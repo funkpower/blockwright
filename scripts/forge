@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Minimal Forgejo client for funkpower/blockwright on git.pumpin.online.
+# The token comes from `pass` and is never printed.
+#
+#   forge pr-create <head> <title> <body-file>   -> prints PR number
+#   forge pr-list                                 open PRs: number, head, title
+#   forge pr-get <n>                              JSON
+#   forge pr-merge <n>                            merge commit
+#   forge comment <n> <body-file>                 comment on a PR or issue
+#   forge issue-create <title> <body-file>        -> prints issue number
+#   forge issue-list                              open issues: number, title
+#   forge issue-close <n>
+set -euo pipefail
+API=https://git.pumpin.online/api/v1/repos/funkpower/blockwright
+
+call() { # method path [json]
+  local tok; tok=$(pass show forgejo/pumpin-funkpower | head -n1)
+  local args=(-sS --fail-with-body -X "$1" -H 'Content-Type: application/json')
+  [[ $# -ge 3 ]] && args+=(--data-binary "$3")
+  printf 'header = "Authorization: token %s"\n' "$tok" | curl -K - "${args[@]}" "$API$2"
+}
+
+cmd=${1:-}; shift || true
+case "$cmd" in
+  pr-create)  call POST /pulls "$(jq -n --arg h "$1" --arg t "$2" --rawfile b "$3" '{head:$h,base:"main",title:$t,body:$b}')" | jq -r .number ;;
+  pr-list)    call GET '/pulls?state=open&limit=50' | jq -r '.[] | "\(.number)\t\(.head.ref)\t\(.title)"' ;;
+  pr-get)     call GET "/pulls/$1" ;;
+  pr-merge)   call POST "/pulls/$1/merge" '{"Do":"merge"}' >/dev/null && echo "merged #$1" ;;
+  comment)    call POST "/issues/$1/comments" "$(jq -n --rawfile b "$2" '{body:$b}')" | jq -r .html_url ;;
+  issue-create) call POST /issues "$(jq -n --arg t "$1" --rawfile b "$2" '{title:$t,body:$b}')" | jq -r .number ;;
+  issue-list) call GET '/issues?state=open&type=issues&limit=50' | jq -r '.[] | "\(.number)\t\(.title)"' ;;
+  issue-close) call PATCH "/issues/$1" '{"state":"closed"}' >/dev/null && echo "closed #$1" ;;
+  *) sed -n '2,13p' "$0"; exit 2 ;;
+esac
