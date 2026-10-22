@@ -15,16 +15,35 @@
 set -euo pipefail
 API=https://git.pumpin.online/api/v1/repos/funkpower/blockwright
 
-call() { # method path [json]
-  local tok; tok=$(pass show forgejo/pumpin-funkpower | head -n1)
-  local args=(-sS --fail-with-body -X "$1" -H 'Content-Type: application/json')
-  [[ $# -ge 3 ]] && args+=(--data-binary "$3")
-  printf 'header = "Authorization: token %s"\n' "$tok" | curl -K - "${args[@]}" "$API$2"
+# Text never goes on a command line (one argument is capped at 128 KiB): JSON
+# bodies reach curl on stdin, and user text reaches jq through --rawfile.
+#
+# xtrace is off from reading the token to the end of the curl call, so `bash -x`
+# shows neither it nor the rest of the pass entry; the caller's setting is put
+# back afterwards. The token goes into a quoted curl config value, so anything
+# outside the token alphabet (an empty entry, `"`, `\`) is refused.
+call() { # method path [--data: the JSON body is read from stdin]
+  local xt=$-; set +x
+  local tok st=0
+  tok=$(pass show forgejo/pumpin-funkpower | sed -n 1p) || st=$?
+  if [[ $st -eq 0 && ! $tok =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+    echo "forge: the forgejo/pumpin-funkpower token is empty or not a token" >&2; st=1
+  fi
+  if [[ $st -eq 0 ]]; then
+    local args=(-sS --fail-with-body -X "$1" -H 'Content-Type: application/json')
+    [[ ${3:-} == --data ]] && args+=(--data-binary @-)
+    curl -K <(printf 'header = "Authorization: token %s"\n' "$tok") "${args[@]}" "$API$2" || st=$?
+  fi
+  tok=
+  [[ $xt == *x* ]] && set -x
+  return $st
 }
 
 cmd=${1:-}; shift || true
 case "$cmd" in
-  pr-create)  call POST /pulls "$(jq -n --arg h "$1" --arg t "$2" --rawfile b "$3" '{head:$h,base:"main",title:$t,body:$b}')" | jq -r .number ;;
+  pr-create)
+    data=$(jq -n --arg h "$1" --arg t "$2" --rawfile b "$3" '{head:$h,base:"main",title:$t,body:$b}')
+    call POST /pulls --data <<<"$data" | jq -r .number ;;
   pr-list)    call GET '/pulls?state=open&limit=50' | jq -r '.[] | "\(.number)\t\(.head.ref)\t\(.title)"' ;;
   pr-get)     call GET "/pulls/$1" ;;
   pr-merge)
@@ -37,12 +56,17 @@ case "$cmd" in
         | (first(range(length) as $i | select(.[$i] | test("[^ \t]") | not) | $i) // length) as $e
         | .[:$e] | join("\n")' <<<"$pr")
     fi
-    call POST "/pulls/$1/merge" "$(jq -n --arg t "$title" --arg m "$msg" \
-      '{Do:"squash",MergeTitleField:$t,MergeMessageField:$m,delete_branch_after_merge:true}')" >/dev/null
+    data=$(jq -n --rawfile t <(printf '%s' "$title") --rawfile m <(printf '%s' "$msg") \
+      '{Do:"squash",MergeTitleField:$t,MergeMessageField:$m,delete_branch_after_merge:true}')
+    call POST "/pulls/$1/merge" --data <<<"$data" >/dev/null
     echo "squash-merged #$1" ;;
-  comment)    call POST "/issues/$1/comments" "$(jq -n --rawfile b "$2" '{body:$b}')" | jq -r .html_url ;;
-  issue-create) call POST /issues "$(jq -n --arg t "$1" --rawfile b "$2" '{title:$t,body:$b}')" | jq -r .number ;;
+  comment)
+    data=$(jq -n --rawfile b "$2" '{body:$b}')
+    call POST "/issues/$1/comments" --data <<<"$data" | jq -r .html_url ;;
+  issue-create)
+    data=$(jq -n --arg t "$1" --rawfile b "$2" '{title:$t,body:$b}')
+    call POST /issues --data <<<"$data" | jq -r .number ;;
   issue-list) call GET '/issues?state=open&type=issues&limit=50' | jq -r '.[] | "\(.number)\t\(.title)"' ;;
-  issue-close) call PATCH "/issues/$1" '{"state":"closed"}' >/dev/null && echo "closed #$1" ;;
+  issue-close) call PATCH "/issues/$1" --data <<<'{"state":"closed"}' >/dev/null && echo "closed #$1" ;;
   *) sed -n '2,14p' "$0"; exit 2 ;;
 esac
