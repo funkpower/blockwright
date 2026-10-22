@@ -1,0 +1,18 @@
+[package]
+name = "ans2irc-ffi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "C ABI over the ans2irc encoder, for Blockwright"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ans2irc_ffi"
+crate-type = ["staticlib"]
+
+[dependencies]
+ans2irc = { path = "../../third_party/ans2irc" }
+
+[profile.release]
+codegen-units = 1

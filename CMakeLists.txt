@@ -13,6 +13,8 @@ include(CTest)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui)
 
+include(cmake/Ans2irc.cmake)
+
 # The short commit reported by --version. Empty means ask git on every build,
 # so the binary never reports a stale commit; scripts/install-dev sets it
 # because it builds from an exported tree with no .git.

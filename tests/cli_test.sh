@@ -21,6 +21,7 @@ piece=$data/golden/tux.ans
 
 expect "--version prints version and short commit" 0 '^blockwright-cli [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]{7,}(-dirty)?|unknown)\)$' -- "$cli" --version
 expect "--help" 0 'convert <in> <out>' -- "$cli" --help
+expect "--help lists export" 0 'export --irc <in> <out>' -- "$cli" --help
 
 expect "info: dimensions" 0 '^size: +30x17$' -- "$cli" info "$piece"
 expect "info: SAUCE author" 0 '^author: +funkpower$' -- "$cli" info "$piece"
@@ -77,6 +78,65 @@ if [[ -z $left ]]; then ok "short writes leave no temporary file"; else bad "sho
 cp "$piece" "$fsz/ok.ans"
 expect "in-place convert" 0 '^$' -- "$cli" convert "$fsz/ok.ans" "$fsz/ok.ans"
 if cmp -s "$piece" "$fsz/ok.ans"; then ok "in-place convert output is byte-identical"; else bad "in-place convert output differs"; fi
+
+# export --irc: per-line byte report, the budget, and the override
+expect "export --irc" 0 '^17 lines, longest 80 bytes, budget 407: 0 over$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
+if cmp -s "$data/golden-irc/tux.txt" "$tmp/tux.txt"; then ok "export --irc output is ans2irc's"; else bad "export --irc output differs from golden-irc/tux.txt"; fi
+expect "export --irc reports every line" 0 '^ +13 +80$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
+report=$("$cli" export --irc "$piece" "$tmp/tux.txt" 2>/dev/null)
+if [[ $(grep -cE '^ +[0-9]+ +[0-9]+' <<<"$report") -eq 17 ]]; then ok "export --irc reports 17 lines"; else bad "export --irc report: $report"; fi
+expect "over budget refused" 3 '^ +13 +80  over by 20$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+expect "over budget listed" 3 'tux\.ans: line 13 is 80 bytes, over the 60-byte budget by 20' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+expect "over budget counted" 3 '^17 lines, longest 80 bytes, budget 60: 6 over$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+expect "over budget says why" 3 'over\.txt: not written: lines over the budget \(--allow-over-budget writes it anyway\)' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+if [[ -e $tmp/over.txt ]]; then bad "refused export left an output file"; else ok "refused export writes nothing"; fi
+expect "--allow-over-budget writes" 0 'line 13 is 80 bytes, over the 60-byte budget' -- "$cli" export --irc --budget 60 --allow-over-budget "$piece" "$tmp/over.txt"
+if cmp -s "$data/golden-irc/tux.txt" "$tmp/over.txt"; then ok "--allow-over-budget writes the lines uncut"; else bad "--allow-over-budget output differs"; fi
+# 80 cells, each a different colour from its neighbour: over 407 bytes
+for i in $(seq 0 79); do printf '\033[%d;%dmx' $((30 + i % 8)) $((40 + (i + 3) % 8)); done > "$tmp/rainbow.ans"
+expect "default budget is 407" 3 '^1 line, longest 4[0-9][0-9] bytes, budget 407: 1 over$' -- "$cli" export --irc "$tmp/rainbow.ans" "$tmp/rainbow.txt"
+expect "--budget raises it" 0 'budget 600: 0 over$' -- "$cli" export --irc --budget 600 "$tmp/rainbow.ans" "$tmp/rainbow.txt"
+expect "export needs --irc" 2 'export needs a format: --irc' -- "$cli" export "$piece" "$tmp/x.txt"
+expect "export arity" 2 'export takes' -- "$cli" export --irc "$piece"
+expect "--budget must be a number" 2 '--budget takes a positive number' -- "$cli" export --irc --budget lots "$piece" "$tmp/x.txt"
+expect "--budget must be positive" 2 '--budget takes a positive number' -- "$cli" export --irc --budget 0 "$piece" "$tmp/x.txt"
+# export never writes over its input, whatever name the output gives it
+same=$tmp/same && mkdir -p "$same/sub"
+cp "$piece" "$same/a.ans"
+ln -s a.ans "$same/out-link.ans"   # the output is a symlink to the input
+cp "$piece" "$same/real.ans"
+ln -s real.ans "$same/in-link.ans" # the input is a symlink to the output
+ln "$same/a.ans" "$same/hard.ans"  # a hard link to the input
+expect "export onto the input refused" 1 'a\.ans: not written: it is the input file' -- "$cli" export --irc "$same/a.ans" "$same/a.ans"
+expect "export onto ./input refused" 1 'not written: it is the input file' -- "$cli" export --irc "$same/a.ans" "$same/./a.ans"
+expect "export onto sub/../input refused" 1 'not written: it is the input file' -- "$cli" export --irc "$same/a.ans" "$same/sub/../a.ans"
+expect "export relative onto the input refused" 1 'not written: it is the input file' -- env -C "$same/sub" "$cli" export --irc ../a.ans ./../a.ans
+expect "export onto a symlink to the input refused" 1 'out-link\.ans: not written: it is the input file' -- "$cli" export --irc "$same/a.ans" "$same/out-link.ans"
+expect "export from a symlink onto its target refused" 1 'real\.ans: not written: it is the input file' -- "$cli" export --irc "$same/in-link.ans" "$same/real.ans"
+expect "export onto a hard link to the input refused" 1 'hard\.ans: not written: it is the input file' -- "$cli" export --irc "$same/a.ans" "$same/hard.ans"
+out=$("$cli" export --irc "$same/a.ans" "$same/a.ans" 2>&1)
+if [[ $out == "blockwright-cli: $same/a.ans: not written: it is the input file" ]]; then ok "export onto the input prints only the refusal"; else bad "export onto the input printed: $out"; fi
+: > "$same/empty.ans"  # refused before the input is read
+expect "export onto the input refused before reading it" 1 'empty\.ans: not written: it is the input file' -- "$cli" export --irc "$same/empty.ans" "$same/empty.ans"
+rm "$same/empty.ans"
+if cmp -s "$piece" "$same/a.ans" && cmp -s "$piece" "$same/real.ans"; then ok "refused export leaves the input"; else bad "refused export changed the input"; fi
+if [[ -L $same/out-link.ans && -L $same/in-link.ans ]]; then ok "refused export leaves the symlinks"; else bad "refused export replaced a symlink"; fi
+left=$(ls -A "$same" | grep -vxE 'a\.ans|out-link\.ans|real\.ans|in-link\.ans|hard\.ans|sub')
+if [[ -z $left && -z $(ls -A "$same/sub") ]]; then ok "refused export leaves no stray file"; else bad "refused export left: $left $(ls -A "$same/sub")"; fi
+expect "export beside the input still writes" 0 '^17 lines' -- "$cli" export --irc "$same/a.ans" "$same/a.txt"
+if cmp -s "$data/golden-irc/tux.txt" "$same/a.txt"; then ok "export beside the input writes the lines"; else bad "export beside the input differs"; fi
+
+for cmd in "info $piece" "convert $piece $tmp/flag.ans" "render $piece $tmp/flag.png"; do
+  for flag in --irc "--budget 60" --allow-over-budget; do
+    # shellcheck disable=SC2086
+    expect "${cmd%% *} rejects $flag" 2 "^blockwright-cli: ${flag%% *} is an export option$" -- "$cli" ${cmd%% *} $flag ${cmd#* }
+  done
+done
+if [[ -e $tmp/flag.ans ]]; then bad "convert with an export option wrote a file"; else ok "convert with an export option writes nothing"; fi
+if [[ -e $tmp/flag.png ]]; then bad "render with an export option wrote a file"; else ok "render with an export option writes nothing"; fi
+
+expect "export bad input" 1 'nope\.ans: No such file' -- "$cli" export --irc "$tmp/nope.ans" "$tmp/x.txt"
+expect "export unwritable output" 1 'no/such/dir/out\.txt' -- "$cli" export --irc "$piece" "$tmp/no/such/dir/out.txt"
 
 expect "no command" 2 'no command' -- "$cli"
 expect "unknown command" 2 "unknown command 'frobnicate'" -- "$cli" frobnicate

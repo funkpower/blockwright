@@ -17,13 +17,14 @@
 # before a command runs.
 #
 # The ref is exported with `git archive`, so uncommitted changes in the
-# working tree never reach the build. The exported files carry the commit's
-# time, which can be older than objects built from another commit, so the
-# build tree is wiped whenever the commit differs from the last one built
-# there (recorded in <build-dir>/built-commit). Installs the CLI as
-# blockwright-cli-dev, with the licence and font notices in
-# <prefix>/share/doc/blockwright/; the GUI and its .desktop entry come once
-# the GUI exists.
+# working tree never reach the build; submodules are exported the same way,
+# at the commits the ref pins. The build needs cargo (a Rust toolchain). The
+# exported files carry the commit's time, which can be older than objects
+# built from another commit, so the build tree is wiped whenever the commit
+# differs from the last one built there (recorded in
+# <build-dir>/built-commit). Installs the CLI as blockwright-cli-dev, with the
+# licence and font notices in <prefix>/share/doc/blockwright/; the GUI and its
+# .desktop entry come once the GUI exists.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -82,6 +83,11 @@ if [[ $check_only ]]; then
   exit 0
 fi
 
+# The ans2irc crate is built with cargo (PLAN §8).
+if ! command -v cargo >/dev/null; then
+  echo "install-dev: cargo not found: the build needs a Rust toolchain" >&2; exit 1
+fi
+
 if [[ $ref == origin/* ]]; then
   GIT_ASKPASS=$repo/scripts/git-askpass git -C "$repo" fetch -q origin
 fi
@@ -98,6 +104,29 @@ fi
 rm -rf "$src"
 mkdir -p "$src" "$build"
 git -C "$repo" archive "$full" | tar -x -C "$src"
+
+# git archive leaves submodules empty: export each at the commit $full pins,
+# from a bare clone kept in the build dir (the URL is the one .gitmodules
+# gives at that commit, so the working tree's submodules don't matter).
+gitmodules=$build_dir/gitmodules
+git -C "$repo" show "$full:.gitmodules" > "$gitmodules" 2>/dev/null || : > "$gitmodules"
+while IFS=$'\t' read -r meta path; do
+  read -r _ type sha <<<"$meta"
+  [[ $type == commit ]] || continue
+  name=$(git config -f "$gitmodules" --get-regexp '^submodule\..*\.path$' |
+         awk -v p="$path" '$2 == p { sub(/^submodule\./, "", $1); sub(/\.path$/, "", $1); print $1; exit }')
+  url=$(git config -f "$gitmodules" --get "submodule.$name.url" || true)
+  if [[ -z $url ]]; then
+    echo "install-dev: no URL for submodule $path in .gitmodules" >&2; exit 1
+  fi
+  mod=$build_dir/modules/$name
+  [[ -d $mod ]] || git clone -q --bare "$url" "$mod"
+  if ! git -C "$mod" cat-file -e "$sha^{commit}" 2>/dev/null; then
+    git -C "$mod" fetch -q "$url" '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
+  fi
+  mkdir -p "$src/$path"
+  git -C "$mod" archive "$sha" | tar -x -C "$src/$path"
+done < <(git -C "$repo" ls-tree -r "$full")
 
 # One configuration for configure, build and install, so they agree even
 # under a multi-config generator

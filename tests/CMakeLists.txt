@@ -15,6 +15,7 @@ add_executable(blockwright-tests
   test_ansi_write.cpp
   test_cp437.cpp
   test_golden.cpp
+  test_irc.cpp
   test_sauce.cpp
   util.h
 )
@@ -26,6 +27,10 @@ add_test(NAME cli
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_test.sh
           $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-tmp)
 set_tests_properties(cli PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+
+add_test(NAME irc_oracle
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/irc_oracle_test.sh
+          $<TARGET_FILE:ans2irc> ${CMAKE_CURRENT_SOURCE_DIR}/data)
 
 add_test(NAME install_dev_paths
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_dev_test.sh

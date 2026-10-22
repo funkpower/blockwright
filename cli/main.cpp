@@ -4,12 +4,15 @@
 //   blockwright-cli info <file.ans>
 //   blockwright-cli convert [--allow-lossy] <in.ans> <out.ans>
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
+//   blockwright-cli export --irc [--budget N] [--allow-over-budget] <in.ans> <out.txt>
 //
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert without
-// --allow-lossy (nothing is written), 2 usage error.
+// --allow-lossy (nothing is written), 2 usage error, 3 an IRC line over the
+// byte budget without --allow-over-budget (nothing is written).
 
 #include "blockwright/ansi.h"
 #include "blockwright/cp437.h"
+#include "blockwright/irc.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
 
@@ -18,18 +21,20 @@
 #include <QImageWriter>
 #include <QSaveFile>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
 
 namespace {
 
-constexpr int kOk = 0, kBadInput = 1, kUsage = 2;
+constexpr int kOk = 0, kBadInput = 1, kUsage = 2, kOverBudget = 3;
 
 struct Failure {
     std::string message;
@@ -119,6 +124,26 @@ int info(const std::string& path) {
     return kOk;
 }
 
+// Writes `bytes` to `path` all or nothing.
+void save(const std::string& out, const std::string& bytes) {
+    // QSaveFile writes a temporary file beside the destination, syncs it and
+    // renames it over the destination on commit, or removes it on failure, so
+    // a failed write never leaves a partial file or damages the input.
+    QSaveFile f(QString::fromStdString(out));
+    if (!f.open(QIODevice::WriteOnly))
+        throw Failure{out + ": " + f.errorString().toStdString()};
+    const auto n = static_cast<qint64>(bytes.size());
+    errno = 0;
+    if (f.write(bytes.data(), n) != n || !f.flush()) {
+        // Qt's error string for a failed write is often "Unknown error"
+        const std::string why = errno ? std::strerror(errno) : f.errorString().toStdString();
+        f.cancelWriting();
+        throw Failure{out + ": write failed: " + why};
+    }
+    if (!f.commit())
+        throw Failure{out + ": write failed: " + f.errorString().toStdString()};
+}
+
 int convert(const std::string& in, const std::string& out, bool allowLossy) {
     const bw::AnsiDocument doc = load(in);
     const bw::AnsiOutput res = bw::writeAnsi(doc);
@@ -139,33 +164,8 @@ int convert(const std::string& in, const std::string& out, bool allowLossy) {
                   << ": bright backgrounds need iCE colours, where blink is a bright background\n";
     if (res.lossy() && !allowLossy)
         throw Failure{out + ": not written: the conversion loses data (--allow-lossy writes it anyway)"};
-    // QSaveFile writes a temporary file beside the destination, syncs it and
-    // renames it over the destination on commit, or removes it on failure, so
-    // a failed write never leaves a partial file or damages the input.
-    QSaveFile f(QString::fromStdString(out));
-    if (!f.open(QIODevice::WriteOnly))
-        throw Failure{out + ": " + f.errorString().toStdString()};
-    const auto n = static_cast<qint64>(res.bytes.size());
-    errno = 0;
-    if (f.write(res.bytes.data(), n) != n || !f.flush()) {
-        // Qt's error string for a failed write is often "Unknown error"
-        const std::string why = errno ? std::strerror(errno) : f.errorString().toStdString();
-        f.cancelWriting();
-        throw Failure{out + ": write failed: " + why};
-    }
-    if (!f.commit())
-        throw Failure{out + ": write failed: " + f.errorString().toStdString()};
+    save(out, res.bytes);
     return kOk;
-}
-
-// A positive integer option value, or a usage error naming the option.
-int intValue(const QString& s, const char* option, int lo, int hi) {
-    bool ok = false;
-    const int v = s.toInt(&ok);
-    if (!ok || v < lo || v > hi)
-        throw Usage{std::string("--") + option + " must be " + std::to_string(lo) + "-" + std::to_string(hi) +
-                    ", not '" + s.toStdString() + "'"};
-    return v;
 }
 
 // Refuses an output that is the input under another name: the same path, a
@@ -180,6 +180,50 @@ void refuseSameFile(const std::string& in, const std::string& out) {
     }
     if (same)
         throw Failure{out + ": not written: it is the input file"};
+}
+
+// Writes the piece as IRC text and reports every line's size in bytes, as
+// ans2irc's encoder writes it. A line over the budget is listed and nothing
+// is written, unless allowOver.
+int exportIrc(const std::string& in, const std::string& out, std::size_t budget, bool allowOver) {
+    refuseSameFile(in, out);
+    const bw::AnsiDocument doc = load(in);
+    const std::vector<std::string> lines = bw::irc::exportCanvas(doc.canvas);
+    const auto over = bw::irc::overBudget(lines, budget);
+    std::size_t longest = 0;
+    std::cout << "line  bytes\n";
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::size_t n = lines[i].size();
+        longest = std::max(longest, n);
+        std::cout << std::setw(4) << i + 1 << "  " << std::setw(5) << n;
+        if (n > budget)
+            std::cout << "  over by " << n - budget;
+        std::cout << "\n";
+    }
+    std::cout << lines.size() << (lines.size() == 1 ? " line" : " lines") << ", longest " << longest
+              << " bytes, budget " << budget << ": " << over.size() << " over\n";
+    if (!over.empty()) {
+        for (const auto& o : over)
+            std::cerr << "blockwright-cli: " << in << ": line " << o.line << " is " << o.bytes << " bytes, over the "
+                      << budget << "-byte budget by " << o.bytes - budget << "\n";
+        if (!allowOver) {
+            std::cerr << "blockwright-cli: " << out
+                      << ": not written: lines over the budget (--allow-over-budget writes it anyway)\n";
+            return kOverBudget;
+        }
+    }
+    save(out, bw::irc::joinLines(lines));
+    return kOk;
+}
+
+// A positive integer option value, or a usage error naming the option.
+int intValue(const QString& s, const char* option, int lo, int hi) {
+    bool ok = false;
+    const int v = s.toInt(&ok);
+    if (!ok || v < lo || v > hi)
+        throw Usage{std::string("--") + option + " must be " + std::to_string(lo) + "-" + std::to_string(hi) +
+                    ", not '" + s.toStdString() + "'"};
+    return v;
 }
 
 int render(const std::string& in, const std::string& out, const bw::RenderOptions& opts) {
@@ -221,7 +265,10 @@ int main(int argc, char** argv) {
         "Commands:\n"
         "  info <file>          dimensions and SAUCE fields\n"
         "  convert <in> <out>   read an .ans and write it back out\n"
-        "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font"));
+        "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font\n"
+        "  export --irc <in> <out>\n"
+        "                       write IRC text (mIRC colour codes) and report each\n"
+        "                       line's size in bytes"));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
@@ -235,7 +282,18 @@ int main(int argc, char** argv) {
                                           QStringLiteral("render: glyph width 8 or 9 (default: SAUCE letter spacing, else 8)"),
                                           QStringLiteral("px"));
     parser.addOption(fontWidthOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert or render"));
+    const QCommandLineOption ircOpt(QStringLiteral("irc"), QStringLiteral("export: IRC text with mIRC colour codes"));
+    parser.addOption(ircOpt);
+    const QCommandLineOption budgetOpt(
+        QStringLiteral("budget"),
+        QStringLiteral("export --irc: bytes a line may take (default %1, EFnet via WeeChat)")
+            .arg(bw::irc::kEfnetWeechatBudget),
+        QStringLiteral("bytes"));
+    parser.addOption(budgetOpt);
+    const QCommandLineOption overOpt(QStringLiteral("allow-over-budget"),
+                                     QStringLiteral("export --irc: write even if a line is over the budget"));
+    parser.addOption(overOpt);
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render or export"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -254,12 +312,17 @@ int main(int argc, char** argv) {
     auto usage = [](const char* msg) {
         std::cerr << "blockwright-cli: " << msg << "\n"
                   << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out>\n"
-                  << "       | render [--scale N] [--font-width 8|9] <in> <out.png> | --version\n";
+                  << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
+                  << "       | export --irc [--budget N] [--allow-over-budget] <in> <out> | --version\n";
         return kUsage;
     };
     if (args.isEmpty())
         return usage("no command given");
     const QString cmd = args.first();
+    if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render"))
+        for (const QCommandLineOption* o : {&ircOpt, &budgetOpt, &overOpt})
+            if (parser.isSet(*o))
+                return usage(("--" + o->names().first().toStdString() + " is an export option").c_str());
     try {
         if (cmd == QLatin1String("info")) {
             if (args.size() != 2)
@@ -280,11 +343,29 @@ int main(int argc, char** argv) {
                 opts.fontWidth = intValue(parser.value(fontWidthOpt), "font-width", 8, 9);
             return render(args[1].toStdString(), args[2].toStdString(), opts);
         }
+        if (cmd == QLatin1String("export")) {
+            if (!parser.isSet(ircOpt))
+                return usage("export needs a format: --irc");
+            if (args.size() != 3)
+                return usage("export takes an input and an output file");
+            std::size_t budget = bw::irc::kEfnetWeechatBudget;
+            if (parser.isSet(budgetOpt)) {
+                bool ok = false;
+                const qulonglong v = parser.value(budgetOpt).toULongLong(&ok);
+                if (!ok || v == 0)
+                    return usage("--budget takes a positive number of bytes");
+                budget = static_cast<std::size_t>(v);
+            }
+            return exportIrc(args[1].toStdString(), args[2].toStdString(), budget, parser.isSet(overOpt));
+        }
         return usage(("unknown command '" + cmd.toStdString() + "'").c_str());
     } catch (const Usage& u) {
         return usage(u.message.c_str());
     } catch (const Failure& f) {
         std::cerr << "blockwright-cli: " << f.message << "\n";
+        return kBadInput;
+    } catch (const bw::irc::IrcError& e) {
+        std::cerr << "blockwright-cli: " << args.value(1).toStdString() << ": " << e.what() << "\n";
         return kBadInput;
     }
 }

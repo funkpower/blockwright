@@ -4,7 +4,8 @@ Native ANSI/IRC art editor in C++20 / Qt 6. `PLAN.md` is the design; read it bef
 
 ## Build
 
-- CMake + Ninja, Qt 6 (system Qt on Linux), Rust toolchain for the linked ans2irc crate.
+- CMake + Ninja, Qt 6 (system Qt on Linux), Rust toolchain (cargo) for the linked ans2irc crate.
+- ans2irc is a git submodule at `third_party/ans2irc`: clone with `--recursive`, or run `git submodule update --init` in an existing checkout (and in every new worktree) before the first configure. CMake stops with that hint if it is missing. Bumping it means moving the submodule commit and regenerating `tests/data/golden-irc/` with the `ans2irc` binary the test build makes (the `irc_oracle` test checks them).
 - Layout: `core/` (no QtWidgets), `render/`, `app/`, `cli/`, `tests/` (Catch2). Tests must not need a display: run with `QT_QPA_PLATFORM=offscreen`.
 - Build trees and caches go under `~/.cache/dw/<name>-build`, never inside the repo, `/tmp` or `~/projects`.
 - On the dev machine build with `nice -n 10` and at most 8 jobs.
