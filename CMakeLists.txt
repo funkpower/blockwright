@@ -11,7 +11,7 @@ endif()
 include(GNUInstallDirs)
 include(CTest)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui)
 
 # The short commit reported by --version. Empty means ask git on every build,
 # so the binary never reports a stale commit; scripts/install-dev sets it
@@ -30,7 +30,14 @@ add_custom_target(bw_version ALL
   VERBATIM)
 
 add_subdirectory(core)
+add_subdirectory(render)
 add_subdirectory(cli)
+
+# The licence and the bundled font's notices travel with the binaries
+# (CC BY-SA 4.0 section 3): <prefix>/share/doc/blockwright/.
+install(FILES LICENSE NOTICE DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fonts/README.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}/oldschool-pc-fonts)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)

@@ -3,16 +3,19 @@
 //   blockwright-cli --version
 //   blockwright-cli info <file.ans>
 //   blockwright-cli convert [--allow-lossy] <in.ans> <out.ans>
+//   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert without
 // --allow-lossy (nothing is written), 2 usage error.
 
 #include "blockwright/ansi.h"
 #include "blockwright/cp437.h"
+#include "blockwright/render.h"
 #include "blockwright/version.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QImageWriter>
 #include <QSaveFile>
 
 #include <cerrno>
@@ -29,6 +32,10 @@ namespace {
 constexpr int kOk = 0, kBadInput = 1, kUsage = 2;
 
 struct Failure {
+    std::string message;
+};
+
+struct Usage {
     std::string message;
 };
 
@@ -151,6 +158,56 @@ int convert(const std::string& in, const std::string& out, bool allowLossy) {
     return kOk;
 }
 
+// A positive integer option value, or a usage error naming the option.
+int intValue(const QString& s, const char* option, int lo, int hi) {
+    bool ok = false;
+    const int v = s.toInt(&ok);
+    if (!ok || v < lo || v > hi)
+        throw Usage{std::string("--") + option + " must be " + std::to_string(lo) + "-" + std::to_string(hi) +
+                    ", not '" + s.toStdString() + "'"};
+    return v;
+}
+
+// Refuses an output that is the input under another name: the same path, a
+// ./ or ../ form of it, a symlink or a hard link to it.
+void refuseSameFile(const std::string& in, const std::string& out) {
+    namespace fs = std::filesystem;
+    std::error_code ec1, ec2;
+    bool same = fs::equivalent(in, out, ec1);
+    if (!same) {
+        const fs::path a = fs::weakly_canonical(in, ec1), b = fs::weakly_canonical(out, ec2);
+        same = !ec1 && !ec2 && a == b;
+    }
+    if (same)
+        throw Failure{out + ": not written: it is the input file"};
+}
+
+int render(const std::string& in, const std::string& out, const bw::RenderOptions& opts) {
+    refuseSameFile(in, out);
+    const bw::AnsiDocument doc = load(in);
+    if (doc.sauce && doc.sauce->aspectRatio() == 1)
+        std::cerr << "blockwright-cli: note: " << in
+                  << ": SAUCE asks for the legacy (stretched) aspect ratio; the PNG has square pixels\n";
+    QImage img;
+    try {
+        img = bw::renderDocument(doc, opts);
+    } catch (const std::length_error&) {
+        throw Failure{out + ": not written: the image would be too large"};
+    }
+    QSaveFile f(QString::fromStdString(out));
+    if (!f.open(QIODevice::WriteOnly))
+        throw Failure{out + ": " + f.errorString().toStdString()};
+    QImageWriter w(&f, "png");
+    if (!w.write(img)) {
+        const std::string why = w.errorString().toStdString();
+        f.cancelWriting();
+        throw Failure{out + ": write failed: " + why};
+    }
+    if (!f.commit())
+        throw Failure{out + ": write failed: " + f.errorString().toStdString()};
+    return kOk;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -163,13 +220,22 @@ int main(int argc, char** argv) {
         "Headless Blockwright.\n\n"
         "Commands:\n"
         "  info <file>          dimensions and SAUCE fields\n"
-        "  convert <in> <out>   read an .ans and write it back out"));
+        "  convert <in> <out>   read an .ans and write it back out\n"
+        "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font"));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
                                       QStringLiteral("convert: write even if something can't be represented"));
     parser.addOption(lossyOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info or convert"));
+    const QCommandLineOption scaleOpt(QStringLiteral("scale"),
+                                      QStringLiteral("render: integer zoom, nearest neighbour (1-8, default 1)"),
+                                      QStringLiteral("N"), QStringLiteral("1"));
+    parser.addOption(scaleOpt);
+    const QCommandLineOption fontWidthOpt(QStringLiteral("font-width"),
+                                          QStringLiteral("render: glyph width 8 or 9 (default: SAUCE letter spacing, else 8)"),
+                                          QStringLiteral("px"));
+    parser.addOption(fontWidthOpt);
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert or render"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -177,6 +243,8 @@ int main(int argc, char** argv) {
     }
     if (parser.isSet(versionOpt)) {
         std::cout << "blockwright-cli " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n";
+        std::cout << "Includes the IBM VGA 8x16 font, (c) 2016-2020 VileR, CC BY-SA 4.0,\n"
+                     "https://int10h.org/oldschool-pc-fonts/; notices in share/doc/blockwright/\n";
         return kOk;
     }
     if (parser.isSet(helpOpt))
@@ -185,7 +253,8 @@ int main(int argc, char** argv) {
     const QStringList args = parser.positionalArguments();
     auto usage = [](const char* msg) {
         std::cerr << "blockwright-cli: " << msg << "\n"
-                  << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out> | --version\n";
+                  << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out>\n"
+                  << "       | render [--scale N] [--font-width 8|9] <in> <out.png> | --version\n";
         return kUsage;
     };
     if (args.isEmpty())
@@ -202,7 +271,18 @@ int main(int argc, char** argv) {
                 return usage("convert takes an input and an output file");
             return convert(args[1].toStdString(), args[2].toStdString(), parser.isSet(lossyOpt));
         }
+        if (cmd == QLatin1String("render")) {
+            if (args.size() != 3)
+                return usage("render takes an input .ans and an output .png");
+            bw::RenderOptions opts;
+            opts.scale = intValue(parser.value(scaleOpt), "scale", 1, bw::kMaxScale);
+            if (parser.isSet(fontWidthOpt))
+                opts.fontWidth = intValue(parser.value(fontWidthOpt), "font-width", 8, 9);
+            return render(args[1].toStdString(), args[2].toStdString(), opts);
+        }
         return usage(("unknown command '" + cmd.toStdString() + "'").c_str());
+    } catch (const Usage& u) {
+        return usage(u.message.c_str());
     } catch (const Failure& f) {
         std::cerr << "blockwright-cli: " << f.message << "\n";
         return kBadInput;

@@ -1,0 +1,7 @@
+Blockwright is licensed under GPL-3.0-or-later (see LICENSE).
+
+It includes third-party material under its own licence:
+
+- IBM VGA 8x16 glyph bitmaps from The Ultimate Oldschool PC Font Pack v2.2,
+  (c) 2016-2020 VileR, https://int10h.org/oldschool-pc-fonts/, licensed under
+  CC BY-SA 4.0. Source, version and licence text: third_party/oldschool-pc-fonts/.

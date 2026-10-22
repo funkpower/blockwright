@@ -1,0 +1,26 @@
+# libansilove reference renders: <png> <piece, relative to tests/data> <glyph width>
+# Made with libansilove ced66a02a320d4ce50297de7623689e61c4f5dac and the ansilove CLI:
+#   ansilove -S -o <png> <piece>          (8 px rows)
+#   ansilove -S -b 9 -o <png> <piece>     (9 px rows)
+battlestation.png golden/battlestation.ans 8
+burning-of-losgar.png golden/burning-of-losgar.ans 8
+cafe-mug.png golden/cafe-mug.ans 8
+cocktober.png golden/cocktober.ans 8
+darkmage.png golden/darkmage.ans 8
+durin-gate.png golden/durin-gate.ans 8
+heinz-efnet.png golden/heinz-efnet.ans 8
+minas-morgul.png golden/minas-morgul.ans 8
+outrun-sunset.png golden/outrun-sunset.ans 8
+spruce-island.png golden/spruce-island.ans 8
+tux.png golden/tux.ans 8
+xeros.png golden/xeros.ans 8
+bexnew.png render/pieces/bexnew.ans 8
+blink-ice-off.png render/pieces/blink-ice-off.ans 8
+blink-ice-on.png render/pieces/blink-ice-on.ans 8
+kahn.png render/pieces/kahn.ans 8
+l0de.png render/pieces/l0de.ans 8
+trump-2024.png render/pieces/trump-2024.ans 8
+vae.png render/pieces/vae.ans 8
+tux-9px.png golden/tux.ans 9
+heinz-efnet-9px.png golden/heinz-efnet.ans 9
+blink-ice-on-9px.png render/pieces/blink-ice-on.ans 9
