@@ -14,6 +14,7 @@ add_library(blockwright_core STATIC
   src/palette.cpp
   src/ramp.cpp
   src/sauce.cpp
+  src/selection.cpp
 )
 add_library(blockwright::core ALIAS blockwright_core)
 target_include_directories(blockwright_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

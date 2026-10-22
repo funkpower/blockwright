@@ -1,0 +1,354 @@
+#include "select_tool.h"
+
+#include "canvas_view.h"
+#include "document.h"
+
+#include "blockwright/ansi.h"
+#include "blockwright/canvas_renderer.h"
+#include "blockwright/render.h"
+
+#include <QKeyEvent>
+#include <QPainter>
+
+#include <algorithm>
+#include <exception>
+#include <utility>
+
+namespace bw {
+
+SelectTool::SelectTool(QObject* parent) : Tool(QStringLiteral("select"), tr("&Select"), parent) {}
+
+const Canvas& SelectTool::canvas() const { return view()->document()->canvas(); }
+
+void SelectTool::activate(CanvasView* v) {
+    Tool::activate(v);
+    home_ = v;
+    const auto stale = [this] {
+        previewStale_ = true;
+        if (floating_)
+            emit changed();
+    };
+    connections_ << connect(v->document(), &Document::cellsChanged, this, stale)
+                 << connect(v->document(), &Document::formatChanged, this, stale)
+                 << connect(v, &CanvasView::mirrorChanged, this, stale);
+}
+
+void SelectTool::deactivate() {
+    // Switching tools keeps a floating selection's cells where they float,
+    // and the selection with them.
+    stamp();
+    drag_ = Drag::None;
+    for (const auto& c : connections_)
+        disconnect(c);
+    connections_.clear();
+    Tool::deactivate();
+}
+
+const Selection& SelectTool::selection() const {
+    static const Selection none;
+    return home_ ? home_->selection() : none;
+}
+
+void SelectTool::setSelection(const Selection& s) {
+    if (view())
+        view()->setSelection(s);
+}
+
+void SelectTool::setPasteMode(PasteMode mode) {
+    if (mode == mode_)
+        return;
+    mode_ = mode;
+    previewStale_ = true;
+    emit changed();
+}
+
+void SelectTool::select(const CellRect& rect) {
+    if (!view())
+        return;
+    stamp();
+    setSelection(Selection(rect));
+}
+
+void SelectTool::selectAll() {
+    if (view())
+        select({0, 0, canvas().width(), canvas().height()});
+}
+
+void SelectTool::deselect() { select({}); }
+
+void SelectTool::lift() {
+    if (!view() || floating_ || selection().empty())
+        return;
+    liftedFrom_ = selection();
+    float_ = copyBlock(canvas(), liftedFrom_);
+    floatPos_ = {liftedFrom_.bounds().x, liftedFrom_.bounds().y};
+    floating_ = lifted_ = true;
+    previewStale_ = true;
+    emit changed();
+}
+
+void SelectTool::setFloatPos(QPoint pos) {
+    // Keep at least one cell on the canvas, so arrows can bring it back.
+    const Canvas& cv = canvas();
+    pos.setX(std::clamp(pos.x(), 1 - float_.width, cv.width() - 1));
+    pos.setY(std::clamp(pos.y(), 1 - float_.height, cv.height() - 1));
+    floatPos_ = pos;
+    setSelection(Selection({pos.x(), pos.y(), float_.width, float_.height}));
+    previewStale_ = true;
+    emit changed();
+}
+
+void SelectTool::moveBy(int dx, int dy) {
+    if (!view())
+        return;
+    lift();
+    if (floating_)
+        setFloatPos(floatPos_ + QPoint(dx, dy));
+}
+
+void SelectTool::stamp() {
+    if (!view() || !floating_)
+        return;
+    const CellEdit edit =
+        stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), mode_, lifted_ ? &liftedFrom_ : nullptr);
+    floating_ = lifted_ = false;
+    drag_ = Drag::None;
+    setSelection(Selection({floatPos_.x(), floatPos_.y(), float_.width, float_.height}));
+    previewStale_ = true;
+    view()->applyEdit(edit);
+    emit changed();
+}
+
+void SelectTool::cancel() {
+    const bool dragging = std::exchange(drag_, Drag::None) != Drag::None;
+    if (floating_) {
+        floating_ = false;
+        setSelection(std::exchange(lifted_, false) ? liftedFrom_ : Selection());
+        previewStale_ = true;
+    } else if (!dragging) {
+        return;
+    }
+    emit changed();
+}
+
+void SelectTool::cancelDrag() {
+    const Drag d = std::exchange(drag_, Drag::None);
+    if (d == Drag::Float && floating_)
+        setFloatPos(dragFrom_);
+    else if (d != Drag::None)
+        emit changed();
+}
+
+void SelectTool::copy() {
+    if (floating_)
+        clipboard_ = float_;
+    else if (view() && !selection().empty())
+        clipboard_ = copyBlock(canvas(), selection());
+    else
+        return;
+    emit changed();
+}
+
+void SelectTool::cut() {
+    if (!floating_ && selection().empty())
+        return;
+    copy();
+    clear();
+}
+
+void SelectTool::clear() {
+    if (!view())
+        return;
+    if (floating_) {
+        const CellEdit edit = lifted_ ? clearSelection(canvas(), liftedFrom_) : CellEdit{};
+        floating_ = lifted_ = false;
+        drag_ = Drag::None;
+        setSelection({});
+        previewStale_ = true;
+        view()->applyEdit(edit);
+        emit changed();
+    } else if (!selection().empty()) {
+        view()->applyEdit(clearSelection(canvas(), selection()));
+    }
+}
+
+void SelectTool::paste() {
+    if (!view() || clipboard_.empty())
+        return;
+    stamp();
+    float_ = clipboard_;
+    floating_ = true;
+    lifted_ = false;
+    drag_ = Drag::None;
+    const Cursor c = view()->cellCursor();
+    setFloatPos({c.x, c.y});
+}
+
+void SelectTool::transform(Transform t) {
+    if (!view())
+        return;
+    if (floating_) {
+        float_ = transformed(float_, t);
+        setFloatPos(floatPos_);
+    } else if (!selection().empty()) {
+        const SelectionEdit r = transformSelection(canvas(), selection(), t);
+        view()->applyEdit(r.edit);
+        setSelection(r.selection);
+    }
+}
+
+bool SelectTool::mousePress(const ToolEvent& e) {
+    if (e.button != Qt::LeftButton || !view())
+        return false;
+    const QPoint c = e.cell;
+    dragStart_ = c;
+    dragMoved_ = false;
+    if (floating_ && QRect(floatPos_, QSize(float_.width, float_.height)).contains(c)) {
+        drag_ = Drag::Float;
+        dragOffset_ = c - floatPos_;
+        dragFrom_ = floatPos_;
+        return true;
+    }
+    stamp();
+    if (selection().contains(c.x(), c.y())) {
+        drag_ = Drag::Pending;  // a move, once the mouse moves
+        return true;
+    }
+    // A new selection; a click that never drags just deselects.
+    drag_ = Drag::Select;
+    setSelection({});
+    view()->setCellCursor({c.x(), c.y()});
+    return true;
+}
+
+bool SelectTool::mouseMove(const ToolEvent& e) {
+    if (drag_ == Drag::None || !view())
+        return false;
+    const QPoint c = e.cell;
+    if (c != dragStart_)
+        dragMoved_ = true;
+    switch (drag_) {
+    case Drag::Select:
+        if (dragMoved_) {
+            setSelection(Selection(CellRect::fromCorners(dragStart_.x(), dragStart_.y(), c.x(), c.y())));
+        }
+        break;
+    case Drag::Pending:
+        if (!dragMoved_)
+            break;
+        lift();
+        drag_ = Drag::Float;
+        dragOffset_ = dragStart_ - floatPos_;
+        dragFrom_ = floatPos_;
+        [[fallthrough]];
+    case Drag::Float:
+        if (dragMoved_)
+            setFloatPos(c - dragOffset_);
+        break;
+    case Drag::None: break;
+    }
+    return true;
+}
+
+bool SelectTool::mouseRelease(const ToolEvent& e) {
+    if (e.button != Qt::LeftButton || drag_ == Drag::None || !view())
+        return false;
+    const Drag d = std::exchange(drag_, Drag::None);
+    if (d == Drag::Float && !dragMoved_)
+        stamp();  // a click on a floating selection
+    else if (d == Drag::Pending)
+        view()->setCellCursor({e.cell.x(), e.cell.y()});
+    return true;
+}
+
+bool SelectTool::keyPress(QKeyEvent* e) {
+    if (e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+        return false;
+    const bool any = floating_ || !selection().empty();
+    switch (e->key()) {
+    case Qt::Key_Left: if (any) moveBy(-1, 0); return any;
+    case Qt::Key_Right: if (any) moveBy(1, 0); return any;
+    case Qt::Key_Up: if (any) moveBy(0, -1); return any;
+    case Qt::Key_Down: if (any) moveBy(0, 1); return any;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        if (!floating_)
+            return false;
+        stamp();
+        return true;
+    case Qt::Key_Escape:
+        if (floating_ || drag_ != Drag::None)
+            cancel();
+        else if (any)
+            deselect();
+        else
+            return false;
+        return true;
+    case Qt::Key_Delete:
+        if (any)
+            clear();
+        return any;
+    default: return false;
+    }
+}
+
+void SelectTool::updatePreview() const {
+    if (!previewStale_)
+        return;
+    previewStale_ = false;
+    preview_ = {};
+    if (!view() || !floating_)
+        return;
+    const Canvas& cv = canvas();
+    CellEdit edit = stampBlock(cv, float_, floatPos_.x(), floatPos_.y(), mode_, lifted_ ? &liftedFrom_ : nullptr);
+    if (view()->mirror())
+        edit = mirrorEdit(cv, edit);
+    if (edit.empty())
+        return;
+    int x0 = cv.width(), y0 = cv.height(), x1 = -1, y1 = -1;
+    for (const CellChange& c : edit.changes) {
+        x0 = std::min(x0, c.x), y0 = std::min(y0, c.y);
+        x1 = std::max(x1, c.x), y1 = std::max(y1, c.y);
+    }
+    // As the renderer draws the canvas: iCE applied, at 1x (paintCells
+    // scales only what it paints, so no zoom makes this bigger).
+    const CanvasRenderer* r = view()->renderer();
+    Canvas part(x1 - x0 + 1, y1 - y0 + 1);
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+            part.at(x - x0, y - y0) = iceCell(cv.at(x, y), r->iceColours());
+    for (const CellChange& c : edit.changes)
+        part.at(c.x - x0, c.y - y0) = iceCell(c.after, r->iceColours());
+    try {
+        preview_ = renderCanvas(part, r->cellSize().width());
+    } catch (const std::exception&) {
+        preview_ = {};
+    }
+    previewCell_ = {x0, y0};
+}
+
+void SelectTool::paintCells(QPainter& p, const QRect& exposed) const {
+    if (!view() || !floating_)
+        return;
+    updatePreview();
+    if (preview_.isNull())
+        return;
+    const int zoom = view()->zoom();
+    const QRect target(view()->cellRect(previewCell_).topLeft(), preview_.size() * zoom);
+    const QRect r = exposed & target;
+    if (r.isEmpty())
+        return;
+    // The preview pixels under `r`, drawn scaled up.
+    const QPoint o = r.topLeft() - target.topLeft();
+    const QRect src(QPoint(o.x() / zoom, o.y() / zoom),
+                    QPoint((r.right() - target.left()) / zoom, (r.bottom() - target.top()) / zoom));
+    p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    p.drawImage(QRect(target.topLeft() + src.topLeft() * zoom, src.size() * zoom), preview_, src);
+}
+
+void SelectTool::paint(QPainter& p) const {
+    if (view() && floating_)
+        view()->paintOutline(p, {floatPos_.x(), floatPos_.y(), float_.width, float_.height}, true);
+}
+
+} // namespace bw

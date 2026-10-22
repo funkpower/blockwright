@@ -21,6 +21,7 @@ add_executable(blockwright-tests
   test_irc.cpp
   test_lint.cpp
   test_sauce.cpp
+  test_selection.cpp
   util.h
 )
 target_link_libraries(blockwright-tests PRIVATE blockwright::core blockwright_cli_io Catch2::Catch2WithMain)
@@ -90,6 +91,7 @@ set_tests_properties(cli_render PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
 add_executable(blockwright-app-tests
   test_app.cpp
   test_app_format.cpp
+  test_app_select.cpp
   util.h
 )
 target_link_libraries(blockwright-app-tests PRIVATE blockwright_app Catch2::Catch2)

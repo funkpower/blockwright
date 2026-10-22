@@ -7,11 +7,18 @@ add_library(blockwright_app STATIC
   document.h
   main_window.cpp
   main_window.h
+  main_window_edit.cpp
   main_window_format.cpp
   palette_widget.cpp
   palette_widget.h
+  reference_scale.cpp
+  reference_scale.h
   sauce_dialog.cpp
   sauce_dialog.h
+  select_tool.cpp
+  select_tool.h
+  tool.cpp
+  tool.h
 )
 set_target_properties(blockwright_app PROPERTIES AUTOMOC ON)
 add_dependencies(blockwright_app bw_version)

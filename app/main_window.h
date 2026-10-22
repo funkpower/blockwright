@@ -1,8 +1,8 @@
 #pragma once
 // The main window: the canvas view in a scroll area, the 1x preview and
 // palette docks, the F-key glyph set in the status bar, and the File, Edit,
-// View, Colours, Glyphs and Help menus. File > SAUCE... and the View menu's
-// iCE and letter-spacing toggles live in main_window_format.cpp.
+// View, Colours, Glyphs, Tools, Selection and Help menus. File > SAUCE... and
+// the View menu's iCE and letter-spacing toggles live in main_window_format.cpp.
 
 #include "blockwright/canvas_renderer.h"
 
@@ -36,6 +36,9 @@ SavePath resolveSavePath(const QString& chosen);
 // its own overwrite check sees the name that will be written.
 void configureSaveDialog(QFileDialog& dialog, const QString& path);
 
+class SelectTool;
+class ToolRegistry;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -49,6 +52,12 @@ public:
     QDockWidget* paletteDock() const { return paletteDock_; }
     QLabel* glyphSetLabel() const { return glyphSetLabel_; }
     const CanvasRenderer& renderer() const { return renderer_; }
+    ToolRegistry* tools() const { return tools_; }
+    SelectTool* selectTool() const { return selectTool_; }
+
+    // Shows the picture at `path` over the canvas to trace (View > Reference
+    // Image). It is never saved. False and `error` if it can't be read.
+    bool loadReferenceImage(const QString& path, QString* error);
 
     // Opens `path` without asking anything; false and `error` on failure.
     bool openFile(const QString& path, QString* error);
@@ -91,6 +100,9 @@ private:
     // Asks to save unsaved edits; false means cancel.
     bool maybeSave();
     bool saveInteractive(const QString& path);
+    // The tools, selection, mirror, guides and reference image
+    // (main_window_edit.cpp).
+    void createEditingActions(QMenu* file, QMenu* edit, QMenu* view);
 
     Document doc_;
     AtlasRenderer renderer_;
@@ -101,6 +113,8 @@ private:
     PaletteWidget* palette_ = nullptr;
     QDockWidget* paletteDock_ = nullptr;
     QLabel* status_ = nullptr;
+    ToolRegistry* tools_ = nullptr;
+    SelectTool* selectTool_ = nullptr;
     QLabel* glyphSetLabel_ = nullptr;
     QList<QAction*> glyphSetActions_;
     QAction* iceAction_ = nullptr;

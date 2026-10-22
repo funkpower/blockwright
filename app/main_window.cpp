@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "select_tool.h"
 #include "palette_widget.h"
 
 #include "blockwright/credits.h"
@@ -216,6 +217,8 @@ void MainWindow::createActions() {
         glyphSetActions_ << set;
     }
 
+    createEditingActions(file, edit, view);
+
     QMenu* help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About Blockwright"), this, [this] {
         QMessageBox::about(this, tr("About Blockwright"),
@@ -282,6 +285,8 @@ bool MainWindow::openFile(const QString& path, QString* error) {
 }
 
 bool MainWindow::saveFile(const QString& path, QString* error, bool allowLossy) {
+    // A floating selection is saved where it floats.
+    view_->finishTool();
     const AnsiOutput out = doc_.encode();
     if (out.lossy() && !allowLossy) {
         *error = lossDescription(out);
@@ -328,6 +333,7 @@ bool MainWindow::saveAs() {
 }
 
 bool MainWindow::saveInteractive(const QString& path) {
+    view_->finishTool();
     const AnsiOutput out = doc_.encode();
     if (out.lossy()) {
         const auto answer = QMessageBox::warning(
@@ -350,6 +356,9 @@ void MainWindow::zoomOut() { view_->setZoom(view_->zoom() - 1); }
 void MainWindow::zoomReset() { view_->setZoom(1); }
 
 bool MainWindow::maybeSave() {
+    // A floating selection is an unsaved change: stamped, it marks the
+    // document modified and is saved with it.
+    view_->finishTool();
     if (!doc_.isModified())
         return true;
     const auto answer = QMessageBox::warning(this, tr("Blockwright"), tr("The canvas has unsaved changes."),
