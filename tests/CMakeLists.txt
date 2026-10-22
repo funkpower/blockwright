@@ -15,6 +15,7 @@ add_executable(blockwright-tests
   test_ansi_write.cpp
   test_cli_read.cpp
   test_cp437.cpp
+  test_edit.cpp
   test_golden.cpp
   test_irc.cpp
   test_sauce.cpp
@@ -70,6 +71,7 @@ add_test(NAME forge_merge
 set_tests_properties(forge_merge PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(blockwright-render-tests
+  test_canvas_renderer.cpp
   test_render.cpp
   test_render_golden.cpp
   util.h
@@ -82,3 +84,16 @@ add_test(NAME cli_render
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_render_test.sh
           $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-render-tmp)
 set_tests_properties(cli_render PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+
+add_executable(blockwright-app-tests
+  test_app.cpp
+  util.h
+)
+target_link_libraries(blockwright-app-tests PRIVATE blockwright_app Catch2::Catch2)
+target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+catch_discover_tests(blockwright-app-tests
+  PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
+  DISCOVERY_MODE PRE_TEST)
+
+add_test(NAME gui_version
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh $<TARGET_FILE:blockwright>)

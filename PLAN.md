@@ -64,8 +64,8 @@ blockwright/
 ```
 
 - **Cell model:** codepoint (Unicode internally, CP437 mapping at the edges), fg/bg as palette index *or* RGB, attribute bits, transparent flag.
-- **Renderer:** pre-built glyph atlas per font, `drawImage` from source rects, dirty-region repaint, integer zoom with smoothing off. Behind an interface so a `QRhiWidget` shader renderer can replace it if large canvases get slow. Avoids the GPU-driver problems that hit Moebius (Electron) and Icy Draw (wgpu).
-- **Undo:** `QUndoStack` with commands that store cell deltas per layer.
+- **Renderer:** pre-built glyph atlas per font, `drawImage` from source rects, dirty-region repaint, integer zoom with smoothing off. Behind an interface so a `QRhiWidget` shader renderer can replace it if large canvases get slow. Avoids the GPU-driver problems that hit Moebius (Electron) and Icy Draw (wgpu). In `render/`: `CanvasRenderer` (the interface) and `AtlasRenderer`, which keeps a 1× cache filled from a `GlyphAtlas` (256 glyphs × 16 palette colours, 24-bit colours made on demand) and repaints only the cells marked dirty; views scale the cache by the zoom. It must draw exactly what `renderCanvas` (the CLI's PNG renderer) draws, and the tests compare the two.
+- **Undo:** `QUndoStack` with commands that store cell deltas per layer. The deltas are `CellEdit`s from `core/` (`edit.h`): keyboard edits are core functions that return one plus the next cursor, and the canvas view sends every edit through one `commit()`, which an undo command takes over.
 - **Fonts:** bundle the CP437 VGA 8×16 / 9×16 family first; Amiga fonts later once their licences are checked.
 - **Build:** CMake + Qt 6.8 LTS, `vcpkg` or system Qt on Linux. CI on GitHub Actions for Linux; macOS/Windows jobs added in Phase 6.
 - **Licence:** GPL-3.0-or-later, matching ans2irc. Compatible with Apache-2.0 (Moebius) and MIT/Apache (Icy Draw) if code is borrowed; Qt is LGPLv3, linked dynamically.
@@ -194,5 +194,5 @@ v1 = Phases 0–4 including 2b: about 6–7 working weeks.
 - Hosting: private on git.pumpin.online (`funkpower/blockwright`), public later.
 - Default canvas: 80×40.
 - Every PR gets an adversarial Codex review before merge.
-- Every merge to main installs a dev build on the dev machine (`blockwright-dev`).
-- Bundled font: IBM VGA 8×16 from VileR's Ultimate Oldschool PC Font Pack (CC BY-SA 4.0, compatible one way with GPLv3), in `third_party/oldschool-pc-fonts/` and credited in `NOTICE`. `LICENSE`, `NOTICE` and the font's licence and README install to `<prefix>/share/doc/blockwright/`, and `blockwright-cli --version` credits the font.
+- Every merge to main installs a dev build on the dev machine (`blockwright-dev`, `blockwright-cli-dev` and a "Blockwright (dev)" launcher entry).
+- Bundled font: IBM VGA 8×16 from VileR's Ultimate Oldschool PC Font Pack (CC BY-SA 4.0, compatible one way with GPLv3), in `third_party/oldschool-pc-fonts/` and credited in `NOTICE`. `LICENSE`, `NOTICE` and the font's licence and README install to `<prefix>/share/doc/blockwright/`, and `blockwright --version`, `blockwright-cli --version` and the GUI's About box credit the font.

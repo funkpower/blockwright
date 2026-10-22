@@ -369,6 +369,11 @@ bool writableByte(std::uint8_t b) {
 
 } // namespace
 
+bool isWritableGlyph(char32_t ch) {
+    const std::optional<std::uint8_t> b = unicodeToCp437(ch);
+    return b && *b != 0x00 && writableByte(*b);
+}
+
 AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts) {
     SauceSplit split = splitSauce(file);
     AnsiDocument doc;

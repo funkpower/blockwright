@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Build a Blockwright ref and install it as the dev build (run on the dev machine).
 #
-#   scripts/install-dev [--ref REF] [--prefix DIR] [--bin-dir DIR] [--build-dir DIR] [--check-paths]
+#   scripts/install-dev [--ref REF] [--prefix DIR] [--bin-dir DIR] [--apps-dir DIR]
+#                       [--build-dir DIR] [--check-paths]
 #
 #   --ref          commit-ish to build (default: origin/main, fetched first)
 #   --prefix       install tree, below ~/.local/opt/ (default: ~/.local/opt/blockwright-dev)
 #   --bin-dir      where the -dev symlinks go (default: ~/.local/bin)
+#   --apps-dir     where the blockwright-dev.desktop launcher entry goes
+#                  (default: ~/.local/share/applications)
 #   --build-dir    source export + build tree, below ~/.cache/dw/
 #                  (default: ~/.cache/dw/blockwright-dev-build)
 #   --check-paths  check the paths, print them and stop
@@ -13,8 +16,8 @@
 # The script deletes inside the build dir and replaces the prefix, so both
 # must resolve (symlinks followed) to below ~/.cache/dw/ and ~/.local/opt/,
 # and those roots and the directories leading to them from $HOME must not be
-# symlinks. --bin-dir must resolve to below $HOME. Anything else is refused
-# before a command runs.
+# symlinks. --bin-dir and --apps-dir must resolve to below $HOME. Anything
+# else is refused before a command runs.
 #
 # The ref is exported with `git archive`, so uncommitted changes in the
 # working tree never reach the build; submodules are exported the same way,
@@ -22,15 +25,17 @@
 # exported files carry the commit's time, which can be older than objects
 # built from another commit, so the build tree is wiped whenever the commit
 # differs from the last one built there (recorded in
-# <build-dir>/built-commit). Installs the CLI as blockwright-cli-dev, with the
-# licence and font notices in <prefix>/share/doc/blockwright/; the GUI and its
-# .desktop entry come once the GUI exists.
+# <build-dir>/built-commit). Installs the GUI as blockwright-dev and the CLI
+# as blockwright-cli-dev, with the licence and font notices in
+# <prefix>/share/doc/blockwright/, and the launcher entry "Blockwright (dev)"
+# (the commit in its Comment) as <apps-dir>/blockwright-dev.desktop.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 ref=origin/main
 prefix=$HOME/.local/opt/blockwright-dev
 bin_dir=$HOME/.local/bin
+apps_dir=$HOME/.local/share/applications
 build_dir=$HOME/.cache/dw/blockwright-dev-build
 check_only=
 
@@ -39,9 +44,10 @@ while [[ $# -gt 0 ]]; do
     --ref) ref=$2; shift 2 ;;
     --prefix) prefix=$2; shift 2 ;;
     --bin-dir) bin_dir=$2; shift 2 ;;
+    --apps-dir) apps_dir=$2; shift 2 ;;
     --build-dir) build_dir=$2; shift 2 ;;
     --check-paths) check_only=1; shift ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "install-dev: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -78,8 +84,13 @@ real_root .local/opt
 build_dir=$(below --build-dir "$build_dir" "$HOME/.cache/dw") || exit 2
 prefix=$(below --prefix "$prefix" "$HOME/.local/opt") || exit 2
 bin_dir=$(below --bin-dir "$bin_dir" "$HOME") || exit 2
+apps_dir=$(below --apps-dir "$apps_dir" "$HOME") || exit 2
+# The launcher entry's Exec line can't hold a line break
+if [[ $bin_dir == *$'\n'* ]]; then
+  echo "install-dev: refusing --bin-dir $bin_dir: it has a line break" >&2; exit 2
+fi
 if [[ $check_only ]]; then
-  printf 'build-dir: %s\nprefix:    %s\nbin-dir:   %s\n' "$build_dir" "$prefix" "$bin_dir"
+  printf 'build-dir: %s\nprefix:    %s\nbin-dir:   %s\napps-dir:  %s\n' "$build_dir" "$prefix" "$bin_dir" "$apps_dir"
   exit 0
 fi
 
@@ -152,10 +163,44 @@ for f in LICENSE NOTICE oldschool-pc-fonts/LICENSE oldschool-pc-fonts/README.md;
     rm -rf "$stage"; exit 1
   fi
 done
+for f in blockwright blockwright-cli; do
+  if [[ ! -x $stage/bin/$f ]]; then
+    echo "install-dev: the install left out bin/$f; keeping the old dev build" >&2
+    rm -rf "$stage"; exit 1
+  fi
+done
 [[ -e $prefix ]] && mv "$prefix" "$prefix.old"
 mv "$stage" "$prefix"
 rm -rf "$prefix.old"
 
 mkdir -p "$bin_dir"
 ln -sfn "$prefix/bin/blockwright-cli" "$bin_dir/blockwright-cli-dev"
+ln -sfn "$prefix/bin/blockwright" "$bin_dir/blockwright-dev"
+
+# The launcher entry, written beside its final name and renamed into place.
+# Exec quotes the path as the Desktop Entry spec says: inside the quotes
+# \ " ` $ take a backslash, the value's own escaping then doubles every
+# backslash, and % is written %%.
+q=$bin_dir/blockwright-dev
+q=${q//\\/\\\\}
+q=${q//\"/\\\"}
+q=${q//\`/\\\`}
+q=${q//\$/\\\$}
+q=${q//\\/\\\\}
+q=${q//%/%%}
+mkdir -p "$apps_dir"
+desktop=$apps_dir/blockwright-dev.desktop
+cat > "$desktop.new" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Blockwright (dev)
+GenericName=ANSI art editor
+Comment=Blockwright dev build $commit
+Exec="$q" %f
+Terminal=false
+Categories=Graphics;2DGraphics;
+DESKTOP
+mv "$desktop.new" "$desktop"
+echo "install-dev: launcher entry $desktop"
+"$bin_dir/blockwright-dev" --version
 "$bin_dir/blockwright-cli-dev" --version

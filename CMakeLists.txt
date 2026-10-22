@@ -11,7 +11,7 @@ endif()
 include(GNUInstallDirs)
 include(CTest)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets)
 
 include(cmake/Ans2irc.cmake)
 
@@ -34,6 +34,7 @@ add_custom_target(bw_version ALL
 add_subdirectory(core)
 add_subdirectory(render)
 add_subdirectory(cli)
+add_subdirectory(app)
 
 # The licence and the bundled font's notices travel with the binaries
 # (CC BY-SA 4.0 section 3): <prefix>/share/doc/blockwright/.

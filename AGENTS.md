@@ -38,5 +38,3 @@ After every merge to `main`, `scripts/install-dev` (on the dev machine) builds `
 - `~/.local/opt/blockwright-dev/` (the build), `~/.local/bin/blockwright-dev` and `~/.local/bin/blockwright-cli-dev`
 - `~/.local/share/applications/blockwright-dev.desktop` named "Blockwright (dev)" with the commit in its comment
 - `blockwright-dev --version` prints the short commit
-
-Before the GUI exists, `install-dev` installs the CLI only.

@@ -65,4 +65,8 @@ struct AnsiOutput {
 // `unwritable`.
 AnsiOutput writeAnsi(const AnsiDocument& doc);
 
+// Whether writeAnsi writes `ch` as itself: it has a CP437 byte and that byte
+// isn't one the parser acts on (TAB, LF, CR, SUB, ESC) or NUL.
+bool isWritableGlyph(char32_t ch);
+
 } // namespace bw

@@ -1,6 +1,7 @@
 # The renderer: documents to images with the bundled VGA font. QtGui only;
 # it must never link QtWidgets.
 add_library(blockwright_render STATIC
+  src/canvas_renderer.cpp
   src/render.cpp
 )
 add_library(blockwright::render ALIAS blockwright_render)

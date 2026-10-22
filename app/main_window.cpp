@@ -1,0 +1,282 @@
+#include "main_window.h"
+
+#include "canvas_view.h"
+
+#include "blockwright/credits.h"
+#include "blockwright/version.h"
+
+#include <QAction>
+#include <QApplication>
+#include <QCloseEvent>
+#include <QDockWidget>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QKeySequence>
+#include <QLabel>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QScrollArea>
+#include <QStatusBar>
+
+#include <stdexcept>
+#include <utility>
+
+namespace bw {
+
+namespace {
+
+const QString kFilter = QObject::tr("ANSI art (*.ans);;All files (*)");
+
+QString lossDescription(const AnsiOutput& out) {
+    QStringList parts;
+    if (!out.unwritable.empty())
+        parts << QObject::tr("%n cell(s) hold a glyph with no CP437 code and will be written as '?'", nullptr,
+                             int(out.unwritable.size()));
+    if (out.blinkDropped)
+        parts << QObject::tr("%n blinking cell(s) will lose their blink (the file is written with iCE colours)",
+                             nullptr, out.blinkDropped);
+    return parts.join(QStringLiteral(";\n"));
+}
+
+} // namespace
+
+SavePath resolveSavePath(const QString& chosen) {
+    if (!QFileInfo(chosen).suffix().isEmpty())
+        return {chosen, false};
+    const QString path = chosen + QStringLiteral(".ans");
+    return {path, QFileInfo::exists(path)};
+}
+
+void configureSaveDialog(QFileDialog& dialog, const QString& path) {
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setFileMode(QFileDialog::AnyFile);
+    dialog.setNameFilter(kFilter);
+    dialog.setDefaultSuffix(QStringLiteral("ans"));
+    if (!path.isEmpty()) {
+        const QFileInfo fi(path);
+        dialog.setDirectory(fi.absolutePath());
+        dialog.selectFile(fi.fileName());
+    }
+}
+
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    renderer_.setCanvas(&doc_.canvas(), glyphWidth(doc_.ansi()));
+
+    view_ = new CanvasView(&doc_, &renderer_);
+    view_->setObjectName(QStringLiteral("canvasView"));
+    scroll_ = new QScrollArea;
+    scroll_->setWidget(view_);
+    scroll_->setAlignment(Qt::AlignCenter);
+    scroll_->setBackgroundRole(QPalette::Dark);
+    setCentralWidget(scroll_);
+
+    preview_ = new PreviewWidget(&renderer_);
+    auto* previewScroll = new QScrollArea;
+    previewScroll->setWidget(preview_);
+    previewScroll->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+    previewScroll->setBackgroundRole(QPalette::Dark);
+    previewDock_ = new QDockWidget(tr("Preview (1x)"), this);
+    previewDock_->setObjectName(QStringLiteral("previewDock"));
+    // Always visible: it can move and float, but not close.
+    previewDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+    previewDock_->setWidget(previewScroll);
+    addDockWidget(Qt::RightDockWidgetArea, previewDock_);
+
+    status_ = new QLabel;
+    statusBar()->addPermanentWidget(status_);
+
+    connect(&doc_, &Document::cellsChanged, this, [this](const QRegion& cells) {
+        renderer_.markDirty(cells);
+        view_->cellsChanged(cells);
+        preview_->cellsChanged(cells);
+    });
+    connect(&doc_, &Document::reset, this, &MainWindow::canvasReset);
+    connect(&doc_, &Document::modifiedChanged, this, &MainWindow::updateTitle);
+    connect(&doc_, &Document::pathChanged, this, &MainWindow::updateTitle);
+    connect(view_, &CanvasView::cursorMoved, this, [this] {
+        const QRect r = view_->cellRect(view_->cellCursor());
+        scroll_->ensureVisible(r.center().x(), r.center().y(), r.width(), r.height());
+        updateStatus();
+    });
+    connect(view_, &CanvasView::zoomChanged, this, &MainWindow::updateStatus);
+    connect(view_, &CanvasView::glyphRejected, this, [this](const QString& text) {
+        statusBar()->showMessage(tr("%1 has no CP437 glyph; not typed").arg(text), 3000);
+    });
+
+    createActions();
+    updateTitle();
+    updateStatus();
+    view_->setFocus();
+    resize(1400, 900);
+}
+
+void MainWindow::createActions() {
+    QMenu* file = menuBar()->addMenu(tr("&File"));
+    QAction* a = file->addAction(tr("&New"), this, &MainWindow::newFile);
+    a->setShortcut(QKeySequence::New);
+    a = file->addAction(tr("&Open..."), this, &MainWindow::open);
+    a->setShortcut(QKeySequence::Open);
+    a = file->addAction(tr("&Save"), this, &MainWindow::save);
+    a->setShortcut(QKeySequence::Save);
+    a = file->addAction(tr("Save &As..."), this, &MainWindow::saveAs);
+    a->setShortcut(QKeySequence::SaveAs);
+    file->addSeparator();
+    a = file->addAction(tr("&Quit"), this, &QWidget::close);
+    a->setShortcut(QKeySequence::Quit);
+
+    QMenu* view = menuBar()->addMenu(tr("&View"));
+    a = view->addAction(tr("Zoom &In"), this, &MainWindow::zoomIn);
+    a->setObjectName(QStringLiteral("zoomIn"));
+    a->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Equal), QKeySequence(Qt::CTRL | Qt::Key_Plus)});
+    a = view->addAction(tr("Zoom &Out"), this, &MainWindow::zoomOut);
+    a->setObjectName(QStringLiteral("zoomOut"));
+    a->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
+    a = view->addAction(tr("&Actual Size"), this, &MainWindow::zoomReset);
+    a->setObjectName(QStringLiteral("zoomReset"));
+    a->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+
+    QMenu* help = menuBar()->addMenu(tr("&Help"));
+    help->addAction(tr("&About Blockwright"), this, [this] {
+        QMessageBox::about(this, tr("About Blockwright"),
+                           tr("<p><b>Blockwright</b> %1 (%2)</p><p>ANSI and IRC art editor. GPL-3.0-or-later.</p>"
+                              "<p>%3</p>")
+                               .arg(QStringLiteral(BLOCKWRIGHT_VERSION), QStringLiteral(BLOCKWRIGHT_GIT_COMMIT),
+                                    QString::fromUtf8(kFontCredit).toHtmlEscaped().replace('\n', ' ')));
+    });
+    help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
+}
+
+void MainWindow::canvasReset() {
+    // openFile has already shown the renderer this canvas, and a blank one
+    // always fits, so this does not throw.
+    renderer_.setCanvas(&doc_.canvas(), glyphWidth(doc_.ansi()));
+    view_->canvasReset();
+    preview_->canvasReset();
+    view_->setCellCursor({0, 0});
+    updateStatus();
+}
+
+bool MainWindow::openFile(const QString& path, QString* error) {
+    AnsiDocument candidate;
+    if (!Document::read(path, &candidate, error))
+        return false;
+    // Let the renderer take the new canvas before the document does, so a
+    // canvas too large to display leaves the open one as it was. setCanvas
+    // changes nothing when it throws, and canvasReset (from replace) points
+    // it at the document's copy before anything draws.
+    try {
+        renderer_.setCanvas(&candidate.canvas, glyphWidth(candidate));
+    } catch (const std::exception&) {
+        *error = tr("the canvas is too large to display");
+        return false;
+    }
+    doc_.replace(std::move(candidate), path);
+    return true;
+}
+
+bool MainWindow::saveFile(const QString& path, QString* error, bool allowLossy) {
+    const AnsiOutput out = doc_.encode();
+    if (out.lossy() && !allowLossy) {
+        *error = lossDescription(out);
+        return false;
+    }
+    return doc_.save(path, out, error);
+}
+
+void MainWindow::newFile() {
+    if (maybeSave())
+        doc_.clear();
+}
+
+void MainWindow::open() {
+    if (!maybeSave())
+        return;
+    const QString dir = doc_.path().isEmpty() ? QString() : QFileInfo(doc_.path()).absolutePath();
+    const QString path = QFileDialog::getOpenFileName(this, tr("Open"), dir, kFilter);
+    if (!path.isEmpty())
+        openInteractive(path);
+}
+
+void MainWindow::openInteractive(const QString& path) {
+    QString error;
+    if (!openFile(path, &error))
+        QMessageBox::warning(this, tr("Open"), tr("Could not open %1:\n%2").arg(path, error));
+}
+
+bool MainWindow::save() { return doc_.path().isEmpty() ? saveAs() : saveInteractive(doc_.path()); }
+
+bool MainWindow::saveAs() {
+    QFileDialog dialog(this, tr("Save As"));
+    configureSaveDialog(dialog, doc_.path());
+    if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty())
+        return false;
+    // A platform dialog may not apply the default suffix; then the name
+    // written is one the dialog never checked.
+    const SavePath p = resolveSavePath(dialog.selectedFiles().constFirst());
+    if (p.confirmOverwrite &&
+        QMessageBox::warning(this, tr("Save As"), tr("%1 already exists.\nDo you want to replace it?").arg(p.path),
+                             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return false;
+    return saveInteractive(p.path);
+}
+
+bool MainWindow::saveInteractive(const QString& path) {
+    const AnsiOutput out = doc_.encode();
+    if (out.lossy()) {
+        const auto answer = QMessageBox::warning(
+            this, tr("Save"), tr("Saving as .ans loses something:\n%1.\n\nSave anyway?").arg(lossDescription(out)),
+            QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Save)
+            return false;
+    }
+    QString error;
+    if (!doc_.save(path, out, &error)) {
+        QMessageBox::warning(this, tr("Save"), tr("Could not save %1:\n%2").arg(path, error));
+        return false;
+    }
+    statusBar()->showMessage(tr("Saved %1").arg(path), 3000);
+    return true;
+}
+
+void MainWindow::zoomIn() { view_->setZoom(view_->zoom() + 1); }
+void MainWindow::zoomOut() { view_->setZoom(view_->zoom() - 1); }
+void MainWindow::zoomReset() { view_->setZoom(1); }
+
+bool MainWindow::maybeSave() {
+    if (!doc_.isModified())
+        return true;
+    const auto answer = QMessageBox::warning(this, tr("Blockwright"), tr("The canvas has unsaved changes."),
+                                             QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+                                             QMessageBox::Save);
+    if (answer == QMessageBox::Save)
+        return save();
+    return answer == QMessageBox::Discard;
+}
+
+void MainWindow::closeEvent(QCloseEvent* e) {
+    if (maybeSave())
+        e->accept();
+    else
+        e->ignore();
+}
+
+void MainWindow::updateTitle() {
+    const QString name = doc_.path().isEmpty() ? tr("untitled.ans") : QFileInfo(doc_.path()).fileName();
+    setWindowTitle(name + QStringLiteral("[*] - Blockwright"));
+    setWindowFilePath(doc_.path());
+    setWindowModified(doc_.isModified());
+}
+
+void MainWindow::updateStatus() {
+    const Canvas& cv = doc_.canvas();
+    const Cursor c = view_->cellCursor();
+    status_->setText(tr("%1, %2  |  %3x%4  |  %5 px  |  %6x")
+                         .arg(c.x)
+                         .arg(c.y)
+                         .arg(cv.width())
+                         .arg(cv.height())
+                         .arg(renderer_.cellSize().width())
+                         .arg(view_->zoom()));
+}
+
+} // namespace bw

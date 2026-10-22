@@ -10,7 +10,8 @@
 # absolute, and checks the notices; then runs scripts/install-dev against a
 # throwaway HOME with git, tar and the build stubbed out (its install step is
 # the real `cmake --install` of this build, staged the same way) to check the
-# dev install carries them and refuses an install without them.
+# dev install carries them and refuses an install without them, and that it
+# installs blockwright-dev and its launcher entry.
 set -uo pipefail
 build=$1 src=$2 tmp=$3 bindir=$4 docdir=$5 config=${6:-}
 rm -rf "$tmp" && mkdir -p "$tmp"
@@ -77,6 +78,7 @@ if staged "$build" "$stage"; then ok "cmake --install staged in $stage"; else ba
 has_notices "staged install carries the notices" "$stage$docdir"
 finds_fonts "staged NOTICE points to the font notices" "$stage$docdir"
 credits "installed --version credits the font" "$stage$bindir/blockwright-cli"
+credits "installed GUI --version credits the font" "$stage$bindir/blockwright"
 
 # install-dev, with everything but the install step stubbed
 home=$tmp/home stubs=$tmp/stubs
@@ -115,6 +117,7 @@ done < "$STUB_BUILD/install_manifest.txt"
 cp -R "$d$STUB_BINDIR/." "$prefix/bin/"
 cp -R "$d$STUB_DOCDIR" "$prefix/share/doc/blockwright"
 [ -z "${NODOCS:-}" ] || rm -rf "$prefix/share/doc"
+[ -z "${NOGUI:-}" ] || rm -f "$prefix/bin/blockwright"
 STUB
 chmod +x "$stubs"/*
 
@@ -128,6 +131,37 @@ if out=$(dev); then ok "install-dev"; else bad "install-dev failed: $out"; fi
 has_notices "install-dev carries the notices" "$prefix/share/doc/blockwright"
 finds_fonts "install-dev NOTICE points to the font notices" "$prefix/share/doc/blockwright"
 credits "blockwright-cli-dev --version credits the font" "$home/.local/bin/blockwright-cli-dev"
+credits "blockwright-dev --version credits the font" "$home/.local/bin/blockwright-dev"
+if [[ $("$home/.local/bin/blockwright-dev" --version | head -n1) =~ ^blockwright\ [0-9.]+\ \(.+\)$ ]]; then
+  ok "blockwright-dev --version names the commit"
+else
+  bad "blockwright-dev --version: $("$home/.local/bin/blockwright-dev" --version 2>&1)"
+fi
+
+# The launcher entry: the dev name, the commit, the dev binary with %f
+desktop=$home/.local/share/applications/blockwright-dev.desktop
+want=$(printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Blockwright (dev)' 'GenericName=ANSI art editor' \
+  'Comment=Blockwright dev build 0123456' "Exec=\"$home/.local/bin/blockwright-dev\" %f" 'Terminal=false' \
+  'Categories=Graphics;2DGraphics;')
+if [[ -f $desktop && $(<"$desktop") == "$want" ]]; then
+  ok "install-dev writes the launcher entry"
+else
+  bad "launcher entry $desktop: $(cat "$desktop" 2>&1)"
+fi
+if command -v desktop-file-validate >/dev/null; then
+  if out=$(desktop-file-validate "$desktop" 2>&1) && [[ -z $out ]]; then ok "the launcher entry validates"; else bad "desktop-file-validate: $out"; fi
+fi
+if [[ ! -e $desktop.new ]]; then ok "no temporary launcher entry left"; else bad "left $desktop.new"; fi
+
+# --apps-dir and --bin-dir move the launcher entry and its Exec
+apps=$home/elsewhere/apps
+if out=$(dev --apps-dir "$apps" --bin-dir "$home/other bin"); then ok "install-dev --apps-dir"; else bad "install-dev --apps-dir failed: $out"; fi
+if grep -qxF "Exec=\"$home/other bin/blockwright-dev\" %f" "$apps/blockwright-dev.desktop" 2>/dev/null \
+   && [[ -x "$home/other bin/blockwright-dev" ]]; then
+  ok "the launcher entry follows --apps-dir and --bin-dir"
+else
+  bad "launcher entry in $apps: $(cat "$apps/blockwright-dev.desktop" 2>&1)"
+fi
 
 echo old > "$prefix/marker"
 out=$(NODOCS=1 dev); st=$?
@@ -137,6 +171,14 @@ else
   bad "install-dev took an install without the notices (exit $st): $out"
 fi
 if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the refused install keeps the old dev build"; else bad "the refused install replaced the old dev build"; fi
+
+out=$(NOGUI=1 dev); st=$?
+if [[ $st -ne 0 ]] && grep -q 'left out bin/blockwright;' <<<"$out"; then
+  ok "install-dev refuses an install without the GUI"
+else
+  bad "install-dev took an install without the GUI (exit $st): $out"
+fi
+if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the GUI-less install keeps the old dev build"; else bad "the GUI-less install replaced the old dev build"; fi
 
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]

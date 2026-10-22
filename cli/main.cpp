@@ -12,6 +12,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/cp437.h"
+#include "blockwright/credits.h"
 #include "blockwright/irc.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
@@ -291,8 +292,7 @@ int main(int argc, char** argv) {
     }
     if (parser.isSet(versionOpt)) {
         std::cout << "blockwright-cli " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n";
-        std::cout << "Includes the IBM VGA 8x16 font, (c) 2016-2020 VileR, CC BY-SA 4.0,\n"
-                     "https://int10h.org/oldschool-pc-fonts/; notices in share/doc/blockwright/\n";
+        std::cout << bw::kFontCredit;
         return kOk;
     }
     if (parser.isSet(helpOpt))

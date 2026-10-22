@@ -5,6 +5,7 @@ add_library(blockwright_core STATIC
   src/ansi.cpp
   src/canvas.cpp
   src/cp437.cpp
+  src/edit.cpp
   src/irc.cpp
   src/palette.cpp
   src/sauce.cpp

@@ -65,9 +65,24 @@ refused "--bin-dir \$HOME/" --bin-dir "$home/"
 refused "--bin-dir outside \$HOME" --bin-dir "$tmp/outside"
 refused "--bin-dir climbing out with .." --bin-dir "$home/.local/bin/../../.."
 refused "--bin-dir through a symlink to /" --bin-dir "$home/.cache/dw/root-link/bin"
+refused "--apps-dir ''" --apps-dir ''
+refused "--apps-dir /" --apps-dir /
+refused "--apps-dir \$HOME" --apps-dir "$home"
+refused "--apps-dir outside \$HOME" --apps-dir "$tmp/outside"
+refused "--apps-dir climbing out with .." --apps-dir "$home/.local/share/applications/../../../.."
+refused "--apps-dir through a symlink to /" --apps-dir "$home/.cache/dw/root-link/apps"
+refused "--bin-dir with a line break" --bin-dir "$home/a
+b"
 accepted "default paths" 
 accepted "build dir and prefix inside their roots" --build-dir "$home/.cache/dw/x-build" --prefix "$home/.local/opt/x"
 accepted "bin dir below \$HOME" --bin-dir "$home/.local/bin"
+accepted "apps dir below \$HOME" --apps-dir "$home/.local/share/applications"
+out=$(HOME=$home PATH=$tmp/stubs:$PATH bash "$script" --check-paths 2>&1)
+if grep -qx "apps-dir:  $home/.local/share/applications" <<<"$out"; then
+  ok "the default apps dir is ~/.local/share/applications"
+else
+  bad "default apps dir: $out"
+fi
 
 # A symlinked root, or a symlink on the way to it from $HOME, is refused even
 # when the path given looks inside it: with ~/.local/opt -> $HOME,
