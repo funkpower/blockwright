@@ -137,22 +137,73 @@ if [[ -z $left && -z $(ls -A "$same/sub") ]]; then ok "refused export leaves no 
 expect "export beside the input still writes" 0 '^17 lines' -- "$cli" export --irc "$same/a.ans" "$same/a.txt"
 if cmp -s "$data/golden-irc/tux.txt" "$same/a.txt"; then ok "export beside the input writes the lines"; else bad "export beside the input differs"; fi
 
+# shade: one pass of the ramp shade brush, then the ladder check
+sphere=$data/brushes/sphere-steel.ans
+expect "--help lists shade" 0 'shade --ramp R <in> <out>' -- "$cli" --help
+expect "shade" 0 '^lightened 2411 cells 1 rung along steel in 0,0-71,33$' -- "$cli" shade --ramp steel "$sphere" "$tmp/sphere-up.ans"
+expect "shade checks the ladder" 0 '^ladder: 2448 of 2448 cells on the ramp, [0-9]+ shaded, noise 0\.000: ' -- "$cli" shade --ramp steel "$sphere" "$tmp/sphere-up.ans"
+expect "shade --darken all the way" 0 '^ladder: 2448 of 2448 cells on the ramp, 0 shaded, noise 0\.000: clean$' -- \
+  "$cli" shade --ramp steel --darken --steps 12 "$sphere" "$tmp/sphere-black.ans"
+expect "shade by palette indices" 0 '^darkened 1661 cells 12 rungs along 0,8,7,15 ' -- \
+  "$cli" shade --ramp 0,8,7,15 --darken --steps 12 "$sphere" "$tmp/sphere-black2.ans"
+if cmp -s "$tmp/sphere-black.ans" "$tmp/sphere-black2.ans"; then ok "a ramp by name and by indices shade alike"; else bad "steel and 0,8,7,15 shade differently"; fi
+expect "shade a box" 0 '^lightened 16 cells 1 rung along steel in 0,0-3,3$' -- "$cli" shade --ramp steel --box 3,3,0,0 "$sphere" "$tmp/corner.ans"
+# A flat field of K░k: no gradient, so no wide rung, but one glyph only.
+expect "shade reports findings" 0 '^ladder: 16 of 16 cells on the ramp, 16 shaded, noise 0\.000: 1 finding$' -- \
+  "$cli" shade --ramp steel --box 0,0,3,3 "$sphere" "$tmp/corner.ans"
+expect "shade lists findings" 0 '^  the shading uses one glyph only$' -- "$cli" shade --ramp steel --box 0,0,3,3 "$sphere" "$tmp/corner.ans"
+expect "shade a box clipped to the canvas" 0 ' in 50,20-71,33$' -- "$cli" shade --ramp steel --box 50,20,90,90 "$sphere" "$tmp/edge.ans"
+expect "shade the box back down" 0 '^darkened 16 cells' -- "$cli" shade --ramp steel --darken --box 0,0,3,3 "$tmp/corner.ans" "$tmp/corner-back.ans"
+if cmp -s "$sphere" "$tmp/corner-back.ans"; then ok "shade changes only the box"; else bad "lightening and darkening a black box changed the file"; fi
+command cp -f "$sphere" "$tmp/inplace-shade.ans"
+expect "shade in place" 0 '^lightened' -- "$cli" shade --ramp steel "$tmp/inplace-shade.ans" "$tmp/inplace-shade.ans"
+if cmp -s "$tmp/sphere-up.ans" "$tmp/inplace-shade.ans"; then ok "shade in place writes what shade writes elsewhere"; else bad "shade in place differs"; fi
+expect "shade with nothing on the ramp" 0 '^lightened 0 cells 1 rung along 1,2 ' -- "$cli" shade --ramp 1,2 "$sphere" "$tmp/none.ans"
+expect "lossy shade refused" 1 'lossy-shade\.ans: not written: the conversion loses data' -- "$cli" shade --ramp fire "$tmp/lossy.ans" "$tmp/lossy-shade.ans"
+if [[ -e $tmp/lossy-shade.ans ]]; then bad "refused lossy shade left an output file"; else ok "refused lossy shade writes nothing"; fi
+expect "shade --allow-lossy writes" 0 '^lightened' -- "$cli" shade --ramp fire --allow-lossy "$tmp/lossy.ans" "$tmp/lossy-shade.ans"
+# A non-iCE piece with a blinking cell: steel's K/w shades keep a dark
+# background, so the blink survives. Two bright colours need iCE.
+printf '\033[5;31mA\033[0;1;30;47m\xb2\xb2\xb2' > "$tmp/nonice.ans"; sauce "$tmp/nonice.ans" 0
+expect "shade a non-iCE piece over steel" 0 '^lightened 3 cells 1 rung along steel in 1,0-3,0$' -- "$cli" shade --ramp steel --box 1,0,3,0 "$tmp/nonice.ans" "$tmp/nonice-up.ans"
+expect "shade keeps iCE off" 0 '^flags: +0x0 \(iCE off' -- "$cli" info "$tmp/nonice-up.ans"
+expect "shade keeps the blink" 0 '^lightened 3 cells' -- "$cli" shade --ramp steel --box 1,0,3,0 "$tmp/nonice-up.ans" "$tmp/nonice-up2.ans"
+printf '\033[5;31mA\033[0;1;31m\xdb' > "$tmp/nonice-fire.ans"; sauce "$tmp/nonice-fire.ans" 0
+expect "shade that needs iCE refused" 1 'nonice-fire-up\.ans: not written: the shading needs iCE colours \(a bright background\), and 1 blinking cell would lose its blink \(--allow-lossy writes it anyway\)' -- \
+  "$cli" shade --ramp fire "$tmp/nonice-fire.ans" "$tmp/nonice-fire-up.ans"
+if [[ -e $tmp/nonice-fire-up.ans ]]; then bad "refused iCE shade left an output file"; else ok "refused iCE shade writes nothing"; fi
+expect "shade needs a ramp" 2 'shade needs a ramp' -- "$cli" shade "$sphere" "$tmp/x.ans"
+expect "shade unknown ramp" 2 "--ramp takes a ramp name \(fire, .*\) or palette indices 0-15 dark to light, not 'blood'" -- \
+  "$cli" shade --ramp blood "$sphere" "$tmp/x.ans"
+expect "shade ramp out of the palette" 2 "not '0,16'" -- "$cli" shade --ramp 0,16 "$sphere" "$tmp/x.ans"
+expect "shade ramp of one colour" 2 '--ramp 7: a ramp needs at least two colours' -- "$cli" shade --ramp 7 "$sphere" "$tmp/x.ans"
+expect "shade ramp with a repeat" 2 '--ramp 0,8,0: colour 0 appears twice' -- "$cli" shade --ramp 0,8,0 "$sphere" "$tmp/x.ans"
+expect "shade bad box" 2 "--box takes x0,y0,x1,y1 .*not '1,2,3'" -- "$cli" shade --ramp steel --box 1,2,3 "$sphere" "$tmp/x.ans"
+expect "shade negative box" 2 "not '-1,0,3,3'" -- "$cli" shade --ramp steel --box=-1,0,3,3 "$sphere" "$tmp/x.ans"
+expect "shade box off the canvas" 1 'the box 72,0,80,3 is off the 72x34 canvas' -- "$cli" shade --ramp steel --box 72,0,80,3 "$sphere" "$tmp/x.ans"
+expect "shade bad steps" 2 "--steps must be 1-64, not '0'" -- "$cli" shade --ramp steel --steps 0 "$sphere" "$tmp/x.ans"
+expect "shade arity" 2 'shade takes an input and an output file' -- "$cli" shade --ramp steel "$sphere"
+expect "shade bad input" 1 'nope\.ans: No such file' -- "$cli" shade --ramp steel "$tmp/nope.ans" "$tmp/x.ans"
+if [[ -e $tmp/x.ans ]]; then bad "a refused shade wrote $tmp/x.ans"; else ok "refused shades write nothing"; fi
+
 # Every command refuses every option it doesn't use: exit 2, a usage message
 # naming the option and the command, and nothing written.
-declare -A owner=([--allow-lossy]=convert [--scale]=render [--font-width]=render
-                  [--irc]=export [--budget]=export [--allow-over-budget]=export)
-declare -A value=([--scale]=2 [--font-width]=9 [--budget]=60)
+declare -A owner=([--allow-lossy]="convert shade" [--scale]=render [--font-width]=render
+                  [--irc]=export [--budget]=export [--allow-over-budget]=export
+                  [--ramp]=shade [--darken]=shade [--steps]=shade [--box]=shade)
+declare -A value=([--scale]=2 [--font-width]=9 [--budget]=60 [--ramp]=steel [--steps]=2 [--box]=0,0,1,1)
 foreign=$tmp/foreign && mkdir -p "$foreign"
-for cmd in info convert render export; do
-  for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget; do
-    [[ ${owner[$opt]} == "$cmd" ]] && continue
+for cmd in info convert render export shade; do
+  for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget --ramp --darken --steps --box; do
+    [[ " ${owner[$opt]} " == *" $cmd "* ]] && continue
     out=$foreign/$cmd${opt}.out
     case $cmd in
       info) argv=(info "$piece") ;;
       export) argv=(export --irc "$piece" "$out") ;;
+      shade) argv=(shade --ramp steel "$piece" "$out") ;;
       *) argv=("$cmd" "$piece" "$out") ;;
     esac
-    a=${owner[$opt]}; [[ $a == export ]] && a="an $a" || a="a $a"
+    a=${owner[$opt]// / or }; [[ $a == export ]] && a="an $a" || a="a $a"
     expect "$cmd rejects $opt" 2 "^blockwright-cli: $opt is $a option, not a $cmd option$" -- \
       "$cli" "${argv[@]:0:1}" "$opt" ${value[$opt]:+"${value[$opt]}"} "${argv[@]:1}"
     if [[ -e $out ]]; then bad "$cmd with $opt wrote $out"; fi
@@ -161,7 +212,7 @@ done
 out=$("$cli" info --scale 2 "$piece" 2>/dev/null)
 if [[ -z $out ]]; then ok "info with a foreign option prints no info"; else bad "info with a foreign option printed: $out"; fi
 if [[ -z $(ls -A "$foreign") ]]; then ok "commands with a foreign option write nothing"; else bad "foreign options wrote: $(ls -A "$foreign")"; fi
-expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert option, not a render option$' -- \
+expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert or shade option, not a render option$' -- \
   "$cli" render "$piece" "$foreign/late.png" --allow-lossy
 
 expect "export bad input" 1 'nope\.ans: No such file' -- "$cli" export --irc "$tmp/nope.ans" "$tmp/x.txt"

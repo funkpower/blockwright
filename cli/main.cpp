@@ -5,15 +5,20 @@
 //   blockwright-cli convert [--allow-lossy] <in.ans> <out.ans>
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli export --irc [--budget N] [--allow-over-budget] <in.ans> <out.txt>
+//   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N]
+//                         [--box x0,y0,x1,y1] [--allow-lossy] <in.ans> <out.ans>
 //
-// Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert without
-// --allow-lossy (nothing is written), 2 usage error, 3 an IRC line over the
-// byte budget without --allow-over-budget (nothing is written).
+// Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert or shade
+// without --allow-lossy (nothing is written), 2 usage error, 3 an IRC line
+// over the byte budget without --allow-over-budget (nothing is written).
 
 #include "blockwright/ansi.h"
+#include "blockwright/brush.h"
+#include "blockwright/brushes/shading.h"
 #include "blockwright/cp437.h"
 #include "blockwright/credits.h"
 #include "blockwright/irc.h"
+#include "blockwright/lint.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
 #include "read_file.h"
@@ -32,9 +37,11 @@
 #include <iomanip>
 #include <iostream>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -133,8 +140,11 @@ void save(const std::string& out, const std::string& bytes) {
         throw Failure{out + ": write failed: " + f.errorString().toStdString()};
 }
 
-int convert(const std::string& in, const std::string& out, bool allowLossy) {
-    const bw::AnsiDocument doc = load(in);
+// Writes the document as .ans, warning once per kind of loss; a lossy
+// result is written only with allowLossy. `why` replaces the refusal's
+// reason when the caller knows it.
+void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocument& doc, bool allowLossy,
+              const std::string& why = {}) {
     const bw::AnsiOutput res = bw::writeAnsi(doc);
     // One warning per kind of loss, with a count.
     if (const size_t n = res.unwritable.size()) {
@@ -152,8 +162,13 @@ int convert(const std::string& in, const std::string& out, bool allowLossy) {
                   << (n == 1 ? " blinking cell loses its blink" : " blinking cells lose their blink")
                   << ": bright backgrounds need iCE colours, where blink is a bright background\n";
     if (res.lossy() && !allowLossy)
-        throw Failure{out + ": not written: the conversion loses data (--allow-lossy writes it anyway)"};
+        throw Failure{out + ": not written: " + (why.empty() ? "the conversion loses data" : why) +
+                      " (--allow-lossy writes it anyway)"};
     save(out, res.bytes);
+}
+
+int convert(const std::string& in, const std::string& out, bool allowLossy) {
+    saveAnsi(in, out, load(in), allowLossy);
     return kOk;
 }
 
@@ -215,6 +230,98 @@ int intValue(const QString& s, const char* option, int lo, int hi) {
     return v;
 }
 
+// A ramp by name (the named ramps) or as palette indices dark to light.
+bw::Ramp rampValue(const QString& s) {
+    if (const auto r = bw::findRamp(s.toStdString()))
+        return *r;
+    bw::Ramp r;
+    r.name = s.toStdString();
+    for (const QString& part : s.split(QLatin1Char(','))) {
+        bool ok = false;
+        const int v = part.trimmed().toInt(&ok);
+        if (!ok || v < 0 || v > 15) {
+            std::string names;
+            for (const bw::Ramp& n : bw::namedRamps())
+                names += (names.empty() ? "" : ", ") + n.name;
+            throw Usage{"--ramp takes a ramp name (" + names + ") or palette indices 0-15 dark to light, not '" +
+                        s.toStdString() + "'"};
+        }
+        r.colours.push_back(static_cast<std::uint8_t>(v));
+    }
+    if (const std::string why = bw::rampProblem(r); !why.empty())
+        throw Usage{"--ramp " + s.toStdString() + ": " + why};
+    return r;
+}
+
+// --box x0,y0,x1,y1: cells from 0, corners included.
+bw::lint::Box boxValue(const QString& s) {
+    const QStringList parts = s.split(QLatin1Char(','));
+    int v[4] = {};
+    bool ok = parts.size() == 4;
+    for (int i = 0; ok && i < 4; ++i) {
+        v[i] = parts[i].trimmed().toInt(&ok);
+        ok = ok && v[i] >= 0;
+    }
+    if (!ok)
+        throw Usage{"--box takes x0,y0,x1,y1 (cells from 0, corners included), not '" + s.toStdString() + "'"};
+    return {std::min(v[0], v[2]), std::min(v[1], v[3]), std::max(v[0], v[2]), std::max(v[1], v[3])};
+}
+
+struct ShadeOptions {
+    bw::Ramp ramp;
+    bw::ShadeDirection direction = bw::ShadeDirection::Lighten;
+    int steps = 1;
+    std::optional<bw::lint::Box> box;
+    bool allowLossy = false;
+};
+
+// One pass of the ramp shade brush over the box (the whole canvas without
+// one), then the ladder check of the box. The check only reports; the file
+// is written either way.
+int shade(const std::string& in, const std::string& out, const ShadeOptions& o) {
+    bw::AnsiDocument doc = load(in);
+    bw::Canvas& c = doc.canvas;
+    bw::lint::Box box = o.box.value_or(bw::lint::Box{0, 0, c.width() - 1, c.height() - 1});
+    if (box.x0 >= c.width() || box.y0 >= c.height())
+        throw Failure{in + ": the box " + std::to_string(box.x0) + "," + std::to_string(box.y0) + "," +
+                      std::to_string(box.x1) + "," + std::to_string(box.y1) + " is off the " +
+                      std::to_string(c.width()) + "x" + std::to_string(c.height()) + " canvas"};
+    box.x1 = std::min(box.x1, c.width() - 1);
+    box.y1 = std::min(box.y1, c.height() - 1);
+    const bw::RampShadeBrush brush(o.ramp, o.direction, o.steps);
+    bw::StrokeOptions so;
+    so.selection = bw::Mask::rect(c.width(), c.height(), box.x0, box.y0, box.x1, box.y1);
+    // A piece that was written without loss and is lossy once shaded only
+    // can be because the shading made a background bright: two bright ramp
+    // neighbours, which need iCE colours, where blink can't be kept.
+    const bw::AnsiOutput before = bw::writeAnsi(doc);
+    const bw::CellEdit edit = bw::paintRegion(c, brush, {}, so);
+    edit.apply(c);
+    std::string why;
+    if (!before.lossy()) {
+        const int n = bw::writeAnsi(doc).blinkDropped;
+        if (n)
+            why = "the shading needs iCE colours (a bright background), and " + std::to_string(n) +
+                  (n == 1 ? " blinking cell would lose its blink" : " blinking cells would lose their blink");
+    }
+    saveAnsi(in, out, doc, o.allowLossy, why);
+
+    const std::size_t n = edit.changes.size();
+    std::cout << (o.direction == bw::ShadeDirection::Lighten ? "lightened " : "darkened ") << n
+              << (n == 1 ? " cell " : " cells ") << o.steps << (o.steps == 1 ? " rung" : " rungs") << " along "
+              << o.ramp.name << " in " << box.x0 << "," << box.y0 << "-" << box.x1 << "," << box.y1 << "\n";
+    const bw::lint::LadderReport rep = bw::lint::checkLadder(c, o.ramp, box);
+    char noise[32];
+    std::snprintf(noise, sizeof noise, "%.3f", rep.noise);
+    std::cout << "ladder: " << rep.ladderCells << " of " << rep.cells << " cells on the ramp, " << rep.shadeCells
+              << " shaded, noise " << noise << ": "
+              << (rep.clean() ? std::string("clean")
+                            : std::to_string(rep.findings.size()) + (rep.findings.size() == 1 ? " finding" : " findings")) << "\n";
+    for (const auto& f : rep.findings)
+        std::cout << "  " << f.message << "\n";
+    return kOk;
+}
+
 int render(const std::string& in, const std::string& out, const bw::RenderOptions& opts) {
     refuseSameFile(in, out);
     const bw::AnsiDocument doc = load(in);
@@ -259,11 +366,15 @@ int main(int argc, char** argv) {
         "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font\n"
         "  export --irc <in> <out>\n"
         "                       write IRC text (mIRC colour codes) and report each\n"
-        "                       line's size in bytes"));
+        "                       line's size in bytes\n"
+        "  shade --ramp R <in> <out>\n"
+        "                       lighten (or --darken) every cell in the box one\n"
+        "                       rung along the ramp's shading ladder, then check\n"
+        "                       the ladder; <out> may be <in>"));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
-                                      QStringLiteral("convert: write even if something can't be represented"));
+                                      QStringLiteral("convert, shade: write even if something can't be represented"));
     parser.addOption(lossyOpt);
     const QCommandLineOption scaleOpt(QStringLiteral("scale"),
                                       QStringLiteral("render: integer zoom, nearest neighbour (1-8, default 1)"),
@@ -284,7 +395,22 @@ int main(int argc, char** argv) {
     const QCommandLineOption overOpt(QStringLiteral("allow-over-budget"),
                                      QStringLiteral("export --irc: write even if a line is over the budget"));
     parser.addOption(overOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render or export"));
+    const QCommandLineOption rampOpt(
+        QStringLiteral("ramp"),
+        QStringLiteral("shade: a ramp name (fire, steel, ...) or palette indices dark to light, e.g. 0,8,7,15"),
+        QStringLiteral("ramp"));
+    parser.addOption(rampOpt);
+    const QCommandLineOption darkenOpt(QStringLiteral("darken"), QStringLiteral("shade: darken (default: lighten)"));
+    parser.addOption(darkenOpt);
+    const QCommandLineOption stepsOpt(QStringLiteral("steps"),
+                                      QStringLiteral("shade: rungs to move each cell (1-64, default 1)"),
+                                      QStringLiteral("N"), QStringLiteral("1"));
+    parser.addOption(stepsOpt);
+    const QCommandLineOption boxOpt(QStringLiteral("box"),
+                                    QStringLiteral("shade: cells x0,y0,x1,y1 from 0, corners included (default: all)"),
+                                    QStringLiteral("x0,y0,x1,y1"));
+    parser.addOption(boxOpt);
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export or shade"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -303,24 +429,34 @@ int main(int argc, char** argv) {
         std::cerr << "blockwright-cli: " << msg << "\n"
                   << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out>\n"
                   << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
-                  << "       | export --irc [--budget N] [--allow-over-budget] <in> <out> | --version\n";
+                  << "       | export --irc [--budget N] [--allow-over-budget] <in> <out>\n"
+                  << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--allow-lossy] <in> <out>\n"
+                  << "       | --version\n";
         return kUsage;
     };
     if (args.isEmpty())
         return usage("no command given");
     const QString cmd = args.first();
-    // Each option belongs to one command; every other command refuses it.
-    const std::pair<const QCommandLineOption*, const char*> owners[] = {
-        {&lossyOpt, "convert"}, {&scaleOpt, "render"}, {&fontWidthOpt, "render"},
-        {&ircOpt, "export"},    {&budgetOpt, "export"}, {&overOpt, "export"},
+    // Each option belongs to its commands; every other command refuses it.
+    const std::pair<const QCommandLineOption*, std::vector<const char*>> owners[] = {
+        {&lossyOpt, {"convert", "shade"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
+        {&ircOpt, {"export"}},             {&budgetOpt, {"export"}}, {&overOpt, {"export"}},
+        {&rampOpt, {"shade"}},             {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
+        {&boxOpt, {"shade"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
-        cmd == QLatin1String("export"))
-        for (const auto& [o, owner] : owners)
-            if (cmd != QLatin1String(owner) && parser.isSet(*o))
-                return usage(("--" + o->names().first().toStdString() + " is " + (owner[0] == 'e' ? "an " : "a ") +
-                              owner + " option, not a " + cmd.toStdString() + " option")
-                                 .c_str());
+        cmd == QLatin1String("export") || cmd == QLatin1String("shade"))
+        for (const auto& [o, cmds] : owners) {
+            if (!parser.isSet(*o) ||
+                std::any_of(cmds.begin(), cmds.end(), [&](const char* c) { return cmd == QLatin1String(c); }))
+                continue;
+            std::string owner;
+            for (std::size_t i = 0; i < cmds.size(); ++i)
+                owner += std::string(i == 0 ? "" : i + 1 == cmds.size() ? " or " : ", ") + cmds[i];
+            return usage(("--" + o->names().first().toStdString() + " is " + (owner[0] == 'e' ? "an " : "a ") +
+                          owner + " option, not a " + cmd.toStdString() + " option")
+                             .c_str());
+        }
     try {
         if (cmd == QLatin1String("info")) {
             if (args.size() != 2)
@@ -356,7 +492,22 @@ int main(int argc, char** argv) {
             }
             return exportIrc(args[1].toStdString(), args[2].toStdString(), budget, parser.isSet(overOpt));
         }
-        return usage(("unknown command '" + cmd.toStdString() + "'").c_str());
+        if (cmd == QLatin1String("shade")) {
+            if (!parser.isSet(rampOpt))
+                return usage("shade needs a ramp: --ramp NAME or --ramp c,c,...");
+            if (args.size() != 3)
+                return usage("shade takes an input and an output file");
+            ShadeOptions o;
+            o.ramp = rampValue(parser.value(rampOpt));
+            if (parser.isSet(darkenOpt))
+                o.direction = bw::ShadeDirection::Darken;
+            o.steps = intValue(parser.value(stepsOpt), "steps", 1, 64);
+            if (parser.isSet(boxOpt))
+                o.box = boxValue(parser.value(boxOpt));
+            o.allowLossy = parser.isSet(lossyOpt);
+            return shade(args[1].toStdString(), args[2].toStdString(), o);
+        }
+        return usage(("unknown command '"+ cmd.toStdString() + "'").c_str());
     } catch (const Usage& u) {
         return usage(u.message.c_str());
     } catch (const Failure& f) {

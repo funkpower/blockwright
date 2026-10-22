@@ -13,11 +13,13 @@ include(Catch)
 add_executable(blockwright-tests
   test_ansi_parse.cpp
   test_ansi_write.cpp
+  test_brush.cpp
   test_cli_read.cpp
   test_cp437.cpp
   test_edit.cpp
   test_golden.cpp
   test_irc.cpp
+  test_lint.cpp
   test_sauce.cpp
   util.h
 )
