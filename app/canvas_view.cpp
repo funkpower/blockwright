@@ -15,8 +15,10 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QScopedValueRollback>
+#include <QUndoStack>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <exception>
 #include <string>
@@ -53,8 +55,11 @@ bool isShortcut(const QKeyEvent* e) {
     return (m & (Qt::ControlModifier | Qt::MetaModifier)) && !(m & Qt::AltModifier);
 }
 
-// x / d rounded down, for pixels left of or above the canvas.
-int floorDiv(int x, int d) { return x >= 0 ? x / d : -((-x + d - 1) / d); }
+// x / d (d > 0) rounded down, for pixels left of or above the canvas; in
+// 64 bits, so no int overflows.
+long long floorDiv(long long x, long long d) { return x >= 0 ? x / d : -((-x + d - 1) / d); }
+
+int clampInt(long long v) { return int(std::clamp(v, (long long)INT_MIN, (long long)INT_MAX)); }
 
 // Saves the painter's state and puts it back, even when drawing throws.
 class SavedPainter {
@@ -88,6 +93,14 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
         cancelTool();
         setSelection({});
     });
+    // Undo or redo of any command, a format change among them, and a format
+    // change made any other way end a drag: what it shows was worked out
+    // on the document before.
+    connect(doc_->undoStack(), &QUndoStack::indexChanged, this, [this] {
+        if (!ownEdit_)
+            cancelDrag();
+    });
+    connect(doc_, &Document::formatChanged, this, &CanvasView::cancelDrag);
     updateSize();
 }
 
@@ -144,7 +157,14 @@ QPoint CanvasView::cellAt(const QPoint& pixel) const {
     const QSize cs = renderer_->cellSize() * zoom_;
     if (cs.isEmpty())
         return {};
-    return {floorDiv(pixel.x(), cs.width()), floorDiv(pixel.y(), cs.height())};
+    return {clampInt(floorDiv(pixel.x(), cs.width())), clampInt(floorDiv(pixel.y(), cs.height()))};
+}
+
+int CanvasView::halfRowAt(const QPoint& pixel) const {
+    const int h = renderer_->cellSize().height() * zoom_;
+    if (h <= 0)
+        return 0;
+    return clampInt(floorDiv(2LL * pixel.y(), h));
 }
 
 void CanvasView::setTool(Tool* tool) {
@@ -163,9 +183,13 @@ void CanvasView::setTool(Tool* tool) {
     update();
 }
 
-bool CanvasView::applyEdit(const CellEdit& edit) {
+bool CanvasView::applyEdit(const CellEdit& edit, bool mirrored) {
     const QScopedValueRollback<bool> own(ownEdit_, true);
-    return doc_->edit(mirror_ ? mirrorEdit(doc_->canvas(), edit) : edit, cursor_, cursor_);
+    return doc_->edit(mirrored ? edit : this->mirrored(edit), cursor_, cursor_);
+}
+
+CellEdit CanvasView::mirrored(const CellEdit& edit) const {
+    return mirror_ ? mirrorEdit(doc_->canvas(), edit) : edit;
 }
 
 void CanvasView::setSelection(const Selection& selection) {
@@ -175,12 +199,21 @@ void CanvasView::setSelection(const Selection& selection) {
     selection_ = s;
     update();
     emit selectionChanged();
+    if (tool_)
+        tool_->settingsChanged();
 }
 
 void CanvasView::cancelTool() {
     toolMouse_ = false;
     if (tool_)
         tool_->cancel();
+}
+
+void CanvasView::cancelDrag() {
+    if (!tool_ || !tool_->dragging())
+        return;
+    toolMouse_ = false;
+    tool_->cancelDrag();
 }
 
 void CanvasView::finishTool() {
@@ -193,6 +226,8 @@ void CanvasView::setMirror(bool on) {
         return;
     mirror_ = on;
     emit mirrorChanged(on);
+    if (tool_)
+        tool_->settingsChanged();
 }
 
 void CanvasView::setGuide(const QSize& size) {
@@ -406,12 +441,28 @@ void CanvasView::paintOutline(QPainter& p, const CellRect& r, bool floating) con
 void CanvasView::commit(const EditResult& r) {
     {
         const QScopedValueRollback<bool> own(ownEdit_, true);
-        doc_->edit(mirror_ ? mirrorEdit(doc_->canvas(), r.edit) : r.edit, cursor_, r.cursor);
+        doc_->edit(mirrored(r.edit), cursor_, r.cursor);
     }
     setCellCursor(r.cursor);
 }
 
+bool CanvasView::event(QEvent* e) {
+    // The undo key during a drag is the view's (keyPressEvent), not the
+    // Undo action's: it must not undo a step the drag can't see, and works
+    // with nothing to undo.
+    if (e->type() == QEvent::ShortcutOverride && tool_ && tool_->dragging() &&
+        static_cast<QKeyEvent*>(e)->matches(QKeySequence::Undo)) {
+        e->accept();
+        return true;
+    }
+    return QWidget::event(e);
+}
+
 void CanvasView::keyPressEvent(QKeyEvent* e) {
+    if (tool_ && tool_->dragging() && e->matches(QKeySequence::Undo)) {
+        cancelDrag();
+        return;
+    }
     if (tool_ && tool_->keyPress(e))
         return;
     const Canvas& cv = doc_->canvas();
@@ -472,7 +523,8 @@ void CanvasView::typeText(const QString& text, int replaceStart, int replaceLeng
 namespace {
 
 ToolEvent toolEvent(const CanvasView& v, const QMouseEvent* e) {
-    return {v.cellAt(e->position().toPoint()), e->button(), e->buttons(), e->modifiers()};
+    const QPoint p = e->position().toPoint();
+    return {v.cellAt(p), v.halfRowAt(p), e->button(), e->buttons(), e->modifiers()};
 }
 
 } // namespace

@@ -16,6 +16,7 @@ add_executable(blockwright-tests
   test_brush.cpp
   test_cli_read.cpp
   test_cp437.cpp
+  test_draw.cpp
   test_edit.cpp
   test_golden.cpp
   test_irc.cpp
@@ -90,8 +91,10 @@ set_tests_properties(cli_render PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
 
 add_executable(blockwright-app-tests
   test_app.cpp
+  test_app_draw.cpp
   test_app_format.cpp
   test_app_select.cpp
+  test_app_perf.cpp
   util.h
 )
 target_link_libraries(blockwright-app-tests PRIVATE blockwright_app Catch2::Catch2)

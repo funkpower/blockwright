@@ -296,54 +296,18 @@ void SelectTool::updatePreview() const {
     if (!previewStale_)
         return;
     previewStale_ = false;
-    preview_ = {};
+    preview_.clear();
     if (!view() || !floating_)
         return;
-    const Canvas& cv = canvas();
-    CellEdit edit = stampBlock(cv, float_, floatPos_.x(), floatPos_.y(), mode_, lifted_ ? &liftedFrom_ : nullptr);
-    if (view()->mirror())
-        edit = mirrorEdit(cv, edit);
-    if (edit.empty())
-        return;
-    int x0 = cv.width(), y0 = cv.height(), x1 = -1, y1 = -1;
-    for (const CellChange& c : edit.changes) {
-        x0 = std::min(x0, c.x), y0 = std::min(y0, c.y);
-        x1 = std::max(x1, c.x), y1 = std::max(y1, c.y);
-    }
-    // As the renderer draws the canvas: iCE applied, at 1x (paintCells
-    // scales only what it paints, so no zoom makes this bigger).
-    const CanvasRenderer* r = view()->renderer();
-    Canvas part(x1 - x0 + 1, y1 - y0 + 1);
-    for (int y = y0; y <= y1; ++y)
-        for (int x = x0; x <= x1; ++x)
-            part.at(x - x0, y - y0) = iceCell(cv.at(x, y), r->iceColours());
-    for (const CellChange& c : edit.changes)
-        part.at(c.x - x0, c.y - y0) = iceCell(c.after, r->iceColours());
-    try {
-        preview_ = renderCanvas(part, r->cellSize().width());
-    } catch (const std::exception&) {
-        preview_ = {};
-    }
-    previewCell_ = {x0, y0};
+    preview_.set(*view(), view()->mirrored(stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), mode_,
+                                                       lifted_ ? &liftedFrom_ : nullptr)));
 }
 
 void SelectTool::paintCells(QPainter& p, const QRect& exposed) const {
     if (!view() || !floating_)
         return;
     updatePreview();
-    if (preview_.isNull())
-        return;
-    const int zoom = view()->zoom();
-    const QRect target(view()->cellRect(previewCell_).topLeft(), preview_.size() * zoom);
-    const QRect r = exposed & target;
-    if (r.isEmpty())
-        return;
-    // The preview pixels under `r`, drawn scaled up.
-    const QPoint o = r.topLeft() - target.topLeft();
-    const QRect src(QPoint(o.x() / zoom, o.y() / zoom),
-                    QPoint((r.right() - target.left()) / zoom, (r.bottom() - target.top()) / zoom));
-    p.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    p.drawImage(QRect(target.topLeft() + src.topLeft() * zoom, src.size() * zoom), preview_, src);
+    preview_.paint(p, *view(), exposed);
 }
 
 void SelectTool::paint(QPainter& p) const {

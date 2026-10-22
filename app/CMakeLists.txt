@@ -4,6 +4,8 @@ add_library(blockwright_app STATIC
   canvas_view.cpp
   canvas_view.h
   document.cpp
+  draw_tools.cpp
+  draw_tools.h
   document.h
   main_window.cpp
   main_window.h

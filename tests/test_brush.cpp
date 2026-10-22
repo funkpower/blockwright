@@ -631,7 +631,7 @@ TEST_CASE("selection masks and the transparent lock", "[brush]") {
     CHECK_FALSE(cellsOf(e).count({2, 1}));
 
     StrokeOptions sel;
-    sel.selection = Mask::rect(8, 3, 5, 0, 3, 2);  // corners in any order
+    sel.selection = std::make_shared<const Mask>(Mask::rect(8, 3, 5, 0, 3, 2));  // corners in any order
     CHECK(cellsOf(paintStroke(c, up, {}, row, sel)) == std::set<std::pair<int, int>>{{3, 1}, {4, 1}, {5, 1}});
     CHECK(paintRegion(c, up, {}, sel).changes.size() == 9);
 
@@ -643,7 +643,7 @@ TEST_CASE("selection masks and the transparent lock", "[brush]") {
     CHECK_FALSE(m.contains(-1, 0));
     CHECK_FALSE(m.contains(0, 1));
     StrokeOptions small;
-    small.selection = Mask(4, 3, true);
+    small.selection = std::make_shared<const Mask>(4, 3, true);
     CHECK(paintRegion(c, up, {}, small).changes.size() == 12);
 }
 

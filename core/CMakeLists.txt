@@ -4,17 +4,20 @@
 add_library(blockwright_core STATIC
   src/ansi.cpp
   src/brush.cpp
+  src/brushes/drawing.cpp
   src/brushes/shading.cpp
   src/canvas.cpp
   src/cp437.cpp
   src/edit.cpp
   src/glyph_sets.cpp
+  src/halfblock.cpp
   src/irc.cpp
   src/lint.cpp
   src/palette.cpp
   src/ramp.cpp
   src/sauce.cpp
   src/selection.cpp
+  src/shapes.cpp
 )
 add_library(blockwright::core ALIAS blockwright_core)
 target_include_directories(blockwright_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

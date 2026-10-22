@@ -4,12 +4,14 @@
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "draw_tools.h"
 #include "select_tool.h"
 #include "tool.h"
 
 #include <QAction>
 #include <QActionGroup>
 #include <QFileDialog>
+#include <QLabel>
 #include <QImageReader>
 #include <QKeySequence>
 #include <QMenu>
@@ -37,6 +39,16 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(new Tool(QStringLiteral("keyboard"), tr("&Keyboard")));
     selectTool_ = new SelectTool;
     tools_->add(selectTool_);
+    tools_->add(new HalfBlockTool);
+    tools_->add(new ShadeTool);
+    tools_->add(new GlyphTool);
+    tools_->add(new ColorizeTool);
+    QList<ShapeTool*> fillable;
+    tools_->add(new ShapeTool(ShapeTool::Shape::Line));
+    tools_->add(fillable.emplace_back(new ShapeTool(ShapeTool::Shape::Rectangle)));
+    tools_->add(fillable.emplace_back(new ShapeTool(ShapeTool::Shape::Ellipse)));
+    tools_->add(new FillTool);
+    tools_->add(new EyedropperTool);
     view_->setTool(tools_->active());
     connect(tools_, &ToolRegistry::activeChanged, view_, &CanvasView::setTool);
 
@@ -137,8 +149,18 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     // Tools: one checkable item per tool in the registry.
     QMenu* toolsMenu = menuBar()->addMenu(tr("&Tools"));
     auto* toolGroup = new QActionGroup(this);
-    const QHash<QString, QKeySequence> toolKeys{{QStringLiteral("keyboard"), QKeySequence(Qt::CTRL | Qt::Key_K)},
-                                                {QStringLiteral("select"), QKeySequence(Qt::CTRL | Qt::Key_E)}};
+    const QHash<QString, QKeySequence> toolKeys{
+        {QStringLiteral("keyboard"), QKeySequence(Qt::CTRL | Qt::Key_K)},
+        {QStringLiteral("select"), QKeySequence(Qt::CTRL | Qt::Key_E)},
+        {QStringLiteral("halfBlock"), QKeySequence(Qt::CTRL | Qt::Key_B)},
+        {QStringLiteral("shade"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_B)},
+        {QStringLiteral("glyph"), QKeySequence(Qt::CTRL | Qt::Key_G)},
+        {QStringLiteral("colorize"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C)},
+        {QStringLiteral("line"), QKeySequence(Qt::CTRL | Qt::Key_L)},
+        {QStringLiteral("rectangle"), QKeySequence(Qt::CTRL | Qt::Key_U)},
+        {QStringLiteral("ellipse"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O)},
+        {QStringLiteral("fill"), QKeySequence(Qt::CTRL | Qt::Key_J)},
+        {QStringLiteral("eyedropper"), QKeySequence(Qt::CTRL | Qt::Key_I)}};
     QHash<Tool*, QAction*> toolActions;
     for (Tool* t : tools_->tools()) {
         QAction* a = add(toolsMenu, t->name(), "", toolKeys.value(t->id()), [this, t] { tools_->setActive(t); });
@@ -150,6 +172,28 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         if (QAction* a = toolActions.value(t))
             a->setChecked(true);
     });
+    // Rectangles and ellipses: outlines, or filled.
+    toolsMenu->addSeparator();
+    QAction* filled = check(add(toolsMenu, tr("Filled Sha&pes"), "filledShapes",
+                                QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F), [] {}),
+                            nullptr, false);
+    connect(filled, &QAction::toggled, this, [fillable](bool on) {
+        for (ShapeTool* t : fillable)
+            t->setFilled(on);
+    });
+    // The active tool's settings (the glyph brush's glyph) in the status bar.
+    auto* toolStatus = new QLabel;
+    toolStatus->setObjectName(QStringLiteral("toolStatusLabel"));
+    statusBar()->insertPermanentWidget(0, toolStatus);
+    const auto updateToolStatus = [this, toolStatus] {
+        Tool* t = tools_->active();
+        toolStatus->setText(t ? t->status() : QString());
+        toolStatus->setVisible(!toolStatus->text().isEmpty());
+    };
+    for (Tool* t : tools_->tools())
+        connect(t, &Tool::changed, this, updateToolStatus);
+    connect(tools_, &ToolRegistry::activeChanged, this, updateToolStatus);
+    updateToolStatus();
 
     // Selection.
     QMenu* sel = menuBar()->addMenu(tr("&Selection"));

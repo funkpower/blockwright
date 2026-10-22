@@ -11,11 +11,16 @@
 // The registry holds the tools and which one is active; the main window
 // builds the Tools menu from it and points the view at the active one.
 
+#include "blockwright/edit.h"
+
+#include <QImage>
 #include <QList>
 #include <QObject>
 #include <QPoint>
 #include <QRect>
 #include <QString>
+
+#include <vector>
 
 class QKeyEvent;
 class QPainter;
@@ -25,9 +30,12 @@ namespace bw {
 class CanvasView;
 
 // A mouse event in cells. The cell may be off the canvas (a drag past the
-// edge); tools clamp what they need.
+// edge); tools clamp what they need. `halfRow` is the half-block pixel row
+// under the pointer (halfblock.h): twice the cell row, plus one in a cell's
+// bottom half.
 struct ToolEvent {
     QPoint cell;
+    int halfRow = 0;
     Qt::MouseButton button = Qt::NoButton;  // the button pressed or released
     Qt::MouseButtons buttons;               // the buttons held
     Qt::KeyboardModifiers modifiers;
@@ -53,6 +61,15 @@ public:
     virtual bool mouseRelease(const ToolEvent&) { return false; }
     virtual bool keyPress(QKeyEvent*) { return false; }
 
+    // Whether a drag the tool took is in progress. The undo key during one
+    // cancels the drag and undoes nothing; undo, redo or a format change
+    // made any other way cancels it too.
+    virtual bool dragging() const { return false; }
+    // The view's mirror mode or selection changed (or a setting of the
+    // tool's own): a drag in progress redoes itself with them, so what it
+    // shows stays what it lands.
+    virtual void settingsChanged() {}
+
     // Drops whatever is in progress (a drag, a floating selection) without
     // an edit. The view calls it when the document changes under the tool
     // (undo, redo, an edit the view didn't make, a new canvas).
@@ -75,6 +92,9 @@ public:
     virtual void paint(QPainter&) const {}
     // Whether paint() draws the selection's outline, so the view doesn't.
     virtual bool drawsSelection() const { return false; }
+    // A word on the tool's settings for the status bar (the glyph brush's
+    // glyph); empty for none.
+    virtual QString status() const { return {}; }
 
 signals:
     // The tool's state or overlay changed: the view repaints and the menus
@@ -84,6 +104,24 @@ signals:
 private:
     QString id_, name_;
     CanvasView* view_ = nullptr;
+};
+
+// What a tool's edit in progress will leave, drawn over the canvas: the
+// changed cells as the renderer draws them. The edit is shown as given
+// (mirror it first for mirror mode, CanvasView::mirrored), and only the
+// cells being painted are rendered, so a preview costs what it shows.
+class EditPreview {
+public:
+    void clear();
+    bool empty() const { return changes_.empty(); }
+    // Keeps `edit` to draw over the view's canvas.
+    void set(const CanvasView& view, const CellEdit& edit);
+    // Draws it in view pixels, the part within `exposed`.
+    void paint(QPainter& p, const CanvasView& view, const QRect& exposed) const;
+
+private:
+    std::vector<CellChange> changes_;  // on the canvas, row-major
+    QRect cells_;                      // their bounding box, in cells
 };
 
 class ToolRegistry : public QObject {

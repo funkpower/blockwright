@@ -290,7 +290,8 @@ int shade(const std::string& in, const std::string& out, const ShadeOptions& o) 
     box.y1 = std::min(box.y1, c.height() - 1);
     const bw::RampShadeBrush brush(o.ramp, o.direction, o.steps);
     bw::StrokeOptions so;
-    so.selection = bw::Mask::rect(c.width(), c.height(), box.x0, box.y0, box.x1, box.y1);
+    so.selection =
+        std::make_shared<const bw::Mask>(bw::Mask::rect(c.width(), c.height(), box.x0, box.y0, box.x1, box.y1));
     // A piece that was written without loss and is lossy once shaded only
     // can be because the shading made a background bright: two bright ramp
     // neighbours, which need iCE colours, where blink can't be kept.

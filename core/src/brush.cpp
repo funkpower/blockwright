@@ -27,6 +27,18 @@ void Mask::set(int x, int y, bool on) {
         bits_[static_cast<size_t>(y) * w_ + x] = on;
 }
 
+std::shared_ptr<const Mask> selectionMask(const Selection& sel, int width, int height) {
+    if (sel.empty())
+        return nullptr;
+    auto m = std::make_shared<Mask>(width, height);
+    const CellRect r = sel.bounds().intersected(CellRect{0, 0, width, height});
+    for (int y = r.y; y < r.y + r.height; ++y)
+        for (int x = r.x; x < r.x + r.width; ++x)
+            if (sel.contains(x, y))
+                m->set(x, y);
+    return m;
+}
+
 namespace {
 
 // The footprint's cells in columns x0..x1 and rows y0..y1, which lie within

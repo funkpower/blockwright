@@ -11,8 +11,10 @@
 
 #include "blockwright/canvas.h"
 #include "blockwright/edit.h"
+#include "blockwright/selection.h"
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -111,11 +113,20 @@ public:
     virtual std::optional<Cell> paintCell(const Stroke& stroke, int x, int y, double strength) const;
 };
 
+// The selection as a stroke's mask: empty (paint anywhere) when nothing is
+// selected, else the selected cells of a width × height canvas.
+std::shared_ptr<const Mask> selectionMask(const Selection& sel, int width, int height);
+
 struct StrokeOptions {
-    std::optional<Mask> selection;  // empty: the whole canvas
+    // Empty: the whole canvas. Shared, not copied: a tool copies its options
+    // into a stroke or painter on every move, and a mask is canvas-sized.
+    std::shared_ptr<const Mask> selection;
     // Leave transparent cells alone: the alpha lock, until layers have their
     // own (PLAN §5).
     bool lockTransparent = false;
+    // The document's iCE colours setting. Half-block pixels (halfblock.h)
+    // read and write cells by the colours they show with it.
+    bool ice = true;
 };
 
 // One stroke, from the first dab to release. Successive dabs are joined by a

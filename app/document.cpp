@@ -5,9 +5,11 @@
 #include <QSaveFile>
 #include <QUndoCommand>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <utility>
+#include <vector>
 
 namespace bw {
 
@@ -237,11 +239,33 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
 }
 
 QRegion Document::changedCells(const CellEdit& edit) {
-    QRegion r;
+    // One rect per run of cells along a row, unioned pairwise: adding cells
+    // to one region one at a time is quadratic in a big fill.
+    std::vector<QPoint> cells;
+    cells.reserve(edit.changes.size());
     for (const CellChange& c : edit.changes)
         if (c.before != c.after)
-            r |= QRect(c.x, c.y, 1, 1);
-    return r;
+            cells.emplace_back(c.x, c.y);
+    std::sort(cells.begin(), cells.end(), [](const QPoint& a, const QPoint& b) {
+        return a.y() != b.y() ? a.y() < b.y() : a.x() < b.x();
+    });
+    std::vector<QRegion> rows;
+    for (size_t i = 0; i < cells.size();) {
+        QRegion row;
+        const int y = cells[i].y();
+        while (i < cells.size() && cells[i].y() == y) {
+            const int x0 = cells[i].x();
+            int x1 = x0;
+            for (++i; i < cells.size() && cells[i].y() == y && cells[i].x() <= x1 + 1; ++i)
+                x1 = cells[i].x();
+            row |= QRect(x0, y, x1 - x0 + 1, 1);
+        }
+        rows.push_back(row);
+    }
+    for (size_t step = 1; step < rows.size(); step *= 2)
+        for (size_t i = 0; i + step < rows.size(); i += 2 * step)
+            rows[i] |= rows[i + step];
+    return rows.empty() ? QRegion() : rows.front();
 }
 
 bool Document::edit(const CellEdit& edit, Cursor before, Cursor after) {

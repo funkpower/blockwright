@@ -17,7 +17,6 @@
 
 #include "blockwright/selection.h"
 
-#include <QImage>
 #include <QMetaObject>
 
 namespace bw {
@@ -101,8 +100,7 @@ private:
     bool dragMoved_ = false;
 
     mutable bool previewStale_ = true;
-    mutable QImage preview_;
-    mutable QPoint previewCell_;
+    mutable EditPreview preview_;
 
     QList<QMetaObject::Connection> connections_;
 };

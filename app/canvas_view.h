@@ -53,6 +53,9 @@ public:
     // (rounded down, so it may be off the canvas).
     QRect cellRect(const QPoint& cell) const { return cellRect(Cursor{cell.x(), cell.y()}); }
     QPoint cellAt(const QPoint& pixel) const;
+    // The half-block pixel row under a widget pixel: two to a cell row,
+    // rounded down.
+    int halfRowAt(const QPoint& pixel) const;
 
     Document* document() const { return doc_; }
     CanvasRenderer* renderer() const { return renderer_; }
@@ -61,10 +64,14 @@ public:
     Tool* tool() const { return tool_; }
     void setTool(Tool* tool);
 
-    // Pushes `edit` as one undo command, through mirror mode; the cursor
+    // Pushes `edit` as one undo command, through mirror mode unless it is
+    // `mirrored` already (a drawing tool mirrors what it draws); the cursor
     // stays. False if it changed nothing. Any other change to the document
-    // (undo, redo, an edit made elsewhere, a new canvas) cancels the tool.
-    bool applyEdit(const CellEdit& edit);
+    // (undo, redo, an edit made elsewhere, a new canvas) cancels the tool,
+    // and undo, redo or a format change ends a drag the tool has going.
+    bool applyEdit(const CellEdit& edit, bool mirrored = false);
+    // `edit` as mirror mode would push it: mirrored when it is on.
+    CellEdit mirrored(const CellEdit& edit) const;
     // The tool writes what it has in progress (a floating selection) as an
     // edit: before the view's own edits, and before the document is saved
     // or checked for unsaved changes.
@@ -128,6 +135,7 @@ signals:
     void selectionChanged();
 
 protected:
+    bool event(QEvent* e) override;
     void paintEvent(QPaintEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
     void inputMethodEvent(QInputMethodEvent* e) override;
@@ -149,6 +157,8 @@ private:
     void paintReference(QPainter& p, const QRect& clip);
     // The document changed under the tool: it drops what it has in progress.
     void cancelTool();
+    // Ends a drag the tool has going, if any, without an edit.
+    void cancelDrag();
 
     Document* doc_;
     CanvasRenderer* renderer_;

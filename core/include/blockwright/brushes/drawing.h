@@ -1,0 +1,56 @@
+#pragma once
+// Drawing brushes (PLAN §4 tools): the cell brushes of the phase 2 drawing
+// tools. Each paints a cell once per stroke, like every brush on Stroke's
+// default dab.
+
+#include "blockwright/brush.h"
+
+namespace bw {
+
+// The shade level of a cell's glyph: 0 for a space (NUL, 0xFF), 1-3 for
+// ░ ▒ ▓, 4 for █; empty for any other glyph.
+std::optional<int> shadeLevel(char32_t ch);
+
+// Shade brush: builds a cell up one step of space → ░ → ▒ → ▓ → █ in the
+// pen's colours, or with `reduce` takes it one step back down to a space.
+// Any other glyph is left alone either way: text, and the half blocks ▀ ▄
+// whose two colours are pixels (halfblock.h) a shade can't keep.
+class ShadeBrush : public Brush {
+public:
+    ShadeBrush(Pen pen, bool reduce) : pen_(pen), reduce_(reduce) {}
+
+    std::string_view name() const override { return "shade"; }
+    std::optional<Cell> paintCell(const Stroke& stroke, int x, int y, double strength) const override;
+
+private:
+    Pen pen_;
+    bool reduce_;
+};
+
+// Glyph brush: writes one cell (a glyph in the pen's colours; a blank cell
+// erases).
+class GlyphBrush : public Brush {
+public:
+    explicit GlyphBrush(Cell cell) : cell_(cell) {}
+
+    std::string_view name() const override { return "glyph"; }
+    std::optional<Cell> paintCell(const Stroke& stroke, int x, int y, double strength) const override;
+
+private:
+    Cell cell_;
+};
+
+// Colorize brush: recolours the cells it passes, keeping their glyphs. An
+// empty colour is left as it is.
+class ColorizeBrush : public Brush {
+public:
+    ColorizeBrush(std::optional<Color> fg, std::optional<Color> bg) : fg_(fg), bg_(bg) {}
+
+    std::string_view name() const override { return "colorize"; }
+    std::optional<Cell> paintCell(const Stroke& stroke, int x, int y, double strength) const override;
+
+private:
+    std::optional<Color> fg_, bg_;
+};
+
+} // namespace bw
