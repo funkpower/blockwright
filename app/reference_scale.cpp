@@ -29,7 +29,7 @@ bool areaScale(const QImage& src, QImage& dst, double kx, double ky) {
     std::size_t next = 0;  // the first chunk not yet converted
     QImage rows;  // the last chunk converted, as ARGB32 premultiplied
     QRect rowsAt;  // where it is in the source
-    std::vector<float> line(std::size_t(dw) * 4);  // source row `lineRow`, reduced across
+    std::vector<double> line(std::size_t(dw) * 4);  // source row `lineRow`, reduced across
     int lineRow = -1;
 
     // Adds row y of `rows` to `line`: each dst column gets the source pixels
@@ -41,30 +41,30 @@ bool areaScale(const QImage& src, QImage& dst, double kx, double ky) {
             const double a = i / kx, b = std::min<double>((i + 1) / kx, sw);
             if (a >= x1)
                 break;
-            float c[4] = {};
+            double c[4] = {};
             for (int x = std::max(int(a), x0); x < b && x < x1; ++x) {
                 const QRgb px = in[x - x0];
-                const float wgt = float(std::min<double>(b, x + 1) - std::max<double>(a, x));
-                c[0] += wgt * float(qAlpha(px));
-                c[1] += wgt * float(qRed(px));
-                c[2] += wgt * float(qGreen(px));
-                c[3] += wgt * float(qBlue(px));
+                const double wgt = std::min<double>(b, x + 1) - std::max<double>(a, x);
+                c[0] += wgt * qAlpha(px);
+                c[1] += wgt * qRed(px);
+                c[2] += wgt * qGreen(px);
+                c[3] += wgt * qBlue(px);
             }
             for (int k = 0; k < 4; ++k)
                 line[std::size_t(i) * 4 + k] += c[k];
         }
     };
 
-    std::vector<float> acc(std::size_t(dw) * 4);
-    const float norm = float(kx * ky);
+    std::vector<double> acc(std::size_t(dw) * 4);
+    const double norm = kx * ky;
     for (int j = 0; j < dh; ++j) {
         const double a = j / ky, b = std::min<double>((j + 1) / ky, sh);
         if (a >= b)
             break;
-        std::fill(acc.begin(), acc.end(), 0.0f);
+        std::fill(acc.begin(), acc.end(), 0.0);
         for (int y = int(a); y < b && y < rowsRead; ++y) {
             if (y != lineRow) {
-                std::fill(line.begin(), line.end(), 0.0f);
+                std::fill(line.begin(), line.end(), 0.0);
                 if (!rows.isNull() && rowsAt.width() == sw && y <= rowsAt.bottom()) {
                     addRow(y);
                 } else {
@@ -79,7 +79,7 @@ bool areaScale(const QImage& src, QImage& dst, double kx, double ky) {
                 }
                 lineRow = y;
             }
-            const float wgt = float(std::min<double>(b, y + 1) - std::max<double>(a, y));
+            const double wgt = std::min<double>(b, y + 1) - std::max<double>(a, y);
             for (std::size_t k = 0; k < acc.size(); ++k)
                 acc[k] += wgt * line[k];
         }

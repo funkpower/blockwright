@@ -1111,7 +1111,7 @@ TEST_CASE("a capped reference image ending just below the canvas stays opaque to
         int y;  // the last view row
     };
     for (const Case& c : {Case{512, 512, 1, QSize(4096, 8193), 8191},     // reduced, 1 row past
-                          Case{512, 2048, 1, QSize(2048, 16385), 32767},  // enlarged, 2 rows past
+                          Case{512, 2048, 1, QSize(2048, 16385), 32767},  // reduced, 2 rows past
                           Case{80, 504, 8, QSize(768, 9677), 64511}}) {   // enlarged, 1.33 rows past
         INFO(c.cols << "x" << c.rows << " at zoom " << c.zoom << ", picture " << c.pic.width() << "x"
                     << c.pic.height());
@@ -1255,9 +1255,10 @@ TEST_CASE("a reference image wider than a conversion is averaged as if whole") {
 }
 
 TEST_CASE("a reference row wider than a conversion keeps its level") {
-    // #35: each view pixel sums 2M source pixels in float, and for white the
-    // sum runs a little over 255 times their weight, so it rounds to 256,
-    // which as a channel would wrap to 0 if it weren't clamped.
+    // #35: each view pixel sums 2M source pixels. In float the sum drifted
+    // a level either way: white ran a little over 255 times their weight and
+    // rounded to 256, which as a channel would wrap to 0 if it weren't
+    // clamped, and 100 and 37 came out 99 and 36 (#37).
     for (const int level : {255, 100, 37}) {
         INFO("level " << level);
         QImage src(16777217, 1, QImage::Format_Grayscale8);
@@ -1269,7 +1270,9 @@ TEST_CASE("a reference row wider than a conversion keeps its level") {
             const QColor got = dst.pixelColor(i, 0);
             INFO("column " << i << ": " << got.name().toStdString() << " alpha " << got.alpha());
             CHECK(got.alpha() == 255);
-            CHECK(within(got, QColor(level, level, level), 1));
+            CHECK(got.red() == level);
+            CHECK(got.green() == level);
+            CHECK(got.blue() == level);
         }
     }
 }
