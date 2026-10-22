@@ -11,6 +11,10 @@
 // tool's cells in progress, a reference image, the screen-size guides, the
 // selection's outline and the tool's marks; none of them is part of the
 // document.
+//
+// The view and the preview draw in view pixels (device_grid.h): logical
+// pixels at a whole device pixel ratio, whole device pixels at a fractional
+// one, so every canvas pixel is a whole block of device pixels.
 
 #include "blockwright/canvas_renderer.h"
 #include "blockwright/edit.h"
@@ -18,6 +22,16 @@
 
 #include <QImage>
 #include <QWidget>
+#include <QtGlobal>
+
+// Qt 6.6 added QEvent::DevicePixelRatioChange. Before it a scale change is
+// seen on the next paint (Qt repaints the window at the new ratio), which
+// queues the same resize the event does.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+#define BW_DPR_CHANGE_EVENT 1
+#else
+#define BW_DPR_CHANGE_EVENT 0
+#endif
 
 namespace bw {
 
@@ -47,15 +61,21 @@ public:
     int glyphSet() const { return glyphSet_; }
     void setGlyphSet(int set);
 
-    // The cursor's cell in widget pixels.
+    // The cursor's cell in view pixels: the canvas at this zoom is
+    // viewSize() of them, and tools paint in them.
     QRect cellRect(Cursor c) const;
-    // Cell `cell` in widget pixels, and the cell under a widget pixel
-    // (rounded down, so it may be off the canvas).
+    // Cell `cell` in view pixels, and the cell under a view pixel (rounded
+    // down, so it may be off the canvas).
     QRect cellRect(const QPoint& cell) const { return cellRect(Cursor{cell.x(), cell.y()}); }
     QPoint cellAt(const QPoint& pixel) const;
-    // The half-block pixel row under a widget pixel: two to a cell row,
+    // The half-block pixel row under a view pixel: two to a cell row,
     // rounded down.
     int halfRowAt(const QPoint& pixel) const;
+    QSize viewSize() const;
+    // The widget (logical) pixels a view rect covers, and the view pixel
+    // under a widget point.
+    QRect toWidget(const QRect& view) const;
+    QPoint toView(const QPointF& widget) const;
 
     Document* document() const { return doc_; }
     CanvasRenderer* renderer() const { return renderer_; }
@@ -153,6 +173,8 @@ private:
     // nothing is written and they are reported instead.
     void typeText(const QString& text, int replaceStart = 0, int replaceLength = 0);
     void updateSize();
+    // The device pixel ratio changed: view pixels changed size.
+    void dprChanged();
     void paintOverlays(QPainter& p, const QRect& clip);
     void paintReference(QPainter& p, const QRect& clip);
     // The document changed under the tool: it drops what it has in progress.
@@ -178,9 +200,11 @@ private:
     QSizeF referenceDrawn_;  // the view size all of referenceScaled_ is drawn at
     bool referenceVisible_ = true;
     qreal referenceOpacity_ = 0.5;
+    qreal sizedDpr_ = 0;  // the device pixel ratio updateSize last ran at
 };
 
-// The canvas at 1x, for the always-visible preview dock.
+// The canvas at 1x, for the always-visible preview dock: one view pixel to a
+// canvas pixel.
 class PreviewWidget : public QWidget {
     Q_OBJECT
 public:
@@ -191,10 +215,15 @@ public:
     void cellsChanged(const QRegion& cells);
 
 protected:
+    bool event(QEvent* e) override;
     void paintEvent(QPaintEvent* e) override;
 
 private:
+    void updateSize();
+    void dprChanged();
+
     CanvasRenderer* renderer_;
+    qreal sizedDpr_ = 0;  // the device pixel ratio updateSize last ran at
 };
 
 } // namespace bw

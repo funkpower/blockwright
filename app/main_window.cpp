@@ -114,7 +114,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(&doc_, &Document::modifiedChanged, this, &MainWindow::updateTitle);
     connect(&doc_, &Document::pathChanged, this, &MainWindow::updateTitle);
     connect(view_, &CanvasView::cursorMoved, this, [this] {
-        const QRect r = view_->cellRect(view_->cellCursor());
+        const QRect r = view_->toWidget(view_->cellRect(view_->cellCursor()));
         scroll_->ensureVisible(r.center().x(), r.center().y(), r.width(), r.height());
         updateStatus();
     });

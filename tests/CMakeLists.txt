@@ -103,5 +103,15 @@ catch_discover_tests(blockwright-app-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
 
+# At a fractional device pixel ratio: its main sets QT_SCALE_FACTOR before the
+# QApplication exists.
+add_executable(blockwright-app-scale-tests
+  test_app_scale.cpp
+)
+target_link_libraries(blockwright-app-scale-tests PRIVATE blockwright_app Catch2::Catch2)
+catch_discover_tests(blockwright-app-scale-tests
+  PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
+  DISCOVERY_MODE PRE_TEST)
+
 add_test(NAME gui_version
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh $<TARGET_FILE:blockwright>)

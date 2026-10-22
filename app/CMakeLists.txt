@@ -3,6 +3,8 @@
 add_library(blockwright_app STATIC
   canvas_view.cpp
   canvas_view.h
+  device_grid.cpp
+  device_grid.h
   document.cpp
   draw_tools.cpp
   draw_tools.h

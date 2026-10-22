@@ -1,5 +1,6 @@
 #include "canvas_view.h"
 
+#include "device_grid.h"
 #include "document.h"
 #include "reference_scale.h"
 #include "tool.h"
@@ -15,6 +16,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QScopedValueRollback>
+#include <QTimer>
 #include <QUndoStack>
 
 #include <algorithm>
@@ -37,7 +39,29 @@ QRegion toPixels(const QRegion& cells, QSize cell, int zoom) {
     return out;
 }
 
-// The 1x pixels a widget rect at `zoom` shows.
+// A view region as the widget pixels that cover it.
+QRegion toWidget(const DeviceGrid& grid, const QRegion& view) {
+    QRegion out;
+    for (const QRect& r : view)
+        out |= grid.toWidget(r);
+    return out;
+}
+
+// Makes `p` draw in view pixels and returns the view rect a widget rect
+// `exposed` covers. Where that rect is off the view's `size` pixels (the part
+// of a device pixel before the grid starts, and after it ends) it is filled
+// with `background`.
+QRect beginViewPaint(QPainter& p, const QRect& exposed, QSize size, const QColor& background) {
+    const QTransform device = p.deviceTransform();
+    const DeviceGrid grid(device.m11(), QPointF(device.dx(), device.dy()));
+    p.setWorldTransform(grid.viewTransform(device));
+    const QRect clip = grid.toView(exposed);
+    for (const QRect& r : QRegion(clip) - QRegion(QRect(QPoint(0, 0), size)))
+        p.fillRect(r, background);
+    return clip;
+}
+
+// The 1x pixels a view rect at `zoom` shows.
 QRect toSource(const QRect& r, int zoom) {
     const int x0 = r.left() / zoom, y0 = r.top() / zoom;
     return QRect(QPoint(x0, y0), QPoint(r.right() / zoom, r.bottom() / zoom));
@@ -140,9 +164,9 @@ void CanvasView::setCellCursor(Cursor c) {
     c = {on.x, on.y, c.pastEnd && on.x == c.x && on.y == c.y && on.x == cv.width() - 1};
     if (c == cursor_)
         return;
-    update(cellRect(cursor_));
+    update(toWidget(cellRect(cursor_)));
     cursor_ = c;
-    update(cellRect(cursor_));
+    update(toWidget(cellRect(cursor_)));
     if (hasFocus())
         QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle);
     emit cursorMoved(cursor_);
@@ -158,6 +182,15 @@ QPoint CanvasView::cellAt(const QPoint& pixel) const {
     if (cs.isEmpty())
         return {};
     return {clampInt(floorDiv(pixel.x(), cs.width())), clampInt(floorDiv(pixel.y(), cs.height()))};
+}
+
+QSize CanvasView::viewSize() const { return renderer_->imageSize() * zoom_; }
+
+QRect CanvasView::toWidget(const QRect& view) const { return DeviceGrid::of(this).toWidget(view); }
+
+QPoint CanvasView::toView(const QPointF& widget) const {
+    const QPointF p = DeviceGrid::of(this).toView(widget);
+    return {clampInt((long long)std::floor(p.x())), clampInt((long long)std::floor(p.y()))};
 }
 
 int CanvasView::halfRowAt(const QPoint& pixel) const {
@@ -261,11 +294,11 @@ void CanvasView::setReferenceOpacity(qreal opacity) {
     update();
 }
 
-QSize CanvasView::sizeHint() const { return renderer_->imageSize() * zoom_; }
+QSize CanvasView::sizeHint() const { return DeviceGrid::of(this).widgetSize(viewSize()); }
 
 QVariant CanvasView::inputMethodQuery(Qt::InputMethodQuery query) const {
     if (query == Qt::ImCursorRectangle)
-        return cellRect(cursor_);
+        return toWidget(cellRect(cursor_));
     return QWidget::inputMethodQuery(query);
 }
 
@@ -279,18 +312,36 @@ void CanvasView::canvasReset() {
     }
 }
 
-void CanvasView::cellsChanged(const QRegion& cells) { update(toPixels(cells, renderer_->cellSize(), zoom_)); }
+void CanvasView::cellsChanged(const QRegion& cells) {
+    update(bw::toWidget(DeviceGrid::of(this), toPixels(cells, renderer_->cellSize(), zoom_)));
+}
 
-void CanvasView::updateSize() { setFixedSize(sizeHint()); }
+void CanvasView::updateSize() {
+    sizedDpr_ = devicePixelRatioF();
+    setFixedSize(sizeHint());
+}
+
+void CanvasView::dprChanged() {
+    updateSize();
+    update();
+}
 
 void CanvasView::paintEvent(QPaintEvent* e) {
+#if !BW_DPR_CHANGE_EVENT
+    if (devicePixelRatioF() != sizedDpr_)
+        QTimer::singleShot(0, this, &CanvasView::dprChanged);
+#endif
     QPainter p(this);
+    const QRect clip = beginViewPaint(p, e->rect(), viewSize(), palette().color(backgroundRole()));
     // Nothing thrown here may leave paintEvent: what can't be drawn is left
     // out of this paint.
     try {
-        const QRect src = toSource(e->rect(), zoom_);
-        renderer_->paint(p, src, src.topLeft() * zoom_, zoom_);
-        paintOverlays(p, e->rect());
+        const QRect shown = clip & QRect(QPoint(0, 0), viewSize());
+        if (!shown.isEmpty()) {
+            const QRect src = toSource(shown, zoom_);
+            renderer_->paint(p, src, src.topLeft() * zoom_, zoom_);
+        }
+        paintOverlays(p, clip);
     } catch (const std::exception&) {
     }
 
@@ -313,7 +364,7 @@ void CanvasView::paintOverlays(QPainter& p, const QRect& clip) {
     paintReference(p, clip);
     if (!guide_.isEmpty()) {
         const Canvas& cv = doc_->canvas();
-        const QSize size = sizeHint();
+        const QSize size = viewSize();
         const QSize cs = renderer_->cellSize() * zoom_;
         const SavedPainter saved(p);
         p.setPen(QPen(QColor(255, 0, 255), std::max(1, zoom_ / 2), Qt::DashLine));
@@ -335,7 +386,7 @@ void CanvasView::paintOverlays(QPainter& p, const QRect& clip) {
 }
 
 void CanvasView::paintReference(QPainter& p, const QRect& clip) {
-    const QSize size = sizeHint();
+    const QSize size = viewSize();
     if (!referenceVisible_ || reference_.isNull() || size.isEmpty())
         return;
     // Across the canvas width at the picture's own aspect, top-aligned: one
@@ -447,6 +498,11 @@ void CanvasView::commit(const EditResult& r) {
 }
 
 bool CanvasView::event(QEvent* e) {
+#if BW_DPR_CHANGE_EVENT
+    // A screen with another scale: view pixels change size.
+    if (e->type() == QEvent::DevicePixelRatioChange)
+        dprChanged();
+#endif
     // The undo key during a drag is the view's (keyPressEvent), not the
     // Undo action's: it must not undo a step the drag can't see, and works
     // with nothing to undo.
@@ -523,7 +579,7 @@ void CanvasView::typeText(const QString& text, int replaceStart, int replaceLeng
 namespace {
 
 ToolEvent toolEvent(const CanvasView& v, const QMouseEvent* e) {
-    const QPoint p = e->position().toPoint();
+    const QPoint p = v.toView(e->position());
     return {v.cellAt(p), v.halfRowAt(p), e->button(), e->buttons(), e->modifiers()};
 }
 
@@ -561,7 +617,7 @@ void CanvasView::mousePressEvent(QMouseEvent* e) {
         return;
     }
     const QSize cs = renderer_->cellSize() * zoom_;
-    const QPoint p = e->position().toPoint();
+    const QPoint p = toView(e->position());
     if (cs.isEmpty() || p.x() < 0 || p.y() < 0)
         return;
     setCellCursor({p.x() / cs.width(), p.y() / cs.height()});
@@ -570,21 +626,47 @@ void CanvasView::mousePressEvent(QMouseEvent* e) {
 
 PreviewWidget::PreviewWidget(CanvasRenderer* renderer, QWidget* parent) : QWidget(parent), renderer_(renderer) {
     setAttribute(Qt::WA_OpaquePaintEvent);
-    setFixedSize(sizeHint());
+    updateSize();
 }
 
-QSize PreviewWidget::sizeHint() const { return renderer_->imageSize(); }
+QSize PreviewWidget::sizeHint() const { return DeviceGrid::of(this).widgetSize(renderer_->imageSize()); }
 
 void PreviewWidget::canvasReset() {
-    setFixedSize(sizeHint());
+    updateSize();
     update();
 }
 
-void PreviewWidget::cellsChanged(const QRegion& cells) { update(toPixels(cells, renderer_->cellSize(), 1)); }
+void PreviewWidget::updateSize() {
+    sizedDpr_ = devicePixelRatioF();
+    setFixedSize(sizeHint());
+}
+
+void PreviewWidget::dprChanged() {
+    updateSize();
+    update();
+}
+
+void PreviewWidget::cellsChanged(const QRegion& cells) {
+    update(toWidget(DeviceGrid::of(this), toPixels(cells, renderer_->cellSize(), 1)));
+}
+
+bool PreviewWidget::event(QEvent* e) {
+#if BW_DPR_CHANGE_EVENT
+    if (e->type() == QEvent::DevicePixelRatioChange)
+        dprChanged();
+#endif
+    return QWidget::event(e);
+}
 
 void PreviewWidget::paintEvent(QPaintEvent* e) {
+#if !BW_DPR_CHANGE_EVENT
+    if (devicePixelRatioF() != sizedDpr_)
+        QTimer::singleShot(0, this, &PreviewWidget::dprChanged);
+#endif
     QPainter p(this);
-    renderer_->paint(p, e->rect(), e->rect().topLeft(), 1);
+    const QRect clip = beginViewPaint(p, e->rect(), renderer_->imageSize(), palette().color(backgroundRole()));
+    const QRect src = clip & QRect(QPoint(0, 0), renderer_->imageSize());
+    renderer_->paint(p, src, src.topLeft(), 1);
 }
 
 } // namespace bw
