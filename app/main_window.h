@@ -1,6 +1,7 @@
 #pragma once
-// The main window: the canvas view in a scroll area, the 1x preview dock
-// and the File, View and Help menus.
+// The main window: the canvas view in a scroll area, the 1x preview and
+// palette docks, the F-key glyph set in the status bar, and the File, Edit,
+// View, Colours, Glyphs and Help menus.
 
 #include "blockwright/canvas_renderer.h"
 
@@ -17,6 +18,7 @@ class QScrollArea;
 namespace bw {
 
 class CanvasView;
+class PaletteWidget;
 class PreviewWidget;
 
 // The file Save As writes for the name its dialog returned: that name, with
@@ -41,6 +43,9 @@ public:
     CanvasView* canvasView() const { return view_; }
     PreviewWidget* preview() const { return preview_; }
     QDockWidget* previewDock() const { return previewDock_; }
+    PaletteWidget* paletteWidget() const { return palette_; }
+    QDockWidget* paletteDock() const { return paletteDock_; }
+    QLabel* glyphSetLabel() const { return glyphSetLabel_; }
     const CanvasRenderer& renderer() const { return renderer_; }
 
     // Opens `path` without asking anything; false and `error` on failure.
@@ -69,6 +74,7 @@ private:
     void canvasReset();
     void updateTitle();
     void updateStatus();
+    void updateGlyphSet();
     // Asks to save unsaved edits; false means cancel.
     bool maybeSave();
     bool saveInteractive(const QString& path);
@@ -79,7 +85,11 @@ private:
     CanvasView* view_ = nullptr;
     PreviewWidget* preview_ = nullptr;
     QDockWidget* previewDock_ = nullptr;
+    PaletteWidget* palette_ = nullptr;
+    QDockWidget* paletteDock_ = nullptr;
     QLabel* status_ = nullptr;
+    QLabel* glyphSetLabel_ = nullptr;
+    QList<QAction*> glyphSetActions_;
 };
 
 } // namespace bw

@@ -7,6 +7,8 @@ add_library(blockwright_app STATIC
   document.h
   main_window.cpp
   main_window.h
+  palette_widget.cpp
+  palette_widget.h
 )
 set_target_properties(blockwright_app PROPERTIES AUTOMOC ON)
 add_dependencies(blockwright_app bw_version)

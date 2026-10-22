@@ -2,6 +2,8 @@
 
 #include "document.h"
 
+#include "blockwright/glyph_sets.h"
+
 #include <QGuiApplication>
 #include <QInputMethod>
 #include <QInputMethodEvent>
@@ -32,15 +34,48 @@ QRect toSource(const QRect& r, int zoom) {
     return QRect(QPoint(x0, y0), QPoint(r.right() / zoom, r.bottom() / zoom));
 }
 
+// Whether a key is a shortcut rather than text. A key with no printable
+// text is. Ctrl or Meta without Alt is too, even when the platform gives the
+// key some text (macOS does for Cmd). Ctrl+Alt is AltGr on Windows and Alt
+// is Option on macOS: both type the characters they give.
+bool isShortcut(const QKeyEvent* e) {
+    const QString t = e->text();
+    if (std::none_of(t.begin(), t.end(), [](QChar c) { return c.unicode() >= 0x20 && c.unicode() != 0x7f; }))
+        return true;
+    const Qt::KeyboardModifiers m = e->modifiers();
+    return (m & (Qt::ControlModifier | Qt::MetaModifier)) && !(m & Qt::AltModifier);
+}
+
 } // namespace
 
 CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
-    : QWidget(parent), doc_(doc), renderer_(renderer) {
+    : QWidget(parent), doc_(doc), renderer_(renderer), glyphSet_(kDefaultGlyphSet) {
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
     // Dead keys and compose sequences arrive as input-method commits.
     setAttribute(Qt::WA_InputMethodEnabled);
+    // Undo and redo put the cursor back where the edit was made or left it.
+    connect(doc_, &Document::cursorRequested, this, &CanvasView::setCellCursor);
     updateSize();
+}
+
+void CanvasView::setPen(const Pen& pen) {
+    if (pen.fg == pen_.fg && pen.bg == pen_.bg)
+        return;
+    pen_ = pen;
+    emit penChanged(pen_);
+}
+
+void CanvasView::setForeground(int index) { setPen({Color::indexed(std::uint8_t(index & 15)), pen_.bg}); }
+
+void CanvasView::setBackground(int index) { setPen({pen_.fg, Color::indexed(std::uint8_t(index & 15))}); }
+
+void CanvasView::setGlyphSet(int set) {
+    set = ((set % kGlyphSetCount) + kGlyphSetCount) % kGlyphSetCount;
+    if (set == glyphSet_)
+        return;
+    glyphSet_ = set;
+    emit glyphSetChanged(glyphSet_);
 }
 
 void CanvasView::setZoom(int zoom) {
@@ -54,7 +89,10 @@ void CanvasView::setZoom(int zoom) {
 }
 
 void CanvasView::setCellCursor(Cursor c) {
-    c = moveCursor(doc_->canvas(), c, 0, 0);
+    const Canvas& cv = doc_->canvas();
+    const Cursor on = moveCursor(cv, c, 0, 0);
+    // Past the end only where the caller put it: on the last column.
+    c = {on.x, on.y, c.pastEnd && on.x == c.x && on.y == c.y && on.x == cv.width() - 1};
     if (c == cursor_)
         return;
     update(cellRect(cursor_));
@@ -109,7 +147,7 @@ void CanvasView::paintEvent(QPaintEvent* e) {
 }
 
 void CanvasView::commit(const EditResult& r) {
-    doc_->apply(r.edit);
+    doc_->edit(r.edit, cursor_, r.cursor);
     setCellCursor(r.cursor);
 }
 
@@ -128,8 +166,12 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
     case Qt::Key_Delete: commit(deleteCell(cv, cursor_)); return;
     default: break;
     }
-    // Shortcuts are not text, even when the platform gives them some.
-    if (e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier) || e->text().isEmpty()) {
+    if (e->key() >= Qt::Key_F1 && e->key() < Qt::Key_F1 + kGlyphSetKeys &&
+        !(e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+        commit(typeGlyph(cv, cursor_, glyphSetGlyph(glyphSet_, e->key() - Qt::Key_F1), pen_));
+        return;
+    }
+    if (isShortcut(e)) {
         QWidget::keyPressEvent(e);
         return;
     }

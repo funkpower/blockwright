@@ -1,11 +1,14 @@
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "palette_widget.h"
 
 #include "blockwright/credits.h"
+#include "blockwright/glyph_sets.h"
 #include "blockwright/version.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDockWidget>
@@ -82,6 +85,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     previewDock_->setWidget(previewScroll);
     addDockWidget(Qt::RightDockWidgetArea, previewDock_);
 
+    palette_ = new PaletteWidget;
+    palette_->setPen(view_->pen());
+    paletteDock_ = new QDockWidget(tr("Palette"), this);
+    paletteDock_->setObjectName(QStringLiteral("paletteDock"));
+    paletteDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+    paletteDock_->setWidget(palette_);
+    addDockWidget(Qt::RightDockWidgetArea, paletteDock_);
+
+    glyphSetLabel_ = new QLabel;
+    glyphSetLabel_->setObjectName(QStringLiteral("glyphSetLabel"));
+    statusBar()->addPermanentWidget(glyphSetLabel_);
     status_ = new QLabel;
     statusBar()->addPermanentWidget(status_);
 
@@ -99,6 +113,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         updateStatus();
     });
     connect(view_, &CanvasView::zoomChanged, this, &MainWindow::updateStatus);
+    connect(palette_, &PaletteWidget::foregroundPicked, view_, &CanvasView::setForeground);
+    connect(palette_, &PaletteWidget::backgroundPicked, view_, &CanvasView::setBackground);
+    connect(view_, &CanvasView::penChanged, palette_, &PaletteWidget::setPen);
+    connect(view_, &CanvasView::glyphSetChanged, this, &MainWindow::updateGlyphSet);
     connect(view_, &CanvasView::glyphRejected, this, [this](const QString& text) {
         statusBar()->showMessage(tr("%1 has no CP437 glyph; not typed").arg(text), 3000);
     });
@@ -106,6 +124,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createActions();
     updateTitle();
     updateStatus();
+    updateGlyphSet();
     view_->setFocus();
     resize(1400, 900);
 }
@@ -124,6 +143,16 @@ void MainWindow::createActions() {
     a = file->addAction(tr("&Quit"), this, &QWidget::close);
     a->setShortcut(QKeySequence::Quit);
 
+    QMenu* edit = menuBar()->addMenu(tr("&Edit"));
+    a = doc_.undoStack()->createUndoAction(this, tr("&Undo"));
+    a->setObjectName(QStringLiteral("undo"));
+    a->setShortcuts(QKeySequence::Undo);
+    edit->addAction(a);
+    a = doc_.undoStack()->createRedoAction(this, tr("&Redo"));
+    a->setObjectName(QStringLiteral("redo"));
+    a->setShortcuts(QKeySequence::Redo);
+    edit->addAction(a);
+
     QMenu* view = menuBar()->addMenu(tr("&View"));
     a = view->addAction(tr("Zoom &In"), this, &MainWindow::zoomIn);
     a->setObjectName(QStringLiteral("zoomIn"));
@@ -135,6 +164,53 @@ void MainWindow::createActions() {
     a->setObjectName(QStringLiteral("zoomReset"));
     a->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
 
+    // Colours and glyph sets: Moebius's keys.
+    const auto add = [this](QMenu* m, const QString& text, const char* name, QKeySequence key, auto slot) {
+        QAction* act = m->addAction(text, this, slot);
+        act->setObjectName(QString::fromLatin1(name));
+        act->setShortcut(key);
+        return act;
+    };
+    QMenu* colours = menuBar()->addMenu(tr("&Colours"));
+    add(colours, tr("&Previous Foreground"), "previousForeground", QKeySequence(Qt::CTRL | Qt::Key_Up),
+        [this] { view_->setForeground(view_->pen().fg.paletteIndex() + 15); });
+    add(colours, tr("&Next Foreground"), "nextForeground", QKeySequence(Qt::CTRL | Qt::Key_Down),
+        [this] { view_->setForeground(view_->pen().fg.paletteIndex() + 1); });
+    add(colours, tr("P&revious Background"), "previousBackground", QKeySequence(Qt::CTRL | Qt::Key_Left),
+        [this] { view_->setBackground(view_->pen().bg.paletteIndex() + 15); });
+    add(colours, tr("N&ext Background"), "nextBackground", QKeySequence(Qt::CTRL | Qt::Key_Right),
+        [this] { view_->setBackground(view_->pen().bg.paletteIndex() + 1); });
+    colours->addSeparator();
+    add(colours, tr("&Default Colours"), "defaultColours", QKeySequence(Qt::CTRL | Qt::Key_D),
+        [this] { view_->setPen(Pen{}); });
+
+    QMenu* glyphs = menuBar()->addMenu(tr("&Glyphs"));
+    add(glyphs, tr("&Previous Set"), "previousGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Comma),
+        [this] { view_->setGlyphSet(view_->glyphSet() - 1); });
+    add(glyphs, tr("&Next Set"), "nextGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Period),
+        [this] { view_->setGlyphSet(view_->glyphSet() + 1); });
+    add(glyphs, tr("&Default Set"), "defaultGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Slash),
+        [this] { view_->setGlyphSet(kDefaultGlyphSet); });
+    glyphs->addSeparator();
+    // Ctrl+Shift+F1-F10 pick sets 1-10; 11-16 are reached from this menu or by
+    // stepping. Not Moebius's Alt+F-keys: desktops take those (Alt+F4 closes
+    // the window), as they do Ctrl+F-keys (KDE and Xfce desktop switching) and
+    // Ctrl+Alt+F-keys (Linux VT switching).
+    auto* group = new QActionGroup(this);
+    for (int i = 0; i < kGlyphSetCount; ++i) {
+        QString shown;
+        for (const char32_t ch : glyphSet(i))
+            shown += QString::fromUcs4(&ch, 1);
+        const QKeySequence key =
+            i < kGlyphSetKeys ? QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key(Qt::Key_F1 + i)) : QKeySequence();
+        QAction* set = add(glyphs, tr("Set %1: %2").arg(i + 1).arg(shown), "", key,
+                           [this, i] { view_->setGlyphSet(i); });
+        set->setObjectName(QStringLiteral("glyphSet%1").arg(i + 1));
+        set->setCheckable(true);
+        group->addAction(set);
+        glyphSetActions_ << set;
+    }
+
     QMenu* help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About Blockwright"), this, [this] {
         QMessageBox::about(this, tr("About Blockwright"),
@@ -144,6 +220,29 @@ void MainWindow::createActions() {
                                     QString::fromUtf8(kFontCredit).toHtmlEscaped().replace('\n', ' ')));
     });
     help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
+}
+
+void MainWindow::updateGlyphSet() {
+    const int set = view_->glyphSet();
+    QStringList glyphs, tips;
+    for (int k = 0; k < kGlyphSetKeys; ++k) {
+        const char32_t ch = glyphSetGlyph(set, k);
+        glyphs << QString::fromUcs4(&ch, 1);
+        tips << tr("F%1 %2").arg(k + 1).arg(glyphs.back());
+    }
+    glyphSetLabel_->setText(tr("F-keys set %1: %2").arg(set + 1).arg(glyphs.join(QLatin1Char(' '))));
+    const auto keys = [this](const char* name) {
+        return findChild<QAction*>(QString::fromLatin1(name))->shortcut().toString(QKeySequence::NativeText);
+    };
+    tips << QString()
+         << tr("%1 and %2 step through the sets, %3 goes back to the default")
+                .arg(keys("previousGlyphSet"), keys("nextGlyphSet"), keys("defaultGlyphSet"))
+         << tr("%1 to %2 pick sets 1-%3; every set is in the Glyphs menu")
+                .arg(keys("glyphSet1"), keys("glyphSet10"))
+                .arg(kGlyphSetKeys);
+    glyphSetLabel_->setToolTip(tips.join(QLatin1Char('\n')));
+    if (set < glyphSetActions_.size())
+        glyphSetActions_[set]->setChecked(true);
 }
 
 void MainWindow::canvasReset() {

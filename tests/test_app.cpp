@@ -1,13 +1,16 @@
 // The GUI, headless (QT_QPA_PLATFORM=offscreen): the document, open/save
-// round trips, zoom, the preview dock, and an open-type-save smoke test.
+// round trips, zoom, the preview dock, undo/redo, F-key glyph sets, the
+// palette, and an open-type-save smoke test.
 
 #include "util.h"
 
 #include "blockwright/cp437.h"
+#include "blockwright/glyph_sets.h"
 
 #include "canvas_view.h"
 #include "document.h"
 #include "main_window.h"
+#include "palette_widget.h"
 
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -19,6 +22,11 @@
 #include <QFileDialog>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
+#include <QLabel>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMouseEvent>
+#include <QUndoStack>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QTemporaryDir>
@@ -94,22 +102,27 @@ TEST_CASE("a document reports exactly the cells an edit changes") {
     e.changes.push_back({9, 7, Cell{}, Cell{U'x'}});
     e.changes.push_back({200, 2, Cell{}, Cell{U'x'}});  // off the canvas
     CHECK(Document::changedCells(e) == (QRegion(4, 2, 1, 1) | QRegion(9, 7, 1, 1) | QRegion(200, 2, 1, 1)));
-    d.apply(e);
+    CHECK(d.edit(e));
     REQUIRE(seen.size() == 1);
     CHECK(seen[0] == (QRegion(4, 2, 1, 1) | QRegion(9, 7, 1, 1)));
     CHECK(d.canvas().at(4, 2).ch == U'#');
     CHECK(d.isModified());
+    CHECK(d.undoStack()->count() == 1);
 
-    d.apply(e, true);  // revert
+    d.undoStack()->undo();
     REQUIRE(seen.size() == 2);
     CHECK(seen[1] == seen[0]);
     CHECK(d.canvas() == Canvas(80, 40));
+    CHECK_FALSE(d.isModified());
 
-    // an edit that changes nothing reports nothing
+    // an edit that changes nothing reports nothing and is no undo step
     CellEdit none;
     none.changes.push_back({1, 1, Cell{}, Cell{}});
-    d.apply(none);
+    none.changes.push_back({300, 1, Cell{}, Cell{U'x'}});
+    CHECK_FALSE(d.edit(none));
     CHECK(seen.size() == 2);
+    CHECK(d.undoStack()->count() == 1);
+    CHECK_FALSE(d.isModified());
 }
 
 TEST_CASE("open then save of an unmodified golden piece") {
@@ -244,6 +257,60 @@ TEST_CASE("Backspace, Delete, Home, End and Enter in the view") {
     QKeyEvent ctrl(QEvent::KeyPress, Qt::Key_Q, Qt::ControlModifier, QStringLiteral("q"));
     QApplication::sendEvent(v, &ctrl);
     CHECK(w.document()->canvas().at(0, 1) == Cell{});
+    QKeyEvent ctrlControl(QEvent::KeyPress, Qt::Key_Q, Qt::ControlModifier, QStringLiteral("\x11"));
+    QApplication::sendEvent(v, &ctrlControl);
+    CHECK(w.document()->canvas().at(0, 1) == Cell{});
+    CHECK(v->cellCursor() == Cursor{0, 1});
+}
+
+TEST_CASE("AltGr and Option characters are typed") {
+    // #28 review P3-3: any Ctrl, Alt or Meta made a key a shortcut
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    const auto press = [&](int k, Qt::KeyboardModifiers m, const QString& text) {
+        QKeyEvent e(QEvent::KeyPress, k, m, text);
+        QApplication::sendEvent(v, &e);
+    };
+    // AltGr+Q on Windows: Ctrl+Alt with the character it gives
+    press(Qt::Key_Q, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("@"));
+    CHECK(w.document()->canvas().at(0, 0).ch == U'@');
+    CHECK(v->cellCursor() == Cursor{1, 0});
+    // Option+u then a on macOS gives ä with Alt held
+    press(Qt::Key_A, Qt::AltModifier, QStringLiteral("ä"));
+    CHECK(w.document()->canvas().at(1, 0).ch == U'ä');
+    CHECK(v->cellCursor() == Cursor{2, 0});
+    // Ctrl+Alt with no text, or a control character, is still a shortcut
+    press(Qt::Key_Q, Qt::ControlModifier | Qt::AltModifier, QString());
+    press(Qt::Key_Q, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("\x11"));
+    // and Cmd (Ctrl in Qt on macOS) or Meta without Alt, even with text
+    press(Qt::Key_Q, Qt::MetaModifier, QStringLiteral("q"));
+    CHECK(w.document()->canvas().at(2, 0) == Cell{});
+    CHECK(v->cellCursor() == Cursor{2, 0});
+}
+
+TEST_CASE("Backspace after typing on the last column clears that column") {
+    // #28 review P3-1, through the view
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    key(v, Qt::Key_End);
+    key(v, Qt::Key_Left);
+    type(v, QStringLiteral("ab"));
+    CHECK(v->cellCursor() == Cursor{79, 0, true});
+    key(v, Qt::Key_Backspace);
+    CHECK(w.document()->canvas().at(79, 0) == Cell{});
+    CHECK(w.document()->canvas().at(78, 0).ch == U'a');
+    CHECK(v->cellCursor() == Cursor{79, 0});
+    // undo puts the b back and the cursor past it again
+    action(w, "undo")->trigger();
+    CHECK(w.document()->canvas().at(79, 0).ch == U'b');
+    CHECK(v->cellCursor() == Cursor{79, 0, true});
+    // a move leaves past-the-end behind
+    key(v, Qt::Key_Left);
+    key(v, Qt::Key_Right);
+    CHECK(v->cellCursor() == Cursor{79, 0});
+    key(v, Qt::Key_Backspace);
+    CHECK(w.document()->canvas().at(78, 0) == Cell{});
+    CHECK(w.document()->canvas().at(79, 0).ch == U'b');
 }
 
 TEST_CASE("the view scrolls only to keep the cursor in sight") {
@@ -611,6 +678,334 @@ TEST_CASE("Save As adds .ans and asks before replacing a file the dialog never s
     own.selectNameFilter(QStringLiteral("All files (*)"));
     own.selectFile(QStringLiteral("piece"));
     CHECK(own.selectedFiles() == QStringList{existing});
+}
+
+namespace {
+
+// A click on the palette at swatch `index`.
+void click(PaletteWidget* p, int index, Qt::MouseButton button) {
+    const QPointF at = p->swatchRect(index).center();
+    QMouseEvent e(QEvent::MouseButtonPress, at, p->mapToGlobal(at), button, button, Qt::NoModifier);
+    QApplication::sendEvent(p, &e);
+}
+
+// The cells of the canvas that differ from `before`.
+QRegion diff(const Canvas& a, const Canvas& b) {
+    QRegion r;
+    for (int y = 0; y < a.height(); ++y)
+        for (int x = 0; x < a.width(); ++x)
+            if (a.at(x, y) != b.at(x, y))
+                r |= QRect(x, y, 1, 1);
+    return r;
+}
+
+} // namespace
+
+TEST_CASE("undo and redo restore the cells, the cursor and the modified flag") {
+    MainWindow w;
+    Document* d = w.document();
+    CanvasView* v = w.canvasView();
+    QAction* undo = action(w, "undo");
+    QAction* redo = action(w, "redo");
+    CHECK(undo->shortcut() == QKeySequence(QKeySequence::Undo));
+    CHECK(redo->shortcut() == QKeySequence(QKeySequence::Redo));
+    CHECK_FALSE(undo->isEnabled());
+
+    std::vector<QRegion> repainted;
+    QObject::connect(d, &Document::cellsChanged, [&](const QRegion& r) { repainted.push_back(r); });
+
+    key(v, Qt::Key_Down);
+    type(v, QStringLiteral("ab"));
+    key(v, Qt::Key_Backspace);
+    const Canvas typed = d->canvas();
+    CHECK(typed.at(0, 1).ch == U'a');
+    CHECK(typed.at(1, 1) == Cell{});
+    CHECK(d->undoStack()->count() == 3);  // one command per key
+    CHECK(undo->isEnabled());
+
+    undo->trigger();  // the Backspace
+    CHECK(d->canvas().at(1, 1).ch == U'b');
+    CHECK(v->cellCursor() == Cursor{2, 1});
+    CHECK(d->isModified());
+    undo->trigger();  // b
+    CHECK(d->canvas().at(1, 1) == Cell{});
+    CHECK(v->cellCursor() == Cursor{1, 1});
+    undo->trigger();  // a
+    CHECK(d->canvas() == Canvas(80, 40));
+    CHECK(v->cellCursor() == Cursor{0, 1});
+    CHECK_FALSE(d->isModified());
+    CHECK_FALSE(w.isWindowModified());
+    CHECK_FALSE(undo->isEnabled());
+
+    redo->trigger();
+    redo->trigger();
+    redo->trigger();
+    CHECK(d->canvas() == typed);
+    CHECK(v->cellCursor() == Cursor{1, 1});
+    CHECK(d->isModified());
+    CHECK(w.isWindowModified());
+
+    // every change, undo and redo repainted just the one cell it touched
+    REQUIRE(repainted.size() == 9);
+    for (const QRegion& r : repainted)
+        CHECK(r.rectCount() == 1);
+    CHECK(repainted[3] == QRegion(1, 1, 1, 1));
+    CHECK(repainted[5] == QRegion(0, 1, 1, 1));
+
+    // the renderer's cache followed
+    QCoreApplication::processEvents();
+    const_cast<CanvasRenderer&>(w.renderer()).flush();
+    const auto& atlas = dynamic_cast<const AtlasRenderer&>(w.renderer());
+    CHECK(atlas.cache() == renderCanvas(d->canvas(), 8).convertToFormat(atlas.cache().format()));
+
+    // a new edit after an undo drops the redo
+    undo->trigger();  // the Backspace again: b is back, the cursor after it
+    type(v, QStringLiteral("z"));
+    CHECK_FALSE(redo->isEnabled());
+    CHECK(d->canvas().at(1, 1).ch == U'b');
+    CHECK(d->canvas().at(2, 1).ch == U'z');
+}
+
+TEST_CASE("undoing back to the saved state clears the modified flag") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    MainWindow w;
+    Document* d = w.document();
+    CanvasView* v = w.canvasView();
+    QAction* undo = action(w, "undo");
+    QAction* redo = action(w, "redo");
+    QString error;
+    const fs::path src = goldenDir() / "tux.ans";
+    REQUIRE(w.openFile(qpath(src), &error));
+    const Canvas orig = d->canvas();
+
+    type(v, QStringLiteral("A"));
+    const QString out = tmp.filePath(QStringLiteral("saved.ans"));
+    REQUIRE(w.saveFile(out, &error));
+    CHECK_FALSE(d->isModified());
+    const Canvas saved = d->canvas();
+
+    // edit after the save, then undo back to it
+    type(v, QStringLiteral("B"));
+    CHECK(d->isModified());
+    undo->trigger();
+    CHECK_FALSE(d->isModified());
+    CHECK_FALSE(w.isWindowModified());
+    CHECK(d->canvas() == saved);
+    CHECK(diff(d->canvas(), orig) == QRegion(0, 0, 1, 1));
+
+    // past the save is modified again, and redo comes back to it
+    undo->trigger();
+    CHECK(d->isModified());
+    CHECK(d->canvas() == orig);
+    redo->trigger();
+    CHECK_FALSE(d->isModified());
+    CHECK(d->canvas() == saved);
+
+    // undo past the save and edit: the saved state can't come back
+    undo->trigger();
+    type(v, QStringLiteral("C"));
+    CHECK(d->isModified());
+    undo->trigger();
+    CHECK(d->isModified());  // the canvas is the original, not the saved one
+    CHECK(d->canvas() == orig);
+
+    // opening a file starts a fresh stack, clean
+    REQUIRE(w.openFile(out, &error));
+    CHECK_FALSE(d->isModified());
+    CHECK_FALSE(undo->isEnabled());
+    CHECK_FALSE(redo->isEnabled());
+    CHECK(d->undoStack()->isClean());
+    // and New does too
+    type(v, QStringLiteral("x"));
+    CHECK(undo->isEnabled());
+    d->clear();
+    CHECK_FALSE(undo->isEnabled());
+    CHECK_FALSE(d->isModified());
+}
+
+TEST_CASE("F1-F10 type the glyphs of the current set") {
+    MainWindow w;
+    Document* d = w.document();
+    CanvasView* v = w.canvasView();
+    CHECK(v->glyphSet() == kDefaultGlyphSet);
+    CHECK(w.glyphSetLabel()->text() == QStringLiteral("F-keys set 6: ░ ▒ ▓ █ ▀ ▄ ▌ ▐ ■ ·"));
+    CHECK(action(w, "glyphSet6")->isChecked());
+
+    for (int k = 0; k < kGlyphSetKeys; ++k)
+        key(v, Qt::Key_F1 + k);
+    for (int k = 0; k < kGlyphSetKeys; ++k)
+        CHECK(d->canvas().at(k, 0).ch == glyphSetGlyph(kDefaultGlyphSet, k));
+    CHECK(v->cellCursor() == Cursor{10, 0});
+    CHECK(d->undoStack()->count() == 10);  // one command per key
+    // F11 and F-keys with Ctrl, Alt or Meta type nothing
+    key(v, Qt::Key_F11);
+    QKeyEvent alt(QEvent::KeyPress, Qt::Key_F1, Qt::AltModifier);
+    QApplication::sendEvent(v, &alt);
+    CHECK(d->canvas().at(10, 0) == Cell{});
+    CHECK(v->cellCursor() == Cursor{10, 0});
+
+    // next and previous wrap round
+    QAction* next = action(w, "nextGlyphSet");
+    QAction* prev = action(w, "previousGlyphSet");
+    CHECK(next->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_Period));
+    CHECK(prev->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_Comma));
+    next->trigger();
+    CHECK(v->glyphSet() == 6);
+    CHECK(w.glyphSetLabel()->text().startsWith(QStringLiteral("F-keys set 7: ☺")));
+    CHECK(action(w, "glyphSet7")->isChecked());
+    key(v, Qt::Key_F1);
+    CHECK(d->canvas().at(10, 0).ch == U'☺');
+
+    // Ctrl+Shift+F-keys pick sets 1-10; 11-16 have no direct chord
+    QAction* first = action(w, "glyphSet1");
+    for (int i = 0; i < kGlyphSetKeys; ++i)
+        CHECK(action(w, QStringLiteral("glyphSet%1").arg(i + 1).toLatin1().constData())->shortcut() ==
+              QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key(Qt::Key_F1 + i)));
+    for (int i = kGlyphSetKeys; i < kGlyphSetCount; ++i)
+        CHECK(action(w, QStringLiteral("glyphSet%1").arg(i + 1).toLatin1().constData())->shortcut().isEmpty());
+    first->trigger();
+    CHECK(v->glyphSet() == 0);
+    prev->trigger();
+    CHECK(v->glyphSet() == kGlyphSetCount - 1);
+    CHECK(w.glyphSetLabel()->text().startsWith(QStringLiteral("F-keys set 16: /")));
+    next->trigger();
+    CHECK(v->glyphSet() == 0);
+    key(v, Qt::Key_F5);
+    CHECK(d->canvas().at(11, 0).ch == U'─');
+
+    action(w, "defaultGlyphSet")->trigger();
+    CHECK(v->glyphSet() == kDefaultGlyphSet);
+
+    // F-keys type in the pen's colours and land on the last column like keys
+    v->setPen({Color::indexed(LightRed), Color::indexed(Blue)});
+    key(v, Qt::Key_End);
+    key(v, Qt::Key_F4);
+    CHECK(d->canvas().at(79, 0) == Cell{U'█', Color::indexed(LightRed), Color::indexed(Blue), 0, false});
+    CHECK(v->cellCursor() == Cursor{79, 0, true});
+}
+
+TEST_CASE("no shortcut uses a desktop's F-key chords") {
+    // #33 review P2: the window manager takes Alt+F-keys (Alt+F4 closes the
+    // window), KDE and Xfce take Ctrl+F-keys for desktops and Linux takes
+    // Ctrl+Alt+F-keys for VTs, so the editor never sees them
+    MainWindow w;
+    const QList<QAction*> actions = w.findChildren<QAction*>();
+    REQUIRE(actions.size() > kGlyphSetCount);
+    int checked = 0;
+    for (QAction* a : actions) {
+        for (const QKeySequence& seq : a->shortcuts()) {
+            for (int k = 0; k < seq.count(); ++k) {
+                const QKeyCombination c = seq[k];
+                if (c.key() < Qt::Key_F1 || c.key() > Qt::Key_F35)
+                    continue;
+                ++checked;
+                INFO(a->objectName().toStdString() << " " << seq.toString().toStdString());
+                CHECK_FALSE(c.keyboardModifiers() & Qt::AltModifier);
+                CHECK(c.keyboardModifiers() != Qt::ControlModifier);
+            }
+        }
+    }
+    CHECK(checked == kGlyphSetKeys);
+}
+
+TEST_CASE("the Glyphs menu lists every set") {
+    MainWindow w;
+    QMenu* glyphs = nullptr;
+    for (QAction* m : w.menuBar()->actions())
+        if (m->text() == QStringLiteral("&Glyphs"))
+            glyphs = m->menu();
+    REQUIRE(glyphs);
+    QStringList sets;
+    for (QAction* a : glyphs->actions())
+        if (a->objectName().startsWith(QStringLiteral("glyphSet")))
+            sets << a->objectName();
+    REQUIRE(sets.size() == kGlyphSetCount);
+    for (int i = 0; i < kGlyphSetCount; ++i) {
+        CHECK(sets[i] == QStringLiteral("glyphSet%1").arg(i + 1));
+        QAction* a = action(w, sets[i].toLatin1().constData());
+        CHECK(a->text().startsWith(QStringLiteral("Set %1: ").arg(i + 1)));
+        a->trigger();
+        CHECK(w.canvasView()->glyphSet() == i);
+        CHECK(a->isChecked());
+    }
+    // the status bar's tooltip names the keys
+    const QString tip = w.glyphSetLabel()->toolTip();
+    CHECK(tip.contains(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F1).toString(QKeySequence::NativeText)));
+    CHECK(tip.contains(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F10).toString(QKeySequence::NativeText)));
+    CHECK_FALSE(tip.contains(QStringLiteral("Alt")));
+}
+
+TEST_CASE("palette clicks set the pen, and typing uses it") {
+    MainWindow w;
+    Document* d = w.document();
+    CanvasView* v = w.canvasView();
+    PaletteWidget* p = w.paletteWidget();
+    REQUIRE(w.paletteDock()->isVisibleTo(&w));
+    CHECK_FALSE(w.paletteDock()->features() & QDockWidget::DockWidgetClosable);
+    CHECK(p->pen().fg == Color::indexed(Grey));
+    CHECK(p->pen().bg == Color::indexed(Black));
+    for (int i = 0; i < 16; ++i)
+        CHECK(p->indexAt(p->swatchRect(i).center()) == i);
+    CHECK(p->indexAt(p->penRect().center()) == -1);
+
+    click(p, Yellow, Qt::LeftButton);
+    CHECK(v->pen().fg == Color::indexed(Yellow));
+    CHECK(v->pen().bg == Color::indexed(Black));
+    click(p, Blue, Qt::RightButton);
+    CHECK(v->pen().fg == Color::indexed(Yellow));
+    CHECK(v->pen().bg == Color::indexed(Blue));
+    // the palette shows the pen
+    CHECK(p->pen().fg == Color::indexed(Yellow));
+    CHECK(p->pen().bg == Color::indexed(Blue));
+    // a middle click picks nothing
+    click(p, Red, Qt::MiddleButton);
+    CHECK(v->pen().fg == Color::indexed(Yellow));
+
+    type(v, QStringLiteral("Q"));
+    key(v, Qt::Key_F1);
+    CHECK(d->canvas().at(0, 0) == Cell{U'Q', Color::indexed(Yellow), Color::indexed(Blue), 0, false});
+    CHECK(d->canvas().at(1, 0) == Cell{U'░', Color::indexed(Yellow), Color::indexed(Blue), 0, false});
+
+    // the swatches draw the palette's colours
+    const QImage img = p->grab().toImage();
+    const QPoint at = p->swatchRect(Red).bottomLeft() + QPoint(3, -3);
+    CHECK(img.pixelColor(at) == QColor(0xaa, 0x00, 0x00));
+}
+
+TEST_CASE("Ctrl+arrows cycle the pen's colours and Ctrl+D resets them") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    PaletteWidget* p = w.paletteWidget();
+    QAction* nextFg = action(w, "nextForeground");
+    QAction* prevFg = action(w, "previousForeground");
+    QAction* nextBg = action(w, "nextBackground");
+    QAction* prevBg = action(w, "previousBackground");
+    CHECK(prevFg->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_Up));
+    CHECK(nextFg->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_Down));
+    CHECK(prevBg->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_Left));
+    CHECK(nextBg->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_Right));
+
+    nextFg->trigger();
+    CHECK(v->pen().fg == Color::indexed(DarkGrey));
+    prevFg->trigger();
+    prevFg->trigger();
+    CHECK(v->pen().fg == Color::indexed(Brown));
+    prevBg->trigger();  // wraps from black to white
+    CHECK(v->pen().bg == Color::indexed(White));
+    nextBg->trigger();
+    nextBg->trigger();
+    CHECK(v->pen().bg == Color::indexed(Blue));
+    CHECK(p->pen().fg == Color::indexed(Brown));
+    CHECK(p->pen().bg == Color::indexed(Blue));
+    v->setForeground(White);
+    nextFg->trigger();
+    CHECK(v->pen().fg == Color::indexed(Black));
+
+    action(w, "defaultColours")->trigger();
+    CHECK(v->pen().fg == Color::indexed(Grey));
+    CHECK(v->pen().bg == Color::indexed(Black));
+    CHECK(p->pen().fg == Color::indexed(Grey));
 }
 
 int main(int argc, char** argv) {

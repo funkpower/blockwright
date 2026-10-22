@@ -90,7 +90,8 @@ if [[ $bin_dir == *$'\n'* ]]; then
   echo "install-dev: refusing --bin-dir $bin_dir: it has a line break" >&2; exit 2
 fi
 if [[ $check_only ]]; then
-  printf 'build-dir: %s\nprefix:    %s\nbin-dir:   %s\napps-dir:  %s\n' "$build_dir" "$prefix" "$bin_dir" "$apps_dir"
+  printf 'build-dir: %s\nprefix:    %s\nbin-dir:   %s\napps-dir:  %s\n' \
+    "$build_dir" "$prefix" "$bin_dir" "$apps_dir"
   exit 0
 fi
 
@@ -125,7 +126,9 @@ while IFS=$'\t' read -r meta path; do
   read -r _ type sha <<<"$meta"
   [[ $type == commit ]] || continue
   name=$(git config -f "$gitmodules" --get-regexp '^submodule\..*\.path$' |
-         awk -v p="$path" '$2 == p { sub(/^submodule\./, "", $1); sub(/\.path$/, "", $1); print $1; exit }')
+         awk -v p="$path" '$2 == p {
+           sub(/^submodule\./, "", $1); sub(/\.path$/, "", $1); print $1; exit
+         }')
   url=$(git config -f "$gitmodules" --get "submodule.$name.url" || true)
   if [[ -z $url ]]; then
     echo "install-dev: no URL for submodule $path in .gitmodules" >&2; exit 1

@@ -2,6 +2,7 @@
 // cell deltas applied and reverted.
 
 #include "blockwright/edit.h"
+#include "blockwright/glyph_sets.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -55,10 +56,12 @@ TEST_CASE("typing writes the glyph in the pen's colours and moves right") {
     r.edit.apply(cv);
     CHECK(cv.at(1, 1).ch == U'A');
 
-    // the last column: written, the cursor stays
+    // the last column: written, the cursor stays, past the glyph
     r = typeGlyph(cv, {2, 1}, U'B', pen);
     CHECK(r.edit.changes.size() == 1);
-    CHECK(r.cursor == Cursor{2, 1});
+    CHECK(r.cursor == Cursor{2, 1, true});
+    // and stays past it typing there again
+    CHECK(typeGlyph(cv, r.cursor, U'C', pen).cursor == Cursor{2, 1, true});
 }
 
 TEST_CASE("the default pen is grey on black") {
@@ -127,7 +130,7 @@ TEST_CASE("replacing text writes from the range's start and ends the cursor afte
     // no range is typing; the other row is untouched
     r = replaceText(cv, {5, 1}, 0, 0, U"z", pen);
     CHECK(r.edit.changes == std::vector<CellChange>{{5, 1, Cell{U'f'}, Cell{U'z', pen.fg, pen.bg, 0, false}}});
-    CHECK(r.cursor == Cursor{5, 1});
+    CHECK(r.cursor == Cursor{5, 1, true});
 
     // the edit reverts
     out = cv;
@@ -168,10 +171,13 @@ TEST_CASE("a replacement range off the row is clamped to it") {
     // starts past the end: written on the last column, as typing there is
     r = replaceText(cv, {2, 0}, 9, 1, U"xy", pen);
     CHECK(row(r) == U"abcy");
-    CHECK(r.cursor == Cursor{3, 0});
+    CHECK(r.cursor == Cursor{3, 0, true});
     // text longer than the row: the last column keeps the last character
     r = replaceText(cv, {2, 0}, 0, 0, U"xyz", pen);
     CHECK(row(r) == U"abxz");
+    CHECK(r.cursor == Cursor{3, 0, true});
+    // text that stops short of the last column leaves the cursor on it
+    r = replaceText(cv, {2, 0}, 0, 0, U"x", pen);
     CHECK(r.cursor == Cursor{3, 0});
     // extremes don't overflow
     r = replaceText(cv, {3, 0}, std::numeric_limits<int>::max(), std::numeric_limits<int>::max(), U"x", pen);
@@ -210,6 +216,64 @@ TEST_CASE("Backspace clears the cell to the left and moves there") {
     r = backspace(cv, {0, 0});
     CHECK(r.edit.empty());
     CHECK(r.cursor == Cursor{0, 0});
+}
+
+TEST_CASE("Backspace after typing on the last column clears that column") {
+    // #28 review P3-1: Backspace cleared the cell left of the last one
+    Canvas cv(3, 1);
+    const Pen pen;
+    EditResult r = typeGlyph(cv, {1, 0}, U'a', pen);
+    r.edit.apply(cv);
+    r = typeGlyph(cv, r.cursor, U'b', pen);
+    r.edit.apply(cv);
+    CHECK(r.cursor == Cursor{2, 0, true});
+    r = backspace(cv, r.cursor);
+    r.edit.apply(cv);
+    CHECK(cv.at(2, 0) == Cell{});
+    CHECK(cv.at(1, 0).ch == U'a');
+    CHECK(r.cursor == Cursor{2, 0});
+    // the next Backspace goes on leftwards as usual
+    r = backspace(cv, r.cursor);
+    r.edit.apply(cv);
+    CHECK(cv.at(1, 0) == Cell{});
+    CHECK(r.cursor == Cursor{1, 0});
+
+    // a one-column canvas: the only column is the last
+    Canvas one(1, 1);
+    r = typeGlyph(one, {0, 0}, U'x', pen);
+    r.edit.apply(one);
+    r = backspace(one, r.cursor);
+    r.edit.apply(one);
+    CHECK(one.at(0, 0) == Cell{});
+    CHECK(r.cursor == Cursor{0, 0});
+
+    // past the end means nothing off the last column
+    Canvas row(3, 1);
+    row.at(0, 0).ch = U'a';
+    r = backspace(row, {1, 0, true});
+    REQUIRE(r.edit.changes.size() == 1);
+    CHECK(r.edit.changes[0].x == 0);
+    // Delete clears the last column and the cursor is back on it
+    row.at(2, 0).ch = U'c';
+    r = deleteCell(row, {2, 0, true});
+    CHECK(r.edit.changes.size() == 1);
+    CHECK(r.cursor == Cursor{2, 0});
+}
+
+TEST_CASE("an input-method replacement past the end counts back from after the last column") {
+    Canvas cv(3, 1);
+    cv.at(1, 0).ch = U'a';
+    cv.at(2, 0).ch = U'e';
+    // the dead key's e was typed on the last column; é replaces it
+    EditResult r = replaceText(cv, {2, 0, true}, -1, 1, U"é", Pen{});
+    REQUIRE(r.edit.changes.size() == 1);
+    CHECK(r.edit.changes[0].x == 2);
+    CHECK(r.edit.changes[0].after.ch == U'é');
+    CHECK(r.cursor == Cursor{2, 0, true});
+    // without past-the-end the same range is the cell left of the cursor
+    r = replaceText(cv, {2, 0}, -1, 1, U"é", Pen{});
+    REQUIRE(r.edit.changes.size() == 1);
+    CHECK(r.edit.changes[0] == CellChange{1, 0, Cell{U'a'}, Cell{U'é'}});
 }
 
 TEST_CASE("Delete clears the cell under the cursor") {
@@ -253,4 +317,21 @@ TEST_CASE("changes outside the canvas are skipped") {
     e.apply(cv);
     e.revert(cv);
     CHECK(cv == Canvas(2, 2));
+}
+
+TEST_CASE("the F-key glyph sets are Moebius's, and every glyph is typeable") {
+    // set 6 (the default) is the block and shade set
+    CHECK(kDefaultGlyphSet == 5);
+    CHECK(glyphSet(kDefaultGlyphSet) == GlyphSet{U'░', U'▒', U'▓', U'█', U'▀', U'▄', U'▌', U'▐', U'■', U'·'});
+    CHECK(glyphSet(0) == GlyphSet{U'┌', U'┐', U'└', U'┘', U'─', U'│', U'├', U'┤', U'┴', U'┬'});
+    CHECK(glyphSetGlyph(1, 0) == U'╔');
+    CHECK(glyphSetGlyph(15, 9) == U'\'');
+    // the index wraps
+    CHECK(glyphSet(kGlyphSetCount) == glyphSet(0));
+    CHECK(glyphSet(-1) == glyphSet(kGlyphSetCount - 1));
+    for (int s = 0; s < kGlyphSetCount; ++s)
+        for (int k = 0; k < kGlyphSetKeys; ++k) {
+            INFO("set " << s + 1 << " F" << k + 1);
+            CHECK(isTypeable(glyphSetGlyph(s, k)));
+        }
 }

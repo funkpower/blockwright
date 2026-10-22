@@ -6,6 +6,7 @@ add_library(blockwright_core STATIC
   src/canvas.cpp
   src/cp437.cpp
   src/edit.cpp
+  src/glyph_sets.cpp
   src/irc.cpp
   src/palette.cpp
   src/sauce.cpp

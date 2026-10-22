@@ -41,7 +41,9 @@ CellEdit setCell(const Canvas& canvas, Cursor c, const Cell& after) {
 EditResult typeGlyph(const Canvas& canvas, Cursor c, char32_t ch, const Pen& pen) {
     if (!isTypeable(ch) || !canvas.contains(c.x, c.y))
         return {{}, c};
-    return {setCell(canvas, c, Cell{ch, pen.fg, pen.bg, 0, false}), moveCursor(canvas, c, 1, 0)};
+    Cursor next = moveCursor(canvas, c, 1, 0);
+    next.pastEnd = c.x == canvas.width() - 1;
+    return {setCell(canvas, c, Cell{ch, pen.fg, pen.bg, 0, false}), next};
 }
 
 EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, std::u32string_view text,
@@ -49,7 +51,9 @@ EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, st
     if (!canvas.contains(c.x, c.y) || !std::all_of(text.begin(), text.end(), isTypeable))
         return {{}, c};
     const long long w = canvas.width();
-    const long long from = c.x + static_cast<long long>(start);
+    // Past the end, the range counts back from the column after the last.
+    const bool past = c.pastEnd && c.x == w - 1;
+    const long long from = c.x + (past ? 1 : 0) + static_cast<long long>(start);
     const long long first = std::clamp(from, 0LL, w);
     const long long last = std::clamp(from + std::max(length, 0), first, w);  // one past
 
@@ -63,7 +67,8 @@ EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, st
         x = std::min(x + 1, w - 1);
     }
 
-    EditResult r{{}, {static_cast<int>(std::min(first + static_cast<long long>(text.size()), w - 1)), c.y}};
+    const long long end = first + static_cast<long long>(text.size());
+    EditResult r{{}, {static_cast<int>(std::min(end, w - 1)), c.y, !text.empty() && end >= w}};
     for (int i = 0; i < w; ++i)
         if (row[i] != canvas.at(i, c.y))
             r.edit.changes.push_back({i, c.y, canvas.at(i, c.y), row[i]});
@@ -71,12 +76,14 @@ EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, st
 }
 
 EditResult backspace(const Canvas& canvas, Cursor c) {
+    if (c.pastEnd && c.x == canvas.width() - 1 && canvas.contains(c.x, c.y))
+        return {setCell(canvas, c, Cell{}), {c.x, c.y}};
     if (c.x <= 0 || !canvas.contains(c.x, c.y))
         return {{}, c};
     const Cursor left{c.x - 1, c.y};
     return {setCell(canvas, left, Cell{}), left};
 }
 
-EditResult deleteCell(const Canvas& canvas, Cursor c) { return {setCell(canvas, c, Cell{}), c}; }
+EditResult deleteCell(const Canvas& canvas, Cursor c) { return {setCell(canvas, c, Cell{}), {c.x, c.y}}; }
 
 } // namespace bw

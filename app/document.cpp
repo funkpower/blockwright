@@ -3,6 +3,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QUndoCommand>
 
 #include <cerrno>
 #include <cstring>
@@ -20,7 +21,31 @@ AnsiDocument blank() {
 
 } // namespace
 
-Document::Document(QObject* parent) : QObject(parent), doc_(blank()) {}
+// One edit on the stack. QUndoStack::push calls redo() at once, so pushing
+// is what applies the edit.
+class EditCommand : public QUndoCommand {
+public:
+    EditCommand(Document* doc, CellEdit edit, Cursor before, Cursor after)
+        : QUndoCommand(Document::tr("Edit")), doc_(doc), edit_(std::move(edit)), before_(before), after_(after) {}
+
+    void redo() override {
+        doc_->apply(edit_);
+        emit doc_->cursorRequested(after_);
+    }
+    void undo() override {
+        doc_->apply(edit_, true);
+        emit doc_->cursorRequested(before_);
+    }
+
+private:
+    Document* doc_;
+    CellEdit edit_;
+    Cursor before_, after_;
+};
+
+Document::Document(QObject* parent) : QObject(parent), doc_(blank()) {
+    connect(&undo_, &QUndoStack::cleanChanged, this, [this](bool clean) { setModified(!clean); });
+}
 
 bool Document::load(const QString& path, QString* error) {
     AnsiDocument doc;
@@ -59,6 +84,7 @@ bool Document::read(const QString& path, AnsiDocument* out, QString* error) {
 }
 
 void Document::replace(AnsiDocument doc, const QString& path) {
+    undo_.clear();
     doc_ = std::move(doc);
     path_ = path;
     emit reset();
@@ -67,6 +93,7 @@ void Document::replace(AnsiDocument doc, const QString& path) {
 }
 
 void Document::clear() {
+    undo_.clear();
     doc_ = blank();
     path_.clear();
     emit reset();
@@ -97,6 +124,7 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         path_ = path;
         emit pathChanged(path_);
     }
+    undo_.setClean();
     setModified(false);
     return true;
 }
@@ -109,6 +137,13 @@ QRegion Document::changedCells(const CellEdit& edit) {
     return r;
 }
 
+bool Document::edit(const CellEdit& edit, Cursor before, Cursor after) {
+    if ((changedCells(edit) & QRect(0, 0, doc_.canvas.width(), doc_.canvas.height())).isEmpty())
+        return false;
+    undo_.push(new EditCommand(this, edit, before, after));
+    return true;
+}
+
 void Document::apply(const CellEdit& edit, bool revert) {
     const QRegion cells = changedCells(edit) & QRect(0, 0, doc_.canvas.width(), doc_.canvas.height());
     if (cells.isEmpty())
@@ -118,7 +153,6 @@ void Document::apply(const CellEdit& edit, bool revert) {
     else
         edit.apply(doc_.canvas);
     emit cellsChanged(cells);
-    setModified(true);
 }
 
 void Document::setModified(bool on) {
