@@ -13,14 +13,16 @@ include(Catch)
 add_executable(blockwright-tests
   test_ansi_parse.cpp
   test_ansi_write.cpp
+  test_cli_read.cpp
   test_cp437.cpp
   test_golden.cpp
   test_irc.cpp
   test_sauce.cpp
   util.h
 )
-target_link_libraries(blockwright-tests PRIVATE blockwright::core Catch2::Catch2WithMain)
-target_compile_definitions(blockwright-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(blockwright-tests PRIVATE blockwright::core blockwright_cli_io Catch2::Catch2WithMain)
+target_compile_definitions(blockwright-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
+                                                    BW_TEST_TMP="${CMAKE_CURRENT_BINARY_DIR}/catch-tmp")
 catch_discover_tests(blockwright-tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
 add_test(NAME cli

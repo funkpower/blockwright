@@ -42,6 +42,8 @@ QImage renderCanvas(const Canvas& canvas, int gw, int scale, const BitmapFont& f
         throw std::invalid_argument("font width must be 8 or 9");
     if (scale < 1 || scale > kMaxScale)
         throw std::invalid_argument("scale must be 1-" + std::to_string(kMaxScale));
+    if (canvas.width() == 0 || canvas.height() == 0)
+        throw std::invalid_argument("empty canvas");
     const int gh = font.height;
     const qint64 w = qint64(canvas.width()) * gw * scale, h = qint64(canvas.height()) * gh * scale;
     if (w <= 0 || h <= 0 || w * h > kMaxPixels)

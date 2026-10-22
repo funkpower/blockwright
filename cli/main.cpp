@@ -15,7 +15,9 @@
 #include "blockwright/irc.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
+#include "read_file.h"
 
+#include <QBuffer>
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QImageWriter>
@@ -26,37 +28,23 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <sstream>
+#include <new>
+#include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 
 constexpr int kOk = 0, kBadInput = 1, kUsage = 2, kOverBudget = 3;
 
-struct Failure {
-    std::string message;
-};
+using bwcli::Failure;
+using bwcli::readFile;
 
 struct Usage {
     std::string message;
 };
-
-std::string readFile(const std::string& path) {
-    std::error_code ec;
-    if (std::filesystem::is_directory(path, ec))
-        throw Failure{path + ": is a directory"};
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
-        throw Failure{path + ": " + std::strerror(errno)};
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    if (in.bad())
-        throw Failure{path + ": read failed"};
-    return ss.str();
-}
 
 bw::AnsiDocument load(const std::string& path) {
     const std::string data = readFile(path);
@@ -237,18 +225,18 @@ int render(const std::string& in, const std::string& out, const bw::RenderOption
         img = bw::renderDocument(doc, opts);
     } catch (const std::length_error&) {
         throw Failure{out + ": not written: the image would be too large"};
+    } catch (const std::invalid_argument& e) {
+        throw Failure{out + ": not written: " + e.what()};
     }
-    QSaveFile f(QString::fromStdString(out));
-    if (!f.open(QIODevice::WriteOnly))
-        throw Failure{out + ": " + f.errorString().toStdString()};
-    QImageWriter w(&f, "png");
-    if (!w.write(img)) {
-        const std::string why = w.errorString().toStdString();
-        f.cancelWriting();
-        throw Failure{out + ": write failed: " + why};
-    }
-    if (!f.commit())
-        throw Failure{out + ": write failed: " + f.errorString().toStdString()};
+    // Encode in memory, then write the bytes as convert does: a failed write
+    // then reports the system's reason, not libpng's "Unknown error".
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    QImageWriter w(&buf, "png");
+    if (!w.write(img))
+        throw Failure{out + ": not written: PNG encoding failed: " + w.errorString().toStdString()};
+    save(out, std::string(png.constData(), static_cast<size_t>(png.size())));
     return kOk;
 }
 
@@ -264,7 +252,9 @@ int main(int argc, char** argv) {
         "Headless Blockwright.\n\n"
         "Commands:\n"
         "  info <file>          dimensions and SAUCE fields\n"
-        "  convert <in> <out>   read an .ans and write it back out\n"
+        "  convert <in> <out>   read an .ans and write it back out; <out> may be\n"
+        "                       <in>, which is rewritten in place (export and\n"
+        "                       render refuse to write over their input)\n"
         "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font\n"
         "  export --irc <in> <out>\n"
         "                       write IRC text (mIRC colour codes) and report each\n"
@@ -319,10 +309,18 @@ int main(int argc, char** argv) {
     if (args.isEmpty())
         return usage("no command given");
     const QString cmd = args.first();
-    if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render"))
-        for (const QCommandLineOption* o : {&ircOpt, &budgetOpt, &overOpt})
-            if (parser.isSet(*o))
-                return usage(("--" + o->names().first().toStdString() + " is an export option").c_str());
+    // Each option belongs to one command; every other command refuses it.
+    const std::pair<const QCommandLineOption*, const char*> owners[] = {
+        {&lossyOpt, "convert"}, {&scaleOpt, "render"}, {&fontWidthOpt, "render"},
+        {&ircOpt, "export"},    {&budgetOpt, "export"}, {&overOpt, "export"},
+    };
+    if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
+        cmd == QLatin1String("export"))
+        for (const auto& [o, owner] : owners)
+            if (cmd != QLatin1String(owner) && parser.isSet(*o))
+                return usage(("--" + o->names().first().toStdString() + " is " + (owner[0] == 'e' ? "an " : "a ") +
+                              owner + " option, not a " + cmd.toStdString() + " option")
+                                 .c_str());
     try {
         if (cmd == QLatin1String("info")) {
             if (args.size() != 2)
@@ -366,6 +364,13 @@ int main(int argc, char** argv) {
         return kBadInput;
     } catch (const bw::irc::IrcError& e) {
         std::cerr << "blockwright-cli: " << args.value(1).toStdString() << ": " << e.what() << "\n";
+        return kBadInput;
+    } catch (const std::bad_alloc&) {
+        std::cerr << "blockwright-cli: out of memory\n";
+        return kBadInput;
+    } catch (const std::length_error&) {
+        // Backstop: a string or buffer past its max_size()
+        std::cerr << "blockwright-cli: input too large\n";
         return kBadInput;
     }
 }

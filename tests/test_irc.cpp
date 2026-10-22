@@ -86,6 +86,22 @@ TEST_CASE("encodeRow writes a non-scalar code point as '?'") {
           irc::encodeRow(std::vector{cell(U'?', Grey, Black)}));
 }
 
+TEST_CASE("encodeRow writes C1 controls as '?'") {
+    const std::string q = irc::encodeRow(std::vector{cell(U'?', Grey, Black)});
+    for (const char32_t cp : {char32_t(0x80), char32_t(0x85), char32_t(0x9b), char32_t(0x9f)}) {
+        INFO("U+" << std::hex << unsigned(cp));
+        CHECK(irc::encodeRow(std::vector{cell(cp, Grey, Black)}) == q);
+    }
+    // U+00A0 is not a control: it reaches the encoder as itself, which draws
+    // it as the blank it is, like a space
+    const auto row = [](char32_t ch) {
+        const Cell x = cell(U'x', LightRed, Blue);
+        return irc::encodeRow(std::vector{x, cell(ch, LightRed, Blue), x});
+    };
+    CHECK(row(char32_t(0xa0)) == row(U' '));
+    CHECK(row(char32_t(0xa0)) != row(U'?'));
+}
+
 TEST_CASE("encodeRow writes C0 controls and DEL as their CP437 glyphs") {
     // as the parser reads those bytes: NUL as a space, the rest as glyphs
     CHECK(irc::encodeRow(std::vector{cell(char32_t(0x01), LightRed, Blue)}) == "\x03" "4,2☺");

@@ -65,8 +65,9 @@ std::string encodeRow(std::span<const Cell> cells, const EncodeOptions& opts) {
     raw.reserve(cells.size());
     for (const Cell& c : cells) {
         ans2irc_cell m = toMirc(drawn(c));
-        // Not a Unicode scalar value: draw it as '?' rather than fail.
-        if (m.ch > 0x10ffff || (m.ch >= 0xd800 && m.ch <= 0xdfff))
+        // Not a Unicode scalar value: draw it as '?' rather than fail. A C1
+        // control too: some clients read C2 9B as a CSI introducer.
+        if (m.ch > 0x10ffff || (m.ch >= 0xd800 && m.ch <= 0xdfff) || (m.ch >= 0x80 && m.ch <= 0x9f))
             m.ch = '?';
         raw.push_back(m);
     }

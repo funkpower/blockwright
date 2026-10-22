@@ -53,7 +53,8 @@ Rgb resolveColor(const Color& c);
 // the line-drawing glyphs 0xC0-0xDF and is background otherwise, as VGA does.
 // The SAUCE aspect-ratio flag is not applied: pixels are always square.
 // Transparent cells draw like any other (layers come later).
-// Throws std::invalid_argument for a bad width or scale and
+// Throws std::invalid_argument for a bad width or scale or an empty (0-column
+// or 0-row) canvas, and
 // std::length_error if the image would be too large to allocate.
 QImage renderDocument(const AnsiDocument& doc, const RenderOptions& opts = {});
 QImage renderCanvas(const Canvas& canvas, int glyphWidth, int scale = 1, const BitmapFont& font = vgaFont());

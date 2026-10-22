@@ -33,6 +33,23 @@ has_notices() {
   ok "$1"
 }
 
+# finds_fonts <name> <dir>: <dir>/NOTICE sends the reader to the font's notices
+# by a path that exists there (an install), and to the source tree's copy
+finds_fonts() {
+  local t; t=$(tr -s ' \n' ' ' < "$2/NOTICE")
+  if [[ $t != *"the oldschool-pc-fonts/ directory beside this file (share/doc/blockwright/oldschool-pc-fonts/)"* ]]; then
+    bad "$1: NOTICE does not name share/doc/blockwright/oldschool-pc-fonts/"
+  elif [[ ! -f $2/oldschool-pc-fonts/LICENSE || ! -f $2/oldschool-pc-fonts/README.md ]]; then
+    bad "$1: no oldschool-pc-fonts/ beside NOTICE in $2"
+  elif [[ $t != *"in the source tree, third_party/oldschool-pc-fonts/."* ]]; then
+    bad "$1: NOTICE does not name third_party/oldschool-pc-fonts/"
+  elif [[ ! -f $src/third_party/oldschool-pc-fonts/LICENSE || ! -f $src/third_party/oldschool-pc-fonts/README.md ]]; then
+    bad "$1: the source tree has no third_party/oldschool-pc-fonts/"
+  else
+    ok "$1"
+  fi
+}
+
 # credits <name> <cli>: --version names the font, its author and licence
 credits() {
   local out; out=$("$2" --version 2>&1)
@@ -58,6 +75,7 @@ real_cmake=$(command -v cmake)
 stage=$tmp/stage
 if staged "$build" "$stage"; then ok "cmake --install staged in $stage"; else bad "cmake --install failed or did not stage in $stage"; fi
 has_notices "staged install carries the notices" "$stage$docdir"
+finds_fonts "staged NOTICE points to the font notices" "$stage$docdir"
 credits "installed --version credits the font" "$stage$bindir/blockwright-cli"
 
 # install-dev, with everything but the install step stubbed
@@ -108,6 +126,7 @@ dev() {
 prefix=$home/.local/opt/blockwright-dev
 if out=$(dev); then ok "install-dev"; else bad "install-dev failed: $out"; fi
 has_notices "install-dev carries the notices" "$prefix/share/doc/blockwright"
+finds_fonts "install-dev NOTICE points to the font notices" "$prefix/share/doc/blockwright"
 credits "blockwright-cli-dev --version credits the font" "$home/.local/bin/blockwright-cli-dev"
 
 echo old > "$prefix/marker"

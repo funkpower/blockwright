@@ -78,6 +78,17 @@ if [[ -z $left ]]; then ok "short writes leave no temporary file"; else bad "sho
 cp "$piece" "$fsz/ok.ans"
 expect "in-place convert" 0 '^$' -- "$cli" convert "$fsz/ok.ans" "$fsz/ok.ans"
 if cmp -s "$piece" "$fsz/ok.ans"; then ok "in-place convert output is byte-identical"; else bad "in-place convert output differs"; fi
+# convert may name its input as its output (export and render refuse): a
+# non-canonical piece rewritten in place is what convert writes elsewhere
+cp "$data/golden/darkmage.ans" "$tmp/darkmage.ans"
+expect "convert a non-canonical piece" 0 '^$' -- "$cli" convert "$tmp/darkmage.ans" "$tmp/darkmage-out.ans"
+if ! cmp -s "$data/golden/darkmage.ans" "$tmp/darkmage-out.ans"; then ok "the non-canonical piece is rewritten"; else bad "darkmage.ans came out unchanged: not a normalising test"; fi
+expect "in-place convert of a non-canonical piece" 0 '^$' -- "$cli" convert "$tmp/darkmage.ans" "$tmp/darkmage.ans"
+if cmp -s "$tmp/darkmage-out.ans" "$tmp/darkmage.ans"; then ok "in-place convert writes what convert writes elsewhere"; else bad "in-place convert differs from convert to another file"; fi
+expect "in-place convert again" 0 '^$' -- "$cli" convert "$tmp/darkmage.ans" "$tmp/darkmage.ans"
+if cmp -s "$tmp/darkmage-out.ans" "$tmp/darkmage.ans"; then ok "a second in-place convert changes nothing"; else bad "a second in-place convert changed the file"; fi
+expect "--help says convert may rewrite in place" 0 '<out> may be' -- "$cli" --help
+expect "--help says export and render refuse" 0 'render refuse to write over their input' -- "$cli" --help
 
 # export --irc: per-line byte report, the budget, and the override
 expect "export --irc" 0 '^17 lines, longest 80 bytes, budget 407: 0 over$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
@@ -126,17 +137,43 @@ if [[ -z $left && -z $(ls -A "$same/sub") ]]; then ok "refused export leaves no 
 expect "export beside the input still writes" 0 '^17 lines' -- "$cli" export --irc "$same/a.ans" "$same/a.txt"
 if cmp -s "$data/golden-irc/tux.txt" "$same/a.txt"; then ok "export beside the input writes the lines"; else bad "export beside the input differs"; fi
 
-for cmd in "info $piece" "convert $piece $tmp/flag.ans" "render $piece $tmp/flag.png"; do
-  for flag in --irc "--budget 60" --allow-over-budget; do
-    # shellcheck disable=SC2086
-    expect "${cmd%% *} rejects $flag" 2 "^blockwright-cli: ${flag%% *} is an export option$" -- "$cli" ${cmd%% *} $flag ${cmd#* }
+# Every command refuses every option it doesn't use: exit 2, a usage message
+# naming the option and the command, and nothing written.
+declare -A owner=([--allow-lossy]=convert [--scale]=render [--font-width]=render
+                  [--irc]=export [--budget]=export [--allow-over-budget]=export)
+declare -A value=([--scale]=2 [--font-width]=9 [--budget]=60)
+foreign=$tmp/foreign && mkdir -p "$foreign"
+for cmd in info convert render export; do
+  for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget; do
+    [[ ${owner[$opt]} == "$cmd" ]] && continue
+    out=$foreign/$cmd${opt}.out
+    case $cmd in
+      info) argv=(info "$piece") ;;
+      export) argv=(export --irc "$piece" "$out") ;;
+      *) argv=("$cmd" "$piece" "$out") ;;
+    esac
+    a=${owner[$opt]}; [[ $a == export ]] && a="an $a" || a="a $a"
+    expect "$cmd rejects $opt" 2 "^blockwright-cli: $opt is $a option, not a $cmd option$" -- \
+      "$cli" "${argv[@]:0:1}" "$opt" ${value[$opt]:+"${value[$opt]}"} "${argv[@]:1}"
+    if [[ -e $out ]]; then bad "$cmd with $opt wrote $out"; fi
   done
 done
-if [[ -e $tmp/flag.ans ]]; then bad "convert with an export option wrote a file"; else ok "convert with an export option writes nothing"; fi
-if [[ -e $tmp/flag.png ]]; then bad "render with an export option wrote a file"; else ok "render with an export option writes nothing"; fi
+out=$("$cli" info --scale 2 "$piece" 2>/dev/null)
+if [[ -z $out ]]; then ok "info with a foreign option prints no info"; else bad "info with a foreign option printed: $out"; fi
+if [[ -z $(ls -A "$foreign") ]]; then ok "commands with a foreign option write nothing"; else bad "foreign options wrote: $(ls -A "$foreign")"; fi
+expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert option, not a render option$' -- \
+  "$cli" render "$piece" "$foreign/late.png" --allow-lossy
 
 expect "export bad input" 1 'nope\.ans: No such file' -- "$cli" export --irc "$tmp/nope.ans" "$tmp/x.txt"
 expect "export unwritable output" 1 'no/such/dir/out\.txt' -- "$cli" export --irc "$piece" "$tmp/no/such/dir/out.txt"
+
+# Out of memory is a one-line error and exit 1, not std::terminate: a 4 GiB
+# sparse input read under a 512 MiB address-space limit
+truncate -s 4G "$tmp/huge.ans"
+expect "out of memory" 1 '^blockwright-cli: out of memory$' -- bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans"
+out=$(bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans" 2>&1)
+if [[ $(wc -l <<<"$out") -eq 1 ]]; then ok "out of memory prints one line"; else bad "out of memory printed: $out"; fi
+rm -f "$tmp/huge.ans"
 
 expect "no command" 2 'no command' -- "$cli"
 expect "unknown command" 2 "unknown command 'frobnicate'" -- "$cli" frobnicate

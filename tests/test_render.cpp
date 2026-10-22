@@ -127,6 +127,37 @@ TEST_CASE("bad widths and scales are refused") {
     CHECK_THROWS_AS(renderCanvas(Canvas(kMaxColumns, kMaxRows), 9, kMaxScale), std::length_error);
 }
 
+TEST_CASE("an empty canvas is refused as empty, not as too large") {
+    for (const Canvas& cv : {Canvas(0, 0), Canvas(0, 1), Canvas(1, 0)}) {
+        INFO(cv.width() << "x" << cv.height());
+        try {
+            renderCanvas(cv, 8);
+            FAIL("no exception");
+        } catch (const std::invalid_argument& e) {
+            CHECK(std::string(e.what()) == "empty canvas");
+        }
+    }
+    AnsiDocument doc;
+    doc.canvas = Canvas(0, 0);
+    CHECK_THROWS_AS(renderDocument(doc), std::invalid_argument);
+}
+
+TEST_CASE("transparent cells draw like opaque ones") {
+    Canvas cv(3, 1);
+    cv.at(0, 0) = Cell{U'▀', Color::indexed(LightRed), Color::indexed(Blue), 0, false};
+    cv.at(1, 0) = Cell{U'A', Color::fromRgb({0x12, 0x34, 0x56}), Color::indexed(Brown), 0, false};
+    cv.at(2, 0) = Cell{};
+    Canvas clear = cv;
+    for (int x = 0; x < 3; ++x)
+        clear.at(x, 0).transparent = true;
+    for (int gw : {8, 9}) {
+        const QImage img = renderCanvas(clear, gw);
+        CHECK(img == renderCanvas(cv, gw));
+        CHECK(img.pixel(0, 0) == q(kPalette[LightRed]));
+        CHECK(img.pixel(0, 15) == q(kPalette[Blue]));
+    }
+}
+
 TEST_CASE("glyphs without a CP437 byte draw as '?'") {
     CHECK(glyphIndex(U'A') == 0x41);
     CHECK(glyphIndex(U'█') == 0xDB);

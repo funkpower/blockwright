@@ -30,7 +30,8 @@ struct EncodeOptions {
 std::uint8_t mircColor(const Color& c);
 
 // The shortest IRC line that draws `cells`, without a line ending. A
-// transparent cell is drawn blank and a C0 control or DEL as its CP437 glyph.
+// transparent cell is drawn blank, a C0 control or DEL as its CP437 glyph,
+// and a C1 control (U+0080-U+009F) or a non-scalar code point as '?'.
 std::string encodeRow(std::span<const Cell> cells, const EncodeOptions& opts = {});
 
 // One line per canvas row, as ans2irc writes rows: trailing black spaces are
