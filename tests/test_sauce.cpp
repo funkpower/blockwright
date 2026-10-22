@@ -248,3 +248,89 @@ TEST_CASE("SAUCE TInfo2 is the minimum canvas height", "[sauce]") {
         CHECK(parseAnsi(body + encodeSauce(s, 1)).canvas.height() == 1);
     }
 }
+
+TEST_CASE("SAUCE text fields, comments and every flag round-trip through an .ans", "[sauce]") {
+    // #7: what the SAUCE dialog and the iCE and 8/9 px toggles set comes back
+    // from writeAnsi and parseAnsi as it was
+    for (const std::uint8_t flags : {0x00, 0x01, 0x02, 0x04, 0x05, 0x08, 0x0B, 0x10, 0x14, 0x15}) {
+        INFO("flags " << int(flags));
+        AnsiDocument doc = bwtest::parse("\x1b[1;5;33;41mA");
+        doc.sauce = Sauce::fresh(80, 1);
+        doc.sauce->title = std::string(35, 'T');
+        doc.sauce->author = "funkpower";
+        doc.sauce->group = std::string(20, 'g');
+        doc.sauce->date = "19961231";
+        doc.sauce->comments = {std::string(64, 'c'), "", "\x01\xb0\xdb \xfe"};
+        doc.sauce->flags = flags;
+        doc.ice = flags & 0x01;
+        if (!doc.ice)  // what an iCE-off editor saves: blink, not a bright background
+            doc.canvas.at(0, 0) = iceCell(doc.canvas.at(0, 0), false);
+        const AnsiOutput out = writeAnsi(doc);
+        CHECK_FALSE(out.lossy());
+        const AnsiDocument back = parseAnsi(out.bytes);
+        REQUIRE(back.sauce);
+        CHECK(back.sauce->title == doc.sauce->title);
+        CHECK(back.sauce->author == "funkpower");
+        CHECK(back.sauce->group == doc.sauce->group);
+        CHECK(back.sauce->date == "19961231");
+        CHECK(back.sauce->comments == doc.sauce->comments);
+        CHECK(back.sauce->flags == flags);
+        CHECK(back.sauce->ice() == doc.ice);
+        CHECK(back.sauce->letterSpacing() == doc.sauce->letterSpacing());
+        CHECK(back.sauce->aspectRatio() == doc.sauce->aspectRatio());
+        CHECK(back.ice == doc.ice);
+        CHECK(back.canvas.at(0, 0) == doc.canvas.at(0, 0));
+    }
+}
+
+TEST_CASE("iceCell: blink and a bright background are one bit", "[sauce]") {
+    const Cell bright{U'A', Color::indexed(Yellow), Color::indexed(LightRed), 0, false};
+    const Cell blink{U'A', Color::indexed(Yellow), Color::indexed(Red), attr::Blink, false};
+    const Cell plain{U'A', Color::indexed(Yellow), Color::indexed(Red), 0, false};
+    // iCE on: blink shows (and saves) as the bright background
+    CHECK(iceCell(bright, true) == bright);
+    CHECK(iceCell(blink, true) == bright);
+    CHECK(iceCell(plain, true) == plain);
+    // iCE off: a bright background shows (and saves) as blink on the dark one
+    CHECK(iceCell(bright, false) == blink);
+    CHECK(iceCell(blink, false) == blink);
+    CHECK(iceCell(plain, false) == plain);
+    // the foreground's bright bit is not iCE's business
+    const Cell boldFg{U'A', Color::indexed(White), Color::indexed(Black), 0, false};
+    CHECK(iceCell(boldFg, false) == boldFg);
+
+    // written through iceCell, iCE off is SGR 5 with the flag off, and iCE on
+    // a bright background with nothing dropped
+    AnsiDocument doc = bwtest::parse("\x1b[33;101mA");
+    REQUIRE(doc.canvas.at(0, 0).bg == Color::indexed(LightRed));
+    doc.ice = false;
+    doc.canvas.at(0, 0) = iceCell(doc.canvas.at(0, 0), false);
+    AnsiOutput out = writeAnsi(doc);
+    CHECK(out.bytes.find("\x1b[0;5;33;41mA") != std::string::npos);
+    AnsiDocument back = parseAnsi(out.bytes);
+    CHECK_FALSE(back.ice);
+    CHECK(back.canvas.at(0, 0) == Cell{U'A', Color::indexed(Brown), Color::indexed(Red), attr::Blink, false});
+
+    back.ice = true;
+    back.canvas.at(0, 0) = iceCell(back.canvas.at(0, 0), true);
+    out = writeAnsi(back);
+    CHECK(out.blinkDropped == 0);
+    back = parseAnsi(out.bytes);
+    CHECK(back.ice);
+    CHECK(back.canvas.at(0, 0) == Cell{U'A', Color::indexed(Brown), Color::indexed(LightRed), 0, false});
+}
+
+TEST_CASE("A trailing blinking space is written, not trimmed as black", "[sauce]") {
+    // iCE off, a bright-black space is a blinking space on black: trimming it
+    // as a blank would lose DarkGrey once iCE is on again
+    AnsiDocument doc = bwtest::parse("A");
+    doc.ice = false;
+    doc.canvas.at(1, 0) = iceCell(Cell{U' ', Color::indexed(Grey), Color::indexed(DarkGrey), 0, false}, false);
+    REQUIRE(doc.canvas.at(1, 0) == Cell{U' ', Color::indexed(Grey), Color::indexed(Black), attr::Blink, false});
+    const AnsiOutput out = writeAnsi(doc);
+    CHECK_FALSE(out.lossy());
+    const AnsiDocument back = parseAnsi(out.bytes);
+    CHECK_FALSE(back.ice);
+    CHECK(back.canvas.at(1, 0) == doc.canvas.at(1, 0));
+    CHECK(iceCell(back.canvas.at(1, 0), true).bg == Color::indexed(DarkGrey));
+}

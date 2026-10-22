@@ -358,8 +358,10 @@ private:
     int savedRow_ = 0, savedCol_ = 0;
 };
 
+// A cell the trailing trim may drop. A blinking space is not one: read
+// back with iCE on it is a bright-black background.
 bool blankBlack(const Cell& c) {
-    return c.transparent || (c.ch == U' ' && c.bg.paletteIndex() == Black);
+    return c.transparent || (c.ch == U' ' && c.bg.paletteIndex() == Black && !(c.attrs & attr::Blink));
 }
 
 bool writableByte(std::uint8_t b) {
@@ -372,6 +374,18 @@ bool writableByte(std::uint8_t b) {
 bool isWritableGlyph(char32_t ch) {
     const std::optional<std::uint8_t> b = unicodeToCp437(ch);
     return b && *b != 0x00 && writableByte(*b);
+}
+
+Cell iceCell(Cell c, bool ice) {
+    const std::uint8_t bg = c.bg.paletteIndex();
+    if (ice && (c.attrs & attr::Blink)) {
+        c.bg = Color::indexed(static_cast<std::uint8_t>(bg | 8));
+        c.attrs &= static_cast<std::uint8_t>(~attr::Blink);
+    } else if (!ice && bg >= 8) {
+        c.bg = Color::indexed(static_cast<std::uint8_t>(bg & 7));
+        c.attrs |= attr::Blink;
+    }
+    return c;
 }
 
 AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts) {

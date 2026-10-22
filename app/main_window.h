@@ -1,7 +1,8 @@
 #pragma once
 // The main window: the canvas view in a scroll area, the 1x preview and
 // palette docks, the F-key glyph set in the status bar, and the File, Edit,
-// View, Colours, Glyphs and Help menus.
+// View, Colours, Glyphs and Help menus. File > SAUCE... and the View menu's
+// iCE and letter-spacing toggles live in main_window_format.cpp.
 
 #include "blockwright/canvas_renderer.h"
 
@@ -13,6 +14,7 @@ class QAction;
 class QDockWidget;
 class QFileDialog;
 class QLabel;
+class QMenu;
 class QScrollArea;
 
 namespace bw {
@@ -65,12 +67,23 @@ public slots:
     void zoomIn();
     void zoomOut();
     void zoomReset();
+    // File > SAUCE...: edits the record's text fields as one undo step.
+    void editSauce();
+    // View > iCE Colours and 9 px Letter Spacing, each one undo step. A 9 px
+    // canvas too large to display is refused with a status message.
+    void setIceColours(bool on);
+    void setNinePx(bool on);
 
 protected:
     void closeEvent(QCloseEvent* e) override;
 
 private:
     void createActions();
+    // The iCE and letter-spacing toggles (main_window_format.cpp).
+    void createFormatActions(QMenu* view);
+    // The renderer and the toggles follow the document's format.
+    void formatChanged();
+    void syncFormatActions();
     void canvasReset();
     void updateTitle();
     void updateStatus();
@@ -90,6 +103,8 @@ private:
     QLabel* status_ = nullptr;
     QLabel* glyphSetLabel_ = nullptr;
     QList<QAction*> glyphSetActions_;
+    QAction* iceAction_ = nullptr;
+    QAction* ninePxAction_ = nullptr;
 };
 
 } // namespace bw

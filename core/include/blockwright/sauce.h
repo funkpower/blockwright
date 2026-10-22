@@ -38,6 +38,8 @@ struct Sauce {
 
     bool isCharacterArt() const { return dataType == 1; }
 
+    bool operator==(const Sauce&) const = default;
+
     // A record for new art: today's date, ANSi, iCE on, IBM VGA.
     static Sauce fresh(int width, int height);
 };

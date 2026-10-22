@@ -31,6 +31,13 @@ public:
     // canvas is too large to cache, and then changes nothing.
     virtual void setCanvas(const Canvas* canvas, int glyphWidth) = 0;
 
+    // How bright backgrounds and blink show (bw::iceCell): with iCE colours
+    // on (the default) as 16 background colours, with them off as blink on
+    // the dark colour in its visible phase, as renderCanvas draws blink.
+    // A change marks every cell dirty.
+    virtual void setIceColours(bool on) = 0;
+    virtual bool iceColours() const = 0;
+
     // One cell in pixels at 1x (glyph width by font height).
     virtual QSize cellSize() const = 0;
     // The whole canvas in pixels at 1x.
@@ -77,12 +84,15 @@ private:
     QHash<quint64, QImage> rgb_;  // (glyph, rgb) -> glyph image
 };
 
-// The QPainter renderer: a 1x RGB32 cache filled from a GlyphAtlas.
+// The QPainter renderer: a 1x RGB32 cache filled from a GlyphAtlas. It draws
+// each cell as renderCanvas draws iceCell(cell, iceColours()).
 class AtlasRenderer final : public CanvasRenderer {
 public:
     explicit AtlasRenderer(const BitmapFont& font = vgaFont());
 
     void setCanvas(const Canvas* canvas, int glyphWidth) override;
+    void setIceColours(bool on) override;
+    bool iceColours() const override { return ice_; }
     QSize cellSize() const override;
     QSize imageSize() const override { return cache_.size(); }
     void markDirty(const QRegion& cells) override;
@@ -99,6 +109,7 @@ private:
     std::unique_ptr<GlyphAtlas> atlas_;
     QImage cache_;
     QRegion dirty_;
+    bool ice_ = true;
 };
 
 } // namespace bw

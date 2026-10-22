@@ -82,6 +82,14 @@ void AtlasRenderer::setCanvas(const Canvas* canvas, int glyphWidth) {
     dirty_ = QRegion(0, 0, canvas->width(), canvas->height());
 }
 
+void AtlasRenderer::setIceColours(bool on) {
+    if (ice_ == on)
+        return;
+    ice_ = on;
+    if (canvas_)
+        dirty_ = QRegion(0, 0, canvas_->width(), canvas_->height());
+}
+
 QSize AtlasRenderer::cellSize() const { return atlas_ ? atlas_->cellSize() : QSize(); }
 
 void AtlasRenderer::markDirty(const QRegion& cells) {
@@ -97,7 +105,7 @@ QRegion AtlasRenderer::flush() {
     for (const QRect& r : dirty_) {
         for (int cy = r.top(); cy <= r.bottom(); ++cy) {
             for (int cx = r.left(); cx <= r.right(); ++cx) {
-                const Cell& cell = canvas_->at(cx, cy);
+                const Cell cell = iceCell(canvas_->at(cx, cy), ice_);
                 const QRect target(QPoint(cx * cs.width(), cy * cs.height()), cs);
                 p.fillRect(target, QColor(toQRgb(resolveColor(cell.bg))));
                 const std::uint8_t g = glyphIndex(cell.ch);

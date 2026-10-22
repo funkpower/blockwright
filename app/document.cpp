@@ -43,19 +43,34 @@ private:
     Cursor before_, after_;
 };
 
+// One format change (SAUCE, iCE, letter spacing) on the stack.
+class FormatCommand : public QUndoCommand {
+public:
+    FormatCommand(Document* doc, DocumentFormat before, DocumentFormat after, const QString& text)
+        : QUndoCommand(text), doc_(doc), before_(std::move(before)), after_(std::move(after)) {}
+
+    void redo() override { doc_->applyFormat(after_); }
+    void undo() override { doc_->applyFormat(before_); }
+
+private:
+    Document* doc_;
+    DocumentFormat before_, after_;
+};
+
 Document::Document(QObject* parent) : QObject(parent), doc_(blank()) {
     connect(&undo_, &QUndoStack::cleanChanged, this, [this](bool clean) { setModified(!clean); });
 }
 
 bool Document::load(const QString& path, QString* error) {
     AnsiDocument doc;
-    if (!read(path, &doc, error))
+    int blinkDropped = 0;
+    if (!read(path, &doc, error, &blinkDropped))
         return false;
-    replace(std::move(doc), path);
+    replace(std::move(doc), path, blinkDropped);
     return true;
 }
 
-bool Document::read(const QString& path, AnsiDocument* out, QString* error) {
+bool Document::read(const QString& path, AnsiDocument* out, QString* error, int* blinkDropped) {
     if (QFileInfo(path).isDir()) {
         *error = tr("%1 is a directory").arg(path);
         return false;
@@ -80,12 +95,102 @@ bool Document::read(const QString& path, AnsiDocument* out, QString* error) {
         *error = QString::fromStdString(e.what());
         return false;
     }
+    // A file without iCE colours can still hold bright backgrounds (SGR
+    // 100-107, 24-bit colours). writeAnsi would write it with iCE on to keep
+    // them, and the CLI renders them bright: open it with iCE on, so the
+    // editor shows and saves them the same way. writeAnsi then drops blink
+    // and keeps the dark background, and renderCanvas draws it so: do the
+    // same to the cells, or iceCell would show and save them bright.
+    *blinkDropped = 0;
+    if (out->ice)
+        return true;
+    Canvas& cv = out->canvas;
+    for (int y = 0; y < cv.height() && !out->ice; ++y)
+        for (int x = 0; x < cv.width() && !out->ice; ++x)
+            out->ice = !cv.at(x, y).transparent && cv.at(x, y).bg.paletteIndex() >= 8;
+    if (!out->ice)
+        return true;
+    if (out->sauce)
+        out->sauce->setIce(true);
+    for (int y = 0; y < cv.height(); ++y)
+        for (int x = 0; x < cv.width(); ++x) {
+            Cell& c = cv.at(x, y);
+            if (!c.transparent && (c.attrs & attr::Blink)) {
+                c.attrs &= static_cast<std::uint8_t>(~attr::Blink);
+                ++*blinkDropped;
+            }
+        }
     return true;
 }
 
-void Document::replace(AnsiDocument doc, const QString& path) {
+AnsiOutput Document::encode() const {
+    AnsiDocument d = doc_;
+    for (int y = 0; y < d.canvas.height(); ++y)
+        for (int x = 0; x < d.canvas.width(); ++x)
+            if (!d.canvas.at(x, y).transparent)
+                d.canvas.at(x, y) = iceCell(d.canvas.at(x, y), d.ice);
+    AnsiOutput out = writeAnsi(d);
+    out.blinkDropped += blinkDropped_;
+    return out;
+}
+
+bool Document::setFormat(const DocumentFormat& format, const QString& text) {
+    const DocumentFormat before = this->format();
+    if (format == before)
+        return false;
+    undo_.push(new FormatCommand(this, before, format, text));
+    return true;
+}
+
+bool Document::setSauceFields(const Sauce& fields) {
+    DocumentFormat f = format();
+    if (!f.sauce) {
+        f.sauce = Sauce::fresh(doc_.canvas.width(), doc_.canvas.height());
+        f.sauce->setIce(f.ice);
+    }
+    Sauce& s = *f.sauce;
+    if (s.title == fields.title && s.author == fields.author && s.group == fields.group && s.date == fields.date &&
+        s.comments == fields.comments)
+        return false;  // the dialog accepted as it was shown: no record added either
+    s.title = fields.title;
+    s.author = fields.author;
+    s.group = fields.group;
+    s.date = fields.date;
+    s.comments = fields.comments;
+    return setFormat(f, tr("SAUCE"));
+}
+
+bool Document::setIce(bool on) {
+    DocumentFormat f = format();
+    f.ice = on;
+    if (f.sauce)
+        f.sauce->setIce(on);
+    return setFormat(f, on ? tr("iCE Colours On") : tr("iCE Colours Off"));
+}
+
+bool Document::setLetterSpacing(int px) {
+    DocumentFormat f = format();
+    // 8 px is also what an unset flag (or no SAUCE) means: leave that alone
+    if ((px == 9) == (f.sauce && f.sauce->letterSpacing() == 2))
+        return false;
+    if (!f.sauce) {
+        f.sauce = Sauce::fresh(doc_.canvas.width(), doc_.canvas.height());
+        f.sauce->setIce(f.ice);
+    }
+    f.sauce->setLetterSpacing(px == 9 ? 2 : 1);
+    return setFormat(f, tr("%1 px Letter Spacing").arg(px == 9 ? 9 : 8));
+}
+
+void Document::applyFormat(const DocumentFormat& format) {
+    doc_.sauce = format.sauce;
+    doc_.ice = format.ice;
+    emit formatChanged();
+}
+
+void Document::replace(AnsiDocument doc, const QString& path, int blinkDropped) {
     undo_.clear();
     doc_ = std::move(doc);
+    blinkDropped_ = blinkDropped;
     path_ = path;
     emit reset();
     emit pathChanged(path_);
@@ -95,6 +200,7 @@ void Document::replace(AnsiDocument doc, const QString& path) {
 void Document::clear() {
     undo_.clear();
     doc_ = blank();
+    blinkDropped_ = 0;
     path_.clear();
     emit reset();
     emit pathChanged(path_);
@@ -124,6 +230,7 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         path_ = path;
         emit pathChanged(path_);
     }
+    blinkDropped_ = 0;  // the file written has none left to lose
     undo_.setClean();
     setModified(false);
     return true;

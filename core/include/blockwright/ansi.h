@@ -65,6 +65,17 @@ struct AnsiOutput {
 // `unwritable`.
 AnsiOutput writeAnsi(const AnsiDocument& doc);
 
+// A cell as it shows, and is saved, with iCE colours `ice`. Blink and a
+// bright background are one bit here, as in Moebius and PabloDraw: with iCE
+// on, a blinking cell shows a bright background (its background index gains
+// 8 and it loses the blink attribute); with iCE off, a bright background
+// shows as blink on the dark colour (the index loses 8, the cell blinks).
+// Other cells come back as they were. A 24-bit background counts as its
+// palette index, as writeAnsi counts it. The editor keeps cells as drawn and
+// shows and saves them through this, so its iCE toggle changes how they
+// look, not what they hold.
+Cell iceCell(Cell c, bool ice);
+
 // Whether writeAnsi writes `ch` as itself: it has a CP437 byte and that byte
 // isn't one the parser acts on (TAB, LF, CR, SUB, ESC) or NUL.
 bool isWritableGlyph(char32_t ch);

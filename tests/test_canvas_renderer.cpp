@@ -91,6 +91,7 @@ TEST_CASE("the atlas renderer agrees with renderCanvas on the golden pieces") {
             for (int gw : {8, 9}) {
                 AtlasRenderer r;
                 r.setCanvas(&doc.canvas, gw);
+                r.setIceColours(doc.ice);
                 for (int zoom : {1, 2}) {
                     INFO("width " << gw << " zoom " << zoom);
                     CHECK(same(paintAll(r, zoom), renderCanvas(doc.canvas, gw, zoom)));
@@ -167,4 +168,79 @@ TEST_CASE("an equal-sized canvas reuses the cache and redraws all of it") {
     CHECK(r.dirtyCells() == QRegion(0, 0, 3, 2));
     r.flush();
     CHECK(r.cache() == renderCanvas(b, 8).convertToFormat(r.cache().format()));
+}
+
+TEST_CASE("iCE on draws bright backgrounds as 16 colours, iCE off as blink on the dark colour") {
+    // #7: a bright background and a blinking cell, each a space and a █ so
+    // both the background and the glyph show
+    Canvas cv(4, 1);
+    cv.at(0, 0) = Cell{U' ', Color::indexed(Yellow), Color::indexed(LightRed), 0, false};
+    cv.at(1, 0) = Cell{U' ', Color::indexed(Yellow), Color::indexed(Red), attr::Blink, false};
+    cv.at(2, 0) = Cell{U'▄', Color::indexed(Yellow), Color::indexed(LightBlue), 0, false};
+    cv.at(3, 0) = Cell{U' ', Color::indexed(Yellow), Color::indexed(Green), 0, false};
+    const auto q = [](Rgb c) { return qRgb(c.r, c.g, c.b); };
+    AtlasRenderer r;
+    r.setCanvas(&cv, 8);
+    CHECK(r.iceColours());
+    QImage img = paintAll(r, 1);
+    CHECK(img.pixel(3, 8) == q(kPalette[LightRed]));
+    CHECK(img.pixel(8 + 3, 8) == q(kPalette[LightRed]));  // blink is the bright bit
+    CHECK(img.pixel(16 + 3, 0) == q(kPalette[LightBlue]));
+    CHECK(img.pixel(16 + 3, 15) == q(kPalette[Yellow]));
+    CHECK(img.pixel(24 + 3, 8) == q(kPalette[Green]));
+
+    r.setIceColours(false);
+    CHECK(r.dirtyCells() == QRegion(0, 0, 4, 1));
+    img = paintAll(r, 1);
+    // the visible phase of blink: the glyph drawn on the dark background,
+    // as renderCanvas draws a blinking cell from an iCE-off file
+    CHECK(img.pixel(3, 8) == q(kPalette[Red]));
+    CHECK(img.pixel(8 + 3, 8) == q(kPalette[Red]));
+    CHECK(img.pixel(16 + 3, 0) == q(kPalette[Blue]));
+    CHECK(img.pixel(16 + 3, 15) == q(kPalette[Yellow]));
+    CHECK(img.pixel(24 + 3, 8) == q(kPalette[Green]));
+    CHECK(cv.at(0, 0).bg == Color::indexed(LightRed));  // the cells are untouched
+
+    // and it is renderCanvas of the cells as iceCell shows them, either way
+    for (bool ice : {true, false}) {
+        Canvas shown = cv;
+        for (int x = 0; x < shown.width(); ++x)
+            shown.at(x, 0) = iceCell(shown.at(x, 0), ice);
+        r.setIceColours(ice);
+        CHECK(same(paintAll(r, 2), renderCanvas(shown, 8, 2)));
+    }
+    r.setIceColours(false);
+    r.flush();
+    r.setIceColours(false);  // no change, nothing to redraw
+    CHECK(r.dirtyCells().isEmpty());
+}
+
+TEST_CASE("9 px cells repeat column 8 for 0xC0-0xDF and are background otherwise") {
+    // #7: ─ (0xC4) joins up, A and ▓ (0xB2, outside the range) don't
+    Canvas cv(3, 1);
+    cv.at(0, 0) = Cell{U'─', Color::indexed(White), Color::indexed(Blue), 0, false};
+    cv.at(1, 0) = Cell{U'▓', Color::indexed(White), Color::indexed(Blue), 0, false};
+    cv.at(2, 0) = Cell{U'█', Color::indexed(White), Color::indexed(Blue), 0, false};  // 0xDB, in the range
+    const QRgb fg = qRgb(0xff, 0xff, 0xff), bg = qRgb(0x00, 0x00, 0xaa);
+    AtlasRenderer r;
+    r.setCanvas(&cv, 9);
+    REQUIRE(r.imageSize() == QSize(27, 16));
+    const QImage img = paintAll(r, 1);
+    int joined = 0, shadeLit = 0;
+    for (int y = 0; y < 16; ++y) {
+        CHECK(img.pixel(8, y) == img.pixel(7, y));
+        joined += img.pixel(8, y) == fg;
+        shadeLit += img.pixel(9 + 7, y) == fg;
+        CHECK(img.pixel(9 + 8, y) == bg);
+        CHECK(img.pixel(18 + 8, y) == fg);
+    }
+    CHECK(joined > 0);
+    CHECK(shadeLit > 0);
+    CHECK(same(img, renderCanvas(cv, 9)));
+
+    r.setCanvas(&cv, 8);
+    CHECK(r.imageSize() == QSize(24, 16));
+    const QImage eight = paintAll(r, 1);
+    CHECK(eight.copy(0, 0, 8, 16) == img.copy(0, 0, 8, 16));
+    CHECK(same(eight, renderCanvas(cv, 8)));
 }

@@ -105,6 +105,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         preview_->cellsChanged(cells);
     });
     connect(&doc_, &Document::reset, this, &MainWindow::canvasReset);
+    connect(&doc_, &Document::formatChanged, this, &MainWindow::formatChanged);
     connect(&doc_, &Document::modifiedChanged, this, &MainWindow::updateTitle);
     connect(&doc_, &Document::pathChanged, this, &MainWindow::updateTitle);
     connect(view_, &CanvasView::cursorMoved, this, [this] {
@@ -140,6 +141,9 @@ void MainWindow::createActions() {
     a = file->addAction(tr("Save &As..."), this, &MainWindow::saveAs);
     a->setShortcut(QKeySequence::SaveAs);
     file->addSeparator();
+    a = file->addAction(tr("SA&UCE..."), this, &MainWindow::editSauce);
+    a->setObjectName(QStringLiteral("sauce"));
+    file->addSeparator();
     a = file->addAction(tr("&Quit"), this, &QWidget::close);
     a->setShortcut(QKeySequence::Quit);
 
@@ -163,6 +167,7 @@ void MainWindow::createActions() {
     a = view->addAction(tr("&Actual Size"), this, &MainWindow::zoomReset);
     a->setObjectName(QStringLiteral("zoomReset"));
     a->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+    createFormatActions(view);
 
     // Colours and glyph sets: Moebius's keys.
     const auto add = [this](QMenu* m, const QString& text, const char* name, QKeySequence key, auto slot) {
@@ -249,6 +254,8 @@ void MainWindow::canvasReset() {
     // openFile has already shown the renderer this canvas, and a blank one
     // always fits, so this does not throw.
     renderer_.setCanvas(&doc_.canvas(), glyphWidth(doc_.ansi()));
+    renderer_.setIceColours(doc_.ansi().ice);
+    syncFormatActions();
     view_->canvasReset();
     preview_->canvasReset();
     view_->setCellCursor({0, 0});
@@ -257,7 +264,8 @@ void MainWindow::canvasReset() {
 
 bool MainWindow::openFile(const QString& path, QString* error) {
     AnsiDocument candidate;
-    if (!Document::read(path, &candidate, error))
+    int blinkDropped = 0;
+    if (!Document::read(path, &candidate, error, &blinkDropped))
         return false;
     // Let the renderer take the new canvas before the document does, so a
     // canvas too large to display leaves the open one as it was. setCanvas
@@ -269,7 +277,7 @@ bool MainWindow::openFile(const QString& path, QString* error) {
         *error = tr("the canvas is too large to display");
         return false;
     }
-    doc_.replace(std::move(candidate), path);
+    doc_.replace(std::move(candidate), path, blinkDropped);
     return true;
 }
 

@@ -87,6 +87,7 @@ set_tests_properties(cli_render PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
 
 add_executable(blockwright-app-tests
   test_app.cpp
+  test_app_format.cpp
   util.h
 )
 target_link_libraries(blockwright-app-tests PRIVATE blockwright_app Catch2::Catch2)
