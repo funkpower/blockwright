@@ -8,6 +8,8 @@
 #include "select_tool.h"
 #include "tool.h"
 
+#include "system_input.h"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
@@ -21,7 +23,9 @@
 #include <QPushButton>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointingDevice>
 #include <QSet>
+#include <QTabletEvent>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUndoStack>
@@ -95,7 +99,7 @@ void write(MainWindow& w, int x, int y, const QString& text) {
 
 TEST_CASE("the tool registry starts in keyboard mode and the Tools menu switches") {
     MainWindow w;
-    REQUIRE(w.tools()->tools().size() == 11);
+    REQUIRE(w.tools()->tools().size() == 12);
     CHECK(w.tools()->active()->id() == QStringLiteral("keyboard"));
     CHECK(w.canvasView()->tool() == w.tools()->active());
     CHECK(act(w, "keyboardTool")->isChecked());
@@ -783,6 +787,152 @@ TEST_CASE("losing focus while dragging a paste keeps the paste") {
     CHECK(w.selectTool()->floatingPos() == QPoint(5, 0));
     press(v, Qt::Key_Return);
     CHECK(row(w, 0, 0, 8) == QStringLiteral("A    A  "));
+}
+
+TEST_CASE("a popup that takes the release while dragging a floating selection puts it back and keeps it") {
+    // The drag ends as on focus loss; Qt's own delivery, as in test_app_brush.
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    write(w, 0, 0, QStringLiteral("A"));
+    act(w, "selectTool")->trigger();
+    w.selectTool()->select({0, 0, 1, 1});
+    const auto sys = [&](QEvent::Type type, QPoint cell, Qt::MouseButtons held) {
+        bwtest::systemMouse(v, type, v->cellRect(cell).center(),
+                            type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held);
+    };
+    sys(QEvent::MouseButtonPress, {0, 0}, Qt::LeftButton);
+    sys(QEvent::MouseMove, {2, 0}, Qt::LeftButton);
+    REQUIRE(w.selectTool()->floatingPos() == QPoint(2, 0));
+    bwtest::popupOver(v, true);
+    CHECK_FALSE(w.selectTool()->dragging());
+    CHECK(w.selectTool()->floating());
+    CHECK(w.selectTool()->floatingPos() == QPoint(0, 0));
+    sys(QEvent::MouseMove, {3, 0}, Qt::NoButton);
+    CHECK(w.selectTool()->floatingPos() == QPoint(0, 0));
+}
+
+TEST_CASE("a popup that takes the release outside it or with another button held puts a dragged float back") {
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    write(w, 0, 0, QStringLiteral("A"));
+    act(w, "selectTool")->trigger();
+    w.selectTool()->select({0, 0, 1, 1});
+    const auto sys = [&](QEvent::Type type, QPoint cell, Qt::MouseButton button, Qt::MouseButtons held) {
+        bwtest::systemMouse(v, type, v->cellRect(cell).center(), button, held);
+    };
+    sys(QEvent::MouseButtonPress, {0, 0}, Qt::LeftButton, Qt::LeftButton);
+    sys(QEvent::MouseMove, {2, 0}, Qt::NoButton, Qt::LeftButton);
+    REQUIRE(w.selectTool()->floatingPos() == QPoint(2, 0));
+    SECTION("released outside the popup, which a click then dismisses") {
+        QMenu m(&w);
+        m.addAction(QStringLiteral("x"));
+        m.popup(w.mapToGlobal(QPoint(400, 300)));
+        QApplication::processEvents();
+        sys(QEvent::MouseButtonRelease, {2, 0}, Qt::LeftButton, Qt::NoButton);
+        REQUIRE(m.isVisible());
+        sys(QEvent::MouseButtonPress, {6, 3}, Qt::LeftButton, Qt::LeftButton);
+        sys(QEvent::MouseButtonRelease, {6, 3}, Qt::LeftButton, Qt::NoButton);
+    }
+    SECTION("released on the popup with the right button held") {
+        sys(QEvent::MouseButtonPress, {2, 0}, Qt::RightButton, Qt::LeftButton | Qt::RightButton);
+        bwtest::popupOver(v, true, Qt::LeftButton, Qt::RightButton);
+        sys(QEvent::MouseButtonRelease, {2, 0}, Qt::RightButton, Qt::NoButton);
+    }
+    CHECK_FALSE(w.selectTool()->dragging());
+    CHECK(w.selectTool()->floating());
+    CHECK(w.selectTool()->floatingPos() == QPoint(0, 0));
+    sys(QEvent::MouseMove, {3, 0}, Qt::NoButton, Qt::NoButton);
+    CHECK(w.selectTool()->floatingPos() == QPoint(0, 0));
+}
+
+TEST_CASE("a popup that opens while a floating selection is dragged puts it back, whenever it closes") {
+    // Codex round 5: once the popup has had a mouse event, the release
+    // reaches the window but not the canvas.
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    write(w, 0, 0, QStringLiteral("A"));
+    act(w, "selectTool")->trigger();
+    w.selectTool()->select({0, 0, 1, 1});
+    const auto sys = [&](QEvent::Type type, QPoint cell, Qt::MouseButtons held) {
+        bwtest::systemMouse(v, type, v->cellRect(cell).center(),
+                            type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held);
+    };
+    sys(QEvent::MouseButtonPress, {0, 0}, Qt::LeftButton);
+    sys(QEvent::MouseMove, {2, 0}, Qt::LeftButton);
+    REQUIRE(w.selectTool()->floatingPos() == QPoint(2, 0));
+    SECTION("a popup that takes a move and closes before the release") {
+        QMenu m(&w);
+        m.addAction(QStringLiteral("x"));
+        m.popup(w.mapToGlobal(QPoint(400, 300)));
+        QApplication::processEvents();
+        sys(QEvent::MouseMove, {3, 0}, Qt::LeftButton);
+        m.close();
+        QApplication::processEvents();
+    }
+    SECTION("a popup that closes with the button still held") {
+        bwtest::popupOver(v, false);
+        sys(QEvent::MouseMove, {3, 0}, Qt::LeftButton);
+    }
+    sys(QEvent::MouseButtonRelease, {3, 0}, Qt::NoButton);
+    CHECK_FALSE(w.selectTool()->dragging());
+    CHECK(w.selectTool()->floating());
+    CHECK(w.selectTool()->floatingPos() == QPoint(0, 0));
+    CHECK(row(w, 0, 0, 4) == QStringLiteral("A   "));
+    sys(QEvent::MouseMove, {4, 0}, Qt::NoButton);
+    CHECK(w.selectTool()->floatingPos() == QPoint(0, 0));
+}
+
+TEST_CASE("the device that starts a selection drag owns it until the drag ends") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    act(w, "selectTool")->trigger();
+    static const QPointingDevice pen(QStringLiteral("test stylus"), 4242, QInputDevice::DeviceType::Stylus,
+                                     QPointingDevice::PointerType::Pen,
+                                     QInputDevice::Capability::Position | QInputDevice::Capability::Pressure, 1, 3);
+    const auto tablet = [&](QEvent::Type type, QPoint cell) {
+        const QPointF at = v->cellRect(cell).center();
+        const bool up = type == QEvent::TabletRelease;
+        QTabletEvent e(type, &pen, at, v->mapToGlobal(at), up ? 0.0 : 1.0, 0, 0, 0, 0, 0, Qt::NoModifier,
+                       Qt::LeftButton, up ? Qt::NoButton : Qt::LeftButton);
+        QApplication::sendEvent(v, &e);
+    };
+    mouse(v, QEvent::MouseButtonPress, {2, 2});
+    mouse(v, QEvent::MouseMove, {4, 3});
+    tablet(QEvent::TabletPress, {10, 10});
+    tablet(QEvent::TabletMove, {12, 12});
+    tablet(QEvent::TabletRelease, {12, 12});
+    mouse(v, QEvent::MouseButtonRelease, {4, 3});
+    CHECK(w.selectTool()->selection().bounds() == CellRect{2, 2, 3, 2});
+    // the drag over, the stylus starts the next one
+    tablet(QEvent::TabletPress, {10, 10});
+    tablet(QEvent::TabletMove, {12, 12});
+    tablet(QEvent::TabletRelease, {12, 12});
+    CHECK(w.selectTool()->selection().bounds() == CellRect{10, 10, 3, 3});
+}
+
+TEST_CASE("the undo key during a selection drag ends the drag and undoes nothing") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    write(w, 0, 0, QStringLiteral("A"));
+    QUndoStack* undo = w.document()->undoStack();
+    const int typed = undo->count();
+    act(w, "selectTool")->trigger();
+    w.selectTool()->select({0, 0, 1, 1});
+    mouse(v, QEvent::MouseButtonPress, {0, 0});
+    mouse(v, QEvent::MouseMove, {2, 0});
+    REQUIRE(w.selectTool()->floatingPos() == QPoint(2, 0));
+    QKeyEvent override(QEvent::ShortcutOverride, Qt::Key_Z, Qt::ControlModifier);
+    QApplication::sendEvent(v, &override);
+    CHECK(override.isAccepted());
+    QKeyEvent z(QEvent::KeyPress, Qt::Key_Z, Qt::ControlModifier);
+    QApplication::sendEvent(v, &z);
+    CHECK(w.selectTool()->floating());
+    CHECK(w.selectTool()->floatingPos() == QPoint(0, 0));
+    CHECK(undo->count() == typed);
+    CHECK(undo->index() == typed);
 }
 
 TEST_CASE("saving writes a floating selection where it floats") {

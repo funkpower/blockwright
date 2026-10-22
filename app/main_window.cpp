@@ -1,5 +1,6 @@
 #include "main_window.h"
 
+#include "brush_dock.h"
 #include "canvas_view.h"
 #include "select_tool.h"
 #include "palette_widget.h"
@@ -97,6 +98,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     paletteDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
     paletteDock_->setWidget(palette_);
     addDockWidget(Qt::RightDockWidgetArea, paletteDock_);
+
+    brush_ = new BrushDock(view_);
+    brushDock_ = new QDockWidget(tr("Brush"), this);
+    brushDock_->setObjectName(QStringLiteral("brushDock"));
+    brushDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+    brushDock_->setWidget(brush_);
+    addDockWidget(Qt::RightDockWidgetArea, brushDock_);
 
     glyphSetLabel_ = new QLabel;
     glyphSetLabel_->setObjectName(QStringLiteral("glyphSetLabel"));

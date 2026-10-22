@@ -37,6 +37,7 @@ SavePath resolveSavePath(const QString& chosen);
 void configureSaveDialog(QFileDialog& dialog, const QString& path);
 
 class SelectTool;
+class BrushDock;
 class ToolRegistry;
 
 class MainWindow : public QMainWindow {
@@ -50,6 +51,8 @@ public:
     QDockWidget* previewDock() const { return previewDock_; }
     PaletteWidget* paletteWidget() const { return palette_; }
     QDockWidget* paletteDock() const { return paletteDock_; }
+    BrushDock* brushWidget() const { return brush_; }
+    QDockWidget* brushDock() const { return brushDock_; }
     QLabel* glyphSetLabel() const { return glyphSetLabel_; }
     const CanvasRenderer& renderer() const { return renderer_; }
     ToolRegistry* tools() const { return tools_; }
@@ -112,6 +115,8 @@ private:
     QDockWidget* previewDock_ = nullptr;
     PaletteWidget* palette_ = nullptr;
     QDockWidget* paletteDock_ = nullptr;
+    BrushDock* brush_ = nullptr;
+    QDockWidget* brushDock_ = nullptr;
     QLabel* status_ = nullptr;
     ToolRegistry* tools_ = nullptr;
     SelectTool* selectTool_ = nullptr;

@@ -22,7 +22,7 @@ std::optional<int> shadeLevel(char32_t ch) {
 
 std::optional<Cell> ShadeBrush::paintCell(const Stroke& stroke, int x, int y, double) const {
     static constexpr std::array<char32_t, 5> kLevels = {U' ', kShadeLight, kShadeMedium, kShadeDark, kFullBlock};
-    const auto cell = stroke.cellAt(x, y);
+    const auto cell = stroke.originalAt(x, y);
     if (!cell)
         return std::nullopt;
     // Only the ladder steps: any other glyph (text, half-block pixels) is
@@ -41,7 +41,7 @@ std::optional<Cell> ShadeBrush::paintCell(const Stroke& stroke, int x, int y, do
 std::optional<Cell> GlyphBrush::paintCell(const Stroke&, int, int, double) const { return cell_; }
 
 std::optional<Cell> ColorizeBrush::paintCell(const Stroke& stroke, int x, int y, double) const {
-    auto cell = stroke.cellAt(x, y);
+    auto cell = stroke.originalAt(x, y);
     if (!cell)
         return std::nullopt;
     if (fg_)

@@ -91,13 +91,20 @@ set_tests_properties(cli_render PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
 
 add_executable(blockwright-app-tests
   test_app.cpp
+  test_app_brush.cpp
   test_app_draw.cpp
   test_app_format.cpp
   test_app_select.cpp
   test_app_perf.cpp
+  system_input.h
   util.h
 )
-target_link_libraries(blockwright-app-tests PRIVATE blockwright_app Catch2::Catch2)
+# QWindowSystemInterface, to deliver input as the platform does
+if(NOT TARGET Qt6::GuiPrivate)
+  set(QT_NO_PRIVATE_MODULE_WARNING ON)
+  find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
+endif()
+target_link_libraries(blockwright-app-tests PRIVATE blockwright_app Qt6::GuiPrivate Catch2::Catch2)
 target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 catch_discover_tests(blockwright-app-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen

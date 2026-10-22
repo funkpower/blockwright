@@ -146,6 +146,7 @@ TEST_CASE("every drawing tool is in the Tools menu with its shortcut") {
     const Entry entries[] = {
         {"halfBlock", QKeySequence(Qt::CTRL | Qt::Key_B)},
         {"shade", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_B)},
+        {"rampShade", QKeySequence(Qt::CTRL | Qt::Key_T)},
         {"glyph", QKeySequence(Qt::CTRL | Qt::Key_G)},
         {"colorize", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C)},
         {"line", QKeySequence(Qt::CTRL | Qt::Key_L)},
@@ -400,7 +401,7 @@ TEST_CASE("toggling mirror mode or filled shapes mid-drag redoes the preview, an
         CHECK(at(w, 3, 2) == cell(kFullBlock, White, Black));
     }
     SECTION("each tool, mirrored") {
-        for (const char* id : {"halfBlock", "shade", "glyph", "colorize", "line", "rectangle", "ellipse"}) {
+        for (const char* id : {"halfBlock", "shade", "rampShade", "glyph", "colorize", "line", "rectangle", "ellipse"}) {
             INFO(id);
             MainWindow w;
             CanvasView* v = w.canvasView();
@@ -416,7 +417,7 @@ TEST_CASE("toggling mirror mode or filled shapes mid-drag redoes the preview, an
 
 TEST_CASE("mirror mode stays inside the selection, preview and edit alike") {
     // C3: the mirrored half of an edit is clipped to the selection too
-    for (const char* id : {"halfBlock", "shade", "glyph", "colorize", "line", "rectangle", "ellipse", "fill"}) {
+    for (const char* id : {"halfBlock", "shade", "rampShade", "glyph", "colorize", "line", "rectangle", "ellipse", "fill"}) {
         INFO(id);
         MainWindow w;
         CanvasView* v = w.canvasView();
@@ -442,7 +443,7 @@ TEST_CASE("mirror mode with a selection clips the stroke and its mirror each on 
     // R6: on a 10x1 canvas with columns 7-9 selected, every tool drawn at
     // column 1 paints its mirror at 8, and drawn at 8 paints 8 and drops
     // the mirror at 1; the preview is the edit that lands
-    for (const char* id : {"halfBlock", "shade", "glyph", "colorize", "line", "rectangle", "ellipse"}) {
+    for (const char* id : {"halfBlock", "shade", "rampShade", "glyph", "colorize", "line", "rectangle", "ellipse"}) {
         for (const int x : {1, 8}) {
             INFO(id << " at " << x);
             MainWindow w;

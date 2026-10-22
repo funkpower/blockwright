@@ -13,6 +13,7 @@
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QTabletEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QScopedValueRollback>
@@ -103,6 +104,12 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     : QWidget(parent), doc_(doc), renderer_(renderer), glyphSet_(kDefaultGlyphSet) {
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
+    // A quarter strength is one rung a pass on the ramp shade brush; a
+    // mouse presses at 1, so pressure to size changes nothing without a
+    // stylus.
+    brush_.strength = 0.25;
+    brush_.pressure = PressureTo::Size;
+    ramp_ = *findRamp("steel");
     // Dead keys and compose sequences arrive as input-method commits.
     setAttribute(Qt::WA_InputMethodEnabled);
     // Undo and redo put the cursor back where the edit was made or left it.
@@ -133,6 +140,36 @@ void CanvasView::setPen(const Pen& pen) {
         return;
     pen_ = pen;
     emit penChanged(pen_);
+}
+
+void CanvasView::setBrushSettings(const BrushSettings& settings) {
+    BrushSettings s = settings;
+    s.size = std::clamp(s.size, 1, kMaxBrushSize);
+    s.strength = std::clamp(s.strength, 0.0, 1.0);
+    if (s == brush_)
+        return;
+    brush_ = s;
+    brushSettingsChanged();
+}
+
+void CanvasView::setRamp(const Ramp& ramp) {
+    if (ramp == ramp_ || !rampProblem(ramp).empty())
+        return;
+    ramp_ = ramp;
+    brushSettingsChanged();
+}
+
+void CanvasView::setLockTransparent(bool on) {
+    if (on == lockTransparent_)
+        return;
+    lockTransparent_ = on;
+    brushSettingsChanged();
+}
+
+void CanvasView::brushSettingsChanged() {
+    emit brushChanged();
+    if (tool_)
+        tool_->settingsChanged();
 }
 
 void CanvasView::setForeground(int index) { setPen({Color::indexed(std::uint8_t(index & 15)), pen_.bg}); }
@@ -208,7 +245,7 @@ void CanvasView::setTool(Tool* tool) {
         tool_->deactivate();
     }
     tool_ = tool;
-    toolMouse_ = false;
+    drag_ = Pointer::None;
     if (tool_) {
         connect(tool_, &Tool::changed, this, qOverload<>(&QWidget::update));
         tool_->activate(this);
@@ -237,7 +274,7 @@ void CanvasView::setSelection(const Selection& selection) {
 }
 
 void CanvasView::cancelTool() {
-    toolMouse_ = false;
+    drag_ = Pointer::None;
     if (tool_)
         tool_->cancel();
 }
@@ -245,7 +282,7 @@ void CanvasView::cancelTool() {
 void CanvasView::cancelDrag() {
     if (!tool_ || !tool_->dragging())
         return;
-    toolMouse_ = false;
+    drag_ = Pointer::None;
     tool_->cancelDrag();
 }
 
@@ -578,6 +615,22 @@ void CanvasView::typeText(const QString& text, int replaceStart, int replaceLeng
 
 namespace {
 
+// Which device a mouse event came from: Qt makes mouse events of a stylus's
+// unaccepted tablet events, from the stylus device.
+bool fromStylus(const QMouseEvent* e) {
+    const QPointingDevice* d = e->pointingDevice();
+    if (!d)
+        return false;
+    switch (d->type()) {
+    case QInputDevice::DeviceType::Stylus:
+    case QInputDevice::DeviceType::Airbrush:
+    case QInputDevice::DeviceType::Puck:
+        return true;
+    default:
+        return false;
+    }
+}
+
 ToolEvent toolEvent(const CanvasView& v, const QMouseEvent* e) {
     const QPoint p = v.toView(e->position());
     return {v.cellAt(p), v.halfRowAt(p), e->button(), e->buttons(), e->modifiers()};
@@ -585,34 +638,88 @@ ToolEvent toolEvent(const CanvasView& v, const QMouseEvent* e) {
 
 } // namespace
 
+CanvasView::Pointer CanvasView::pointerOf(const QMouseEvent* e) {
+    return fromStylus(e) ? Pointer::StylusMouse : Pointer::Mouse;
+}
+
+bool CanvasView::othersDrag(Pointer p) {
+    if (!tool_ || !tool_->dragging())
+        drag_ = Pointer::None;
+    return drag_ != Pointer::None && drag_ != p;
+}
+
 void CanvasView::mouseMoveEvent(QMouseEvent* e) {
+    if (othersDrag(pointerOf(e)))
+        return;
     if (!tool_ || !tool_->mouseMove(toolEvent(*this, e)))
         QWidget::mouseMoveEvent(e);
 }
 
 void CanvasView::mouseReleaseEvent(QMouseEvent* e) {
+    if (othersDrag(pointerOf(e)))
+        return;
     if (e->buttons() == Qt::NoButton)
-        toolMouse_ = false;
+        drag_ = Pointer::None;
     if (!tool_ || !tool_->mouseRelease(toolEvent(*this, e)))
         QWidget::mouseReleaseEvent(e);
 }
 
-void CanvasView::focusOutEvent(QFocusEvent* e) {
-    // Losing focus mid-drag (a window switch, a dialog) loses the mouse too:
-    // the drag ends where it started, but a floating selection from before
-    // it stays. A menu popup doesn't lose the mouse, and a floating selection
-    // stays for the menus to work on.
-    if (toolMouse_ && e->reason() != Qt::PopupFocusReason) {
-        toolMouse_ = false;
-        if (tool_)
-            tool_->cancelDrag();
+void CanvasView::tabletEvent(QTabletEvent* e) {
+    if (othersDrag(Pointer::Stylus)) {
+        // The mouse's drag: taken, so Qt makes no mouse event of it. A drag
+        // the stylus's mouse events started: left for Qt to go on making
+        // those, which drive it.
+        e->setAccepted(drag_ == Pointer::Mouse);
+        return;
     }
+    // A release reads no pressure: it lands with the pressure the stroke had.
+    double pressure = stylusPressure_;
+    if (e->type() != QEvent::TabletRelease)
+        pressure = stylusPressure_ = std::clamp(e->pressure(), 0.0, 1.0);
+    const QPoint p = toView(e->position());
+    const ToolEvent te{cellAt(p), halfRowAt(p), e->button(), e->buttons(), e->modifiers(), pressure};
+    bool taken = false;
+    switch (e->type()) {
+    case QEvent::TabletPress:
+        taken = tool_ && tool_->mousePress(te);
+        if (taken) {
+            drag_ = Pointer::Stylus;
+            setFocus(Qt::MouseFocusReason);
+        }
+        break;
+    case QEvent::TabletMove:
+        taken = tool_ && tool_->mouseMove(te);
+        break;
+    case QEvent::TabletRelease:
+        if (e->buttons() == Qt::NoButton)
+            drag_ = Pointer::None;
+        taken = tool_ && tool_->mouseRelease(te);
+        break;
+    default:
+        break;
+    }
+    // Taken, Qt makes no mouse event of it; otherwise the mouse event moves
+    // the cell cursor as a click does.
+    e->setAccepted(taken);
+}
+
+void CanvasView::focusOutEvent(QFocusEvent* e) {
+    // Losing focus mid-drag (a window switch, a dialog, a popup) loses the
+    // mouse too: the drag ends where it started, but a floating selection
+    // from before it stays. Once a popup has had a mouse event, Qt no longer
+    // sends the drag's release here, so a popup that opens ends a mouse drag
+    // at once. A stylus's tablet events come here popup or not, so its drag
+    // goes on and its own release ends it.
+    if (e->reason() != Qt::PopupFocusReason || drag_ != Pointer::Stylus)
+        cancelDrag();
     QWidget::focusOutEvent(e);
 }
 
 void CanvasView::mousePressEvent(QMouseEvent* e) {
+    if (othersDrag(pointerOf(e)))
+        return;
     if (tool_ && tool_->mousePress(toolEvent(*this, e))) {
-        toolMouse_ = true;
+        drag_ = pointerOf(e);
         setFocus(Qt::MouseFocusReason);
         return;
     }

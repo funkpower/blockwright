@@ -66,6 +66,7 @@ public:
     // the drag picked it up and stays floating; a new rectangle just ends.
     void cancelDrag() override;
     void finish() override { stamp(); }
+    bool dragging() const override { return drag_ != Drag::None; }
     bool mousePress(const ToolEvent& e) override;
     bool mouseMove(const ToolEvent& e) override;
     bool mouseRelease(const ToolEvent& e) override;

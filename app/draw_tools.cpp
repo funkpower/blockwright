@@ -4,6 +4,7 @@
 #include "document.h"
 
 #include "blockwright/brushes/drawing.h"
+#include "blockwright/brushes/shading.h"
 #include "blockwright/glyph_sets.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
@@ -94,6 +95,8 @@ void DragTool::takeSettings() {
     options_ = StrokeOptions{};
     options_.selection = selectionMask(view()->selection(), canvas().width(), canvas().height());
     options_.ice = view()->document()->ansi().ice;
+    options_.lockTransparent = view()->lockTransparent();
+    brushSettings_ = view()->brushSettings();
     mirror_ = view()->mirror();
 }
 
@@ -115,45 +118,56 @@ void DragTool::refresh() {
 }
 
 bool BrushTool::begin(const ToolEvent& e) {
-    brush_ = makeBrush(e.button);
+    button_ = e.button;
+    pen_ = view()->pen();
     dabs_.clear();
     rebuild();
-    addDab(e.cell, true);
+    addDab(Dab{e.cell.x(), e.cell.y(), e.pressure});
     return true;
 }
 
 bool BrushTool::extend(const ToolEvent& e) {
-    if (!dabs_.empty() && dabs_.back() == e.cell)
-        return false;
-    addDab(e.cell, true);
+    if (!dabs_.empty() && dabs_.back().x == e.cell.x() && dabs_.back().y == e.cell.y()) {
+        // Pressing harder where the pen is can grow the brush; anything else
+        // here paints nothing new (a stroke paints each cell once).
+        if (brushSettings().pressure == PressureTo::Nothing || e.pressure <= dabs_.back().pressure)
+            return false;
+    }
+    addDab(Dab{e.cell.x(), e.cell.y(), e.pressure});
     return true;
 }
 
-void BrushTool::addDab(QPoint cell, bool join) {
-    dabs_.push_back(cell);
-    stroke_->addDab(Dab{cell.x(), cell.y()}, join);
+void BrushTool::addDab(const Dab& d) {
+    dabs_.push_back(d);
+    stroke_->addDab(d);
     if (unclipped_)
-        unclipped_->addDab(Dab{cell.x(), cell.y()}, join);
+        unclipped_->addDab(d);
     if (mirrorStroke_)
-        mirrorStroke_->addDab(Dab{mirrorColumn(canvas().width(), cell.x()), cell.y()}, join);
+        mirrorStroke_->addDab(Dab{mirrorColumn(canvas().width(), d.x), d.y, d.pressure});
 }
 
 void BrushTool::rebuild() {
-    const std::vector<QPoint> dabs = std::move(dabs_);
+    const std::vector<Dab> dabs = std::move(dabs_);
     dabs_.clear();
-    stroke_.emplace(canvas(), *brush_, BrushSettings{}, options());
+    // The strokes hold the brush: they go first. A new brush takes the ramp
+    // as it is now, and the pen the drag was pressed with.
+    stroke_.reset();
     mirrorStroke_.reset();
     unclipped_.reset();
+    brush_ = makeBrush(button_);
+    stroke_.emplace(canvas(), *brush_, brushSettings(), options());
     if (mirror() && mirrorDabs()) {
-        mirrorStroke_.emplace(canvas(), *brush_, BrushSettings{}, options());
+        StrokeOptions flipped = options();
+        flipped.mirrorTip = true;
+        mirrorStroke_.emplace(canvas(), *brush_, brushSettings(), std::move(flipped));
     } else if (mirror()) {
         // the mirror is made from the whole stroke, then clipped on its own
         StrokeOptions all;
         all.ice = options().ice;
-        unclipped_.emplace(canvas(), *brush_, BrushSettings{}, std::move(all));
+        unclipped_.emplace(canvas(), *brush_, brushSettings(), std::move(all));
     }
-    for (const QPoint& d : dabs)
-        addDab(d, true);
+    for (const Dab& d : dabs)
+        addDab(d);
 }
 
 CellEdit BrushTool::edit() const {
@@ -163,11 +177,23 @@ CellEdit BrushTool::edit() const {
     if (!mirror())
         return e;
     if (mirrorStroke_) {
-        // The mirror cells as the mirrored dabs paint them; where both
-        // strokes reach a cell (the middle column) this one's wins.
+        // The mirror cells as the mirrored dabs paint them. Where both
+        // strokes reach a cell, the one that painted it with the stronger
+        // dab wins, this one on a tie: so the cell and its mirror take the
+        // same strength.
+        const auto mirrorWins = [this](int x, int y) {
+            const auto own = stroke_->paintedStrength(x, y);
+            const auto other = mirrorStroke_->paintedStrength(x, y);
+            return other && (!own || *other > *own);
+        };
+        std::vector<CellChange> changes;
+        for (const CellChange& c : e.changes)
+            if (!mirrorWins(c.x, c.y))
+                changes.push_back(c);
         for (const CellChange& c : mirrorStroke_->edit().changes)
-            if (!stroke_->painted(c.x, c.y))
-                e.changes.push_back(c);
+            if (mirrorWins(c.x, c.y))
+                changes.push_back(c);
+        e.changes = std::move(changes);
         return e;
     }
     // The mirror image of the whole stroke, before the selection and the
@@ -191,12 +217,29 @@ void BrushTool::reset() {
     unclipped_.reset();
     dabs_.clear();
     brush_.reset();
+    button_ = Qt::NoButton;
 }
 
 ShadeTool::ShadeTool(QObject* parent) : BrushTool(QStringLiteral("shade"), tr("Sh&ade Brush"), parent) {}
 
 std::unique_ptr<Brush> ShadeTool::makeBrush(Qt::MouseButton button) const {
-    return std::make_unique<ShadeBrush>(view()->pen(), button == Qt::RightButton);
+    return std::make_unique<ShadeBrush>(pen(), button == Qt::RightButton);
+}
+
+RampShadeTool::RampShadeTool(QObject* parent)
+    : BrushTool(QStringLiteral("rampShade"), tr("&Ramp Shade Brush"), parent) {}
+
+QString RampShadeTool::status() const {
+    return view() ? tr("Ramp %1").arg(QString::fromStdString(view()->ramp().name)) : QString();
+}
+
+std::unique_ptr<Brush> RampShadeTool::makeBrush(Qt::MouseButton button) const {
+    // At full strength a pass moves a whole colour, four rungs; Stroke scales
+    // that by the strength (and pressure), rounded and never below a rung.
+    return std::make_unique<RampShadeBrush>(view()->ramp(),
+                                            button == Qt::RightButton ? ShadeDirection::Darken
+                                                                      : ShadeDirection::Lighten,
+                                            kRungsPerStep);
 }
 
 GlyphTool::GlyphTool(QObject* parent)
@@ -230,18 +273,17 @@ std::unique_ptr<Brush> GlyphTool::makeBrush(Qt::MouseButton button) const {
         return std::make_unique<GlyphBrush>(Cell{});
     Cell c;
     c.ch = glyph_;
-    c.fg = view()->pen().fg;
-    c.bg = view()->pen().bg;
+    c.fg = pen().fg;
+    c.bg = pen().bg;
     return std::make_unique<GlyphBrush>(c);
 }
 
 ColorizeTool::ColorizeTool(QObject* parent) : BrushTool(QStringLiteral("colorize"), tr("&Colorize Brush"), parent) {}
 
 std::unique_ptr<Brush> ColorizeTool::makeBrush(Qt::MouseButton button) const {
-    const Pen& pen = view()->pen();
     if (button == Qt::RightButton)
-        return std::make_unique<ColorizeBrush>(std::nullopt, pen.bg);
-    return std::make_unique<ColorizeBrush>(pen.fg, std::nullopt);
+        return std::make_unique<ColorizeBrush>(std::nullopt, pen().bg);
+    return std::make_unique<ColorizeBrush>(pen().fg, std::nullopt);
 }
 
 HalfBlockTool::HalfBlockTool(QObject* parent)

@@ -44,12 +44,16 @@ namespace {
 // The footprint's cells in columns x0..x1 and rows y0..y1, which lie within
 // int. Only the cells in range are visited, so a big brush costs no more
 // than the canvas.
+// Mirrored, the tip's cell at dx lands at x - dx instead, so an even size
+// reaches one column further right; the columns are still visited left to
+// right.
 std::vector<std::pair<int, int>> cover(int x, int y, int size, Tip tip, long long x0, long long y0, long long x1,
-                                       long long y1) {
+                                       long long y1, bool mirrored = false) {
     size = std::clamp(size, 1, kMaxBrushSize);
     std::vector<std::pair<int, int>> out;
     const int lo = -(size / 2), hi = lo + size - 1;
-    const long long dxLo = std::max<long long>(lo, x0 - x), dxHi = std::min<long long>(hi, x1 - x);
+    const long long dxLo = std::max<long long>(lo, mirrored ? x - x1 : x0 - x),
+                    dxHi = std::min<long long>(hi, mirrored ? x - x0 : x1 - x);
     // Round: cell centres within a circle `size` columns across, rows two
     // columns tall. An odd size centres on the dab; an even one is centred
     // half a cell left of it, and a multiple of four (an even number of
@@ -59,13 +63,14 @@ std::vector<std::pair<int, int>> cover(int x, int y, int size, Tip tip, long lon
     const long long dyLo = std::max<long long>(tip == Tip::Square ? lo : -rows, y0 - y),
                     dyHi = std::min<long long>(tip == Tip::Square ? hi : rows, y1 - y);
     for (long long dy = dyLo; dy <= dyHi; ++dy)
-        for (long long dx = dxLo; dx <= dxHi; ++dx) {
+        for (long long i = dxLo; i <= dxHi; ++i) {
+            const long long dx = mirrored ? dxHi - (i - dxLo) : i;
             if (tip == Tip::Round) {
                 const double fx = double(dx) + shiftX, fy = 2.0 * double(dy) + shiftY;
                 if (fx * fx + fy * fy > r * r + 1e-9)
                     continue;
             }
-            out.emplace_back(x + static_cast<int>(dx), y + static_cast<int>(dy));
+            out.emplace_back(static_cast<int>(mirrored ? x - dx : x + dx), y + static_cast<int>(dy));
         }
     return out;
 }
@@ -77,8 +82,8 @@ std::vector<std::pair<int, int>> footprint(int x, int y, int size, Tip tip) {
     return cover(x, y, size, tip, INT_MIN, INT_MIN, INT_MAX, INT_MAX);
 }
 
-std::vector<std::pair<int, int>> footprint(int x, int y, int size, Tip tip, int width, int height) {
-    return cover(x, y, size, tip, 0, 0, width - 1LL, height - 1LL);
+std::vector<std::pair<int, int>> footprint(int x, int y, int size, Tip tip, int width, int height, bool mirrored) {
+    return cover(x, y, size, tip, 0, 0, width - 1LL, height - 1LL, mirrored);
 }
 
 namespace {
@@ -228,11 +233,15 @@ std::vector<std::pair<int, int>> line4(int x0, int y0, int x1, int y1, long long
 
 void Brush::dab(Stroke& stroke, const Dab& d, int size, double strength) const {
     const Canvas& c = stroke.canvas();
-    for (const auto& [x, y] : footprint(d.x, d.y, size, stroke.settings().tip, c.width(), c.height())) {
-        if (!stroke.paintable(x, y) || stroke.painted(x, y))
+    for (const auto& [x, y] :
+         footprint(d.x, d.y, size, stroke.settings().tip, c.width(), c.height(), stroke.options().mirrorTip)) {
+        if (!stroke.paintable(x, y))
+            continue;
+        // painted already at this strength or more: one pass is one step
+        if (const auto done = stroke.paintedStrength(x, y); done && *done >= strength)
             continue;
         if (const auto c = paintCell(stroke, x, y, strength))
-            stroke.set(x, y, *c);
+            stroke.set(x, y, *c, strength);
     }
 }
 
@@ -280,7 +289,12 @@ std::optional<Cell> Stroke::cellAt(int x, int y) const {
     if (!canvas_.contains(x, y))
         return std::nullopt;
     const auto it = painted_.find({y, x});
-    return it != painted_.end() ? it->second : canvas_.at(x, y);
+    return it != painted_.end() ? it->second.cell : canvas_.at(x, y);
+}
+
+std::optional<double> Stroke::paintedStrength(int x, int y) const {
+    const auto it = painted_.find({y, x});
+    return it != painted_.end() ? std::optional<double>(it->second.strength) : std::nullopt;
 }
 
 std::optional<Cell> Stroke::originalAt(int x, int y) const {
@@ -297,26 +311,26 @@ bool Stroke::paintable(int x, int y) const {
     return !(options_.lockTransparent && canvas_.at(x, y).transparent);
 }
 
-bool Stroke::set(int x, int y, const Cell& c) {
+bool Stroke::set(int x, int y, const Cell& c, double strength) {
     if (!paintable(x, y))
         return false;
-    painted_[{y, x}] = c;
+    painted_[{y, x}] = Painted{c, strength};
     return true;
 }
 
 Canvas Stroke::preview() const {
     Canvas out = canvas_;
-    for (const auto& [yx, c] : painted_)
-        out.at(yx.second, yx.first) = c;
+    for (const auto& [yx, p] : painted_)
+        out.at(yx.second, yx.first) = p.cell;
     return out;
 }
 
 CellEdit Stroke::edit() const {
     CellEdit e;
-    for (const auto& [yx, c] : painted_) {
+    for (const auto& [yx, p] : painted_) {
         const Cell& before = canvas_.at(yx.second, yx.first);
-        if (!(before == c))
-            e.changes.push_back({yx.second, yx.first, before, c});
+        if (!(before == p.cell))
+            e.changes.push_back({yx.second, yx.first, before, p.cell});
     }
     return e;
 }

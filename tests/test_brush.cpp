@@ -2,6 +2,7 @@
 // strokes, masks, pressure, preview and the one-delta-per-stroke edit) and
 // the ramp shade brush.
 
+#include "blockwright/ansi.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/ramp.h"
@@ -72,8 +73,26 @@ TEST_CASE("the named ramps, colour for colour", "[ramp]") {
         CHECK(rampProblem(*r).empty());
         CHECK(r->colours.front() == Black);
     }
-    CHECK(findRamp("fire")->colours == std::vector<std::uint8_t>{Black, Red, LightRed, Yellow, White});
-    CHECK(steel().colours == std::vector<std::uint8_t>{Black, DarkGrey, Grey, White});
+    // every ramp, colour for colour
+    using C = std::vector<std::uint8_t>;
+    const std::vector<std::pair<const char*, C>> expected = {
+        {"fire", {Black, Red, LightRed, Yellow, White}},
+        {"sunset", {Black, Blue, Magenta, LightMagenta, LightRed, Yellow}},
+        {"ice", {Black, Blue, LightBlue, LightCyan, White}},
+        {"grass", {Black, Green, LightGreen, Yellow}},
+        {"steel", {Black, DarkGrey, Grey, White}},
+        {"skin", {Black, Red, Brown, LightRed, Yellow}},
+        {"sea", {Black, Blue, Cyan, LightCyan}},
+        {"toxic", {Black, Green, LightGreen, LightCyan, White}},
+        {"violet", {Black, Magenta, LightMagenta, White}},
+        {"wood", {Black, Red, Brown, Yellow}},
+    };
+    REQUIRE(namedRamps().size() == expected.size());
+    for (size_t i = 0; i < expected.size(); ++i) {
+        INFO(expected[i].first);
+        CHECK(namedRamps()[i].name == expected[i].first);
+        CHECK(namedRamps()[i].colours == expected[i].second);
+    }
     CHECK_FALSE(findRamp("plaid"));
     CHECK_FALSE(rampProblem(Ramp{"", {Black}}).empty());
     CHECK_FALSE(rampProblem(Ramp{"", {Black, Red, Black}}).empty());
@@ -264,6 +283,132 @@ TEST_CASE("a pass steps each cell once however often the stroke crosses it", "[b
     CHECK(rungOf(steel(), d.at(4, 1)) == 2);
 }
 
+TEST_CASE("a cell takes the strongest dab that covers it, once, from its original value", "[brush]") {
+    const Canvas c = filled(9, 5, solid(Black));
+    const RampShadeBrush up(steel(), ShadeDirection::Lighten, 4);
+    BrushSettings s;
+    s.pressure = PressureTo::Strength;
+    auto rung = [&](const CellEdit& e, int x, int y) -> std::optional<int> {
+        for (const CellChange& ch : e.changes)
+            if (ch.x == x && ch.y == y)
+                return rungOf(steel(), ch.after);
+        return std::nullopt;
+    };
+    // A pen touches down lightly and presses harder where it is: the cell
+    // ends at the peak's strength, one change from black, not 1 + 2 + 4.
+    CellEdit e = paintStroke(c, up, s, {{0, 0, 0.05}, {0, 0, 0.5}, {0, 0, 1.0}});
+    REQUIRE(e.changes.size() == 1);
+    CHECK(e.changes[0].before == solid(Black));
+    CHECK(rung(e, 0, 0) == 4);
+    // A weaker dab after it leaves the cell alone.
+    CHECK(rung(paintStroke(c, up, s, {{0, 0, 1.0}, {0, 0, 0.25}}), 0, 0) == 4);
+    CHECK(rung(paintStroke(c, up, s, {{0, 0, 0.5}, {0, 0, 0.25}, {0, 0, 0.5}}), 0, 0) == 2);
+    // A line at full pressure back over a light start repaints it, once.
+    e = paintStroke(c, up, s, {{0, 2, 0.25}, {4, 2, 1.0}, {0, 2, 1.0}});
+    for (int x = 0; x <= 4; ++x)
+        CHECK(rung(e, x, 2) == 4);
+    // A wider dab repaints the cells it shares with a weaker one at its
+    // strength too, from their original value.
+    s.size = 3;
+    e = paintStroke(c, up, s, {{4, 2, 0.25}, {4, 2, 0.75}});
+    REQUIRE(e.changes.size() == 9);
+    for (const CellChange& ch : e.changes) {
+        CHECK(ch.before == solid(Black));
+        CHECK(rungOf(steel(), ch.after) == 3);
+    }
+    // Only strength repaints: the same strength crossing again is one pass.
+    s.size = 1;
+    s.pressure = PressureTo::Nothing;
+    CHECK(rung(paintStroke(c, up, s, {{0, 0}, {3, 0}, {0, 0}}), 0, 0) == 4);
+    // The preview shows what lands.
+    s.pressure = PressureTo::Strength;
+    Stroke st(c, up, s);
+    st.addDab({1, 1, 0.25});
+    st.addDab({1, 1, 1.0});
+    CHECK(rungOf(steel(), st.preview().at(1, 1)) == 4);
+}
+
+TEST_CASE("with iCE off the ramp brush never writes a cell that needs a bright background", "[brush][ladder]") {
+    // Every ramp, every rung in both forms as a start, every step count,
+    // up and down: whatever is written shows as a rung of the ramp with
+    // iCE off (a dark background, no blink).
+    StrokeOptions off;
+    off.ice = false;
+    auto shows = [](const Ramp& r, const Cell& c) {
+        return c.bg.paletteIndex() < 8 && !(c.attrs & attr::Blink) && rungOf(r, iceCell(c, false));
+    };
+    for (const Ramp& r : namedRamps())
+        for (const auto dir : {ShadeDirection::Lighten, ShadeDirection::Darken})
+            for (int steps = 1; steps <= 4; ++steps)
+                for (int k = 0; k <= r.topRung(); ++k)
+                    for (const auto form : {ShadeForm::LightOnTop, ShadeForm::DarkOnTop}) {
+                        INFO(r.name << (dir == ShadeDirection::Lighten ? " lighten " : " darken ") << steps
+                                    << " from rung " << k << " form " << int(form));
+                        const Cell start = rungCell(r, k, form);
+                        const RampShadeBrush brush(r, dir, steps);
+                        const CellEdit e = paintStroke(filled(1, 1, start), brush, {}, {{0, 0}}, off);
+                        for (const CellChange& ch : e.changes) {
+                            CHECK(shows(r, ch.after));
+                            CHECK(neighbourShade(r, ch.after));
+                            // never past the step, never the wrong way
+                            const int d = *rungOf(r, ch.after) - k;
+                            CHECK((dir == ShadeDirection::Lighten ? d : -d) > 0);
+                            CHECK(std::abs(d) <= steps);
+                        }
+                    }
+    // Sweeping a cell from black to the top and back with each step count:
+    // every cell written shows as a rung, and a whole colour a pass (solid
+    // to solid) still reaches both ends.
+    for (const Ramp& r : namedRamps())
+        for (int steps = 1; steps <= 4; ++steps) {
+            INFO(r.name << " steps " << steps);
+            Canvas c = filled(1, 1, solid(Black));
+            for (const auto dir : {ShadeDirection::Lighten, ShadeDirection::Darken}) {
+                for (int pass = 0; pass < 2 * r.topRung(); ++pass) {
+                    const CellEdit e = paintStroke(c, RampShadeBrush(r, dir, steps), {}, {{0, 0}}, off);
+                    for (const CellChange& ch : e.changes)
+                        CHECK(shows(r, ch.after));
+                    e.apply(c);
+                }
+                if (dir == ShadeDirection::Lighten && steps == kRungsPerStep)
+                    CHECK(rungOf(r, c.at(0, 0)) == r.topRung());
+            }
+            CHECK(c.at(0, 0) == solid(Black));
+        }
+    // Every glyph in every pair of colours: what is written shows as a rung,
+    // and a cell that blinks with iCE off (a bright background) is left.
+    const char32_t glyphs[] = {U' ', kFullBlock, kShadeLight, kShadeMedium, kShadeDark, kUpperHalf, U'A'};
+    Canvas grid(16 * 16, std::size(glyphs));
+    for (size_t g = 0; g < std::size(glyphs); ++g)
+        for (int fg = 0; fg < 16; ++fg)
+            for (int bg = 0; bg < 16; ++bg)
+                grid.at(fg * 16 + bg, int(g)) = shade(glyphs[g], std::uint8_t(fg), std::uint8_t(bg));
+    for (const Ramp& r : namedRamps())
+        for (const auto dir : {ShadeDirection::Lighten, ShadeDirection::Darken})
+            for (const int steps : {1, 2, 3, 4}) {
+                INFO(r.name << (dir == ShadeDirection::Lighten ? " lighten " : " darken ") << steps);
+                for (const CellChange& ch : paintRegion(grid, RampShadeBrush(r, dir, steps), {}, off).changes) {
+                    INFO("cell " << ch.x << "," << ch.y);
+                    CHECK(ch.before.bg.paletteIndex() < 8);
+                    CHECK(shows(r, ch.after));
+                }
+            }
+    // fire with iCE off: two whole colours up is LightRed; a rung more needs
+    // LightRed and Yellow, two brights, either way round, so it stays.
+    const Ramp fire = *findRamp("fire");
+    Canvas c = filled(1, 1, solid(Black));
+    for (int i = 0; i < 2; ++i)
+        paintStroke(c, RampShadeBrush(fire, ShadeDirection::Lighten, 4), {}, {{0, 0}}, off).apply(c);
+    REQUIRE(rungOf(fire, c.at(0, 0)) == 8);
+    CHECK(paintStroke(c, RampShadeBrush(fire, ShadeDirection::Lighten, 1), {}, {{0, 0}}, off).changes.empty());
+    CHECK(stepRung(fire, c.at(0, 0), 1, false) == std::nullopt);
+    // Further than that stops at the last rung that shows: from Red▒LightRed
+    // three rungs up is LightRed, not the rung past it.
+    CHECK(stepRung(fire, rungCell(fire, 6), 3, false) == rungCell(fire, 8));
+    // iCE on writes the two-bright shade as before.
+    CHECK(rungOf(fire, *stepRung(fire, c.at(0, 0), 1)) == 9);
+}
+
 TEST_CASE("footprints", "[brush]") {
     using P = std::vector<std::pair<int, int>>;
     CHECK(footprint(5, 5, 1, Tip::Square) == P{{5, 5}});
@@ -287,6 +432,50 @@ TEST_CASE("footprints", "[brush]") {
         const auto [lo, hi] = std::minmax_element(fp.begin(), fp.end());
         CHECK(hi->second - lo->second + 1 <= size / 2 + 1);
     }
+}
+
+TEST_CASE("a mirrored tip covers the mirror image of the tip", "[brush]") {
+    // A dab at the mirror column with the tip mirrored covers exactly the
+    // mirror of the unmirrored dab's cells, even sizes included, in
+    // row-major order; on odd sizes mirroring changes nothing.
+    const int w = 23, h = 15;
+    for (const Tip tip : {Tip::Square, Tip::Round})
+        for (int size = 1; size <= 12; ++size)
+            for (const int x : {0, 3, 11, 20, 22}) {
+                INFO("size " << size << " x " << x << (tip == Tip::Round ? " round" : " square"));
+                std::vector<std::pair<int, int>> want;
+                for (const auto& [cx, cy] : footprint(x, 7, size, tip, w, h))
+                    want.emplace_back(w - 1 - cx, cy);
+                std::sort(want.begin(), want.end(), [](auto a, auto b) {
+                    return a.second != b.second ? a.second < b.second : a.first < b.first;
+                });
+                CHECK(footprint(w - 1 - x, 7, size, tip, w, h, true) == want);
+                if (size % 2)
+                    CHECK(footprint(x, 7, size, tip, w, h, true) == footprint(x, 7, size, tip, w, h));
+            }
+    using P = std::vector<std::pair<int, int>>;
+    CHECK(footprint(5, 5, 2, Tip::Square, 20, 20, true) == P{{5, 4}, {6, 4}, {5, 5}, {6, 5}});
+}
+
+TEST_CASE("a stroke with a mirrored tip paints the mirror of the stroke", "[brush]") {
+    const int w = 16, h = 9;
+    const Canvas c = filled(w, h, solid(Black));
+    const RampShadeBrush up(steel(), ShadeDirection::Lighten);
+    BrushSettings s;
+    s.size = 4;
+    s.tip = Tip::Round;
+    StrokeOptions mirrored;
+    mirrored.mirrorTip = true;
+    const std::vector<Dab> dabs = {{2, 2}, {2, 5}, {6, 6}};
+    std::vector<Dab> mirrorDabs;
+    for (const Dab& d : dabs)
+        mirrorDabs.push_back({w - 1 - d.x, d.y});
+    std::set<std::pair<int, int>> want, got;
+    for (const CellChange& ch : paintStroke(c, up, s, dabs).changes)
+        want.emplace(w - 1 - ch.x, ch.y);
+    for (const CellChange& ch : paintStroke(c, up, s, mirrorDabs, mirrored).changes)
+        got.emplace(ch.x, ch.y);
+    CHECK(got == want);
 }
 
 namespace {

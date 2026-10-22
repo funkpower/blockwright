@@ -14,7 +14,12 @@ namespace bw {
 // where the other way wouldn't (see rungCell). Empty when the cell isn't on the ramp (text, half blocks,
 // colours the ramp doesn't have, a shade of two non-neighbours) or the step
 // changes nothing.
-std::optional<Cell> stepRung(const Ramp& ramp, const Cell& cell, int steps);
+// With `ice` off the cell is read as it shows (a bright background is its
+// dark colour, blinking: off the ramp), and a rung that needs a bright
+// background either way round (a shade of two bright neighbours) is never
+// written: the step stops at the last rung short of the target that
+// doesn't, and is empty if there is none.
+std::optional<Cell> stepRung(const Ramp& ramp, const Cell& cell, int steps, bool ice = true);
 
 enum class ShadeDirection { Lighten, Darken };
 
@@ -22,7 +27,9 @@ enum class ShadeDirection { Lighten, Darken };
 // rung (or `steps` rungs) along the ramp. Strength (pressure, with
 // PressureTo::Strength) scales the step count, rounded and never below one
 // rung, so it changes nothing at the default of one step: there is no
-// randomness or partial step. Cells off the ramp are left alone.
+// randomness or partial step. Cells off the ramp are left alone. With the
+// stroke's iCE colours off it writes no cell that needs a bright background
+// (stepRung).
 class RampShadeBrush : public Brush {
 public:
     RampShadeBrush(Ramp ramp, ShadeDirection direction, int steps = 1);

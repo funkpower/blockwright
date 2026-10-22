@@ -1,6 +1,8 @@
 # The GUI: Qt 6 Widgets. The window and its parts live in a library so the
 # tests can drive them without the executable.
 add_library(blockwright_app STATIC
+  brush_dock.cpp
+  brush_dock.h
   canvas_view.cpp
   canvas_view.h
   device_grid.cpp

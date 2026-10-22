@@ -16,12 +16,16 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <QAction>
 #include <QApplication>
 #include <QColor>
 #include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
+#include <QPointingDevice>
+#include <QTabletEvent>
+#include <QUndoStack>
 
 #include <algorithm>
 #include <cmath>
@@ -256,6 +260,40 @@ TEST_CASE("a view whose origin falls inside a device pixel starts on the next on
         const QRect cursorWidget = v->toWidget(v->cellRect(v->cellCursor()));
         CHECK(QRect(QPoint(0, 0), v->size()).contains(cursorWidget));
         doc.undoStack()->undo();
+    }
+}
+
+TEST_CASE("a stylus paints the cell under it at a fractional device pixel ratio") {
+    MainWindow w;
+    w.show();
+    QApplication::processEvents();
+    CanvasView* v = w.canvasView();
+    auto* glyph = w.findChild<QAction*>(QStringLiteral("glyphTool"));
+    REQUIRE(glyph);
+    glyph->trigger();
+    static const QPointingDevice pen(QStringLiteral("test stylus"), 4242, QInputDevice::DeviceType::Stylus,
+                                     QPointingDevice::PointerType::Pen,
+                                     QInputDevice::Capability::Position | QInputDevice::Capability::Pressure, 1, 3);
+    const QPoint cell(9, 3);
+    for (int zoom : {1, 2, 3, 5}) {
+        CAPTURE(zoom);
+        v->setZoom(zoom);
+        QApplication::processEvents();
+        const QPointF at = QRectF(v->toWidget(v->cellRect(cell))).center();
+        for (QEvent::Type type : {QEvent::TabletPress, QEvent::TabletRelease}) {
+            const bool down = type == QEvent::TabletPress;
+            QTabletEvent e(type, &pen, at, v->mapToGlobal(at), down ? 1.0 : 0.0, 0, 0, 0, 0, 0, Qt::NoModifier,
+                           Qt::LeftButton, down ? Qt::LeftButton : Qt::NoButton);
+            QApplication::sendEvent(v, &e);
+        }
+        const Canvas& c = w.document()->canvas();
+        CHECK_FALSE(c.at(cell.x(), cell.y()) == Cell{});
+        int painted = 0;
+        for (int y = 0; y < c.height(); ++y)
+            for (int x = 0; x < c.width(); ++x)
+                painted += !(c.at(x, y) == Cell{});
+        CHECK(painted == 1);
+        w.document()->undoStack()->undo();
     }
 }
 

@@ -59,6 +59,8 @@ struct BrushSettings {
     Tip tip = Tip::Square;
     double strength = 1.0;   // 0-1; what it means is up to the brush
     PressureTo pressure = PressureTo::Nothing;
+
+    bool operator==(const BrushSettings&) const = default;
 };
 
 // One stamp of the brush, at a cell, with the tablet's pressure (0-1; a
@@ -79,8 +81,12 @@ struct Dab {
 // INT_MAX covers only the columns up to INT_MAX.
 std::vector<std::pair<int, int>> footprint(int x, int y, int size, Tip tip);
 // The same, clipped to a width × height canvas; it visits only the cells on
-// the canvas, so a huge size is cheap.
-std::vector<std::pair<int, int>> footprint(int x, int y, int size, Tip tip, int width, int height);
+// the canvas, so a huge size is cheap. `mirrored` flips the tip left to
+// right about the dab (an even size reaches one column further right
+// instead), so a dab at the mirror column covers the mirror image of the
+// cells the unmirrored dab covers.
+std::vector<std::pair<int, int>> footprint(int x, int y, int size, Tip tip, int width, int height,
+                                           bool mirrored = false);
 
 // The cells from one point to another, 4-connected (a diagonal step adds the
 // cell beside the corner first), so a fast drag between two dabs leaves no
@@ -105,11 +111,15 @@ public:
     virtual std::string_view name() const = 0;
     // Paints one dab: reads through the stroke and writes the cells it
     // changes with Stroke::set. `size` and `strength` already carry the dab's
-    // pressure. The default calls paintCell once for each covered cell the
-    // stroke hasn't painted yet, so a pass steps a cell once however often
-    // the stroke crosses it; a brush that builds up (smudge) overrides this.
+    // pressure. The default calls paintCell for each covered cell the stroke
+    // hasn't painted yet, or has painted only with a weaker dab: a cell
+    // changes once, from its value when the stroke began, with the strongest
+    // dab that has covered it. So a pass steps a cell once however often the
+    // stroke crosses it, and pressing harder deepens it rather than adding a
+    // pass. A brush that builds up (smudge) overrides this.
     virtual void dab(Stroke& stroke, const Dab& d, int size, double strength) const;
-    // One cell under the dab: its new value, or empty to leave it.
+    // One cell under the dab: its new value, made from the cell as the
+    // stroke began (Stroke::originalAt), or empty to leave it.
     virtual std::optional<Cell> paintCell(const Stroke& stroke, int x, int y, double strength) const;
 };
 
@@ -127,6 +137,10 @@ struct StrokeOptions {
     // The document's iCE colours setting. Half-block pixels (halfblock.h)
     // read and write cells by the colours they show with it.
     bool ice = true;
+    // Flip each dab's tip left to right (footprint's `mirrored`): mirror
+    // mode's second stroke, whose dabs sit at the mirror columns, so it
+    // covers the mirror image of the first stroke at every size.
+    bool mirrorTip = false;
 };
 
 // One stroke, from the first dab to release. Successive dabs are joined by a
@@ -138,12 +152,14 @@ public:
     // Stamps a dab, joined to the previous one by a 4-connected line unless
     // `join` is false (a new segment of the same stroke). A dab on the last
     // one's cell stamps again, so pressing harder without moving grows the
-    // brush; each cell is still painted once per stroke.
+    // brush or deepens the cells under it; each cell still changes once per
+    // stroke, at the strongest dab's strength.
     void addDab(const Dab& d, bool join = true);
 
     // The canvas as the stroke started.
     const Canvas& canvas() const { return canvas_; }
     const BrushSettings& settings() const { return settings_; }
+    const StrokeOptions& options() const { return options_; }
     // A cell as the stroke has left it so far; empty off the canvas.
     std::optional<Cell> cellAt(int x, int y) const;
     // A cell as it was when the stroke began; empty off the canvas.
@@ -151,11 +167,14 @@ public:
     // Whether this stroke has painted the cell already (even if it came out
     // the same).
     bool painted(int x, int y) const { return painted_.count({y, x}) != 0; }
+    // The strength the cell was painted at; empty if it hasn't been.
+    std::optional<double> paintedStrength(int x, int y) const;
     // Whether the stroke may paint the cell: on the canvas, in the
     // selection, and not transparent under the lock.
     bool paintable(int x, int y) const;
-    // Paints a cell; refused (false) where it isn't paintable.
-    bool set(int x, int y, const Cell& c);
+    // Paints a cell, at the strength of the dab that painted it; refused
+    // (false) where it isn't paintable.
+    bool set(int x, int y, const Cell& c, double strength = 1.0);
 
     // The canvas with the stroke so far, for a live preview.
     Canvas preview() const;
@@ -177,7 +196,11 @@ private:
     StrokeOptions options_;
     std::optional<Dab> last_;
     long long stamps_ = 0;
-    std::map<std::pair<int, int>, Cell> painted_;  // (y, x) -> cell, row-major
+    struct Painted {
+        Cell cell;
+        double strength;
+    };
+    std::map<std::pair<int, int>, Painted> painted_;  // (y, x) -> cell, row-major
 };
 
 // A whole stroke in one call: the dabs in order, then the delta.

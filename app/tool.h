@@ -39,6 +39,7 @@ struct ToolEvent {
     Qt::MouseButton button = Qt::NoButton;  // the button pressed or released
     Qt::MouseButtons buttons;               // the buttons held
     Qt::KeyboardModifiers modifiers;
+    double pressure = 1.0;  // a stylus's pressure, 0-1; a mouse gives 1
 };
 
 class Tool : public QObject {
@@ -76,7 +77,7 @@ public:
     virtual void cancel() {}
     // Ends a drag without an edit and undoes what the drag moved; what was
     // there before the drag (a floating selection) stays. The view calls it
-    // when it loses focus during a drag the tool took.
+    // when it loses focus or the mouse grab during a drag the tool took.
     virtual void cancelDrag() {}
     // Writes whatever is in progress onto the canvas as an edit. The view
     // calls it before an edit of its own (typing) and before the document is

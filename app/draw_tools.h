@@ -76,6 +76,9 @@ protected:
     // the last settingsChanged.
     const StrokeOptions& options() const { return options_; }
     bool mirror() const { return mirror_; }
+    // The view's brush settings, as they were at the press or the last
+    // settingsChanged.
+    const BrushSettings& brushSettings() const { return brushSettings_; }
     // The pen colour for a button, as a palette index.
     std::uint8_t colourFor(Qt::MouseButton button) const;
 
@@ -87,23 +90,30 @@ private:
     bool dragging_ = false;
     Qt::MouseButton button_ = Qt::NoButton;
     StrokeOptions options_;
+    BrushSettings brushSettings_;
     bool mirror_ = false;
     CellEdit current_;
     EditPreview preview_;
 };
 
-// A brush on the cell grid, one Stroke per drag. In mirror mode it
+// A brush on the cell grid, one Stroke per drag, painting with the view's
+// brush settings: size, tip, strength and what a stylus's pressure scales.
+// Each move adds a dab with the event's pressure; staying on a cell adds
+// one only when pressing harder there can grow the brush. In mirror mode it
 // mirrors the cells the whole stroke changes (mirrorEdit) and clips the
 // mirror to the selection, or with mirrorDabs a second stroke paints the
-// mirrored dabs over the mirror cells as they are.
+// mirrored dabs, tips mirrored, over the mirror cells as they are.
 class BrushTool : public DragTool {
     Q_OBJECT
 public:
     using DragTool::DragTool;
 
 protected:
-    // The brush for a drag with this button.
+    // The brush for a drag with this button, in pen().
     virtual std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const = 0;
+    // The pen the drag was pressed with: a pen change mid-stroke waits for
+    // the next one.
+    const Pen& pen() const { return pen_; }
     virtual bool mirrorDabs() const { return false; }
 
     bool begin(const ToolEvent& e) override;
@@ -113,14 +123,16 @@ protected:
     void reset() override;
 
 private:
-    void addDab(QPoint cell, bool join);
+    void addDab(const Dab& d);
 
+    Qt::MouseButton button_ = Qt::NoButton;
+    Pen pen_;
     std::unique_ptr<Brush> brush_;
     std::optional<Stroke> stroke_, mirrorStroke_;
     // In mirror mode without mirrorDabs: the same dabs unclipped, which the
     // mirror is made from.
     std::optional<Stroke> unclipped_;
-    std::vector<QPoint> dabs_;
+    std::vector<Dab> dabs_;
 };
 
 // Shade brush: left builds a cell up a step of space ░ ▒ ▓ █ in the pen's
@@ -129,6 +141,23 @@ class ShadeTool : public BrushTool {
     Q_OBJECT
 public:
     explicit ShadeTool(QObject* parent = nullptr);
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    bool mirrorDabs() const override { return true; }
+};
+
+// Ramp shade brush (PLAN §10): left lightens the cells under it along the
+// view's ramp, right darkens them, a rung a pass at a quarter strength and
+// up to a whole colour (four rungs) at full strength; pressure to strength
+// scales that. Cells off the ramp are left alone. Its glyphs are symmetric,
+// so mirror mode steps the mirror cells' own rungs.
+class RampShadeTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit RampShadeTool(QObject* parent = nullptr);
+
+    QString status() const override;
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;

@@ -41,6 +41,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(selectTool_);
     tools_->add(new HalfBlockTool);
     tools_->add(new ShadeTool);
+    tools_->add(new RampShadeTool);
     tools_->add(new GlyphTool);
     tools_->add(new ColorizeTool);
     QList<ShapeTool*> fillable;
@@ -154,6 +155,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("select"), QKeySequence(Qt::CTRL | Qt::Key_E)},
         {QStringLiteral("halfBlock"), QKeySequence(Qt::CTRL | Qt::Key_B)},
         {QStringLiteral("shade"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_B)},
+        {QStringLiteral("rampShade"), QKeySequence(Qt::CTRL | Qt::Key_T)},
         {QStringLiteral("glyph"), QKeySequence(Qt::CTRL | Qt::Key_G)},
         {QStringLiteral("colorize"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C)},
         {QStringLiteral("line"), QKeySequence(Qt::CTRL | Qt::Key_L)},
@@ -181,6 +183,16 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         for (ShapeTool* t : fillable)
             t->setFilled(on);
     });
+    // The brushes' size, a cell at a time (the Brush dock has the rest).
+    const auto stepSize = [this](int by) {
+        BrushSettings s = view_->brushSettings();
+        s.size += by;
+        view_->setBrushSettings(s);
+    };
+    add(toolsMenu, tr("&Smaller Brush"), "brushSmaller", QKeySequence(Qt::CTRL | Qt::Key_BracketLeft),
+        [stepSize] { stepSize(-1); });
+    add(toolsMenu, tr("&Larger Brush"), "brushLarger", QKeySequence(Qt::CTRL | Qt::Key_BracketRight),
+        [stepSize] { stepSize(1); });
     // The active tool's settings (the glyph brush's glyph) in the status bar.
     auto* toolStatus = new QLabel;
     toolStatus->setObjectName(QStringLiteral("toolStatusLabel"));
@@ -193,6 +205,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     for (Tool* t : tools_->tools())
         connect(t, &Tool::changed, this, updateToolStatus);
     connect(tools_, &ToolRegistry::activeChanged, this, updateToolStatus);
+    connect(view_, &CanvasView::brushChanged, this, updateToolStatus);
     updateToolStatus();
 
     // Selection.

@@ -16,11 +16,14 @@
 // pixels at a whole device pixel ratio, whole device pixels at a fractional
 // one, so every canvas pixel is a whole block of device pixels.
 
+#include "blockwright/brush.h"
 #include "blockwright/canvas_renderer.h"
 #include "blockwright/edit.h"
+#include "blockwright/ramp.h"
 #include "blockwright/selection.h"
 
 #include <QImage>
+#include <QPointingDevice>
 #include <QWidget>
 #include <QtGlobal>
 
@@ -56,6 +59,18 @@ public:
     // The pen's colours one at a time, as palette indices.
     void setForeground(int index);
     void setBackground(int index);
+
+    // What the brush tools paint with, like the pen: the brush settings
+    // (size, tip, strength, what a stylus's pressure scales), the ramp the
+    // ramp brushes walk, and the alpha lock, which leaves transparent cells
+    // alone (until layers have their own, PLAN §5). A change redoes a drag
+    // in progress, so what it shows stays what it lands.
+    const BrushSettings& brushSettings() const { return brush_; }
+    void setBrushSettings(const BrushSettings& settings);  // size and strength clamped
+    const Ramp& ramp() const { return ramp_; }
+    void setRamp(const Ramp& ramp);  // ignored if rampProblem finds one
+    bool lockTransparent() const { return lockTransparent_; }
+    void setLockTransparent(bool on);
 
     // The F-key glyph set (glyph_sets.h), wrapping round at either end.
     int glyphSet() const { return glyphSet_; }
@@ -153,6 +168,8 @@ signals:
     // (or tried again) until the zoom, the canvas or the image changes.
     void referenceFailed();
     void selectionChanged();
+    // The brush settings, the ramp or the alpha lock changed.
+    void brushChanged();
 
 protected:
     bool event(QEvent* e) override;
@@ -162,6 +179,10 @@ protected:
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
+    // A stylus drives the tool as the mouse does, with its pressure in the
+    // ToolEvent; what the tool doesn't take is left for the mouse event Qt
+    // makes from it.
+    void tabletEvent(QTabletEvent* e) override;
     void focusOutEvent(QFocusEvent* e) override;
 
 private:
@@ -181,6 +202,7 @@ private:
     void cancelTool();
     // Ends a drag the tool has going, if any, without an edit.
     void cancelDrag();
+    void brushSettingsChanged();
 
     Document* doc_;
     CanvasRenderer* renderer_;
@@ -190,7 +212,22 @@ private:
     int glyphSet_;
     Tool* tool_ = nullptr;  // owned by the tool registry
     bool ownEdit_ = false;  // the view is pushing an edit
-    bool toolMouse_ = false;  // the tool took a press not yet released
+    // The device whose press started the tool's drag: it owns the drag, and
+    // the other device's events are ignored while the drag goes on. The
+    // ownership ends with the drag, however it ends (a release, Esc, a lost
+    // focus or grab), whatever buttons are still held. A stylus's events
+    // reach the view as tablet events, or as the mouse events Qt makes of
+    // the ones the view doesn't accept.
+    enum class Pointer { None, Mouse, Stylus, StylusMouse };
+    Pointer drag_ = Pointer::None;
+    static Pointer pointerOf(const QMouseEvent* e);
+    // Whether the tool's drag is going on and another device than `p` owns
+    // it; clears the owner of a drag that has ended.
+    bool othersDrag(Pointer p);
+    BrushSettings brush_;
+    Ramp ramp_;
+    bool lockTransparent_ = false;
+    double stylusPressure_ = 1.0;  // the last press or move's, for its release
     Selection selection_;
     bool mirror_ = false;
     QSize guide_;
