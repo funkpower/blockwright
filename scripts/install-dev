@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Build a Blockwright ref and install it as the dev build (run on the dev machine).
+#
+#   scripts/install-dev [--ref REF] [--prefix DIR] [--bin-dir DIR] [--build-dir DIR] [--check-paths]
+#
+#   --ref          commit-ish to build (default: origin/main, fetched first)
+#   --prefix       install tree, below ~/.local/opt/ (default: ~/.local/opt/blockwright-dev)
+#   --bin-dir      where the -dev symlinks go (default: ~/.local/bin)
+#   --build-dir    source export + build tree, below ~/.cache/dw/
+#                  (default: ~/.cache/dw/blockwright-dev-build)
+#   --check-paths  check the paths, print them and stop
+#
+# The script deletes inside the build dir and replaces the prefix, so both
+# must resolve (symlinks followed) to below ~/.cache/dw/ and ~/.local/opt/,
+# and those roots and the directories leading to them from $HOME must not be
+# symlinks. --bin-dir must resolve to below $HOME. Anything else is refused
+# before a command runs.
+#
+# The ref is exported with `git archive`, so uncommitted changes in the
+# working tree never reach the build. The exported files carry the commit's
+# time, which can be older than objects built from another commit, so the
+# build tree is wiped whenever the commit differs from the last one built
+# there (recorded in <build-dir>/built-commit). Installs the CLI as
+# blockwright-cli-dev; the GUI and its .desktop entry come once the GUI exists.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+ref=origin/main
+prefix=$HOME/.local/opt/blockwright-dev
+bin_dir=$HOME/.local/bin
+build_dir=$HOME/.cache/dw/blockwright-dev-build
+check_only=
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --ref) ref=$2; shift 2 ;;
+    --prefix) prefix=$2; shift 2 ;;
+    --bin-dir) bin_dir=$2; shift 2 ;;
+    --build-dir) build_dir=$2; shift 2 ;;
+    --check-paths) check_only=1; shift ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    *) echo "install-dev: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+
+# real_root <rel>: refuse if $HOME/<rel> or a directory between it and $HOME
+# is a symlink, since the check below resolves the root it compares against
+real_root() {
+  local d=$HOME part
+  local IFS=/
+  for part in $1; do
+    d=$d/$part
+    if [[ -L $d ]]; then
+      echo "install-dev: refusing to run: $d is a symlink" >&2; exit 2
+    fi
+  done
+}
+
+# below <name> <path> <root>: print <path> resolved, or refuse unless it is
+# strictly below <root>
+below() {
+  local name=$1 path=$2 root
+  root=$(realpath -m -- "$3")
+  if [[ -z $path ]]; then
+    echo "install-dev: refusing an empty $name" >&2; exit 2
+  fi
+  path=$(realpath -m -- "$path")
+  if [[ $path != "$root"/?* ]]; then
+    echo "install-dev: refusing $name $path: it must be below $root/" >&2; exit 2
+  fi
+  printf '%s\n' "$path"
+}
+real_root .cache/dw
+real_root .local/opt
+build_dir=$(below --build-dir "$build_dir" "$HOME/.cache/dw") || exit 2
+prefix=$(below --prefix "$prefix" "$HOME/.local/opt") || exit 2
+bin_dir=$(below --bin-dir "$bin_dir" "$HOME") || exit 2
+if [[ $check_only ]]; then
+  printf 'build-dir: %s\nprefix:    %s\nbin-dir:   %s\n' "$build_dir" "$prefix" "$bin_dir"
+  exit 0
+fi
+
+if [[ $ref == origin/* ]]; then
+  GIT_ASKPASS=$repo/scripts/git-askpass git -C "$repo" fetch -q origin
+fi
+full=$(git -C "$repo" rev-parse "$ref^{commit}")
+commit=$(git -C "$repo" rev-parse --short "$full")
+echo "install-dev: building $ref ($commit)"
+
+src=$build_dir/src
+build=$build_dir/build
+stamp=$build_dir/built-commit
+if [[ ! -f $stamp || $(<"$stamp") != "$full" ]]; then
+  rm -rf "$build" "$stamp"
+fi
+rm -rf "$src"
+mkdir -p "$src" "$build"
+git -C "$repo" archive "$full" | tar -x -C "$src"
+
+cmake -S "$src" -B "$build" -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DBUILD_TESTING=OFF \
+  -DBLOCKWRIGHT_GIT_COMMIT="$commit" \
+  -DCMAKE_INSTALL_PREFIX="$prefix" >/dev/null
+nice -n 10 cmake --build "$build" -j 8
+echo "$full" > "$stamp"
+
+# Install into a fresh tree beside the old one, then swap, so a failed
+# install leaves the previous dev build working. <prefix>.new and .old sit
+# beside the prefix, so they are below ~/.local/opt/ too.
+stage=$prefix.new
+rm -rf "$stage" "$prefix.old"
+DESTDIR= cmake --install "$build" --prefix "$stage" >/dev/null
+[[ -e $prefix ]] && mv "$prefix" "$prefix.old"
+mv "$stage" "$prefix"
+rm -rf "$prefix.old"
+
+mkdir -p "$bin_dir"
+ln -sfn "$prefix/bin/blockwright-cli" "$bin_dir/blockwright-cli-dev"
+"$bin_dir/blockwright-cli-dev" --version

@@ -1,0 +1,4 @@
+# Pieces that can't round-trip byte for byte: name, then why.
+darkmage.ans Moebius-era encoding: incremental SGR (ESC[31m, ESC[1;35m) instead of a full 0;..;3x;4x reset per change, and blank rows as bare CR LF; the writer emits the canonical form.
+heinz-efnet.ans Moebius-era encoding: incremental SGR (ESC[31m / ESC[30m toggles between cells) instead of a full 0;..;3x;4x reset per change; the writer emits the canonical form.
+xeros.ans Moebius-era encoding: incremental SGR (ESC[1;31m, ESC[41m) and blank rows as bare CR LF; the writer emits the canonical form.

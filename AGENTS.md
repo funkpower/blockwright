@@ -18,9 +18,13 @@ Native ANSI/IRC art editor in C++20 / Qt 6. `PLAN.md` is the design; read it bef
 ## Git and the forge
 
 - Remote: `https://git.pumpin.online/funkpower/blockwright.git` (private). Push with `GIT_ASKPASS=$PWD/scripts/git-askpass`. Commits are made as funkpower (picked up from the remote URL); never as a real name.
-- Work on a branch, open a PR with `scripts/forge pr-create <branch> <title> <body-file>`; the PR body is the report. Never push to `main`; PRs merge through `scripts/forge pr-merge`.
+- Work on a branch, open a PR with `scripts/forge pr-create <branch> <title> <body-file>`; the PR body is the report. Never push to `main`; PRs are squash-merged through `scripts/forge pr-merge`.
 - No Co-Authored-By or "Generated with" trailers. Never force-push except `--force-with-lease` on your own branch.
 - Never print the forge token or any `pass` entry.
+
+## Public repo
+
+The repo, its history, issues and PRs are public. Tracked files, commit messages and PR or issue text carry no real names, personal host names, home-directory paths (write `~/…`), email addresses, tokens or other secrets, and nothing about anyone's employer or private infrastructure. People are "funkpower" or "the maintainer"; machines are "the dev machine". PRs are squash-merged, so the PR title and the first paragraph of its body become the commit on `main`.
 
 ## Review
 
