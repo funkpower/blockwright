@@ -174,3 +174,20 @@ TEST_CASE("Bright backgrounds with iCE off", "[write]") {
         CHECK(back.canvas.at(2, 0).attrs == 0);
     }
 }
+
+TEST_CASE("A trailing blinking black space written with iCE on is trimmed as black", "[write]") {
+    // #36: the bright background turns iCE on, the blink is dropped, and the
+    // two blinking spaces are plain black spaces, trimmed as the editor does
+    const AnsiDocument d =
+        parseAnsi(withSauce("\x1b[0;5;31;44mA\x1b[0;37;104mB\x1b[0;5;30;40m  ", 80, false));
+    REQUIRE_FALSE(d.ice);
+    REQUIRE(d.canvas.at(2, 0).attrs == attr::Blink);
+    const AnsiOutput out = writeAnsi(d);
+    CHECK(out.blinkDropped == 3);
+    CHECK(out.bytes.find("B\x1b[0m\r\n") != std::string::npos);
+    CHECK(out.bytes.find("\x1b[0;30;40m") == std::string::npos);
+    const AnsiDocument back = parseAnsi(out.bytes);
+    CHECK(back.ice);
+    CHECK(back.canvas.at(2, 0) == Cell{});
+    CHECK(back.canvas.at(3, 0) == Cell{});
+}

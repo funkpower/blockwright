@@ -358,10 +358,12 @@ private:
     int savedRow_ = 0, savedCol_ = 0;
 };
 
-// A cell the trailing trim may drop. A blinking space is not one: read
-// back with iCE on it is a bright-black background.
-bool blankBlack(const Cell& c) {
-    return c.transparent || (c.ch == U' ' && c.bg.paletteIndex() == Black && !(c.attrs & attr::Blink));
+// A cell the trailing trim may drop, written with iCE colours `ice`. A
+// blinking space written without iCE is not one: read back with iCE on it is
+// a bright-black background. With iCE on its blink is dropped (and counted),
+// so it is written as a plain black space and goes like one.
+bool blankBlack(const Cell& c, bool ice) {
+    return c.transparent || (c.ch == U' ' && c.bg.paletteIndex() == Black && (ice || !(c.attrs & attr::Blink)));
 }
 
 bool writableByte(std::uint8_t b) {
@@ -432,7 +434,7 @@ AnsiOutput writeAnsi(const AnsiDocument& doc) {
     s = "\x1b[0m";
     for (int y = 0; y < cv.height(); ++y) {
         int end = cv.width();
-        while (end > 0 && blankBlack(cv.at(end - 1, y)))
+        while (end > 0 && blankBlack(cv.at(end - 1, y), ice))
             --end;
         int cur = -1;
         for (int x = 0; x < end; ++x) {

@@ -36,8 +36,12 @@ QString lossDescription(const AnsiOutput& out) {
     if (!out.unwritable.empty())
         parts << QObject::tr("%n cell(s) hold a glyph with no CP437 code and will be written as '?'", nullptr,
                              int(out.unwritable.size()));
+    // From the editor this is blink the file had and lost when it was opened
+    // with iCE colours (see Document::encode): what has happened to those
+    // cells since, iCE turned off or the cell erased, doesn't bring it back.
     if (out.blinkDropped)
-        parts << QObject::tr("%n blinking cell(s) will lose their blink (the file is written with iCE colours)",
+        parts << QObject::tr("%n blinking cell(s) of the original file lost their blink when it was opened with iCE "
+                             "colours",
                              nullptr, out.blinkDropped);
     return parts.join(QStringLiteral(";\n"));
 }

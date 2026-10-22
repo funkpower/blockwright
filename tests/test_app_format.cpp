@@ -403,13 +403,16 @@ TEST_CASE("an iCE-off file opened with iCE on shows and saves its blinking cells
     // the same bytes and warns that the blink is lost
     struct Case {
         const char* body;
-        int x;  // the blinking cell
+        int x;  // a blinking cell
         Rgb bg;  // its background, as renderCanvas draws it
+        int blinks;  // blinking cells in the file
     };
     const Case cases[] = {
-        {"\x1b[0;5;31;44mA\x1b[0;37;104mB", 0, kPalette[Blue]},
-        {"\x1b[0;5;37;104mC", 0, kPalette[LightBlue]},
-        {"\x1b[101mA\x1b[0;5;44mB", 1, kPalette[Blue]},
+        {"\x1b[0;5;31;44mA\x1b[0;37;104mB", 0, kPalette[Blue], 1},
+        {"\x1b[0;5;37;104mC", 0, kPalette[LightBlue], 1},
+        {"\x1b[101mA\x1b[0;5;44mB", 1, kPalette[Blue], 1},
+        // #36: trailing blinking black spaces, trimmed by both
+        {"\x1b[0;5;31;44mA\x1b[0;37;104mB\x1b[0;5;30;40m  ", 0, kPalette[Blue], 3},
     };
     for (const Case& c : cases) {
         CAPTURE(c.body);
@@ -418,7 +421,7 @@ TEST_CASE("an iCE-off file opened with iCE on shows and saves its blinking cells
         const AnsiDocument parsed = parseAnsi(bwtest::readFile(path.toStdString()));
         REQUIRE_FALSE(parsed.ice);
         const AnsiOutput cli = writeAnsi(parsed);
-        REQUIRE(cli.blinkDropped == 1);
+        REQUIRE(cli.blinkDropped == c.blinks);
 
         MainWindow w;
         QString error;
@@ -440,6 +443,34 @@ TEST_CASE("an iCE-off file opened with iCE on shows and saves its blinking cells
         CHECK(w.document()->encode().blinkDropped == 0);
         CHECK(w.saveFile(saved, &error));
     }
+}
+
+TEST_CASE("the save warning for blink lost on open stays true once iCE is off or the cell is erased") {
+    // #36: the count is fixed when the file opens; neither turning iCE off
+    // nor erasing the cell gives the blink back, and the warning says what
+    // happened rather than what the save will do
+    const QString lost = QStringLiteral("1 blinking cell(s) of the original file lost their blink when it was "
+                                        "opened with iCE colours");
+    QTemporaryDir tmp;
+    const QString path = writeIceOff(tmp, "blink.ans", "\x1b[0;5;31;44mA\x1b[0;37;104mB");
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(path, &error));
+    REQUIRE(w.document()->ansi().ice);
+    const QString saved = tmp.filePath(QStringLiteral("saved.ans"));
+
+    SECTION("iCE off") {
+        REQUIRE(w.document()->setIce(false));
+        CHECK(w.document()->encode().blinkDropped == 1);
+    }
+    SECTION("the blinking cell erased") {
+        const Cell a = w.document()->canvas().at(0, 0);
+        REQUIRE(w.document()->edit(CellEdit{{{0, 0, a, Cell{}}}}));
+        CHECK(w.document()->encode().blinkDropped == 1);
+    }
+    CHECK_FALSE(w.saveFile(saved, &error));
+    CHECK(error == lost);
+    CHECK_FALSE(error.contains(QStringLiteral("will lose")));
 }
 
 TEST_CASE("View > 9 px Letter Spacing sizes the view and preview, is undoable and is saved and read back") {

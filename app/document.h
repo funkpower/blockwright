@@ -52,7 +52,9 @@ public:
     // The bytes save() writes, and what they lose (see writeAnsi). The cells
     // are written as they show with the document's iCE setting (iceCell):
     // with iCE off a bright background is saved as blink, with it on blink
-    // is saved as a bright background.
+    // is saved as a bright background. So writeAnsi itself drops no blink, and
+    // `blinkDropped` is only the blink lost on open (read), whatever has been
+    // done to those cells since.
     AnsiOutput encode() const;
     // Writes `out` (from encode()) to `path` all or nothing, makes `path`
     // the document's file and marks the undo stack clean.
