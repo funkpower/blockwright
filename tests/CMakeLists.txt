@@ -15,12 +15,14 @@ add_executable(blockwright-tests
   test_ansi_write.cpp
   test_brush.cpp
   test_cli_read.cpp
+  test_composite.cpp
   test_cp437.cpp
   test_detail.cpp
   test_draw.cpp
   test_edit.cpp
   test_golden.cpp
   test_irc.cpp
+  test_layers.cpp
   test_library.cpp
   test_library_bundled.cpp
   test_lint.cpp

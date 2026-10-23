@@ -11,8 +11,10 @@ add_library(blockwright_core STATIC
   src/cp437.cpp
   src/edit.cpp
   src/glyph_sets.cpp
+  src/composite.cpp
   src/halfblock.cpp
   src/irc.cpp
+  src/layer.cpp
   src/library.cpp
   src/lint.cpp
   src/mirc.cpp
