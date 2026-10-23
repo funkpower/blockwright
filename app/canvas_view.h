@@ -249,12 +249,27 @@ private:
     // Whether the tool's drag is going on and another device than `p` owns
     // it; clears the owner of a drag that has ended.
     bool othersDrag(Pointer p);
+    // A press no tool takes, at view point `p`: the cell cursor goes to the
+    // cell under it.
+    void clickCell(QPoint p);
+    // A stylus tablet event, by the view's own record of the pen's buttons
+    // (tabletEvent keeps Qt's): returns whether the view took it.
+    bool stylusEvent(QTabletEvent* e);
     BrushSettings brush_;
     Ramp ramp_;
     bool lockTransparent_ = false;
     FormOptions form_;
     double hardness_ = 0.0;
     double stylusPressure_ = 1.0;  // the last press or move's, for its release
+    // The stylus's buttons as its last tablet event here held them, and the
+    // point the view last saw it at (tabletEvent).
+    Qt::MouseButtons stylusButtons_;
+    // Qt's own record of the stylus's buttons, as the view last knew it, and
+    // whether Qt's tablet grab is the view's.
+    Qt::MouseButtons qtStylusButtons_;
+    bool stylusGrab_ = false;
+    QPoint stylusCell_;
+    int stylusHalfRow_ = 0;
     Selection selection_;
     bool mirror_ = false;
     Symmetry symmetry_{SymmetryMode::MirrorX, 4, std::nullopt};

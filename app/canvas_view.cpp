@@ -8,6 +8,7 @@
 #include "blockwright/glyph_sets.h"
 #include "blockwright/selection.h"
 
+#include <QApplication>
 #include <QGuiApplication>
 #include <QInputMethod>
 #include <QInputMethodEvent>
@@ -26,6 +27,7 @@
 #include <exception>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace bw {
 
@@ -112,6 +114,9 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     ramp_ = *findRamp("steel");
     // Dead keys and compose sequences arrive as input-method commits.
     setAttribute(Qt::WA_InputMethodEnabled);
+    // The pen's hover reaches the view, so a stylus drag whose release went
+    // elsewhere lands when the pen comes back (tabletEvent).
+    setTabletTracking(true);
     // Undo and redo put the cursor back where the edit was made or left it.
     connect(doc_, &Document::cursorRequested, this, &CanvasView::setCellCursor);
     // Undo, redo or any edit the view didn't push changes the cells under
@@ -694,6 +699,15 @@ bool fromStylus(const QMouseEvent* e) {
     }
 }
 
+// The buttons in `bs`, lowest first.
+std::vector<Qt::MouseButton> buttonsIn(Qt::MouseButtons bs) {
+    std::vector<Qt::MouseButton> out;
+    for (unsigned b = 1; b && b <= unsigned(Qt::MaxMouseButton); b <<= 1)
+        if (bs.toInt() & b)
+            out.push_back(Qt::MouseButton(b));
+    return out;
+}
+
 ToolEvent toolEvent(const CanvasView& v, const QMouseEvent* e) {
     const QPoint p = v.toView(e->position());
     return {v.cellAt(p), v.halfRowAt(p), e->button(), e->buttons(), e->modifiers()};
@@ -728,42 +742,117 @@ void CanvasView::mouseReleaseEvent(QMouseEvent* e) {
 }
 
 void CanvasView::tabletEvent(QTabletEvent* e) {
+    // Qt's tablet grab: a press Qt sends here takes it and a release of the
+    // last button lets it go, so with it every event of the pen comes here,
+    // through an open popup first.
+    const bool throughPopup = stylusGrab_ && QApplication::activePopupWidget();
+    if (e->type() == QEvent::TabletPress)
+        stylusGrab_ = true;
+    else if (e->type() == QEvent::TabletRelease && e->buttons() == Qt::NoButton)
+        stylusGrab_ = false;
+    const bool taken = stylusEvent(e);
+    // Qt records the buttons of every event but one a widget takes through
+    // a popup. One no widget takes there it passes again, through the view's
+    // own window and so here, and records: the view sees it twice, and the
+    // second time, its buttons already the view's own, it is at most a
+    // button the tool declined, let go and pressed again, declined again.
+    if (!throughPopup || !taken)
+        qtStylusButtons_ = e->buttons();
+    e->setAccepted(taken);
+}
+
+bool CanvasView::stylusEvent(QTabletEvent* e) {
+    // Qt tells a press and a release from a move, and which button changed,
+    // by its own record of the pen's buttons, and an event the canvas takes
+    // through an open popup leaves that record as it was (#46): a release
+    // under a popup leaves the button held, so the next press can come as a
+    // move, which sets no tablet grab, or as a press of the button let go
+    // (the lowest one that changed); a press under a popup comes again with
+    // the next event. So the view decides the type and the button of every
+    // event by its own record, the buttons the pen's last tablet event here
+    // held. A button this event holds that the record doesn't is pressed
+    // here. One the record holds that this event doesn't was let go: here
+    // if Qt says this event is its release; otherwise Qt saw it go up where
+    // the view couldn't, or the event doesn't show, so it lands the stylus's
+    // drag where the view last saw the pen (tablet tracking is on, so the
+    // pen hovering back does that). A button both hold is held on, unless Qt
+    // saw it go up out of view and comes back with it pressed again.
+    const Qt::MouseButtons was = std::exchange(stylusButtons_, e->buttons());
     if (othersDrag(Pointer::Stylus)) {
         // The mouse's drag: taken, so Qt makes no mouse event of it. A drag
         // the stylus's mouse events started: left for Qt to go on making
         // those, which drive it.
-        e->setAccepted(drag_ == Pointer::Mouse);
-        return;
+        return drag_ == Pointer::Mouse;
     }
-    // A release reads no pressure: it lands with the pressure the stroke had.
-    double pressure = stylusPressure_;
-    if (e->type() != QEvent::TabletRelease)
-        pressure = stylusPressure_ = std::clamp(e->pressure(), 0.0, 1.0);
+    const Qt::MouseButtons now = e->buttons();
+    // The button Qt says changed. One both records hold that Qt says is
+    // pressed went up out of view and is pressed again if the view knew
+    // Qt's record held it; if Qt never recorded its press (one the view
+    // took through a popup), this is that press again.
+    const Qt::MouseButton flipped = e->type() == QEvent::TabletMove ? Qt::NoButton : e->button();
+    const Qt::MouseButtons missed = was & now & qtStylusButtons_ & flipped;
+    const Qt::MouseButtons lifted = was & ~now;
+    const Qt::MouseButtons pressed = (now & ~was) | missed;
+    const Qt::MouseButtons here = lifted & flipped;
     const QPoint p = toView(e->position());
-    const ToolEvent te{cellAt(p), halfRowAt(p), e->button(), e->buttons(), e->modifiers(), pressure};
+    ToolEvent te{cellAt(p), halfRowAt(p), Qt::NoButton, was, e->modifiers(), stylusPressure_};
+    // What the view makes of the event, if it's one Qt could have said.
+    QEvent::Type type = QEvent::TabletMove;
+    Qt::MouseButton button = Qt::NoButton;
     bool taken = false;
-    switch (e->type()) {
-    case QEvent::TabletPress:
-        taken = tool_ && tool_->mousePress(te);
-        if (taken) {
+    for (const Qt::MouseButton b : buttonsIn(lifted | missed)) {
+        const bool seen = here.testFlag(b);
+        if (!seen && drag_ != Pointer::Stylus)
+            continue;
+        te.button = b;
+        te.buttons &= ~b;
+        if (te.buttons == Qt::NoButton)
+            drag_ = Pointer::None;
+        if (seen) {
+            type = QEvent::TabletRelease;
+            button = b;
+        }
+        if (tool_) {
+            if (seen)
+                taken = tool_->mouseRelease(te) || taken;
+            else
+                tool_->mouseRelease({stylusCell_, stylusHalfRow_, b, te.buttons, e->modifiers(), stylusPressure_});
+        }
+    }
+    te.buttons = now & ~pressed;
+    // A release reads no pressure: it lands with the pressure the stroke had.
+    // Whether the event is one is the view's call, not Qt's.
+    if (pressed || !here)
+        te.pressure = stylusPressure_ = std::clamp(e->pressure(), 0.0, 1.0);
+    for (const Qt::MouseButton b : buttonsIn(pressed)) {
+        if (type != QEvent::TabletPress) {
+            type = QEvent::TabletPress;
+            button = b;
+        }
+        te.button = b;
+        te.buttons |= b;
+        if (tool_ && tool_->mousePress(te)) {
+            taken = true;
             drag_ = Pointer::Stylus;
             setFocus(Qt::MouseFocusReason);
         }
-        break;
-    case QEvent::TabletMove:
-        taken = tool_ && tool_->mouseMove(te);
-        break;
-    case QEvent::TabletRelease:
-        if (e->buttons() == Qt::NoButton)
-            drag_ = Pointer::None;
-        taken = tool_ && tool_->mouseRelease(te);
-        break;
-    default:
-        break;
     }
+    if (!pressed && !here) {
+        te.button = Qt::NoButton;
+        taken = tool_ && tool_->mouseMove(te);
+    }
+    stylusCell_ = te.cell;
+    stylusHalfRow_ = te.halfRow;
     // Taken, Qt makes no mouse event of it; otherwise the mouse event moves
-    // the cell cursor as a click does.
-    e->setAccepted(taken);
+    // the cell cursor as a click does. The mouse event Qt would make of an
+    // event it has the wrong type or button for would be wrong the same way,
+    // so the view does here what the right one would have done and takes it.
+    if (!taken && (e->type() != type || e->button() != button)) {
+        if (type == QEvent::TabletPress)
+            clickCell(p);
+        taken = true;
+    }
+    return taken;
 }
 
 void CanvasView::focusOutEvent(QFocusEvent* e) {
@@ -786,8 +875,11 @@ void CanvasView::mousePressEvent(QMouseEvent* e) {
         setFocus(Qt::MouseFocusReason);
         return;
     }
+    clickCell(toView(e->position()));
+}
+
+void CanvasView::clickCell(QPoint p) {
     const QSize cs = renderer_->cellSize() * zoom_;
-    const QPoint p = toView(e->position());
     if (cs.isEmpty() || p.x() < 0 || p.y() < 0)
         return;
     setCellCursor({p.x() / cs.width(), p.y() / cs.height()});

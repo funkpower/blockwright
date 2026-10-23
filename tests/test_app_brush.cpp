@@ -23,11 +23,13 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPointingDevice>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QTabletEvent>
 #include <QUndoStack>
 
@@ -757,6 +759,334 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
         CHECK_FALSE(dragTool(w)->dragging());
         CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {4, 2}});
         CHECK(w.document()->undoStack()->count() == 1);
+    }
+    SECTION("a stylus press right after a release under a popup") {
+        // #46: the release goes through the popup, so Qt keeps the pen down
+        // and sends the next press, with no hover between, as a move.
+        // A left stroke paints cells 2 and 3; a right one rubs them out.
+        const auto penLiftedUnderPopup = [&](Qt::MouseButton button = Qt::LeftButton, double pressure = 1.0) {
+            const int strokes = w.document()->undoStack()->count();
+            bwtest::systemTablet(v, pixel(v, 2, 4), button, pressure);
+            QMenu m(v);
+            m.addAction(QStringLiteral("x"));
+            m.popup(v->mapToGlobal(QPoint(10, 10)));
+            QApplication::processEvents();
+            bwtest::systemTablet(v, pixel(v, 3, 4), button, pressure);
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::NoButton, 0.0);
+            m.close();
+            QApplication::processEvents();
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(w.document()->undoStack()->count() == strokes + 1);
+            if (button == Qt::LeftButton)
+                CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}});
+            else
+                CHECK(changed(w).empty());
+        };
+        SECTION("starts a stroke") {
+            penLiftedUnderPopup();
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::LeftButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::NoButton, 0.0);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {10, 2}, {11, 2}});
+            CHECK(w.document()->undoStack()->count() == 2);
+        }
+        // Qt's held record makes a press of another button a press or a
+        // release of the one let go (the lowest bit that changed): the view's
+        // own record says which button it is.
+        const auto settled = [&](std::set<std::pair<int, int>> cells, int strokes) {
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(changed(w) == cells);
+            CHECK(w.document()->undoStack()->count() == strokes);
+            // nothing is left pending for a hover to go on with
+            bwtest::systemTablet(v, pixel(v, 30, 4), Qt::NoButton, 0.0);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(changed(w) == cells);
+            CHECK(w.document()->undoStack()->count() == strokes);
+        };
+        SECTION("with the right button after a left stroke") {
+            // Codex round 1: the right stroke rubs out the left one's cells
+            // and ends on its own release.
+            penLiftedUnderPopup();
+            bwtest::systemTablet(v, pixel(v, 2, 4), Qt::RightButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::RightButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::NoButton, 0.0);
+            settled({}, 2);
+        }
+        SECTION("with the left button after a right stroke") {
+            bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::NoButton, 0.0);
+            penLiftedUnderPopup(Qt::RightButton);
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::LeftButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::NoButton, 0.0);
+            settled({{10, 2}, {11, 2}}, 3);
+        }
+        SECTION("with the middle button, which no brush takes") {
+            // Nor does the mouse event Qt makes of it come as the left
+            // button's press.
+            penLiftedUnderPopup();
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::MiddleButton, 1.0);
+            CHECK_FALSE(dragTool(w)->dragging());
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::MiddleButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::NoButton, 0.0);
+            settled({{2, 2}, {3, 2}}, 1);
+            bwtest::systemTablet(v, pixel(v, 40, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 40, 4), Qt::NoButton, 0.0);
+            settled({{2, 2}, {3, 2}, {40, 2}}, 2);
+        }
+        SECTION("pressed while another button is held") {
+            // The right button's stroke: the tip pressed during it does
+            // nothing, the right button's release ends it, and the tip held
+            // after that paints nothing.
+            penLiftedUnderPopup();
+            bwtest::systemTablet(v, pixel(v, 2, 4), Qt::RightButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::LeftButton | Qt::RightButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}});
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::LeftButton, 1.0);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(changed(w).empty());
+            CHECK(w.document()->undoStack()->count() == 2);
+            bwtest::systemTablet(v, pixel(v, 13, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 13, 4), Qt::NoButton, 0.0);
+            settled({}, 2);
+        }
+        SECTION("two buttons pressed at once") {
+            // The lower one is the stroke's; the other's release leaves it
+            // going.
+            penLiftedUnderPopup();
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::LeftButton | Qt::RightButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::LeftButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            bwtest::systemTablet(v, pixel(v, 12, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 12, 4), Qt::NoButton, 0.0);
+            settled({{2, 2}, {3, 2}, {10, 2}, {11, 2}, {12, 2}}, 2);
+        }
+        SECTION("a different button pressed straight after a release") {
+            // No hover between the left stroke's release and the right press.
+            penLiftedUnderPopup();
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::NoButton, 0.0);
+            CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {10, 2}});
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::RightButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::NoButton, 0.0);
+            settled({{2, 2}, {3, 2}}, 3);
+        }
+        // That press set no tablet grab, so a lift off the canvas goes to
+        // another widget; the stroke lands where the canvas last saw the pen
+        // once the pen is back.
+        const QPoint offInWindow = w.statusBar()->geometry().center();
+        REQUIRE(w.childAt(offInWindow) != v);
+        const QPointF off = v->mapFrom(&w, QPointF(offInWindow));
+        const auto strokeLiftedOffCanvas = [&] {
+            penLiftedUnderPopup();
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, off, Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, off, Qt::NoButton, 0.0);
+        };
+        SECTION("lifted off the canvas, its stroke lands when the pen hovers back") {
+            strokeLiftedOffCanvas();
+            bwtest::systemTablet(v, pixel(v, 30, 4), Qt::NoButton, 0.0);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {10, 2}, {11, 2}});
+            CHECK(w.document()->undoStack()->count() == 2);
+            // and the next press is an ordinary one
+            bwtest::systemTablet(v, pixel(v, 40, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 40, 4), Qt::NoButton, 0.0);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {10, 2}, {11, 2}, {40, 2}});
+            CHECK(w.document()->undoStack()->count() == 3);
+        }
+        SECTION("lifted off the canvas, its stroke lands when the pen presses on it again") {
+            // No hover over the canvas between: the press lands the old
+            // stroke and starts its own, joined to nothing.
+            strokeLiftedOffCanvas();
+            bwtest::systemTablet(v, pixel(v, 40, 4), Qt::LeftButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {10, 2}, {11, 2}});
+            CHECK(w.document()->undoStack()->count() == 2);
+            bwtest::systemTablet(v, pixel(v, 40, 4), Qt::NoButton, 0.0);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {10, 2}, {11, 2}, {40, 2}});
+            CHECK(w.document()->undoStack()->count() == 3);
+        }
+        SECTION("lifted off the canvas, its stroke lands when another button presses on it") {
+            strokeLiftedOffCanvas();
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::RightButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {10, 2}, {11, 2}});
+            CHECK(w.document()->undoStack()->count() == 2);
+            bwtest::systemTablet(v, pixel(v, 11, 4), Qt::NoButton, 0.0);
+            settled({{2, 2}, {3, 2}, {10, 2}}, 3);
+        }
+        SECTION("a press Qt makes a release of reads its own pressure") {
+            // Codex round 2: Qt still holds the right button, so it sends
+            // the left press as a release; the press reads its pressure and
+            // its release keeps it.
+            bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::LeftButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::NoButton, 0.0);
+            // 5 × 0.05 is 1 cell: the right stroke rubs out the left one
+            v->setBrushSettings(BrushSettings{5, Tip::Square, 1.0, PressureTo::Size});
+            penLiftedUnderPopup(Qt::RightButton, 0.05);
+            bwtest::systemTablet(v, pixel(v, 20, 20), Qt::LeftButton, 1.0);
+            CHECK(cellsOf(dragTool(w)->pending()) == tipAt(20, 10, 5, Tip::Square, w));
+            bwtest::systemTablet(v, pixel(v, 20, 20), Qt::NoButton, 0.0);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(changed(w) == tipAt(20, 10, 5, Tip::Square, w));
+            CHECK(w.document()->undoStack()->count() == 3);
+        }
+        SECTION("a click in keyboard mode with another button moves the cell cursor") {
+            // Codex round 2: Qt sends the right press as the left button's;
+            // keyboard mode doesn't take it, so it moves the cell cursor as
+            // a click does.
+            penLiftedUnderPopup();
+            w.tools()->setActive(QStringLiteral("keyboard"));
+            REQUIRE(v->cellCursor() != Cursor{30, 4});
+            bwtest::systemTablet(v, pixel(v, 30, 8), Qt::RightButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 30, 8), Qt::NoButton, 0.0);
+            CHECK(v->cellCursor() == Cursor{30, 4});
+            CHECK(w.document()->undoStack()->count() == 1);
+        }
+        // Qt's record of the pen is up again for the tests after this one.
+        bwtest::systemTablet(v, pixel(v, 50, 4), Qt::NoButton, 0.0);
+    }
+    SECTION("a right stroke lifted off the canvas ends where the view last saw it, not at the next press") {
+        // Codex round 3: Qt shows only the left button changing on the left
+        // press, so nothing says the right one went up there.
+        use(w, "halfBlock");
+        v->setPen(Pen{Color::indexed(Grey), Color::indexed(Red)});
+        bwtest::systemTablet(v, pixel(v, 2, 4), Qt::RightButton, 1.0);
+        {
+            QMenu m(v);
+            m.addAction(QStringLiteral("x"));
+            m.popup(v->mapToGlobal(QPoint(10, 10)));
+            QApplication::processEvents();
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::RightButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::NoButton, 0.0);
+            m.close();
+            QApplication::processEvents();
+        }
+        REQUIRE(w.document()->undoStack()->count() == 1);
+        const QPoint offInWindow = w.statusBar()->geometry().center();
+        REQUIRE(w.childAt(offInWindow) != v);
+        const QPointF off = v->mapFrom(&w, QPointF(offInWindow));
+        bwtest::systemTablet(v, pixel(v, 10, 4), Qt::RightButton, 1.0);
+        bwtest::systemTablet(v, pixel(v, 11, 4), Qt::RightButton, 1.0);
+        bwtest::systemTablet(v, off, Qt::RightButton, 1.0);
+        bwtest::systemTablet(v, off, Qt::NoButton, 0.0);
+        bwtest::systemTablet(v, pixel(v, 40, 4), Qt::LeftButton, 1.0);
+        CHECK(dragTool(w)->dragging());
+        CHECK(w.document()->undoStack()->count() == 2);
+        bwtest::systemTablet(v, pixel(v, 40, 4), Qt::NoButton, 0.0);
+        CHECK_FALSE(dragTool(w)->dragging());
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {10, 2}, {11, 2}, {40, 2}});
+        CHECK(w.document()->undoStack()->count() == 3);
+    }
+    SECTION("a stroke pressed under a popup after a release the view declined there stays whole") {
+        // Codex round 3: the release the view declines comes again through
+        // the window, and Qt records it; the press after it, which the view
+        // takes through the popup, Qt doesn't, and sends as a press again.
+        use(w, "halfBlock");
+        v->setPen(Pen{Color::indexed(Grey), Color::indexed(Red)});
+        bwtest::systemTablet(v, pixel(v, 2, 4), Qt::RightButton | Qt::MiddleButton, 1.0);
+        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(v, &esc);
+        REQUIRE_FALSE(dragTool(w)->dragging());
+        {
+            QMenu m(v);
+            m.addAction(QStringLiteral("x"));
+            m.popup(v->mapToGlobal(QPoint(10, 10)));
+            QApplication::processEvents();
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::MiddleButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 10, 4), Qt::RightButton | Qt::MiddleButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            bwtest::systemTablet(v, pixel(v, 20, 4), Qt::RightButton | Qt::MiddleButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 21, 4), Qt::RightButton | Qt::MiddleButton, 1.0);
+            CHECK(dragTool(w)->dragging());
+            CHECK(w.document()->undoStack()->count() == 0);
+            m.close();
+            QApplication::processEvents();
+        }
+        bwtest::systemTablet(v, pixel(v, 22, 4), Qt::RightButton | Qt::MiddleButton, 1.0);
+        bwtest::systemTablet(v, pixel(v, 22, 4), Qt::MiddleButton, 1.0);
+        CHECK_FALSE(dragTool(w)->dragging());
+        std::set<std::pair<int, int>> row;
+        for (int x = 10; x <= 22; ++x)
+            row.insert({x, 2});
+        CHECK(changed(w) == row);
+        CHECK(w.document()->undoStack()->count() == 1);
+        bwtest::systemTablet(v, pixel(v, 22, 4), Qt::NoButton, 0.0);
+        CHECK(changed(w) == row);
+        CHECK(w.document()->undoStack()->count() == 1);
+    }
+    SECTION("a button the tool declines pressed under a popup leaves its drag going") {
+        // The select tool declines the right press through the popup; Qt
+        // passes it again through the window and the view, which has acted on
+        // it, sees it again: a release of a button its drag doesn't use and
+        // the same press, both declined again.
+        use(w, "select");
+        bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+        {
+            QMenu m(v);
+            m.addAction(QStringLiteral("x"));
+            m.popup(v->mapToGlobal(QPoint(10, 10)));
+            QApplication::processEvents();
+            bwtest::systemTablet(v, pixel(v, 5, 4), Qt::LeftButton | Qt::RightButton, 1.0);
+            bwtest::systemTablet(v, pixel(v, 8, 4), Qt::LeftButton | Qt::RightButton, 1.0);
+            m.close();
+            QApplication::processEvents();
+        }
+        bwtest::systemTablet(v, pixel(v, 9, 6), Qt::LeftButton | Qt::RightButton, 1.0);
+        bwtest::systemTablet(v, pixel(v, 9, 6), Qt::RightButton, 1.0);
+        bwtest::systemTablet(v, pixel(v, 9, 6), Qt::NoButton, 0.0);
+        CHECK(v->selection().bounds() == CellRect::fromCorners(2, 2, 9, 3));
+        CHECK(changed(w).empty());
+    }
+    SECTION("a stylus button pressed under a popup leaves the stroke whole") {
+        // Codex round 2: the canvas takes the right press through the popup,
+        // so Qt doesn't record it and sends the next event as that press
+        // again; the left stroke goes on to its own release.
+        bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+        {
+            QMenu m(v);
+            m.addAction(QStringLiteral("x"));
+            m.popup(v->mapToGlobal(QPoint(10, 10)));
+            QApplication::processEvents();
+            bwtest::systemTablet(v, pixel(v, 3, 4), Qt::LeftButton | Qt::RightButton, 1.0);
+            m.close();
+            QApplication::processEvents();
+        }
+        bwtest::systemTablet(v, pixel(v, 4, 4), Qt::LeftButton | Qt::RightButton, 1.0);
+        bwtest::systemTablet(v, pixel(v, 5, 4), Qt::LeftButton | Qt::RightButton, 1.0);
+        CHECK(dragTool(w)->dragging());
+        CHECK(w.document()->undoStack()->count() == 0);
+        bwtest::systemTablet(v, pixel(v, 5, 4), Qt::RightButton, 1.0);
+        CHECK_FALSE(dragTool(w)->dragging());
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {4, 2}, {5, 2}});
+        CHECK(w.document()->undoStack()->count() == 1);
+        bwtest::systemTablet(v, pixel(v, 5, 4), Qt::NoButton, 0.0);
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {4, 2}, {5, 2}});
+        CHECK(w.document()->undoStack()->count() == 1);
+    }
+    SECTION("a stylus stroke Esc drops doesn't start again while the pen stays down") {
+        bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+        bwtest::systemTablet(v, pixel(v, 3, 4), Qt::LeftButton, 1.0);
+        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(v, &esc);
+        CHECK_FALSE(dragTool(w)->dragging());
+        bwtest::systemTablet(v, pixel(v, 4, 4), Qt::LeftButton, 1.0);
+        CHECK_FALSE(dragTool(w)->dragging());
+        bwtest::systemTablet(v, pixel(v, 4, 4), Qt::NoButton, 0.0);
+        CHECK(changed(w).empty());
+        CHECK(w.document()->undoStack()->count() == 0);
     }
 }
 
