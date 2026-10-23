@@ -40,7 +40,11 @@ void MainWindow::createLibrary() {
     libraryDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
     libraryDock_->setWidget(library_);
     addDockWidget(Qt::RightDockWidgetArea, libraryDock_);
-    library_->setDirectories(library::bundledLibraryDir(fspath(QCoreApplication::applicationDirPath())),
+    // The bundled library sits beside the real binary, not beside a symlink to
+    // it (the dev install links ~/.local/bin/blockwright-dev into its prefix).
+    const std::filesystem::path binDir = library::realBinDir(fspath(QCoreApplication::applicationFilePath()),
+                                                             fspath(QCoreApplication::applicationDirPath()));
+    library_->setDirectories(library::bundledLibraryDir(binDir),
                              library::userLibraryDir());
 
     // A drag can come from any application, so its payload is only a key to

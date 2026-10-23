@@ -42,4 +42,18 @@ fi
 out=$("$cli" library check "$lib" 2>&1); st=$?
 if [[ $st -eq 0 && $out == "$n stamp(s), 0 problem(s)" ]]; then ok "the installed library checks clean"; else bad "library check (exit $st): $out"; fi
 
+# Run through a symlink, as the dev install's ~/.local/bin/blockwright-cli-dev
+# is: the bundled library is found beside the real binary, not the link.
+mkdir -p "$tmp/links"
+if ! ln -sf "$cli" "$tmp/links/blockwright-cli-link" 2>/dev/null || [[ ! -L $tmp/links/blockwright-cli-link ]]; then
+  echo "skip the symlink case: this filesystem can't hold symlinks"
+else
+  out=$(env -u BLOCKWRIGHT_BUNDLED_LIBRARY BLOCKWRIGHT_USER_LIBRARY="$tmp/user" "$tmp/links/blockwright-cli-link" library list 2>&1); st=$?
+  if [[ $st -eq 0 && $out == *"$lib"/sky/small-star.ans* ]]; then
+    ok "the installed CLI run through a symlink lists the bundled library"
+  else
+    bad "library list through a symlink (exit $st): $out"
+  fi
+fi
+
 exit $((fails > 0))

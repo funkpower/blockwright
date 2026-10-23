@@ -435,6 +435,21 @@ TEST_CASE("the library directories follow the install layout, or the environment
     }
 }
 
+TEST_CASE("the bundled library is found from the real executable, or where it was started") {
+    const fs::path dir = scratch("realbindir");
+    fs::create_directories(dir / "prefix/bin");
+    fs::create_directories(dir / "links");
+    { std::ofstream(dir / "prefix/bin/blockwright-cli") << "x"; }
+    fs::create_symlink(dir / "prefix/bin/blockwright-cli", dir / "links/blockwright-cli-dev");
+    const fs::path real = fs::canonical(dir / "prefix/bin");
+    // through a link in another directory: the link's target's directory
+    CHECK(realBinDir(dir / "links/blockwright-cli-dev", dir / "links") == real);
+    CHECK(realBinDir(dir / "prefix/bin/blockwright-cli", dir / "prefix/bin") == real);
+    // renamed or deleted while running: where it was started, never a relative path
+    CHECK(realBinDir(dir / "prefix/bin/gone", dir / "prefix/bin") == dir / "prefix/bin");
+    CHECK(realBinDir("", "/opt/bw/bin") == fs::path("/opt/bw/bin"));
+}
+
 TEST_CASE("a block past the .ans limits is refused as a LibraryError, not an AnsiError") {
     // The Codex repro: a 1x401 float turned to 401x1.
     CellBlock wide(kMaxColumns + 1, 1);

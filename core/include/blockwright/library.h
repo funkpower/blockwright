@@ -192,6 +192,11 @@ bool matches(const Stamp& stamp, std::string_view query);
 // and macOS that is the GUI's AppDataLocation + "/library"; on Windows it is
 // under AppData/Local (AppLocalDataLocation), not the roaming AppData.
 std::filesystem::path bundledLibraryDir(const std::filesystem::path& binDir);
+// The directory of the real executable `exe`, with symlinks resolved, so a
+// binary started through a link elsewhere (the dev install's ~/.local/bin
+// links) still finds its own prefix. When `exe` can't be resolved (renamed
+// or deleted while running) it is `fallback`, the directory it was started from.
+std::filesystem::path realBinDir(const std::filesystem::path& exe, const std::filesystem::path& fallback);
 std::filesystem::path userLibraryDir();
 
 } // namespace bw::library

@@ -825,6 +825,14 @@ bool matches(const Stamp& stamp, std::string_view query) {
     return true;
 }
 
+fs::path realBinDir(const fs::path& exe, const fs::path& fallback) {
+    std::error_code ec;
+    const fs::path real = fs::canonical(exe, ec);
+    if (ec || !real.has_parent_path())
+        return fallback;
+    return real.parent_path();
+}
+
 fs::path bundledLibraryDir(const fs::path& binDir) {
     if (fs::path p = envPath("BLOCKWRIGHT_BUNDLED_LIBRARY"); !p.empty())
         return p;

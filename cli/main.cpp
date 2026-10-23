@@ -32,6 +32,7 @@
 #include <QCoreApplication>
 #include <QImageWriter>
 #include <QFile>
+#include <QFileInfo>
 #include <QSaveFile>
 
 #include <algorithm>
@@ -379,8 +380,10 @@ int libraryList(const std::optional<std::string>& dir) {
     if (dir) {
         dirs.push_back(libraryDir(*dir));
     } else {
-        const QString bin = QCoreApplication::applicationDirPath();
-        dirs.push_back(bw::library::bundledLibraryDir(QFile::encodeName(bin).toStdString()));
+        // Beside the real binary, not a symlink to it.
+        const auto native = [](const QString& p) { return std::filesystem::path(QFile::encodeName(p).toStdString()); };
+        dirs.push_back(bw::library::bundledLibraryDir(bw::library::realBinDir(
+            native(QCoreApplication::applicationFilePath()), native(QCoreApplication::applicationDirPath()))));
         dirs.push_back(bw::library::userLibraryDir());
     }
     for (const auto& d : dirs) {
