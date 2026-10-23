@@ -92,7 +92,7 @@ expect "--help says export and render refuse" 0 'render refuse to write over the
 
 # export --irc: per-line byte report, the budget, and the override
 expect "export --irc" 0 '^17 lines, longest 80 bytes, budget 407: 0 over$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
-if cmp -s "$data/golden-irc/tux.txt" "$tmp/tux.txt"; then ok "export --irc output is ans2irc's"; else bad "export --irc output differs from golden-irc/tux.txt"; fi
+if cmp -s "$data/golden-irc/tux.txt" "$tmp/tux.txt"; then ok "export --irc output is golden-irc's"; else bad "export --irc output differs from golden-irc/tux.txt"; fi
 expect "export --irc reports every line" 0 '^ +13 +80$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
 report=$("$cli" export --irc "$piece" "$tmp/tux.txt" 2>/dev/null)
 if [[ $(grep -cE '^ +[0-9]+ +[0-9]+' <<<"$report") -eq 17 ]]; then ok "export --irc reports 17 lines"; else bad "export --irc report: $report"; fi

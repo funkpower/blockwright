@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# irc_oracle_test.sh <ans2irc> <tests/data>: the committed golden-irc outputs
-# are what the ans2irc CLI from the pinned submodule writes.
+# irc_oracle_test.sh <blockwright-cli> <tests/data> <scratch dir>: `cli export
+# --irc` writes each golden piece byte for byte as the committed golden-irc
+# output, which is a fixed oracle: it changes only when the encoder's output
+# is meant to change.
 set -uo pipefail
-ans2irc=$1 data=$2
+cli=$1 data=$2 tmp=$3
+rm -rf "$tmp" && mkdir -p "$tmp"
 fails=0 n=0
 for f in "$data"/golden/*.ans; do
   name=$(basename "$f" .ans)
   n=$((n + 1))
-  if "$ans2irc" "$f" | cmp -s - "$data/golden-irc/$name.txt"; then
+  if ! "$cli" export --irc --allow-over-budget "$f" "$tmp/$name.txt" >/dev/null 2>"$tmp/$name.err"; then
+    echo "FAIL $name: export --irc failed: $(<"$tmp/$name.err")"; fails=$((fails + 1))
+  elif cmp -s "$tmp/$name.txt" "$data/golden-irc/$name.txt"; then
     echo "ok   $name"
   else
-    echo "FAIL $name: ans2irc output differs from golden-irc/$name.txt"; fails=$((fails + 1))
+    echo "FAIL $name: export --irc output differs from golden-irc/$name.txt"; fails=$((fails + 1))
   fi
 done
 extra=$(comm -13 <(cd "$data/golden" && ls *.ans | sed 's/\.ans$//') <(cd "$data/golden-irc" && ls *.txt | sed 's/\.txt$//'))

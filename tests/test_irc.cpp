@@ -1,4 +1,4 @@
-// IRC text through the linked ans2irc encoder.
+// IRC text from the canvas (irc.h).
 
 #include "util.h"
 
@@ -36,7 +36,7 @@ std::vector<std::string> splitLines(const std::string& text) {
 } // namespace
 
 TEST_CASE("palette colours map to mIRC colours of the same name and shade") {
-    // CGA order; ans2irc's ANSI_NORMAL and ANSI_BRIGHT in that order
+    // CGA order: the dark eight, then the bright eight
     const std::uint8_t want[16] = {1, 2, 3, 10, 5, 6, 7, 15, 14, 12, 9, 11, 4, 13, 8, 0};
     for (std::uint8_t i = 0; i < 16; ++i)
         CHECK(irc::mircColor(Color::indexed(i)) == want[i]);
@@ -57,16 +57,17 @@ TEST_CASE("RGB cells reach the 99-colour mapping") {
 }
 
 // The parser quantises 256-colour and 24-bit SGR colours to the 16-colour
-// palette (PLAN §8), so they export as palette colours: ans2irc's own parser
-// keeps them and writes 53 and 59 here.
+// palette (PLAN §8), so they export as palette colours, not as the nearest of
+// mIRC's 99 (53 and 59 here).
 TEST_CASE("256-colour and 24-bit input exports with its 16-colour quantisation") {
     CHECK(irc::exportCanvas(parseAnsi("\x1b[38;5;208mX\r\n").canvas) == std::vector<std::string>{"\x03" "7,1X"});
     CHECK(irc::exportCanvas(parseAnsi("\x1b[38;2;0;128;255mX\r\n").canvas) ==
           std::vector<std::string>{"\x03" "10,1X"});
 }
 
-TEST_CASE("encodeRow is ans2irc's encoder") {
-    // ans2irc encode.rs tests, with the mIRC colours given as palette colours
+TEST_CASE("encodeRow draws palette cells through the row encoder") {
+    // the row encoder's own cases (test_mirc.cpp), with the mIRC colours given
+    // as palette colours
     // red on black, then 7 in light green on black: one digit unless a digit follows
     CHECK(irc::encodeRow(std::vector{cell(U'a', LightRed, Black), cell(U'7', LightGreen, Black)}) ==
           "\x03" "4,1a\x03" "097");
@@ -186,10 +187,10 @@ TEST_CASE("overBudget lists the lines longer than the budget") {
     CHECK(irc::joinLines(lines) == "abc\nabcd\n\nabcde\n");
 }
 
-// tests/data/golden-irc/<piece>.txt is what the ans2irc CLI, built from the
-// pinned submodule commit, writes for tests/data/golden/<piece>.ans (the
-// irc_oracle test checks that it still does).
-TEST_CASE("golden pieces export byte for byte as the ans2irc CLI writes them") {
+// tests/data/golden-irc/<piece>.txt is the fixed IRC output for
+// tests/data/golden/<piece>.ans (the irc_oracle test checks `cli export --irc`
+// against it too).
+TEST_CASE("golden pieces export byte for byte as golden-irc holds them") {
     std::vector<fs::path> pieces;
     for (const auto& e : fs::directory_iterator(bwtest::dataDir() / "golden"))
         if (e.path().extension() == ".ans")

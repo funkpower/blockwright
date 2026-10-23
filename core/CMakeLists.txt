@@ -1,5 +1,5 @@
 # The core library: cell model, palette, CP437, ANSI and SAUCE codecs, IRC
-# text through the linked ans2irc encoder, ramps, brushes and the lint.
+# text (mIRC colours and the row encoder), ramps, brushes and the lint.
 # Plain C++20; it must never link QtWidgets.
 add_library(blockwright_core STATIC
   src/ansi.cpp
@@ -14,6 +14,7 @@ add_library(blockwright_core STATIC
   src/halfblock.cpp
   src/irc.cpp
   src/lint.cpp
+  src/mirc.cpp
   src/palette.cpp
   src/ramp.cpp
   src/sauce.cpp
@@ -22,6 +23,5 @@ add_library(blockwright_core STATIC
 )
 add_library(blockwright::core ALIAS blockwright_core)
 target_include_directories(blockwright_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(blockwright_core PRIVATE ans2irc_ffi)
 target_compile_options(blockwright_core PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)

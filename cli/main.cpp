@@ -187,7 +187,7 @@ void refuseSameFile(const std::string& in, const std::string& out) {
 }
 
 // Writes the piece as IRC text and reports every line's size in bytes, as
-// ans2irc's encoder writes it. A line over the budget is listed and nothing
+// the row encoder writes it. A line over the budget is listed and nothing
 // is written, unless allowOver.
 int exportIrc(const std::string& in, const std::string& out, std::size_t budget, bool allowOver) {
     refuseSameFile(in, out);
