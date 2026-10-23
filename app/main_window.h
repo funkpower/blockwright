@@ -38,6 +38,11 @@ SavePath resolveSavePath(const QString& chosen);
 // its own overwrite check sees the name that will be written.
 void configureSaveDialog(QFileDialog& dialog, const QString& path);
 
+// The question Save asks before a lossy save (AnsiOutput::lossy). Blink lost
+// on open is stated as what happened on open, not as something this save
+// loses, as the cells may have been put back.
+QString saveWarning(const AnsiOutput& out);
+
 class SelectTool;
 class BrushDock;
 class LibraryDock;
@@ -89,7 +94,8 @@ public:
     // Opens `path` without asking anything; false and `error` on failure.
     bool openFile(const QString& path, QString* error);
     // Saves to `path` without asking anything. A save that would lose data
-    // (glyphs written as '?', blink dropped) is refused unless `allowLossy`.
+    // (glyphs written as '?', or blink lost when the file was opened, see
+    // Document::encode) is refused unless `allowLossy`.
     bool saveFile(const QString& path, QString* error, bool allowLossy = false);
 
 public slots:

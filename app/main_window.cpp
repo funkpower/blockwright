@@ -38,16 +38,21 @@ QString lossDescription(const AnsiOutput& out) {
         parts << QObject::tr("%n cell(s) hold a glyph with no CP437 code and will be written as '?'", nullptr,
                              int(out.unwritable.size()));
     // From the editor this is blink the file had and lost when it was opened
-    // with iCE colours (see Document::encode): what has happened to those
-    // cells since, iCE turned off or the cell erased, doesn't bring it back.
+    // with iCE colours (see Document::encode), counted on open. It says only
+    // that: the cells may since have moved, been erased or had their blink put
+    // back, so it claims nothing about what this save writes, and nothing
+    // about the original file, which a Save As to a new path leaves alone.
     if (out.blinkDropped)
-        parts << QObject::tr("%n blinking cell(s) of the original file lost their blink when it was opened with iCE "
-                             "colours",
-                             nullptr, out.blinkDropped);
+        parts << QObject::tr("%n cell(s) lost their blink when the file was opened with iCE colours", nullptr,
+                             out.blinkDropped);
     return parts.join(QStringLiteral(";\n"));
 }
 
 } // namespace
+
+QString saveWarning(const AnsiOutput& out) {
+    return QObject::tr("Before saving as .ans:\n%1.\n\nSave anyway?").arg(lossDescription(out));
+}
 
 SavePath resolveSavePath(const QString& chosen) {
     if (!QFileInfo(chosen).suffix().isEmpty())
@@ -350,7 +355,7 @@ bool MainWindow::saveInteractive(const QString& path) {
     const AnsiOutput out = doc_.encode();
     if (out.lossy()) {
         const auto answer = QMessageBox::warning(
-            this, tr("Save"), tr("Saving as .ans loses something:\n%1.\n\nSave anyway?").arg(lossDescription(out)),
+            this, tr("Save"), saveWarning(out),
             QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);
         if (answer != QMessageBox::Save)
             return false;

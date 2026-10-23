@@ -39,7 +39,8 @@ public:
     // document; false and `error` on failure. A file whose iCE flag is off
     // but which sets a bright background opens with iCE on, as writeAnsi
     // writes it and `cli render` draws it: its blinking cells keep their
-    // dark background and lose the blink, and `blinkDropped` counts them
+    // dark background and lose the blink, and `blinkDropped` counts those
+    // whose blink showed (not on a blank glyph), as writeAnsi does
     // (openAsEditor).
     static bool read(const QString& path, AnsiDocument* out, QString* error, int* blinkDropped);
     // Replaces the document with `doc`, read from `path`, unmodified and
@@ -55,7 +56,8 @@ public:
     // with iCE off a bright background is saved as blink, with it on blink
     // is saved as a bright background. So writeAnsi itself drops no blink, and
     // `blinkDropped` is only the blink lost on open (read), whatever has been
-    // done to those cells since.
+    // done to those cells since: it says what happened on open, not what these
+    // bytes hold, and it still gates the save (lossy()) until the next save.
     AnsiOutput encode() const;
     // Writes `out` (from encode()) to `path` all or nothing, makes `path`
     // the document's file and marks the undo stack clean.

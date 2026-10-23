@@ -360,8 +360,8 @@ private:
 
 // A cell the trailing trim may drop, written with iCE colours `ice`. A
 // blinking space written without iCE is not one: read back with iCE on it is
-// a bright-black background. With iCE on its blink is dropped (and counted),
-// so it is written as a plain black space and goes like one.
+// a bright-black background. With iCE on its blink is dropped, so it is
+// written as a plain black space and goes like one.
 bool blankBlack(const Cell& c, bool ice) {
     return c.transparent || (c.ch == U' ' && c.bg.paletteIndex() == Black && (ice || !(c.attrs & attr::Blink)));
 }
@@ -377,6 +377,8 @@ bool isWritableGlyph(char32_t ch) {
     const std::optional<std::uint8_t> b = unicodeToCp437(ch);
     return b && *b != 0x00 && writableByte(*b);
 }
+
+bool blankGlyph(char32_t ch) { return ch == U' ' || ch == U'\0' || ch == U'\u00a0'; }
 
 Cell iceCell(Cell c, bool ice) {
     const std::uint8_t bg = c.bg.paletteIndex();
@@ -408,7 +410,8 @@ Opened openAsEditor(AnsiDocument& doc) {
             Cell& c = cv.at(x, y);
             if (!c.transparent && (c.attrs & attr::Blink)) {
                 c.attrs &= static_cast<std::uint8_t>(~attr::Blink);
-                ++r.blinkDropped;
+                if (!blankGlyph(c.ch))  // blink on a blank glyph never showed
+                    ++r.blinkDropped;
             }
         }
     return r;
@@ -445,16 +448,19 @@ AnsiOutput writeAnsi(const AnsiDocument& doc) {
     // Without iCE colours a bright background can't be written (SGR 5 would
     // mean blink on a dark one, and 100-107 aren't read by classic viewers),
     // so a canvas with any bright background is written with iCE on. Blink
-    // can't be written with iCE on: those cells lose it, and that's reported.
+    // can't be written with iCE on: those cells lose it, and that's reported
+    // where it showed (not on a blank glyph).
     bool ice = doc.ice;
     for (int y = 0; y < cv.height() && !ice; ++y)
         for (int x = 0; x < cv.width() && !ice; ++x)
             ice = !cv.at(x, y).transparent && cv.at(x, y).bg.paletteIndex() >= 8;
     if (ice)
         for (int y = 0; y < cv.height(); ++y)
-            for (int x = 0; x < cv.width(); ++x)
-                if (!cv.at(x, y).transparent && (cv.at(x, y).attrs & attr::Blink))
+            for (int x = 0; x < cv.width(); ++x) {
+                const Cell& c = cv.at(x, y);
+                if (!c.transparent && (c.attrs & attr::Blink) && !blankGlyph(c.ch))
                     ++out.blinkDropped;
+            }
     s = "\x1b[0m";
     for (int y = 0; y < cv.height(); ++y) {
         int end = cv.width();

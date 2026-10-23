@@ -52,6 +52,10 @@ expect "--allow-lossy writes" 0 'warning: .*lossy\.ans: 1 blinking cell loses it
 expect "--allow-lossy output is iCE on" 0 '^flags: +0x1 \(iCE on' -- "$cli" info "$tmp/lossy-out.ans"
 expect "blink alone is not lossy" 0 '^$' -- "$cli" convert "$tmp/blink.ans" "$tmp/blink-out.ans"
 expect "blink alone stays iCE off" 0 '^flags: +0x0 \(iCE off' -- "$cli" info "$tmp/blink-out.ans"
+# #42: blink on a space never shows with iCE off, so iCE on loses nothing
+printf '\033[0;5;40m   \033[0;37;104mB\r\n\033[0;5;40m    ' > "$tmp/blank-blink.ans"; sauce "$tmp/blank-blink.ans" 0
+expect "blink on blank glyphs is not lossy" 0 '^$' -- "$cli" convert "$tmp/blank-blink.ans" "$tmp/blank-blink-out.ans"
+expect "blink on blank glyphs: output is iCE on" 0 '^flags: +0x1 \(iCE on' -- "$cli" info "$tmp/blank-blink-out.ans"
 
 : > "$tmp/empty.ans"
 printf '\033[0m\r\n' > "$tmp/nothing.ans"
@@ -162,6 +166,12 @@ expect "shade with nothing on the ramp" 0 '^lightened 0 cells 1 rung along 1,2 '
 expect "lossy shade refused" 1 'lossy-shade\.ans: not written: the conversion loses data' -- "$cli" shade --ramp fire "$tmp/lossy.ans" "$tmp/lossy-shade.ans"
 if [[ -e $tmp/lossy-shade.ans ]]; then bad "refused lossy shade left an output file"; else ok "refused lossy shade writes nothing"; fi
 expect "shade --allow-lossy writes" 0 '^lightened' -- "$cli" shade --ramp fire --allow-lossy "$tmp/lossy.ans" "$tmp/lossy-shade.ans"
+# #42: blink on a blank glyph never showed, so opening it with iCE on loses
+# nothing and shade writes it without --allow-lossy, as convert does
+printf '\033[0;5;40m \033[0;37;104mB' > "$tmp/blank-blink-1.ans"; sauce "$tmp/blank-blink-1.ans" 0
+expect "shade of blink on a blank glyph is not refused" 0 '^lightened' -- "$cli" shade --ramp fire "$tmp/blank-blink-1.ans" "$tmp/blank-blink-shade.ans"
+if grep -q 'blinking cell' <<<"$("$cli" shade --ramp fire "$tmp/blank-blink-1.ans" "$tmp/blank-blink-shade.ans" 2>&1)"; then
+  bad "shade of blink on a blank glyph warns of a blinking cell"; else ok "shade of blink on a blank glyph warns of no blinking cell"; fi
 # A non-iCE piece with a blinking cell: steel's K/w shades keep a dark
 # background, so the blink survives. Two bright colours need iCE.
 printf '\033[5;31mA\033[0;1;30;47m\xb2\xb2\xb2' > "$tmp/nonice.ans"; sauce "$tmp/nonice.ans" 0

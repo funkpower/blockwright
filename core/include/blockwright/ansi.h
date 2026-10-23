@@ -47,7 +47,9 @@ struct AnsiOutput {
     std::string bytes;
     std::vector<Unwritable> unwritable;  // cells written as '?'
     // Blinking cells written without their blink: the file is written with
-    // iCE colours on, where blink means a bright background.
+    // iCE colours on, where blink means a bright background. Only cells whose
+    // blink shows count: blink hides and shows the foreground, so on a blank
+    // glyph (blankGlyph) it shows nothing and nothing is lost.
     int blinkDropped = 0;
 
     bool lossy() const { return !unwritable.empty() || blinkDropped; }
@@ -60,9 +62,9 @@ struct AnsiOutput {
 // document's record if it has one (width, height, iCE and FileSize updated)
 // or a fresh one. iCE is the document's, except that a canvas with a bright
 // background is written with iCE on (blinking cells then lose their blink,
-// counted in `blinkDropped`). Glyphs with no CP437 byte, or whose byte is a
-// control code the parser would act on, are written as '?' and listed in
-// `unwritable`.
+// counted in `blinkDropped` unless the glyph is blank). Glyphs with no CP437
+// byte, or whose byte is a control code the parser would act on, are written
+// as '?' and listed in `unwritable`.
 AnsiOutput writeAnsi(const AnsiDocument& doc);
 
 // A cell as it shows, and is saved, with iCE colours `ice`. Blink and a
@@ -79,7 +81,8 @@ Cell iceCell(Cell c, bool ice);
 // What openAsEditor changed.
 struct Opened {
     bool iceInferred = false;  // iCE colours turned on for a bright background
-    int blinkDropped = 0;      // blinking cells that lost their blink for it
+    int blinkDropped = 0;      // blinking cells that lost their blink for it, as
+                               // writeAnsi counts them (not on a blank glyph)
 };
 
 // Makes a parsed document what the editor opens, and `cli shade` shades: a
@@ -87,13 +90,18 @@ struct Opened {
 // 100-107, a 24-bit colour) is opened with them on, its SAUCE flag too, as
 // writeAnsi would write it. Its blinking cells lose their blink and keep
 // their dark background, as writeAnsi writes them then, so iceCell doesn't
-// show or save them bright. A file with iCE colours on, or without a bright
-// background, is left as it is. The blink lost is lost on open, so a save
-// should still count it (Document::encode, `cli shade`).
+// show or save them bright; those whose blink showed (not on a blank glyph)
+// are counted, as writeAnsi counts them. A file with iCE colours on, or
+// without a bright background, is left as it is. The blink lost is lost on
+// open, so a save should still count it (Document::encode, `cli shade`).
 Opened openAsEditor(AnsiDocument& doc);
 
 // Whether writeAnsi writes `ch` as itself: it has a CP437 byte and that byte
 // isn't one the parser acts on (TAB, LF, CR, SUB, ESC) or NUL.
 bool isWritableGlyph(char32_t ch);
+
+// Whether `ch` draws no foreground: a space, NUL or 0xFF (U+00A0). Blink
+// (with iCE off) hides and shows the foreground, so on these it shows nothing.
+bool blankGlyph(char32_t ch);
 
 } // namespace bw

@@ -224,3 +224,16 @@ TEST_CASE("cli shade opens a piece as the editor does: inferred iCE colours stay
     CHECK(out.blinkDropped == 0);
     CHECK(parseAnsi(out.bytes).ice);
 }
+
+TEST_CASE("cli shade counts no blink lost on a blank glyph, as the editor doesn't", "[cli][shade]") {
+    // #42: a blinking black space beside a bright background loses nothing
+    // on open, so the shaded piece isn't lossy
+    AnsiDocument doc = parseIceOff("\x1b[0;5;40m \x1b[0;37;104mB");
+    REQUIRE(doc.canvas.at(0, 0).attrs & attr::Blink);
+    bwcli::ShadeOptions o = options(fire());
+    const bwcli::Shaded r = bwcli::shadeDocument(doc, o);
+    CHECK(r.iceTurnedOn);
+    CHECK(r.blinkDropped == 0);
+    CHECK(r.why.empty());
+    CHECK_FALSE(writeAnsi(doc).lossy());
+}

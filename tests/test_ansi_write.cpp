@@ -184,19 +184,62 @@ TEST_CASE("Bright backgrounds with iCE off", "[write]") {
 
 TEST_CASE("A trailing blinking black space written with iCE on is trimmed as black", "[write]") {
     // #36: the bright background turns iCE on, the blink is dropped, and the
-    // two blinking spaces are plain black spaces, trimmed as the editor does
+    // two blinking spaces are plain black spaces, trimmed as the editor does.
+    // Only A's blink showed (#42): blink on a space shows nothing.
     const AnsiDocument d =
         parseAnsi(withSauce("\x1b[0;5;31;44mA\x1b[0;37;104mB\x1b[0;5;30;40m  ", 80, false));
     REQUIRE_FALSE(d.ice);
     REQUIRE(d.canvas.at(2, 0).attrs == attr::Blink);
     const AnsiOutput out = writeAnsi(d);
-    CHECK(out.blinkDropped == 3);
+    CHECK(out.blinkDropped == 1);
     CHECK(out.bytes.find("B\x1b[0m\r\n") != std::string::npos);
     CHECK(out.bytes.find("\x1b[0;30;40m") == std::string::npos);
     const AnsiDocument back = parseAnsi(out.bytes);
     CHECK(back.ice);
     CHECK(back.canvas.at(2, 0) == Cell{});
     CHECK(back.canvas.at(3, 0) == Cell{});
+}
+
+TEST_CASE("Blink on a blank glyph is not lost when iCE is turned on", "[write]") {
+    SECTION("#42: blinking spaces next to a bright background are written without loss") {
+        Sauce sauce = Sauce::fresh(80, 2);
+        sauce.setIce(false);
+        const std::string b = "\x1b[0;5;40m   \x1b[0;37;104mB\r\n\x1b[0;5;40m    ";
+        const AnsiDocument d = parseAnsi(b + encodeSauce(sauce, static_cast<std::uint32_t>(b.size())));
+        REQUIRE_FALSE(d.ice);
+        REQUIRE(d.canvas.at(0, 0).attrs == attr::Blink);
+        REQUIRE(d.canvas.at(3, 1).attrs == attr::Blink);
+        const AnsiOutput out = writeAnsi(d);
+        CHECK(out.blinkDropped == 0);
+        CHECK_FALSE(out.lossy());
+        const AnsiDocument back = parseAnsi(out.bytes);
+        CHECK(back.ice);
+        for (int x = 0; x < 4; ++x) {
+            CHECK(back.canvas.at(x, 1) == Cell{});
+            if (x < 3)
+                CHECK(back.canvas.at(x, 0) == Cell{});
+        }
+        CHECK(back.canvas.at(3, 0).bg.index == LightBlue);
+    }
+    SECTION("a space, NUL and 0xFF are blank; any other glyph's blink is lost") {
+        AnsiDocument doc;
+        doc.canvas = Canvas(6, 1);
+        const char32_t glyphs[] = {U' ', U'\0', U'\u00a0', U'.', U'█'};
+        for (int x = 0; x < 5; ++x) {
+            Cell c = cell(glyphs[x], Grey, Red);
+            c.attrs = attr::Blink;
+            doc.canvas.at(x, 0) = c;
+        }
+        doc.canvas.at(5, 0) = cell(U'B', Grey, LightBlue);
+        doc.ice = false;
+        const AnsiOutput out = writeAnsi(doc);
+        CHECK(out.blinkDropped == 2);
+        CHECK(blankGlyph(U' '));
+        CHECK(blankGlyph(U'\0'));
+        CHECK(blankGlyph(U'\u00a0'));
+        CHECK_FALSE(blankGlyph(U'.'));
+        CHECK_FALSE(blankGlyph(U'█'));
+    }
 }
 
 TEST_CASE("openAsEditor turns iCE colours on for a bright background and drops blink as writeAnsi would") {
@@ -238,5 +281,36 @@ TEST_CASE("openAsEditor turns iCE colours on for a bright background and drops b
         t.canvas.at(2, 0).bg = Color::indexed(12);
         CHECK_FALSE(openAsEditor(t).iceInferred);
         CHECK_FALSE(t.ice);
+    }
+}
+
+TEST_CASE("openAsEditor loses no blink on a blank glyph, as writeAnsi doesn't", "[write]") {
+    SECTION("#42: a blinking black space beside a bright background") {
+        AnsiDocument doc = parseIceOff("\x1b[0;5;40m \x1b[0;37;104mB");
+        REQUIRE_FALSE(doc.ice);
+        REQUIRE(doc.canvas.at(0, 0).attrs == attr::Blink);
+        REQUIRE(writeAnsi(doc).blinkDropped == 0);
+        const Opened r = openAsEditor(doc);
+        CHECK(r.iceInferred);
+        CHECK(r.blinkDropped == 0);
+        CHECK_FALSE(doc.canvas.at(0, 0).attrs & attr::Blink);
+        CHECK_FALSE(writeAnsi(doc).lossy());
+    }
+    SECTION("only the blink on glyphs that aren't blank is counted") {
+        AnsiDocument doc;
+        doc.canvas = Canvas(6, 1);
+        const char32_t glyphs[] = {U' ', U'\0', U' ', U'.', U'█'};
+        for (int x = 0; x < 5; ++x) {
+            Cell c = cell(glyphs[x], Grey, Red);
+            c.attrs = attr::Blink;
+            doc.canvas.at(x, 0) = c;
+        }
+        doc.canvas.at(5, 0) = cell(U'B', Grey, LightBlue);
+        doc.ice = false;
+        REQUIRE(writeAnsi(doc).blinkDropped == 2);
+        const Opened r = openAsEditor(doc);
+        CHECK(r.blinkDropped == 2);
+        for (int x = 0; x < 5; ++x)
+            CHECK_FALSE(doc.canvas.at(x, 0).attrs & attr::Blink);
     }
 }

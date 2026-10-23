@@ -8,6 +8,7 @@
 #include "document.h"
 #include "main_window.h"
 #include "sauce_dialog.h"
+#include "select_tool.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -411,8 +412,9 @@ TEST_CASE("an iCE-off file opened with iCE on shows and saves its blinking cells
         {"\x1b[0;5;31;44mA\x1b[0;37;104mB", 0, kPalette[Blue], 1},
         {"\x1b[0;5;37;104mC", 0, kPalette[LightBlue], 1},
         {"\x1b[101mA\x1b[0;5;44mB", 1, kPalette[Blue], 1},
-        // #36: trailing blinking black spaces, trimmed by both
-        {"\x1b[0;5;31;44mA\x1b[0;37;104mB\x1b[0;5;30;40m  ", 0, kPalette[Blue], 3},
+        // #36: trailing blinking black spaces, trimmed by both; their blink
+        // never showed, so only A's counts (#42)
+        {"\x1b[0;5;31;44mA\x1b[0;37;104mB\x1b[0;5;30;40m  ", 0, kPalette[Blue], 1},
     };
     for (const Case& c : cases) {
         CAPTURE(c.body);
@@ -449,8 +451,7 @@ TEST_CASE("the save warning for blink lost on open stays true once iCE is off or
     // #36: the count is fixed when the file opens; neither turning iCE off
     // nor erasing the cell gives the blink back, and the warning says what
     // happened rather than what the save will do
-    const QString lost = QStringLiteral("1 blinking cell(s) of the original file lost their blink when it was "
-                                        "opened with iCE colours");
+    const QString lost = QStringLiteral("1 cell(s) lost their blink when the file was opened with iCE colours");
     QTemporaryDir tmp;
     const QString path = writeIceOff(tmp, "blink.ans", "\x1b[0;5;31;44mA\x1b[0;37;104mB");
     MainWindow w;
@@ -471,6 +472,84 @@ TEST_CASE("the save warning for blink lost on open stays true once iCE is off or
     CHECK_FALSE(w.saveFile(saved, &error));
     CHECK(error == lost);
     CHECK_FALSE(error.contains(QStringLiteral("will lose")));
+    // #42: a save to a new path leaves the original's blink alone, so the
+    // warning doesn't say the original lost it
+    CHECK_FALSE(error.contains(QStringLiteral("original")));
+}
+
+TEST_CASE("the save warning for blink lost on open says only what happened on open") {
+    // #75 review: the warning can't follow a lost cell through edits, so it
+    // says nothing about what the save writes. Both cases below would make a
+    // claim about the save false; the open-time wording stays true, and the
+    // loss recorded on open still stops the save unless lossy saves are allowed.
+    const QString lost = QStringLiteral("1 cell(s) lost their blink when the file was opened with iCE colours");
+    QTemporaryDir tmp;
+    const QString path = writeIceOff(tmp, "blink.ans", "\x1b[0;5;31;44mA\x1b[0;37;104mB");
+    const Cell original = parseAnsi(bwtest::readFile(path.toStdString())).canvas.at(0, 0);
+    REQUIRE((original.attrs & attr::Blink));
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(path, &error));
+    REQUIRE(w.document()->encode().blinkDropped == 1);
+    // the Save question doesn't say the save loses it either
+    const QString asked = saveWarning(w.document()->encode());
+    CHECK(asked.contains(lost));
+    CHECK_FALSE(asked.contains(QStringLiteral("lose")));
+    CHECK_FALSE(asked.contains(QStringLiteral("saved without")));
+    const QString saved = tmp.filePath(QStringLiteral("saved.ans"));
+
+    SECTION("iCE off and the blinking cell put back in place: the save writes its blink") {
+        REQUIRE(w.document()->setIce(false));
+        put(w.document(), 0, 0, original);
+        const AnsiOutput out = w.document()->encode();
+        CHECK((parseAnsi(out.bytes).canvas.at(0, 0).attrs & attr::Blink));
+        CHECK(out.blinkDropped == 1);
+        CHECK_FALSE(w.saveFile(saved, &error));
+        CHECK(error == lost);
+        REQUIRE(w.saveFile(saved, &error, true));
+        CHECK(bwtest::readFile(saved.toStdString()) == out.bytes);
+    }
+    SECTION("iCE off and the cells flipped: A moves and B's bright background takes its place") {
+        REQUIRE(w.document()->setIce(false));
+        QUndoStack* undo = w.document()->undoStack();
+        action(w, "selectTool")->trigger();
+        w.selectTool()->select({0, 0, 2, 1});
+        action(w, "flipHorizontal")->trigger();
+        REQUIRE(w.document()->canvas().at(0, 0).ch == U'B');
+        REQUIRE(w.document()->canvas().at(1, 0).ch == U'A');
+        CHECK(w.document()->encode().blinkDropped == 1);
+        undo->undo();
+        CHECK(w.document()->encode().blinkDropped == 1);
+        undo->redo();
+        CHECK(w.document()->encode().blinkDropped == 1);
+        CHECK_FALSE(w.saveFile(saved, &error));
+        CHECK(error == lost);
+    }
+}
+
+TEST_CASE("an iCE-off file whose only blink is on blank glyphs opens and saves without a loss warning") {
+    // #42: blink with iCE off hides and shows the foreground, so on a space it
+    // never shows; turning iCE on for the bright background loses nothing
+    QTemporaryDir tmp;
+    const QString path =
+        writeIceOff(tmp, "blank-blink.ans", "\x1b[0;5;40m   \x1b[0;37;104mB\r\n\x1b[0;5;40m    ");
+    const AnsiDocument parsed = parseAnsi(bwtest::readFile(path.toStdString()));
+    REQUIRE_FALSE(parsed.ice);
+    const AnsiOutput cli = writeAnsi(parsed);
+    REQUIRE(cli.blinkDropped == 0);
+
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(path, &error));
+    CHECK(w.document()->ansi().ice);
+    CHECK(w.document()->canvas().at(0, 0).attrs == 0);
+    CHECK(w.document()->canvas().at(3, 1).attrs == 0);
+    const AnsiOutput out = w.document()->encode();
+    CHECK(out.blinkDropped == 0);
+    CHECK(out.bytes == cli.bytes);
+    const QString saved = tmp.filePath(QStringLiteral("saved.ans"));
+    REQUIRE(w.saveFile(saved, &error));
+    CHECK(bwtest::readFile(saved.toStdString()) == cli.bytes);
 }
 
 TEST_CASE("View > 9 px Letter Spacing sizes the view and preview, is undoable and is saved and read back") {
