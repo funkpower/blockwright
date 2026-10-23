@@ -5,11 +5,23 @@
 #include "blockwright/canvas.h"
 #include "blockwright/ramp.h"
 
+#include <compare>
+#include <cstdint>
+#include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace bw::lint {
+
+// Options the lint can't judge with (a rung at most 0 cells wide), or a
+// canvas an index doesn't hold.
+class LintError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 // A rectangle of cells, corners inclusive, as --box x0,r0,x1,r1.
 struct Box {
@@ -30,10 +42,14 @@ double noise(const Canvas& canvas, std::optional<Box> box = {});
 
 struct LadderOptions {
     // The widest a shade rung may be along the gradient, in cells: each rung
-    // has each rung 1-3 cells wide.
+    // is 1-3 cells wide, so a band reads as a turn, not a stripe. At least 1: checkLadder and LadderIndex
+    // throw LintError below that.
     int maxRung = 3;
     // The most noise a clean area has.
     double maxNoise = 0.02;
+    // Judge the box as a whole too (one glyph, noise). Off for a caller
+    // that wants the findings at cells only: the noise reads every pixel.
+    bool whole = true;
 };
 
 struct LadderFinding {
@@ -48,6 +64,31 @@ struct LadderFinding {
     Kind kind;
     int x = 0, y = 0;  // canvas cell (the box's corner for OneGlyph and Noise)
     std::string message;
+    int nx = 0, ny = 0;  // a skip's other cell, across the jump from x, y; a wide rung's run's last cell
+
+    // A finding is all of its fields: two are the same finding only when
+    // every field is equal. A wide step across a row and one down a column
+    // from the same cell, of the same width, differ only in nx, ny. The
+    // whole-canvas list and its tests order and compare findings with these;
+    // a brush's guard compares places (below).
+    friend bool operator==(const LadderFinding&, const LadderFinding&) = default;
+    friend std::strong_ordering operator<=>(const LadderFinding&, const LadderFinding&) = default;
+
+    // Where a finding is, without what it measures: how a brush's guard
+    // tells findings apart (LadderIndex::apply), wide rungs aside. Its kind,
+    // cell and other cell; the message and the numbers in it (a skip's
+    // rungs, whether a speck is lighter or darker, the noise) aren't part of
+    // it. A wide rung's place is its first cell and the cell one step along
+    // its run (x + 1, y across a row; x, y + 1 down a column), so a row's
+    // step and a column's at one cell are two places; the guard matches wide
+    // rungs by the cells their runs share instead (LadderIndex).
+    struct Place {
+        Kind kind;
+        int x = 0, y = 0, nx = 0, ny = 0;
+        friend std::strong_ordering operator<=>(const Place&, const Place&) = default;
+        friend bool operator==(const Place&, const Place&) = default;
+    };
+    Place place() const;
 };
 
 struct LadderReport {
@@ -78,7 +119,151 @@ struct LadderReport {
 // neighbours that is lighter than all of them or darker than all of them;
 // black (ink) and the ramp's top rung (a glint) are never specks. Cells off
 // the ramp (text, half blocks, RGB and other ramps' colours) aren't judged.
+// Throws LintError for options.maxRung below 1.
 LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<Box> box = {},
                          const LadderOptions& options = {});
+
+// checkLadder's findings over the whole canvas (no box), kept up to date a
+// change at a time, so a brush can judge each step of a stroke by the
+// findings it adds. Taking the index reads the canvas once (a whole-canvas
+// cost, once per stroke); after that a change costs the rows and columns
+// through its cells (O(W + H) per changed cell, a few more where a row's
+// trailing blank run moves), however large the canvas is.
+//
+// What a change adds is what a brush's guard refuses, judged on the whole
+// canvas, the one-glyph and noise findings included when options.whole is
+// on (a test checks it against linting both whole canvases):
+//  - a wide rung, unless the held canvas had one the same way (across or
+//    down), on the same row or column, of the same rung, whose run shares a
+//    cell with its run. Narrowed or widened at either end (6 cells wide to
+//    5, or 5 to 6), two runs joined or one split, it is the step that was
+//    and isn't added; a band repainted to another rung is.
+//  - any other finding at a place (LadderFinding::Place) where the held
+//    canvas had none of that kind. A finding that only measures differently
+//    where it was (a skip of other rungs between the same two cells, a
+//    speck gone from lighter to darker) isn't added.
+//  The whole-canvas list (findings(), checkLadder) still shows a finding
+//  that wasn't added, with its new message.
+//  - one glyph when the held canvas didn't use one glyph only.
+//  - noise when the noise is over options.maxNoise and higher than it was.
+// An index holds one canvas: after an edit it wasn't told of (undo from
+// elsewhere, another tool, a layer switch), take a new one.
+class LadderIndex {
+public:
+    // Throws LintError for options.maxRung below 1.
+    LadderIndex(const Canvas& canvas, const Ramp& ramp, const LadderOptions& options = {});
+
+    // Moves the index to `after`, which differs from the canvas it holds
+    // only at `changed` cells (a cell named twice counts once; cells off the
+    // canvas are ignored), and returns what the change adds, as above.
+    // Throws LintError, leaving the index as it was, when `after` isn't the
+    // held canvas's size, and in a debug build (no NDEBUG) when `after`
+    // differs at a cell `changed` doesn't name (differsOnlyAt, a whole-canvas
+    // compare). A release build trusts `changed`: a cell it leaves out keeps
+    // its old findings for the index's life.
+    std::vector<LadderFinding> apply(const Canvas& after, const std::vector<std::pair<int, int>>& changed);
+    // What apply would return, leaving the index where it is: an apply and
+    // the update back, twice apply's cost. A guard that keeps most of its
+    // dabs calls apply, and on a refusal applies the held cells back
+    // (apply(before, changed) adds nothing it must look at).
+    std::vector<LadderFinding> added(const Canvas& after, const std::vector<std::pair<int, int>>& changed);
+    // Whether `after` is the held canvas's size and equal to it at every
+    // cell `changed` doesn't name: apply's precondition, read over the whole
+    // canvas (O(W x H)).
+    bool differsOnlyAt(const Canvas& after, const std::vector<std::pair<int, int>>& changed) const;
+
+    // Whether the held canvas has this finding (every field equal).
+    bool has(const LadderFinding& finding) const;
+    // checkLadder's findings of the held canvas over the whole of it.
+    std::vector<LadderFinding> findings() const;
+    const Canvas& canvas() const { return canvas_; }
+    double noise() const { return total_ ? double(lonely_) / double(total_) : 0.0; }
+
+private:
+    // A wide step's width, its run's last cell along the line and its rung;
+    // width 0 for none.
+    struct Wide {
+        int width = 0, last = 0, rung = -1;
+        bool operator==(const Wide&) const = default;
+    };
+    // A skip along a line: the last cell of the level at rung a and the
+    // first of the next, at rung c, as positions along it.
+    struct Skip {
+        int i = 0, j = 0, a = 0, c = 0;
+    };
+    // Positions 0..n-1, some set: the highest set one at or below a
+    // position, in a few word reads (a 64-ary tree of bitsets).
+    struct Highest {
+        std::vector<std::vector<std::uint64_t>> levels;
+        void reset(std::size_t n);
+        void set(std::size_t i, bool on);
+        long long below(std::size_t i) const;
+    };
+
+    std::vector<LadderFinding> update(const std::vector<std::pair<int, Cell>>& cells);
+    int rungAt(int x, int y) const;
+    int pixelAt(int p, int x) const;
+    int contribution(int p, int x) const;
+    void bump(bool row, int slot, int by);
+    void placeRow(int i);
+    void placeColumn(int i);
+    bool judgedRow(int start) const;
+    Wide judgeRow(int start) const;
+    Wide judgeColumn(int start) const;
+    int speckAt(int x, int y) const;
+    std::vector<Skip> skips(bool row, int line) const;
+    LadderFinding skipAt(bool row, int line, const Skip& s) const;
+    std::vector<LadderFinding> globals() const;
+
+    Canvas canvas_;
+    Ramp ramp_;
+    LadderOptions options_;
+    int w_ = 0, h_ = 0;
+    // per cell, y * w + x: the rung (-1 off the ladder), the run across the
+    // row [rowFirst, rowEnd) and down the column [columnFirst, columnEnd)
+    std::vector<int> rung_, rowFirst_, rowEnd_, columnFirst_, columnEnd_;
+    // The width rule's runs the other way, bucketed: a row's run [a, b)
+    // owns slots a..b-1 of its row (y * w + slot), and each of its cells
+    // counts in slot a + min(its run down, b - a) - 1, so the highest
+    // counted slot in [a, b) is the rung's longest run down across the run.
+    // Columns the same way (x * h + slot), with the runs across.
+    std::vector<int> rowSlot_, columnSlot_, rowCount_, columnCount_;
+    Highest rowHighest_, columnHighest_;
+    // A cell whose run across is judged (a row reports it if it is in a
+    // judged column run), and per column run, at its first cell, how many
+    // of its cells are.
+    std::vector<char> judgedAcross_;
+    std::vector<int> seen_;
+    std::vector<Wide> rowWide_, columnWide_;  // at a run's first cell
+    std::vector<std::vector<Skip>> rowSkips_, columnSkips_;  // per line, in order along it
+    std::vector<char> speck_, shade_;  // speck: 0, 1 lighter, 2 darker
+    // one glyph: the shade cells, by glyph
+    int shadeCells_ = 0;
+    std::map<char32_t, int> glyphs_;
+    // noise: each row's length with its trailing black spaces trimmed, the
+    // pixels (2 rows per cell row, -1 for none) and what each counts (0,
+    // 1 counted, 2 counted and lonely)
+    std::vector<int> length_, pixel_;
+    std::vector<signed char> counts_;
+    long long lonely_ = 0, total_ = 0;
+    // bookkeeping for one update
+    unsigned epoch_ = 0;
+    std::vector<unsigned> cellMark_, rowMark_, columnMark_, rowRunMark_, columnRunMark_, pixelMark_, rowWideMark_,
+        columnWideMark_, speckMark_, shadeMark_;
+};
+
+// What changing `before` to `after` at `changed` adds, as
+// LadderIndex::apply judges it, from an index of `before` built for this
+// one call: a whole-canvas pass every time (milliseconds on a large
+// canvas). For tests and a one-off check; a brush judging dab after dab
+// keeps a LadderIndex for the stroke.
+std::vector<LadderFinding> addedFindingsOnce(const Canvas& before, const Canvas& after, const Ramp& ramp,
+                                             const std::vector<std::pair<int, int>>& changed,
+                                             const LadderOptions& options = {});
+
+// How many reads the lint has made on this thread so far (a cell, its rung,
+// a pixel, a run's bucket, a step of comparing a line's skips): a work counter, for tests of what a change costs
+// to judge.
+long long cellsRead();
 
 } // namespace bw::lint
