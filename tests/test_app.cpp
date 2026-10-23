@@ -889,25 +889,41 @@ TEST_CASE("F1-F10 type the glyphs of the current set") {
 TEST_CASE("no shortcut uses a desktop's F-key chords") {
     // #33 review P2: the window manager takes Alt+F-keys (Alt+F4 closes the
     // window), KDE and Xfce take Ctrl+F-keys for desktops and Linux takes
-    // Ctrl+Alt+F-keys for VTs, so the editor never sees them
+    // Ctrl+Alt+F-keys for VTs, so the editor never sees them. Every action is
+    // checked; only the glyph sets' chords are counted, because the platform's
+    // standard keys add their own (#48: on xcb, Undo is also F14, the Sun Undo
+    // key). Those may not take a glyph set's chord either: Qt fires neither
+    // action on an ambiguous key (#78 review P2; "no two actions share a
+    // shortcut" checks every key)
     MainWindow w;
     const QList<QAction*> actions = w.findChildren<QAction*>();
     REQUIRE(actions.size() > kGlyphSetCount);
-    int checked = 0;
+    const auto isGlyphSet = [](QAction* a) { return a->objectName().startsWith(QStringLiteral("glyphSet")); };
+    QList<QKeySequence> glyphSetKeys;
+    for (QAction* a : actions)
+        if (isGlyphSet(a))
+            glyphSetKeys << a->shortcuts();
+    REQUIRE(glyphSetKeys.size() == kGlyphSetKeys);
+    int glyphSetChords = 0;
     for (QAction* a : actions) {
         for (const QKeySequence& seq : a->shortcuts()) {
+            if (!isGlyphSet(a)) {
+                INFO(a->objectName().toStdString() << " " << seq.toString().toStdString());
+                CHECK_FALSE(glyphSetKeys.contains(seq));
+            }
             for (int k = 0; k < seq.count(); ++k) {
                 const QKeyCombination c = seq[k];
                 if (c.key() < Qt::Key_F1 || c.key() > Qt::Key_F35)
                     continue;
-                ++checked;
+                if (isGlyphSet(a))
+                    ++glyphSetChords;
                 INFO(a->objectName().toStdString() << " " << seq.toString().toStdString());
                 CHECK_FALSE(c.keyboardModifiers() & Qt::AltModifier);
                 CHECK(c.keyboardModifiers() != Qt::ControlModifier);
             }
         }
     }
-    CHECK(checked == kGlyphSetKeys);
+    CHECK(glyphSetChords == kGlyphSetKeys);
 }
 
 TEST_CASE("the Glyphs menu lists every set") {
