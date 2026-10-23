@@ -6,7 +6,7 @@
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli export --irc [--budget N] [--allow-over-budget] <in.ans> <out.txt>
 //   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N]
-//                         [--box x0,y0,x1,y1] [--allow-lossy] <in.ans> <out.ans>
+//                         [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in.ans> <out.ans>
 //   blockwright-cli library list [dir]
 //   blockwright-cli library check <dir>
 //
@@ -26,6 +26,7 @@
 #include "blockwright/render.h"
 #include "blockwright/version.h"
 #include "read_file.h"
+#include "shade.h"
 
 #include <QBuffer>
 #include <QCommandLineParser>
@@ -148,10 +149,12 @@ void save(const std::string& out, const std::string& bytes) {
 
 // Writes the document as .ans, warning once per kind of loss; a lossy
 // result is written only with allowLossy. `why` replaces the refusal's
-// reason when the caller knows it.
+// reason when the caller knows it. `blinkDropped` is blink the document lost
+// before it got here (openAsEditor), counted with what writeAnsi drops.
 void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocument& doc, bool allowLossy,
-              const std::string& why = {}) {
-    const bw::AnsiOutput res = bw::writeAnsi(doc);
+              const std::string& why = {}, int blinkDropped = 0) {
+    bw::AnsiOutput res = bw::writeAnsi(doc);
+    res.blinkDropped += blinkDropped;
     // One warning per kind of loss, with a count.
     if (const size_t n = res.unwritable.size()) {
         const bw::Unwritable& u = res.unwritable.front();
@@ -273,51 +276,30 @@ bw::lint::Box boxValue(const QString& s) {
     return {std::min(v[0], v[2]), std::min(v[1], v[3]), std::max(v[0], v[2]), std::max(v[1], v[3])};
 }
 
-struct ShadeOptions {
-    bw::Ramp ramp;
-    bw::ShadeDirection direction = bw::ShadeDirection::Lighten;
-    int steps = 1;
-    std::optional<bw::lint::Box> box;
-    bool allowLossy = false;
-};
+using bwcli::ShadeOptions;
 
 // One pass of the ramp shade brush over the box (the whole canvas without
-// one), then the ladder check of the box. The check only reports; the file
-// is written either way.
+// one) with the piece's iCE colours, then the ladder check of the box. The
+// check only reports; the file is written either way.
 int shade(const std::string& in, const std::string& out, const ShadeOptions& o) {
     bw::AnsiDocument doc = load(in);
-    bw::Canvas& c = doc.canvas;
-    bw::lint::Box box = o.box.value_or(bw::lint::Box{0, 0, c.width() - 1, c.height() - 1});
-    if (box.x0 >= c.width() || box.y0 >= c.height())
-        throw Failure{in + ": the box " + std::to_string(box.x0) + "," + std::to_string(box.y0) + "," +
-                      std::to_string(box.x1) + "," + std::to_string(box.y1) + " is off the " +
-                      std::to_string(c.width()) + "x" + std::to_string(c.height()) + " canvas"};
-    box.x1 = std::min(box.x1, c.width() - 1);
-    box.y1 = std::min(box.y1, c.height() - 1);
-    const bw::RampShadeBrush brush(o.ramp, o.direction, o.steps);
-    bw::StrokeOptions so;
-    so.selection =
-        std::make_shared<const bw::Mask>(bw::Mask::rect(c.width(), c.height(), box.x0, box.y0, box.x1, box.y1));
-    // A piece that was written without loss and is lossy once shaded only
-    // can be because the shading made a background bright: two bright ramp
-    // neighbours, which need iCE colours, where blink can't be kept.
-    const bw::AnsiOutput before = bw::writeAnsi(doc);
-    const bw::CellEdit edit = bw::paintRegion(c, brush, {}, so);
-    edit.apply(c);
-    std::string why;
-    if (!before.lossy()) {
-        const int n = bw::writeAnsi(doc).blinkDropped;
-        if (n)
-            why = "the shading needs iCE colours (a bright background), and " + std::to_string(n) +
-                  (n == 1 ? " blinking cell would lose its blink" : " blinking cells would lose their blink");
+    bwcli::Shaded r;
+    try {
+        r = bwcli::shadeDocument(doc, o);
+    } catch (const Failure& f) {
+        throw Failure{in + ": " + f.message};
     }
-    saveAnsi(in, out, doc, o.allowLossy, why);
+    saveAnsi(in, out, doc, o.allowLossy, r.why, r.blinkDropped);
+    if (r.iceTurnedOn)
+        std::cerr << "blockwright-cli: note: " << out << ": written with iCE colours on; " << in
+                  << " had them off\n";
 
-    const std::size_t n = edit.changes.size();
+    const bw::lint::Box& box = r.box;
+    const std::size_t n = r.edit.changes.size();
     std::cout << (o.direction == bw::ShadeDirection::Lighten ? "lightened " : "darkened ") << n
               << (n == 1 ? " cell " : " cells ") << o.steps << (o.steps == 1 ? " rung" : " rungs") << " along "
               << o.ramp.name << " in " << box.x0 << "," << box.y0 << "-" << box.x1 << "," << box.y1 << "\n";
-    const bw::lint::LadderReport rep = bw::lint::checkLadder(c, o.ramp, box);
+    const bw::lint::LadderReport rep = bw::lint::checkLadder(doc.canvas, o.ramp, box);
     char noise[32];
     std::snprintf(noise, sizeof noise, "%.3f", rep.noise);
     std::cout << "ladder: " << rep.ladderCells << " of " << rep.cells << " cells on the ramp, " << rep.shadeCells
@@ -438,7 +420,9 @@ int main(int argc, char** argv) {
         "  shade --ramp R <in> <out>\n"
         "                       lighten (or --darken) every cell in the box one\n"
         "                       rung along the ramp's shading ladder, then check\n"
-        "                       the ladder; <out> may be <in>\n"
+        "                       the ladder; <out> may be <in>. A piece without\n"
+        "                       iCE colours keeps them off (no shade that needs\n"
+        "                       a bright background) unless --ice turns them on\n"
         "  library list [dir]   list the stamps in dir (default: the bundled and\n"
         "                       user libraries): category, name, size, widest\n"
         "                       IRC row in bytes, tags, path; tab-separated\n"
@@ -482,6 +466,9 @@ int main(int argc, char** argv) {
                                     QStringLiteral("shade: cells x0,y0,x1,y1 from 0, corners included (default: all)"),
                                     QStringLiteral("x0,y0,x1,y1"));
     parser.addOption(boxOpt);
+    const QCommandLineOption iceOpt(QStringLiteral("ice"),
+                                    QStringLiteral("shade: turn iCE colours on (default: keep the piece's)"));
+    parser.addOption(iceOpt);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade or library"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
@@ -502,7 +489,7 @@ int main(int argc, char** argv) {
                   << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out>\n"
                   << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
                   << "       | export --irc [--budget N] [--allow-over-budget] <in> <out>\n"
-                  << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--allow-lossy] <in> <out>\n"
+                  << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in> <out>\n"
                   << "       | library list [dir] | library check <dir>\n"
                   << "       | --version\n";
         return kUsage;
@@ -515,7 +502,7 @@ int main(int argc, char** argv) {
         {&lossyOpt, {"convert", "shade"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
         {&ircOpt, {"export"}},             {&budgetOpt, {"export"}}, {&overOpt, {"export"}},
         {&rampOpt, {"shade"}},             {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
-        {&boxOpt, {"shade"}},
+        {&boxOpt, {"shade"}},              {&iceOpt, {"shade"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("library"))
@@ -577,6 +564,7 @@ int main(int argc, char** argv) {
             o.steps = intValue(parser.value(stepsOpt), "steps", 1, 64);
             if (parser.isSet(boxOpt))
                 o.box = boxValue(parser.value(boxOpt));
+            o.ice = parser.isSet(iceOpt);
             o.allowLossy = parser.isSet(lossyOpt);
             return shade(args[1].toStdString(), args[2].toStdString(), o);
         }

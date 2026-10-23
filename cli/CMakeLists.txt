@@ -1,7 +1,9 @@
-# Reading input files, shared with the tests so the size limit can be
-# exercised with a small injected maximum.
-add_library(blockwright_cli_io STATIC read_file.cpp)
+# Reading input files and the shade pass, shared with the tests so the size
+# limit can be exercised with a small injected maximum and the shade compared
+# with the editor's ramp brush.
+add_library(blockwright_cli_io STATIC read_file.cpp shade.cpp)
 target_include_directories(blockwright_cli_io PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(blockwright_cli_io PUBLIC blockwright::core)
 target_compile_options(blockwright_cli_io PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)
 

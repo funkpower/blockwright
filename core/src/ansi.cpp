@@ -390,6 +390,30 @@ Cell iceCell(Cell c, bool ice) {
     return c;
 }
 
+Opened openAsEditor(AnsiDocument& doc) {
+    Opened r;
+    if (doc.ice)
+        return r;
+    Canvas& cv = doc.canvas;
+    for (int y = 0; y < cv.height() && !r.iceInferred; ++y)
+        for (int x = 0; x < cv.width() && !r.iceInferred; ++x)
+            r.iceInferred = !cv.at(x, y).transparent && cv.at(x, y).bg.paletteIndex() >= 8;
+    if (!r.iceInferred)
+        return r;
+    doc.ice = true;
+    if (doc.sauce)
+        doc.sauce->setIce(true);
+    for (int y = 0; y < cv.height(); ++y)
+        for (int x = 0; x < cv.width(); ++x) {
+            Cell& c = cv.at(x, y);
+            if (!c.transparent && (c.attrs & attr::Blink)) {
+                c.attrs &= static_cast<std::uint8_t>(~attr::Blink);
+                ++r.blinkDropped;
+            }
+        }
+    return r;
+}
+
 AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts) {
     SauceSplit split = splitSauce(file);
     AnsiDocument doc;

@@ -98,30 +98,10 @@ bool Document::read(const QString& path, AnsiDocument* out, QString* error, int*
         return false;
     }
     // A file without iCE colours can still hold bright backgrounds (SGR
-    // 100-107, 24-bit colours). writeAnsi would write it with iCE on to keep
-    // them, and the CLI renders them bright: open it with iCE on, so the
-    // editor shows and saves them the same way. writeAnsi then drops blink
-    // and keeps the dark background, and renderCanvas draws it so: do the
-    // same to the cells, or iceCell would show and save them bright.
-    *blinkDropped = 0;
-    if (out->ice)
-        return true;
-    Canvas& cv = out->canvas;
-    for (int y = 0; y < cv.height() && !out->ice; ++y)
-        for (int x = 0; x < cv.width() && !out->ice; ++x)
-            out->ice = !cv.at(x, y).transparent && cv.at(x, y).bg.paletteIndex() >= 8;
-    if (!out->ice)
-        return true;
-    if (out->sauce)
-        out->sauce->setIce(true);
-    for (int y = 0; y < cv.height(); ++y)
-        for (int x = 0; x < cv.width(); ++x) {
-            Cell& c = cv.at(x, y);
-            if (!c.transparent && (c.attrs & attr::Blink)) {
-                c.attrs &= static_cast<std::uint8_t>(~attr::Blink);
-                ++*blinkDropped;
-            }
-        }
+    // 100-107, 24-bit colours): open it with them on, as writeAnsi writes it
+    // and the CLI renders it, and its blinking cells as writeAnsi writes them
+    // then. `cli shade` opens files the same way.
+    *blinkDropped = openAsEditor(*out).blinkDropped;
     return true;
 }
 

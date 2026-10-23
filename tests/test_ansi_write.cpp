@@ -24,6 +24,13 @@ std::string withSauce(const std::string& body, int width, bool ice) {
     return body + encodeSauce(s, static_cast<std::uint32_t>(body.size()));
 }
 
+// `body` as a file with SAUCE and its iCE flag off, parsed.
+AnsiDocument parseIceOff(const std::string& body) {
+    Sauce s = Sauce::fresh(80, 1);
+    s.setIce(false);
+    return parseAnsi(body + encodeSauce(s, std::uint32_t(body.size())));
+}
+
 } // namespace
 
 TEST_CASE("Writer follows the canonical conventions", "[write]") {
@@ -190,4 +197,46 @@ TEST_CASE("A trailing blinking black space written with iCE on is trimmed as bla
     CHECK(back.ice);
     CHECK(back.canvas.at(2, 0) == Cell{});
     CHECK(back.canvas.at(3, 0) == Cell{});
+}
+
+TEST_CASE("openAsEditor turns iCE colours on for a bright background and drops blink as writeAnsi would") {
+    // a blinking cell, a bright background, a transparent cell with a
+    // bright background that doesn't count
+    AnsiDocument doc = parseIceOff("\x1b[0;5;31mA\x1b[0;104mB");
+    REQUIRE_FALSE(doc.ice);
+    const AnsiOutput writer = writeAnsi(doc);
+    REQUIRE(writer.blinkDropped == 1);
+
+    AnsiDocument opened = doc;
+    const Opened r = openAsEditor(opened);
+    CHECK(r.iceInferred);
+    CHECK(r.blinkDropped == 1);
+    CHECK(opened.ice);
+    CHECK(opened.sauce->ice());
+    CHECK_FALSE(opened.canvas.at(0, 0).attrs & attr::Blink);
+    CHECK(opened.canvas.at(0, 0).bg.paletteIndex() == 0);
+    const AnsiOutput out = writeAnsi(opened);
+    CHECK(out.bytes == writer.bytes);
+    CHECK(out.blinkDropped == 0);
+
+    SECTION("a piece with iCE colours on, or no bright background, is left alone") {
+        AnsiDocument on = doc;
+        on.ice = true;
+        CHECK(openAsEditor(on).blinkDropped == 0);
+        CHECK(on.canvas == doc.canvas);
+        AnsiDocument dark = parseIceOff("\x1b[0;5;31mA\x1b[0;44mB");
+        const AnsiDocument before = dark;
+        const Opened d = openAsEditor(dark);
+        CHECK_FALSE(d.iceInferred);
+        CHECK(d.blinkDropped == 0);
+        CHECK_FALSE(dark.ice);
+        CHECK(dark.canvas == before.canvas);
+    }
+    SECTION("a transparent cell's background doesn't count") {
+        AnsiDocument t = parseIceOff("\x1b[0;5;31mA\x1b[0;44mB");
+        t.canvas.at(2, 0).transparent = true;
+        t.canvas.at(2, 0).bg = Color::indexed(12);
+        CHECK_FALSE(openAsEditor(t).iceInferred);
+        CHECK_FALSE(t.ice);
+    }
 }

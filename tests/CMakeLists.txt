@@ -15,6 +15,7 @@ add_executable(blockwright-tests
   test_ansi_write.cpp
   test_brush.cpp
   test_cli_read.cpp
+  test_cli_shade.cpp
   test_composite.cpp
   test_cp437.cpp
   test_detail.cpp
@@ -115,6 +116,7 @@ set_tests_properties(cli_render PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
 add_executable(blockwright-app-tests
   test_app.cpp
   test_app_brush.cpp
+  test_app_cli_shade.cpp
   test_app_draw.cpp
   test_app_format.cpp
   test_app_library.cpp
@@ -130,7 +132,7 @@ if(NOT TARGET Qt6::GuiPrivate)
   set(QT_NO_PRIVATE_MODULE_WARNING ON)
   find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
 endif()
-target_link_libraries(blockwright-app-tests PRIVATE blockwright_app Qt6::GuiPrivate Catch2::Catch2)
+target_link_libraries(blockwright-app-tests PRIVATE blockwright_app blockwright_cli_io Qt6::GuiPrivate Catch2::Catch2)
 target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
                                                         BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
 catch_discover_tests(blockwright-app-tests

@@ -76,6 +76,22 @@ AnsiOutput writeAnsi(const AnsiDocument& doc);
 // look, not what they hold.
 Cell iceCell(Cell c, bool ice);
 
+// What openAsEditor changed.
+struct Opened {
+    bool iceInferred = false;  // iCE colours turned on for a bright background
+    int blinkDropped = 0;      // blinking cells that lost their blink for it
+};
+
+// Makes a parsed document what the editor opens, and `cli shade` shades: a
+// file with iCE colours off that holds a bright background anyway (SGR
+// 100-107, a 24-bit colour) is opened with them on, its SAUCE flag too, as
+// writeAnsi would write it. Its blinking cells lose their blink and keep
+// their dark background, as writeAnsi writes them then, so iceCell doesn't
+// show or save them bright. A file with iCE colours on, or without a bright
+// background, is left as it is. The blink lost is lost on open, so a save
+// should still count it (Document::encode, `cli shade`).
+Opened openAsEditor(AnsiDocument& doc);
+
 // Whether writeAnsi writes `ch` as itself: it has a CP437 byte and that byte
 // isn't one the parser acts on (TAB, LF, CR, SUB, ESC) or NUL.
 bool isWritableGlyph(char32_t ch);

@@ -168,10 +168,48 @@ printf '\033[5;31mA\033[0;1;30;47m\xb2\xb2\xb2' > "$tmp/nonice.ans"; sauce "$tmp
 expect "shade a non-iCE piece over steel" 0 '^lightened 3 cells 1 rung along steel in 1,0-3,0$' -- "$cli" shade --ramp steel --box 1,0,3,0 "$tmp/nonice.ans" "$tmp/nonice-up.ans"
 expect "shade keeps iCE off" 0 '^flags: +0x0 \(iCE off' -- "$cli" info "$tmp/nonice-up.ans"
 expect "shade keeps the blink" 0 '^lightened 3 cells' -- "$cli" shade --ramp steel --box 1,0,3,0 "$tmp/nonice-up.ans" "$tmp/nonice-up2.ans"
+# Past LightRed, fire's next rung is LightRed/Yellow, a bright background
+# either way round: without iCE the brush stops short of it and the piece
+# stays non-iCE, as the editor's ramp brush does; --ice turns iCE on.
+printf '\033[0;1;31m\xdb\xdb' > "$tmp/nonice-pair.ans"; sauce "$tmp/nonice-pair.ans" 0
+expect "shade without iCE stops short of a bright background" 0 '^lightened 0 cells 1 rung along fire in 0,0-1,0$' -- \
+  "$cli" shade --ramp fire --box 0,0,1,0 "$tmp/nonice-pair.ans" "$tmp/nonice-pair-up.ans"
+expect "shade without iCE keeps iCE off" 0 '^flags: +0x0 \(iCE off' -- "$cli" info "$tmp/nonice-pair-up.ans"
+if "$cli" shade --ramp fire --box 0,0,1,0 "$tmp/nonice-pair.ans" "$tmp/nonice-pair-up.ans" 2>&1 | grep -q 'iCE'; then
+  bad "shade without iCE mentions iCE"; else ok "shade without iCE says nothing about iCE"; fi
+expect "shade --ice notes iCE on" 0 'note: .*nonice-pair-ice\.ans: written with iCE colours on; .*nonice-pair\.ans had them off' -- \
+  "$cli" shade --ramp fire --box 0,0,1,0 --ice "$tmp/nonice-pair.ans" "$tmp/nonice-pair-ice.ans"
+expect "shade --ice shades past it" 0 '^lightened 2 cells 1 rung along fire' -- \
+  "$cli" shade --ramp fire --box 0,0,1,0 --ice "$tmp/nonice-pair.ans" "$tmp/nonice-pair-ice.ans"
+expect "shade --ice writes iCE on" 0 '^flags: +0x1 \(iCE on' -- "$cli" info "$tmp/nonice-pair-ice.ans"
+if grep -q $'\033\\[0;1;5;33;41m' "$tmp/nonice-pair-ice.ans"; then ok "shade --ice writes rung 9"; else bad "shade --ice didn't write ESC[0;1;5;33;41m"; fi
 printf '\033[5;31mA\033[0;1;31m\xdb' > "$tmp/nonice-fire.ans"; sauce "$tmp/nonice-fire.ans" 0
-expect "shade that needs iCE refused" 1 'nonice-fire-up\.ans: not written: the shading needs iCE colours \(a bright background\), and 1 blinking cell would lose its blink \(--allow-lossy writes it anyway\)' -- \
-  "$cli" shade --ramp fire "$tmp/nonice-fire.ans" "$tmp/nonice-fire-up.ans"
-if [[ -e $tmp/nonice-fire-up.ans ]]; then bad "refused iCE shade left an output file"; else ok "refused iCE shade writes nothing"; fi
+expect "shade without iCE keeps a blinking piece" 0 '^lightened 0 cells' -- "$cli" shade --ramp fire --box 1,0,1,0 "$tmp/nonice-fire.ans" "$tmp/nonice-fire-up.ans"
+expect "shade without iCE keeps a blinking piece iCE off" 0 '^flags: +0x0 \(iCE off' -- "$cli" info "$tmp/nonice-fire-up.ans"
+if grep -q $'\033\\[0;5;31;40mA' "$tmp/nonice-fire-up.ans"; then ok "shade without iCE keeps the blink"; else bad "shade without iCE lost the blink"; fi
+expect "shade --ice that drops a blink refused" 1 'nonice-fire-ice\.ans: not written: --ice turns iCE colours on, and 1 blinking cell would lose its blink \(--allow-lossy writes it anyway\)' -- \
+  "$cli" shade --ramp fire --box 1,0,1,0 --ice "$tmp/nonice-fire.ans" "$tmp/nonice-fire-ice.ans"
+if [[ -e $tmp/nonice-fire-ice.ans ]]; then bad "refused iCE shade left an output file"; else ok "refused iCE shade writes nothing"; fi
+expect "shade --ice --allow-lossy writes" 0 'note: .*written with iCE colours on' -- \
+  "$cli" shade --ramp fire --box 1,0,1,0 --ice --allow-lossy "$tmp/nonice-fire.ans" "$tmp/nonice-fire-ice.ans"
+expect "shade --ice --allow-lossy writes iCE on" 0 '^flags: +0x1 \(iCE on' -- "$cli" info "$tmp/nonice-fire-ice.ans"
+# A piece with iCE off that holds a bright background opens with iCE on, as
+# the editor opens it: its blinking red block loses the blink there, so it
+# is on the ramp, and that loss is counted at the save.
+printf '\033[0;5;31;40m\xdb\033[0;104mA' > "$tmp/inferred-blink.ans"; sauce "$tmp/inferred-blink.ans" 0
+expect "shade of an inferred-iCE piece refuses the blink lost on open" 1 'inferred-blink-up\.ans: not written: the conversion loses data \(--allow-lossy writes it anyway\)' -- \
+  "$cli" shade --ramp fire --box 0,0,0,0 "$tmp/inferred-blink.ans" "$tmp/inferred-blink-up.ans"
+expect "shade of an inferred-iCE piece shades its blinking block" 0 '^lightened 1 cell 1 rung along fire in 0,0-0,0$' -- \
+  "$cli" shade --ramp fire --box 0,0,0,0 --allow-lossy "$tmp/inferred-blink.ans" "$tmp/inferred-blink-up.ans"
+# Darkening its only bright background leaves none, and iCE stays on as the
+# editor saves it, so two passes lightening reach rung 9 (LightRed/Yellow).
+printf '\033[101m ' > "$tmp/inferred.ans"; sauce "$tmp/inferred.ans" 0
+expect "shade darkens an inferred-iCE piece's last bright background" 0 '^darkened 1 cell 1 rung along fire in 0,0-0,0$' -- \
+  "$cli" shade --ramp fire --darken --box 0,0,0,0 "$tmp/inferred.ans" "$tmp/inferred-down.ans"
+expect "shade keeps inferred iCE on" 0 '^flags: +0x1 \(iCE on' -- "$cli" info "$tmp/inferred-down.ans"
+"$cli" shade --ramp fire --box 0,0,0,0 "$tmp/inferred-down.ans" "$tmp/inferred-up.ans" > /dev/null 2>&1
+"$cli" shade --ramp fire --box 0,0,0,0 "$tmp/inferred-up.ans" "$tmp/inferred-up2.ans" > /dev/null 2>&1
+if grep -q $'\033\\[0;1;5;33;41m' "$tmp/inferred-up2.ans"; then ok "shade of inferred iCE lightens to rung 9"; else bad "shade of inferred iCE didn't reach rung 9 (ESC[0;1;5;33;41m)"; fi
 expect "shade needs a ramp" 2 'shade needs a ramp' -- "$cli" shade "$sphere" "$tmp/x.ans"
 expect "shade unknown ramp" 2 "--ramp takes a ramp name \(fire, .*\) or palette indices 0-15 dark to light, not 'blood'" -- \
   "$cli" shade --ramp blood "$sphere" "$tmp/x.ans"
@@ -190,11 +228,11 @@ if [[ -e $tmp/x.ans ]]; then bad "a refused shade wrote $tmp/x.ans"; else ok "re
 # naming the option and the command, and nothing written.
 declare -A owner=([--allow-lossy]="convert shade" [--scale]=render [--font-width]=render
                   [--irc]=export [--budget]=export [--allow-over-budget]=export
-                  [--ramp]=shade [--darken]=shade [--steps]=shade [--box]=shade)
+                  [--ramp]=shade [--darken]=shade [--steps]=shade [--box]=shade [--ice]=shade)
 declare -A value=([--scale]=2 [--font-width]=9 [--budget]=60 [--ramp]=steel [--steps]=2 [--box]=0,0,1,1)
 foreign=$tmp/foreign && mkdir -p "$foreign"
 for cmd in info convert render export shade; do
-  for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget --ramp --darken --steps --box; do
+  for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget --ramp --darken --steps --box --ice; do
     [[ " ${owner[$opt]} " == *" $cmd "* ]] && continue
     out=$foreign/$cmd${opt}.out
     case $cmd in

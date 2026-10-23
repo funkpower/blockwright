@@ -39,7 +39,8 @@ public:
     // document; false and `error` on failure. A file whose iCE flag is off
     // but which sets a bright background opens with iCE on, as writeAnsi
     // writes it and `cli render` draws it: its blinking cells keep their
-    // dark background and lose the blink, and `blinkDropped` counts them.
+    // dark background and lose the blink, and `blinkDropped` counts them
+    // (openAsEditor).
     static bool read(const QString& path, AnsiDocument* out, QString* error, int* blinkDropped);
     // Replaces the document with `doc`, read from `path`, unmodified and
     // with an empty undo stack. `blinkDropped` (from read) is reported by
