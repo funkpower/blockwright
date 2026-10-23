@@ -29,6 +29,8 @@ add_executable(blockwright-tests
   test_library_bundled.cpp
   test_lint.cpp
   test_mirc.cpp
+  test_outline.cpp
+  test_outline_property.cpp
   test_shading_brushes.cpp
   test_soft_brush.cpp
   test_sauce.cpp

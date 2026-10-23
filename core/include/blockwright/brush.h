@@ -253,8 +253,8 @@ public:
     // paints what stamping every dab of the line would.
     long long stamps() const { return stamps_; }
     // What the brush keeps over the stroke besides the cells it has painted
-    // (the soft brush's rungs and limits): the brush's own, and dropped
-    // with the stroke.
+    // (the soft brush's rungs and limits, the outline brush's plan): the
+    // brush's own, and dropped with the stroke.
     std::shared_ptr<void>& brushState() { return brushState_; }
 
 private:
@@ -265,9 +265,10 @@ private:
     BrushSettings settings_;
     StrokeOptions options_;
     // One image of a dab, at x, y (64-bit: an image of a dab near the ends
-    // of int can lie beyond them), joined to the image's last position.
+    // of int can lie beyond them), joined to the image's last position: its
+    // stamps, in order, into out (addDab stamps the images' in turn).
     void addImage(long long x, long long y, const Dab& d, bool join,
-                  std::optional<std::pair<long long, long long>>& last);
+                  std::optional<std::pair<long long, long long>>& last, std::vector<Dab>& out);
 
     std::vector<std::optional<std::pair<long long, long long>>> lasts_;  // per symmetry image
     Dab current_;

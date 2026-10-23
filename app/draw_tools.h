@@ -322,6 +322,20 @@ public:
     bool mouseRelease(const ToolEvent& e) override;
 };
 
+// Outline brush (PLAN §10, "Detail"): the edge cells of the view's ramp
+// shape under it become the ramp colour below them, one cell wide, the
+// outline the ladder lint accepts (OutlineBrush). Either button.
+class OutlineTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit OutlineTool(QObject* parent = nullptr);
+
+    QString status() const override;
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+};
+
 // Rim-light brush (PLAN §10, "Detail"): the edge cells of the view's ramp
 // shape under it that face the Brush dock's light direction go one rung
 // lighter (RimLightBrush). Either button.

@@ -54,6 +54,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(fillable.emplace_back(new ShapeTool(ShapeTool::Shape::Ellipse)));
     tools_->add(new FillTool);
     tools_->add(new EyedropperTool);
+    tools_->add(new OutlineTool);
     tools_->add(new RimLightTool);
     view_->setTool(tools_->active());
     connect(tools_, &ToolRegistry::activeChanged, view_, &CanvasView::setTool);
@@ -195,6 +196,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("ellipse"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O)},
         {QStringLiteral("fill"), QKeySequence(Qt::CTRL | Qt::Key_J)},
         {QStringLiteral("eyedropper"), QKeySequence(Qt::CTRL | Qt::Key_I)},
+        {QStringLiteral("outline"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E)},
         {QStringLiteral("rimLight"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)}};
     QHash<Tool*, QAction*> toolActions;
     for (Tool* t : tools_->tools()) {

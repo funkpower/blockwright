@@ -1,19 +1,21 @@
-// The detail tools in the main window (PLAN §10, "Detail"): the rim-light
-// brush, the pencil's 8-connected mode and the symmetry modes, from the
-// Tools and Edit menus and the Brush dock, with the mouse delivered as the
-// platform delivers it.
+// The detail tools in the main window (PLAN §10, "Detail"): the outline and
+// rim-light brushes, the pencil's 8-connected mode and the symmetry modes,
+// from the Tools and Edit menus and the Brush dock, with the mouse delivered
+// as the platform delivers it.
 
 #include "brush_dock.h"
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
 #include "main_window.h"
+#include "select_tool.h"
 #include "tool.h"
 
 #include "system_input.h"
 
 #include "blockwright/brush.h"
 #include "blockwright/halfblock.h"
+#include "blockwright/lint.h"
 #include "blockwright/palette.h"
 #include "blockwright/ramp.h"
 #include "blockwright/shapes.h"
@@ -118,6 +120,42 @@ std::set<Point> cells(const CellEdit& e) {
 }
 
 } // namespace
+
+TEST_CASE("the outline brush outlines the ramp shape one cell wide, in the selection only") {
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setRamp(steel());
+    v->setBrushSettings(BrushSettings{12, Tip::Square, 1.0, PressureTo::Nothing});
+    paintBlob(w);
+    const int steps = w.document()->undoStack()->index();
+    use(w, "outline");
+    CHECK(act(w, QStringLiteral("outlineTool"))->isChecked());
+    const CellEdit shown = drag(w, {{4, 4}, {5, 5}});
+    landed(w, shown, steps);
+    std::set<Point> edge;
+    for (int y = 1; y <= 4; ++y)
+        for (int x = 2; x <= 6; ++x)
+            if (x == 2 || x == 6 || y == 1 || y == 4)
+                edge.insert({x, y});
+    CHECK(cells(shown) == edge);
+    for (const CellChange& c : shown.changes)
+        CHECK(c.after == rungCell(steel(), 4));  // K, the colour below w
+
+    // undone, then again with a selection: only its cells change
+    w.document()->undoStack()->undo();
+    act(w, QStringLiteral("selectTool"))->trigger();
+    w.selectTool()->select({2, 1, 1, 4});
+    use(w, "outline");
+    const CellEdit clipped = drag(w, {{4, 4}});
+    // the selection's edge cells, the left side, as far as the lint allows
+    // (a corner cell it allows alone is a lone fragment, left off)
+    REQUIRE_FALSE(clipped.empty());
+    for (const Point& p : cells(clipped))
+        CHECK((p.first == 2 && p.second >= 1 && p.second <= 4));
+    CHECK(lint::checkLadder(w.document()->canvas(), steel()).clean());
+}
+
 
 TEST_CASE("the rim-light brush lights the edges facing the dock's light by one rung") {
     MainWindow w;

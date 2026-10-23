@@ -119,6 +119,12 @@ struct LadderReport {
     bool clean() const { return findings.empty(); }
 };
 
+// The outline colour beside a level (PLAN §10, "the end-level rule"): the
+// ramp colour next below the darker colour of `rung`, as a solid rung; empty
+// where that is black (the ground) or below the ramp. The outline brush
+// draws it and checkLadder takes it as an outline at a gradient's end.
+std::optional<int> outlineRung(const Ramp& ramp, int rung);
+
 // Checks the box (the whole canvas when empty) against the ramp's ladder:
 // shades only between ramp neighbours, rungs no wider than maxRung, no
 // skipped rungs, no specks, more than one shade glyph, and noise no higher
@@ -132,9 +138,17 @@ struct LadderReport {
 // than one rung is a skip where three or more levels climb or fall
 // together; an outline that turns back, two planes meeting (two levels and
 // no third) and black against anything (ink, seams, the silhouette) aren't
-// skips, nor is a one-cell end level in the outline brush's colour, the one
-// next below the darker colour beside it. A speck is a cell with three or more ladder
-// neighbours that is lighter than all of them or darker than all of them;
+// skips. An outline is not part of the gradient, for skips and widths
+// alike: an end level in the outline colour of the level beside it
+// (outlineRung), one cell thick along the row or column, or two where they
+// are a step of a 4-connected diagonal line: the inner cell a filler with no
+// outside 4-neighbour, the run not half of a 2x2 block of the level (except
+// where a staircase meets a straight side), and the line going on one cell
+// further out on one side and one cell further in on the other, in the same
+// line colour or, where the level inside changes, another solid non-black
+// one against the outside. Outside is black, off the ladder or off the box.
+// A speck is a cell with three or more ladder neighbours that is lighter
+// than all of them or darker than all of them;
 // black (ink) and the ramp's top rung (a glint) are never specks. Cells off
 // the ramp (text, half blocks, RGB and other ramps' colours) aren't judged.
 // Throws LintError for options.maxRung below 1.
@@ -146,7 +160,8 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
 // findings it adds. Taking the index reads the canvas once (a whole-canvas
 // cost, once per stroke); after that a change costs the rows and columns
 // through its cells (O(W + H) per changed cell, a few more where a row's
-// trailing blank run moves), however large the canvas is.
+// trailing blank run moves, and the rows and columns within two of it,
+// whose end-level outlines read it), however large the canvas is.
 //
 // What a change adds is what a brush's guard refuses, judged on the whole
 // canvas, the one-glyph and noise findings included when options.whole is
@@ -270,8 +285,8 @@ private:
     long long lonely_ = 0, total_ = 0;
     // bookkeeping for one update
     unsigned epoch_ = 0;
-    std::vector<unsigned> cellMark_, rowMark_, columnMark_, rowRunMark_, columnRunMark_, pixelMark_, rowWideMark_,
-        columnWideMark_, speckMark_, shadeMark_;
+    std::vector<unsigned> cellMark_, rowMark_, columnMark_, nearRowMark_, nearColumnMark_, rowRunMark_, columnRunMark_,
+        pixelMark_, rowWideMark_, columnWideMark_, speckMark_, shadeMark_;
 };
 
 // What changing `before` to `after` at `changed` adds, as

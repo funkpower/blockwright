@@ -419,6 +419,16 @@ bool EyedropperTool::mouseMove(const ToolEvent&) { return false; }
 
 bool EyedropperTool::mouseRelease(const ToolEvent&) { return view() != nullptr; }
 
+OutlineTool::OutlineTool(QObject* parent) : BrushTool(QStringLiteral("outline"), tr("&Outline Brush"), parent) {}
+
+QString OutlineTool::status() const {
+    return view() ? tr("Ramp %1").arg(QString::fromStdString(view()->ramp().name)) : QString();
+}
+
+std::unique_ptr<Brush> OutlineTool::makeBrush(Qt::MouseButton) const {
+    return std::make_unique<OutlineBrush>(view()->ramp());
+}
+
 RimLightTool::RimLightTool(QObject* parent) : BrushTool(QStringLiteral("rimLight"), tr("R&im Light Brush"), parent) {}
 
 QString RimLightTool::status() const {

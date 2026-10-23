@@ -387,12 +387,23 @@ Stroke::Stroke(const Canvas& canvas, const Brush& brush, BrushSettings settings,
 void Stroke::addDab(const Dab& d, bool join) {
     const std::vector<Image> ims = dabImages(options_.symmetry, d, canvas_.width(), canvas_.height());
     lasts_.resize(ims.size());
-    for (size_t i = 0; i < ims.size(); ++i)
-        addImage(ims[i].x, ims[i].y, imageDab(d, ims[i], int(i)), join, lasts_[i]);
+    // Each image's stamps for this dab (its joining line's, or the one),
+    // stamped in turn: point k of every image, then point k + 1, so a brush
+    // that judges a dab's images together sees each point's images at once.
+    std::vector<std::vector<Dab>> stamps(ims.size());
+    size_t most = 0;
+    for (size_t i = 0; i < ims.size(); ++i) {
+        addImage(ims[i].x, ims[i].y, imageDab(d, ims[i], int(i)), join, lasts_[i], stamps[i]);
+        most = std::max(most, stamps[i].size());
+    }
+    for (size_t k = 0; k < most; ++k)
+        for (const auto& image : stamps)
+            if (k < image.size())
+                stamp(image[k]);
 }
 
 void Stroke::addImage(long long x, long long y, const Dab& d, bool join,
-                      std::optional<std::pair<long long, long long>>& last) {
+                      std::optional<std::pair<long long, long long>>& last, std::vector<Dab>& out) {
     const auto at = [&](long long cx, long long cy) {
         Dab out = d;
         out.x = int(cx);
@@ -403,7 +414,7 @@ void Stroke::addImage(long long x, long long y, const Dab& d, bool join,
         // a new segment, or the pen pressed again where it is; an image
         // beyond the ends of int can't reach the canvas
         if (fitsInt(x) && fitsInt(y))
-            stamp(at(x, y));
+            out.push_back(at(x, y));
     } else {
         // Only the part of the line within reach of the canvas: the cells of
         // the whole line that are, in order, so the stroke paints as if every
@@ -419,7 +430,7 @@ void Stroke::addImage(long long x, long long y, const Dab& d, bool join,
             walk4(fx, fy, x, y, -m, -m, canvas_.width() - 1LL + m, canvas_.height() - 1LL + m,
                   [&](long long cx, long long cy) {
                       if (cx != fx || cy != fy)
-                          stamp(at(cx, cy));
+                          out.push_back(at(cx, cy));
                   });
         } else {
             std::vector<std::pair<long long, long long>> cells;
@@ -429,7 +440,7 @@ void Stroke::addImage(long long x, long long y, const Dab& d, bool join,
                           cells.emplace_back(cx, cy);
                   });
             for (auto it = cells.rbegin(); it != cells.rend(); ++it)
-                stamp(at(it->first, it->second));
+                out.push_back(at(it->first, it->second));
         }
     }
     last = std::pair{x, y};

@@ -37,17 +37,6 @@ bool blackRung(const Ramp& ramp, int g) {
     return solidRung(g) && ramp.colours[static_cast<size_t>(g / kRungsPerStep)] == Black;
 }
 
-// A step of a gradient: a lower rung at one end and a higher one at the
-// other (-1 for none). Black is ink or the ground, not the dark end of a
-// gradient, so a run against it has no neighbour there.
-bool isStep(const Ramp& ramp, int before, int g, int after) {
-    if (before >= 0 && blackRung(ramp, before))
-        before = -1;
-    if (after >= 0 && blackRung(ramp, after))
-        after = -1;
-    return before >= 0 && after >= 0 && ((before < g && g < after) || (before > g && g > after));
-}
-
 LadderFinding wideFinding(int x, int y, int width, int maxRung, int nx, int ny) {
     return {LadderFinding::Kind::WideRung, x, y,
             at(x, y) + ": a rung " + std::to_string(width) + " cells wide (at most " + std::to_string(maxRung) + ")",
@@ -91,50 +80,6 @@ LadderFinding speckFinding(int x, int y, bool lighter) {
             at(x, y) + ": a speck, " + (lighter ? "lighter" : "darker") + " than every neighbour"};
 }
 
-// The skips along a line of n cells, rungAt(i) its rungs (-1 off the
-// ladder): emit(i, j, a, c) for each, i the last cell of the level at rung
-// a and j the first of the next, at rung c.
-template <class RungAt, class Emit>
-void skipsAlong(const Ramp& ramp, int n, RungAt&& rungAt, Emit&& emit) {
-    struct Level {
-        int g, first, last;  // the rung, and its run's ends along the line
-    };
-    std::vector<Level> levels;
-    // l is an end level and beside the level next to it
-    auto outline = [&](const Level& l, const Level& beside) {
-        return l.first == l.last && solidRung(l.g) && l.g == beside.g - beside.g % kRungsPerStep - kRungsPerStep;
-    };
-    auto judge = [&] {
-        if (levels.size() >= 2 && outline(levels.back(), levels[levels.size() - 2]))
-            levels.pop_back();
-        if (levels.size() >= 2 && outline(levels.front(), levels[1]))
-            levels.erase(levels.begin());
-        for (size_t k = 0; k + 1 < levels.size(); ++k) {
-            const int a = levels[k].g, c = levels[k + 1].g;
-            if (std::abs(c - a) < 2)
-                continue;
-            const bool up = c > a;
-            const bool before = k > 0 && (a > levels[k - 1].g) == up;
-            const bool after = k + 2 < levels.size() && (levels[k + 2].g > c) == up;
-            if (before || after)
-                emit(levels[k].last, levels[k + 1].first, a, c);
-        }
-        levels.clear();
-    };
-    for (int i = 0; i < n; ++i) {
-        const int g = rungAt(i);
-        if (g < 0 || blackRung(ramp, g)) {
-            judge();
-            continue;
-        }
-        if (!levels.empty() && levels.back().g == g)
-            levels.back().last = i;
-        else
-            levels.push_back({g, i, i});
-    }
-    judge();
-}
-
 LadderFinding skipFinding(int x, int y, int a, int c, int nx, int ny) {
     return {LadderFinding::Kind::RungSkip, x, y,
             at(x, y) + ": rung " + std::to_string(a) + " next to rung " + std::to_string(c) + " at " + at(nx, ny) +
@@ -160,7 +105,238 @@ void checkOptions(const LadderOptions& options) {
         throw LintError("maxRung " + std::to_string(options.maxRung) + " is below 1");
 }
 
+// The line rules checkLadder and the reader at a change share, over a grid
+// of rungs. G has w and h, rung(x, y) (-1 off the ladder; on the grid
+// only), and across(x, y, cap) and down(x, y, cap): the run through a cell
+// across its row and down its column, counted no further than cap.
+template <class G>
+class Rules {
+public:
+    Rules(const Ramp& ramp, const G& grid, int maxRung) : ramp_(ramp), g_(grid), max_(maxRung) {}
+
+    // -1 off the ladder or the grid
+    int rung(int x, int y) const { return x < 0 || y < 0 || x >= g_.w || y >= g_.h ? -1 : g_.rung(x, y); }
+
+    // The run [x, end) across row y is a step of a gradient (below) long
+    // enough to be wide.
+    bool rowStep(int x, int end, int y) const {
+        const auto cellAt = [y](int i) { return std::pair{i, y}; };
+        const auto runAt = [this](int cx, int cy) { return g_.across(cx, cy, g_.w); };
+        return judged(rung(x, y), end - x, g_.w, x, end - 1, cellAt, runAt);
+    }
+    bool columnStep(int x, int y, int end) const {
+        const auto cellAt = [x](int i) { return std::pair{x, i}; };
+        const auto runAt = [this](int cx, int cy) { return g_.down(cx, cy, g_.h); };
+        return judged(rung(x, y), end - y, g_.h, y, end - 1, cellAt, runAt);
+    }
+    // The width of the run [x, end) across row y where it is a wide rung, 0
+    // where it isn't.
+    int rowWidth(int x, int end, int y) const {
+        if (!rowStep(x, end, y))
+            return 0;
+        const int len = end - x;
+        int tallest = 0;
+        for (int xx = x; xx < end && tallest < len; ++xx)
+            tallest = std::max(tallest, g_.down(xx, y, len));
+        const int width = std::min(len, tallest);
+        return width > max_ ? width : 0;
+    }
+    // emit(x, end, width) for each wide run across row y.
+    template <class Emit>
+    void rowWide(int y, Emit&& emit) const {
+        for (int x = 0, end = 0; x < g_.w; x = end) {
+            end = x + g_.across(x, y, g_.w);
+            if (const int width = rowWidth(x, end, y))
+                emit(x, end, width);
+        }
+    }
+    // emit(y, end, width) for each wide run down column x that no row
+    // reports a cell of (reported(x, y)).
+    template <class Reported, class Emit>
+    void columnWide(int x, Reported&& reported, Emit&& emit) const {
+        for (int y = 0, end = 0; y < g_.h; y = end) {
+            end = y + g_.down(x, y, g_.h);
+            if (!columnStep(x, y, end))
+                continue;
+            const int len = end - y;
+            int widest = 0;
+            for (int yy = y; yy < end && widest < len; ++yy)
+                widest = std::max(widest, g_.across(x, yy, len));
+            const int width = std::min(len, widest);
+            bool seen = false;
+            for (int yy = y; yy < end && width > max_ && !seen; ++yy)
+                seen = reported(x, yy);
+            if (width > max_ && !seen)
+                emit(y, end, width);
+        }
+    }
+    // emit(i, j, a, c) for each skip along row y (rowSkips) or column x: i
+    // the last cell of the level at rung a, j the first of the next, at c.
+    template <class Emit>
+    void rowSkips(int y, Emit&& emit) const {
+        skips(g_.w, [y](int i) { return std::pair{i, y}; }, emit);
+    }
+    template <class Emit>
+    void columnSkips(int x, Emit&& emit) const {
+        skips(g_.h, [x](int i) { return std::pair{x, i}; }, emit);
+    }
+
+private:
+    // a gradient ends here: off the ladder or black
+    bool ends(int g) const { return g < 0 || blackRung(ramp_, g); }
+    // Outside the shape, for the end-level rule: off the grid, off the
+    // ladder or black.
+    bool outsideAt(int x, int y) const { return ends(rung(x, y)); }
+
+    // An outline at a gradient's end takes no part in it (PLAN §10, "the
+    // end-level rule"): a run g of cells along a line (cellAt), at the end
+    // of its sequence, `outer` its cell against the outside and `inner` its
+    // cell against the level `beside` it. g must be the outline colour of
+    // that level (outlineRung) and the run one cell thick along the line, or
+    // two where they are a step of a staircase: the inner cell a filler,
+    // none of its four neighbours outside; the run not half of a 2x2 block
+    // of g, unless the block's other half is a line against the outside (the
+    // corner where a staircase meets a straight side); and, on one side across the line, the outside beside the outer
+    // cell, the line going on beside the inner cell, and on the other side
+    // the line going on beside the outer cell. So the two cells join a run
+    // of g one cell further out on one side to a run one cell further in on
+    // the other: a 4-connected diagonal line, two cells on a row. Where the
+    // level inside changes along the line, the line may go on in another
+    // line colour: any solid colour but black against the outside. A band two
+    // cells deep, a solid corner and a dotted outer edge are not an outline
+    // but a rung like the rest. Off the grid the line may go on.
+    template <class CellAt>
+    bool outlineRun(int g, int beside, int outer, int inner, CellAt&& cellAt) const {
+        const auto line = beside >= 0 ? outlineRung(ramp_, beside) : std::nullopt;
+        if (!line || g != *line)
+            return false;
+        if (outer == inner)
+            return true;
+        if (std::abs(outer - inner) != 1)
+            return false;
+        const auto [ox, oy] = cellAt(outer);
+        const auto [ix, iy] = cellAt(inner);
+        if (outsideAt(ix - 1, iy) || outsideAt(ix + 1, iy) || outsideAt(ix, iy - 1) || outsideAt(ix, iy + 1))
+            return false;
+        const auto off = [&](int x, int y) { return x < 0 || y < 0 || x >= g_.w || y >= g_.h; };
+        const auto is = [&](int x, int y) { return !off(x, y) && rung(x, y) == g; };
+        // the line goes on in g, or in another line colour where the level
+        // inside it changes (buildings.md: a CYAN rim, LCYAN on the lit
+        // arc): a solid colour, not black, against the outside
+        const auto goesOn = [&](int x, int y) {
+            if (off(x, y) || rung(x, y) == g)
+                return true;
+            const int o = rung(x, y);
+            if (o < 0 || !solidRung(o) || ends(o))
+                return false;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                    if ((dx || dy) && outsideAt(x + dx, y + dy))
+                        return true;
+            return false;
+        };
+        // across the line, one way and the other
+        const int px = oy - iy, py = ox - ix;
+        for (const int s : {1, -1})
+            if (is(ox + s * px, oy + s * py) && is(ix + s * px, iy + s * py) &&
+                !(outsideAt(ox + 2 * s * px, oy + 2 * s * py) && outsideAt(ix + 2 * s * px, iy + 2 * s * py)))
+                return false;
+        for (const int s : {1, -1})
+            if (outsideAt(ox + s * px, oy + s * py) && goesOn(ix + s * px, iy + s * py) &&
+                goesOn(ox - s * px, oy - s * py))
+                return true;
+        return false;
+    }
+
+    // The rung of the run before (dir -1) or after (dir 1) the run i0..i1 of
+    // g along a line of n cells, or -1 when the gradient ends there: the
+    // line's end, black, off the ladder, or an outline.
+    template <class CellAt, class RunAt>
+    int beyond(int n, int i0, int i1, int g, int dir, CellAt&& cellAt, RunAt&& runAt) const {
+        const int i = dir < 0 ? i0 - 1 : i1 + 1;
+        if (i < 0 || i >= n)
+            return -1;
+        const auto [x, y] = cellAt(i);
+        const int o = rung(x, y);
+        if (ends(o))
+            return -1;
+        const int len = runAt(x, y), j0 = dir < 0 ? i - len + 1 : i, j1 = dir < 0 ? i : i + len - 1;
+        const int past = dir < 0 ? j0 - 1 : j1 + 1;
+        const bool atEnd = past < 0 || past >= n || ends(rung(cellAt(past).first, cellAt(past).second));
+        return atEnd && outlineRun(o, g, dir < 0 ? j0 : j1, dir < 0 ? j1 : j0, cellAt) ? -1 : o;
+    }
+
+    // Only a step of a gradient is judged for width: a run of a shade rung
+    // with a lower rung at one end and a higher one at the other.
+    template <class CellAt, class RunAt>
+    bool judged(int g, int len, int n, int i0, int i1, CellAt&& cellAt, RunAt&& runAt) const {
+        if (len <= max_ || g < 0 || solidRung(g))
+            return false;
+        const int before = beyond(n, i0, i1, g, -1, cellAt, runAt), after = beyond(n, i0, i1, g, 1, cellAt, runAt);
+        return before >= 0 && after >= 0 && ((before < g && g < after) || (before > g && g > after));
+    }
+
+    template <class CellAt, class Emit>
+    void skips(int n, CellAt&& cellAt, Emit&& emit) const {
+        struct Level {
+            int g, first, last;  // the rung, and its run's ends along the line
+        };
+        std::vector<Level> levels;
+        auto judge = [&] {
+            if (levels.size() >= 2 &&
+                outlineRun(levels.back().g, levels[levels.size() - 2].g, levels.back().last, levels.back().first, cellAt))
+                levels.pop_back();
+            if (levels.size() >= 2 && outlineRun(levels.front().g, levels[1].g, levels.front().first, levels.front().last, cellAt))
+                levels.erase(levels.begin());
+            for (size_t k = 0; k + 1 < levels.size(); ++k) {
+                const int a = levels[k].g, c = levels[k + 1].g;
+                if (std::abs(c - a) < 2)
+                    continue;
+                const bool up = c > a;
+                const bool before = k > 0 && (a > levels[k - 1].g) == up;
+                const bool after = k + 2 < levels.size() && (levels[k + 2].g > c) == up;
+                if (before || after)
+                    emit(levels[k].last, levels[k + 1].first, a, c);
+            }
+            levels.clear();
+        };
+        for (int i = 0; i < n; ++i) {
+            const auto [x, y] = cellAt(i);
+            const int g = rung(x, y);
+            if (ends(g)) {
+                judge();
+                continue;
+            }
+            if (!levels.empty() && levels.back().g == g)
+                levels.back().last = i;
+            else
+                levels.push_back({g, i, i});
+        }
+        judge();
+    }
+
+    const Ramp& ramp_;
+    const G& g_;
+    int max_;
+};
+
+// checkLadder's box: its rungs and runs, read once.
+struct BoxGrid {
+    int w, h;
+    std::vector<int> rungs, acrossRun, downRun;
+    int rung(int x, int y) const { return rungs[static_cast<size_t>(y) * w + x]; }
+    int across(int x, int y, int cap) const { return std::min(acrossRun[static_cast<size_t>(y) * w + x], cap); }
+    int down(int x, int y, int cap) const { return std::min(downRun[static_cast<size_t>(y) * w + x], cap); }
+};
+
 } // namespace
+
+std::optional<int> outlineRung(const Ramp& ramp, int rung) {
+    const int below = rung / kRungsPerStep - 1;
+    if (rung < 0 || below < 0 || below >= int(ramp.colours.size()) || ramp.colours[static_cast<size_t>(below)] == Black)
+        return std::nullopt;
+    return below * kRungsPerStep;
+}
 
 LadderFinding::Place LadderFinding::place() const {
     if (kind == Kind::WideRung)
@@ -305,7 +481,8 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
         return r;
     const int w = b->x1 - b->x0 + 1, h = b->y1 - b->y0 + 1;
     // rung per box cell, -1 off the ladder
-    std::vector<int> rung(static_cast<size_t>(w) * h, -1);
+    BoxGrid grid{w, h, std::vector<int>(static_cast<size_t>(w) * h, -1), {}, {}};
+    auto& rung = grid.rungs;
     auto rungAt = [&](int x, int y) { return rung[static_cast<size_t>(y) * w + x]; };
     std::set<char32_t> glyphs;
     for (int y = 0; y < h; ++y)
@@ -318,19 +495,19 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
                 ++r.ladderCells;
                 if (*g % kRungsPerStep) {
                     ++r.shadeCells;
-                    if (options.whole)
-                        glyphs.insert(c.ch);
+                    glyphs.insert(c.ch);
                 }
             }
             if (nonNeighbourShade(ramp, c))
                 r.findings.push_back(shadeFinding(b->x0 + x, b->y0 + y));
         }
 
-    auto solid = solidRung;
-
     // The length of the run across the row and down the column each cell
     // is in.
-    std::vector<int> across(rung.size(), 0), down(rung.size(), 0);
+    auto& across = grid.acrossRun;
+    auto& down = grid.downRun;
+    across.assign(rung.size(), 0);
+    down.assign(rung.size(), 0);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w;) {
             int end = x + 1;
@@ -349,6 +526,7 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
                 down[static_cast<size_t>(yy) * w + x] = end - y;
             y = end;
         }
+    const Rules<BoxGrid> rules(ramp, grid, options.maxRung);
 
     // Rungs wider than maxRung along the gradient. Only a step of a
     // gradient is judged: a run of a shade rung with a lower rung at one end
@@ -358,38 +536,22 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
     // that runs into it is a plane at the end too. The gradient runs across
     // the rung, so a step's width is the shorter of its run and the rung's
     // longest run the other way, in cells ("1-3 cells wide
-    // along the gradient"). Reported once per run, at its left or top end; a
-    // run down a column only when no cell of it was reported across a row.
+    // along the gradient"). An outline at the gradient's end (as for skips,
+    // below) ends it too: the plane inside it is the end plane. Reported
+    // once per run, at its left or top end; a run down a column only when no
+    // cell of it was reported across a row.
     std::vector<char> reported(rung.size(), 0);
-    auto step = [&](int before, int g, int after) { return isStep(ramp, before, g, after); };
     for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; x += across[static_cast<size_t>(y) * w + x]) {
-            const int g = rungAt(x, y), end = x + across[static_cast<size_t>(y) * w + x];
-            if (g < 0 || solid(g) || !step(x > 0 ? rungAt(x - 1, y) : -1, g, end < w ? rungAt(end, y) : -1))
-                continue;
-            int tallest = 0;
-            for (int xx = x; xx < end; ++xx)
-                tallest = std::max(tallest, down[static_cast<size_t>(y) * w + xx]);
-            if (const int width = std::min(end - x, tallest); width > options.maxRung) {
-                r.findings.push_back(wideFinding(b->x0 + x, b->y0 + y, width, options.maxRung, b->x0 + end - 1, b->y0 + y));
-                for (int xx = x; xx < end; ++xx)
-                    reported[static_cast<size_t>(y) * w + xx] = 1;
-            }
-        }
+        rules.rowWide(y, [&](int x, int end, int width) {
+            r.findings.push_back(wideFinding(b->x0 + x, b->y0 + y, width, options.maxRung, b->x0 + end - 1, b->y0 + y));
+            std::fill(reported.begin() + static_cast<long>(y) * w + x, reported.begin() + static_cast<long>(y) * w + end, 1);
+        });
     for (int x = 0; x < w; ++x)
-        for (int y = 0; y < h; y += down[static_cast<size_t>(y) * w + x]) {
-            const int g = rungAt(x, y), end = y + down[static_cast<size_t>(y) * w + x];
-            if (g < 0 || solid(g) || !step(y > 0 ? rungAt(x, y - 1) : -1, g, end < h ? rungAt(x, end) : -1))
-                continue;
-            int widest = 0;
-            bool seen = false;
-            for (int yy = y; yy < end; ++yy) {
-                widest = std::max(widest, across[static_cast<size_t>(yy) * w + x]);
-                seen = seen || reported[static_cast<size_t>(yy) * w + x];
-            }
-            if (const int width = std::min(end - y, widest); width > options.maxRung && !seen)
+        rules.columnWide(
+            x, [&](int cx, int cy) { return reported[static_cast<size_t>(cy) * w + cx] != 0; },
+            [&](int y, int end, int width) {
                 r.findings.push_back(wideFinding(b->x0 + x, b->y0 + y, width, options.maxRung, b->x0 + x, b->y0 + end - 1));
-        }
+            });
 
     // Skipped rungs: along a row or a column, the ramp jumping more than one
     // rung in the middle of a gradient. Runs of one rung are a level; a jump
@@ -398,19 +560,17 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
     // together. An outline that turns back and two planes meeting at a fold
     // (two levels, solid or not) are edges, not skips. Black and cells off
     // the ramp end a gradient: black against anything is ink, a seam or the
-    // silhouette. An outline in a ramp colour takes no part in the gradient:
-    // a level at either end of a sequence (against black, off-ramp or the
-    // canvas edge) that is one cell wide, solid, and the ramp colour next
-    // below the darker colour of the level beside it, which is what the
-    // outline brush draws. Any other end level, a lighter one (a highlight)
-    // included, is a rung like the rest. Reported once per pair of cells, at
-    // the left or top one.
+    // silhouette. An outline at either end of a sequence (against black,
+    // off-ramp or the box edge) takes no part in the gradient (outlineRun).
+    // Any other end level, a lighter one (a highlight) or a band two cells
+    // deep included, is a rung like the rest.
+    // Reported once per pair of cells, at the left or top one.
     for (int y = 0; y < h; ++y)
-        skipsAlong(ramp, w, [&](int i) { return rungAt(i, y); }, [&](int i, int j, int a, int c) {
+        rules.rowSkips(y, [&](int i, int j, int a, int c) {
             r.findings.push_back(skipFinding(b->x0 + i, b->y0 + y, a, c, b->x0 + j, b->y0 + y));
         });
     for (int x = 0; x < w; ++x)
-        skipsAlong(ramp, h, [&](int i) { return rungAt(x, i); }, [&](int i, int j, int a, int c) {
+        rules.columnSkips(x, [&](int i, int j, int a, int c) {
             r.findings.push_back(skipFinding(b->x0 + x, b->y0 + i, a, c, b->x0 + x, b->y0 + j));
         });
 
@@ -426,10 +586,9 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
     // neighbour of its own rung. That is a known gap; pixel noise
     // doesn't see shade cells either, so for now only the eye
     // catches them.
-    auto rungOr = [&](int x, int y) { return x < 0 || y < 0 || x >= w || y >= h ? -1 : rungAt(x, y); };
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
-            const int nb[4] = {rungOr(x, y - 1), rungOr(x, y + 1), rungOr(x - 1, y), rungOr(x + 1, y)};
+            const int nb[4] = {rules.rung(x, y - 1), rules.rung(x, y + 1), rules.rung(x - 1, y), rules.rung(x + 1, y)};
             if (const auto lighter = speck(ramp, rungAt(x, y), nb))
                 r.findings.push_back(speckFinding(b->x0 + x, b->y0 + y, *lighter));
         }
@@ -468,6 +627,30 @@ std::optional<char32_t> shadeGlyph(const Ramp& ramp, const Cell& c) {
         return c.ch;
     return std::nullopt;
 }
+
+} // namespace
+
+namespace {
+
+// The index's rungs and runs as the line rules read them.
+struct IndexGrid {
+    int w, h;
+    const std::vector<int>&rungs, &rowFirst, &rowEnd, &columnFirst, &columnEnd;
+    int rung(int x, int y) const {
+        ++readCount;
+        return rungs[static_cast<std::size_t>(y * w + x)];
+    }
+    int across(int x, int y, int cap) const {
+        ++readCount;
+        const auto i = static_cast<std::size_t>(y * w + x);
+        return std::min(rowEnd[i] - rowFirst[i], cap);
+    }
+    int down(int x, int y, int cap) const {
+        ++readCount;
+        const auto i = static_cast<std::size_t>(y * w + x);
+        return std::min(columnEnd[i] - columnFirst[i], cap);
+    }
+};
 
 } // namespace
 
@@ -539,6 +722,8 @@ LadderIndex::LadderIndex(const Canvas& canvas, const Ramp& ramp, const LadderOpt
     pixelMark_.assign(2 * n, 0);
     rowMark_.assign(static_cast<std::size_t>(h_), 0);
     columnMark_.assign(static_cast<std::size_t>(w_), 0);
+    nearRowMark_.assign(static_cast<std::size_t>(h_), 0);
+    nearColumnMark_.assign(static_cast<std::size_t>(w_), 0);
     // everything starts empty (the blank canvas_ holds no shade, pixel or
     // run yet), and the canvas comes in as one change of every cell
     std::vector<std::pair<int, Cell>> cells;
@@ -617,8 +802,9 @@ void LadderIndex::placeColumn(int i) {
 // rung's run longer than maxRung with a lower rung at one end and a higher
 // one at the other.
 bool LadderIndex::judgedRow(int start) const {
-    const int y = start / w_, a = start % w_, b = rowEnd_[size_t(start)], g = rungAt(a, y);
-    return g >= 0 && !solidRung(g) && b - a > options_.maxRung && isStep(ramp_, rungAt(a - 1, y), g, rungAt(b, y));
+    const IndexGrid grid{w_, h_, rung_, rowFirst_, rowEnd_, columnFirst_, columnEnd_};
+    const int y = start / w_, a = start % w_;
+    return Rules<IndexGrid>(ramp_, grid, options_.maxRung).rowStep(a, rowEnd_[size_t(start)], y);
 }
 
 LadderIndex::Wide LadderIndex::judgeRow(int start) const {
@@ -635,8 +821,8 @@ LadderIndex::Wide LadderIndex::judgeRow(int start) const {
 // column run holds (that cell's run down is longer than maxRung).
 LadderIndex::Wide LadderIndex::judgeColumn(int start) const {
     const int x = start % w_, a = start / w_, b = columnEnd_[size_t(start)], g = rungAt(x, a);
-    if (g < 0 || solidRung(g) || b - a <= options_.maxRung || !isStep(ramp_, rungAt(x, a - 1), g, rungAt(x, b)) ||
-        seen_[size_t(start)] > 0)
+    const IndexGrid grid{w_, h_, rung_, rowFirst_, rowEnd_, columnFirst_, columnEnd_};
+    if (seen_[size_t(start)] > 0 || !Rules<IndexGrid>(ramp_, grid, options_.maxRung).columnStep(x, a, b))
         return {};
     ++readCount;
     const int width = int(columnHighest_.below(size_t(x * h_ + b - 1)) - (x * h_ + a)) + 1;
@@ -652,10 +838,12 @@ int LadderIndex::speckAt(int x, int y) const {
 std::vector<LadderIndex::Skip> LadderIndex::skips(bool row, int line) const {
     std::vector<Skip> out;
     auto emit = [&](int i, int j, int a, int c) { out.push_back({i, j, a, c}); };
+    const IndexGrid grid{w_, h_, rung_, rowFirst_, rowEnd_, columnFirst_, columnEnd_};
+    const Rules<IndexGrid> rules(ramp_, grid, options_.maxRung);
     if (row)
-        skipsAlong(ramp_, w_, [&](int i) { return rungAt(i, line); }, emit);
+        rules.rowSkips(line, emit);
     else
-        skipsAlong(ramp_, h_, [&](int i) { return rungAt(line, i); }, emit);
+        rules.columnSkips(line, emit);
     return out;
 }
 
@@ -737,6 +925,19 @@ std::vector<LadderFinding> LadderIndex::update(const std::vector<std::pair<int, 
     }
     const auto isRow = [&](int y) { return rowMark_[size_t(y)] == e; };
     const auto isColumn = [&](int x) { return columnMark_[size_t(x)] == e; };
+    // The end-level rule reads two cells across a line each way (an
+    // outline's staircase step and the line going on beside it), so the
+    // rows and columns within two of a changed one judge their runs and
+    // skips again too, their runs unchanged.
+    std::vector<int> nearRows, nearColumns;
+    for (const int y : rows)
+        for (int yy = std::max(0, y - 2); yy <= std::min(h_ - 1, y + 2); ++yy)
+            if (!isRow(yy) && mark(nearRowMark_, yy))
+                nearRows.push_back(yy);
+    for (const int x : columns)
+        for (int xx = std::max(0, x - 2); xx <= std::min(w_ - 1, x + 2); ++xx)
+            if (!isColumn(xx) && mark(nearColumnMark_, xx))
+                nearColumns.push_back(xx);
 
     // each changed row's trimmed length: past its last cell that isn't a
     // trailing blank, which can only have moved back over blanks
@@ -800,9 +1001,19 @@ std::vector<LadderFinding> LadderIndex::update(const std::vector<std::pair<int, 
                 rowRun(x, y);
         }
 
+    // the runs of the lines near a change, judged again
+    for (const int y : nearRows)
+        for (int x = 0; x < w_; x = rowEnd_[size_t(y * w_ + x)])
+            rowRun(x, y);
+    for (const int x : nearColumns)
+        for (int y = 0; y < h_; y = columnEnd_[size_t(y * w_ + x)])
+            columnRun(x, y);
+
     // which cells' runs across are judged, and how many of each column
     // run's cells are
-    for (const int y : rows)
+    std::vector<int> judgedRows = rows;
+    judgedRows.insert(judgedRows.end(), nearRows.begin(), nearRows.end());
+    for (const int y : judgedRows)
         for (int x = 0; x < w_;) {
             const int end = rowEnd_[size_t(y * w_ + x)];
             const char judged = judgedRow(y * w_ + x);
@@ -886,7 +1097,11 @@ std::vector<LadderFinding> LadderIndex::update(const std::vector<std::pair<int, 
     };
     for (const int y : rows)
         added(true, y, rowSkips_[size_t(y)]);
+    for (const int y : nearRows)
+        added(true, y, rowSkips_[size_t(y)]);
     for (const int x : columns)
+        added(false, x, columnSkips_[size_t(x)]);
+    for (const int x : nearColumns)
         added(false, x, columnSkips_[size_t(x)]);
 
     for (const int i : cellsAt) {

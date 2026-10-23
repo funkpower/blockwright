@@ -1490,6 +1490,152 @@ TEST_CASE("ladder index timings", "[.][bench]") {
     }
 }
 
+TEST_CASE("an end level is an outline only when it is one cell thick along the line", "[lint][ladder]") {
+    // PR #50 round 3 (Codex 1, Claude P3-2): the end-level rule is decided
+    // per row and per column, never by a cell's eight neighbours
+    const Ramp r = steel();
+    // rows y0..y1 of these rungs from column 1, on black
+    auto band = [&](int w, int h, int y0, int y1, const std::vector<int>& rungs) {
+        Canvas c(w, h);
+        for (int y = y0; y <= y1; ++y)
+            for (size_t i = 0; i < rungs.size(); ++i)
+                c.at(1 + int(i), y) = rungCell(r, rungs[i]);
+        return c;
+    };
+    auto skipAt = [&](const Canvas& c, int x, int y) {
+        for (const auto& f : lint::checkLadder(c, r).findings)
+            if (f.kind == Kind::RungSkip && f.x == x && f.y == y)
+                return true;
+        return false;
+    };
+    SECTION("a dark band two cells deep is the gradient's bottom rung") {
+        // Codex's hidden skip: two rows, the second 4 has black above or below
+        const Canvas hidden = band(8, 4, 1, 2, {4, 4, 9, 10, 11, 12});
+        CHECK(skipAt(hidden, 2, 1));
+        CHECK(skipAt(hidden, 2, 2));
+        // Claude's bars
+        CHECK(skipAt(band(10, 4, 1, 2, {4, 4, 9, 10, 11, 12, 12, 12}), 2, 1));
+        CHECK(skipAt(band(13, 4, 1, 2, {4, 4, 4, 4, 4, 4, 9, 10, 11, 12, 12}), 6, 1));
+        CHECK(skipAt(band(10, 3, 1, 1, {4, 4, 4, 9, 10, 11, 12, 12}), 3, 1));
+        CHECK(skipAt(band(9, 4, 1, 2, {12, 12, 11, 10, 9, 4, 4}), 5, 1));
+    }
+    SECTION("a staircase filler counts only with the outside on the outer cell's side") {
+        // Claude's seam band: rows 1-8, a black seam on row 5 from column 3;
+        // the 4s at (2,4) and (2,6) touch the seam diagonally on the inner
+        // side, so the two-cell runs on rows 4 and 6 are bands, not a line
+        Canvas c = band(12, 10, 1, 8, {4, 4, 9, 10, 11, 12, 12, 12, 12, 12});
+        for (int x = 3; x <= 10; ++x)
+            c.at(x, 5) = rungCell(r, 0);
+        CHECK(skipAt(c, 2, 4));
+        CHECK(skipAt(c, 2, 6));
+    }
+    SECTION("a one-cell end level leaves the plane inside it unjudged") {
+        // the broad end plane; Codex's hidden width is the same picture
+        CHECK(lint::checkLadder(band(15, 8, 1, 6, {4, 9, 9, 9, 9, 9, 9, 9, 10, 11, 12, 12, 8}), r).clean());
+        CHECK(lint::checkLadder(band(14, 8, 1, 6, {4, 9, 9, 9, 9, 9, 9, 9, 9, 10, 11, 12}), r).clean());
+    }
+    SECTION("a two-cell run is a staircase step only where the staircase goes on") {
+        // PR #50 round 4 (Codex 1): a solid 2x2 patch of the line colour is
+        // a rung of the gradient, not a rim, however the picture is turned
+        auto grid = [&](const std::vector<std::vector<int>>& g, bool flip, bool turn) {
+            const int gh = int(g.size()), gw = int(g[0].size());
+            Canvas c(turn ? gh : gw, turn ? gw : gh);
+            for (int y = 0; y < gh; ++y)
+                for (int x = 0; x < gw; ++x) {
+                    const int fx = flip ? gw - 1 - x : x;
+                    c.at(turn ? y : fx, turn ? fx : y) = rungCell(r, g[size_t(y)][size_t(x)]);
+                }
+            return c;
+        };
+        const std::vector<std::vector<int>> patch = {
+            {0, 0, 0, 0, 0, 0, 0, 0},     {0, 0, 9, 10, 11, 12, 12, 0}, {0, 4, 4, 9, 10, 11, 12, 0},
+            {0, 4, 4, 9, 10, 11, 12, 0},  {0, 0, 9, 10, 11, 12, 12, 0}, {0, 0, 0, 0, 0, 0, 0, 0},
+        };
+        const std::vector<std::vector<int>> wide = {
+            {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},     {0, 0, 9, 9, 9, 9, 9, 9, 9, 9, 9, 10, 11, 12, 0},
+            {0, 4, 4, 9, 9, 9, 9, 9, 9, 9, 9, 10, 11, 12, 0}, {0, 4, 4, 9, 9, 9, 9, 9, 9, 9, 9, 10, 11, 12, 0},
+            {0, 0, 9, 9, 9, 9, 9, 9, 9, 9, 9, 10, 11, 12, 0}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+        };
+        CHECK(skipAt(grid(patch, false, false), 2, 2));
+        CHECK(skipAt(grid(patch, false, false), 2, 3));
+        CHECK(count(lint::checkLadder(grid(wide, false, false), r), Kind::WideRung) == 2);
+        for (const bool flip : {false, true})
+            for (const bool turn : {false, true}) {
+                INFO("mirrored " << flip << ", transposed " << turn);
+                CHECK(count(lint::checkLadder(grid(patch, flip, turn), r), Kind::RungSkip) == 2);
+                const auto w = lint::checkLadder(grid(wide, flip, turn), r);
+                CHECK(count(w, Kind::RungSkip) == 2);
+                CHECK(count(w, Kind::WideRung) == 2);
+            }
+        // Claude round 4 P3-1: rows 1-8 of 4 4 9 10 11 12 12 12 from column 1
+        const std::vector<int> bar = {4, 4, 9, 10, 11, 12, 12, 12};
+        // one black cell in the outer column: the rows beside it are still a
+        // band two deep, each in a 2x2 block of 4
+        Canvas notch = band(11, 10, 1, 8, bar);
+        notch.at(1, 4) = rungCell(r, 0);
+        CHECK(skipAt(notch, 2, 3));
+        CHECK(skipAt(notch, 2, 5));
+        // every other outer cell black: no 2x2 block, but no staircase either
+        Canvas dotted = band(11, 10, 1, 8, bar);
+        for (int y = 2; y <= 8; y += 2)
+            dotted.at(1, y) = rungCell(r, 0);
+        for (int y = 3; y <= 7; y += 2)
+            CHECK(skipAt(dotted, 2, y));
+        // a one-cell step in the outer edge
+        Canvas stepped = band(11, 10, 1, 4, bar);
+        for (int y = 5; y <= 8; ++y)
+            for (size_t i = 0; i < bar.size(); ++i)
+                stepped.at(2 + int(i), y) = rungCell(r, bar[i]);
+        CHECK(skipAt(stepped, 2, 4));
+        // the corner of a band two deep on a dark mass (a real piece's 4 4 8 12
+        // with the outside above the outer cell only): a 2x2 block of 4
+        Canvas corner(7, 6);
+        corner.at(3, 1) = rungCell(r, 8);
+        corner.at(4, 1) = rungCell(r, 8);
+        const int rowsOf[3][4] = {{4, 4, 8, 12}, {4, 4, 8, 0}, {4, 4, 4, 4}};
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 4; ++x)
+                corner.at(2 + x, 2 + y) = rungCell(r, rowsOf[y][x]);
+        CHECK(skipAt(corner, 3, 2));
+        CHECK(skipAt(corner, 4, 2));
+    }
+    SECTION("a 4-connected diagonal line is one cell thick") {
+        // a 45° side: on each row the line's outer cell against black and
+        // its inner cell, a staircase filler with black diagonally below
+        Canvas c(16, 12);
+        for (int y = 1; y <= 10; ++y)
+            for (int x = 1; x <= y + 2; ++x)
+                c.at(x, y) = rungCell(r, x >= y + 1 ? 4 : std::max(8, 13 - x));
+        for (int y = 1; y <= 10; ++y)
+            c.at(1, y) = rungCell(r, 4);
+        for (int x = 1; x <= 12; ++x)
+            c.at(x, 10) = rungCell(r, 4);
+        CHECK(count(lint::checkLadder(c, r), Kind::RungSkip) == 0);
+    }
+    SECTION("a staircase's line may change colour where the level inside it does") {
+        // brush-outline review (P3-2): a rim is one line however its colour
+        // changes along it (buildings.md: a CYAN rim, LCYAN on the lit arc),
+        // so the step at (3,3)-(3,4) goes on as the 4s of the level below
+        const Ramp f = *findRamp("fire");
+        const std::vector<std::vector<int>> g = {
+            {0, 0, 8, 13, 12, 12, 0, 0}, {0, 0, 8, 13, 12, 12, 0, 0}, {0, 0, 8, 12, 12, 12, 0, 0},
+            {0, 0, 8, 8, 12, 12, 0, 0},  {0, 0, 0, 8, 4, 11, 0, 0},   {0, 0, 0, 0, 4, 4, 0, 0},
+            {0, 0, 0, 0, 0, 0, 0, 0},
+        };
+        Canvas c(8, 7);
+        for (int y = 0; y < 7; ++y)
+            for (int x = 0; x < 8; ++x)
+                c.at(x, y) = rungCell(f, g[size_t(y)][size_t(x)]);
+        CHECK(lint::checkLadder(c, f).clean());
+        // a shade there is no line: the step is a band of 8 and a skip
+        c.at(4, 4) = rungCell(f, 5);
+        bool skip = false;
+        for (const auto& x : lint::checkLadder(c, f).findings)
+            skip = skip || (x.kind == Kind::RungSkip && x.x == 3 && x.y == 2);
+        CHECK(skip);
+    }
+}
+
 TEST_CASE("detail is the looks per 4x2 window and its flat share", "[lint][detail]") {
     // Measured figures, the detail of funkpower's pieces in
     // tests/data/golden.

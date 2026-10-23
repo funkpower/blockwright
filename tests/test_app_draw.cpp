@@ -154,6 +154,7 @@ TEST_CASE("every drawing tool is in the Tools menu with its shortcut") {
         {"ellipse", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O)},
         {"fill", QKeySequence(Qt::CTRL | Qt::Key_J)},
         {"eyedropper", QKeySequence(Qt::CTRL | Qt::Key_I)},
+        {"outline", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E)},
         {"rimLight", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)},
     };
     for (const Entry& e : entries) {

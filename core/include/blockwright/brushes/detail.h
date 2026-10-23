@@ -1,5 +1,5 @@
 #pragma once
-// Detail brushes (PLAN §10, "Detail"): the rim-light brush. It works on a
+// Detail brushes (PLAN §10, "Detail"): the outline and rim-light brushes. It works on a
 // shape: the cells on the brush's ramp other than its ground (its first
 // colour when that is black), read as they show under the stroke's iCE
 // setting, and the half blocks whose halves are ramp colours, or one a ramp
@@ -23,6 +23,15 @@
 #include <optional>
 
 namespace bw {
+
+// Whether the cell is in the ramp's shape (above), as it shows with iCE
+// `ice`.
+bool inShape(const Ramp& ramp, const Cell& cell, bool ice = true);
+
+// How many cells the detail brushes have read on this thread so far, the
+// cells they copied and the lint's reads (lint::cellsRead) included: a work
+// counter, for tests of what a dab costs.
+long long detailCellsRead();
 
 // Whether (x, y) is a shape cell on the shape's edge (above).
 bool onEdge(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice = true);
@@ -49,6 +58,86 @@ bool onEdge(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice = tru
 // normal.
 std::optional<std::pair<double, double>> edgeNormal(const Canvas& canvas, const Ramp& ramp, int x, int y,
                                                     bool ice = true);
+
+// Outline brush (PLAN §10): the edge cells under it become the line, the
+// outline colour (lint::outlineRung) of the level inside them: the darkest
+// interior cell (not on the edge, not a half block) at the shortest walk
+// through the shape, read once a stroke from the whole stroke-start canvas,
+// so a thin part takes the line of the nearest body however far along it.
+// A shape with no interior is left alone. Where the colour below would be
+// the ground the line is the darkest colour above the ground. A cell darker
+// than the line is kept, but for a shade into the ground (k░K) on the edge,
+// which takes the line. The line over the cells the stroke has covered is
+// settled against checkLadder: where it would add a finding the cells to
+// blame take the next lighter candidate, down to the cell as it was, so the
+// line is the darkest the lint accepts. Each finding is blamed on its own:
+// on the line cells along its own row or column (a wide run's width, where
+// nothing along it is, on the runs across it; a speck on the speck, or what
+// is round it); noise on the changed cells whose own change raises it; one
+// glyph on the cells that change a shade glyph. A blamed cell beside a
+// darker one waits for it. Where no step clears noise, the one finding, the
+// line goes back on the index a cell at a time, the cells that raise the
+// noise least alone first, each kept where the noise stays as it was or
+// within its limit; where no step clears another finding, only the fewest
+// line cells nearest it are left as they were, not the rest of the line. An
+// image's first settle (a click, a stroke's start) that writes nothing from
+// three or more covered cells settles again carefully, while its outline
+// has read under 5e7 cells (detailCellsRead): a skip between two
+// changed cells is first the cell more findings involve, and cells left as
+// they were are tried a step darker, alone or with a stepped neighbour. Repairs are on
+// covered cells only: a fade cell the line leaves a speck takes the darkest
+// colour above the ground, and so on inward. Lone fragments (under three
+// line cells beside covered edge cells the line leaves, or one cell a step
+// lighter with no line beside it) and corners of pieces of four or more (the
+// end of a lined side where the side round it stays unlined) are left off
+// unless the lint needs them. Every write is judged by lint::LadderIndex
+// with the guard identity (place; wide rungs by overlap; noise only over its
+// limit and higher), so a dab adds no finding anywhere on the canvas, and a
+// dab that softens a finding or changes only its value is allowed. Each dab
+// settles only round its own new cells: the covered cells within three of
+// it that the stroke has left as they were, against the line the stroke has
+// drawn so far, settled again until it is its own fixed point. A cell the
+// stroke has written stays for the rest of the stroke, unless a strictly
+// stronger dab covers it; a dab that would add a finding adds nothing. A
+// dab's work is flat in the stroke's length and O(W + H) per changed cell.
+// Each symmetry image (Dab::image) is outlined on its own, a mirror image in
+// its own frame (the canvas mirrored back). The stroke stamps each point's
+// images in turn, and their composite is judged on the shown canvas as a
+// whole: where it adds a finding, the cells to blame go back, a mirror orbit
+// at a time and in the images too, until it adds nothing; where nothing to
+// blame clears it, every image's cells are refused, so a Mirror X click can
+// write nothing where the stroke alone would write a line. Where images overlap, a cell shows the line of the strongest dab
+// that changed it; on a tie the image whose frame has the cell in the
+// canvas's first half (across, then down) wins, then the lower image, so a
+// mirrored canvas gets a mirrored line. Its
+// dabs again in the same stroke change nothing. Limits: a cell written a step
+// lighter before the line beside it was drawn stays for the stroke, so a
+// second stroke over the result can take it darker (it adds no finding);
+// where the careful budget ran out, so can a second click (baud-dudes-all,
+// 80 x 2312, skin, square 161 at (60,1541): 42 cells after 305). A larger
+// click is not sure to write more of the line where the noise is over its
+// limit: psyop-radar's steel at (20,13) writes 127 cells at size 73 and 109
+// at 75, cells the noise fallback keeps apart being pruned as fragments. A
+// fringe keeps its shape half
+// and takes the line in its black half, outside the shape, when the line is
+// darker than that half; with iCE off it is written the way round that keeps
+// the background dark, or left when it can't be.
+class OutlineBrush : public Brush {
+public:
+    explicit OutlineBrush(Ramp ramp);
+
+    std::string_view name() const override { return "outline"; }
+    void dab(Stroke& stroke, const Dab& d, int size, double strength) const override;
+
+    // The stroke's state: the cells it has covered and their line.
+    struct Plan;
+
+private:
+    void settleImage(Stroke& stroke, Plan& plan, const Dab& d, int size, double strength) const;
+    void composite(Stroke& stroke, Plan& plan) const;
+
+    Ramp ramp_;
+};
 
 // Rim-light brush: the full edge cells under it that face the light go one
 // rung lighter along the ramp (stepRung, so iCE off writes no bright

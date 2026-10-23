@@ -99,7 +99,7 @@ void write(MainWindow& w, int x, int y, const QString& text) {
 
 TEST_CASE("the tool registry starts in keyboard mode and the Tools menu switches") {
     MainWindow w;
-    REQUIRE(w.tools()->tools().size() == 16);
+    REQUIRE(w.tools()->tools().size() == 17);
     CHECK(w.tools()->active()->id() == QStringLiteral("keyboard"));
     CHECK(w.canvasView()->tool() == w.tools()->active());
     CHECK(act(w, "keyboardTool")->isChecked());
