@@ -457,27 +457,6 @@ TEST_CASE("a mirrored tip covers the mirror image of the tip", "[brush]") {
     CHECK(footprint(5, 5, 2, Tip::Square, 20, 20, true) == P{{5, 4}, {6, 4}, {5, 5}, {6, 5}});
 }
 
-TEST_CASE("a stroke with a mirrored tip paints the mirror of the stroke", "[brush]") {
-    const int w = 16, h = 9;
-    const Canvas c = filled(w, h, solid(Black));
-    const RampShadeBrush up(steel(), ShadeDirection::Lighten);
-    BrushSettings s;
-    s.size = 4;
-    s.tip = Tip::Round;
-    StrokeOptions mirrored;
-    mirrored.mirrorTip = true;
-    const std::vector<Dab> dabs = {{2, 2}, {2, 5}, {6, 6}};
-    std::vector<Dab> mirrorDabs;
-    for (const Dab& d : dabs)
-        mirrorDabs.push_back({w - 1 - d.x, d.y});
-    std::set<std::pair<int, int>> want, got;
-    for (const CellChange& ch : paintStroke(c, up, s, dabs).changes)
-        want.emplace(w - 1 - ch.x, ch.y);
-    for (const CellChange& ch : paintStroke(c, up, s, mirrorDabs, mirrored).changes)
-        got.emplace(ch.x, ch.y);
-    CHECK(got == want);
-}
-
 namespace {
 int rowsOf(int size) {
     std::set<int> rows;

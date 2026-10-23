@@ -3,6 +3,7 @@
 #include "canvas_view.h"
 #include "document.h"
 
+#include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/drawing.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/glyph_sets.h"
@@ -96,6 +97,7 @@ void DragTool::takeSettings() {
     options_.selection = selectionMask(view()->selection(), canvas().width(), canvas().height());
     options_.ice = view()->document()->ansi().ice;
     options_.lockTransparent = view()->lockTransparent();
+    options_.symmetry = view()->symmetry();
     brushSettings_ = view()->brushSettings();
     mirror_ = view()->mirror();
 }
@@ -140,81 +142,25 @@ bool BrushTool::extend(const ToolEvent& e) {
 void BrushTool::addDab(const Dab& d) {
     dabs_.push_back(d);
     stroke_->addDab(d);
-    if (unclipped_)
-        unclipped_->addDab(d);
-    if (mirrorStroke_)
-        mirrorStroke_->addDab(Dab{mirrorColumn(canvas().width(), d.x), d.y, d.pressure});
 }
 
 void BrushTool::rebuild() {
     const std::vector<Dab> dabs = std::move(dabs_);
     dabs_.clear();
-    // The strokes hold the brush: they go first. A new brush takes the ramp
-    // as it is now, and the pen the drag was pressed with.
+    // The stroke holds the brush: it goes first. A new brush takes the ramp
+    // as it is now, and the pen the drag was pressed with. The stroke
+    // repeats its dabs under the options' symmetry.
     stroke_.reset();
-    mirrorStroke_.reset();
-    unclipped_.reset();
     brush_ = makeBrush(button_);
     stroke_.emplace(canvas(), *brush_, brushSettings(), options());
-    if (mirror() && mirrorDabs()) {
-        StrokeOptions flipped = options();
-        flipped.mirrorTip = true;
-        mirrorStroke_.emplace(canvas(), *brush_, brushSettings(), std::move(flipped));
-    } else if (mirror()) {
-        // the mirror is made from the whole stroke, then clipped on its own
-        StrokeOptions all;
-        all.ice = options().ice;
-        unclipped_.emplace(canvas(), *brush_, brushSettings(), std::move(all));
-    }
     for (const Dab& d : dabs)
         addDab(d);
 }
 
-CellEdit BrushTool::edit() const {
-    if (!stroke_)
-        return {};
-    CellEdit e = stroke_->edit();
-    if (!mirror())
-        return e;
-    if (mirrorStroke_) {
-        // The mirror cells as the mirrored dabs paint them. Where both
-        // strokes reach a cell, the one that painted it with the stronger
-        // dab wins, this one on a tie: so the cell and its mirror take the
-        // same strength.
-        const auto mirrorWins = [this](int x, int y) {
-            const auto own = stroke_->paintedStrength(x, y);
-            const auto other = mirrorStroke_->paintedStrength(x, y);
-            return other && (!own || *other > *own);
-        };
-        std::vector<CellChange> changes;
-        for (const CellChange& c : e.changes)
-            if (!mirrorWins(c.x, c.y))
-                changes.push_back(c);
-        for (const CellChange& c : mirrorStroke_->edit().changes)
-            if (mirrorWins(c.x, c.y))
-                changes.push_back(c);
-        e.changes = std::move(changes);
-        return e;
-    }
-    // The mirror image of the whole stroke, before the selection and the
-    // lock clip it, kept where the mirror cell itself may be painted; where
-    // the stroke reaches the mirror cell its own change wins (mirrorEdit).
-    if (!unclipped_)
-        return e;
-    const CellEdit whole = unclipped_->edit();
-    std::set<std::pair<int, int>> own;
-    for (const CellChange& c : whole.changes)
-        own.emplace(c.x, c.y);
-    for (const CellChange& c : mirrorEdit(canvas(), whole).changes)
-        if (!own.count({c.x, c.y}) && stroke_->paintable(c.x, c.y))
-            e.changes.push_back(c);
-    return e;
-}
+CellEdit BrushTool::edit() const { return stroke_ ? stroke_->edit() : CellEdit{}; }
 
 void BrushTool::reset() {
     stroke_.reset();
-    mirrorStroke_.reset();
-    unclipped_.reset();
     dabs_.clear();
     brush_.reset();
     button_ = Qt::NoButton;
@@ -306,7 +252,7 @@ bool HalfBlockTool::extend(const ToolEvent& e) {
 }
 
 void HalfBlockTool::rebuild() {
-    stroke_.emplace(canvas(), colour_, options(), mirror());
+    stroke_.emplace(canvas(), colour_, options(), false, view()->pencilConnectivity());
     for (const QPoint& p : points_)
         stroke_->addPoint(p.x(), p.y());
 }
@@ -365,12 +311,14 @@ bool ShapeTool::extend(const ToolEvent& e) {
 }
 
 CellEdit ShapeTool::edit() const {
-    const int w = canvas().width(), h = 2 * canvas().height();
+    // the shape as far as its images under the symmetry can reach the
+    // canvas; the painter clips each image on its own
+    const PixelRect clip = symmetryReach(options().symmetry, canvas().width(), canvas().height());
     Pixels px;
     switch (shape_) {
-    case Shape::Line: px = lineShape(from_.x(), from_.y(), to_.x(), to_.y(), w, h); break;
-    case Shape::Rectangle: px = rectShape(from_.x(), from_.y(), to_.x(), to_.y(), filled_, w, h); break;
-    case Shape::Ellipse: px = ellipseShape(from_.x(), from_.y(), to_.x(), to_.y(), filled_, w, h); break;
+    case Shape::Line: px = lineShape(from_.x(), from_.y(), to_.x(), to_.y(), clip); break;
+    case Shape::Rectangle: px = rectShape(from_.x(), from_.y(), to_.x(), to_.y(), filled_, clip); break;
+    case Shape::Ellipse: px = ellipseShape(from_.x(), from_.y(), to_.x(), to_.y(), filled_, clip); break;
     }
     return plotPixels(canvas(), px, colour_, options(), mirror());
 }
@@ -406,5 +354,27 @@ bool EyedropperTool::mousePress(const ToolEvent& e) {
 bool EyedropperTool::mouseMove(const ToolEvent&) { return false; }
 
 bool EyedropperTool::mouseRelease(const ToolEvent&) { return view() != nullptr; }
+
+namespace {
+
+QString compassName(Compass c) {
+    static const char* const names[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+    return QString::fromLatin1(names[static_cast<int>(c)]);
+}
+
+} // namespace
+
+RimLightTool::RimLightTool(QObject* parent) : BrushTool(QStringLiteral("rimLight"), tr("R&im Light Brush"), parent) {}
+
+QString RimLightTool::status() const {
+    return view() ? tr("Ramp %1, light from %2")
+                        .arg(QString::fromStdString(view()->ramp().name),
+                             compassName(view()->brushSettings().lightDirection))
+                  : QString();
+}
+
+std::unique_ptr<Brush> RimLightTool::makeBrush(Qt::MouseButton) const {
+    return std::make_unique<RimLightBrush>(view()->ramp(), brushSettings().lightDirection);
+}
 
 } // namespace bw

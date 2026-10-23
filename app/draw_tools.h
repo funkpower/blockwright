@@ -9,18 +9,21 @@
 // the edit shown is the edit that lands. Esc, the undo key, undo or redo,
 // a format change or a lost mouse drop it (the undo key undoes nothing
 // then). Every tool paints only inside the selection when there is one,
-// and mirror mode repeats what it paints; toggling mirror mode (or filled
-// shapes) mid-drag redoes the drag with the new setting.
+// and mirror mode repeats what it paints under the view's symmetry
+// (mirror X, mirror Y, both, or radial; PLAN §10); toggling mirror mode,
+// changing the symmetry (or filled shapes) mid-drag redoes the drag with
+// the new setting.
 //
 // The half-block brush, the shapes, fill and the eyedropper work in
 // half-block pixels (halfblock.h): a cell's top and bottom halves, read and
 // written by the colours they show under the document's iCE setting. In
-// mirror mode the pixel tools (and the shade brush, whose glyphs are
-// symmetric) mirror what they plot, so the mirror cell keeps its other half
-// and the shade brush steps the mirror cell's own level. The glyph and
-// colorize brushes mirror the cells they change (mirrorEdit), flipping the
-// glyphs. The selection clips each side on its own: the stroke and its
-// mirror are each painted where they fall inside it.
+// mirror mode the pixel tools repeat what they plot, so an image cell keeps
+// its other half, and the brushes repeat their dabs (Stroke): each image
+// paints the cells it reaches as they are, the shade brushes stepping an
+// image cell's own level, the colorize brush keeping its glyph, the glyph
+// brush writing its glyph mirrored. The selection clips each image on its
+// own: the stroke and its images are each painted where they fall inside
+// it.
 
 #include "tool.h"
 
@@ -99,10 +102,9 @@ private:
 // A brush on the cell grid, one Stroke per drag, painting with the view's
 // brush settings: size, tip, strength and what a stylus's pressure scales.
 // Each move adds a dab with the event's pressure; staying on a cell adds
-// one only when pressing harder there can grow the brush. In mirror mode it
-// mirrors the cells the whole stroke changes (mirrorEdit) and clips the
-// mirror to the selection, or with mirrorDabs a second stroke paints the
-// mirrored dabs, tips mirrored, over the mirror cells as they are.
+// one only when pressing harder there can grow the brush. In mirror mode
+// the stroke paints the dabs' images too (StrokeOptions::symmetry), tips
+// mirrored, over the image cells as they are.
 class BrushTool : public DragTool {
     Q_OBJECT
 public:
@@ -114,7 +116,6 @@ protected:
     // The pen the drag was pressed with: a pen change mid-stroke waits for
     // the next one.
     const Pen& pen() const { return pen_; }
-    virtual bool mirrorDabs() const { return false; }
 
     bool begin(const ToolEvent& e) override;
     bool extend(const ToolEvent& e) override;
@@ -128,10 +129,7 @@ private:
     Qt::MouseButton button_ = Qt::NoButton;
     Pen pen_;
     std::unique_ptr<Brush> brush_;
-    std::optional<Stroke> stroke_, mirrorStroke_;
-    // In mirror mode without mirrorDabs: the same dabs unclipped, which the
-    // mirror is made from.
-    std::optional<Stroke> unclipped_;
+    std::optional<Stroke> stroke_;
     std::vector<Dab> dabs_;
 };
 
@@ -144,7 +142,6 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
-    bool mirrorDabs() const override { return true; }
 };
 
 // Ramp shade brush (PLAN §10): left lightens the cells under it along the
@@ -161,7 +158,6 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
-    bool mirrorDabs() const override { return true; }
 };
 
 // Glyph brush: left writes the brush's glyph in the pen's colours, right
@@ -197,7 +193,8 @@ protected:
 };
 
 // Half-block brush: a pencil of half-block pixels, each drag joined up
-// 4-connected.
+// 4-connected, or 8-connected when the view's pencil connectivity says so
+// (the Brush dock).
 class HalfBlockTool : public DragTool {
     Q_OBJECT
 public:
@@ -275,6 +272,20 @@ public:
     bool mousePress(const ToolEvent& e) override;
     bool mouseMove(const ToolEvent& e) override;
     bool mouseRelease(const ToolEvent& e) override;
+};
+
+// Rim-light brush (PLAN §10, "Detail"): the edge cells of the view's ramp
+// shape under it that face the Brush dock's light direction go one rung
+// lighter (RimLightBrush). Either button.
+class RimLightTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit RimLightTool(QObject* parent = nullptr);
+
+    QString status() const override;
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
 };
 
 } // namespace bw

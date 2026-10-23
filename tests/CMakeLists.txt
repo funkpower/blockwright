@@ -16,6 +16,7 @@ add_executable(blockwright-tests
   test_brush.cpp
   test_cli_read.cpp
   test_cp437.cpp
+  test_detail.cpp
   test_draw.cpp
   test_edit.cpp
   test_golden.cpp
@@ -96,6 +97,7 @@ add_executable(blockwright-app-tests
   test_app_format.cpp
   test_app_select.cpp
   test_app_perf.cpp
+  test_app_detail.cpp
   system_input.h
   util.h
 )

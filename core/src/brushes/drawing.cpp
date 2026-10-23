@@ -1,6 +1,7 @@
 #include "blockwright/brushes/drawing.h"
 
 #include "blockwright/ramp.h"
+#include "blockwright/selection.h"
 
 #include <algorithm>
 #include <array>
@@ -38,7 +39,19 @@ std::optional<Cell> ShadeBrush::paintCell(const Stroke& stroke, int x, int y, do
     return out;
 }
 
-std::optional<Cell> GlyphBrush::paintCell(const Stroke&, int, int, double) const { return cell_; }
+std::optional<Cell> GlyphBrush::paintCell(const Stroke& stroke, int, int, double) const {
+    // a mirrored image of the stroke writes the glyph mirrored, and a
+    // radial image a quarter turn round writes it turned
+    Cell c = cell_;
+    const Dab& d = stroke.currentDab();
+    if (d.flipX)
+        c.ch = flipGlyph(c.ch, Flip::Horizontal);
+    if (d.flipY)
+        c.ch = flipGlyph(c.ch, Flip::Vertical);
+    for (int i = 0; i < d.turns; ++i)
+        c.ch = rotateGlyph(c.ch, true);
+    return c;
+}
 
 std::optional<Cell> ColorizeBrush::paintCell(const Stroke& stroke, int x, int y, double) const {
     auto cell = stroke.originalAt(x, y);

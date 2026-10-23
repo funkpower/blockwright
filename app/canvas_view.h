@@ -19,6 +19,7 @@
 #include "blockwright/brush.h"
 #include "blockwright/canvas_renderer.h"
 #include "blockwright/edit.h"
+#include "blockwright/halfblock.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
 
@@ -124,6 +125,20 @@ public:
     // glyphs flipped (mirrorEdit).
     bool mirror() const { return mirror_; }
     void setMirror(bool on);
+    // The symmetry the drawing tools repeat what they paint with (PLAN
+    // §10): the chosen mode while mirror mode is on, none while it is off.
+    // Mirror X is chosen at first. Setting a mode turns mirror mode on,
+    // setting None turns it off and keeps the mode chosen before. Edits
+    // made outside the drawing tools (typing, paste, delete) are mirrored
+    // in mirror X only (mirrored()).
+    Symmetry symmetry() const;
+    const Symmetry& symmetryChoice() const { return symmetry_; }
+    void setSymmetry(const Symmetry& symmetry);  // folds clamped to 2-8
+    // Pulls a set radial centre onto the canvas (on Document::reset).
+    void fitSymmetryCentre();
+    // How the half-block pencil joins its points: 4-connected by default.
+    Connectivity pencilConnectivity() const { return pencil_; }
+    void setPencilConnectivity(Connectivity c);
 
     // Screen-size guides: a line after column `size.width()` and one after
     // every `size.height()` rows. An empty size shows none.
@@ -162,6 +177,9 @@ signals:
     // can hold; the text was not written.
     void glyphRejected(const QString& text);
     void mirrorChanged(bool on);
+    // The symmetry or the pencil's connectivity changed (and mirror mode
+    // with it, if it did).
+    void symmetryChanged();
     // The reference image, or whether it shows, changed.
     void referenceChanged();
     // The reference image could not be scaled for this zoom; it is not drawn
@@ -230,6 +248,8 @@ private:
     double stylusPressure_ = 1.0;  // the last press or move's, for its release
     Selection selection_;
     bool mirror_ = false;
+    Symmetry symmetry_{SymmetryMode::MirrorX, 4, std::nullopt};
+    Connectivity pencil_ = Connectivity::Four;
     QSize guide_;
     QImage reference_;
     QImage referenceScaled_;  // see referenceCacheSize, made on paint

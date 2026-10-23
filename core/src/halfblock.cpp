@@ -4,6 +4,8 @@
 #include "blockwright/ramp.h"
 
 #include <algorithm>
+#include <climits>
+#include <cstdlib>
 #include <deque>
 
 namespace bw {
@@ -101,8 +103,18 @@ std::optional<Color> pickColour(const Canvas& canvas, int x, int py, bool backgr
     return background ? iceCell(c, ice).bg : c.fg;
 }
 
+namespace {
+
+Symmetry symmetryOf(const StrokeOptions& options, bool mirror) {
+    if (options.symmetry.mode == SymmetryMode::None && mirror)
+        return Symmetry{SymmetryMode::MirrorX, 4, std::nullopt};
+    return options.symmetry;
+}
+
+} // namespace
+
 PixelPainter::PixelPainter(const Canvas& canvas, std::uint8_t colour, StrokeOptions options, bool mirror)
-    : canvas_(canvas), colour_(colour & 15), options_(std::move(options)), mirror_(mirror) {}
+    : canvas_(canvas), colour_(colour & 15), options_(std::move(options)), symmetry_(symmetryOf(options_, mirror)) {}
 
 bool PixelPainter::paintable(int x, int y) const {
     if (!canvas_.contains(x, y))
@@ -113,9 +125,13 @@ bool PixelPainter::paintable(int x, int y) const {
 }
 
 bool PixelPainter::plot(int x, int py) {
-    bool any = plotOne(x, py);
-    if (mirror_ && x >= 0 && x < canvas_.width())
-        any = plotOne(canvas_.width() - 1 - x, py) || any;
+    // a pixel off the canvas has images too: each is clipped on its own
+    if (symmetry_.mode == SymmetryMode::None)
+        return plotOne(x, py);
+    bool any = false;
+    for (const auto& [ix, ipy] : symmetryPixels(symmetry_, x, py, canvas_.width(), canvas_.height()))
+        if (ix >= 0 && ix < canvas_.width() && ipy >= 0 && ipy < 2LL * canvas_.height())
+            any = plotOne(int(ix), int(ipy)) || any;
     return any;
 }
 
@@ -205,19 +221,77 @@ CellEdit plotPixels(const Canvas& canvas, const std::vector<std::pair<int, int>>
     return p.edit();
 }
 
-HalfBlockStroke::HalfBlockStroke(const Canvas& canvas, std::uint8_t colour, StrokeOptions options, bool mirror)
-    : painter_(canvas, colour, std::move(options), mirror) {}
+std::vector<std::pair<int, int>> line8(long long x0, long long y0, long long x1, long long y1, long long cx0,
+                                       long long cy0, long long cx1, long long cy1) {
+    std::vector<std::pair<int, int>> out;
+    // only cells within int come out
+    cx0 = std::max<long long>(cx0, INT_MIN), cy0 = std::max<long long>(cy0, INT_MIN);
+    cx1 = std::min<long long>(cx1, INT_MAX), cy1 = std::min<long long>(cy1, INT_MAX);
+    const long long dx = x1 - x0, dy = y1 - y0;
+    const long long n = std::max(std::llabs(dx), std::llabs(dy));
+    if (n == 0) {
+        if (x0 >= cx0 && x0 <= cx1 && y0 >= cy0 && y0 <= cy1)
+            out.emplace_back(static_cast<int>(x0), static_cast<int>(y0));
+        return out;
+    }
+    // the point at step i: the minor axis is d * i / n rounded, halves
+    // away from the start. The ends are images of int points, within 2^34
+    // of the canvas, so |d| and i are below 2^35 and d * i can pass 2^63:
+    // divided in two parts of i, its bits above 16 then the low 16.
+    const auto along = [n](long long a0, long long d, long long i) {
+        const long long m = std::llabs(d), hi = m * (i >> 16), lo = m * (i & 0xffff);
+        const long long rest = (hi % n) * 65536 + lo;
+        const long long q = (hi / n) * 65536 + rest / n, r = q + (2 * (rest % n) >= n ? 1 : 0);
+        return a0 + (d < 0 ? -r : r);
+    };
+    // the steps whose major coordinate is in the box
+    const bool xMajor = std::llabs(dx) >= std::llabs(dy);
+    const long long a0 = xMajor ? x0 : y0, da = xMajor ? dx : dy;
+    const long long lo = xMajor ? cx0 : cy0, hi = xMajor ? cx1 : cy1;
+    long long i0 = 0, i1 = n;
+    if (da > 0)
+        i0 = std::max(i0, lo - a0), i1 = std::min(i1, hi - a0);
+    else
+        i0 = std::max(i0, a0 - hi), i1 = std::min(i1, a0 - lo);
+    for (long long i = i0; i <= i1; ++i) {
+        const long long x = along(x0, dx, i), y = along(y0, dy, i);
+        if (x >= cx0 && x <= cx1 && y >= cy0 && y <= cy1)
+            out.emplace_back(static_cast<int>(x), static_cast<int>(y));
+    }
+    return out;
+}
+
+HalfBlockStroke::HalfBlockStroke(const Canvas& canvas, std::uint8_t colour, StrokeOptions options, bool mirror,
+                                 Connectivity connectivity)
+    : painter_(canvas, colour, options), symmetry_(symmetryOf(options, mirror)), connectivity_(connectivity) {}
 
 void HalfBlockStroke::addPoint(int x, int py, bool join) {
-    if (last_ && join && *last_ != std::pair{x, py}) {
-        const Canvas& c = painter_.canvas();
-        for (const auto& [lx, ly] : line4(last_->first, last_->second, x, py, 0, 0, c.width() - 1LL,
-                                          2LL * c.height() - 1))
-            painter_.plot(lx, ly);
-    } else {
-        painter_.plot(x, py);
+    const Canvas& c = painter_.canvas();
+    if (symmetry_.mode == SymmetryMode::None) {
+        lasts_.resize(1);
+        addImage(x, py, join, lasts_[0]);
+        return;
     }
-    last_ = std::pair{x, py};
+    const auto images = symmetryPixels(symmetry_, x, py, c.width(), c.height());
+    lasts_.resize(images.size());
+    for (size_t i = 0; i < images.size(); ++i)
+        addImage(images[i].first, images[i].second, join, lasts_[i]);
+}
+
+void HalfBlockStroke::addImage(long long x, long long py, bool join,
+                               std::optional<std::pair<long long, long long>>& last) {
+    if (last && join && *last != std::pair{x, py}) {
+        const Canvas& c = painter_.canvas();
+        const long long cx1 = c.width() - 1LL, cy1 = 2LL * c.height() - 1;
+        for (const auto& [lx, ly] : connectivity_ == Connectivity::Eight
+                                        ? line8(last->first, last->second, x, py, 0, 0, cx1, cy1)
+                                        : line4(last->first, last->second, x, py, 0, 0, cx1, cy1))
+            painter_.plotOne(lx, ly);
+    } else if (x >= INT_MIN && x <= INT_MAX && py >= INT_MIN && py <= INT_MAX) {
+        // an image beyond int can't be on the canvas
+        painter_.plotOne(static_cast<int>(x), static_cast<int>(py));
+    }
+    last = std::pair{x, py};
 }
 
 std::vector<std::pair<int, int>> floodPixels(const Canvas& canvas, int x, int py, const StrokeOptions& options) {

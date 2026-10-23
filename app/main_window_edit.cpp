@@ -50,6 +50,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(fillable.emplace_back(new ShapeTool(ShapeTool::Shape::Ellipse)));
     tools_->add(new FillTool);
     tools_->add(new EyedropperTool);
+    tools_->add(new RimLightTool);
     view_->setTool(tools_->active());
     connect(tools_, &ToolRegistry::activeChanged, view_, &CanvasView::setTool);
 
@@ -107,6 +108,30 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
                             nullptr, view_->mirror());
     connect(mirror, &QAction::toggled, view_, &CanvasView::setMirror);
     connect(view_, &CanvasView::mirrorChanged, mirror, &QAction::setChecked);
+    // The mirror toggle's menu: what mirror mode repeats a stroke as (PLAN
+    // §10). Picking one turns mirror mode on; the Brush dock sets radial's
+    // folds and centre.
+    QMenu* symmetry = edit->addMenu(tr("S&ymmetry"));
+    auto* symmetryGroup = new QActionGroup(this);
+    struct SymmetryEntry {
+        const char* name;
+        QString text;
+        SymmetryMode mode;
+    };
+    for (const SymmetryEntry& m : {SymmetryEntry{"symmetryMirrorX", tr("Mirror &X"), SymmetryMode::MirrorX},
+                                   SymmetryEntry{"symmetryMirrorY", tr("Mirror &Y"), SymmetryMode::MirrorY},
+                                   SymmetryEntry{"symmetryMirrorXY", tr("Mirror X &and Y"), SymmetryMode::MirrorXY},
+                                   SymmetryEntry{"symmetryRadial", tr("&Radial"), SymmetryMode::Radial}}) {
+        QAction* a = check(add(symmetry, m.text, m.name, QKeySequence(),
+                               [this, mode = m.mode] {
+                                   Symmetry s = view_->symmetryChoice();
+                                   s.mode = mode;
+                                   view_->setSymmetry(s);
+                               }),
+                           symmetryGroup, view_->symmetryChoice().mode == m.mode);
+        connect(view_, &CanvasView::symmetryChanged, a,
+                [this, a, mode = m.mode] { a->setChecked(view_->symmetryChoice().mode == mode); });
+    }
 
     // View: guides and the reference image.
     view->addSeparator();
@@ -162,7 +187,8 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("rectangle"), QKeySequence(Qt::CTRL | Qt::Key_U)},
         {QStringLiteral("ellipse"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O)},
         {QStringLiteral("fill"), QKeySequence(Qt::CTRL | Qt::Key_J)},
-        {QStringLiteral("eyedropper"), QKeySequence(Qt::CTRL | Qt::Key_I)}};
+        {QStringLiteral("eyedropper"), QKeySequence(Qt::CTRL | Qt::Key_I)},
+        {QStringLiteral("rimLight"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)}};
     QHash<Tool*, QAction*> toolActions;
     for (Tool* t : tools_->tools()) {
         QAction* a = add(toolsMenu, t->name(), "", toolKeys.value(t->id()), [this, t] { tools_->setActive(t); });

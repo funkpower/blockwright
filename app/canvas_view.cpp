@@ -123,6 +123,7 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     connect(doc_, &Document::reset, this, [this] {
         cancelTool();
         setSelection({});
+        fitSymmetryCentre();
     });
     // Undo or redo of any command, a format change among them, and a format
     // change made any other way end a drag: what it shows was worked out
@@ -259,7 +260,7 @@ bool CanvasView::applyEdit(const CellEdit& edit, bool mirrored) {
 }
 
 CellEdit CanvasView::mirrored(const CellEdit& edit) const {
-    return mirror_ ? mirrorEdit(doc_->canvas(), edit) : edit;
+    return mirror_ && symmetry_.mode == SymmetryMode::MirrorX ? mirrorEdit(doc_->canvas(), edit) : edit;
 }
 
 void CanvasView::setSelection(const Selection& selection) {
@@ -296,6 +297,53 @@ void CanvasView::setMirror(bool on) {
         return;
     mirror_ = on;
     emit mirrorChanged(on);
+    emit symmetryChanged();
+    if (tool_)
+        tool_->settingsChanged();
+}
+
+Symmetry CanvasView::symmetry() const { return mirror_ ? symmetry_ : Symmetry{SymmetryMode::None, 4, std::nullopt}; }
+
+void CanvasView::setSymmetry(const Symmetry& symmetry) {
+    if (symmetry.mode == SymmetryMode::None) {
+        setMirror(false);
+        return;
+    }
+    Symmetry s = symmetry;
+    s.folds = std::clamp(s.folds, kMinFolds, kMaxFolds);
+    if (s == symmetry_ && mirror_)
+        return;
+    const bool was = mirror_;
+    symmetry_ = s;
+    mirror_ = true;
+    if (!was)
+        emit mirrorChanged(true);
+    emit symmetryChanged();
+    if (tool_)
+        tool_->settingsChanged();
+}
+
+void CanvasView::fitSymmetryCentre() {
+    // A set centre stays on the canvas, symmetry on or off, so turning it
+    // on after a smaller canvas opens turns about the edge, not off it.
+    if (!symmetry_.centre)
+        return;
+    const Canvas& c = doc_->canvas();
+    const std::pair fitted{std::clamp(symmetry_.centre->first, 0, std::max(0, c.width() - 1)),
+                           std::clamp(symmetry_.centre->second, 0, std::max(0, c.height() - 1))};
+    if (fitted == *symmetry_.centre)
+        return;
+    symmetry_.centre = fitted;
+    emit symmetryChanged();
+    if (tool_ && mirror_)
+        tool_->settingsChanged();
+}
+
+void CanvasView::setPencilConnectivity(Connectivity c) {
+    if (c == pencil_)
+        return;
+    pencil_ = c;
+    emit symmetryChanged();
     if (tool_)
         tool_->settingsChanged();
 }

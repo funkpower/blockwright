@@ -4,6 +4,7 @@
 add_library(blockwright_core STATIC
   src/ansi.cpp
   src/brush.cpp
+  src/brushes/detail.cpp
   src/brushes/drawing.cpp
   src/brushes/shading.cpp
   src/canvas.cpp

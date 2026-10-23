@@ -47,6 +47,10 @@ private:
 
 enum class Tip { Square, Round };
 enum class PressureTo { Nothing, Size, Strength };
+// The eight compass points, north up the canvas.
+enum class Compass { N, NE, E, SE, S, SW, W, NW };
+// A unit vector toward the compass point, x right and y down the canvas.
+std::pair<double, double> compassVector(Compass c);
 
 // The widest tip, in cells: far more than an 80- or 160-column piece needs.
 // A larger size, set or reached through pressure, is taken as this, so a
@@ -59,16 +63,64 @@ struct BrushSettings {
     Tip tip = Tip::Square;
     double strength = 1.0;   // 0-1; what it means is up to the brush
     PressureTo pressure = PressureTo::Nothing;
+    // Where the light comes from, for the brushes that read one (the rim
+    // light brush, brushes/detail.h).
+    Compass lightDirection = Compass::NW;
 
     bool operator==(const BrushSettings&) const = default;
 };
 
 // One stamp of the brush, at a cell, with the tablet's pressure (0-1; a
-// mouse gives 1).
+// mouse gives 1). A stroke's symmetry (StrokeOptions::symmetry) stamps
+// images of each dab: `image` says which (0 is the dab itself), `flipX`
+// and `flipY` whether its tip, and a brush's glyph, are flipped, and
+// `turns` how many quarter turns clockwise a brush's glyph is turned after
+// the flips (a radial image a quarter turn round; the tip isn't turned).
 struct Dab {
     int x = 0, y = 0;
     double pressure = 1.0;
+    int image = 0;
+    bool flipX = false, flipY = false;
+    int turns = 0;
 };
+
+// Symmetry (PLAN §10): every dab of a stroke is repeated as these images.
+// Mirror X reflects columns (x to width - 1 - x), mirror Y rows, mirror XY
+// both (four images); radial turns the dab `folds` times (2-8) about the
+// centre: the canvas centre, or the centre of cell `centre`. Mirrors are
+// always about the canvas centre.
+enum class SymmetryMode { None, MirrorX, MirrorY, MirrorXY, Radial };
+
+struct Symmetry {
+    SymmetryMode mode = SymmetryMode::None;
+    int folds = 4;
+    std::optional<std::pair<int, int>> centre;
+
+    bool operator==(const Symmetry&) const = default;
+};
+
+constexpr int kMinFolds = 2, kMaxFolds = 8;
+
+// The images of a dab on a width × height canvas, the dab itself first, in
+// a fixed order (mirror XY: itself, X, Y, both). A mirror image is exact:
+// the reflected cell with its tip flipped. A radial turn is made on screen,
+// where a cell is twice as tall as wide: the dab's centre is turned about
+// the centre with rows counted two columns tall and rounded to the nearest
+// cell (halves round down and right), so a half turn is exact (both flips)
+// and other turns keep the shape's look on screen, not its cells. A turned
+// dab keeps its tip as it is (a round tip stays round); a quarter turn
+// (four or eight folds) turns its glyph as selection rotation does
+// (rotateGlyph), other turns keep it. An image beyond the ends of int is
+// left out here (its index stays, so the others keep theirs); a stroke
+// keeps its images in 64 bits.
+std::vector<Dab> symmetryDabs(const Symmetry& symmetry, const Dab& d, int width, int height);
+// The same for a half-block pixel (x, py) of a canvas `width` cells wide and
+// `height` rows high (2 × height pixel rows). Pixels are square, so a
+// quarter turn about a centre on the pixel grid is exact too. A set centre
+// is the centre of its cell, between its two pixels. In 64 bits: an image
+// can lie beyond the ends of int.
+std::vector<std::pair<long long, long long>> symmetryPixels(const Symmetry& symmetry, int x, int py, int width,
+                                                            int height);
 
 // The cells a dab covers, before clipping to the canvas, row-major. A square
 // tip is size × size cells. A round tip is the cells whose centres fall in a
@@ -84,9 +136,10 @@ std::vector<std::pair<int, int>> footprint(int x, int y, int size, Tip tip);
 // the canvas, so a huge size is cheap. `mirrored` flips the tip left to
 // right about the dab (an even size reaches one column further right
 // instead), so a dab at the mirror column covers the mirror image of the
-// cells the unmirrored dab covers.
+// cells the unmirrored dab covers. `flippedY` flips it top to bottom the
+// same way.
 std::vector<std::pair<int, int>> footprint(int x, int y, int size, Tip tip, int width, int height,
-                                           bool mirrored = false);
+                                           bool mirrored = false, bool flippedY = false);
 
 // The cells from one point to another, 4-connected (a diagonal step adds the
 // cell beside the corner first), so a fast drag between two dabs leaves no
@@ -97,9 +150,10 @@ std::vector<std::pair<int, int>> line4(int x0, int y0, int x1, int y1);
 // inclusive), in order: exactly the cells of the line above that fall in
 // it, found without walking the rest (the walk starts where the line
 // enters, its error term worked out there), so a line from far off is
-// cheap. Empty when it misses.
-std::vector<std::pair<int, int>> line4(int x0, int y0, int x1, int y1, long long cx0, long long cy0, long long cx1,
-                                       long long cy1);
+// cheap. Empty when it misses. The ends are 64-bit (an image beyond int
+// keeps its slope); the cells returned are those within int.
+std::vector<std::pair<int, int>> line4(long long x0, long long y0, long long x1, long long y1, long long cx0,
+                                       long long cy0, long long cx1, long long cy1);
 
 class Stroke;
 
@@ -137,10 +191,11 @@ struct StrokeOptions {
     // The document's iCE colours setting. Half-block pixels (halfblock.h)
     // read and write cells by the colours they show with it.
     bool ice = true;
-    // Flip each dab's tip left to right (footprint's `mirrored`): mirror
-    // mode's second stroke, whose dabs sit at the mirror columns, so it
-    // covers the mirror image of the first stroke at every size.
-    bool mirrorTip = false;
+    // The images every dab is repeated as (symmetryDabs). Each image joins
+    // its own dabs with 4-connected lines. Where images cover the same
+    // cell, the strongest dab paints it, the lower image (the stroke itself
+    // first) on a tie, as for one stroke's own dabs.
+    Symmetry symmetry;
 };
 
 // One stroke, from the first dab to release. Successive dabs are joined by a
@@ -169,6 +224,10 @@ public:
     bool painted(int x, int y) const { return painted_.count({y, x}) != 0; }
     // The strength the cell was painted at; empty if it hasn't been.
     std::optional<double> paintedStrength(int x, int y) const;
+    // The symmetry image that painted it (Dab::image); empty if none has.
+    std::optional<int> paintedImage(int x, int y) const;
+    // The dab being stamped, while a brush paints it: its image and flips.
+    const Dab& currentDab() const { return current_; }
     // Whether the stroke may paint the cell: on the canvas, in the
     // selection, and not transparent under the lock.
     bool paintable(int x, int y) const;
@@ -194,11 +253,18 @@ private:
     const Brush& brush_;
     BrushSettings settings_;
     StrokeOptions options_;
-    std::optional<Dab> last_;
+    // One image of a dab, at x, y (64-bit: an image of a dab near the ends
+    // of int can lie beyond them), joined to the image's last position.
+    void addImage(long long x, long long y, const Dab& d, bool join,
+                  std::optional<std::pair<long long, long long>>& last);
+
+    std::vector<std::optional<std::pair<long long, long long>>> lasts_;  // per symmetry image
+    Dab current_;
     long long stamps_ = 0;
     struct Painted {
         Cell cell;
         double strength;
+        int image;
     };
     std::map<std::pair<int, int>, Painted> painted_;  // (y, x) -> cell, row-major
 };

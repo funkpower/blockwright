@@ -74,9 +74,14 @@ std::optional<Color> pickColour(const Canvas& canvas, int x, int py, bool backgr
 // dropped. In mirror mode every pixel is plotted at column width - 1 - x
 // too, before the selection is checked, so a mirrored pixel lands in its
 // own cell (keeping that cell's other half) and never outside the
-// selection. A cell is worked out from the canvas and the halves plotted
-// into it, so plotting both halves of a cell gives the colour in both
-// whatever the iCE setting.
+// selection. The options' symmetry (StrokeOptions::symmetry) repeats each
+// pixel the same way, at its images (symmetryPixels); `mirror` is mirror X
+// when the options have none. A pixel off the canvas has images too, each
+// clipped on its own, so a shape running off the canvas keeps the images
+// of its part off it that land on the canvas. A
+// cell is worked out from the canvas and the halves plotted into it, so
+// plotting both halves of a cell gives the colour in both whatever the iCE
+// setting.
 class PixelPainter {
 public:
     PixelPainter(const Canvas& canvas, std::uint8_t colour, StrokeOptions options = {}, bool mirror = false);
@@ -85,9 +90,13 @@ public:
     // Whether the cell may be painted: on the canvas, in the selection and
     // not transparent under the lock.
     bool paintable(int x, int y) const;
-    // Plots one pixel in the painter's colour, and its mirror image in
-    // mirror mode; false where neither is paintable.
+    // Plots one pixel in the painter's colour, and its images under the
+    // symmetry; false where none is paintable.
     bool plot(int x, int py);
+    // Plots one pixel alone, without its images.
+    bool plotOne(int x, int py);
+    // The symmetry plot() repeats pixels with.
+    const Symmetry& symmetry() const { return symmetry_; }
     // The cell as plotted so far; empty off the canvas.
     std::optional<Cell> cellAt(int x, int y) const;
     // The canvas with the pixels plotted, for a live preview.
@@ -108,7 +117,6 @@ public:
     const Mask* selection() const { return options_.selection.get(); }
 
 private:
-    bool plotOne(int x, int py);
     // Grows the window to hold cell (x, y), which is paintable.
     void cover(int x, int y);
     Cell painted(int x, int y, std::uint8_t halves) const;
@@ -116,7 +124,7 @@ private:
     const Canvas& canvas_;
     std::uint8_t colour_;
     StrokeOptions options_;
-    bool mirror_;
+    Symmetry symmetry_;
     // The halves plotted per cell (bit 0 top, bit 1 bottom), row-major over
     // the window of ww_ x wh_ cells at (wx_, wy_); empty until the first
     // plot.
@@ -130,13 +138,31 @@ private:
 CellEdit plotPixels(const Canvas& canvas, const std::vector<std::pair<int, int>>& pixels, std::uint8_t colour,
                     const StrokeOptions& options = {}, bool mirror = false);
 
+// How the pencil joins one point to the next: Four steps only sideways or
+// up and down (line4), so a diagonal is a staircase of pixels touching by
+// their sides and never dots; Eight steps diagonally too (line8), the
+// thinnest line, its pixels touching at the corners.
+enum class Connectivity { Four, Eight };
+
+// The 8-connected line between two points, both ends included: one point
+// per step along the longer axis, the other axis rounded to the nearest
+// (halves away from the start). Only its points inside the box
+// (cx0, cy0)-(cx1, cy1) are returned, and only those are walked.
+// The ends are 64-bit (images of int points, within 2^34 of the canvas).
+std::vector<std::pair<int, int>> line8(long long x0, long long y0, long long x1, long long y1, long long cx0,
+                                       long long cy0, long long cx1, long long cy1);
+
 // The half-block pencil: a stroke of single pixels, each joined to the last
-// by a 4-connected line (line4), so a fast drag leaves no gap and a
-// diagonal doesn't dot. One edit per stroke; in mirror mode every pixel is
-// plotted mirrored too (PixelPainter).
+// by a 4-connected line (line4) by default, so a fast drag leaves no gap
+// and a diagonal doesn't dot, or an 8-connected one (line8). One edit per
+// stroke. Under the options' symmetry (or `mirror`, mirror X) each image of
+// the stroke is a track of its own: the images of the points, each joined
+// to that image's last point, so a rotated stroke is as joined as the
+// stroke.
 class HalfBlockStroke {
 public:
-    HalfBlockStroke(const Canvas& canvas, std::uint8_t colour, StrokeOptions options = {}, bool mirror = false);
+    HalfBlockStroke(const Canvas& canvas, std::uint8_t colour, StrokeOptions options = {}, bool mirror = false,
+                    Connectivity connectivity = Connectivity::Four);
 
     // Plots (x, py), joined to the last point unless `join` is false. Only
     // the part of a joining line on the canvas is walked.
@@ -145,8 +171,13 @@ public:
     CellEdit edit() const { return painter_.edit(); }
 
 private:
+    void addImage(long long x, long long py, bool join, std::optional<std::pair<long long, long long>>& last);
+
     PixelPainter painter_;
-    std::optional<std::pair<int, int>> last_;
+    Symmetry symmetry_;
+    Connectivity connectivity_;
+    // each image's last point, in 64 bits: an image can lie beyond int
+    std::vector<std::optional<std::pair<long long, long long>>> lasts_;
 };
 
 // Fill: the 4-connected pixels of the same colour as (x, py), as they show

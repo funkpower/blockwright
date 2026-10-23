@@ -30,7 +30,8 @@ void SelectTool::activate(CanvasView* v) {
     };
     connections_ << connect(v->document(), &Document::cellsChanged, this, stale)
                  << connect(v->document(), &Document::formatChanged, this, stale)
-                 << connect(v, &CanvasView::mirrorChanged, this, stale);
+                 << connect(v, &CanvasView::mirrorChanged, this, stale)
+                 << connect(v, &CanvasView::symmetryChanged, this, stale);
 }
 
 void SelectTool::deactivate() {
