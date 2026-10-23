@@ -1245,8 +1245,8 @@ TEST_CASE("despeckle round 9, Claude #742 N1: a fallback doesn't take an outlyin
           "[shading][despeckle]") {
     // A near-white speck (rung 19) with 17 below, 3 above, 7 left and 0
     // right. The guard refuses 17, 7 and 3; round 8 took the 0, the far end
-    // of its neighbours, which reads as a hole. A rung only one neighbour
-    // holds at either end of theirs is no fallback, so the speck stays.
+    // of its neighbours, which reads as a hole. The far end of theirs, when
+    // one neighbour alone holds it, is no fallback, so the speck stays.
     const Ramp r = *findRamp("sunset");
     const std::array<std::string, 11> rows{"hfjbhihhhh17h6h7h", "c39a2h56hhigd2h2c", "7i6d1jgkhhhcchekb",
                                            "h2hgjjihh1k52hd47", "hh5h9bhd4h2hihh9i", "hhjfbcfhhhh8ijgb1",
@@ -1888,6 +1888,13 @@ TEST_CASE("form brush repros from round 4", "[shading][form]") {
 
 namespace {
 
+// The seeded harnesses below make each random draw in a statement or a
+// declarator of its own, never two in one call's arguments: the order those
+// are evaluated in is unspecified, so another compiler could build other
+// strokes from the same seed and miss the pinned cells. Where a call took
+// several draws, they are made last argument first, the order GCC made
+// them in when the strokes, the pins and PLAN §10's figures were measured.
+
 // What a soft stroke shades in the property tests: a flat field, a gradient
 // running one of eight ways at one to three cells a rung, or a form brush
 // dome over the canvas.
@@ -1954,8 +1961,10 @@ SpeckTally speckCorpus(int fields, unsigned seed) {
                         if (const auto g = rungOf(r, start.at(x, y)))
                             start.at(x, y) = rungCell(r, std::clamp(*g + pick(-2, 2), 0, top));
         } else if (kind < 2) {
-            for (int i = 0, k = pick(3, 12); i < k; ++i)
-                start.at(pick(0, w - 1), pick(0, h - 1)) = rungCell(r, pick(0, top));
+            for (int i = 0, k = pick(3, 12); i < k; ++i) {
+                const int g = pick(0, top), y = pick(0, h - 1), x = pick(0, w - 1);
+                start.at(x, y) = rungCell(r, g);
+            }
         }
         ++t.fields;
         BrushSettings s;
@@ -2039,12 +2048,15 @@ Tally softStrokes(Start kind, int strokes, unsigned seed) {
         switch (pick(0, 2)) {
         case 1: {
             const int x0 = pick(0, w - 2), y0 = pick(0, h - 2);
-            o.selection = shared(Mask::rect(w, h, x0, y0, pick(x0 + 1, w - 1), pick(y0 + 1, h - 1)));
+            const int y1 = pick(y0 + 1, h - 1), x1 = pick(x0 + 1, w - 1);
+            o.selection = shared(Mask::rect(w, h, x0, y0, x1, y1));
             break;
         }
-        case 2:
-            o.selection = shared(disc(w, h, pick(0, w - 1), pick(0, h - 1), pick(4, 30)));
+        case 2: {
+            const int across = pick(4, 30), cy = pick(0, h - 1), cx = pick(0, w - 1);
+            o.selection = shared(disc(w, h, cx, cy, across));
             break;
+        }
         default:
             break;
         }
@@ -2136,8 +2148,10 @@ TEST_CASE("soft dab on a flat field paints when its footprint can take a clean c
         o.ice = pick(0, 1);
         switch (pick(0, 2)) {
         case 1: { const int x0 = pick(0, w - 2), y0 = pick(0, h - 2);
-            o.selection = shared(Mask::rect(w, h, x0, y0, pick(x0 + 1, w - 1), pick(y0 + 1, h - 1))); break; }
-        case 2: o.selection = shared(disc(w, h, pick(0, w - 1), pick(0, h - 1), pick(4, 30))); break;
+            const int y1 = pick(y0 + 1, h - 1), x1 = pick(x0 + 1, w - 1);
+            o.selection = shared(Mask::rect(w, h, x0, y0, x1, y1)); break; }
+        case 2: { const int across = pick(4, 30), cy = pick(0, h - 1), cx = pick(0, w - 1);
+            o.selection = shared(disc(w, h, cx, cy, across)); break; }
         default: break;
         }
         const auto dir = pick(0, 1) ? ShadeDirection::Lighten : ShadeDirection::Darken;
@@ -2265,8 +2279,10 @@ NearWholeRun nearWhole(unsigned seed, const std::set<int>& only = {}) {
         Canvas start = startCanvas(Start(pick(0, 2)), r, w, h, rng);
         StrokeOptions o;
         o.ice = pick(0, 1);
-        if (pick(0, 2) == 0)
-            o.selection = shared(disc(w, h, pick(0, w - 1), pick(0, h - 1), pick(4, 30)));
+        if (pick(0, 2) == 0) {
+            const int across = pick(4, 30), cy = pick(0, h - 1), cx = pick(0, w - 1);
+            o.selection = shared(disc(w, h, cx, cy, across));
+        }
         if (pick(0, 3) == 0) {
             o.lockTransparent = true;
             for (int y = 0; y < h; ++y)
@@ -2330,7 +2346,9 @@ TEST_CASE("soft brush: re-shading near the dab equals re-shading the whole strok
     const NearWholeRun run = nearWhole(2026102304);
     INFO(cellList(run.cells) << run.painted << " of 400 painted\n" << run.first);
     CHECK(run.cells == kNearWhole304);
-    CHECK(run.painted > 200);
+    // the seed's strokes themselves: a compiler that drew them in another
+    // order would paint another count, the pins above aside
+    CHECK(run.painted == 239);
     const NearWholeRun other = nearWhole(2026102309, {205});
     INFO(cellList(other.cells));
     CHECK(other.cells == kNearWhole309);
@@ -2716,8 +2734,10 @@ TEST_CASE("shading brushes: random strokes add nothing to the start, checked aft
         for (int k = 0; k < 80; ++k) {
             const Ramp r = *findRamp(kRamps[size_t(pick(0, 4))]);
             Canvas start = startCanvas(Start(pick(0, 2)), r, w, h, rng);
-            for (int i = 0, n = pick(0, 12); i < n; ++i)
-                start.at(pick(0, w - 1), pick(0, h - 1)) = rungCell(r, pick(0, r.topRung()));
+            for (int i = 0, n = pick(0, 12); i < n; ++i) {
+                const int g = pick(0, r.topRung()), y = pick(0, h - 1), x = pick(0, w - 1);
+                start.at(x, y) = rungCell(r, g);
+            }
             StrokeOptions o;
             o.ice = pick(0, 1);
             o.symmetry = {modes[pick(0, 3)]};
@@ -2729,8 +2749,9 @@ TEST_CASE("shading brushes: random strokes add nothing to the start, checked aft
             s.strength = std::array{0.25, 0.5, 0.75, 1.0}[size_t(pick(0, 3))];
             std::unique_ptr<Brush> brush;
             if (which == 0) {
-                brush = std::make_unique<SoftShadeBrush>(r, pick(0, 1) ? ShadeDirection::Lighten : ShadeDirection::Darken,
-                                                         std::array{0.0, 0.5, 1.0}[size_t(pick(0, 2))]);
+                const double hardness = std::array{0.0, 0.5, 1.0}[size_t(pick(0, 2))];
+                const auto dir = pick(0, 1) ? ShadeDirection::Lighten : ShadeDirection::Darken;
+                brush = std::make_unique<SoftShadeBrush>(r, dir, hardness);
             } else if (which == 1) {
                 FormOptions fo;
                 fo.shape = FormShape(pick(0, 2));

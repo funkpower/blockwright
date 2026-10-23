@@ -384,8 +384,10 @@ bool SoftShadeBrush::shade(Stroke& stroke, State& st, const std::vector<std::arr
     // Round each box, the cells near it are shaded again from the stroke's
     // start and the rest no further back than the last dab left them, and
     // four beyond those settle round them; the bands read the context round
-    // those. Shading the whole stroke settles every cell of it, with bands
-    // over the whole canvas, and gives the same.
+    // those. Shading the whole stroke (`reshadeWhole`, used only by tests)
+    // settles every cell of it, with bands over the whole canvas, and gives
+    // the same but for rare cells at the edge of those the near solve
+    // settles; a test pins the known ones.
     std::vector<Rect> fresh, reset, settle, regions;
     for (const auto& b : around) {
         const Rect u{b[0], b[1], b[2], b[3]};
