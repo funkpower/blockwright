@@ -3,9 +3,12 @@
 #include "canvas_view.h"
 #include "document.h"
 
+#include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/drawing.h"
+#include "blockwright/brushes/form.h"
 #include "blockwright/brushes/shading.h"
+#include "blockwright/brushes/soft.h"
 #include "blockwright/glyph_sets.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
@@ -188,6 +191,67 @@ std::unique_ptr<Brush> RampShadeTool::makeBrush(Qt::MouseButton button) const {
                                             kRungsPerStep);
 }
 
+namespace {
+
+QString compassName(Compass c) {
+    static const char* const names[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+    return QString::fromLatin1(names[static_cast<int>(c)]);
+}
+
+} // namespace
+
+QString formShapeName(FormShape shape) {
+    switch (shape) {
+    case FormShape::Cylinder:
+        return FormTool::tr("Cylinder");
+    case FormShape::Plane:
+        return FormTool::tr("Plane");
+    case FormShape::Dome:
+        break;
+    }
+    return FormTool::tr("Dome");
+}
+
+FormTool::FormTool(QObject* parent) : BrushTool(QStringLiteral("form"), tr("F&orm Brush"), parent) {}
+
+QString FormTool::status() const {
+    if (!view())
+        return {};
+    return tr("Ramp %1, %2, light from %3")
+        .arg(QString::fromStdString(view()->ramp().name), formShapeName(view()->formOptions().shape).toLower(),
+             compassName(view()->brushSettings().lightDirection));
+}
+
+std::unique_ptr<Brush> FormTool::makeBrush(Qt::MouseButton) const {
+    return std::make_unique<FormShadeBrush>(view()->ramp(), view()->formOptions());
+}
+
+SoftTool::SoftTool(QObject* parent) : BrushTool(QStringLiteral("soft"), tr("Sof&t Brush"), parent) {}
+
+QString SoftTool::status() const {
+    return view() ? tr("Ramp %1, hardness %2%")
+                        .arg(QString::fromStdString(view()->ramp().name))
+                        .arg(qRound(view()->hardness() * 100))
+                  : QString();
+}
+
+std::unique_ptr<Brush> SoftTool::makeBrush(Qt::MouseButton button) const {
+    return std::make_unique<SoftShadeBrush>(
+        view()->ramp(), button == Qt::RightButton ? ShadeDirection::Darken : ShadeDirection::Lighten,
+        view()->hardness());
+}
+
+DespeckleTool::DespeckleTool(QObject* parent)
+    : BrushTool(QStringLiteral("despeckle"), tr("&Despeckle Brush"), parent) {}
+
+QString DespeckleTool::status() const {
+    return view() ? tr("Ramp %1").arg(QString::fromStdString(view()->ramp().name)) : QString();
+}
+
+std::unique_ptr<Brush> DespeckleTool::makeBrush(Qt::MouseButton) const {
+    return std::make_unique<DespeckleBrush>(view()->ramp());
+}
+
 GlyphTool::GlyphTool(QObject* parent)
     : BrushTool(QStringLiteral("glyph"), tr("&Glyph Brush"), parent), glyph_(kFullBlock) {}
 
@@ -354,15 +418,6 @@ bool EyedropperTool::mousePress(const ToolEvent& e) {
 bool EyedropperTool::mouseMove(const ToolEvent&) { return false; }
 
 bool EyedropperTool::mouseRelease(const ToolEvent&) { return view() != nullptr; }
-
-namespace {
-
-QString compassName(Compass c) {
-    static const char* const names[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
-    return QString::fromLatin1(names[static_cast<int>(c)]);
-}
-
-} // namespace
 
 RimLightTool::RimLightTool(QObject* parent) : BrushTool(QStringLiteral("rimLight"), tr("R&im Light Brush"), parent) {}
 

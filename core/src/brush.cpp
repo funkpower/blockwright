@@ -410,13 +410,27 @@ void Stroke::addImage(long long x, long long y, const Dab& d, bool join,
         // dab of it were stamped. A dab further off than the brush's half
         // width (plus one) can't touch the canvas. The ends stay in 64 bits,
         // so an image beyond int keeps the line's slope.
+        // The line is walked from its lesser end (by row, then column) and
+        // stamped from the last point, so a line back over the same two
+        // points covers the same cells: a scrub stamps no new ones.
         const long long m = settings_.size / 2 + 1;
         const auto [fx, fy] = *last;
-        walk4(fx, fy, x, y, -m, -m, canvas_.width() - 1LL + m, canvas_.height() - 1LL + m,
-              [&](long long cx, long long cy) {
-                  if (cx != fx || cy != fy)
-                      stamp(at(cx, cy));
-              });
+        if (std::pair{fy, fx} < std::pair{y, x}) {
+            walk4(fx, fy, x, y, -m, -m, canvas_.width() - 1LL + m, canvas_.height() - 1LL + m,
+                  [&](long long cx, long long cy) {
+                      if (cx != fx || cy != fy)
+                          stamp(at(cx, cy));
+                  });
+        } else {
+            std::vector<std::pair<long long, long long>> cells;
+            walk4(x, y, fx, fy, -m, -m, canvas_.width() - 1LL + m, canvas_.height() - 1LL + m,
+                  [&](long long cx, long long cy) {
+                      if (cx != fx || cy != fy)
+                          cells.emplace_back(cx, cy);
+                  });
+            for (auto it = cells.rbegin(); it != cells.rend(); ++it)
+                stamp(at(it->first, it->second));
+        }
     }
     last = std::pair{x, y};
 }
@@ -465,10 +479,18 @@ bool Stroke::paintable(int x, int y) const {
     return !(options_.lockTransparent && canvas_.at(x, y).transparent);
 }
 
-bool Stroke::set(int x, int y, const Cell& c, double strength) {
+std::vector<std::pair<int, int>> Stroke::paintedCells() const {
+    std::vector<std::pair<int, int>> out;
+    out.reserve(painted_.size());
+    for (const auto& [yx, p] : painted_)
+        out.emplace_back(yx.second, yx.first);
+    return out;
+}
+
+bool Stroke::set(int x, int y, const Cell& c, double strength, int image) {
     if (!paintable(x, y))
         return false;
-    painted_[{y, x}] = Painted{c, strength, current_.image};
+    painted_[{y, x}] = Painted{c, strength, image < 0 ? current_.image : image};
     return true;
 }
 

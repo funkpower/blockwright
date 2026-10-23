@@ -167,6 +167,21 @@ void CanvasView::setLockTransparent(bool on) {
     brushSettingsChanged();
 }
 
+void CanvasView::setFormOptions(const FormOptions& options) {
+    if (options == form_)
+        return;
+    form_ = options;
+    brushSettingsChanged();
+}
+
+void CanvasView::setHardness(double hardness) {
+    hardness = std::clamp(hardness, 0.0, 1.0);
+    if (hardness == hardness_)
+        return;
+    hardness_ = hardness;
+    brushSettingsChanged();
+}
+
 void CanvasView::brushSettingsChanged() {
     emit brushChanged();
     if (tool_)

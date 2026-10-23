@@ -1,8 +1,10 @@
 #pragma once
 // The brush dock: the view's brush settings (size, tip, strength, what a
 // stylus's pressure scales), the ramp the ramp brushes walk, the alpha
-// lock, the rim brush's light, the symmetry and the pencil's connectivity. It edits the view's and follows it, so the menu's size keys and the
-// dock stay in step.
+// lock, the light direction (the rim-light and form brushes), the form
+// brush's form, rim light and glint, the soft brush's hardness, the symmetry
+// and the pencil's connectivity. It edits the view's and follows it, so the
+// menu's size keys and the dock stay in step.
 
 #include <QWidget>
 
@@ -26,6 +28,10 @@ public:
     QComboBox* rampBox() const { return ramp_; }
     QCheckBox* alphaLockBox() const { return lock_; }
     QComboBox* lightBox() const { return light_; }
+    QComboBox* formBox() const { return form_; }
+    QCheckBox* rimBox() const { return rim_; }
+    QCheckBox* specularBox() const { return specular_; }
+    QSpinBox* hardnessBox() const { return hardness_; }
     QComboBox* symmetryBox() const { return symmetry_; }
     QSpinBox* foldsBox() const { return folds_; }
     QCheckBox* centreBox() const { return centre_; }
@@ -49,6 +55,10 @@ private:
     QComboBox* ramp_;
     QCheckBox* lock_;
     QComboBox* light_;
+    QComboBox* form_;
+    QCheckBox* rim_;
+    QCheckBox* specular_;
+    QSpinBox* hardness_;
     QComboBox* symmetry_;
     QSpinBox* folds_;
     QCheckBox* centre_;

@@ -612,7 +612,13 @@ CellEdit naiveStroke(const Canvas& c, const Brush& b, const BrushSettings& s, co
             st.addDab(dabs[0], false);
             continue;
         }
-        const auto l = line4(dabs[k - 1].x, dabs[k - 1].y, dabs[k].x, dabs[k].y);
+        // The line between two dabs is the one from their lesser end (by
+        // row, then column), stamped from the earlier dab.
+        const Dab& a = dabs[k - 1];
+        const Dab& b = dabs[k];
+        auto l = std::pair{a.y, a.x} < std::pair{b.y, b.x} ? line4(a.x, a.y, b.x, b.y) : line4(b.x, b.y, a.x, a.y);
+        if (std::pair{a.y, a.x} >= std::pair{b.y, b.x})
+            std::reverse(l.begin(), l.end());
         for (size_t i = 1; i < l.size(); ++i)
             st.addDab({l[i].first, l[i].second, dabs[k].pressure}, false);
         if (l.size() == 1)
@@ -663,6 +669,21 @@ TEST_CASE("a stroke that crosses the border paints what the whole line would", "
             what += " " + std::to_string(d.x) + "," + std::to_string(d.y);
         INFO(what);
         REQUIRE(paintStroke(c, up, s, dabs).changes == naiveStroke(c, up, s, dabs).changes);
+    }
+}
+
+TEST_CASE("a line back over the same two dabs covers the same cells", "[brush][border]") {
+    // Claude round 6, N2: a 4-connected line from B to A can step across
+    // where the one from A to B steps down, so a scrub painted new cells.
+    std::mt19937 rng(20261023);
+    auto in = [&](int lo, int hi) { return lo + int(rng() % unsigned(hi - lo + 1)); };
+    const Canvas c = filled(30, 20, solid(Black));
+    for (int n = 0; n < 500; ++n) {
+        const Dab a{in(-5, 34), in(-5, 24)}, b{in(-5, 34), in(-5, 24)};
+        INFO(a.x << "," << a.y << " " << b.x << "," << b.y);
+        const RampShadeBrush up(steel(), ShadeDirection::Lighten);
+        REQUIRE(cellsOf(paintStroke(c, up, {}, {a, b})) == cellsOf(paintStroke(c, up, {}, {b, a})));
+        REQUIRE(cellsOf(paintStroke(c, up, {}, {a, b, a, b})) == cellsOf(paintStroke(c, up, {}, {a, b})));
     }
 }
 

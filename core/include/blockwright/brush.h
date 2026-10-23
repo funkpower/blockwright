@@ -40,6 +40,8 @@ public:
     }
     void set(int x, int y, bool on = true);
 
+    bool operator==(const Mask&) const = default;
+
 private:
     int w_ = 0, h_ = 0;
     std::vector<bool> bits_;
@@ -157,8 +159,10 @@ std::vector<std::pair<int, int>> line4(long long x0, long long y0, long long x1,
 
 class Stroke;
 
-// A brush. Implementations live in core/brushes/ and are stateless: what a
-// stroke has done so far is the Stroke's to keep.
+// A brush. Implementations live in core/brushes/. What a stroke has done so
+// far is the Stroke's to keep; a brush may cache what it works out from the
+// stroke (the form brush keeps its form), keyed on what it was made from,
+// never on where that lives.
 class Brush {
 public:
     virtual ~Brush() = default;
@@ -224,6 +228,8 @@ public:
     bool painted(int x, int y) const { return painted_.count({y, x}) != 0; }
     // The strength the cell was painted at; empty if it hasn't been.
     std::optional<double> paintedStrength(int x, int y) const;
+    // The cells the stroke has painted so far, (x, y) in row-major order.
+    std::vector<std::pair<int, int>> paintedCells() const;
     // The symmetry image that painted it (Dab::image); empty if none has.
     std::optional<int> paintedImage(int x, int y) const;
     // The dab being stamped, while a brush paints it: its image and flips.
@@ -231,9 +237,10 @@ public:
     // Whether the stroke may paint the cell: on the canvas, in the
     // selection, and not transparent under the lock.
     bool paintable(int x, int y) const;
-    // Paints a cell, at the strength of the dab that painted it; refused
-    // (false) where it isn't paintable.
-    bool set(int x, int y, const Cell& c, double strength = 1.0);
+    // Paints a cell, at the strength of the dab that painted it, as the
+    // symmetry image `image` (-1: the dab being stamped); refused (false)
+    // where it isn't paintable.
+    bool set(int x, int y, const Cell& c, double strength = 1.0, int image = -1);
 
     // The canvas with the stroke so far, for a live preview.
     Canvas preview() const;
@@ -245,6 +252,10 @@ public:
     // Only the part of a line within reach of the canvas is stamped; it
     // paints what stamping every dab of the line would.
     long long stamps() const { return stamps_; }
+    // What the brush keeps over the stroke besides the cells it has painted
+    // (the soft brush's rungs and limits): the brush's own, and dropped
+    // with the stroke.
+    std::shared_ptr<void>& brushState() { return brushState_; }
 
 private:
     void stamp(const Dab& d);
@@ -267,6 +278,7 @@ private:
         int image;
     };
     std::map<std::pair<int, int>, Painted> painted_;  // (y, x) -> cell, row-major
+    std::shared_ptr<void> brushState_;
 };
 
 // A whole stroke in one call: the dabs in order, then the delta.

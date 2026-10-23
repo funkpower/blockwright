@@ -17,6 +17,7 @@
 // one, so every canvas pixel is a whole block of device pixels.
 
 #include "blockwright/brush.h"
+#include "blockwright/brushes/form.h"
 #include "blockwright/canvas_renderer.h"
 #include "blockwright/edit.h"
 #include "blockwright/halfblock.h"
@@ -72,6 +73,12 @@ public:
     void setRamp(const Ramp& ramp);  // ignored if rampProblem finds one
     bool lockTransparent() const { return lockTransparent_; }
     void setLockTransparent(bool on);
+    // The form brush's shape, rim light and glint (its light is the brush
+    // settings' lightDirection), and the soft brush's hardness (0-1).
+    const FormOptions& formOptions() const { return form_; }
+    void setFormOptions(const FormOptions& options);
+    double hardness() const { return hardness_; }
+    void setHardness(double hardness);  // clamped
 
     // The F-key glyph set (glyph_sets.h), wrapping round at either end.
     int glyphSet() const { return glyphSet_; }
@@ -245,6 +252,8 @@ private:
     BrushSettings brush_;
     Ramp ramp_;
     bool lockTransparent_ = false;
+    FormOptions form_;
+    double hardness_ = 0.0;
     double stylusPressure_ = 1.0;  // the last press or move's, for its release
     Selection selection_;
     bool mirror_ = false;

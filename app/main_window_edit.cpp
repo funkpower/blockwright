@@ -18,6 +18,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QStatusBar>
+#include <QToolBar>
 
 namespace bw {
 
@@ -42,6 +43,9 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(new HalfBlockTool);
     tools_->add(new ShadeTool);
     tools_->add(new RampShadeTool);
+    tools_->add(new FormTool);
+    tools_->add(new SoftTool);
+    tools_->add(new DespeckleTool);
     tools_->add(new GlyphTool);
     tools_->add(new ColorizeTool);
     QList<ShapeTool*> fillable;
@@ -181,6 +185,9 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("halfBlock"), QKeySequence(Qt::CTRL | Qt::Key_B)},
         {QStringLiteral("shade"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_B)},
         {QStringLiteral("rampShade"), QKeySequence(Qt::CTRL | Qt::Key_T)},
+        {QStringLiteral("form"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T)},
+        {QStringLiteral("soft"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N)},
+        {QStringLiteral("despeckle"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D)},
         {QStringLiteral("glyph"), QKeySequence(Qt::CTRL | Qt::Key_G)},
         {QStringLiteral("colorize"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C)},
         {QStringLiteral("line"), QKeySequence(Qt::CTRL | Qt::Key_L)},
@@ -200,6 +207,11 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         if (QAction* a = toolActions.value(t))
             a->setChecked(true);
     });
+    // The same tools on a toolbar.
+    QToolBar* toolBar = addToolBar(tr("Tools"));
+    toolBar->setObjectName(QStringLiteral("toolsToolBar"));
+    for (Tool* t : tools_->tools())
+        toolBar->addAction(toolActions.value(t));
     // Rectangles and ellipses: outlines, or filled.
     toolsMenu->addSeparator();
     QAction* filled = check(add(toolsMenu, tr("Filled Sha&pes"), "filledShapes",

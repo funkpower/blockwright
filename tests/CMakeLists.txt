@@ -20,6 +20,7 @@ add_executable(blockwright-tests
   test_detail.cpp
   test_draw.cpp
   test_edit.cpp
+  test_form_brush.cpp
   test_golden.cpp
   test_irc.cpp
   test_layers.cpp
@@ -27,6 +28,8 @@ add_executable(blockwright-tests
   test_library_bundled.cpp
   test_lint.cpp
   test_mirc.cpp
+  test_shading_brushes.cpp
+  test_soft_brush.cpp
   test_sauce.cpp
   test_selection.cpp
   util.h
@@ -116,6 +119,7 @@ add_executable(blockwright-app-tests
   test_app_format.cpp
   test_app_library.cpp
   test_app_select.cpp
+  test_app_shading.cpp
   test_app_perf.cpp
   test_app_detail.cpp
   system_input.h

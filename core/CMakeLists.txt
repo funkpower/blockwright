@@ -4,9 +4,14 @@
 add_library(blockwright_core STATIC
   src/ansi.cpp
   src/brush.cpp
+  src/brushes/despeckle.cpp
+  src/brushes/distance.cpp
   src/brushes/detail.cpp
   src/brushes/drawing.cpp
+  src/brushes/form.cpp
+  src/brushes/guard.cpp
   src/brushes/shading.cpp
+  src/brushes/soft.cpp
   src/canvas.cpp
   src/cp437.cpp
   src/edit.cpp

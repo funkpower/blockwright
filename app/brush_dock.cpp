@@ -2,6 +2,7 @@
 
 #include "canvas_view.h"
 #include "document.h"
+#include "draw_tools.h"
 
 #include "blockwright/palette.h"
 
@@ -75,7 +76,28 @@ BrushDock::BrushDock(CanvasView* view, QWidget* parent) : QWidget(parent), view_
     const QString compass[] = {tr("N"), tr("NE"), tr("E"), tr("SE"), tr("S"), tr("SW"), tr("W"), tr("NW")};
     for (int i = 0; i < 8; ++i)
         light_->addItem(compass[i], i);
-    light_->setToolTip(tr("Where the rim-light brush's light comes from"));
+    light_->setToolTip(tr("Where the light comes from, for the rim-light and form brushes"));
+
+    form_ = new QComboBox;
+    form_->setObjectName(QStringLiteral("brushForm"));
+    for (const FormShape f : {FormShape::Dome, FormShape::Cylinder, FormShape::Plane})
+        form_->addItem(formShapeName(f), int(f));
+    form_->setToolTip(tr("The form brush's shape"));
+
+    rim_ = new QCheckBox(tr("Form rim light"));
+    rim_->setObjectName(QStringLiteral("brushRim"));
+    rim_->setToolTip(tr("Form brush: a rung of reflected light on the edge away from the light"));
+
+    specular_ = new QCheckBox(tr("Glint"));
+    specular_->setObjectName(QStringLiteral("brushSpecular"));
+    specular_->setToolTip(tr("Form brush: the ramp's top colour at the brightest point"));
+
+    hardness_ = new QSpinBox;
+    hardness_->setObjectName(QStringLiteral("brushHardness"));
+    hardness_->setRange(0, 100);
+    hardness_->setSingleStep(25);
+    hardness_->setSuffix(QStringLiteral("%"));
+    hardness_->setToolTip(tr("Soft brush: how little of the tip fades out"));
 
     symmetry_ = new QComboBox;
     symmetry_->setObjectName(QStringLiteral("brushSymmetry"));
@@ -115,6 +137,10 @@ BrushDock::BrushDock(CanvasView* view, QWidget* parent) : QWidget(parent), view_
     form->addRow(tr("Ramp"), ramp_);
     form->addRow(lock_);
     form->addRow(tr("Light"), light_);
+    form->addRow(tr("Form"), form_);
+    form->addRow(rim_);
+    form->addRow(specular_);
+    form->addRow(tr("Hardness"), hardness_);
     form->addRow(tr("Symmetry"), symmetry_);
     form->addRow(tr("Folds"), folds_);
     form->addRow(centreRow);
@@ -130,6 +156,10 @@ BrushDock::BrushDock(CanvasView* view, QWidget* parent) : QWidget(parent), view_
     connect(pressure_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
     connect(ramp_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
     connect(lock_, &QCheckBox::toggled, this, &BrushDock::apply);
+    connect(form_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
+    connect(rim_, &QCheckBox::toggled, this, &BrushDock::apply);
+    connect(specular_, &QCheckBox::toggled, this, &BrushDock::apply);
+    connect(hardness_, &QSpinBox::valueChanged, this, &BrushDock::apply);
     connect(view_, &CanvasView::symmetryChanged, this, &BrushDock::sync);
     connect(light_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
     connect(symmetry_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
@@ -159,6 +189,11 @@ void BrushDock::sync() {
     ramp_->setCurrentIndex(ramp_->findData(QString::fromStdString(view_->ramp().name)));
     lock_->setChecked(view_->lockTransparent());
     light_->setCurrentIndex(light_->findData(int(s.lightDirection)));
+    const FormOptions& f = view_->formOptions();
+    form_->setCurrentIndex(form_->findData(int(f.shape)));
+    rim_->setChecked(f.rim);
+    specular_->setChecked(f.specular);
+    hardness_->setValue(int(std::lround(view_->hardness() * 100)));
     const Symmetry& choice = view_->symmetryChoice();
     symmetry_->setCurrentIndex(symmetry_->findData(int(view_->symmetry().mode)));
     folds_->setValue(choice.folds);
@@ -188,6 +223,11 @@ void BrushDock::apply() {
     const auto ramp = findRamp(ramp_->currentData().toString().toStdString());
     const bool lock = lock_->isChecked();
     s.lightDirection = Compass(light_->currentData().toInt());
+    FormOptions f;
+    f.shape = FormShape(form_->currentData().toInt());
+    f.rim = rim_->isChecked();
+    f.specular = specular_->isChecked();
+    const double hardness = hardness_->value() / 100.0;
     Symmetry sym{SymmetryMode(symmetry_->currentData().toInt()), folds_->value(), std::nullopt};
     if (centre_->isChecked())
         sym.centre = std::pair{centreX_->value(), centreY_->value()};
@@ -196,6 +236,8 @@ void BrushDock::apply() {
     if (ramp)
         view_->setRamp(*ramp);
     view_->setLockTransparent(lock);
+    view_->setFormOptions(f);
+    view_->setHardness(hardness);
     view_->setSymmetry(sym);
     view_->setPencilConnectivity(pencil);
 }

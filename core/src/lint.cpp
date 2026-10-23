@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <bit>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <set>
+#include <tuple>
 
 namespace bw::lint {
 
@@ -224,6 +226,75 @@ double noise(const Canvas& canvas, std::optional<Box> box) {
             lonely += std::all_of(std::begin(around), std::end(around), [&](const auto& a) { return a != c; });
         }
     return total ? double(lonely) / total : 0.0;
+}
+
+Detail detail(const Canvas& canvas, std::optional<Box> box) {
+    Detail d;
+    // The rows as in the written file: the writer trims
+    // each row's trailing black spaces, and blank rows at the top and the
+    // bottom go. The box indexes what is left.
+    std::vector<int> trimmed;
+    for (int y = 0; y < canvas.height(); ++y) {
+        int n = canvas.width();
+        while (n > 0 && canvas.at(n - 1, y).ch == U' ' && canvas.at(n - 1, y).bg.paletteIndex() == Black)
+            --n;
+        trimmed.push_back(n);
+    }
+    int top = 0, bottom = canvas.height();
+    while (top < bottom && trimmed[size_t(top)] == 0)
+        ++top;
+    while (bottom > top && trimmed[size_t(bottom) - 1] == 0)
+        --bottom;
+    Box b{0, 0, canvas.width() - 1, bottom - top - 1};
+    if (box)
+        b = Box{std::max(0, box->x0), std::max(0, box->y0), std::min(canvas.width() - 1, box->x1),
+                std::min(bottom - top - 1, box->y1)};
+    if (b.x0 > b.x1 || b.y0 > b.y1)
+        return d;
+    b.y0 += top, b.y1 += top;
+    std::vector<int> len;
+    int longest = 0;
+    for (int y = b.y0; y <= b.y1; ++y) {
+        len.push_back(std::clamp(trimmed[size_t(y)] - b.x0, 0, b.x1 - b.x0 + 1));
+        longest = std::max(longest, len.back());
+    }
+    // a look: the background of a space, the foreground of a full block,
+    // or the glyph and both colours
+    using Look = std::tuple<char32_t, int, int>;
+    auto look = [&](int x, int y) {
+        const Cell& c = canvas.at(x, y);
+        if (c.ch == U' ')
+            return Look{U' ', c.bg.paletteIndex(), -1};
+        if (c.ch == kFullBlock)
+            return Look{U' ', c.fg.paletteIndex(), -1};
+        return Look{c.ch, c.fg.paletteIndex(), c.bg.paletteIndex()};
+    };
+    const Look black{U' ', Black, -1};
+    long total = 0;
+    for (int y = 0; y + 1 < static_cast<int>(len.size()); y += 2)
+        for (int x = 0; x + 3 < longest; x += 4) {
+            if (len[size_t(y)] < x + 4 || len[size_t(y) + 1] < x + 4)
+                continue;
+            Look win[8];
+            int n = 0, dark = 0;
+            for (int yy = y; yy <= y + 1; ++yy)
+                for (int xx = x; xx < x + 4; ++xx) {
+                    win[n] = look(b.x0 + xx, b.y0 + yy);
+                    dark += win[n++] == black;
+                }
+            if (dark > 4)
+                continue;
+            std::sort(std::begin(win), std::end(win));
+            const int distinct = static_cast<int>(std::unique(std::begin(win), std::end(win)) - std::begin(win));
+            ++d.windows;
+            d.flat += distinct == 1;
+            total += distinct;
+        }
+    if (d.windows) {
+        d.mean = std::nearbyint(100.0 * double(total) / d.windows) / 100.0;
+        d.flatPercent = static_cast<int>(std::nearbyint(100.0 * d.flat / d.windows));
+    }
+    return d;
 }
 
 LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<Box> box, const LadderOptions& options) {
@@ -958,6 +1029,22 @@ bool LadderIndex::has(const LadderFinding& f) const {
         return false;
     default: return false;
     }
+}
+
+std::vector<LadderFinding> LadderIndex::wideRungs(bool across, int line) const {
+    std::vector<LadderFinding> out;
+    if (line < 0 || line >= (across ? h_ : w_))
+        return out;
+    for (int k = 0; k < (across ? w_ : h_); ++k) {
+        const int x = across ? k : line, y = across ? line : k;
+        const auto i = size_t(y * w_ + x);
+        ++readCount;
+        if (across && rowWide_[i].width)
+            out.push_back(wideFinding(x, y, rowWide_[i].width, options_.maxRung, rowWide_[i].last, y));
+        if (!across && columnWide_[i].width)
+            out.push_back(wideFinding(x, y, columnWide_[i].width, options_.maxRung, x, columnWide_[i].last));
+    }
+    return out;
 }
 
 std::vector<LadderFinding> LadderIndex::findings() const {

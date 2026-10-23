@@ -40,6 +40,24 @@ std::vector<std::vector<std::optional<std::uint8_t>>> pixels(const Canvas& canva
 // noise; smaug-on-the-hoard went from 0.033 to 0.016 with a despeckle pass.
 double noise(const Canvas& canvas, std::optional<Box> box = {});
 
+// Detail: distinct cell looks per 4x2-cell window (a space
+// looks like its background, a full block like its foreground, any other
+// cell like its glyph and both colours), over the windows aligned from the
+// box's corner that have all eight cells and no more than four black, and
+// the share of those windows that are one flat look. As in
+// the written file, each row's trailing black spaces aren't there and nor
+// are blank rows at the top and the bottom; the box's rows count from the
+// first row left, as --box does. The
+// bar for a modelled form is a mean of 3.6 or more and under 15% flat: below
+// it the form reads as flat fills, not light.
+struct Detail {
+    double mean = 0.0;    // rounded to two places
+    int flatPercent = 0;  // rounded to a whole percent
+    int windows = 0;      // the windows judged
+    int flat = 0;         // of those, one flat look
+};
+Detail detail(const Canvas& canvas, std::optional<Box> box = {});
+
 struct LadderOptions {
     // The widest a shade rung may be along the gradient, in cells: each rung
     // is 1-3 cells wide, so a band reads as a turn, not a stripe. At least 1: checkLadder and LadderIndex
@@ -172,6 +190,10 @@ public:
     // canvas (O(W x H)).
     bool differsOnlyAt(const Canvas& after, const std::vector<std::pair<int, int>>& changed) const;
 
+    // The held canvas's wide rungs across row `line` (across true) or down
+    // column `line`, in order along it: O(W) or O(H). A guard that compares
+    // with an earlier canvas than the held one reads the lines it changed.
+    std::vector<LadderFinding> wideRungs(bool across, int line) const;
     // Whether the held canvas has this finding (every field equal).
     bool has(const LadderFinding& finding) const;
     // checkLadder's findings of the held canvas over the whole of it.

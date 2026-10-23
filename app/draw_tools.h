@@ -28,6 +28,7 @@
 #include "tool.h"
 
 #include "blockwright/brush.h"
+#include "blockwright/brushes/form.h"
 #include "blockwright/halfblock.h"
 
 #include <memory>
@@ -153,6 +154,53 @@ class RampShadeTool : public BrushTool {
     Q_OBJECT
 public:
     explicit RampShadeTool(QObject* parent = nullptr);
+
+    QString status() const override;
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+};
+
+// The name the form brush's shape goes by in the Brush dock and the status
+// bar.
+QString formShapeName(FormShape shape);
+
+// Form brush (PLAN §10): shades the selection's shape, or with nothing
+// selected the cells the stroke covers, as the view's form (a dome, a
+// cylinder or a plane) lit from the Brush dock's light direction, along the
+// view's ramp. Strength (pressure, with pressure to strength) is how far a
+// cell moves towards its tone. Each symmetry image shades its own form.
+class FormTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit FormTool(QObject* parent = nullptr);
+
+    QString status() const override;
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+};
+
+// Soft brush (PLAN §10): the ramp shade brush with a banded falloff, left
+// lightens and right darkens, the most in the middle of the tip; the
+// view's hardness narrows the falloff.
+class SoftTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit SoftTool(QObject* parent = nullptr);
+
+    QString status() const override;
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+};
+
+// Despeckle brush (PLAN §10): clears the specks under it, lone cells
+// lighter or darker than all their neighbours on the view's ramp.
+class DespeckleTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit DespeckleTool(QObject* parent = nullptr);
 
     QString status() const override;
 

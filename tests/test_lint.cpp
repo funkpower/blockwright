@@ -1489,3 +1489,99 @@ TEST_CASE("ladder index timings", "[.][bench]") {
                << " reads, one-off addedFindingsOnce " << oneOff << " us, checkLadder " << whole << " us");
     }
 }
+
+TEST_CASE("detail is the looks per 4x2 window and its flat share", "[lint][detail]") {
+    // Measured figures, the detail of funkpower's pieces in
+    // tests/data/golden.
+    struct Case {
+        const char* piece;
+        std::optional<lint::Box> box;
+        double mean;
+        int flat;
+    };
+    for (const Case& k : {Case{"darkmage.ans", {}, 3.3, 9}, Case{"darkmage.ans", lint::Box{10, 5, 40, 20}, 3.29, 9},
+                          Case{"cafe-mug.ans", {}, 2.58, 18}, Case{"cafe-mug.ans", lint::Box{20, 10, 60, 30}, 2.42, 17},
+                          Case{"outrun-sunset.ans", {}, 2.52, 8},
+                          Case{"outrun-sunset.ans", lint::Box{0, 0, 79, 15}, 2.58, 4},
+                          Case{"durin-gate.ans", {}, 2.78, 21},
+                          Case{"durin-gate.ans", lint::Box{5, 3, 50, 25}, 3.12, 6}}) {
+        const AnsiDocument doc = parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden" / k.piece));
+        const lint::Detail d = lint::detail(doc.canvas, k.box);
+        INFO(k.piece << (k.box ? " in a box" : "") << ": " << d.mean << ", " << d.flatPercent << "% flat of "
+                     << d.windows);
+        CHECK(std::abs(d.mean - k.mean) < 0.005);
+        CHECK(d.flatPercent == k.flat);
+    }
+}
+
+TEST_CASE("detail skips windows that are cut short or mostly black", "[lint][detail]") {
+    Canvas c(9, 3);  // all black: no window judged
+    CHECK(lint::detail(c).windows == 0);
+    CHECK(lint::detail(c).mean == 0.0);
+    for (int y = 0; y < 3; ++y)
+        for (int x = 0; x < 9; ++x)
+            c.at(x, y).bg = Color::indexed(Blue);
+    // two whole windows (columns 0-3 and 4-7 of rows 0-1), both flat
+    auto d = lint::detail(c);
+    CHECK(d.windows == 2);
+    CHECK(d.flat == 2);
+    CHECK(d.flatPercent == 100);
+    c.at(1, 1).ch = U'░';
+    c.at(1, 1).fg = Color::indexed(LightBlue);
+    c.at(6, 0).ch = kFullBlock;
+    c.at(6, 0).fg = Color::indexed(Blue);  // a full block looks like its colour
+    d = lint::detail(c);
+    CHECK(d.mean == 1.5);
+    CHECK(d.flatPercent == 50);
+}
+
+// LadderIndex::wideRungs reads one row or column of the held canvas: the
+// wide rungs checkLadder finds along it, every field, in order, as the index
+// is built and after changes (bands, squares and ladders, which have runs
+// both ways).
+TEST_CASE("an index's wide rungs along a line are checkLadder's on that line", "[lint][ladder]") {
+    std::mt19937 rng(2026102321);
+    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const Ramp r = steel();
+    int lines = 0, found = 0;
+    for (int k = 0; k < 300; ++k) {
+        const int w = pick(1, 30), h = pick(1, 20), source = pick(0, 2);
+        Canvas canvas = source == 0   ? randomLadder(r, w, h, rng)
+                        : source == 1 ? randomSquares(r, w, h, rng)
+                                      : randomBands(r, w, h, rng);
+        lint::LadderIndex index(canvas, r);
+        for (int step = 0; step < 3; ++step) {
+            const auto all = lint::checkLadder(canvas, r).findings;
+            for (const bool across : {true, false})
+                for (int line = 0; line < (across ? h : w); ++line) {
+                    std::vector<lint::LadderFinding> want;
+                    for (const auto& f : all)
+                        if (f.kind == Kind::WideRung && (across ? f.y == line && f.ny == line && f.nx != f.x
+                                                                : f.x == line && f.nx == line && f.ny != f.y))
+                            want.push_back(f);
+                    const auto got = index.wideRungs(across, line);
+                    INFO("case " << k << " step " << step << (across ? " row " : " column ") << line);
+                    REQUIRE(keysOf(got) == keysOf(want));
+                    REQUIRE(got.size() == want.size());
+                    for (size_t i = 1; i < got.size(); ++i)
+                        REQUIRE((across ? got[i - 1].x < got[i].x : got[i - 1].y < got[i].y));
+                    ++lines;
+                    found += int(got.size());
+                }
+            // a patch moved a rung or two
+            Canvas after = canvas;
+            std::vector<std::pair<int, int>> changed;
+            const int x0 = pick(0, w - 1), y0 = pick(0, h - 1);
+            for (int y = y0; y < std::min(h, y0 + pick(1, 3)); ++y)
+                for (int x = x0; x < std::min(w, x0 + pick(1, 6)); ++x) {
+                    const auto g = rungOf(r, canvas.at(x, y));
+                    after.at(x, y) = rungCell(r, std::clamp(g.value_or(0) + pick(-2, 2), 0, r.topRung()));
+                    changed.push_back({x, y});
+                }
+            (void)index.apply(after, changed);
+            canvas = after;
+        }
+    }
+    INFO(lines << " lines, " << found << " wide rungs");
+    CHECK(found > 200);
+}
