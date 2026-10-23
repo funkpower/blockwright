@@ -22,6 +22,7 @@ add_executable(blockwright-tests
   test_golden.cpp
   test_irc.cpp
   test_library.cpp
+  test_library_bundled.cpp
   test_lint.cpp
   test_mirc.cpp
   test_sauce.cpp
@@ -30,7 +31,8 @@ add_executable(blockwright-tests
 )
 target_link_libraries(blockwright-tests PRIVATE blockwright::core blockwright_cli_io Catch2::Catch2WithMain)
 target_compile_definitions(blockwright-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
-                                                    BW_TEST_TMP="${CMAKE_CURRENT_BINARY_DIR}/catch-tmp")
+                                                    BW_TEST_TMP="${CMAKE_CURRENT_BINARY_DIR}/catch-tmp"
+                                                    BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
 catch_discover_tests(blockwright-tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
 add_test(NAME cli
@@ -46,7 +48,8 @@ set_tests_properties(library_bundled_check PROPERTIES ENVIRONMENT QT_QPA_PLATFOR
 add_test(NAME library_install
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/library_install_test.sh
           ${PROJECT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/library-install-tmp
-          ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR} "$<CONFIG>")
+          ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR} "$<CONFIG>"
+          ${PROJECT_SOURCE_DIR}/library)
 set_tests_properties(library_install PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
 add_test(NAME irc_oracle
@@ -122,7 +125,8 @@ if(NOT TARGET Qt6::GuiPrivate)
   find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
 endif()
 target_link_libraries(blockwright-app-tests PRIVATE blockwright_app Qt6::GuiPrivate Catch2::Catch2)
-target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
+                                                        BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
 catch_discover_tests(blockwright-app-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)

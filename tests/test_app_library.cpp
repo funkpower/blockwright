@@ -741,3 +741,51 @@ TEST_CASE("a stamp replaced under an upper-case extension stays in the dock") {
     CHECK(s->art.canvas.width() == 3);
     CHECK(f.dock->shownNames().count(QStringLiteral("Oak Tree")) == 1);
 }
+
+// Phase 2c's "done when" (PLAN §13): a tree from the bundled Library dropped
+// onto a blank canvas floats, moves, and lands where it was moved to, with
+// its transparent cells leaving the canvas as it was. The tree is one that
+// shows on the default black canvas, and the test checks the render changed.
+TEST_CASE("a bundled tree is placed on a blank canvas, moved, then committed") {
+    Fixture f;
+    const fs::path tree = fs::path(BW_BUNDLED_LIBRARY) / "trees" / "golden-tree.ans";
+    const library::Stamp stamp = library::readStamp(tree);
+    const Canvas& art = stamp.art.canvas;
+    const QImage before = renderCanvas(f.w.document()->canvas(), 8);
+    QString error;
+    REQUIRE(f.w.placeStamp(QString::fromStdString(tree.string()), {2, 1}, &error));
+    SelectTool* s = f.w.selectTool();
+    REQUIRE(s->floating());
+    CHECK(s->effectivePasteMode() == PasteMode::Transparent);
+    REQUIRE(f.w.document()->canvas().height() >= 3 + art.height());
+    REQUIRE(f.w.document()->canvas().width() >= 5 + art.width());
+    s->moveBy(3, 2);
+    CHECK(s->floatingPos() == QPoint(5, 3));
+    CHECK(f.w.document()->canvas().at(5, 3) == Cell{});  // nothing lands until it is committed
+    s->stamp();
+    CHECK_FALSE(s->floating());
+    int drawn = 0;
+    for (int y = 0; y < art.height(); ++y)
+        for (int x = 0; x < art.width(); ++x) {
+            const Cell& got = f.w.document()->canvas().at(5 + x, 3 + y);
+            if (isBlank(art.at(x, y))) {
+                CHECK(got == Cell{});
+            } else {
+                CHECK(got == iceCell(art.at(x, y), stamp.art.ice));
+                ++drawn;
+            }
+        }
+    CHECK(drawn > 100);
+    // The tree shows: the render changed inside the placed rectangle, and
+    // only there.
+    const QImage after = renderCanvas(f.w.document()->canvas(), 8);
+    REQUIRE(after.size() == before.size());
+    const QRect placed(5 * 8, 3 * 16, art.width() * 8, art.height() * 16);
+    int changed = 0, outside = 0;
+    for (int y = 0; y < after.height(); ++y)
+        for (int x = 0; x < after.width(); ++x)
+            if (after.pixel(x, y) != before.pixel(x, y))
+                ++(placed.contains(x, y) ? changed : outside);
+    CHECK(changed > art.width() * art.height() * 8 * 16 / 4);
+    CHECK(outside == 0);
+}

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # The bundled Library installs to <datadir>/blockwright/library/ and the
 # installed CLI finds it from its own directory:
-#   library_install_test.sh <build dir> <scratch dir> <full bindir> <full datadir> [<config>]
+#   library_install_test.sh <build dir> <scratch dir> <full bindir> <full datadir> [<config> [<source library>]]
+# With the source library, every stamp in it must be installed.
 set -uo pipefail
-build=$1 tmp=$2 bindir=$3 datadir=$4 config=${5:-}
+build=$1 tmp=$2 bindir=$3 datadir=$4 config=${5:-} src=${6:-}
 rm -rf "$tmp" && mkdir -p "$tmp/user"
 tmp=$(cd "$tmp" && pwd)
 fails=0
@@ -26,12 +27,19 @@ fi
 
 cli=$stage$bindir/blockwright-cli
 out=$(env -u BLOCKWRIGHT_BUNDLED_LIBRARY BLOCKWRIGHT_USER_LIBRARY="$tmp/user" "$cli" library list 2>&1); st=$?
-if [[ $st -eq 0 && $out == *$'sky\tSmall star\t5x3\t16\tstar,night\t'"$lib"/sky/small-star.ans* ]]; then
+if [[ $st -eq 0 && $out == *$'sky\tSmall star\t3x3\t13\tstar,night\t'"$lib"/sky/small-star.ans* ]]; then
   ok "the installed CLI lists the installed bundled library"
 else
   bad "library list (exit $st): $out"
 fi
+n=1
+if [[ -n $src ]]; then
+  n=$(cd "$src" && find . -name '*.ans' | wc -l)
+  n=$((n))  # BSD wc pads the count with spaces
+  missing=$(cd "$src" && find . -type f \( -name '*.ans' -o -name '*.json' \) | while read -r f; do cmp -s "$f" "$lib/$f" || echo "$f"; done)
+  if [[ $n -gt 1 && -z $missing ]]; then ok "all $n bundled stamps install"; else bad "not installed as in the source: $missing"; fi
+fi
 out=$("$cli" library check "$lib" 2>&1); st=$?
-if [[ $st -eq 0 && $out == "1 stamp(s), 0 problem(s)" ]]; then ok "the installed library checks clean"; else bad "library check (exit $st): $out"; fi
+if [[ $st -eq 0 && $out == "$n stamp(s), 0 problem(s)" ]]; then ok "the installed library checks clean"; else bad "library check (exit $st): $out"; fi
 
 exit $((fails > 0))

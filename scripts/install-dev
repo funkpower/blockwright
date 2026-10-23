@@ -141,6 +141,12 @@ for f in blockwright blockwright-cli; do
     rm -rf "$stage"; exit 1
   fi
 done
+# The bundled Library (PLAN §12) ships with it
+# (searched under the literal directory: the prefix may hold glob characters)
+if [[ -z $(find "$stage/share/blockwright/library" -mindepth 2 -maxdepth 2 -name '*.ans' -print -quit 2>/dev/null) ]]; then
+  echo "install-dev: the install left out the bundled library (share/blockwright/library/); keeping the old dev build" >&2
+  rm -rf "$stage"; exit 1
+fi
 [[ -e $prefix ]] && mv "$prefix" "$prefix.old"
 mv "$stage" "$prefix"
 rm -rf "$prefix.old"

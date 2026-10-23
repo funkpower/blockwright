@@ -116,6 +116,11 @@ while IFS= read -r f; do
 done < "$STUB_BUILD/install_manifest.txt"
 cp -R "$d$STUB_BINDIR/." "$prefix/bin/"
 cp -R "$d$STUB_DOCDIR" "$prefix/share/doc/blockwright"
+lib=$(find "$d" -type d -path '*/blockwright/library' | head -n 1)
+[ -n "$lib" ] || { echo "cmake stub: no bundled library staged" >&2; exit 1; }
+mkdir -p "$prefix/share/blockwright"
+cp -R "$lib" "$prefix/share/blockwright/library"
+[ -z "${NOLIB:-}" ] || rm -rf "$prefix/share/blockwright"
 [ -z "${NODOCS:-}" ] || rm -rf "$prefix/share/doc"
 [ -z "${NOGUI:-}" ] || rm -f "$prefix/bin/blockwright"
 STUB
@@ -179,6 +184,21 @@ else
   bad "install-dev took an install without the GUI (exit $st): $out"
 fi
 if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the GUI-less install keeps the old dev build"; else bad "the GUI-less install replaced the old dev build"; fi
+
+out=$(NOLIB=1 dev); st=$?
+if [[ $st -ne 0 ]] && grep -q 'left out the bundled library' <<<"$out"; then
+  ok "install-dev refuses an install without the bundled library"
+else
+  bad "install-dev took an install without the bundled library (exit $st): $out"
+fi
+if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the library-less install keeps the old dev build"; else bad "the library-less install replaced the old dev build"; fi
+has_library() { [[ -n $(find "$1/share/blockwright/library" -mindepth 2 -maxdepth 2 -name '*.ans' -print -quit 2>/dev/null) ]]; }
+if has_library "$prefix"; then ok "install-dev installs the bundled library"; else bad "no bundled library in $prefix"; fi
+# A prefix with glob characters is a literal path: the library check must
+# not read [dev] as a character class and refuse (and delete) a good install
+bracket=$home/.local/opt/blockwright[dev]
+if out=$(dev --prefix "$bracket"); then ok "install-dev --prefix with brackets"; else bad "install-dev --prefix with brackets failed: $out"; fi
+if has_library "$bracket" && [[ -x $bracket/bin/blockwright ]]; then ok "the bracketed prefix holds the install and its library"; else bad "no install or library in $bracket"; fi
 
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]
