@@ -17,7 +17,7 @@ Native ANSI/IRC art editor in C++20 / Qt 6. `PLAN.md` is the design; read it bef
 
 ## Git and the forge
 
-- Remote: `https://git.pumpin.online/funkpower/blockwright.git` (private). Push with `GIT_ASKPASS=$PWD/scripts/git-askpass`. Commits are made as funkpower (picked up from the remote URL); never as a real name.
+- Remote: `https://git.pumpin.online/funkpower/blockwright.git`. Push with `GIT_ASKPASS=$PWD/scripts/git-askpass`. Commits are made as funkpower (picked up from the remote URL); never as a real name.
 - Work on a branch, open a PR with `scripts/forge pr-create <branch> <title> <body-file>`; the PR body is the report. Never push to `main`; PRs are squash-merged through `scripts/forge pr-merge`.
 - No Co-Authored-By or "Generated with" trailers. Never force-push except `--force-with-lease` on your own branch.
 - Never print the forge token or any `pass` entry.
@@ -28,7 +28,7 @@ The repo, its history, issues and PRs are public. Tracked files, commit messages
 
 ## Review
 
-Every PR gets an adversarial Codex review before it merges. Findings need a failing test or an exact repro; the author fixes, the same reviewer re-checks. Codex can't run the build, so the PR body states what was built and tested and how.
+Every PR gets an adversarial Codex review before it merges. When Codex is unavailable (out of credits or its session limit), a Claude reviewer stands in for it, one that didn't write the change, and says in its comment that it is the fallback. A later round may go back to Codex once it is available; either the stand-in or Codex may then re-check the stand-in's findings. Findings need a failing test or an exact repro; the author fixes, the same reviewer re-checks. Codex can't run the build, so the PR body states what was built and tested and how.
 
 ## Dev install on the dev machine
 
