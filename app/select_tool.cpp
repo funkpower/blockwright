@@ -56,9 +56,10 @@ void SelectTool::setSelection(const Selection& s) {
 }
 
 void SelectTool::setPasteMode(PasteMode mode) {
-    if (mode == mode_)
+    if (mode == mode_ && !floatMode_)
         return;
     mode_ = mode;
+    floatMode_.reset();
     previewStale_ = true;
     emit changed();
 }
@@ -110,9 +111,10 @@ void SelectTool::moveBy(int dx, int dy) {
 void SelectTool::stamp() {
     if (!view() || !floating_)
         return;
-    const CellEdit edit =
-        stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), mode_, lifted_ ? &liftedFrom_ : nullptr);
+    const CellEdit edit = stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), effectivePasteMode(),
+                                     lifted_ ? &liftedFrom_ : nullptr);
     floating_ = lifted_ = false;
+    floatMode_.reset();
     drag_ = Drag::None;
     setSelection(Selection({floatPos_.x(), floatPos_.y(), float_.width, float_.height}));
     previewStale_ = true;
@@ -124,6 +126,7 @@ void SelectTool::cancel() {
     const bool dragging = std::exchange(drag_, Drag::None) != Drag::None;
     if (floating_) {
         floating_ = false;
+        floatMode_.reset();
         setSelection(std::exchange(lifted_, false) ? liftedFrom_ : Selection());
         previewStale_ = true;
     } else if (!dragging) {
@@ -163,6 +166,7 @@ void SelectTool::clear() {
     if (floating_) {
         const CellEdit edit = lifted_ ? clearSelection(canvas(), liftedFrom_) : CellEdit{};
         floating_ = lifted_ = false;
+        floatMode_.reset();
         drag_ = Drag::None;
         setSelection({});
         previewStale_ = true;
@@ -176,13 +180,20 @@ void SelectTool::clear() {
 void SelectTool::paste() {
     if (!view() || clipboard_.empty())
         return;
+    const Cursor c = view()->cellCursor();
+    floatBlock(clipboard_, {c.x, c.y});
+}
+
+void SelectTool::floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode) {
+    if (!view() || block.empty())
+        return;
     stamp();
-    float_ = clipboard_;
+    floatMode_ = mode;
+    float_ = block;
     floating_ = true;
     lifted_ = false;
     drag_ = Drag::None;
-    const Cursor c = view()->cellCursor();
-    setFloatPos({c.x, c.y});
+    setFloatPos(cell);
 }
 
 void SelectTool::transform(Transform t) {
@@ -300,7 +311,8 @@ void SelectTool::updatePreview() const {
     preview_.clear();
     if (!view() || !floating_)
         return;
-    preview_.set(*view(), view()->mirrored(stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), mode_,
+    preview_.set(*view(), view()->mirrored(stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(),
+                                                       effectivePasteMode(),
                                                        lifted_ ? &liftedFrom_ : nullptr)));
 }
 

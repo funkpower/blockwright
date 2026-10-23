@@ -7,10 +7,13 @@
 //   blockwright-cli export --irc [--budget N] [--allow-over-budget] <in.ans> <out.txt>
 //   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N]
 //                         [--box x0,y0,x1,y1] [--allow-lossy] <in.ans> <out.ans>
+//   blockwright-cli library list [dir]
+//   blockwright-cli library check <dir>
 //
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert or shade
-// without --allow-lossy (nothing is written), 2 usage error, 3 an IRC line
-// over the byte budget without --allow-over-budget (nothing is written).
+// without --allow-lossy (nothing is written), or a library check that found
+// a problem, 2 usage error, 3 an IRC line over the byte budget without
+// --allow-over-budget (nothing is written).
 
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
@@ -18,6 +21,7 @@
 #include "blockwright/cp437.h"
 #include "blockwright/credits.h"
 #include "blockwright/irc.h"
+#include "blockwright/library.h"
 #include "blockwright/lint.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
@@ -27,6 +31,7 @@
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QImageWriter>
+#include <QFile>
 #include <QSaveFile>
 
 #include <algorithm>
@@ -349,6 +354,65 @@ int render(const std::string& in, const std::string& out, const bw::RenderOption
     return kOk;
 }
 
+std::string joined(const std::vector<std::string>& v, const char* sep) {
+    std::string out;
+    for (std::size_t i = 0; i < v.size(); ++i)
+        out += (i ? sep : "") + v[i];
+    return out;
+}
+
+std::filesystem::path libraryDir(const std::string& dir) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec))
+        throw Failure{dir + ": not a directory"};
+    return dir;
+}
+
+// library list [dir]: one stamp a line, tab-separated: category, name,
+// width x height, the widest row's IRC bytes, tags (comma-separated: a tag
+// never holds a comma or a tab, and a category or name never holds a tab or
+// newline), path.
+// Without a dir, the bundled library and then the user library. Stamps that
+// can't be read are warnings on stderr; the exit status is still 0.
+int libraryList(const std::optional<std::string>& dir) {
+    std::vector<std::filesystem::path> dirs;
+    if (dir) {
+        dirs.push_back(libraryDir(*dir));
+    } else {
+        const QString bin = QCoreApplication::applicationDirPath();
+        dirs.push_back(bw::library::bundledLibraryDir(QFile::encodeName(bin).toStdString()));
+        dirs.push_back(bw::library::userLibraryDir());
+    }
+    for (const auto& d : dirs) {
+        const bw::library::ScanResult r = bw::library::scan(d);
+        for (const bw::library::Stamp& s : r.stamps)
+            std::cout << s.meta.category << "\t" << s.displayName() << "\t" << s.art.canvas.width() << "x"
+                      << s.art.canvas.height() << "\t" << s.meta.ircBytes << "\t" << joined(s.meta.tags, ",")
+                      << "\t" << s.path.string() << "\n";
+        for (const bw::library::Problem& p : r.problems)
+            std::cerr << "warning: " << p.path.string() << ": " << p.message << "\n";
+    }
+    return kOk;
+}
+
+// library check <dir>: reads every stamp and sidecar under dir and reports
+// each problem on stderr, plus any stamp whose widest row alone is over the
+// IRC byte budget. Exit 1 if there was any.
+int libraryCheck(const std::string& dir) {
+    const bw::library::ScanResult r = bw::library::scan(libraryDir(dir));
+    std::size_t problems = r.problems.size();
+    for (const bw::library::Problem& p : r.problems)
+        std::cerr << p.path.string() << ": " << p.message << "\n";
+    for (const bw::library::Stamp& s : r.stamps)
+        if (s.meta.ircBytes > bw::irc::kEfnetWeechatBudget) {
+            std::cerr << s.path.string() << ": the widest row is " << s.meta.ircBytes << " IRC bytes, over the "
+                      << bw::irc::kEfnetWeechatBudget << "-byte budget\n";
+            ++problems;
+        }
+    std::cout << r.stamps.size() << " stamp(s), " << problems << " problem(s)\n";
+    return problems ? kBadInput : kOk;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -371,7 +435,11 @@ int main(int argc, char** argv) {
         "  shade --ramp R <in> <out>\n"
         "                       lighten (or --darken) every cell in the box one\n"
         "                       rung along the ramp's shading ladder, then check\n"
-        "                       the ladder; <out> may be <in>"));
+        "                       the ladder; <out> may be <in>\n"
+        "  library list [dir]   list the stamps in dir (default: the bundled and\n"
+        "                       user libraries): category, name, size, widest\n"
+        "                       IRC row in bytes, tags, path; tab-separated\n"
+        "  library check <dir>  check every stamp and sidecar in dir"));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
@@ -411,7 +479,7 @@ int main(int argc, char** argv) {
                                     QStringLiteral("shade: cells x0,y0,x1,y1 from 0, corners included (default: all)"),
                                     QStringLiteral("x0,y0,x1,y1"));
     parser.addOption(boxOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export or shade"));
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade or library"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -432,6 +500,7 @@ int main(int argc, char** argv) {
                   << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
                   << "       | export --irc [--budget N] [--allow-over-budget] <in> <out>\n"
                   << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--allow-lossy] <in> <out>\n"
+                  << "       | library list [dir] | library check <dir>\n"
                   << "       | --version\n";
         return kUsage;
     };
@@ -446,7 +515,7 @@ int main(int argc, char** argv) {
         {&boxOpt, {"shade"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
-        cmd == QLatin1String("export") || cmd == QLatin1String("shade"))
+        cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("library"))
         for (const auto& [o, cmds] : owners) {
             if (!parser.isSet(*o) ||
                 std::any_of(cmds.begin(), cmds.end(), [&](const char* c) { return cmd == QLatin1String(c); }))
@@ -507,6 +576,21 @@ int main(int argc, char** argv) {
                 o.box = boxValue(parser.value(boxOpt));
             o.allowLossy = parser.isSet(lossyOpt);
             return shade(args[1].toStdString(), args[2].toStdString(), o);
+        }
+        if (cmd == QLatin1String("library")) {
+            const QString sub = args.value(1);
+            if (sub == QLatin1String("list")) {
+                if (args.size() > 3)
+                    return usage("library list takes at most one directory");
+                return libraryList(args.size() == 3 ? std::optional(args[2].toStdString()) : std::nullopt);
+            }
+            if (sub == QLatin1String("check")) {
+                if (args.size() != 3)
+                    return usage("library check takes one directory");
+                return libraryCheck(args[2].toStdString());
+            }
+            return usage(sub.isEmpty() ? "library needs a subcommand: list or check"
+                                       : ("unknown library subcommand '" + sub.toStdString() + "'").c_str());
         }
         return usage(("unknown command '"+ cmd.toStdString() + "'").c_str());
     } catch (const Usage& u) {

@@ -21,6 +21,7 @@ add_executable(blockwright-tests
   test_edit.cpp
   test_golden.cpp
   test_irc.cpp
+  test_library.cpp
   test_lint.cpp
   test_mirc.cpp
   test_sauce.cpp
@@ -36,6 +37,17 @@ add_test(NAME cli
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_test.sh
           $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-tmp)
 set_tests_properties(cli PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+
+# The bundled Library passes its own check, and installs where the installed
+# CLI finds it.
+add_test(NAME library_bundled_check
+  COMMAND $<TARGET_FILE:blockwright-cli> library check ${PROJECT_SOURCE_DIR}/library)
+set_tests_properties(library_bundled_check PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+add_test(NAME library_install
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/library_install_test.sh
+          ${PROJECT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/library-install-tmp
+          ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR} "$<CONFIG>")
+set_tests_properties(library_install PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
 add_test(NAME irc_oracle
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/irc_oracle_test.sh
@@ -97,6 +109,7 @@ add_executable(blockwright-app-tests
   test_app_brush.cpp
   test_app_draw.cpp
   test_app_format.cpp
+  test_app_library.cpp
   test_app_select.cpp
   test_app_perf.cpp
   test_app_detail.cpp

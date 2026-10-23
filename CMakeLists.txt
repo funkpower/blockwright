@@ -40,6 +40,10 @@ install(FILES LICENSE NOTICE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fonts/README.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/oldschool-pc-fonts)
 
+# The bundled Library (PLAN §12): stamps the GUI and `blockwright-cli library
+# list` find from the binaries' directory, <prefix>/share/blockwright/library/.
+install(DIRECTORY library/ DESTINATION ${CMAKE_INSTALL_DATADIR}/blockwright/library)
+
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()

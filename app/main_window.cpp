@@ -136,6 +136,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
 
     createActions();
+    createLibrary();
     updateTitle();
     updateStatus();
     updateGlyphSet();

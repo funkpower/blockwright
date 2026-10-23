@@ -11,10 +11,13 @@ add_library(blockwright_app STATIC
   draw_tools.cpp
   draw_tools.h
   document.h
+  library_dock.cpp
+  library_dock.h
   main_window.cpp
   main_window.h
   main_window_edit.cpp
   main_window_format.cpp
+  main_window_library.cpp
   palette_widget.cpp
   palette_widget.h
   reference_scale.cpp

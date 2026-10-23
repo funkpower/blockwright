@@ -19,6 +19,8 @@
 
 #include <QMetaObject>
 
+#include <optional>
+
 namespace bw {
 
 class SelectTool : public Tool {
@@ -39,7 +41,13 @@ public:
     QPoint floatingPos() const { return floatPos_; }
 
     const CellBlock& clipboard() const { return clipboard_; }
+    // The Selection > Paste Mode setting.
     PasteMode pasteMode() const { return mode_; }
+    // The mode the floating selection stamps in: its own (floatBlock), or
+    // the setting.
+    PasteMode effectivePasteMode() const { return floating_ && floatMode_ ? *floatMode_ : mode_; }
+    // Sets the setting. During a float with a mode of its own, this
+    // overrides that mode too, and the pick stays the setting.
     void setPasteMode(PasteMode mode);
 
     // The Edit and Selection menu actions. Each that changes the canvas is
@@ -48,6 +56,11 @@ public:
     void cut();
     // Floats the clipboard at the cell cursor.
     void paste();
+    // Floats `block` with its top-left at `cell`, as paste floats the
+    // clipboard (a Library stamp). Stamps a floating selection first. With
+    // `mode`, this float stamps in that mode instead of the setting, which
+    // stays as it was; the mode ends when the float lands or is dropped.
+    void floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode = std::nullopt);
     // Delete: clears the selected cells, or drops a floating selection
     // (clearing the cells it was lifted from).
     void clear();
@@ -94,6 +107,7 @@ private:
     Selection liftedFrom_;
     CellBlock clipboard_;
     PasteMode mode_ = PasteMode::Normal;
+    std::optional<PasteMode> floatMode_;  // this float's own mode
 
     Drag drag_ = Drag::None;
     QPoint dragStart_, dragOffset_;

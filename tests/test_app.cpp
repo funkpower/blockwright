@@ -17,6 +17,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QFile>
 #include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -1009,6 +1010,11 @@ TEST_CASE("Ctrl+arrows cycle the pen's colours and Ctrl+D resets them") {
 }
 
 int main(int argc, char** argv) {
+    // Every window here reads its Library from empty scratch directories,
+    // never the user's real one.
+    QTemporaryDir libraries;
+    qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("bundled"))));
+    qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("user"))));
     QApplication app(argc, argv);
     return Catch::Session().run(argc, argv);
 }

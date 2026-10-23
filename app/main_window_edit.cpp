@@ -268,9 +268,18 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     for (const Mode& m : {Mode{"pasteNormal", tr("&Normal"), PasteMode::Normal},
                           Mode{"pasteTransparent", tr("&Transparent (blank cells don't paste)"),
                                PasteMode::Transparent},
-                          Mode{"pasteUnder", tr("&Under (only into blank cells)"), PasteMode::Under}})
-        check(add(modes, m.text, m.name, QKeySequence(), [this, mode = m.mode] { selectTool_->setPasteMode(mode); }),
-              modeGroup, m.mode == selectTool_->pasteMode());
+                          Mode{"pasteUnder", tr("&Under (only into blank cells)"), PasteMode::Under}}) {
+        QAction* a = check(
+            add(modes, m.text, m.name, QKeySequence(), [this, mode = m.mode] { selectTool_->setPasteMode(mode); }),
+            modeGroup, m.mode == selectTool_->pasteMode());
+        // A Library stamp floats in a mode of its own; the menu shows it.
+        connect(selectTool_, &Tool::changed, a, [this, a, mode = m.mode] {
+            if (selectTool_->effectivePasteMode() == mode)
+                a->setChecked(true);
+        });
+    }
+    sel->addSeparator();
+    needSelection << add(sel, tr("Save to &Library..."), "saveToLibrary", QKeySequence(), [this] { saveToLibrary(); });
 
     const auto updateSelection = [this, needSelection, paste] {
         const bool any = selectTool_->floating() || !view_->selection().empty();

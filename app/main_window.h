@@ -10,6 +10,8 @@
 
 #include <QMainWindow>
 
+#include <filesystem>
+
 class QAction;
 class QDockWidget;
 class QFileDialog;
@@ -38,6 +40,7 @@ void configureSaveDialog(QFileDialog& dialog, const QString& path);
 
 class SelectTool;
 class BrushDock;
+class LibraryDock;
 class ToolRegistry;
 
 class MainWindow : public QMainWindow {
@@ -57,6 +60,27 @@ public:
     const CanvasRenderer& renderer() const { return renderer_; }
     ToolRegistry* tools() const { return tools_; }
     SelectTool* selectTool() const { return selectTool_; }
+    LibraryDock* libraryWidget() const { return library_; }
+    QDockWidget* libraryDock() const { return libraryDock_; }
+
+    // The Library (main_window_library.cpp). Floats the stamp at `path` (a
+    // .ans in the Library dock, or any stamp on disk) with its top-left at
+    // `cell`, through the select tool's paste in transparent paste mode;
+    // false and `error` if it can't be read.
+    bool placeStamp(const std::filesystem::path& path, QPoint cell, QString* error);
+    bool placeStamp(const QString& path, QPoint cell, QString* error);  // a UTF-8 path
+    // Saves the selection (or the floating selection) as a stamp in the
+    // user library and rescans the dock, at libraryPathFor(name). Refuses
+    // to replace the stamp of that name already there unless `replace`. The
+    // path written, or empty and `error`.
+    QString saveSelectionToLibrary(const QString& name, const QString& category, const QStringList& tags,
+                                   QString* error, bool replace = false);
+    // The .ans a stamp called `name` is saved as in the user library
+    // (library::stampPathFor): a stamp with another title is never
+    // replaced. `exists` says whether a stamp of that name is there.
+    // Empty, with `error`, if the library folder can't be listed. The
+    // QString is for showing; saving uses the native path.
+    QString libraryPathFor(const QString& name, bool* exists = nullptr, QString* error = nullptr) const;
 
     // Shows the picture at `path` over the canvas to trace (View > Reference
     // Image). It is never saved. False and `error` if it can't be read.
@@ -85,6 +109,8 @@ public slots:
     // canvas too large to display is refused with a status message.
     void setIceColours(bool on);
     void setNinePx(bool on);
+    // Selection > Save to Library...: asks for the name, category and tags.
+    void saveToLibrary();
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -106,6 +132,8 @@ private:
     // The tools, selection, mirror, guides and reference image
     // (main_window_edit.cpp).
     void createEditingActions(QMenu* file, QMenu* edit, QMenu* view);
+    // The Library dock and stamp drops on the canvas.
+    void createLibrary();
 
     Document doc_;
     AtlasRenderer renderer_;
@@ -117,6 +145,8 @@ private:
     QDockWidget* paletteDock_ = nullptr;
     BrushDock* brush_ = nullptr;
     QDockWidget* brushDock_ = nullptr;
+    LibraryDock* library_ = nullptr;
+    QDockWidget* libraryDock_ = nullptr;
     QLabel* status_ = nullptr;
     ToolRegistry* tools_ = nullptr;
     SelectTool* selectTool_ = nullptr;

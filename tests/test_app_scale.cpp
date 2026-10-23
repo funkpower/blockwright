@@ -18,6 +18,8 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QFile>
+#include <QTemporaryDir>
 #include <QColor>
 #include <QImage>
 #include <QKeyEvent>
@@ -300,6 +302,10 @@ TEST_CASE("a stylus paints the cell under it at a fractional device pixel ratio"
 int main(int argc, char** argv) {
     qputenv("QT_SCALE_FACTOR", QByteArray::number(kScale));
     qputenv("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough");
+    // The Library reads empty scratch directories, never the user's.
+    QTemporaryDir libraries;
+    qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("bundled"))));
+    qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("user"))));
     QApplication app(argc, argv);
     return Catch::Session().run(argc, argv);
 }

@@ -232,5 +232,59 @@ expect "convert arity" 2 'convert takes' -- "$cli" convert "$piece"
 expect "info arity" 2 'info takes' -- "$cli" info
 expect "unknown option" 2 'Unknown option' -- "$cli" --bogus
 
+# library list / check
+lib=$data/library
+expect "library check: a good library" 0 '^2 stamp\(s\), 0 problem\(s\)$' -- "$cli" library check "$lib"
+expect "library list: tab-separated" 0 $'^sky\tSmall star\t5x3\t16\tstar,night\t.*/sky/small-star\\.ans$' -- "$cli" library list "$lib"
+expect "library list: sorted by path" 0 $'^figures\tTux\t30x17\t80\tpenguin,linux\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$lib"
+expect "library list: no dir lists the bundled and user libraries" 0 $'^sky\tSmall star\t' -- env BLOCKWRIGHT_BUNDLED_LIBRARY="$lib" BLOCKWRIGHT_USER_LIBRARY="$tmp/no-user-lib" "$cli" library list
+expect "library check: missing dir" 1 'nope: not a directory' -- "$cli" library check "$tmp/nope"
+expect "library check: needs a dir" 2 'library check takes one directory' -- "$cli" library check
+expect "library: needs a subcommand" 2 'library needs a subcommand' -- "$cli" library
+expect "library: unknown subcommand" 2 "unknown library subcommand 'frob'" -- "$cli" library frob
+expect "library: refuses other commands' options" 2 '--scale is a render option, not a library option' -- "$cli" library list --scale 2
+bl=$tmp/badlib; mkdir -p "$bl"
+cp "$lib/sky/small-star.ans" "$bl/bytes.ans"; sed 's/"ircBytes": 16/"ircBytes": 17/' "$lib/sky/small-star.json" > "$bl/bytes.json"
+cp "$lib/sky/small-star.ans" "$bl/key.ans"; sed 's/"tags"/"tag"/' "$lib/sky/small-star.json" > "$bl/key.json"
+cp "$lib/sky/small-star.ans" "$bl/nosidecar.ans"
+cp "$lib/sky/small-star.json" "$bl/orphan.json"
+printf '\033[0;33mx\033[0m\r\n' > "$bl/nosauce.ans"; cp "$lib/sky/small-star.json" "$bl/nosauce.json"
+expect "library check: wrong byte count" 1 'bytes\.ans: sidecar says the widest row is 17 IRC bytes; the art.s is 16' -- "$cli" library check "$bl"
+expect "library check: unknown key" 1 'key\.ans: sidecar has an unknown key "tag"' -- "$cli" library check "$bl"
+expect "library check: no sidecar" 1 'nosidecar\.ans: no sidecar nosidecar\.json' -- "$cli" library check "$bl"
+expect "library check: orphan sidecar" 1 'orphan\.json: sidecar with no orphan\.ans' -- "$cli" library check "$bl"
+expect "library check: no SAUCE" 1 'nosauce\.ans: \.ans has no SAUCE record' -- "$cli" library check "$bl"
+sed 's/"night"/"night,day"/' "$lib/sky/small-star.json" > "$bl/comma.json"; cp "$lib/sky/small-star.ans" "$bl/comma.ans"
+# blank.ans: three blank cells under a SAUCE titled "Blank", 3 wide
+{
+  printf '\033[0m   \033[0m\x1aSAUCE00%-35s%-20s%-20s20261023' 'Blank' '' ''
+  printf '\x0c\x00\x00\x00\x01\x01\x03\x00\x01\x00\x00\x00\x00\x00\x00\x01'
+  printf '%022d' 0 | tr 0 '\0'
+} > "$bl/blank.ans"
+printf '{"category": "x", "tags": [], "ircBytes": 0}\n' > "$bl/blank.json"
+mkdir -p "$tmp/shared"; ln -s "$tmp/shared" "$bl/linked"; ln -s "$bl/gone.ans" "$bl/dangling.ans"
+expect "library check: a comma in a tag" 1 'comma\.ans: a sidecar tag holds a comma' -- "$cli" library check "$bl"
+expect "library check: an all-blank stamp" 1 'blank\.ans: \.ans has no drawn cell' -- "$cli" library check "$bl"
+expect "library check: a linked folder" 1 'linked: symbolic link to a folder, not followed' -- "$cli" library check "$bl"
+expect "library check: a broken link" 1 'dangling\.ans: broken symbolic link, skipped' -- "$cli" library check "$bl"
+expect "library list: a linked folder is a warning" 0 'warning: .*linked: symbolic link to a folder' -- "$cli" library list "$bl"
+expect "library check: counts" 1 '^0 stamp\(s\), 9 problem\(s\)$' -- "$cli" library check "$bl"
+expect "library list: problems are warnings" 0 'warning: .*orphan\.json: sidecar with no orphan\.ans' -- "$cli" library list "$bl"
+b2=$tmp/badlib2; mkdir -p "$b2"
+cp "$lib/sky/small-star.ans" "$b2/dup.ans"
+printf '{"category":7,"category":"sky","tags":[],"ircBytes":9999,"ircBytes":16}\n' > "$b2/dup.json"
+mkfifo "$b2/pipe.ans"
+expect "library check: a repeated key" 1 'dup\.ans: sidecar has the key "category" more than once' -- timeout 10 "$cli" library check "$b2"
+expect "library check: a FIFO is never opened" 1 'pipe\.ans: not a regular file, skipped' -- timeout 10 "$cli" library check "$b2"
+if [[ $(id -u) -ne 0 ]]; then
+  b3=$tmp/badlib3; mkdir -p "$b3/locked"; cp "$lib/sky/small-star."* "$b3/"
+  chmod 000 "$b3/locked"
+  expect "library check: an unreadable folder" 1 'locked: folder can.t be read' -- "$cli" library check "$b3"
+  expect "library list: an unreadable folder is a warning" 0 'warning: .*locked: folder can.t be read' -- "$cli" library list "$b3"
+  chmod 700 "$b3/locked"
+else
+  echo "skip library check: an unreadable folder (running as root)"
+fi
+
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]
