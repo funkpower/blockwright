@@ -324,7 +324,9 @@ public:
 
 // Outline brush (PLAN §10, "Detail"): the edge cells of the view's ramp
 // shape under it become the ramp colour below them, one cell wide, the
-// outline the ladder lint accepts (OutlineBrush). Either button.
+// outline the ladder lint accepts (OutlineBrush). With *Outline the
+// selection* on, the selection is the shape, so a seam takes the line.
+// Either button.
 class OutlineTool : public BrushTool {
     Q_OBJECT
 public:

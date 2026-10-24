@@ -1904,6 +1904,147 @@ TEST_CASE("a small dab on a thin part takes the line of its body far off", "[det
     CHECK(lint::addedFindingsOnce(c, applied(c, e), steel(), cellsOf(e)).empty());
 }
 
+namespace {
+
+// Steel shapes side by side on black, rows 1-6: each `widths` columns wide
+// from column 1, its rungs across it `rungs` (the last one on to its end).
+Canvas sideBySide(const std::vector<int>& widths, const std::vector<std::vector<int>>& rungs) {
+    int w = 2;
+    for (const int n : widths)
+        w += n;
+    Canvas c(w, 8);
+    for (int y = 1; y <= 6; ++y)
+        for (size_t s = 0, x0 = 1; s < widths.size(); x0 += size_t(widths[s]), ++s)
+            for (int i = 0; i < widths[s]; ++i)
+                c.at(int(x0) + i, y) = rungCell(steel(), rungs[s][std::min(size_t(i), rungs[s].size() - 1)]);
+    return c;
+}
+
+} // namespace
+
+TEST_CASE("the outline takes the selection as the shape and lines the seam", "[detail][lint]") {
+    // #51: two White shapes touching on the same ramp are one shape to the
+    // outline; with the selection as the shape, the selected one is lined
+    // along the seam too, on its own side
+    const Canvas c = sideBySide({6, 6}, {{12}, {12}});
+    const Canvas alone = sideBySide({6, 6}, {{12}, {0}});
+    REQUIRE(lint::checkLadder(c, steel()).clean());
+    StrokeOptions a;
+    a.selection = std::make_shared<Mask>(Mask::rect(c.width(), c.height(), 1, 1, 6, 6));
+    // by default the selection only clips: no line down the seam
+    const auto plain = written(outlineAll(c, steel(), a));
+    for (int y = 2; y <= 5; ++y)
+        CHECK_FALSE(plain.count({6, y}));
+    // as the shape, the left one is lined as it is alone on black
+    BrushSettings s;
+    s.size = kMaxBrushSize;
+    const OutlineBrush shaped(steel(), OutlineShape::Selection);
+    const CellEdit e = paintStroke(c, shaped, s, {{c.width() / 2, c.height() / 2}}, a);
+    const auto w = written(e);
+    CHECK(w == written(outlineAll(alone, steel(), a)));
+    for (int y = 1; y <= 6; ++y) {
+        INFO("row " << y);
+        REQUIRE(w.count({6, y}));
+        CHECK(w.at({6, y}) == rungCell(steel(), 8));
+    }
+    for (const auto& [p, cell] : w)
+        CHECK(p.first <= 6);
+    CHECK(added(c, applied(c, e), steel()).empty());
+    // the right one selected takes the seam on its side
+    StrokeOptions b;
+    b.selection = std::make_shared<Mask>(Mask::rect(c.width(), c.height(), 7, 6, 12, 1));
+    const auto right = written(paintStroke(c, shaped, s, {{c.width() / 2, c.height() / 2}}, b));
+    for (int y = 1; y <= 6; ++y) {
+        REQUIRE(right.count({7, y}));
+        CHECK(right.at({7, y}) == rungCell(steel(), 8));
+    }
+    for (const auto& [p, cell] : right)
+        CHECK(p.first >= 7);
+    // a size-3 stroke down the seam draws it there too
+    std::vector<Dab> down;
+    for (int y = 1; y <= 6; ++y)
+        down.push_back({6, y});
+    const CellEdit stroke = paintStroke(c, shaped, square(3), down, a);
+    const auto ws = written(stroke);
+    for (int y = 2; y <= 5; ++y) {
+        REQUIRE(ws.count({6, y}));
+        CHECK(ws.at({6, y}) == rungCell(steel(), 8));
+    }
+    CHECK(added(c, applied(c, stroke), steel()).empty());
+}
+
+TEST_CASE("a seam beside a shape that climbs from it is the darkest the lint accepts", "[detail][lint]") {
+    // the right shape climbs W▒w, W▓w, W away from the seam: w on the
+    // left's side would be a skip, w to W▒w with W▓w after it, so the seam
+    // takes the next rung lighter, still darker than the White it lines
+    const Canvas c = sideBySide({6, 6}, {{12}, {10, 11, 12}});
+    REQUIRE(lint::checkLadder(c, steel()).clean());
+    StrokeOptions a;
+    a.selection = std::make_shared<Mask>(Mask::rect(c.width(), c.height(), 1, 1, 6, 6));
+    BrushSettings s;
+    s.size = kMaxBrushSize;
+    const CellEdit e =
+        paintStroke(c, OutlineBrush(steel(), OutlineShape::Selection), s, {{c.width() / 2, c.height() / 2}}, a);
+    const auto w = written(e);
+    CHECK(added(c, applied(c, e), steel()).empty());
+    for (int y = 2; y <= 5; ++y) {
+        INFO("row " << y);
+        REQUIRE(w.count({6, y}));
+        CHECK(rungOf(steel(), w.at({6, y})) == 9);
+    }
+    // falling away from the seam, W▓w W▒w W░w, the seam is the full line
+    const Canvas f = sideBySide({6, 6}, {{12}, {11, 10, 9}});
+    REQUIRE(lint::checkLadder(f, steel()).clean());
+    const CellEdit fe =
+        paintStroke(f, OutlineBrush(steel(), OutlineShape::Selection), s, {{f.width() / 2, f.height() / 2}}, a);
+    const auto fw = written(fe);
+    CHECK(added(f, applied(f, fe), steel()).empty());
+    for (int y = 2; y <= 5; ++y) {
+        INFO("row " << y);
+        REQUIRE(fw.count({6, y}));
+        CHECK(rungOf(steel(), fw.at({6, y})) == 8);
+    }
+}
+
+TEST_CASE("the outline with the selection as the shape and no selection is the outline", "[detail]") {
+    const Canvas c = shadedEllipse(60, 30);
+    BrushSettings s;
+    s.size = kMaxBrushSize;
+    const Dab centre{30, 15};
+    CHECK(written(paintStroke(c, OutlineBrush(steel(), OutlineShape::Selection), s, {centre})) ==
+          written(paintStroke(c, OutlineBrush(steel()), s, {centre})));
+    // and the selection as the shape over the whole canvas likewise
+    StrokeOptions all;
+    all.selection = std::make_shared<Mask>(c.width(), c.height(), true);
+    CHECK(written(paintStroke(c, OutlineBrush(steel(), OutlineShape::Selection), s, {centre}, all)) ==
+          written(paintStroke(c, OutlineBrush(steel()), s, {centre})));
+}
+
+TEST_CASE("a mirrored stroke lines the seam of the selection in both images", "[detail][lint]") {
+    // A | B | A', A and A' selected; a Mirror X click on A lines both seams
+    const Canvas c = sideBySide({4, 4, 4}, {{12}, {12}, {12}});
+    REQUIRE(c.width() == 14);
+    auto sel = std::make_shared<Mask>(Mask::rect(c.width(), c.height(), 1, 1, 4, 6));
+    for (int y = 1; y <= 6; ++y)
+        for (int x = 9; x <= 12; ++x)
+            sel->set(x, y);
+    StrokeOptions o;
+    o.selection = sel;
+    o.symmetry = Symmetry{SymmetryMode::MirrorX};
+    const CellEdit e = paintStroke(c, OutlineBrush(steel(), OutlineShape::Selection), square(5), {{3, 3}}, o);
+    const auto w = written(e);
+    CHECK(added(c, applied(c, e), steel()).empty());
+    for (int y = 2; y <= 4; ++y) {
+        INFO("row " << y);
+        REQUIRE(w.count({4, y}));
+        REQUIRE(w.count({9, y}));
+        CHECK(w.at({4, y}) == rungCell(steel(), 8));
+        CHECK(w.at({9, y}) == w.at({4, y}));
+    }
+    for (const auto& [p, cell] : w)
+        CHECK((p.first <= 4 || p.first >= 9));
+}
+
 TEST_CASE("the outline closes a fringe's shape half at its ends", "[detail]") {
     // #53: a ▄/▀ fringe with the outside beside it along the row (an
     // ellipse's top and bottom rows step in a cell at a time) keeps its shape

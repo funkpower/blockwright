@@ -68,7 +68,7 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("ellipse"), draw | O::Filled},
         {QStringLiteral("fill"), draw},
         {QStringLiteral("eyedropper"), {}},
-        {QStringLiteral("outline"), brush | O::Ramp},
+        {QStringLiteral("outline"), brush | O::Ramp | O::OutlineSelection},
         {QStringLiteral("rimLight"), brush | O::Ramp | O::Light},
     };
     const auto it = table.find(toolId);
@@ -76,7 +76,7 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         *known = it != table.end();
     if (it != table.end())
         return *it;
-    return brush | O::Strength | O::Ramp | O::Light | O::Form | O::Hardness;
+    return brush | O::Strength | O::Ramp | O::Light | O::Form | O::Hardness | O::OutlineSelection;
 }
 
 ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* select, QAction* filledShapes,
@@ -158,6 +158,11 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     hardness_->setSuffix(QStringLiteral("%"));
     hardness_->setToolTip(tr("Soft brush: how little of the tip fades out"));
 
+    outlineSelection_ = new QCheckBox(tr("Outline the selection"));
+    outlineSelection_->setObjectName(QStringLiteral("brushOutlineSelection"));
+    outlineSelection_->setToolTip(
+        tr("Outline brush: the selection is the shape, so its seam with a shape beside it takes the line"));
+
     symmetry_ = new QComboBox;
     symmetry_->setObjectName(QStringLiteral("brushSymmetry"));
     symmetry_->addItem(tr("Off"), int(SymmetryMode::None));
@@ -224,6 +229,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(rim_);
     form->addRow(specular_);
     form->addRow(tr("Hardness"), hardness_);
+    form->addRow(outlineSelection_);
     form->addRow(filled_);
     form->addRow(pencil4_);
     form->addRow(tr("Paste"), pasteMode_);
@@ -252,6 +258,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     connect(rim_, &QCheckBox::toggled, this, &ToolOptions::apply);
     connect(specular_, &QCheckBox::toggled, this, &ToolOptions::apply);
     connect(hardness_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
+    connect(outlineSelection_, &QCheckBox::toggled, this, &ToolOptions::apply);
     connect(light_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
     connect(symmetry_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
     connect(folds_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
@@ -285,6 +292,7 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(rim_, o.testFlag(O::Form));
     f->setRowVisible(specular_, o.testFlag(O::Form));
     f->setRowVisible(hardness_, o.testFlag(O::Hardness));
+    f->setRowVisible(outlineSelection_, o.testFlag(O::OutlineSelection));
     f->setRowVisible(filled_, o.testFlag(O::Filled));
     f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
     f->setRowVisible(pasteMode_, o.testFlag(O::PasteMode));
@@ -318,6 +326,7 @@ void ToolOptions::sync() {
     rim_->setChecked(f.rim);
     specular_->setChecked(f.specular);
     hardness_->setValue(int(std::lround(view_->hardness() * 100)));
+    outlineSelection_->setChecked(view_->outlineShape() == OutlineShape::Selection);
     const Symmetry& choice = view_->symmetryChoice();
     symmetry_->setCurrentIndex(symmetry_->findData(int(view_->symmetry().mode)));
     folds_->setValue(choice.folds);
@@ -358,6 +367,7 @@ void ToolOptions::apply() {
     f.rim = rim_->isChecked();
     f.specular = specular_->isChecked();
     const double hardness = hardness_->value() / 100.0;
+    const OutlineShape outline = outlineSelection_->isChecked() ? OutlineShape::Selection : OutlineShape::Ramp;
     Symmetry sym{SymmetryMode(symmetry_->currentData().toInt()), folds_->value(), std::nullopt};
     if (centre_->isChecked())
         sym.centre = std::pair{centreX_->value(), centreY_->value()};
@@ -368,6 +378,7 @@ void ToolOptions::apply() {
     view_->setLockTransparent(lock);
     view_->setFormOptions(f);
     view_->setHardness(hardness);
+    view_->setOutlineShape(outline);
     view_->setSymmetry(sym);
     view_->setPencilConnectivity(pencil);
 }

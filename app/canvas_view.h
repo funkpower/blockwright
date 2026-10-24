@@ -17,6 +17,7 @@
 // one, so every canvas pixel is a whole block of device pixels.
 
 #include "blockwright/brush.h"
+#include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/form.h"
 #include "blockwright/canvas_renderer.h"
 #include "blockwright/edit.h"
@@ -79,6 +80,10 @@ public:
     void setFormOptions(const FormOptions& options);
     double hardness() const { return hardness_; }
     void setHardness(double hardness);  // clamped
+    // What the outline brush takes as the shape: the ramp's cells, or those
+    // in the selection (a seam beside another shape takes the line).
+    OutlineShape outlineShape() const { return outlineShape_; }
+    void setOutlineShape(OutlineShape shape);
 
     // The F-key glyph set (glyph_sets.h), wrapping round at either end.
     int glyphSet() const { return glyphSet_; }
@@ -260,6 +265,7 @@ private:
     bool lockTransparent_ = false;
     FormOptions form_;
     double hardness_ = 0.0;
+    OutlineShape outlineShape_ = OutlineShape::Ramp;
     double stylusPressure_ = 1.0;  // the last press or move's, for its release
     // The stylus's buttons as its last tablet event here held them, and the
     // point the view last saw it at (tabletEvent).

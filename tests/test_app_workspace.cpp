@@ -190,6 +190,7 @@ TEST_CASE("Tool Options shows only the active tool's settings") {
         CHECK(shows(o->formBox()) == want.testFlag(ToolOptions::Option::Form));
         CHECK(shows(o->rimBox()) == want.testFlag(ToolOptions::Option::Form));
         CHECK(shows(o->hardnessBox()) == want.testFlag(ToolOptions::Option::Hardness));
+        CHECK(shows(o->outlineSelectionBox()) == want.testFlag(ToolOptions::Option::OutlineSelection));
         CHECK(shows(o->symmetryBox()) == want.testFlag(ToolOptions::Option::Symmetry));
         CHECK(shows(o->foldsBox()) == want.testFlag(ToolOptions::Option::Symmetry));
         CHECK(shows(o->centreBox()) == want.testFlag(ToolOptions::Option::Symmetry));
@@ -209,6 +210,8 @@ TEST_CASE("Tool Options shows only the active tool's settings") {
     CHECK(ToolOptions::optionsFor(QStringLiteral("rectangle")).testFlag(O::Filled));
     CHECK_FALSE(ToolOptions::optionsFor(QStringLiteral("line")).testFlag(O::Filled));
     CHECK(ToolOptions::optionsFor(QStringLiteral("halfBlock")).testFlag(O::Pencil));
+    CHECK(ToolOptions::optionsFor(QStringLiteral("outline")).testFlag(O::OutlineSelection));
+    CHECK_FALSE(ToolOptions::optionsFor(QStringLiteral("rimLight")).testFlag(O::OutlineSelection));
 }
 
 TEST_CASE("every Tool Options control has a tooltip, with its shortcut where it has one") {

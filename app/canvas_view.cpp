@@ -187,6 +187,13 @@ void CanvasView::setHardness(double hardness) {
     brushSettingsChanged();
 }
 
+void CanvasView::setOutlineShape(OutlineShape shape) {
+    if (shape == outlineShape_)
+        return;
+    outlineShape_ = shape;
+    brushSettingsChanged();
+}
+
 void CanvasView::brushSettingsChanged() {
     emit brushChanged();
     if (tool_)

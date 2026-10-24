@@ -3,8 +3,9 @@
 // only those. It holds the view's brush settings (size, tip, strength, what
 // a stylus's pressure scales), the ramp the ramp brushes walk, the alpha
 // lock, the light direction (the rim-light and form brushes), the form
-// brush's form, rim light and glint, the soft brush's hardness, the symmetry
-// and the pencil's connectivity, the glyph brush's glyph, Filled Shapes for
+// brush's form, rim light and glint, the soft brush's hardness, what the
+// outline brush takes as the shape, the symmetry and the pencil's
+// connectivity, the glyph brush's glyph, Filled Shapes for
 // the rectangle and ellipse, and the select tool's paste mode. Each row is
 // shown while the active tool reads it (optionsFor). It edits the view's
 // settings and the tools' and follows them, so the menus and the dock stay
@@ -47,6 +48,7 @@ public:
         Glyph = 1 << 11,
         Filled = 1 << 12,
         PasteMode = 1 << 13,
+        OutlineSelection = 1 << 14,  // the outline brush's shape is the selection
     };
     Q_DECLARE_FLAGS(Options, Option)
 
@@ -74,6 +76,7 @@ public:
     QCheckBox* rimBox() const { return rim_; }
     QCheckBox* specularBox() const { return specular_; }
     QSpinBox* hardnessBox() const { return hardness_; }
+    QCheckBox* outlineSelectionBox() const { return outlineSelection_; }
     QComboBox* symmetryBox() const { return symmetry_; }
     QSpinBox* foldsBox() const { return folds_; }
     QCheckBox* centreBox() const { return centre_; }
@@ -111,6 +114,7 @@ private:
     QCheckBox* rim_;
     QCheckBox* specular_;
     QSpinBox* hardness_;
+    QCheckBox* outlineSelection_;
     QComboBox* symmetry_;
     QSpinBox* folds_;
     QCheckBox* centre_;

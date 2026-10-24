@@ -125,9 +125,22 @@ std::optional<std::pair<double, double>> edgeNormal(const Canvas& canvas, const 
 // beside the fringe along its half (left or right of a ▀/▄, above or below a
 // ▌/▐), the shape half would still meet the ground past that line, so the
 // whole cell takes the line first and the half is the next step lighter.
+// With OutlineShape::Selection the shape is only the ramp's cells in the
+// stroke's selection: the cells outside it are outside the shape, so where
+// the selected shape touches another on the same ramp its edge runs along
+// the seam and takes the line on its own side, as against black (#51). With
+// no selection, or one over the whole canvas, it is the outline as ever. The
+// seam is settled against the lint like the rest of the line: beside a shape
+// that climbs away from it the darkest line can be a skip (w between W and
+// W▒w, W▓w after it), and the seam takes a lighter rung there.
+enum class OutlineShape {
+    Ramp,       // every cell on the ramp but the ground; the selection only clips
+    Selection,  // those cells in the selection
+};
+
 class OutlineBrush : public Brush {
 public:
-    explicit OutlineBrush(Ramp ramp);
+    explicit OutlineBrush(Ramp ramp, OutlineShape shape = OutlineShape::Ramp);
 
     std::string_view name() const override { return "outline"; }
     void dab(Stroke& stroke, const Dab& d, int size, double strength) const override;
@@ -140,6 +153,7 @@ private:
     void composite(Stroke& stroke, Plan& plan) const;
 
     Ramp ramp_;
+    OutlineShape shape_;
 };
 
 // Rim-light brush: the full edge cells under it that face the light go one

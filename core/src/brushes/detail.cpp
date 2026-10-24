@@ -203,16 +203,35 @@ public:
     // `inside`, when given, is the level inside each cell of a whole canvas
     // `stride` wide (insides() of an Outliner of it), this canvas its box at
     // (ox, oy): the box reads a thin part's level from a body outside it.
+    // `shape`, when given, marks the cells of that whole canvas that may be
+    // the shape (OutlineShape::Selection): the rest are outside it.
     Outliner(const Canvas& canvas, const Ramp& ramp, bool ice, const std::vector<int>* inside = nullptr, int ox = 0,
-             int oy = 0, int stride = 0)
+             int oy = 0, int stride = 0, const std::vector<char>* shape = nullptr)
         : canvas_(canvas), ramp_(ramp), ice_(ice), w_(canvas.width()), h_(canvas.height()), ground_(groundOf(ramp)),
           floor_((groundOf(ramp) + 1) * kRungsPerStep), part_(size()), edge_(size(), 0), inside_(size(), INT_MAX) {
+        const auto inMask = [&](int x, int y) {
+            return (*shape)[static_cast<size_t>(y + oy) * static_cast<size_t>(stride) + (x + ox)] != 0;
+        };
         for (int y = 0; y < h_; ++y)
             for (int x = 0; x < w_; ++x)
-                part_[at(x, y)] = partOf(ramp_, canvas_.at(x, y), ice_);
+                if (!shape || inMask(x, y))
+                    part_[at(x, y)] = partOf(ramp_, canvas_.at(x, y), ice_);
         for (int y = 0; y < h_; ++y)
-            for (int x = 0; x < w_; ++x)
-                edge_[at(x, y)] = part_[at(x, y)] && outlineEdgeAt(canvas_, ramp_, x, y, ice_, *part_[at(x, y)]);
+            for (int x = 0; x < w_; ++x) {
+                const auto& p = part_[at(x, y)];
+                if (!p)
+                    continue;
+                if (!shape) {
+                    edge_[at(x, y)] = outlineEdgeAt(canvas_, ramp_, x, y, ice_, *p);
+                    continue;
+                }
+                // outlineEdgeAt, a cell outside the mask outside the shape
+                bool edge = p->fringe;
+                for (int dy = -1; dy <= 1 && !edge; ++dy)
+                    for (int dx = -1; dx <= 1 && !edge; ++dx)
+                        edge = (dx || dy) && canvas_.contains(x + dx, y + dy) && !part_[at(x + dx, y + dy)];
+                edge_[at(x, y)] = edge;
+            }
         if (!inside) {
             insideLevels();
             return;
@@ -437,11 +456,13 @@ struct OutlineBrush::Plan {
         lint::LadderIndex index;            // the lint of result
         std::vector<int> inside;            // the level inside each edge cell of origin (Outliner)
         bool settled = false;               // a dab of the image has settled a line
+        std::vector<char> shape;            // the cells that may be the shape (OutlineShape::Selection), or empty
     };
     // The lint of the stroke-start canvas and its levels inside, which the
     // unmirrored images start from.
     std::optional<lint::LadderIndex> start;
     std::vector<int> inside;
+    std::vector<char> shape;  // the unmirrored images' (Image::shape)
     std::map<int, Image> images;
     // The canvas as the stroke shows it, every image's line composited, and
     // its lint: each dab's composite is judged here as a whole.
@@ -486,7 +507,8 @@ std::tuple<int, int, int, int, int> keyOf(const lint::LadderFinding& f) {
 // is the box with the line, never a canvas with a finding it lacked.
 Canvas settleWith(Layer& layer, int ox, int oy, const Canvas& canvas, const Ramp& ramp, bool ice,
                   const std::vector<char>& cover, const std::vector<int>& inside, bool careful) {
-    const Outliner outliner(canvas, ramp, ice, &inside, ox, oy, layer.result.width());
+    const Outliner outliner(canvas, ramp, ice, &inside, ox, oy, layer.result.width(),
+                            layer.shape.empty() ? nullptr : &layer.shape);
     const int w = canvas.width(), h = canvas.height();
     const auto at = [w](int x, int y) { return static_cast<size_t>(y) * static_cast<size_t>(w) + x; };
     std::vector<std::vector<Cell>> cands(static_cast<size_t>(w) * h);
@@ -1112,14 +1134,38 @@ constexpr int kContext = 8;
 
 // Whether covering (x, y) can change the line: a shape cell on the edge,
 // where the line goes, or of the ground's level, a fade a repair may darken.
-bool relevantAt(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice) {
+// `shape`, unless empty, marks the canvas's cells that may be the shape.
+bool relevantAt(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice, const std::vector<char>& shape) {
+    const int w = canvas.width();
+    const auto in = [&](int cx, int cy) { return shape.empty() || shape[static_cast<size_t>(cy) * w + cx]; };
+    if (!in(x, y))
+        return false;
     const auto p = partOf(ramp, canvas.at(x, y), ice);
-    return p && (p->level == groundOf(ramp) || outlineEdgeAt(canvas, ramp, x, y, ice, *p));
+    if (!p || p->level == groundOf(ramp) || outlineEdgeAt(canvas, ramp, x, y, ice, *p))
+        return p.has_value();
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx)
+            if ((dx || dy) && canvas.contains(x + dx, y + dy) && !in(x + dx, y + dy))
+                return true;
+    return false;
+}
+
+// The cells of a w x h canvas in the selection, mirrored into an image's
+// frame, for OutlineShape::Selection; empty for no selection.
+std::vector<char> shapeOf(const std::shared_ptr<const Mask>& selection, int w, int h, bool flipX, bool flipY) {
+    std::vector<char> out;
+    if (!selection)
+        return out;
+    out.resize(static_cast<size_t>(w) * static_cast<size_t>(h));
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            out[static_cast<size_t>(y) * w + x] = selection->contains(flipX ? w - 1 - x : x, flipY ? h - 1 - y : y);
+    return out;
 }
 
 } // namespace
 
-OutlineBrush::OutlineBrush(Ramp ramp) : ramp_(std::move(ramp)) {}
+OutlineBrush::OutlineBrush(Ramp ramp, OutlineShape shape) : ramp_(std::move(ramp)), shape_(shape) {}
 
 namespace {
 
@@ -1169,7 +1215,10 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
         // once a stroke: the canvas's lint, the level inside its edge cells,
         // and the shown canvas with its lint
         plan->start.emplace(canvas, ramp_);
-        plan->inside = Outliner(canvas, ramp_, ice).insides();
+        if (shape_ == OutlineShape::Selection)
+            plan->shape = shapeOf(stroke.options().selection, w, h, false, false);
+        plan->inside =
+            Outliner(canvas, ramp_, ice, nullptr, 0, 0, w, plan->shape.empty() ? nullptr : &plan->shape).insides();
         plan->shown = canvas;
         plan->shownIndex = *plan->start;
         cellsRead += 2LL * w * h;
@@ -1182,10 +1231,15 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
         const bool fx = d.flipX, fy = d.flipY;
         Canvas origin = mirrored(canvas, fx, fy);
         lint::LadderIndex index = fx || fy ? lint::LadderIndex(origin, ramp_) : *plan->start;
-        std::vector<int> inside = fx || fy ? Outliner(origin, ramp_, ice).insides() : plan->inside;
+        std::vector<char> shape = fx || fy ? std::vector<char>() : plan->shape;
+        if ((fx || fy) && !plan->shape.empty())
+            shape = shapeOf(stroke.options().selection, w, h, fx, fy);
+        std::vector<int> inside =
+            fx || fy ? Outliner(origin, ramp_, ice, nullptr, 0, 0, w, shape.empty() ? nullptr : &shape).insides()
+                     : plan->inside;
         image = plan->images
                     .emplace(d.image, Layer{fx, fy, origin, std::vector<double>(static_cast<size_t>(w) * h, -1.0), origin,
-                                            origin, std::move(index), std::move(inside)})
+                                            origin, std::move(index), std::move(inside), false, std::move(shape)})
                     .first;
     }
     Layer& layer = image->second;
@@ -1239,7 +1293,7 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
         for (int y = y0; y <= y1; ++y)
             for (int x = x0; x <= x1; ++x)
                 if (layer.cover[at(x, y)] >= 0 && layer.result.at(x, y) == origin.at(x, y) &&
-                    relevantAt(origin, ramp_, x, y, ice))
+                    relevantAt(origin, ramp_, x, y, ice, layer.shape))
                     cover[static_cast<size_t>(y - cy0) * static_cast<size_t>(cw) + (x - cx0)] = 1, any = true;
         if (any) {
             outline(layer, cx0, cy0, cw, ch, ramp_, ice, cover, layer.inside, was);

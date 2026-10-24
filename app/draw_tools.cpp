@@ -426,7 +426,7 @@ QString OutlineTool::status() const {
 }
 
 std::unique_ptr<Brush> OutlineTool::makeBrush(Qt::MouseButton) const {
-    return std::make_unique<OutlineBrush>(view()->ramp());
+    return std::make_unique<OutlineBrush>(view()->ramp(), view()->outlineShape());
 }
 
 RimLightTool::RimLightTool(QObject* parent) : BrushTool(QStringLiteral("rimLight"), tr("R&im Light Brush"), parent) {}

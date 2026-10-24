@@ -157,6 +157,50 @@ TEST_CASE("the outline brush outlines the ramp shape one cell wide, in the selec
 }
 
 
+TEST_CASE("the outline brush lines the seam of the selected shape from Tool Options") {
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setRamp(steel());
+    v->setBrushSettings(BrushSettings{12, Tip::Square, 1.0, PressureTo::Nothing});
+    // two White shapes touching at rows 1-4: columns 2-6 and 7-11
+    CellEdit e;
+    for (int y = 1; y <= 4; ++y)
+        for (int x = 2; x <= 11; ++x)
+            e.changes.push_back({x, y, at(w, x, y), rungCell(steel(), 12)});
+    REQUIRE(v->applyEdit(e));
+    act(w, QStringLiteral("selectTool"))->trigger();
+    w.selectTool()->select({2, 1, 5, 4});
+    QCheckBox* box = dock(w)->outlineSelectionBox();
+    CHECK_FALSE(box->isChecked());
+    CHECK(v->outlineShape() == OutlineShape::Ramp);
+    // the selection only clips: no seam
+    use(w, "outline");
+    const CellEdit clipped = drag(w, {{4, 4}});
+    REQUIRE_FALSE(clipped.empty());
+    CHECK_FALSE(cells(clipped).count({6, 2}));
+    CHECK_FALSE(cells(clipped).count({6, 3}));
+    w.document()->undoStack()->undo();
+    // the selection as the shape: its side of the seam takes the line
+    box->setChecked(true);
+    CHECK(v->outlineShape() == OutlineShape::Selection);
+    const int steps = w.document()->undoStack()->index();
+    const CellEdit seam = drag(w, {{4, 4}});
+    landed(w, seam, steps);
+    const auto line = written(seam);
+    for (int y = 1; y <= 4; ++y) {
+        INFO("row " << y);
+        REQUIRE(line.count({6, y}));
+        CHECK(line.at({6, y}) == rungCell(steel(), 8));
+    }
+    for (const Point& p : cells(seam))
+        CHECK(p.first <= 6);
+    CHECK(lint::checkLadder(w.document()->canvas(), steel()).clean());
+    // and the dock follows the view
+    v->setOutlineShape(OutlineShape::Ramp);
+    CHECK_FALSE(box->isChecked());
+}
+
 TEST_CASE("the rim-light brush lights the edges facing the dock's light by one rung") {
     MainWindow w;
     REQUIRE(bwtest::showExposed(&w));
