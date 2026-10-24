@@ -1,5 +1,5 @@
 // The detail tools in the main window (PLAN §10, "Detail"): the outline,
-// rim-light and texture brushes, the pencil's 8-connected mode and the symmetry modes,
+// rim-light and texture brushes, the clone stamp, the pencil's 8-connected mode and the symmetry modes,
 // from the Tools and Edit menus and Tool Options, with the mouse delivered
 // as the platform delivers it.
 
@@ -11,7 +11,10 @@
 #include "main_window.h"
 #include "select_tool.h"
 #include "tool.h"
+#include "toolbox.h"
+#include "settings.h"
 
+#include "scratch_settings.h"
 #include "system_input.h"
 
 #include "blockwright/brush.h"
@@ -27,6 +30,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QFileInfo>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QMenu>
@@ -124,7 +128,293 @@ std::set<Point> cells(const CellEdit& e) {
     return out;
 }
 
+// A click on cell (x, y) with Ctrl held, through the window system.
+void ctrlClick(CanvasView* v, int x, int y) {
+    QWidget* top = v->window();
+    const QPointF local = v->mapTo(top, QPointF(v->cellRect(QPoint(x, y)).center()));
+    for (const auto& [type, held] : {std::pair{QEvent::MouseButtonPress, Qt::MouseButtons(Qt::LeftButton)},
+                                     std::pair{QEvent::MouseButtonRelease, Qt::MouseButtons(Qt::NoButton)}})
+        QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+            top->windowHandle(), local, top->mapToGlobal(local), held, Qt::LeftButton, type, Qt::ControlModifier);
+}
+
+CloneTool* cloneTool(MainWindow& w) {
+    auto* t = qobject_cast<CloneTool*>(w.tools()->find(QStringLiteral("clone")));
+    REQUIRE(t);
+    return t;
+}
+
+// The clone stamp's settings, forgotten before and after a test, from the
+// scratch settings only.
+struct FreshCloneSettings {
+    static QString dir() { return QFileInfo(bwtest::scratchSettingsFile()).absolutePath(); }
+    FreshCloneSettings() {
+        REQUIRE(bwtest::settingsInScratch(dir()));
+        appSettings()->remove(QStringLiteral("clone"));
+    }
+    ~FreshCloneSettings() {
+        if (bwtest::settingsInScratch(dir()))
+            appSettings()->remove(QStringLiteral("clone"));
+    }
+};
+
+// Letters A, B, C at (1..3, 1) and a, b, c under them, as one undo step.
+void paintLetters(MainWindow& w) {
+    CellEdit e;
+    for (int x = 1; x <= 3; ++x) {
+        Cell top;
+        top.ch = char32_t(U'A' + x - 1);
+        top.fg = Color::indexed(Yellow);
+        top.bg = Color::indexed(Blue);
+        Cell under = top;
+        under.ch = char32_t(U'a' + x - 1);
+        e.changes.push_back({x, 1, at(w, x, 1), top});
+        e.changes.push_back({x, 2, at(w, x, 2), under});
+    }
+    REQUIRE(w.canvasView()->applyEdit(e));
+}
+
 } // namespace
+
+TEST_CASE("the clone stamp is in the Tools menu and the detail group, on Ctrl+Shift+K") {
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    QAction* a = act(w, QStringLiteral("cloneTool"));
+    CHECK(a->shortcut() == QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_K));
+    CHECK(QString(cloneTool(w)->name()).remove(QLatin1Char('&')) == QStringLiteral("Clone Stamp"));
+    bwtest::systemKey(w.canvasView(), Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
+    CHECK(w.tools()->active()->id() == QStringLiteral("clone"));
+    CHECK(a->isChecked());
+    bool inDetail = false;
+    for (const QStringList& g : Toolbox::groups())
+        if (g.contains(QStringLiteral("outline")))
+            inDetail = g.contains(QStringLiteral("clone"));
+    CHECK(inDetail);
+    // it reads the brush settings and Aligned, not a ramp or a strength
+    w.tools()->setActive(cloneTool(w));
+    const auto shown = dock(w)->shown();
+    CHECK(shown.testFlag(ToolOptions::Option::Size));
+    CHECK(shown.testFlag(ToolOptions::Option::Tip));
+    CHECK(shown.testFlag(ToolOptions::Option::Symmetry));
+    CHECK(shown.testFlag(ToolOptions::Option::AlphaLock));
+    CHECK(shown.testFlag(ToolOptions::Option::CloneAligned));
+    CHECK(dock(w)->cloneAlignedBox()->isVisibleTo(dock(w)));
+}
+
+TEST_CASE("the clone stamp: Ctrl+click sets the source and paints nothing; a drag copies from it") {
+    FreshCloneSettings fresh;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    QUndoStack* undo = w.document()->undoStack();
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    paintLetters(w);
+    use(w, "clone");
+    CloneTool* t = cloneTool(w);
+    CHECK(t->aligned());
+    CHECK(t->status().contains(QStringLiteral("Ctrl+click")));
+    const Canvas before = w.document()->canvas();
+    const int steps = undo->index();
+
+    // no source: a drag paints nothing
+    drag(w, {{10, 8}, {12, 8}});
+    CHECK(undo->index() == steps);
+    CHECK(w.document()->canvas() == before);
+    CHECK_FALSE(t->dragging());
+
+    // Ctrl+click: the source, no paint, no drag, the cell cursor stays
+    const Cursor cursor = v->cellCursor();
+    ctrlClick(v, 1, 1);
+    CHECK(t->source().source == std::pair{1, 1});
+    CHECK_FALSE(t->dragging());
+    CHECK(undo->index() == steps);
+    CHECK(w.document()->canvas() == before);
+    CHECK(v->cellCursor().x == cursor.x);
+    CHECK(v->cellCursor().y == cursor.y);
+    CHECK(t->mark() == QPoint(1, 1));
+    CHECK(t->status().contains(QStringLiteral("aligned")));
+
+    // a drag copies the cells at the distance to its first cell, one step
+    const CellEdit shown = drag(w, {{10, 8}, {12, 8}});
+    landed(w, shown, steps);
+    CHECK(at(w, 10, 4) == before.at(1, 1));
+    CHECK(at(w, 11, 4) == before.at(2, 1));
+    CHECK(at(w, 12, 4) == before.at(3, 1));
+
+    // aligned: the next stroke keeps that distance; the mark is the cell it
+    // copies from
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 10, 10), Qt::LeftButton, Qt::LeftButton);
+    CHECK(t->mark() == QPoint(1, 2));
+    bwtest::systemMouse(v, QEvent::MouseMove, pixel(v, 11, 10), Qt::NoButton, Qt::LeftButton);
+    CHECK(t->mark() == QPoint(2, 2));
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 11, 10), Qt::LeftButton, Qt::NoButton);
+    CHECK(at(w, 10, 5) == before.at(1, 2));
+    CHECK(at(w, 11, 5) == before.at(2, 2));
+    CHECK(undo->index() == steps + 2);
+    CHECK(t->mark() == QPoint(1, 1));
+
+    // undo takes a stroke back whole
+    undo->undo();
+    CHECK(at(w, 10, 5) == before.at(10, 5));
+    CHECK(at(w, 11, 5) == before.at(11, 5));
+    CHECK(at(w, 10, 4) == before.at(1, 1));
+
+    // a new source starts over; a stroke dropped with Esc sets no distance
+    ctrlClick(v, 2, 1);
+    CHECK_FALSE(t->source().anchor);
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 20, 12), Qt::LeftButton, Qt::LeftButton);
+    CHECK(t->dragging());
+    CHECK_FALSE(t->pending().empty());
+    bwtest::systemKey(v, Qt::Key_Escape);
+    CHECK_FALSE(t->dragging());
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 20, 12), Qt::LeftButton, Qt::NoButton);
+    CHECK(at(w, 20, 6) == before.at(20, 6));
+    CHECK_FALSE(t->source().anchor);
+    drag(w, {{30, 12}});
+    CHECK(at(w, 30, 6) == before.at(2, 1));
+    CHECK(t->source().anchor == std::pair{30, 6});
+
+    // not aligned: each stroke copies from the source again
+    dock(w)->cloneAlignedBox()->setChecked(false);
+    CHECK_FALSE(t->aligned());
+    drag(w, {{40, 12}, {41, 12}});
+    CHECK(at(w, 40, 6) == before.at(2, 1));
+    CHECK(at(w, 41, 6) == before.at(3, 1));
+}
+
+TEST_CASE("the clone stamp's Aligned is kept between runs", "[settings]") {
+    FreshCloneSettings fresh;
+    {
+        MainWindow w;
+        CHECK(cloneTool(w)->aligned());
+        CHECK(dock(w)->cloneAlignedBox()->isChecked());
+        dock(w)->cloneAlignedBox()->setChecked(false);
+        CHECK_FALSE(cloneTool(w)->aligned());
+    }
+    REQUIRE(bwtest::settingsInScratch(FreshCloneSettings::dir()));
+    CHECK(appSettings()->value(QStringLiteral("clone/aligned")).toBool() == false);
+    {
+        MainWindow w;
+        CHECK_FALSE(cloneTool(w)->aligned());
+        CHECK_FALSE(dock(w)->cloneAlignedBox()->isChecked());
+        // and the dock follows the tool
+        cloneTool(w)->setAligned(true);
+        CHECK(dock(w)->cloneAlignedBox()->isChecked());
+    }
+    CHECK(appSettings()->value(QStringLiteral("clone/aligned")).toBool());
+}
+
+TEST_CASE("the clone stamp's mark follows an unaligned drag") {
+    FreshCloneSettings fresh;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    paintLetters(w);
+    use(w, "clone");
+    CloneTool* t = cloneTool(w);
+    t->setAligned(false);
+    ctrlClick(v, 1, 1);
+    const Canvas before = w.document()->canvas();
+    // the mark is the cell the brush copies to the dab under the pointer
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 10, 8), Qt::LeftButton, Qt::LeftButton);
+    CHECK(t->mark() == QPoint(1, 1));
+    bwtest::systemMouse(v, QEvent::MouseMove, pixel(v, 11, 8), Qt::NoButton, Qt::LeftButton);
+    CHECK(t->mark() == QPoint(2, 1));
+    CHECK(dragTool(w)->pending().changes.size() == 2);
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 11, 8), Qt::LeftButton, Qt::NoButton);
+    CHECK(at(w, 11, 4) == before.at(2, 1));
+    CHECK(t->mark() == QPoint(1, 1));
+    // a second stroke starts at the source again, and its mark with it
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 20, 12), Qt::LeftButton, Qt::LeftButton);
+    CHECK(t->mark() == QPoint(1, 1));
+    bwtest::systemMouse(v, QEvent::MouseMove, pixel(v, 22, 14), Qt::NoButton, Qt::LeftButton);
+    CHECK(t->mark() == QPoint(3, 2));
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 22, 14), Qt::LeftButton, Qt::NoButton);
+    CHECK(at(w, 22, 7) == before.at(3, 2));
+}
+
+TEST_CASE("the clone stamp forgets its source and distance when the document is replaced") {
+    FreshCloneSettings fresh;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    Document* doc = w.document();
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    CloneTool* t = cloneTool(w);
+    REQUIRE(t->aligned());
+
+    // ABCDEFGH on one row, as an .ans opens
+    const auto letters = [] {
+        AnsiDocument a;
+        a.canvas = Canvas(8, 1);
+        for (int x = 0; x < 8; ++x) {
+            a.canvas.at(x, 0).ch = char32_t(U'A' + x);
+            a.canvas.at(x, 0).fg = Color::indexed(Yellow);
+        }
+        return a;
+    };
+    // A source at (1, 0) and an aligned stroke from (4, 0) on the open
+    // document: a source and a distance.
+    const auto setUp = [&] {
+        doc->replace(letters(), QString());
+        use(w, "clone");
+        ctrlClick(v, 1, 0);
+        drag(w, {{4, 0}});
+        REQUIRE(t->source().source == std::pair{1, 0});
+        REQUIRE(t->source().anchor == std::pair{4, 0});
+        REQUIRE(at(w, 4, 0).ch == U'B');
+    };
+    // After a replacement: no source, no distance, no mark, and a press paints
+    // nothing until a new Ctrl+click.
+    const auto forgotten = [&] {
+        CHECK_FALSE(t->source().source);
+        CHECK_FALSE(t->source().anchor);
+        CHECK_FALSE(t->mark());
+        CHECK(t->aligned());
+        use(w, "clone");
+        CHECK(t->status().contains(QStringLiteral("Ctrl+click")));
+        const Canvas before = doc->canvas();
+        const int steps = doc->undoStack()->index();
+        drag(w, {{4, 0}, {5, 0}});
+        CHECK(doc->canvas() == before);
+        CHECK(doc->undoStack()->index() == steps);
+        // a new source works as ever
+        ctrlClick(v, 0, 0);
+        drag(w, {{4, 0}});
+        CHECK(at(w, 4, 0) == before.at(0, 0));
+    };
+
+    SECTION("open an .ans with the clone stamp active") {
+        setUp();
+        doc->replace(letters(), QString());
+        forgotten();
+    }
+    SECTION("New with the clone stamp active") {
+        setUp();
+        doc->clear();
+        forgotten();
+    }
+    SECTION("open a project with another tool active") {
+        setUp();
+        use(w, "halfBlock");
+        project::Project p;
+        p.layers = LayerStack::fromCanvas(letters().canvas);
+        doc->replace(std::move(p), QString(), FileForm::ProjectDirectory);
+        forgotten();
+    }
+    SECTION("open a narrower canvas with another tool active: no source left off it") {
+        setUp();
+        ctrlClick(v, 7, 0);
+        REQUIRE(t->source().source == std::pair{7, 0});
+        use(w, "keyboard");
+        AnsiDocument narrow;
+        narrow.canvas = Canvas(4, 1);
+        doc->replace(std::move(narrow), QString());
+        CHECK_FALSE(t->source().source);
+        CHECK_FALSE(t->mark());
+    }
+}
 
 TEST_CASE("the outline brush outlines the ramp shape one cell wide, in the selection only") {
     MainWindow w;

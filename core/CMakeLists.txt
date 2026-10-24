@@ -5,6 +5,7 @@
 add_library(blockwright_core STATIC
   src/ansi.cpp
   src/brush.cpp
+  src/brushes/clone.cpp
   src/brushes/despeckle.cpp
   src/brushes/distance.cpp
   src/brushes/detail.cpp

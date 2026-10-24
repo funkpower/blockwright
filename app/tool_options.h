@@ -8,8 +8,8 @@
 // seed, the symmetry and the pencil's
 // connectivity, the glyph brush's glyph, Filled Shapes for
 // the rectangle and ellipse, the ramp gradient's shape, rungs and banding,
-// the select tool's paste mode, and sample merged for the eyedropper and
-// fill. Each row is
+// the select tool's paste mode, sample merged for the eyedropper and
+// fill, and the clone stamp's Aligned. Each row is
 // shown while the active tool reads it (optionsFor). It edits the view's
 // settings and the tools' and follows them, so the menus and the dock stay
 // in step.
@@ -28,6 +28,7 @@ class QSpinBox;
 namespace bw {
 
 class CanvasView;
+class CloneTool;
 class GlyphTool;
 class GradientTool;
 class SelectTool;
@@ -57,6 +58,7 @@ public:
         SampleMerged = 1 << 15,
         Gradient = 1 << 16,  // the ramp gradient's shape, rungs and banding
         Texture = 1 << 17,   // the texture stamp's kind, density and seed
+        CloneAligned = 1 << 18,  // the clone stamp keeps its distance across strokes
     };
     Q_DECLARE_FLAGS(Options, Option)
 
@@ -102,6 +104,7 @@ public:
     QSpinBox* gradientFromBox() const { return gradientFrom_; }
     QSpinBox* gradientToBox() const { return gradientTo_; }
     QComboBox* gradientBandingBox() const { return gradientBanding_; }
+    QCheckBox* cloneAlignedBox() const { return cloneAligned_; }
 
 private:
     // Shows the view's and the tools' settings.
@@ -121,6 +124,7 @@ private:
     SelectTool* select_;
     GlyphTool* glyphTool_;
     GradientTool* gradientTool_;
+    CloneTool* cloneTool_;
     QFormLayout* form_layout_;
     QLabel* title_;
     QLabel* none_;
@@ -153,6 +157,7 @@ private:
     QSpinBox* gradientFrom_;
     QSpinBox* gradientTo_;
     QComboBox* gradientBanding_;
+    QCheckBox* cloneAligned_;
     Options shown_;
     bool syncing_ = false;
 };

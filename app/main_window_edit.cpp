@@ -59,6 +59,11 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(new OutlineTool);
     tools_->add(new RimLightTool);
     tools_->add(new TextureTool);
+    auto* clone = new CloneTool;
+    tools_->add(clone);
+    // The clone source and its distance are cells of this document, so a
+    // new one forgets them, the tool active or not.
+    connect(&doc_, &Document::reset, clone, &CloneTool::forgetSource);
     view_->setTool(tools_->active());
     connect(tools_, &ToolRegistry::activeChanged, view_, &CanvasView::setTool);
 
@@ -203,7 +208,8 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("eyedropper"), QKeySequence(Qt::CTRL | Qt::Key_I)},
         {QStringLiteral("outline"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E)},
         {QStringLiteral("rimLight"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)},
-        {QStringLiteral("texture"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P)}};
+        {QStringLiteral("texture"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P)},
+        {QStringLiteral("clone"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_K)}};
     QHash<Tool*, QAction*> toolActions;
     for (Tool* t : tools_->tools()) {
         const QKeySequence key = toolKeys.value(t->id());

@@ -29,6 +29,7 @@
 #include "tool.h"
 
 #include "blockwright/brush.h"
+#include "blockwright/brushes/clone.h"
 #include "blockwright/brushes/form.h"
 #include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/guard.h"
@@ -448,6 +449,54 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+};
+
+// Clone stamp (PLAN §10, "Detail"): Ctrl+click (Cmd+click on macOS) sets
+// the source cell and paints nothing; a stroke then copies whole cells from
+// the source to the cells under the tip, at the distance from the source to
+// the stroke's first dab (CloneBrush). Aligned (the default, kept in the
+// settings) keeps that distance for later strokes; not aligned, each stroke
+// copies from the source again. Without a source a press paints nothing; a
+// new document (open, New) has none.
+// The view marks the source cell, and during a stroke the cell being copied
+// from. Either button.
+class CloneTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit CloneTool(QObject* parent = nullptr);
+
+    // Where the strokes copy from, and the distance the last stroke set.
+    const CloneSource& source() const { return clone_; }
+    // Sets the source cell (a cell off the canvas is ignored): the next
+    // stroke copies from it.
+    void setSource(QPoint cell);
+    // Forgets the source and the distance: they are cells of a document
+    // another one (open, New) replaces. The main window calls it on
+    // Document::reset, whichever tool is active.
+    void forgetSource();
+    bool aligned() const { return clone_.aligned; }
+    void setAligned(bool aligned);
+    // The cell the stroke copies to its last dab (aligned or not), or with
+    // no stroke the source; empty without a source.
+    std::optional<QPoint> mark() const;
+
+    bool mousePress(const ToolEvent& e) override;
+    void finish() override;
+    void paint(QPainter& p) const override;
+    QString status() const override;
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    bool begin(const ToolEvent& e) override;
+    bool extend(const ToolEvent& e) override;
+    void reset() override;
+
+private:
+    CloneSource clone_;
+    // The drag's: clone_ with the stroke's distance, kept if it lands.
+    std::optional<CloneSource> next_;
+    std::optional<CloneBrush> stamp_;
+    QPoint last_;  // the drag's last dab
 };
 
 } // namespace bw

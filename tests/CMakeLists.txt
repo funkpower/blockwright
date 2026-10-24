@@ -14,6 +14,7 @@ add_executable(blockwright-tests
   test_ansi_parse.cpp
   test_ansi_write.cpp
   test_brush.cpp
+  test_clone_brush.cpp
   test_cli_read.cpp
   test_cli_shade.cpp
   test_composite.cpp

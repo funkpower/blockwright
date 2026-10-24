@@ -4,6 +4,7 @@
 #include "document.h"
 #include "settings.h"
 
+#include "blockwright/brushes/clone.h"
 #include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/drawing.h"
@@ -18,8 +19,10 @@
 #include "blockwright/shapes.h"
 
 #include <QKeyEvent>
+#include <QPainter>
 
 #include <algorithm>
+#include <climits>
 #include <set>
 
 namespace bw {
@@ -662,6 +665,109 @@ QString TextureTool::status() const {
 
 std::unique_ptr<Brush> TextureTool::makeBrush(Qt::MouseButton) const {
     return std::make_unique<TextureBrush>(view()->ramp(), view()->textureOptions(), brushSettings().lightDirection);
+}
+
+namespace {
+
+const QString kCloneAlignedKey = QStringLiteral("clone/aligned");
+
+} // namespace
+
+CloneTool::CloneTool(QObject* parent) : BrushTool(QStringLiteral("clone"), tr("Clone Stamp"), parent) {
+    clone_.aligned = appSettings()->value(kCloneAlignedKey, true).toBool();
+}
+
+void CloneTool::setSource(QPoint cell) {
+    if (!view() || cell.x() < 0 || cell.y() < 0 || cell.x() >= canvas().width() || cell.y() >= canvas().height())
+        return;
+    clone_.setSource(cell.x(), cell.y());
+    emit changed();
+}
+
+void CloneTool::forgetSource() {
+    if (!clone_.source && !clone_.anchor)
+        return;
+    clone_.source.reset();
+    clone_.anchor.reset();
+    emit changed();
+}
+
+void CloneTool::setAligned(bool aligned) {
+    if (aligned == clone_.aligned)
+        return;
+    clone_.aligned = aligned;
+    appSettings()->setValue(kCloneAlignedKey, aligned);
+    emit changed();
+}
+
+std::optional<QPoint> CloneTool::mark() const {
+    if (dragging() && stamp_) {
+        // The cell the stroke copies to the last dab, aligned or not.
+        const auto s = stamp_->sampleAt(last_.x(), last_.y());
+        if (s.first < INT_MIN || s.first > INT_MAX || s.second < INT_MIN || s.second > INT_MAX)
+            return std::nullopt;
+        return QPoint(int(s.first), int(s.second));
+    }
+    if (!clone_.source)
+        return std::nullopt;
+    return QPoint(clone_.source->first, clone_.source->second);
+}
+
+bool CloneTool::mousePress(const ToolEvent& e) {
+    // Ctrl+click sets the source; it takes the press so it doesn't move the
+    // cell cursor, and starts no drag.
+    if (!dragging() && view() && (e.modifiers & Qt::ControlModifier) &&
+        (e.button == Qt::LeftButton || e.button == Qt::RightButton)) {
+        setSource(e.cell);
+        return true;
+    }
+    return BrushTool::mousePress(e);
+}
+
+bool CloneTool::begin(const ToolEvent& e) {
+    next_ = clone_;
+    stamp_ = next_->beginStroke(e.cell.x(), e.cell.y());
+    if (!stamp_) {
+        next_.reset();
+        return false;
+    }
+    last_ = e.cell;
+    return BrushTool::begin(e);
+}
+
+bool CloneTool::extend(const ToolEvent& e) {
+    last_ = e.cell;
+    return BrushTool::extend(e);
+}
+
+void CloneTool::finish() {
+    // A stroke that lands sets the distance aligned strokes keep; one
+    // dropped with Esc leaves it.
+    if (dragging() && next_)
+        clone_.anchor = next_->anchor;
+    BrushTool::finish();
+}
+
+void CloneTool::reset() {
+    BrushTool::reset();
+    stamp_.reset();
+    next_.reset();
+}
+
+std::unique_ptr<Brush> CloneTool::makeBrush(Qt::MouseButton) const { return std::make_unique<CloneBrush>(*stamp_); }
+
+void CloneTool::paint(QPainter& p) const {
+    if (const auto m = mark(); view() && m)
+        view()->paintOutline(p, {m->x(), m->y(), 1, 1}, true);
+}
+
+QString CloneTool::status() const {
+    if (!clone_.source)
+        return tr("Ctrl+click to set the source");
+    return tr("Source %1, %2%3")
+        .arg(clone_.source->first)
+        .arg(clone_.source->second)
+        .arg(clone_.aligned ? tr(", aligned") : QString());
 }
 
 } // namespace bw

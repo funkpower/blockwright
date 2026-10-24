@@ -32,8 +32,10 @@ const QList<QStringList>& Toolbox::groups() {
         // The brushes that walk a ramp.
         {QStringLiteral("rampShade"), QStringLiteral("form"), QStringLiteral("soft"), QStringLiteral("despeckle"),
          QStringLiteral("smudge")},
-        // The detail brushes: those that find an edge, and the texture stamp.
-        {QStringLiteral("outline"), QStringLiteral("rimLight"), QStringLiteral("texture")},
+        // The detail brushes: those that find an edge, the texture stamp and the
+        // clone stamp.
+        {QStringLiteral("outline"), QStringLiteral("rimLight"), QStringLiteral("texture"),
+         QStringLiteral("clone")},
         {QStringLiteral("line"), QStringLiteral("rectangle"), QStringLiteral("ellipse")},
         // The fills: the bucket and the ramp gradient.
         {QStringLiteral("fill"), QStringLiteral("gradient")},
@@ -166,6 +168,14 @@ QIcon toolIcon(const QString& id) {
                 p.setBrush(light);
                 p.drawEllipse(QRectF(s.left() + 1.5, s.top() + 1, s.width() / 3, s.height() / 3).intersected(box));
             }
+    } else if (id == QLatin1String("clone")) {
+        // the source cell, outlined, and its copy
+        const QRectF from(box.left(), box.top(), box.width() / 2 - 1, box.height() / 2 - 1);
+        const QRectF to = from.translated(box.width() / 2 + 1, box.height() / 2 + 1);
+        p.drawRect(from);
+        p.fillRect(to, mid);
+        p.drawRect(to);
+        p.drawLine(from.center(), to.center());
     } else {
         // A tool with no picture of its own: its name's first letter.
         p.drawText(QRectF(0, 0, kIcon, kIcon), Qt::AlignCenter, id.left(1).toUpper());

@@ -77,6 +77,8 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("outline"), brush | O::Ramp | O::OutlineSelection},
         {QStringLiteral("rimLight"), brush | O::Ramp | O::Light},
         {QStringLiteral("texture"), brush | O::Ramp | O::Light | O::Texture},
+        // The clone stamp copies whole cells: no strength, no ramp.
+        {QStringLiteral("clone"), brush | O::CloneAligned},
     };
     const auto it = table.find(toolId);
     if (known)
@@ -90,7 +92,8 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
                          QWidget* parent)
     : QWidget(parent), view_(view), select_(select),
       glyphTool_(qobject_cast<GlyphTool*>(tools->find(QStringLiteral("glyph")))),
-      gradientTool_(qobject_cast<GradientTool*>(tools->find(QStringLiteral("gradient")))) {
+      gradientTool_(qobject_cast<GradientTool*>(tools->find(QStringLiteral("gradient")))),
+      cloneTool_(qobject_cast<CloneTool*>(tools->find(QStringLiteral("clone")))) {
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("toolOptionsTitle"));
     QFont bold = title_->font();
@@ -270,6 +273,11 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     gradientBanding_->setItemData(1, tr("Not yet: a dither is speckle to the ladder lint"), Qt::ToolTipRole);
     gradientBanding_->setToolTip(tr("Ramp gradient: how the rungs blend"));
 
+    cloneAligned_ = new QCheckBox(tr("Aligned"));
+    cloneAligned_->setObjectName(QStringLiteral("cloneAligned"));
+    cloneAligned_->setToolTip(tr("Clone stamp: keep the distance to the source from stroke to stroke; off, "
+                                 "each stroke copies from the source again (Ctrl+click sets it)"));
+
     auto* form = form_layout_ = new QFormLayout(this);
     form->addRow(title_);
     form->addRow(none_);
@@ -292,6 +300,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(tr("Texture"), textureKind_);
     form->addRow(tr("Density"), textureDensity_);
     form->addRow(tr("Seed"), textureSeed_);
+    form->addRow(cloneAligned_);
     form->addRow(filled_);
     form->addRow(pencil4_);
     form->addRow(tr("Paste"), pasteMode_);
@@ -312,6 +321,13 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
         connect(glyphTool_, &Tool::changed, this, &ToolOptions::sync);
     if (gradientTool_)
         connect(gradientTool_, &Tool::changed, this, &ToolOptions::sync);
+    if (cloneTool_) {
+        connect(cloneTool_, &Tool::changed, this, &ToolOptions::sync);
+        connect(cloneAligned_, &QCheckBox::toggled, this, [this](bool on) {
+            if (!syncing_)
+                cloneTool_->setAligned(on);
+        });
+    }
     connect(gradientShape_, &QComboBox::currentIndexChanged, this, &ToolOptions::applyGradientShape);
     connect(gradientFrom_, &QSpinBox::valueChanged, this, &ToolOptions::applyGradientFrom);
     connect(gradientTo_, &QSpinBox::valueChanged, this, &ToolOptions::applyGradientTo);
@@ -372,6 +388,7 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(textureKind_, o.testFlag(O::Texture));
     f->setRowVisible(textureDensity_, o.testFlag(O::Texture));
     f->setRowVisible(textureSeed_, o.testFlag(O::Texture));
+    f->setRowVisible(cloneAligned_, o.testFlag(O::CloneAligned));
     f->setRowVisible(filled_, o.testFlag(O::Filled));
     f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
     f->setRowVisible(pasteMode_, o.testFlag(O::PasteMode));
@@ -440,6 +457,8 @@ void ToolOptions::sync() {
         gradientFrom_->setValue(gradientTool_->fromRung());
         gradientTo_->setValue(gradientTool_->toRung());
     }
+    if (cloneTool_)
+        cloneAligned_->setChecked(cloneTool_->aligned());
     // A Library stamp floats in a mode of its own; the dock shows it.
     pasteMode_->setCurrentIndex(pasteMode_->findData(int(select_->effectivePasteMode())));
 }
