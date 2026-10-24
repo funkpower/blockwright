@@ -122,47 +122,123 @@ bool outlineEdgeAt(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ic
     return false;
 }
 
-// The outward normal at (x, y), taken on a grid of 2 x 2 sub-pixels a
-// cell, a sub-pixel half a column wide and a column tall on screen: the sum
-// of the offsets from the cell's centre to the outside sub-pixels of the
-// cells within three columns' distance (three columns each way on the
-// cell's row, two on the rows above and below), a window round on screen so
-// no direction is favoured, each sub-pixel weighted a half. A sub-pixel is
-// outside when its cell is outside, or it is in a fringe's black half; off
-// the canvas is not outside. Weighted so, an outside cell adds twice its
-// centre's offset and a ▀/▄ fringe's black half its pixel's, so full cells
-// and ▀/▄ fringes have the normals they had on the half-block pixel grid.
-// The sums are multiples of an eighth and exact.
-std::optional<std::pair<double, double>> normalAt(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice) {
-    double gx = 0, gy = 0;
+// The window an edge normal is read over, on a grid of 2 x 2 sub-pixels a
+// cell, a sub-pixel half a column wide and a column tall on screen: the
+// cells within three columns' distance (dx² + 4dy² ≤ 9: three columns each
+// way on the cell's row, two on the rows above and below), a window round on
+// screen so no direction is favoured. It is 14 sub-pixels across and 6
+// down, row r and column col of it in cell (col / 2 - 3, r / 2 - 1) from
+// the cell; the cell's own four are rows 2-3, columns 6-7.
+struct Window {
+    static constexpr int kW = 14, kH = 6;
+    // A sub-pixel is outside when its cell is outside, or it is in a
+    // fringe's black half; off the canvas and off the window is not outside.
+    bool outside[kH][kW] = {};
+    // The outside that reaches the cell (windowAt), which the rim light reads.
+    bool reaches[kH][kW] = {};
+};
+
+// The offset on screen, in columns, from the cell's centre to sub-pixel
+// (r, col) of its window: the sub-pixels' centres are a quarter column
+// either side of their cell's and half a column above and below it.
+std::pair<double, double> offsetOf(int r, int col) {
+    return {col / 2 - 3 + (col % 2 ? 0.25 : -0.25), 2 * (r / 2 - 1) + (r % 2 ? 0.5 : -0.5)};
+}
+
+// The window round (x, y), and the outside in it that reaches the cell:
+// each region of outside sub-pixels (joined by a side or a corner, within
+// the window) that touches the cell's own sub-pixels. Where none does, as
+// for a full cell under a row of ▄ fringes, whose coloured halves lie
+// against it, each region with a sub-pixel in one of its eight neighbours:
+// a fringe can't be lit, so the light falls past its coloured half onto the
+// cell in from it. Outside beyond the shape doesn't reach the cell: not the
+// outside past a narrow shape's far side, nor the outside past the coloured
+// half of a fringe when the cell has outside of its own beside it.
+Window windowAt(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice) {
+    Window w;
     for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -3; dx <= 3; ++dx) {
             if (dx * dx + 4 * dy * dy > 9 || !canvas.contains(x + dx, y + dy))
                 continue;
             const auto p = partOf(ramp, canvas.at(x + dx, y + dy), ice);
-            // the sub-pixels' centres are a quarter column either side of
-            // the cell's and half a column above and below it
             for (int r = 0; r < 2; ++r)
                 for (int col = 0; col < 2; ++col)
-                    if (!(p && p->in[r][col])) {
-                        gx += 0.5 * (dx + (col ? 0.25 : -0.25));
-                        gy += 0.5 * (2 * dy + (r ? 0.5 : -0.5));
+                    w.outside[2 * (dy + 1) + r][2 * (dx + 3) + col] = !(p && p->in[r][col]);
+        }
+    // the regions with an outside sub-pixel among rows r0-r1, columns c0-c1
+    const auto reach = [&](int r0, int r1, int c0, int c1) {
+        std::vector<std::pair<int, int>> todo;
+        for (int r = r0; r <= r1; ++r)
+            for (int col = c0; col <= c1; ++col)
+                if (w.outside[r][col] && !w.reaches[r][col]) {
+                    w.reaches[r][col] = true;
+                    todo.push_back({r, col});
+                }
+        const bool any = !todo.empty();
+        while (!todo.empty()) {
+            const auto [r, col] = todo.back();
+            todo.pop_back();
+            for (int rr = std::max(r - 1, 0); rr <= std::min(r + 1, Window::kH - 1); ++rr)
+                for (int cc = std::max(col - 1, 0); cc <= std::min(col + 1, Window::kW - 1); ++cc)
+                    if (w.outside[rr][cc] && !w.reaches[rr][cc]) {
+                        w.reaches[rr][cc] = true;
+                        todo.push_back({rr, cc});
                     }
         }
+        return any;
+    };
+    // the sub-pixels touching the cell's own, else its eight neighbours'
+    if (!reach(1, 4, 5, 8))
+        reach(0, Window::kH - 1, 4, 9);
+    return w;
+}
+
+// The normal over a window: the sum of the offsets from the cell's centre
+// to the outside sub-pixels (all of them, or only those that reach the
+// cell), each weighted a half, normalised. Weighted so, an outside cell adds
+// twice its centre's offset and a ▀/▄ fringe's black half its pixel's, so
+// full cells and ▀/▄ fringes have the normals they had on the half-block
+// pixel grid. The sums are multiples of an eighth and exact.
+std::optional<std::pair<double, double>> normalOf(const Window& w, bool reaching) {
+    double gx = 0, gy = 0;
+    for (int r = 0; r < Window::kH; ++r)
+        for (int col = 0; col < Window::kW; ++col)
+            if (reaching ? w.reaches[r][col] : w.outside[r][col]) {
+                const auto [ox, oy] = offsetOf(r, col);
+                gx += 0.5 * ox;
+                gy += 0.5 * oy;
+            }
     const double len = std::hypot(gx, gy);
     if (len < 1e-9)
         return std::nullopt;
     return std::pair{gx / len, gy / len};
 }
 
+// Whether the cell has outside beside it on the light's side: an outside
+// sub-pixel in one of its eight neighbours whose offset from the cell's
+// centre, on screen, has a positive dot product with the light's direction
+// (never 0: the offsets are odd multiples of a quarter across and of a half
+// down). Light falls on a cell only past outside beside it, so a cell whose
+// outside all lies behind it, however the outside that reaches it sums,
+// isn't lit.
+bool exposedTo(const Window& w, Compass light) {
+    const auto [lx, ly] = compassVector(light);
+    for (int r = 0; r < Window::kH; ++r)
+        for (int col = 4; col <= 9; ++col)
+            if (w.outside[r][col]) {
+                const auto [ox, oy] = offsetOf(r, col);
+                if (ox * lx + oy * ly > 0)
+                    return true;
+            }
+    return false;
+}
+
 // Whether a light from `light` can reach (x, y) past its neighbours: not
 // when the neighbour straight towards the light (a step along each axis the
 // light comes from) is a full shape cell while the one straight away from
 // it is outside or a fringe. Such a cell is taken to face away from the
-// light, into the outside behind it, however its window normal sums: the
-// column of a narrow shape that faces a gap can see more outside on the
-// shape's far side, within three columns, than in the gap. Only that one
-// pair of neighbours is checked; the known limits are in detail.h.
+// light, into the outside behind it, however its rim normal sums. Only that
+// one pair of neighbours is checked; the known limits are in detail.h.
 bool openTowards(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice, Compass light) {
     const auto [lx, ly] = compassVector(light);
     const int sx = lx > 1e-9 ? 1 : lx < -1e-9 ? -1 : 0, sy = ly > 1e-9 ? 1 : ly < -1e-9 ? -1 : 0;
@@ -190,7 +266,13 @@ bool onEdge(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice) {
 std::optional<std::pair<double, double>> edgeNormal(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice) {
     if (!onEdge(canvas, ramp, x, y, ice))
         return std::nullopt;
-    return normalAt(canvas, ramp, x, y, ice);
+    return normalOf(windowAt(canvas, ramp, x, y, ice), false);
+}
+
+std::optional<std::pair<double, double>> rimNormal(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice) {
+    if (!onEdge(canvas, ramp, x, y, ice))
+        return std::nullopt;
+    return normalOf(windowAt(canvas, ramp, x, y, ice), true);
 }
 
 namespace {
@@ -1572,8 +1654,9 @@ std::optional<Cell> RimLightBrush::paintCell(const Stroke& stroke, int x, int y,
     const auto part = partOf(ramp_, c.at(x, y), ice);
     if (!part || part->fringe || !edgeAt(c, ramp_, x, y, ice, *part))
         return std::nullopt;
-    const auto n = normalAt(c, ramp_, x, y, ice);
-    if (!n || !facesLight(*n, light_) || !openTowards(c, ramp_, x, y, ice, light_))
+    const Window w = windowAt(c, ramp_, x, y, ice);
+    const auto n = normalOf(w, true);
+    if (!n || !facesLight(*n, light_) || !exposedTo(w, light_) || !openTowards(c, ramp_, x, y, ice, light_))
         return std::nullopt;
     return stepRung(ramp_, c.at(x, y), 1, ice);
 }

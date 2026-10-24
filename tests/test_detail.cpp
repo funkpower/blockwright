@@ -571,7 +571,13 @@ TEST_CASE("the rim light's lit arc is centred on the light on screen", "[detail]
     // a disc round on screen (a row two columns tall): under each diagonal
     // light the lit cells, measured on screen from the centre, balance about
     // the light's direction. Normals taken in cells would tip the arc
-    // towards the vertical
+    // towards the vertical, by about 19° here. The cells don't balance
+    // exactly: on the steep part of the rim nearer the light (for NE, the
+    // right side above the middle) the rim is two cells wide and the inner
+    // cell sees the light past the corner of the row above, while at the
+    // steep end of the arc (the right side below the middle) the inner
+    // cell's only outside is the corner below, behind the light, so it
+    // isn't lit (#54). The arc tips about 5.6° towards the shallow end
     const Canvas c = disc(61, 31, 41, rungCell(steel(), 8));
     const double cx = c.width() / 2, cy = c.height() / 2;
     BrushSettings s;
@@ -588,7 +594,7 @@ TEST_CASE("the rim light's lit arc is centred on the light on screen", "[detail]
         }
         const auto [lx, ly] = compassVector(from);
         const double angle = std::acos((sx * lx + sy * ly) / std::hypot(sx, sy)) * 180 / std::acos(-1.0);
-        CHECK(angle < 3);
+        CHECK(angle < 7);
         // and its two ends lie about as far either side of the light
         double lo = 180, hi = -180;
         const double towards = std::atan2(ly, lx);
@@ -691,6 +697,39 @@ std::set<Point> region(const Canvas& c, Compass from) {
     for (const CellChange& ch : paintRegion(c, RimLightBrush(steel(), from), {}).changes)
         out.insert({ch.x, ch.y});
     return out;
+}
+
+// Whether the cell at (x, y) of a canvas w x h drawn from the pixels `on`
+// has a black pixel on the canvas among its eight neighbours' on the side
+// the light comes from: one whose centre, on screen, is no further from
+// the light than the cell's own (a dot product with the light's direction
+// of 0 or more). A pixel is a column wide and half a row tall, so pixel
+// 2(y + dy) + h has its centre 2dy + h - 1/2 columns below the cell's. The
+// light can only fall on a cell past outside that lies beside it.
+bool outsideTowards(const std::set<Point>& on, int w, int h, int x, int y, Compass from) {
+    const auto [lx, ly] = compassVector(from);
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx)
+            for (int k = 0; k < 2; ++k) {
+                const int px = x + dx, py = 2 * (y + dy) + k;
+                if ((dx || dy) && px >= 0 && px < w && py >= 0 && py < 2 * h && !on.count({px, py}) &&
+                    dx * lx + (2 * dy + k - 0.5) * ly >= 0)
+                    return true;
+            }
+    return false;
+}
+
+// Every cell the rim light lights from each point of the compass, on a
+// canvas w x h drawn from `px`, has black beside it towards the light;
+// the first that hasn't, or empty.
+std::string litFromBehind(const Pixels& px, int w, int h) {
+    const std::set<Point> on(px.begin(), px.end());
+    const Canvas c = drawn(w, h, px);
+    for (const Compass from : kCompass)
+        for (const auto& [x, y] : region(c, from))
+            if (!outsideTowards(on, w, h, x, y, from))
+                return "(" + std::to_string(x) + "," + std::to_string(y) + ") from " + std::to_string(int(from));
+    return {};
 }
 
 } // namespace
@@ -872,7 +911,9 @@ TEST_CASE("the rim light on random half-block shapes faces the light and mirrors
     // drawn as the shape tools draw them, lit from all eight points. The
     // lit cells are worked out again here from the pixels alone: a full
     // cell with a black pixel among its eight neighbours' on the canvas,
-    // whose normal on the pixel grid faces the light, unless the cell a
+    // whose normal on the pixel grid, over the black pixels in its window
+    // that reach it, faces the light, with a black pixel among its
+    // neighbours' on the light's side of it on screen, unless the cell a
     // step towards the light is full while the one a step away has a black
     // pixel. And the canvas mirrored, lit from the mirrored point, lights
     // the mirrored cells
@@ -887,7 +928,7 @@ TEST_CASE("the rim light on random half-block shapes faces the light and mirrors
     const auto rectPx = [](int x0, int y0, int x1, int y1) { return rectShape(x0, y0, x1, y1, true, W, 2 * H); };
     const auto linePx = [](int x0, int y0, int x1, int y1) { return lineShape(x0, y0, x1, y1, W, 2 * H); };
     std::vector<std::string> bad;
-    int litTotal = 0, held = 0;
+    int litTotal = 0, held = 0, turned = 0, hidden = 0;
     for (int n = 0; n < 500; ++n) {
         Pixels px;
         const int kind = n % 3;
@@ -903,16 +944,51 @@ TEST_CASE("the rim light on random half-block shapes faces the light and mirrors
         const auto empty = [&](int x, int py) { return x >= 0 && x < W && py >= 0 && py < 2 * H && !on.count({x, py}); };
         const auto full = [&](int x, int y) { return on.count({x, 2 * y}) && on.count({x, 2 * y + 1}); };
         // the normal on the pixel grid: the offsets from the cell's centre
-        // to the black pixels of the cells in its window, on screen
-        const auto faces = [&](int x, int y, Compass from) {
-            double gx = 0, gy = 0;
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -3; dx <= 3; ++dx)
-                    for (int h = 0; h < 2 && dx * dx + 4 * dy * dy <= 9; ++h)
-                        if (empty(x + dx, 2 * (y + dy) + h)) {
-                            gx += dx;
-                            gy += 2 * dy + h - 0.5;
+        // to the black pixels of the cells in its window, on screen. With
+        // `reaching`, only the black pixels that reach the cell: those
+        // joined, by a side or a corner within the window, to one on the
+        // rows from the pixel above the cell's to the one below and the
+        // columns from the cell before to the cell after; failing any, to
+        // one in those columns on the window's three rows of cells
+        const auto faces = [&](int x, int y, Compass from, bool reaching) {
+            // the window's pixels: row r (0-5) from the top pixel of the row
+            // above, column dx (-3 to 3) from the cell
+            const auto black = [&](int r, int dx) {
+                const int dy = r / 2 - 1;
+                return dx >= -3 && dx <= 3 && r >= 0 && r < 6 && dx * dx + 4 * dy * dy <= 9 &&
+                       empty(x + dx, 2 * (y - 1) + r);
+            };
+            bool reach[6][7] = {};
+            const auto seed = [&](int r0, int r1) {
+                std::vector<Point> todo;
+                for (int r = r0; r <= r1; ++r)
+                    for (int dx = -1; dx <= 1; ++dx)
+                        if (black(r, dx) && !reach[r][dx + 3]) {
+                            reach[r][dx + 3] = true;
+                            todo.push_back({r, dx});
                         }
+                const bool any = !todo.empty();
+                while (!todo.empty()) {
+                    const auto [r, dx] = todo.back();
+                    todo.pop_back();
+                    for (int rr = r - 1; rr <= r + 1; ++rr)
+                        for (int dd = dx - 1; dd <= dx + 1; ++dd)
+                            if (black(rr, dd) && !reach[rr][dd + 3]) {
+                                reach[rr][dd + 3] = true;
+                                todo.push_back({rr, dd});
+                            }
+                }
+                return any;
+            };
+            if (reaching && !seed(1, 4))
+                seed(0, 5);
+            double gx = 0, gy = 0;
+            for (int r = 0; r < 6; ++r)
+                for (int dx = -3; dx <= 3; ++dx)
+                    if (reaching ? reach[r][dx + 3] : black(r, dx)) {
+                        gx += dx;
+                        gy += 2 * (r / 2 - 1) + r % 2 - 0.5;
+                    }
             const double len = std::hypot(gx, gy);
             const auto [lx, ly] = compassVector(from);
             return len > 1e-9 && (gx * lx + gy * ly) / len > 0.3;
@@ -944,15 +1020,24 @@ TEST_CASE("the rim light on random half-block shapes faces the light and mirrors
             std::set<Point> expected, mx, my;
             for (int y = 0; y < H; ++y)
                 for (int x = 0; x < W; ++x)
-                    if (full(x, y) && edge(x, y) && faces(x, y, from)) {
-                        if (open(x, y, from))
+                    if (full(x, y) && edge(x, y)) {
+                        turned += int(faces(x, y, from, true) != faces(x, y, from, false));
+                        if (!faces(x, y, from, true))
+                            continue;
+                        if (!outsideTowards(on, W, H, x, y, from))
+                            ++hidden;
+                        else if (open(x, y, from))
                             expected.insert({x, y});
                         else
                             ++held;
                     }
             for (const auto& [x, y] : lit) {
-                if (!faces(x, y, from))
+                if (!faces(x, y, from, true))
                     bad.push_back(where + ": (" + std::to_string(x) + "," + std::to_string(y) + ") faces away");
+                // checked apart from the rule: black beside it towards the light
+                if (!outsideTowards(on, W, H, x, y, from))
+                    bad.push_back(where + ": (" + std::to_string(x) + "," + std::to_string(y) +
+                                  ") has no outside beside it towards the light");
                 mx.insert({W - 1 - x, y});
                 my.insert({x, H - 1 - y});
             }
@@ -969,6 +1054,10 @@ TEST_CASE("the rim light on random half-block shapes faces the light and mirrors
     CHECK(bad.empty());
     CHECK(litTotal > 2000);
     CHECK(held > 50);
+    // cells facing the light with no outside beside them on its side
+    CHECK(hidden > 50);
+    // cells whose facing the outside that doesn't reach them would change
+    CHECK(turned > 50);
 }
 
 namespace {
@@ -1073,22 +1162,28 @@ TEST_CASE("a shape within three columns of the canvas's side edge can light diff
     }
     // (b) Codex round 9: three full columns. On column 1 the middle cells'
     // window finds the outside east of the shape and none west of it, so
-    // they face E; a column in they face W. They are lit from neither W nor
-    // E at the edge (the cell a step east is in the shape and the fringe a
-    // step west is behind them), and from W a column in
+    // they face E; a column in they face W. The rim normal reads only the
+    // outside that reaches them, the ▐'s black half, so they face W at the
+    // edge too (#54) and light from the west as a column in does; they
+    // aren't lit from E (the cell a step east is in the shape and the
+    // fringe a step west is behind them). Their corners, whose outside runs
+    // round the shape's top and bottom to its east side, still light
+    // differently
     const Canvas left3 = shape(U'▐', 0, 1, 3), left3In = shape(U'▐', 1, 2, 4);
     REQUIRE(edgeNormal(left3, steel(), 1, 2));
     REQUIRE(edgeNormal(left3In, steel(), 2, 2));
     CHECK(edgeNormal(left3, steel(), 1, 2)->first > 0);
     CHECK(edgeNormal(left3In, steel(), 2, 2)->first < 0);
+    CHECK(rimNormal(left3, steel(), 1, 2) == std::pair{-1.0, 0.0});
+    CHECK(rimNormal(left3In, steel(), 2, 2) == std::pair{-1.0, 0.0});
     CHECK(lights(left3) == Lit{{Compass::N, {{1, 1}, {2, 1}, {3, 1}}},
                                {Compass::NE, {{1, 1}, {2, 1}, {3, 1}, {3, 2}, {3, 3}}},
                                {Compass::E, {{2, 1}, {2, 4}, {3, 1}, {3, 2}, {3, 3}, {3, 4}}},
                                {Compass::SE, {{1, 4}, {2, 4}, {3, 2}, {3, 3}, {3, 4}}},
                                {Compass::S, {{1, 4}, {2, 4}, {3, 4}}},
-                               {Compass::SW, {}},
-                               {Compass::W, {}},
-                               {Compass::NW, {}}});
+                               {Compass::SW, {{1, 2}, {1, 3}}},
+                               {Compass::W, {{1, 2}, {1, 3}}},
+                               {Compass::NW, {{1, 2}, {1, 3}}}});
     CHECK(lights(left3In) == Lit{{Compass::N, {{2, 1}, {3, 1}, {4, 1}}},
                                  {Compass::NE, {{2, 1}, {3, 1}, {4, 1}, {4, 2}, {4, 3}}},
                                  {Compass::E, {{4, 1}, {4, 2}, {4, 3}, {4, 4}}},
@@ -1173,9 +1268,11 @@ TEST_CASE("the column of a narrow shape that faces a gap isn't lit from behind",
     // (three wide across a ▌/▐ half-column gap) sees more outside on its far
     // side, within the window's three columns, than in the gap, so the
     // normal of its column beside the gap points across the shape. That
-    // column was lit from the far side. A cell isn't lit when the cell a
-    // step towards the light is a full shape cell and the one a step away
-    // is outside or a fringe
+    // column was lit from the far side. The rim normal reads only the
+    // outside that reaches the cell, the gap's (#54), so the column faces
+    // the gap and is lit from the gap's side. And a cell isn't lit when the
+    // cell a step towards the light is a full shape cell and the one a step
+    // away is outside or a fringe
     const Cell w = fullW();
     using Lit = std::map<Compass, std::set<Point>>;
     // shapes on rows 1-8: columns 8-9, the gap on column 10, and `rw`
@@ -1197,24 +1294,33 @@ TEST_CASE("the column of a narrow shape that faces a gap isn't lit from behind",
             out[from] = column(region(c, from), x);
         return out;
     };
-    // (a) full cells, an empty column between shapes two wide. The normal
-    // of column 11 still points E, across the shape, but the column isn't
-    // lit from E: only its end cells light, from the points that have the
+    // (a) full cells, an empty column between shapes two wide. The window
+    // normal of column 11 still points E, across the shape; its rim normal
+    // points W, into the gap. It isn't lit from E: its middle cells light
+    // from W, NW and SW, and its end cells from the points that have the
     // outside above or below them. Column 9 is its mirror
     const Canvas a = make(Cell{}, 2);
     CHECK(edgeNormal(a, steel(), 11, 4) == std::pair{1.0, 0.0});
+    CHECK(rimNormal(a, steel(), 11, 4) == std::pair{-1.0, 0.0});
+    CHECK(rimNormal(a, steel(), 9, 4) == std::pair{1.0, 0.0});
+    const auto run = [](int x, int y0, int y1) {
+        std::set<Point> out;
+        for (int y = y0; y <= y1; ++y)
+            out.insert({x, y});
+        return out;
+    };
     CHECK(columnLit(a, 11) == Lit{{Compass::N, {{11, 1}}},
                                   {Compass::NE, {{11, 1}}},
                                   {Compass::E, {}},
                                   {Compass::SE, {{11, 8}}},
                                   {Compass::S, {{11, 8}}},
-                                  {Compass::SW, {}},
-                                  {Compass::W, {}},
-                                  {Compass::NW, {}}});
+                                  {Compass::SW, run(11, 2, 7)},
+                                  {Compass::W, run(11, 2, 7)},
+                                  {Compass::NW, run(11, 2, 7)}});
     CHECK(columnLit(a, 9) == Lit{{Compass::N, {{9, 1}}},
-                                 {Compass::NE, {}},
-                                 {Compass::E, {}},
-                                 {Compass::SE, {}},
+                                 {Compass::NE, run(9, 2, 7)},
+                                 {Compass::E, run(9, 2, 7)},
+                                 {Compass::SE, run(9, 2, 7)},
                                  {Compass::S, {{9, 8}}},
                                  {Compass::SW, {{9, 8}}},
                                  {Compass::W, {}},
@@ -1225,18 +1331,20 @@ TEST_CASE("the column of a narrow shape that faces a gap isn't lit from behind",
         CHECK(region(a, Compass::W).count({8, y}));
     }
     // (b) a ▌ or ▐ half-column gap between a shape two wide and one three
-    // wide: column 11 faces E across the shape and isn't lit from E. It
-    // and column 9 light as they do across an empty column
+    // wide: column 11's window normal faces E across the shape, its rim
+    // normal W into the gap, and it isn't lit from E. It and column 9 light
+    // as they do across an empty column
     const Canvas blank = make(Cell{}, 3);
-    const Lit ends{{Compass::N, {{11, 1}}},  {Compass::NE, {{11, 1}}}, {Compass::E, {}},
-                   {Compass::SE, {{11, 8}}}, {Compass::S, {{11, 8}}},  {Compass::SW, {{11, 8}}},
-                   {Compass::W, {}},         {Compass::NW, {{11, 1}}}};
-    CHECK(columnLit(blank, 11) == ends);
+    const Lit gapSide{{Compass::N, {{11, 1}}},  {Compass::NE, {{11, 1}}}, {Compass::E, {}},
+                      {Compass::SE, {{11, 8}}}, {Compass::S, {{11, 8}}},  {Compass::SW, run(11, 2, 8)},
+                      {Compass::W, run(11, 2, 7)}, {Compass::NW, run(11, 1, 7)}};
+    CHECK(columnLit(blank, 11) == gapSide);
     for (const char32_t ch : {U'▌', U'▐'}) {
         INFO("glyph " << int(ch));
         const Canvas b = make(side(ch), 3);
         CHECK(edgeNormal(b, steel(), 11, 4) == std::pair{1.0, 0.0});
-        CHECK(columnLit(b, 11) == ends);
+        CHECK(rimNormal(b, steel(), 11, 4) == std::pair{-1.0, 0.0});
+        CHECK(columnLit(b, 11) == gapSide);
         CHECK(columnLit(b, 9) == columnLit(blank, 9));
     }
     // (c) a stem a column wide far from the canvas edges: it cancels down
@@ -1254,19 +1362,12 @@ TEST_CASE("the column of a narrow shape that faces a gap isn't lit from behind",
                                      {Compass::NW, {{10, 1}}}});
 }
 
-// The cases below are known limits of the rule against light from behind
-// (follow-up #54): it checks only the neighbour pair along the light's own
-// step, so it misses some back faces and removes some grazing cells. Each
-// test pins what the brush does now; when the rule changes, they change
-// with it.
-
-TEST_CASE("known limit: a counter's inner wall is lit from the far diagonal", "[detail]") {
-    // Claude round 10 P2-1, a known limit (follow-up #54): a block "o",
-    // full cells on columns 10-14 and rows 3-5 with (12,4) empty. The only
-    // open side of (13,4) is W, the counter, but its normal points E across
-    // the side stroke. From NE and SE the neighbour a step away is the
-    // counter's top or bottom stroke, which is inside, so the rule doesn't
-    // fire: (13,4) is lit from NE and SE and not from W, NW or SW. (11,4)
+TEST_CASE("a counter's inner wall faces the counter", "[detail]") {
+    // Claude round 10 P2-1 (#54): a block "o", full cells on columns 10-14
+    // and rows 3-5 with (12,4) empty. The only open side of (13,4) is W,
+    // the counter. Its window normal points E across the side stroke, and
+    // it was lit from NE and SE; its rim normal reads only the counter and
+    // points W, so it lights from W, NW and SW and from nowhere else. (11,4)
     // mirrors it
     const Cell w = fullW();
     Canvas c(24, 8);
@@ -1275,27 +1376,69 @@ TEST_CASE("known limit: a counter's inner wall is lit from the far diagonal", "[
             c.at(x, y) = w;
     c.at(12, 4) = Cell{};
     CHECK(edgeNormal(c, steel(), 13, 4) == std::pair{1.0, 0.0});
+    CHECK(rimNormal(c, steel(), 13, 4) == std::pair{-1.0, 0.0});
+    CHECK(rimNormal(c, steel(), 11, 4) == std::pair{1.0, 0.0});
     using Lit = std::map<Compass, std::set<Point>>;
     Lit lit;
     for (const Compass from : kCompass)
         lit[from] = region(c, from);
     CHECK(lit == Lit{{Compass::N, {{10, 3}, {11, 3}, {12, 3}, {13, 3}, {14, 3}}},
-                     {Compass::NE, {{12, 3}, {13, 3}, {13, 4}, {14, 3}, {14, 4}}},
-                     {Compass::E, {{13, 3}, {13, 5}, {14, 3}, {14, 4}, {14, 5}}},
-                     {Compass::SE, {{12, 5}, {13, 4}, {13, 5}, {14, 4}, {14, 5}}},
+                     {Compass::NE, {{11, 4}, {12, 3}, {13, 3}, {14, 3}, {14, 4}}},
+                     {Compass::E, {{11, 4}, {13, 3}, {13, 5}, {14, 3}, {14, 4}, {14, 5}}},
+                     {Compass::SE, {{11, 4}, {12, 5}, {13, 5}, {14, 4}, {14, 5}}},
                      {Compass::S, {{10, 5}, {11, 5}, {12, 5}, {13, 5}, {14, 5}}},
-                     {Compass::SW, {{10, 4}, {10, 5}, {11, 4}, {11, 5}, {12, 5}}},
-                     {Compass::W, {{10, 3}, {10, 4}, {10, 5}, {11, 3}, {11, 5}}},
-                     {Compass::NW, {{10, 3}, {10, 4}, {11, 3}, {11, 4}, {12, 3}}}});
+                     {Compass::SW, {{10, 4}, {10, 5}, {11, 5}, {12, 5}, {13, 4}}},
+                     {Compass::W, {{10, 3}, {10, 4}, {10, 5}, {11, 3}, {11, 5}, {13, 4}}},
+                     {Compass::NW, {{10, 3}, {10, 4}, {11, 3}, {12, 3}, {13, 4}}}});
 }
 
-TEST_CASE("known limit: a thin bar over another lights its underside from above", "[detail]") {
-    // Codex round 10 #2, a known limit (follow-up #54): two bars three
-    // pixels tall, ▄ fringes over a full row each, one black pixel row
-    // apart. The upper bar's full row is its underside, but its window
-    // sees more outside above than in the one black pixel row below, so
-    // its normal faces N. The neighbour towards N is a fringe, not a full
-    // cell, so the rule doesn't fire: (10,2) is lit from N and not from S
+TEST_CASE("no ring is lit on a side that faces only away from the light", "[detail]") {
+    // Claude round 10 (#54): block rings, side strokes one to three columns
+    // wide and top and bottom strokes one or two rows, round counters one
+    // to three columns wide and one or two rows tall, lit from all eight
+    // points. A lit cell has some outside among its eight neighbours that
+    // isn't wholly behind it: a neighbour a step (dx, dy) away with
+    // dx·sx + dy·sy ≥ 0 for the light's step (sx, sy). The old window
+    // normal lit the counter's corner cells from the far diagonal
+    const Cell w = fullW();
+    int rings = 0, lit = 0;
+    for (int side = 1; side <= 3; ++side)
+        for (int bar = 1; bar <= 2; ++bar)
+            for (int cw = 1; cw <= 3; ++cw)
+                for (int ch = 1; ch <= 2; ++ch) {
+                    const int x0 = 8, y0 = 2, x1 = x0 + 2 * side + cw - 1, y1 = y0 + 2 * bar + ch - 1;
+                    Canvas c(x1 + 9, y1 + 3);
+                    for (int y = y0; y <= y1; ++y)
+                        for (int x = x0; x <= x1; ++x)
+                            if (x < x0 + side || x > x1 - side || y < y0 + bar || y > y1 - bar)
+                                c.at(x, y) = w;
+                    ++rings;
+                    for (const Compass from : kCompass) {
+                        const auto [sx, sy] = kStep[int(from)];
+                        for (const auto& [x, y] : region(c, from)) {
+                            INFO("side " << side << " bar " << bar << " counter " << cw << "x" << ch << " light "
+                                         << int(from) << " cell " << x << "," << y);
+                            bool open = false;
+                            for (int dy = -1; dy <= 1; ++dy)
+                                for (int dx = -1; dx <= 1; ++dx)
+                                    open = open || (c.at(x + dx, y + dy) == Cell{} && dx * sx + dy * sy >= 0);
+                            CHECK(open);
+                            ++lit;
+                        }
+                    }
+                }
+    CHECK(rings == 36);
+    CHECK(lit > 1000);
+}
+
+TEST_CASE("a thin bar over another lights its underside from below", "[detail]") {
+    // Codex round 10 #2 (#54): two bars three pixels tall, ▄ fringes over a
+    // full row each, one black pixel row apart. The upper bar's full row is
+    // its underside, but its window sees more outside above than in the one
+    // black pixel row below, so its window normal faces N, and (10,2) was
+    // lit from N. The outside above lies past the ▄ fringes' coloured
+    // halves and doesn't reach the row; the black pixel row under it does,
+    // so its rim normal faces S and it lights from S, not N
     const Ramp r = steel();
     const Cell lower{kLowerHalf, Color::indexed(Grey), Color::indexed(Black)};
     Canvas c(24, 6);
@@ -1306,27 +1449,184 @@ TEST_CASE("known limit: a thin bar over another lights its underside from above"
         c.at(x, 4) = rungCell(r, 8);
     }
     CHECK(edgeNormal(c, r, 10, 2) == std::pair{0.0, -1.0});
-    CHECK(region(c, Compass::N).count({10, 2}));
-    CHECK_FALSE(region(c, Compass::S).count({10, 2}));
-    // the row's end cell (2,2) sums to (-12, -3), a dot of 1/√17 ≈ 0.24
-    // with N, so it stays unlit from N
-    CHECK_FALSE(region(c, Compass::N).count({2, 2}));
-    // without the lower bar the same cell faces down, as it should
+    CHECK(rimNormal(c, r, 10, 2) == std::pair{0.0, 1.0});
+    // the row lights from S along its length, and from N nowhere; the
+    // outside round the bar's ends reaches the two cells at each end, which
+    // light as ends do
+    for (int x = 2; x <= 21; ++x) {
+        INFO("cell " << x << ",2");
+        CHECK_FALSE(region(c, Compass::N).count({x, 2}));
+        CHECK(region(c, Compass::S).count({x, 2}) == (x >= 4 && x <= 19));
+    }
+    // without the lower bar the same cell faces down, as it did
     Canvas alone = c;
     for (int x = 2; x <= 21; ++x)
         alone.at(x, 3) = alone.at(x, 4) = Cell{};
     CHECK(edgeNormal(alone, r, 10, 2) == std::pair{0.0, 1.0});
+    CHECK(rimNormal(alone, r, 10, 2) == std::pair{0.0, 1.0});
     CHECK_FALSE(region(alone, Compass::N).count({10, 2}));
     CHECK(region(alone, Compass::S).count({10, 2}));
 }
 
+TEST_CASE("the rim light needs outside beside the cell on the light's side", "[detail]") {
+    // Codex round 11 #1 (#54): an ellipse with a rectangle beside it. Of
+    // (5,3)'s eight neighbours only (6,4), a ▀ whose bottom half is black,
+    // has outside in it, and that lies down and to the right of the cell:
+    // nothing beside it is open to a light from the N, NE, W or NW. Its
+    // rim normal, over the outside its neighbours reach, turned NE and it
+    // was lit from NE
+    const auto shape = [](int ex0, int ey0, int ex1, int ey1, int rx0, int ry0, int rx1, int ry1) {
+        Pixels px = ellipseShape(ex0, ey0, ex1, ey1, true, 13, 14);
+        const Pixels rect = rectShape(rx0, ry0, rx1, ry1, true, 13, 14);
+        px.insert(px.end(), rect.begin(), rect.end());
+        return px;
+    };
+    const Pixels px = shape(3, 3, 6, 9, 8, 7, 10, 9);
+    const Canvas c = drawn(13, 7, px);
+    CHECK_FALSE(region(c, Compass::NE).count({5, 3}));
+    for (const Compass from : {Compass::N, Compass::NE, Compass::W, Compass::NW}) {
+        INFO("light " << int(from));
+        CHECK_FALSE(region(c, from).count({5, 3}));
+    }
+    CHECK(litFromBehind(px, 13, 7).empty());
+    // mirrored left to right, top to bottom and both, lit from the
+    // mirrored points: the mirrored cell isn't lit either
+    for (const int m : {1, 2, 3}) {
+        Pixels flipped;
+        for (const auto& [x, py] : px)
+            flipped.push_back({m & 1 ? 12 - x : x, m & 2 ? 13 - py : py});
+        const Canvas f = drawn(13, 7, flipped);
+        const Point cell{m & 1 ? 12 - 5 : 5, m & 2 ? 6 - 3 : 3};
+        for (Compass from : {Compass::N, Compass::NE, Compass::W, Compass::NW}) {
+            if (m & 1)
+                from = mirrored(from, true);
+            if (m & 2)
+                from = mirrored(from, false);
+            INFO("mirror " << m << " light " << int(from));
+            CHECK_FALSE(region(f, from).count(cell));
+        }
+        INFO("mirror " << m);
+        CHECK(litFromBehind(flipped, 13, 7).empty());
+    }
+    // the same from the other points of the compass: each cell's only
+    // outside beside it lies away from the light. (8,6) has black only in
+    // the lower halves of the ▀ either side of it, (8,0) only in the upper
+    // halves of the ▀ either side, (0,2) only above it, (5,4) only above
+    // and to its right, (2,2) only below and to its right
+    struct Case {
+        int ex0, ey0, ex1, ey1, rx0, ry0, rx1, ry1;
+        Point cell;
+        Compass from;
+    };
+    for (const Case& k : {Case{6, 1, 10, 13, 6, 9, 7, 10, {8, 6}, Compass::N},
+                          Case{7, 0, 9, 8, 9, 9, 11, 12, {8, 0}, Compass::S},
+                          Case{4, 8, 12, 13, 0, 3, 1, 13, {0, 2}, Compass::SE},
+                          Case{4, 6, 12, 13, 4, 8, 6, 11, {5, 4}, Compass::SW},
+                          Case{1, 1, 4, 7, 2, 4, 6, 10, {2, 2}, Compass::NW}}) {
+        const Pixels p = shape(k.ex0, k.ey0, k.ex1, k.ey1, k.rx0, k.ry0, k.rx1, k.ry1);
+        const std::set<Point> on(p.begin(), p.end());
+        INFO("cell " << k.cell.first << "," << k.cell.second << " light " << int(k.from));
+        REQUIRE(onEdge(drawn(13, 7, p), steel(), k.cell.first, k.cell.second));
+        REQUIRE_FALSE(outsideTowards(on, 13, 7, k.cell.first, k.cell.second, k.from));
+        CHECK_FALSE(region(drawn(13, 7, p), k.from).count(k.cell));
+        CHECK(litFromBehind(p, 13, 7) == "");
+    }
+    // and over 3000 random pairs of a filled ellipse and a filled rectangle
+    std::mt19937 rng(54);
+    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    std::vector<std::string> bad;
+    for (int n = 0; n < 3000; ++n) {
+        const int a0 = pick(0, 10), a1 = pick(a0 + 1, 12), b0 = pick(0, 11), b1 = pick(b0 + 2, 13);
+        const int c0 = pick(0, 10), c1 = pick(c0, 12), d0 = pick(0, 12), d1 = pick(d0, 13);
+        const std::string at = litFromBehind(shape(a0, b0, a1, b1, c0, d0, c1, d1), 13, 7);
+        if (!at.empty())
+            bad.push_back("pair " + std::to_string(n) + ": " + at);
+    }
+    INFO((bad.empty() ? std::string() : bad.front()) << " (" << bad.size() << " in all)");
+    CHECK(bad.empty());
+}
+
+TEST_CASE("a thin bar's underside two columns in from its ends faces down", "[detail]") {
+    // Codex round 11 #2 (#54): the two bars three pixels tall of the test
+    // above, one to twelve columns long, the lower one shifted up to two
+    // columns either way or left out. A cell of the upper bar's full row
+    // has the ▄ fringe's coloured half on top of it and the black pixel
+    // row (or an empty cell) under it: it is the bar's underside. Two
+    // columns or more in from both of the bar's ends, the outside past the
+    // fringes above joins the outside below only beyond the cell's window,
+    // so none of those cells faces up: none is lit from N, NE or NW, and
+    // each is lit from S. Nearer the ends is a known limit (below)
+    const Ramp r = steel();
+    const Cell lower{kLowerHalf, Color::indexed(Grey), Color::indexed(Black)};
+    int checked = 0;
+    for (int len = 1; len <= 12; ++len)
+        for (int shift = -2; shift <= 3; ++shift) {
+            Canvas c(24, 7);
+            for (int x = 6; x < 6 + len; ++x) {
+                c.at(x, 1) = lower;
+                c.at(x, 2) = rungCell(r, 8);
+            }
+            if (shift <= 2)  // 3: no lower bar
+                for (int x = 6 + shift; x < 6 + shift + len; ++x) {
+                    c.at(x, 3) = lower;
+                    c.at(x, 4) = rungCell(r, 8);
+                }
+            const std::set<Point> n = region(c, Compass::N), s = region(c, Compass::S),
+                                  ne = region(c, Compass::NE), nw = region(c, Compass::NW);
+            for (int x = 8; x < 4 + len; ++x) {
+                INFO("length " << len << " shift " << shift << " cell " << x << ",2");
+                CHECK_FALSE(n.count({x, 2}));
+                CHECK_FALSE(ne.count({x, 2}));
+                CHECK_FALSE(nw.count({x, 2}));
+                CHECK(s.count({x, 2}));
+                ++checked;
+            }
+        }
+    CHECK(checked == 6 * (1 + 2 + 3 + 4 + 5 + 6 + 7 + 8));
+}
+
+TEST_CASE("known limit: a thin bar's underside by its ends can face up", "[detail]") {
+    // Codex round 11 #2 (#54), a known limit: the same two bars, three
+    // columns long, one over the other. (6,2), a column in from both ends,
+    // has outside touching it only below, in the lower ▄ fringes' black
+    // halves, but within its window that outside joins the outside past the
+    // upper fringes round both ends of the bar, so all of it reaches the
+    // cell. Its rim normal sums to straight up: it is lit from N, NE and NW
+    // and not from S, where the cells of a longer bar two columns or more
+    // from its ends light from the south (S, with no N, NE or NW). The end cells face out sideways
+    const Ramp r = steel();
+    const Cell lower{kLowerHalf, Color::indexed(Grey), Color::indexed(Black)};
+    Canvas c(13, 7);
+    for (int x = 5; x <= 7; ++x) {
+        c.at(x, 1) = c.at(x, 3) = lower;
+        c.at(x, 2) = c.at(x, 4) = rungCell(r, 8);
+    }
+    using N = std::pair<double, double>;
+    CHECK(rimNormal(c, r, 6, 2) == N{0, -1});
+    const std::map<Compass, std::set<Point>> lit = {
+        {Compass::N, {{6, 2}}},
+        {Compass::NE, {{6, 2}, {7, 2}, {7, 4}}},
+        {Compass::E, {{7, 2}, {7, 4}}},
+        {Compass::SE, {{7, 2}, {6, 4}, {7, 4}}},
+        {Compass::S, {{5, 4}, {6, 4}, {7, 4}}},
+        {Compass::SW, {{5, 2}, {5, 4}, {6, 4}}},
+        {Compass::W, {{5, 2}, {5, 4}}},
+        {Compass::NW, {{5, 2}, {6, 2}, {5, 4}}},
+    };
+    for (const auto& [from, cells] : lit) {
+        INFO("light " << int(from));
+        CHECK(region(c, from) == cells);
+    }
+}
+
 TEST_CASE("known limit: a grazing cell on a rotated ellipse isn't lit", "[detail]") {
-    // Codex round 10 #1, a known limit (follow-up #54): an ellipse with
-    // semi-axes 9 and 3 columns turned 35° on screen, sampled on the
-    // sub-pixel grid. (5,3)'s window normal sums to (-21, 10.5), a dot of
-    // 1/√10 ≈ 0.316 with NW, so it faces NW; but (4,2) is full and (6,4) a
-    // ▀ fringe, so the rule takes it for a cell lit from behind and leaves
-    // it. The analytic normal of the ellipse where its edge crosses the
+    // Codex round 10 #1, a known limit: an ellipse with semi-axes 9 and 3
+    // columns turned 35° on screen, sampled on the sub-pixel grid. All the
+    // outside in (5,3)'s window reaches it, so its rim normal is its window
+    // normal, which sums to (-21, 10.5), a dot of 1/√10 ≈ 0.316 with NW: it
+    // faces NW. But (4,2) is full and (6,4) a ▀ fringe, so the rule against
+    // light from behind, which checks only that pair of neighbours, takes
+    // it for a cell lit from behind and leaves it. The analytic normal of the ellipse where its edge crosses the
     // cell has a dot of about 0.17 with NW, under the 0.3 the brush needs,
     // so leaving it unlit is defensible
     const Ramp r = steel();
@@ -1347,6 +1647,7 @@ TEST_CASE("known limit: a grazing cell on a rotated ellipse isn't lit", "[detail
     REQUIRE(n);
     CHECK(std::abs(n->first + 2 / std::sqrt(5.0)) < 1e-9);
     CHECK(std::abs(n->second - 1 / std::sqrt(5.0)) < 1e-9);
+    CHECK(rimNormal(c, r, 5, 3) == n);
     CHECK(RimLightBrush::facesLight(*n, Compass::NW));
     CHECK(paintStroke(c, RimLightBrush(r, Compass::NW), {}, {{5, 3}}).empty());
     CHECK_FALSE(region(c, Compass::NW).count({5, 3}));
@@ -1357,10 +1658,10 @@ TEST_CASE("a half-column gap is not an empty column to the normal", "[detail]") 
     // ▌ (or ▐) on column 4. The fringe's coloured half is inside, so the
     // window of (5,2) sees less outside to its west than across an empty
     // column: its normal sums to (3.75, 0) with ▌ and (2.25, 0) with ▐, and
-    // points E, where an empty column 4 cancels it. It isn't lit from E
-    // either way: the cell a step east is in the shape and the fringe a
-    // step west is behind it. The corners of the narrow shapes still light
-    // differently
+    // points E, where an empty column 4 cancels it. Its rim normal reads
+    // only the gap, and points W either way (#54): it lights from W, NW and
+    // SW, and (3,2) beside it from E, NE and SE. Neither is lit across the
+    // shape. The corners of the narrow shapes still light differently
     const Cell w = fullW();
     const auto make = [&](const Cell& gap) {
         Canvas c(12, 6);
@@ -1379,30 +1680,33 @@ TEST_CASE("a half-column gap is not an empty column to the normal", "[detail]") 
         return out;
     };
     const Lit fringe{{Compass::N, {{2, 1}, {3, 1}, {5, 1}, {6, 1}, {7, 1}}},
-                     {Compass::NE, {{5, 1}, {6, 1}, {7, 1}, {7, 2}, {7, 3}}},
-                     {Compass::E, {{6, 1}, {6, 4}, {7, 1}, {7, 2}, {7, 3}, {7, 4}}},
-                     {Compass::SE, {{5, 4}, {6, 4}, {7, 2}, {7, 3}, {7, 4}}},
+                     {Compass::NE, {{3, 2}, {3, 3}, {5, 1}, {6, 1}, {7, 1}, {7, 2}, {7, 3}}},
+                     {Compass::E, {{3, 2}, {3, 3}, {6, 1}, {6, 4}, {7, 1}, {7, 2}, {7, 3}, {7, 4}}},
+                     {Compass::SE, {{3, 2}, {3, 3}, {5, 4}, {6, 4}, {7, 2}, {7, 3}, {7, 4}}},
                      {Compass::S, {{2, 4}, {3, 4}, {5, 4}, {6, 4}, {7, 4}}},
-                     {Compass::SW, {{2, 2}, {2, 3}, {2, 4}, {3, 4}, {5, 4}}},
-                     {Compass::W, {{2, 1}, {2, 2}, {2, 3}, {2, 4}}},
-                     {Compass::NW, {{2, 1}, {2, 2}, {2, 3}, {3, 1}, {5, 1}}}};
+                     {Compass::SW, {{2, 2}, {2, 3}, {2, 4}, {3, 4}, {5, 2}, {5, 3}, {5, 4}}},
+                     {Compass::W, {{2, 1}, {2, 2}, {2, 3}, {2, 4}, {5, 2}, {5, 3}}},
+                     {Compass::NW, {{2, 1}, {2, 2}, {2, 3}, {3, 1}, {5, 1}, {5, 2}, {5, 3}}}};
     for (const char32_t ch : {U'▌', U'▐'}) {
         INFO("glyph " << int(ch));
         const Canvas c = make(side(ch));
         CHECK(edgeNormal(c, steel(), 5, 2) == std::pair{1.0, 0.0});
+        CHECK(rimNormal(c, steel(), 5, 2) == std::pair{-1.0, 0.0});
+        CHECK(rimNormal(c, steel(), 3, 2) == std::pair{1.0, 0.0});
         CHECK(lights(c) == fringe);
     }
     const Canvas blank = make(Cell{});
     CHECK(onEdge(blank, steel(), 5, 2));
     CHECK_FALSE(edgeNormal(blank, steel(), 5, 2));
+    CHECK(rimNormal(blank, steel(), 5, 2) == std::pair{-1.0, 0.0});
     CHECK(lights(blank) == Lit{{Compass::N, {{2, 1}, {3, 1}, {5, 1}, {6, 1}, {7, 1}}},
-                               {Compass::NE, {{2, 1}, {5, 1}, {6, 1}, {7, 1}, {7, 2}, {7, 3}}},
-                               {Compass::E, {{6, 1}, {6, 4}, {7, 1}, {7, 2}, {7, 3}, {7, 4}}},
-                               {Compass::SE, {{2, 4}, {5, 4}, {6, 4}, {7, 2}, {7, 3}, {7, 4}}},
+                               {Compass::NE, {{2, 1}, {3, 2}, {3, 3}, {5, 1}, {6, 1}, {7, 1}, {7, 2}, {7, 3}}},
+                               {Compass::E, {{3, 2}, {3, 3}, {6, 1}, {6, 4}, {7, 1}, {7, 2}, {7, 3}, {7, 4}}},
+                               {Compass::SE, {{2, 4}, {3, 2}, {3, 3}, {5, 4}, {6, 4}, {7, 2}, {7, 3}, {7, 4}}},
                                {Compass::S, {{2, 4}, {3, 4}, {5, 4}, {6, 4}, {7, 4}}},
-                               {Compass::SW, {{2, 2}, {2, 3}, {2, 4}, {3, 4}, {5, 4}, {6, 4}}},
-                               {Compass::W, {{2, 1}, {2, 2}, {2, 3}, {2, 4}}},
-                               {Compass::NW, {{2, 1}, {2, 2}, {2, 3}, {3, 1}, {5, 1}, {6, 1}}}});
+                               {Compass::SW, {{2, 2}, {2, 3}, {2, 4}, {3, 4}, {5, 2}, {5, 3}, {5, 4}, {6, 4}}},
+                               {Compass::W, {{2, 1}, {2, 2}, {2, 3}, {2, 4}, {5, 2}, {5, 3}}},
+                               {Compass::NW, {{2, 1}, {2, 2}, {2, 3}, {3, 1}, {5, 1}, {5, 2}, {5, 3}, {6, 1}}}});
     // Rectangles 1-5 columns wide either side of a ▌ or ▐ column, 1-8 rows
     // tall: the cells beside the gap light from every point as across an
     // empty column, but for their top and bottom cells, which can light
@@ -1521,10 +1825,12 @@ TEST_CASE("the rim light on random ▌/▐ shapes faces the light and mirrors", 
     // fringes. The lit cells are worked out again from the sub-pixels
     // alone: a full cell with an empty sub-pixel among its eight
     // neighbours' on the canvas, whose normal on the 2 x 2 sub-pixel grid
-    // (a sub-pixel half a column wide and a column tall, weighted a half)
-    // faces the light, unless the cell a step towards the light is full
-    // while the one a step away has an empty sub-pixel. And the mirrored
-    // canvas lights the mirrored cells
+    // (a sub-pixel half a column wide and a column tall, weighted a half),
+    // over the empty sub-pixels in its window that reach it, faces the
+    // light, with an empty sub-pixel among its neighbours' on the light's
+    // side of it on screen, unless the cell a step towards the light is
+    // full while the one a step away has an empty sub-pixel. And the
+    // mirrored canvas lights the mirrored cells
     constexpr int W = 20, H = 10, SW = 2 * W;
     std::mt19937 rng(80);
     const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
@@ -1548,7 +1854,7 @@ TEST_CASE("the rim light on random ▌/▐ shapes faces the light and mirrors", 
         return c;
     };
     std::vector<std::string> bad;
-    int litTotal = 0, fringes = 0, held = 0;
+    int litTotal = 0, fringes = 0, held = 0, turned = 0, hidden = 0;
     for (int n = 0; n < 500; ++n) {
         Pixels px;
         const int kind = n % 3;
@@ -1568,15 +1874,49 @@ TEST_CASE("the rim light on random ▌/▐ shapes faces the light and mirrors", 
             return sx >= 0 && sx < SW && sy >= 0 && sy < 2 * H && !on.count({sx, sy / 2});
         };
         const auto full = [&](int x, int y) { return on.count({2 * x, y}) && on.count({2 * x + 1, y}); };
-        const auto faces = [&](int x, int y, Compass from) {
-            double gx = 0, gy = 0;
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -3; dx <= 3; ++dx)
-                    for (int s = 0; s < 4 && dx * dx + 4 * dy * dy <= 9; ++s)
-                        if (empty(2 * (x + dx) + s % 2, 2 * (y + dy) + s / 2)) {
-                            gx += (dx + (s % 2 - 0.5) / 2) / 2;
-                            gy += (2 * dy + s / 2 - 0.5) / 2;
+        // With `reaching`, the normal over only the empty sub-pixels that
+        // reach the cell: those joined, by a side or a corner within the
+        // window, to one touching the cell's own four; failing any, to one
+        // in the cell's eight neighbours
+        const auto faces = [&](int x, int y, Compass from, bool reaching) {
+            // the window's sub-pixels: row r (0-5) from the top of the row
+            // above, column k (0-13) from the left of three cells before
+            const auto gap = [&](int r, int k) {
+                const int dx = k / 2 - 3, dy = r / 2 - 1;
+                return r >= 0 && r < 6 && k >= 0 && k < 14 && dx * dx + 4 * dy * dy <= 9 &&
+                       empty(2 * (x - 3) + k, 2 * (y - 1) + r);
+            };
+            bool reach[6][14] = {};
+            const auto seed = [&](int r0, int r1, int k0, int k1) {
+                std::vector<Point> todo;
+                for (int r = r0; r <= r1; ++r)
+                    for (int k = k0; k <= k1; ++k)
+                        if (gap(r, k) && !reach[r][k]) {
+                            reach[r][k] = true;
+                            todo.push_back({r, k});
                         }
+                const bool any = !todo.empty();
+                while (!todo.empty()) {
+                    const auto [r, k] = todo.back();
+                    todo.pop_back();
+                    for (int rr = r - 1; rr <= r + 1; ++rr)
+                        for (int kk = k - 1; kk <= k + 1; ++kk)
+                            if (gap(rr, kk) && !reach[rr][kk]) {
+                                reach[rr][kk] = true;
+                                todo.push_back({rr, kk});
+                            }
+                }
+                return any;
+            };
+            if (reaching && !seed(1, 4, 5, 8))
+                seed(0, 5, 4, 9);
+            double gx = 0, gy = 0;
+            for (int r = 0; r < 6; ++r)
+                for (int k = 0; k < 14; ++k)
+                    if (reaching ? reach[r][k] : gap(r, k)) {
+                        gx += (k / 2 - 3 + (k % 2 - 0.5) / 2) / 2;
+                        gy += (2 * (r / 2 - 1) + r % 2 - 0.5) / 2;
+                    }
             const double len = std::hypot(gx, gy);
             const auto [lx, ly] = compassVector(from);
             return len > 1e-9 && (gx * lx + gy * ly) / len > 0.3;
@@ -1586,6 +1926,18 @@ TEST_CASE("the rim light on random ▌/▐ shapes faces the light and mirrors", 
                 for (int dx = -1; dx <= 1; ++dx)
                     for (int s = 0; s < 4; ++s)
                         if (empty(2 * (x + dx) + s % 2, 2 * (y + dy) + s / 2))
+                            return true;
+            return false;
+        };
+        // an empty sub-pixel among its neighbours' whose offset from the
+        // cell's centre, on screen, has a positive dot with the light
+        const auto towards = [&](int x, int y, Compass from) {
+            const auto [lx, ly] = compassVector(from);
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                    for (int k = 0; k < 4; ++k)
+                        if ((dx || dy) && empty(2 * (x + dx) + k % 2, 2 * (y + dy) + k / 2) &&
+                            (dx + (k % 2 - 0.5) / 2) * lx + (2 * dy + k / 2 - 0.5) * ly > 0)
                             return true;
             return false;
         };
@@ -1613,8 +1965,13 @@ TEST_CASE("the rim light on random ▌/▐ shapes faces the light and mirrors", 
             std::set<Point> expected, mx, my;
             for (int y = 0; y < H; ++y)
                 for (int x = 0; x < W; ++x)
-                    if (full(x, y) && edge(x, y) && faces(x, y, from)) {
-                        if (open(x, y, from))
+                    if (full(x, y) && edge(x, y)) {
+                        turned += int(faces(x, y, from, true) != faces(x, y, from, false));
+                        if (!faces(x, y, from, true))
+                            continue;
+                        if (!towards(x, y, from))
+                            ++hidden;
+                        else if (open(x, y, from))
                             expected.insert({x, y});
                         else
                             ++held;
@@ -1622,6 +1979,9 @@ TEST_CASE("the rim light on random ▌/▐ shapes faces the light and mirrors", 
             for (const auto& [x, y] : lit) {
                 mx.insert({W - 1 - x, y});
                 my.insert({x, H - 1 - y});
+                if (!towards(x, y, from))
+                    bad.push_back(where + ": (" + std::to_string(x) + "," + std::to_string(y) +
+                                  ") has no outside beside it towards the light");
             }
             if (lit != expected)
                 bad.push_back(where + ": not the full edge cells facing the light");
@@ -1637,6 +1997,8 @@ TEST_CASE("the rim light on random ▌/▐ shapes faces the light and mirrors", 
     CHECK(fringes > 2000);
     CHECK(litTotal > 2000);
     CHECK(held > 50);
+    CHECK(turned > 50);
+    CHECK(hidden > 50);
 }
 
 TEST_CASE("the rim light is an accent and not held to the ladder lint", "[detail][lint]") {

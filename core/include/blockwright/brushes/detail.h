@@ -68,6 +68,22 @@ bool onEdge(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice = tru
 std::optional<std::pair<double, double>> edgeNormal(const Canvas& canvas, const Ramp& ramp, int x, int y,
                                                     bool ice = true);
 
+// The normal the rim light reads (RimLightBrush, below): edgeNormal's, over
+// only the outside in the window that reaches the cell. That is each
+// region of outside sub-pixels in the window, joined by a side or a corner,
+// that touches the cell's own sub-pixels; where none does (a full cell whose
+// only outside lies past a fringe's coloured half, as under a row of ▄
+// fringes), each region with a sub-pixel in one of its eight neighbours.
+// Outside beyond the shape doesn't turn it: a narrow shape's column beside
+// a gap faces the gap, a counter's inner wall faces the counter, and the
+// full row of a bar three pixels tall, two columns or more in from the
+// bar's ends, faces the black pixel row under it however much outside lies
+// past the fringes above it. Nearer the ends that outside joins the outside
+// below round the bar's end within the window, so it reaches the cell (a
+// known limit, RimLightBrush below).
+std::optional<std::pair<double, double>> rimNormal(const Canvas& canvas, const Ramp& ramp, int x, int y,
+                                                   bool ice = true);
+
 // Outline brush (PLAN §10): the edge cells under it become the line, the
 // outline colour (lint::outlineRung) of the level inside them: the darkest
 // interior cell (not on the edge, not a half block) at the shortest walk
@@ -168,38 +184,34 @@ private:
 // Rim-light brush: the full edge cells under it that face the light go one
 // rung lighter along the ramp (stepRung, so iCE off writes no bright
 // background); fringes stay as they are. A cell faces the light when its
-// edge normal, on screen, is within about 73° of the light's direction on
-// screen: the normal's dot product with the light's unit vector over 0.3,
-// as the rim light. Nor is a cell lit when the neighbour a step
-// towards the light (from NE, the one up and to the right) is a full shape
-// cell while the one a step away is outside or a fringe, whatever its
-// normal sums to (the column of a narrow shape that faces a gap can see
-// more outside on the shape's far side, within three columns, than in the
-// gap). A neighbour off the canvas is neither. The rule checks only that
-// one pair of neighbours, along the light's own step, not whether the cell
-// has an open side towards the light. The direction is Tool Options'
-// light direction (BrushSettings::lightDirection), the way the light comes
-// from (NW: from the top left). It is an accent, not held to the ladder
-// lint: a lit cell can make a rung skip or a speck, which the lint reports.
+// rim normal (rimNormal, above: the normal over the outside that reaches
+// it), on screen, is within about 73° of the light's direction on screen:
+// the normal's dot product with the light's unit vector over 0.3. A cell is lit only past outside beside it on the
+// light's side: an outside sub-pixel in one of its eight neighbours whose
+// offset from the cell's centre, on screen, has a positive dot product with
+// the light's direction, however the outside that reaches it sums. Nor is a
+// cell lit when the neighbour a step towards the light (from NE, the one up
+// and to the right) is a full shape cell while the one a step away is
+// outside or a fringe, whatever its normal sums to. A neighbour off the
+// canvas is neither, and off the canvas is not outside. The direction is
+// Tool Options' light direction (BrushSettings::lightDirection), the way
+// the light comes from (NW: from the top left). It is an accent, not held
+// to the ladder lint: a lit cell can make a rung skip or a speck, which
+// the lint reports.
 //
-// Known limits (PLAN §10; follow-up #54):
+// Known limits (PLAN §10):
 // - canvas edges: a shape within three columns of the left or right edge,
 //   or with full cells on the first or last row, can light differently
 //   from the same shape further in (edgeNormal, above);
 // - ▌/▐ gaps: the top and bottom cells beside a ▌/▐ column can light where
 //   across an empty column they don't;
-// - counters: in a gap closed above and below (a letter's counter), the
-//   side walls' top and bottom inner cells can be lit from the far
-//   diagonal, where the neighbour a step away is the counter's top or
-//   bottom stroke;
-// - thin bars split by a black half-pixel row: the interior of the full
-//   row of a bar three pixels tall with another shape a black pixel row
-//   under it, such as (10,2), faces up and is lit from above, since the
-//   neighbour towards the light is a fringe; the row's end cells, such as
-//   (2,2) with a dot of about 0.24 with N, stay unlit from above;
 // - grazing cells on rotated ellipses: a cell whose normal faces the light
 //   just over the threshold can be left unlit when the neighbour pair
-//   along the light's step is full and outside or a fringe.
+//   along the light's step is full and outside or a fringe;
+// - thin bars by their ends: the full row of a bar three pixels tall under
+//   ▄ fringes, at the bar's end or a column in from it, can face up or
+//   sideways (rimNormal, above), so it can be lit from N, NE or NW and not
+//   from S.
 class RimLightBrush : public Brush {
 public:
     RimLightBrush(Ramp ramp, Compass light);
