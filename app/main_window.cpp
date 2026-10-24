@@ -37,13 +37,13 @@ QString lossDescription(const AnsiOutput& out) {
         parts << QObject::tr("%n cell(s) hold a glyph with no CP437 code and will be written as '?'", nullptr,
                              int(out.unwritable.size()));
     // From the editor this is blink the file had and lost when it was opened
-    // with iCE colours (see Document::encode), counted on open. It says only
-    // that: the cells may since have moved, been erased or had their blink put
-    // back, so it claims nothing about what this save writes, and nothing
-    // about the original file, which a Save As to a new path leaves alone.
+    // with iCE colours that this save still writes without (see
+    // Document::encode). It claims nothing about the original file, which a
+    // Save As to a new path leaves alone.
     if (out.blinkDropped)
-        parts << QObject::tr("%n cell(s) lost their blink when the file was opened with iCE colours", nullptr,
-                             out.blinkDropped);
+        parts << QObject::tr(
+            "%n cell(s) lost their blink when the file was opened with iCE colours, and this save doesn't put it back",
+            nullptr, out.blinkDropped);
     return parts.join(QStringLiteral(";\n"));
 }
 
@@ -283,8 +283,7 @@ void MainWindow::canvasReset() {
 
 bool MainWindow::openFile(const QString& path, QString* error) {
     AnsiDocument candidate;
-    int blinkDropped = 0;
-    if (!Document::read(path, &candidate, error, &blinkDropped))
+    if (!Document::read(path, &candidate, error))
         return false;
     // Let the renderer take the new canvas before the document does, so a
     // canvas too large to display leaves the open one as it was. setCanvas
@@ -296,7 +295,7 @@ bool MainWindow::openFile(const QString& path, QString* error) {
         *error = tr("the canvas is too large to display");
         return false;
     }
-    doc_.replace(std::move(candidate), path, blinkDropped);
+    doc_.replace(std::move(candidate), path);
     return true;
 }
 

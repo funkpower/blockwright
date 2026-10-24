@@ -65,14 +65,13 @@ Document::Document(QObject* parent) : QObject(parent), doc_(blank()) {
 
 bool Document::load(const QString& path, QString* error) {
     AnsiDocument doc;
-    int blinkDropped = 0;
-    if (!read(path, &doc, error, &blinkDropped))
+    if (!read(path, &doc, error))
         return false;
-    replace(std::move(doc), path, blinkDropped);
+    replace(std::move(doc), path);
     return true;
 }
 
-bool Document::read(const QString& path, AnsiDocument* out, QString* error, int* blinkDropped) {
+bool Document::read(const QString& path, AnsiDocument* out, QString* error) {
     if (QFileInfo(path).isDir()) {
         *error = tr("%1 is a directory").arg(path);
         return false;
@@ -100,19 +99,22 @@ bool Document::read(const QString& path, AnsiDocument* out, QString* error, int*
     // A file without iCE colours can still hold bright backgrounds (SGR
     // 100-107, 24-bit colours): open it with them on, as writeAnsi writes it
     // and the CLI renders it, and its blinking cells as writeAnsi writes them
-    // then. `cli shade` opens files the same way.
-    *blinkDropped = openAsEditor(*out).blinkDropped;
+    // then, marked as lost. `cli shade` opens files the same way.
+    openAsEditor(*out);
     return true;
 }
 
 AnsiOutput Document::encode() const {
     AnsiDocument d = doc_;
     for (int y = 0; y < d.canvas.height(); ++y)
-        for (int x = 0; x < d.canvas.width(); ++x)
-            if (!d.canvas.at(x, y).transparent)
-                d.canvas.at(x, y) = iceCell(d.canvas.at(x, y), d.ice);
+        for (int x = 0; x < d.canvas.width(); ++x) {
+            Cell& c = d.canvas.at(x, y);
+            if (!c.transparent)
+                c = iceCell(c, d.ice);
+        }
     AnsiOutput out = writeAnsi(d);
-    out.blinkDropped += blinkDropped_;
+    if (countLostBlink_)
+        out.blinkDropped += lostBlinkCount(doc_);
     return out;
 }
 
@@ -169,10 +171,14 @@ void Document::applyFormat(const DocumentFormat& format) {
     emit formatChanged();
 }
 
-void Document::replace(AnsiDocument doc, const QString& path, int blinkDropped) {
+void Document::replace(AnsiDocument doc, const QString& path) {
     undo_.clear();
     doc_ = std::move(doc);
-    blinkDropped_ = blinkDropped;
+    countLostBlink_ = false;
+    const Canvas& cv = doc_.canvas;
+    for (int y = 0; y < cv.height() && !countLostBlink_; ++y)
+        for (int x = 0; x < cv.width() && !countLostBlink_; ++x)
+            countLostBlink_ = cv.at(x, y).lostBlink;
     path_ = path;
     emit reset();
     emit pathChanged(path_);
@@ -182,7 +188,7 @@ void Document::replace(AnsiDocument doc, const QString& path, int blinkDropped) 
 void Document::clear() {
     undo_.clear();
     doc_ = blank();
-    blinkDropped_ = 0;
+    countLostBlink_ = false;
     path_.clear();
     emit reset();
     emit pathChanged(path_);
@@ -212,7 +218,7 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         path_ = path;
         emit pathChanged(path_);
     }
-    blinkDropped_ = 0;  // the file written has none left to lose
+    countLostBlink_ = false;  // the file written has no blink left to lose
     undo_.setClean();
     setModified(false);
     return true;
@@ -224,7 +230,7 @@ QRegion Document::changedCells(const CellEdit& edit) {
     std::vector<QPoint> cells;
     cells.reserve(edit.changes.size());
     for (const CellChange& c : edit.changes)
-        if (c.before != c.after)
+        if (!identical(c.before, c.after))
             cells.emplace_back(c.x, c.y);
     std::sort(cells.begin(), cells.end(), [](const QPoint& a, const QPoint& b) {
         return a.y() != b.y() ? a.y() < b.y() : a.x() < b.x();
@@ -249,9 +255,10 @@ QRegion Document::changedCells(const CellEdit& edit) {
 }
 
 bool Document::edit(const CellEdit& edit, Cursor before, Cursor after) {
-    if ((changedCells(edit) & QRect(0, 0, doc_.canvas.width(), doc_.canvas.height())).isEmpty())
+    const CellEdit e = settleLostBlink(edit);
+    if ((changedCells(e) & QRect(0, 0, doc_.canvas.width(), doc_.canvas.height())).isEmpty())
         return false;
-    undo_.push(new EditCommand(this, edit, before, after));
+    undo_.push(new EditCommand(this, e, before, after));
     return true;
 }
 

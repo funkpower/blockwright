@@ -24,7 +24,7 @@ Shaded shadeDocument(bw::AnsiDocument& doc, const ShadeOptions& o) {
     // can be because --ice turned iCE colours on, where blink can't be kept.
     const bw::AnsiOutput before = bw::writeAnsi(doc);
     const bool flag = doc.ice;
-    r.blinkDropped = bw::openAsEditor(doc).blinkDropped;
+    bw::openAsEditor(doc);
     if (o.ice)
         doc.ice = true;
     const bw::RampShadeBrush brush(o.ramp, o.direction, o.steps);
@@ -32,8 +32,9 @@ Shaded shadeDocument(bw::AnsiDocument& doc, const ShadeOptions& o) {
     so.selection = std::make_shared<const bw::Mask>(
         bw::Mask::rect(c.width(), c.height(), r.box.x0, r.box.y0, r.box.x1, r.box.y1));
     so.ice = doc.ice;
-    r.edit = bw::paintRegion(c, brush, {}, so);
+    r.edit = bw::settleLostBlink(bw::paintRegion(c, brush, {}, so));
     r.edit.apply(c);
+    r.blinkDropped = bw::lostBlinkCount(doc);
     r.iceTurnedOn = !flag && doc.ice;
     if (!before.lossy()) {
         const int n = bw::writeAnsi(doc).blinkDropped;

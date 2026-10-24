@@ -27,7 +27,7 @@ public:
         CellEdit e;
         for (const auto& [at, c] : after_) {
             const Cell& before = canvas_.at(at.second, at.first);
-            if (before != c)
+            if (!identical(before, c))
                 e.changes.push_back({at.second, at.first, before, c});
         }
         return e;
@@ -58,7 +58,7 @@ void pasteInto(EditBuilder& b, const Canvas& canvas, const CellBlock& block, int
             const int x = static_cast<int>(lx), y = static_cast<int>(ly);
             const Cell under = cleared && cleared->contains(x, y) ? Cell{} : canvas.at(x, y);
             if (const auto c = pasteCell(block.at(bx, by), under, mode))
-                b.set(x, y, *c);
+                b.set(x, y, writtenOver(under, *c));
         }
 }
 
@@ -220,7 +220,9 @@ CellEdit stampBlock(const Canvas& canvas, const CellBlock& block, int x, int y, 
     if (liftedFrom)
         clearInto(b, canvas, *liftedFrom);
     pasteInto(b, canvas, block, x, y, mode, liftedFrom);
-    return b.finish();
+    CellEdit e = b.finish();
+    e.moves = true;
+    return e;
 }
 
 char32_t flipGlyph(char32_t ch, Flip flip) {
@@ -297,7 +299,9 @@ SelectionEdit transformSelection(const Canvas& canvas, const Selection& sel, Tra
     EditBuilder b(canvas);
     clearInto(b, canvas, from);
     pasteInto(b, canvas, block, r.x, r.y, PasteMode::Normal, &from);
-    return {b.finish(), Selection(CellRect{r.x, r.y, block.width, block.height}).clipped(canvas)};
+    CellEdit e = b.finish();
+    e.moves = true;
+    return {e, Selection(CellRect{r.x, r.y, block.width, block.height}).clipped(canvas)};
 }
 
 SelectionEdit moveSelection(const Canvas& canvas, const Selection& sel, int dx, int dy, PasteMode mode) {
@@ -323,10 +327,15 @@ CellEdit mirrorEdit(const Canvas& canvas, const CellEdit& edit) {
     EditBuilder all = own;
     for (const CellChange& c : edit.changes) {
         const int mx = mirrorColumn(canvas.width(), c.x);
-        if (canvas.contains(c.x, c.y) && !own.has(mx, c.y))
-            all.set(mx, c.y, flipCell(c.after, Flip::Horizontal));
+        if (!canvas.contains(c.x, c.y) || own.has(mx, c.y))
+            continue;
+        // a drawn image is settled with the rest; a moved one is pasted
+        const Cell image = flipCell(c.after, Flip::Horizontal);
+        all.set(mx, c.y, edit.moves && canvas.contains(mx, c.y) ? writtenOver(canvas.at(mx, c.y), image) : image);
     }
-    return all.finish();
+    CellEdit e = all.finish();
+    e.moves = edit.moves;
+    return e;
 }
 
 } // namespace bw

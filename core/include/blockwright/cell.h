@@ -1,7 +1,7 @@
 #pragma once
 // One character cell: a Unicode codepoint (CP437 mapping happens only at
-// the file edges), a foreground and background colour, attribute bits and a
-// transparent flag for layers.
+// the file edges), a foreground and background colour, attribute bits, a
+// transparent flag for layers and the editor's lost-blink mark.
 
 #include "blockwright/palette.h"
 
@@ -41,8 +41,23 @@ struct Cell {
     Color bg = Color::indexed(Black);
     std::uint8_t attrs = 0;
     bool transparent = false;
+    // Editor only: this cell lost its blink when its file was opened
+    // (openAsEditor). Moved and copied cells keep it, so the mark goes where
+    // the cell goes (moves, flips, copies, undo and redo); a drawn cell has
+    // none of its own (settleLostBlink in edit.h); the save counts the marked cells it still
+    // writes without a blink (Document::encode). No file, export or renderer
+    // reads it, and == leaves it out, so cells that look the same are equal
+    // to lint, previews and tests. identical() sees it.
+    bool lostBlink = false;
 
-    bool operator==(const Cell&) const = default;
+    bool operator==(const Cell& o) const {
+        return ch == o.ch && fg == o.fg && bg == o.bg && attrs == o.attrs && transparent == o.transparent;
+    }
 };
+
+// Whether `a` and `b` are the same cell, the lost-blink mark included: how an
+// edit tells whether it changes a cell, so moving a marked cell onto one that
+// looks the same still moves the mark.
+inline bool identical(const Cell& a, const Cell& b) { return a == b && a.lostBlink == b.lostBlink; }
 
 } // namespace bw

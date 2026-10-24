@@ -3,6 +3,8 @@
 #include "blockwright/ansi.h"
 
 #include <algorithm>
+#include <map>
+#include <utility>
 
 namespace bw {
 
@@ -18,6 +20,26 @@ void CellEdit::revert(Canvas& canvas) const {
             canvas.at(it->x, it->y) = it->before;
 }
 
+Cell writtenOver(const Cell& under, Cell c) {
+    c.lostBlink = c.lostBlink || (under.lostBlink && writesAlike(under, c));
+    return c;
+}
+
+CellEdit settleLostBlink(CellEdit edit) {
+    if (edit.moves || std::none_of(edit.changes.begin(), edit.changes.end(), [](const CellChange& c) {
+            return c.before.lostBlink || c.after.lostBlink;
+        }))
+        return edit;
+    std::map<std::pair<int, int>, Cell> was;  // (y, x) -> the cell before the edit
+    for (const CellChange& c : edit.changes)
+        was.emplace(std::pair{c.y, c.x}, c.before);
+    for (CellChange& c : edit.changes) {
+        c.after.lostBlink = false;
+        c.after = writtenOver(was.at({c.y, c.x}), c.after);
+    }
+    return edit;
+}
+
 Cursor moveCursor(const Canvas& canvas, Cursor c, int dx, int dy) {
     if (canvas.width() <= 0 || canvas.height() <= 0)
         return {};
@@ -31,7 +53,7 @@ namespace {
 // An edit setting one cell, or none if the cell already holds `after`.
 CellEdit setCell(const Canvas& canvas, Cursor c, const Cell& after) {
     CellEdit e;
-    if (canvas.contains(c.x, c.y) && canvas.at(c.x, c.y) != after)
+    if (canvas.contains(c.x, c.y) && !identical(canvas.at(c.x, c.y), after))
         e.changes.push_back({c.x, c.y, canvas.at(c.x, c.y), after});
     return e;
 }
@@ -70,7 +92,7 @@ EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, st
     const long long end = first + static_cast<long long>(text.size());
     EditResult r{{}, {static_cast<int>(std::min(end, w - 1)), c.y, !text.empty() && end >= w}};
     for (int i = 0; i < w; ++i)
-        if (row[i] != canvas.at(i, c.y))
+        if (!identical(row[i], canvas.at(i, c.y)))
             r.edit.changes.push_back({i, c.y, canvas.at(i, c.y), row[i]});
     return r;
 }

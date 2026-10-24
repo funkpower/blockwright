@@ -516,7 +516,7 @@ CellEdit Stroke::edit() const {
     CellEdit e;
     for (const auto& [yx, p] : painted_) {
         const Cell& before = canvas_.at(yx.second, yx.first);
-        if (!(before == p.cell))
+        if (!identical(before, p.cell))
             e.changes.push_back({yx.second, yx.first, before, p.cell});
     }
     return e;

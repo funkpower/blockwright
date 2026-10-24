@@ -4,6 +4,14 @@
 
 #include "util.h"
 
+#include "blockwright/brushes/despeckle.h"
+#include "blockwright/brushes/detail.h"
+#include "blockwright/brushes/drawing.h"
+#include "blockwright/brushes/form.h"
+#include "blockwright/brushes/shading.h"
+#include "blockwright/brushes/soft.h"
+#include "blockwright/ramp.h"
+
 #include "canvas_view.h"
 #include "document.h"
 #include "main_window.h"
@@ -29,6 +37,8 @@
 
 #include <functional>
 #include <map>
+#include <memory>
+#include <vector>
 
 using namespace bw;
 
@@ -447,11 +457,11 @@ TEST_CASE("an iCE-off file opened with iCE on shows and saves its blinking cells
     }
 }
 
-TEST_CASE("the save warning for blink lost on open stays true once iCE is off or the cell is erased") {
-    // #36: the count is fixed when the file opens; neither turning iCE off
-    // nor erasing the cell gives the blink back, and the warning says what
-    // happened rather than what the save will do
-    const QString lost = QStringLiteral("1 cell(s) lost their blink when the file was opened with iCE colours");
+TEST_CASE("the save warning for blink lost on open stays true once iCE is off, and ends with the cell erased") {
+    // #36: turning iCE off doesn't give the blink back. #82: erasing the cell
+    // is the artist's own edit, so the cell no longer claims a blink
+    const QString lost = QStringLiteral(
+        "1 cell(s) lost their blink when the file was opened with iCE colours, and this save doesn't put it back");
     QTemporaryDir tmp;
     const QString path = writeIceOff(tmp, "blink.ans", "\x1b[0;5;31;44mA\x1b[0;37;104mB");
     MainWindow w;
@@ -463,26 +473,31 @@ TEST_CASE("the save warning for blink lost on open stays true once iCE is off or
     SECTION("iCE off") {
         REQUIRE(w.document()->setIce(false));
         CHECK(w.document()->encode().blinkDropped == 1);
+        CHECK_FALSE(w.saveFile(saved, &error));
+        CHECK(error == lost);
+        CHECK(saveWarning(w.document()->encode()).contains(lost));
+        // #42: a save to a new path leaves the original's blink alone, so
+        // the warning doesn't say the original lost it
+        CHECK_FALSE(error.contains(QStringLiteral("original")));
     }
     SECTION("the blinking cell erased") {
         const Cell a = w.document()->canvas().at(0, 0);
         REQUIRE(w.document()->edit(CellEdit{{{0, 0, a, Cell{}}}}));
+        CHECK(w.document()->encode().blinkDropped == 0);
+        w.document()->undoStack()->undo();
         CHECK(w.document()->encode().blinkDropped == 1);
+        w.document()->undoStack()->redo();
+        REQUIRE(w.saveFile(saved, &error));
+        CHECK(parseAnsi(bwtest::readFile(saved.toStdString())).canvas.at(0, 0).ch == U' ');
     }
-    CHECK_FALSE(w.saveFile(saved, &error));
-    CHECK(error == lost);
-    CHECK_FALSE(error.contains(QStringLiteral("will lose")));
-    // #42: a save to a new path leaves the original's blink alone, so the
-    // warning doesn't say the original lost it
-    CHECK_FALSE(error.contains(QStringLiteral("original")));
 }
 
-TEST_CASE("the save warning for blink lost on open says only what happened on open") {
-    // #75 review: the warning can't follow a lost cell through edits, so it
-    // says nothing about what the save writes. Both cases below would make a
-    // claim about the save false; the open-time wording stays true, and the
-    // loss recorded on open still stops the save unless lossy saves are allowed.
-    const QString lost = QStringLiteral("1 cell(s) lost their blink when the file was opened with iCE colours");
+TEST_CASE("the save warning for blink lost on open follows the lost cell through edits") {
+    // #79, #82: the count is the cells marked on open as having lost their
+    // blink that the save still writes without one. The mark goes where the
+    // cell goes, so a lost cell that only moved stays lost, and one made to
+    // blink again, in place or moved, is back. Fixture from #75 round 2: A
+    // blinks red on blue at (0,0), B is grey on bright blue at (1,0).
     QTemporaryDir tmp;
     const QString path = writeIceOff(tmp, "blink.ans", "\x1b[0;5;31;44mA\x1b[0;37;104mB");
     const Cell original = parseAnsi(bwtest::readFile(path.toStdString())).canvas.at(0, 0);
@@ -490,40 +505,488 @@ TEST_CASE("the save warning for blink lost on open says only what happened on op
     MainWindow w;
     QString error;
     REQUIRE(w.openFile(path, &error));
-    REQUIRE(w.document()->encode().blinkDropped == 1);
-    // the Save question doesn't say the save loses it either
-    const QString asked = saveWarning(w.document()->encode());
-    CHECK(asked.contains(lost));
-    CHECK_FALSE(asked.contains(QStringLiteral("lose")));
-    CHECK_FALSE(asked.contains(QStringLiteral("saved without")));
+    Document* d = w.document();
+    REQUIRE(d->encode().blinkDropped == 1);
+    QUndoStack* undo = d->undoStack();
     const QString saved = tmp.filePath(QStringLiteral("saved.ans"));
+    const auto blinksAt = [](const std::string& bytes, int x) {
+        const Cell c = parseAnsi(bytes).canvas.at(x, 0);
+        return c.ch == U'A' && (c.attrs & attr::Blink);
+    };
 
-    SECTION("iCE off and the blinking cell put back in place: the save writes its blink") {
-        REQUIRE(w.document()->setIce(false));
-        put(w.document(), 0, 0, original);
-        const AnsiOutput out = w.document()->encode();
-        CHECK((parseAnsi(out.bytes).canvas.at(0, 0).attrs & attr::Blink));
-        CHECK(out.blinkDropped == 1);
-        CHECK_FALSE(w.saveFile(saved, &error));
-        CHECK(error == lost);
-        REQUIRE(w.saveFile(saved, &error, true));
+    SECTION("iCE off and A put back in place: nothing lost, and undo and redo follow") {
+        REQUIRE(d->setIce(false));
+        put(d, 0, 0, original);
+        const AnsiOutput out = d->encode();
+        CHECK(blinksAt(out.bytes, 0));
+        CHECK(out.blinkDropped == 0);
+        undo->undo();
+        CHECK(d->encode().blinkDropped == 1);
+        undo->redo();
+        CHECK(d->encode().blinkDropped == 0);
+        REQUIRE(w.saveFile(saved, &error));
         CHECK(bwtest::readFile(saved.toStdString()) == out.bytes);
     }
     SECTION("iCE off and the cells flipped: A moves and B's bright background takes its place") {
-        REQUIRE(w.document()->setIce(false));
-        QUndoStack* undo = w.document()->undoStack();
+        REQUIRE(d->setIce(false));
         action(w, "selectTool")->trigger();
         w.selectTool()->select({0, 0, 2, 1});
         action(w, "flipHorizontal")->trigger();
-        REQUIRE(w.document()->canvas().at(0, 0).ch == U'B');
-        REQUIRE(w.document()->canvas().at(1, 0).ch == U'A');
-        CHECK(w.document()->encode().blinkDropped == 1);
+        REQUIRE(d->canvas().at(0, 0).ch == U'B');
+        REQUIRE(d->canvas().at(1, 0).ch == U'A');
+        CHECK(d->encode().blinkDropped == 1);
         undo->undo();
-        CHECK(w.document()->encode().blinkDropped == 1);
+        CHECK(d->encode().blinkDropped == 1);
         undo->redo();
-        CHECK(w.document()->encode().blinkDropped == 1);
+        CHECK(d->encode().blinkDropped == 1);
         CHECK_FALSE(w.saveFile(saved, &error));
-        CHECK(error == lost);
+        CHECK(error.contains(QStringLiteral("1 cell(s) lost their blink")));
+    }
+    SECTION("iCE off, A put back and moved: the moved cell carries its blink") {
+        REQUIRE(d->setIce(false));
+        put(d, 0, 0, original);
+        action(w, "selectTool")->trigger();
+        w.selectTool()->select({0, 0, 1, 1});
+        w.selectTool()->moveBy(2, 0);
+        w.selectTool()->stamp();
+        REQUIRE(d->canvas().at(0, 0) == Cell{});
+        REQUIRE(d->canvas().at(2, 0) == original);
+        const AnsiOutput out = d->encode();
+        CHECK(blinksAt(out.bytes, 2));
+        CHECK(out.blinkDropped == 0);
+        undo->undo();  // the move
+        CHECK(d->encode().blinkDropped == 0);
+        undo->undo();  // the put
+        CHECK(d->encode().blinkDropped == 1);
+        undo->redo();
+        undo->redo();
+        CHECK(d->encode().blinkDropped == 0);
+        REQUIRE(w.saveFile(saved, &error));
+        CHECK(bwtest::readFile(saved.toStdString()) == out.bytes);
+    }
+    SECTION("iCE off, A erased: its claim goes with it, and undo brings it back") {
+        REQUIRE(d->setIce(false));
+        put(d, 0, 0, Cell{});
+        CHECK(d->encode().blinkDropped == 0);
+        undo->undo();
+        CHECK(d->encode().blinkDropped == 1);
+        put(d, 5, 0, original);
+        CHECK(d->encode().blinkDropped == 1);
+    }
+    SECTION("A drawn blinking over itself with iCE on is the bright background iCE shows") {
+        // the artist drew the cell anew, as it saves with iCE on
+        put(d, 0, 0, original);
+        CHECK(d->encode().blinkDropped == 0);
+        REQUIRE(w.saveFile(saved, &error));
+        const AnsiDocument back = parseAnsi(bwtest::readFile(saved.toStdString()));
+        CHECK(back.ice);
+        CHECK(back.canvas.at(0, 0).bg.paletteIndex() == LightBlue);
+        REQUIRE(d->setIce(false));
+        CHECK(d->encode().blinkDropped == 0);
+    }
+    SECTION("a blinking cell that isn't A doesn't bring it back, and drawn over A ends A's claim") {
+        REQUIRE(d->setIce(false));
+        Cell space = original;
+        space.ch = U' ';
+        put(d, 3, 0, space);
+        CHECK(d->encode().blinkDropped == 1);
+        Cell other = original;
+        other.fg = Color::indexed(Green);
+        put(d, 4, 0, other);
+        CHECK(d->encode().blinkDropped == 1);
+        put(d, 0, 0, other);
+        CHECK(d->encode().blinkDropped == 0);
+    }
+    SECTION("a failed save keeps the record; a successful one clears it") {
+        const QString nowhere = tmp.filePath(QStringLiteral("missing/saved.ans"));
+        CHECK_FALSE(w.saveFile(nowhere, &error, true));
+        CHECK(d->encode().blinkDropped == 1);
+        REQUIRE(w.saveFile(saved, &error, true));
+        CHECK(d->encode().blinkDropped == 0);
+    }
+    SECTION("reopening replaces the record and New clears it") {
+        REQUIRE(d->setIce(false));
+        put(d, 0, 0, original);
+        REQUIRE(d->encode().blinkDropped == 0);
+        REQUIRE(w.openFile(path, &error));
+        CHECK(d->encode().blinkDropped == 1);
+        const QString plain = writeIceOff(tmp, "plain.ans", "\x1b[0;37;104mB");
+        REQUIRE(w.openFile(plain, &error));
+        CHECK(d->encode().blinkDropped == 0);
+        REQUIRE(w.openFile(path, &error));
+        REQUIRE(d->encode().blinkDropped == 1);
+        d->clear();
+        CHECK(d->encode().blinkDropped == 0);
+    }
+}
+
+TEST_CASE("a cell the file already wrote as the lost one doesn't bring it back") {
+    // #79: with iCE off, A red on bright blue saves as A blinking red on
+    // blue, which is how the lost A was written; it wasn't marked on open
+    // (#82), so it doesn't stand in for the lost one
+    QTemporaryDir tmp;
+    const QString path = writeIceOff(tmp, "twin.ans", "\x1b[0;5;31;44mA\x1b[0;31;104mA");
+    const Cell original = parseAnsi(bwtest::readFile(path.toStdString())).canvas.at(0, 0);
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(path, &error));
+    Document* d = w.document();
+    REQUIRE(d->encode().blinkDropped == 1);
+    REQUIRE(d->setIce(false));
+    CHECK(d->encode().blinkDropped == 1);
+    put(d, 0, 0, original);
+    CHECK(d->encode().blinkDropped == 0);
+}
+
+namespace {
+
+// Opens `body` as an iCE-off file in `w` and turns iCE off, so the cells
+// save as they were in the file; the document.
+Document* openIceOff(MainWindow& w, const QTemporaryDir& tmp, const char* name, const std::string& body) {
+    QString error;
+    REQUIRE(w.openFile(writeIceOff(tmp, name, body), &error));
+    REQUIRE(w.document()->ansi().ice);
+    REQUIRE(w.document()->setIce(false));
+    return w.document();
+}
+
+// Copies the cells in `from` and stamps them with their top-left at `to`.
+void copyTo(MainWindow& w, const CellRect& from, QPoint to) {
+    action(w, "selectTool")->trigger();
+    w.selectTool()->select(from);
+    w.selectTool()->copy();
+    w.selectTool()->floatBlock(w.selectTool()->clipboard(), to);
+    w.selectTool()->stamp();
+}
+
+// A cell from scratch, as a tool draws it: nothing of what was there before.
+Cell drawn(char32_t ch, std::uint8_t fg, std::uint8_t bg, std::uint8_t attrs = 0) {
+    Cell c;
+    c.ch = ch;
+    c.fg = Color::indexed(fg);
+    c.bg = Color::indexed(bg);
+    c.attrs = attrs;
+    return c;
+}
+
+bool blinksIn(const std::string& bytes, int x) { return parseAnsi(bytes).canvas.at(x, 0).attrs & attr::Blink; }
+
+} // namespace
+
+TEST_CASE("another cell made to blink doesn't stand in for a cell that lost its blink on open") {
+    // #82 round 1 (P2): the claim is the lost cell's own and goes where edits
+    // take it; a cell that never lost a blink earns nothing by blinking
+    QTemporaryDir tmp;
+    MainWindow w;
+    QString error;
+    const QString saved = tmp.filePath(QStringLiteral("saved.ans"));
+
+    SECTION("the bright < flipped into a blinking > beside the lost >") {
+        Document* d = openIceOff(w, tmp, "arrows.ans", "\x1b[0;5;31;44m>\x1b[0;31;104m<");
+        action(w, "selectTool")->trigger();
+        w.selectTool()->select({1, 0, 1, 1});
+        action(w, "flipHorizontal")->trigger();
+        REQUIRE(d->canvas().at(1, 0).ch == U'>');
+        const AnsiOutput out = d->encode();
+        CHECK(blinksIn(out.bytes, 1));
+        CHECK_FALSE(blinksIn(out.bytes, 0));
+        CHECK(out.blinkDropped == 1);
+        CHECK_FALSE(w.saveFile(saved, &error));
+        CHECK(error.contains(QStringLiteral("1 cell(s) lost their blink")));
+        d->undoStack()->undo();
+        CHECK(d->encode().blinkDropped == 1);
+        d->undoStack()->redo();
+        CHECK(d->encode().blinkDropped == 1);
+    }
+    SECTION("twin.ans: the bright A copied, then the lost A put back") {
+        Document* d = openIceOff(w, tmp, "twin.ans", "\x1b[0;5;31;44mA\x1b[0;31;104mA");
+        const Cell original = drawn(U'A', Red, Blue, attr::Blink);
+        copyTo(w, {1, 0, 1, 1}, {5, 0});
+        REQUIRE(d->canvas().at(5, 0) == d->canvas().at(1, 0));
+        CHECK(blinksIn(d->encode().bytes, 5));
+        CHECK(d->encode().blinkDropped == 1);
+        CHECK_FALSE(w.saveFile(saved, &error));
+        put(d, 0, 0, original);
+        CHECK(d->encode().blinkDropped == 0);
+        REQUIRE(w.saveFile(saved, &error));
+        CHECK(blinksIn(bwtest::readFile(saved.toStdString()), 0));
+    }
+    SECTION("the lost A drawn again elsewhere, blinking, while it stays as it is") {
+        Document* d = openIceOff(w, tmp, "blink.ans", "\x1b[0;5;31;44mA\x1b[0;37;104mB");
+        put(d, 5, 0, drawn(U'A', Red, Blue, attr::Blink));
+        CHECK(d->encode().blinkDropped == 1);
+    }
+}
+
+TEST_CASE("two cells that lost their blink on open come back one at a time") {
+    // #82 round 1: duplicate lost cells, one restored; a copy of the restored
+    // one doesn't restore the other
+    QTemporaryDir tmp;
+    MainWindow w;
+    Document* d = openIceOff(w, tmp, "pair.ans", "\x1b[0;5;31;44mAA\x1b[0;37;104mB");
+    QUndoStack* undo = d->undoStack();
+    const Cell original = drawn(U'A', Red, Blue, attr::Blink);
+    CHECK(d->encode().blinkDropped == 2);
+    put(d, 0, 0, original);
+    CHECK(d->encode().blinkDropped == 1);
+    copyTo(w, {0, 0, 1, 1}, {5, 0});
+    REQUIRE(d->canvas().at(5, 0) == original);
+    CHECK(d->encode().blinkDropped == 1);
+    put(d, 1, 0, original);
+    CHECK(d->encode().blinkDropped == 0);
+    undo->undo();
+    CHECK(d->encode().blinkDropped == 1);
+    undo->undo();  // the copy
+    CHECK(d->encode().blinkDropped == 1);
+    undo->undo();
+    CHECK(d->encode().blinkDropped == 2);
+}
+
+TEST_CASE("attribute bits other than blink neither restore a lost cell nor end its claim") {
+    // #82 round 1: writeAnsi writes only the blink bit, so a cell drawn over
+    // the lost one that differs from it only in other bits saves as it did
+    QTemporaryDir tmp;
+    MainWindow w;
+    Document* d = openIceOff(w, tmp, "blink.ans", "\x1b[0;5;31;44mA\x1b[0;37;104mB");
+    put(d, 0, 0, drawn(U'A', Red, Blue, 0x80));
+    CHECK(d->encode().blinkDropped == 1);
+    put(d, 5, 0, drawn(U'A', Red, Blue, attr::Blink | 0x80));
+    CHECK(d->encode().blinkDropped == 1);
+    put(d, 0, 0, drawn(U'A', Red, Blue, attr::Blink | 0x80));
+    CHECK(d->encode().blinkDropped == 0);
+}
+
+TEST_CASE("a lost cell drawn over with its CP437 look-alike is the same cell to the save") {
+    // #82 round 1 (P3): ß and β (and µ and μ) are one CP437 byte, so the save
+    // writes them alike
+    QTemporaryDir tmp;
+    MainWindow w;
+    QString error;
+    const QString saved = tmp.filePath(QStringLiteral("saved.ans"));
+
+    SECTION("beta, blinking, in place of a lost sharp s") {
+        Document* d = openIceOff(w, tmp, "eszett.ans", "\x1b[0;5;31;44m\xe1\x1b[0;37;104mB");
+        REQUIRE(d->canvas().at(0, 0).ch == U'ß');
+        put(d, 0, 0, drawn(U'β', Red, Blue, attr::Blink));
+        CHECK(d->encode().blinkDropped == 0);
+        REQUIRE(w.saveFile(saved, &error));
+        const Cell back = parseAnsi(bwtest::readFile(saved.toStdString())).canvas.at(0, 0);
+        CHECK(back.ch == U'ß');
+        CHECK((back.attrs & attr::Blink));
+    }
+    SECTION("mu, blinking, in place of a lost micro sign") {
+        Document* d = openIceOff(w, tmp, "micro.ans", "\x1b[0;5;31;44m\xe6\x1b[0;37;104mB");
+        REQUIRE(d->canvas().at(0, 0).ch == U'µ');
+        put(d, 0, 0, drawn(U'μ', Red, Blue, attr::Blink));
+        CHECK(d->encode().blinkDropped == 0);
+    }
+    SECTION("beta without the blink keeps the sharp s's claim") {
+        Document* d = openIceOff(w, tmp, "eszett.ans", "\x1b[0;5;31;44m\xe1\x1b[0;37;104mB");
+        put(d, 0, 0, drawn(U'β', Red, Blue));
+        CHECK(d->encode().blinkDropped == 1);
+        put(d, 5, 0, drawn(U'ß', Red, Blue, attr::Blink));
+        CHECK(d->encode().blinkDropped == 1);
+        CHECK_FALSE(w.saveFile(saved, &error));
+    }
+}
+
+TEST_CASE("a lost cell drawn over or moved onto a cell the save writes alike keeps its claim") {
+    // #82 round 1: an edit that leaves the cell as the save writes it can't
+    // be what takes its blink away, and a move can't leave the claim behind
+    // where the cell it lands on looks the same
+    QTemporaryDir tmp;
+    MainWindow w;
+    Document* d = openIceOff(w, tmp, "same.ans", "\x1b[0;5;31;44mA\x1b[0;31;44mA\x1b[0;37;104mB");
+    REQUIRE(d->encode().blinkDropped == 1);
+
+    SECTION("drawn over as it is") {
+        CHECK_FALSE(d->edit(CellEdit{{{0, 0, d->canvas().at(0, 0), drawn(U'A', Red, Blue)}}}));
+        CHECK(d->encode().blinkDropped == 1);
+    }
+    SECTION("moved onto the plain A beside it") {
+        action(w, "selectTool")->trigger();
+        w.selectTool()->select({0, 0, 1, 1});
+        w.selectTool()->moveBy(1, 0);
+        w.selectTool()->stamp();
+        REQUIRE(d->canvas().at(0, 0) == Cell{});
+        CHECK(d->encode().blinkDropped == 1);
+        put(d, 1, 0, drawn(U'A', Red, Blue, attr::Blink));
+        CHECK(d->encode().blinkDropped == 0);
+    }
+}
+
+TEST_CASE("flipping a lost cell with its look-alike moves the claim and doesn't copy it") {
+    // #82 round 2 (P2 1): the flip takes the lost A to (1,0) and puts the
+    // plain A at (0,0); the plain A doesn't take over the claim it leaves
+    QTemporaryDir tmp;
+    MainWindow w;
+    QString error;
+    const QString saved = tmp.filePath(QStringLiteral("saved.ans"));
+    Document* d = openIceOff(w, tmp, "same.ans", "\x1b[0;5;31;44mA\x1b[0;31;44mA\x1b[0;37;104mB");
+    QUndoStack* undo = d->undoStack();
+    REQUIRE(d->encode().blinkDropped == 1);
+    action(w, "selectTool")->trigger();
+    w.selectTool()->select({0, 0, 2, 1});
+    action(w, "flipHorizontal")->trigger();
+    CHECK_FALSE(d->canvas().at(0, 0).lostBlink);
+    CHECK(d->canvas().at(1, 0).lostBlink);
+    CHECK(d->encode().blinkDropped == 1);
+    put(d, 1, 0, drawn(U'A', Red, Blue, attr::Blink));
+    CHECK(d->encode().blinkDropped == 0);
+    undo->undo();
+    CHECK(d->encode().blinkDropped == 1);
+    undo->undo();  // the flip
+    CHECK(d->canvas().at(0, 0).lostBlink);
+    CHECK_FALSE(d->canvas().at(1, 0).lostBlink);
+    CHECK(d->encode().blinkDropped == 1);
+    undo->redo();
+    CHECK_FALSE(d->canvas().at(0, 0).lostBlink);
+    CHECK(d->canvas().at(1, 0).lostBlink);
+    CHECK(d->encode().blinkDropped == 1);
+    undo->redo();
+    CHECK(d->encode().blinkDropped == 0);
+    REQUIRE(w.saveFile(saved, &error));
+    const std::string bytes = bwtest::readFile(saved.toStdString());
+    CHECK_FALSE(blinksIn(bytes, 0));
+    CHECK(blinksIn(bytes, 1));
+}
+
+TEST_CASE("a look-alike pasted or moved onto a lost cell that stays put leaves it its claim") {
+    // #82 round 2: as drawing it does; the lost cell isn't the one moved
+    QTemporaryDir tmp;
+    MainWindow w;
+    Document* d = openIceOff(w, tmp, "same.ans", "\x1b[0;5;31;44mA\x1b[0;31;44mA\x1b[0;37;104mB");
+    REQUIRE(d->encode().blinkDropped == 1);
+    action(w, "selectTool")->trigger();
+
+    SECTION("pasted") {
+        copyTo(w, {1, 0, 1, 1}, {0, 0});
+        CHECK(d->canvas().at(0, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 1);
+    }
+    SECTION("moved") {
+        w.selectTool()->select({1, 0, 1, 1});
+        w.selectTool()->moveBy(-1, 0);
+        w.selectTool()->stamp();
+        REQUIRE(d->canvas().at(1, 0) == Cell{});
+        CHECK(d->canvas().at(0, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 1);
+    }
+}
+
+TEST_CASE("colorizing a lost cell ends its claim as drawing the recoloured cell does") {
+    // #82 round 2 (P2 2): the colorize brush starts from a copy of the cell,
+    // mark and all; the save writes it green, so the edit is the artist's
+    QTemporaryDir tmp;
+    MainWindow w;
+    Document* d = openIceOff(w, tmp, "same.ans", "\x1b[0;5;31;44mA\x1b[0;31;44mA\x1b[0;37;104mB");
+    QUndoStack* undo = d->undoStack();
+    REQUIRE(d->encode().blinkDropped == 1);
+
+    SECTION("the colorize brush") {
+        REQUIRE(d->edit(paintStroke(d->canvas(), ColorizeBrush(Color::indexed(Green), std::nullopt), {}, {{0, 0}})));
+        REQUIRE(d->canvas().at(0, 0) == drawn(U'A', Green, Blue));
+        CHECK_FALSE(d->canvas().at(0, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 0);
+        undo->undo();
+        CHECK(d->canvas().at(0, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 1);
+        undo->redo();
+        CHECK(d->encode().blinkDropped == 0);
+    }
+    SECTION("the glyph brush") {
+        REQUIRE(d->edit(paintStroke(d->canvas(), GlyphBrush(drawn(U'A', Green, Blue)), {}, {{0, 0}})));
+        CHECK(d->encode().blinkDropped == 0);
+    }
+    SECTION("colorized to the colour it has") {
+        CHECK_FALSE(d->edit(paintStroke(d->canvas(), ColorizeBrush(Color::indexed(Red), std::nullopt), {}, {{0, 0}})));
+        CHECK(d->encode().blinkDropped == 1);
+    }
+}
+
+namespace {
+
+// A 3x3 field of K on k (rung 4 of steel), blinking, with a lighter speck
+// (rung 8, a space on w) in the middle that doesn't, and a bright B below so
+// the file opens with iCE on: eight lost cells.
+const std::string kField = [] {
+    const std::string k = "\x1b[0;1;5;30;40m\xdb";
+    const std::string speck = "\x1b[0;30;47m ";
+    return k + k + k + "\r\n" + k + speck + k + "\r\n" + k + k + k + "\r\n\x1b[0;37;104mB";
+}();
+
+int marked(const Canvas& c) {
+    int n = 0;
+    for (int y = 0; y < c.height(); ++y)
+        for (int x = 0; x < c.width(); ++x)
+            n += c.at(x, y).lostBlink;
+    return n;
+}
+
+} // namespace
+
+TEST_CASE("despeckling next to lost cells doesn't copy their claim into the speck") {
+    // #82 round 2: the despeckle brush copies the neighbour's look into the
+    // speck; the speck never lost a blink
+    QTemporaryDir tmp;
+    MainWindow w;
+    Document* d = openIceOff(w, tmp, "field.ans", kField);
+    const Ramp r = *findRamp("steel");
+    REQUIRE(d->canvas().at(0, 0) == rungCell(r, 4));
+    REQUIRE(d->canvas().at(1, 1) == rungCell(r, 8));
+    REQUIRE(d->encode().blinkDropped == 8);
+    StrokeOptions o;
+    o.ice = false;
+    REQUIRE(d->edit(paintStroke(d->canvas(), DespeckleBrush(r), {}, {{1, 1}}, o)));
+    REQUIRE(d->canvas().at(1, 1) == rungCell(r, 4));
+    CHECK_FALSE(d->canvas().at(1, 1).lostBlink);
+    CHECK(marked(d->canvas()) == 8);
+    CHECK(d->encode().blinkDropped == 8);
+    d->undoStack()->undo();
+    CHECK(d->encode().blinkDropped == 8);
+}
+
+TEST_CASE("every brush leaves a painted lost cell its claim only when the save writes it alike") {
+    // #82 round 2: one rule for every brush, whatever it builds its cell from
+    const Ramp r = *findRamp("steel");
+    const Pen pen{Color::indexed(LightRed), Color::indexed(Blue)};
+    struct Case {
+        const char* name;
+        std::function<std::unique_ptr<Brush>()> make;
+    };
+    const std::vector<Case> cases = {
+        {"shade", [&] { return std::make_unique<ShadeBrush>(pen, false); }},
+        {"glyph", [&] { return std::make_unique<GlyphBrush>(rungCell(r, 4)); }},
+        {"colorize", [] { return std::make_unique<ColorizeBrush>(Color::indexed(Green), std::nullopt); }},
+        {"ramp shade", [&] { return std::make_unique<RampShadeBrush>(r, ShadeDirection::Lighten); }},
+        {"soft", [&] { return std::make_unique<SoftShadeBrush>(r, ShadeDirection::Darken); }},
+        {"form", [&] { return std::make_unique<FormShadeBrush>(r); }},
+        {"despeckle", [&] { return std::make_unique<DespeckleBrush>(r); }},
+        {"outline", [&] { return std::make_unique<OutlineBrush>(r); }},
+        {"rim light", [&] { return std::make_unique<RimLightBrush>(r, Compass::NW); }},
+    };
+    for (const Case& c : cases) {
+        INFO(c.name);
+        QTemporaryDir tmp;
+        MainWindow w;
+        Document* d = openIceOff(w, tmp, "field.ans", kField);
+        const Canvas before = d->canvas();
+        BrushSettings s;
+        s.size = 3;
+        StrokeOptions o;
+        o.ice = false;
+        d->edit(paintStroke(before, *c.make(), s, {{1, 1}}, o));
+        const Canvas& after = d->canvas();
+        int keep = 0;
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 3; ++x) {
+                INFO(x << "," << y);
+                const bool alike = before.at(x, y).lostBlink && writesAlike(before.at(x, y), after.at(x, y));
+                CHECK(after.at(x, y).lostBlink == alike);
+                keep += alike;
+            }
+        CHECK(marked(after) == keep);
+        CHECK(d->encode().blinkDropped == keep);
     }
 }
 

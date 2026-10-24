@@ -380,6 +380,25 @@ bool isWritableGlyph(char32_t ch) {
 
 bool blankGlyph(char32_t ch) { return ch == U' ' || ch == U'\0' || ch == U'\u00a0'; }
 
+int lostBlinkCount(const AnsiDocument& doc) {
+    int n = 0;
+    for (int y = 0; y < doc.canvas.height(); ++y)
+        for (int x = 0; x < doc.canvas.width(); ++x) {
+            const Cell& c = doc.canvas.at(x, y);
+            if (c.lostBlink && !c.transparent && !blankGlyph(c.ch) && !(iceCell(c, doc.ice).attrs & attr::Blink))
+                ++n;
+        }
+    return n;
+}
+
+bool writesAlike(const Cell& a, const Cell& b) {
+    if (a.transparent || b.transparent)
+        return a.transparent == b.transparent;
+    const auto byte = [](char32_t ch) { return isWritableGlyph(ch) ? *unicodeToCp437(ch) : std::uint8_t('?'); };
+    return byte(a.ch) == byte(b.ch) && a.fg.paletteIndex() == b.fg.paletteIndex() &&
+           a.bg.paletteIndex() == b.bg.paletteIndex() && (a.attrs & attr::Blink) == (b.attrs & attr::Blink);
+}
+
 Cell iceCell(Cell c, bool ice) {
     const std::uint8_t bg = c.bg.paletteIndex();
     if (ice && (c.attrs & attr::Blink)) {
@@ -409,9 +428,11 @@ Opened openAsEditor(AnsiDocument& doc) {
         for (int x = 0; x < cv.width(); ++x) {
             Cell& c = cv.at(x, y);
             if (!c.transparent && (c.attrs & attr::Blink)) {
-                c.attrs &= static_cast<std::uint8_t>(~attr::Blink);
-                if (!blankGlyph(c.ch))  // blink on a blank glyph never showed
+                if (!blankGlyph(c.ch)) {  // blink on a blank glyph never showed
                     ++r.blinkDropped;
+                    c.lostBlink = true;
+                }
+                c.attrs &= static_cast<std::uint8_t>(~attr::Blink);
             }
         }
     return r;

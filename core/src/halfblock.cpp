@@ -206,7 +206,7 @@ CellEdit PixelPainter::edit() const {
                 continue;
             const Cell& before = canvas_.at(x, y);
             const Cell after = painted(x, y, h);
-            if (!(before == after))
+            if (!identical(before, after))
                 e.changes.push_back({x, y, before, after});
         }
     }

@@ -43,7 +43,7 @@ void checkWellFormed(const Canvas& cv, const CellEdit& e) {
         const CellChange& c = e.changes[i];
         REQUIRE(cv.contains(c.x, c.y));
         CHECK(c.before == cv.at(c.x, c.y));
-        CHECK(c.before != c.after);
+        CHECK_FALSE(identical(c.before, c.after));
         for (size_t j = i + 1; j < e.changes.size(); ++j)
             CHECK_FALSE((e.changes[j].x == c.x && e.changes[j].y == c.y));
     }
@@ -520,4 +520,58 @@ TEST_CASE("a half turn is both flips for every CP437 glyph") {
     const CellBlock half = transformed(transformed(b, Transform::RotateClockwise), Transform::RotateClockwise);
     CHECK(half == b);
     CHECK(half == transformed(transformed(b, Transform::FlipHorizontal), Transform::FlipVertical));
+}
+
+TEST_CASE("the lost-blink mark goes with its cell through flips, rotations, moves and pastes") {
+    // #82: Document::encode counts the marked cells, so every edit that
+    // carries a cell carries its mark, and a hole left behind has none
+    Canvas cv = canvasOf({U"<AB", U"CDE"});
+    cv.at(0, 0).lostBlink = true;
+    const auto marks = [](const Canvas& c) {
+        std::vector<std::pair<int, int>> at;
+        for (int y = 0; y < c.height(); ++y)
+            for (int x = 0; x < c.width(); ++x)
+                if (c.at(x, y).lostBlink)
+                    at.emplace_back(x, y);
+        return at;
+    };
+    using At = std::vector<std::pair<int, int>>;
+
+    SECTION("a flip moves it with the cell and its glyph") {
+        const Canvas out = applied(cv, transformSelection(cv, Selection(CellRect{0, 0, 3, 2}),
+                                                          Transform::FlipHorizontal).edit);
+        CHECK(out.at(2, 0).ch == U'>');
+        CHECK(marks(out) == At{{2, 0}});
+    }
+    SECTION("a rotation") {
+        const Canvas out = applied(cv, transformSelection(cv, Selection(CellRect{0, 0, 2, 2}),
+                                                          Transform::RotateClockwise).edit);
+        CHECK(marks(out) == At{{1, 0}});
+    }
+    SECTION("a move leaves an unmarked hole") {
+        const Canvas out = applied(cv, moveSelection(cv, Selection(CellRect{0, 0, 1, 1}), 1, 1).edit);
+        CHECK(marks(out) == At{{1, 1}});
+        CHECK(out.at(0, 0) == Cell{});
+    }
+    SECTION("a move onto a cell that looks the same still moves the mark") {
+        Canvas twin = canvasOf({U"AA"});
+        twin.at(0, 0).lostBlink = true;
+        const CellEdit e = moveSelection(twin, Selection(CellRect{0, 0, 1, 1}), 1, 0).edit;
+        checkWellFormed(twin, e);
+        const Canvas out = applied(twin, e);
+        CHECK(out.at(1, 0) == twin.at(1, 0));
+        CHECK(marks(out) == At{{1, 0}});
+    }
+    SECTION("a copy pasted elsewhere carries a mark of its own") {
+        const CellBlock block = copyBlock(cv, Selection(CellRect{0, 0, 1, 1}));
+        CHECK(block.at(0, 0).lostBlink);
+        const Canvas out = applied(cv, pasteBlock(cv, block, 2, 1, PasteMode::Normal));
+        CHECK(marks(out) == At{{0, 0}, {2, 1}});
+    }
+    SECTION("a cell cleared or pasted over from scratch loses it") {
+        CHECK(marks(applied(cv, clearSelection(cv, Selection(CellRect{0, 0, 1, 1})))).empty());
+        CellBlock fresh(1, 1);
+        fresh.at(0, 0) = glyph(U'Z', Grey, Blue);
+        CHECK(marks(applied(cv, pasteBlock(cv, fresh, 0, 0, PasteMode::Normal))).empty());
+    }
 }

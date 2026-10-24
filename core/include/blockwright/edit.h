@@ -20,6 +20,10 @@ struct CellChange {
 
 struct CellEdit {
     std::vector<CellChange> changes;
+    // The cells are moved or copied (a paste, a stamp, a move, a flip or a
+    // turn), not drawn, and each `after` already has the lost-blink mark it
+    // keeps (writtenOver); settleLostBlink leaves them as they are.
+    bool moves = false;
 
     bool empty() const { return changes.empty(); }
     // Writes each change's `after` (apply) or `before` (revert, in reverse
@@ -27,6 +31,22 @@ struct CellEdit {
     void apply(Canvas& canvas) const;
     void revert(Canvas& canvas) const;
 };
+
+// The cell `c` written over `under`, with the lost-blink mark it keeps
+// (Cell::lostBlink, PLAN §4): the mark `c` carries, which only a moved or
+// copied cell has, or else `under`'s, when the save writes the two alike
+// (writesAlike), since the save still writes that cell without its blink. A
+// cell the same edit lifts off (a move, flip or turn) takes its mark with
+// it, so what it leaves under is a blank.
+Cell writtenOver(const Cell& under, Cell c);
+
+// The marks `edit` leaves. A drawn cell carries no mark of its own,
+// whatever a brush built it from (a copy of the cell, of a neighbour, of a
+// mirror image), and takes the mark of the cell it is drawn over by
+// writtenOver; a cell changed twice is judged against what it was before
+// the edit. An edit that moves cells (CellEdit::moves) is left as its
+// builder made it. Document::edit and cli shade settle every edit.
+CellEdit settleLostBlink(CellEdit edit);
 
 // The cell the keyboard writes to. `pastEnd` is set when a glyph was just
 // typed on the last column: the cursor stays on that cell but stands past

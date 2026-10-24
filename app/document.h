@@ -14,6 +14,8 @@
 #include <QString>
 #include <QUndoStack>
 
+#include <optional>
+
 namespace bw {
 
 // What the SAUCE dialog and the iCE and letter-spacing toggles change: the
@@ -39,14 +41,14 @@ public:
     // document; false and `error` on failure. A file whose iCE flag is off
     // but which sets a bright background opens with iCE on, as writeAnsi
     // writes it and `cli render` draws it: its blinking cells keep their
-    // dark background and lose the blink, and `blinkDropped` counts those
-    // whose blink showed (not on a blank glyph), as writeAnsi does
-    // (openAsEditor).
-    static bool read(const QString& path, AnsiDocument* out, QString* error, int* blinkDropped);
+    // dark background and lose the blink, and those whose blink showed (not
+    // on a blank glyph), as writeAnsi counts them, are marked
+    // (Cell::lostBlink; openAsEditor).
+    static bool read(const QString& path, AnsiDocument* out, QString* error);
     // Replaces the document with `doc`, read from `path`, unmodified and
-    // with an empty undo stack. `blinkDropped` (from read) is reported by
-    // encode() until the document is next saved.
-    void replace(AnsiDocument doc, const QString& path, int blinkDropped = 0);
+    // with an empty undo stack. Its marked cells (from read) are the blink
+    // encode() reports lost until the document is next saved.
+    void replace(AnsiDocument doc, const QString& path);
     // Starts over on a blank default-size canvas with no file and an empty
     // undo stack.
     void clear();
@@ -55,9 +57,14 @@ public:
     // are written as they show with the document's iCE setting (iceCell):
     // with iCE off a bright background is saved as blink, with it on blink
     // is saved as a bright background. So writeAnsi itself drops no blink, and
-    // `blinkDropped` is only the blink lost on open (read), whatever has been
-    // done to those cells since: it says what happened on open, not what these
-    // bytes hold, and it still gates the save (lossy()) until the next save.
+    // `blinkDropped` is the cells that lost their blink on open (read) and
+    // that these bytes still write without one: the marked cells on the
+    // canvas, wherever edits have taken them, that don't blink as saved (so
+    // all of them with iCE on) and whose glyph shows. A marked cell that
+    // blinks again is back; one moved or flipped is still lost; one erased or
+    // drawn over is gone with its mark, and a copy carries a mark of its own,
+    // so the count can run over what the file lost but never under what the
+    // save loses. It gates the save (lossy()) until the next save.
     AnsiOutput encode() const;
     // Writes `out` (from encode()) to `path` all or nothing, makes `path`
     // the document's file and marks the undo stack clean.
@@ -86,8 +93,11 @@ public:
 
     // Pushes `edit` as one undo command, which applies it now. Undo reverts
     // it and emits cursorRequested(before); redo applies it again and emits
-    // cursorRequested(after). An edit that changes no cell on the canvas is
-    // not pushed, and false is returned.
+    // cursorRequested(after). The edit's lost-blink marks are settled first
+    // (settleLostBlink): a drawn cell keeps the mark of the cell it is drawn
+    // over only when the save writes the two alike, and a moved or copied
+    // cell keeps its own. An edit that changes no cell on the canvas
+    // (identical) is not pushed, and false is returned.
     bool edit(const CellEdit& edit, Cursor before = {}, Cursor after = {});
 
     // Applies an edit forwards, or backwards with `revert`, and emits
@@ -95,7 +105,8 @@ public:
     // call this; it does not touch the stack or the modified flag.
     void apply(const CellEdit& edit, bool revert = false);
 
-    // The cells an edit changes: those whose before and after differ.
+    // The cells an edit changes: those whose before and after differ
+    // (identical, so a mark moving counts).
     static QRegion changedCells(const CellEdit& edit);
 
 signals:
@@ -118,7 +129,9 @@ private:
     AnsiDocument doc_;
     QString path_;
     QUndoStack undo_;
-    int blinkDropped_ = 0;  // blink the file had and the document lost on open
+    // The marked cells count as lost (encode): from an open that marked
+    // some until the next save, which leaves no blink of that file to lose.
+    bool countLostBlink_ = false;
     bool modified_ = false;
 };
 

@@ -184,7 +184,8 @@ CellEdit toLayerEdit(const Layer& layer, const CellEdit& canvasEdit) {
         else
             out.changes[it->second].after = c.after;
     }
-    std::erase_if(out.changes, [](const CellChange& c) { return c.after == c.before; });
+    std::erase_if(out.changes, [](const CellChange& c) { return identical(c.after, c.before); });
+    out.moves = canvasEdit.moves;
     return out;
 }
 
@@ -196,6 +197,7 @@ CellEdit toCanvasEdit(const Layer& layer, const CellEdit& layerEdit) {
             continue;
         out.changes.push_back({int(cx), int(cy), c.before, c.after});
     }
+    out.moves = layerEdit.moves;
     return out;
 }
 

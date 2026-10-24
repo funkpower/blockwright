@@ -204,13 +204,16 @@ expect "shade --ice --allow-lossy writes" 0 'note: .*written with iCE colours on
   "$cli" shade --ramp fire --box 1,0,1,0 --ice --allow-lossy "$tmp/nonice-fire.ans" "$tmp/nonice-fire-ice.ans"
 expect "shade --ice --allow-lossy writes iCE on" 0 '^flags: +0x1 \(iCE on' -- "$cli" info "$tmp/nonice-fire-ice.ans"
 # A piece with iCE off that holds a bright background opens with iCE on, as
-# the editor opens it: its blinking red block loses the blink there, so it
-# is on the ramp, and that loss is counted at the save.
-printf '\033[0;5;31;40m\xdb\033[0;104mA' > "$tmp/inferred-blink.ans"; sauce "$tmp/inferred-blink.ans" 0
+# the editor opens it: its blinking red blocks lose the blink there, so they
+# are on the ramp, and the save counts the ones the shade leaves as they were.
+# A shaded block is written afresh as a rung, so it no longer counts.
+printf '\033[0;5;31;40m\xdb\xdb\033[0;104mA' > "$tmp/inferred-blink.ans"; sauce "$tmp/inferred-blink.ans" 0
 expect "shade of an inferred-iCE piece refuses the blink lost on open" 1 'inferred-blink-up\.ans: not written: the conversion loses data \(--allow-lossy writes it anyway\)' -- \
   "$cli" shade --ramp fire --box 0,0,0,0 "$tmp/inferred-blink.ans" "$tmp/inferred-blink-up.ans"
 expect "shade of an inferred-iCE piece shades its blinking block" 0 '^lightened 1 cell 1 rung along fire in 0,0-0,0$' -- \
   "$cli" shade --ramp fire --box 0,0,0,0 --allow-lossy "$tmp/inferred-blink.ans" "$tmp/inferred-blink-up.ans"
+expect "shade of every lost cell of an inferred-iCE piece is not refused" 0 '^lightened 2 cells 1 rung along fire in 0,0-1,0$' -- \
+  "$cli" shade --ramp fire --box 0,0,1,0 "$tmp/inferred-blink.ans" "$tmp/inferred-blink-all.ans"
 # Darkening its only bright background leaves none, and iCE stays on as the
 # editor saves it, so two passes lightening reach rung 9 (LightRed/Yellow).
 printf '\033[101m ' > "$tmp/inferred.ans"; sauce "$tmp/inferred.ans" 0

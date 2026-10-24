@@ -30,8 +30,9 @@ struct Shaded {
     // The input had iCE colours off and the document is now written with
     // them on (--ice, or bright backgrounds it already held).
     bool iceTurnedOn = false;
-    // Blinking cells that lost their blink when the document was opened as
-    // the editor opens it (openAsEditor); writeAnsi no longer counts them.
+    // Cells that lost their blink when the document was opened as the editor
+    // opens it (openAsEditor) and still don't blink once shaded, as the
+    // editor counts them (lostBlinkCount); writeAnsi no longer counts them.
     int blinkDropped = 0;
     // Why a lossy result is refused, when the shading made it lossy; empty
     // when it was lossy before.

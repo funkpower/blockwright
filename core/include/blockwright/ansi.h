@@ -91,10 +91,23 @@ struct Opened {
 // writeAnsi would write it. Its blinking cells lose their blink and keep
 // their dark background, as writeAnsi writes them then, so iceCell doesn't
 // show or save them bright; those whose blink showed (not on a blank glyph)
-// are counted, as writeAnsi counts them. A file with iCE colours on, or
-// without a bright background, is left as it is. The blink lost is lost on
-// open, so a save should still count it (Document::encode, `cli shade`).
+// are counted, as writeAnsi counts them, and marked (Cell::lostBlink). A file
+// with iCE colours on, or without a bright background, is left as it is. The
+// blink lost is lost on open, so a save should still count it, for each
+// marked cell it still writes without a blink (lostBlinkCount).
 Opened openAsEditor(AnsiDocument& doc);
+
+// The cells of `doc` marked as having lost their blink on open
+// (Cell::lostBlink) that writeAnsi still writes without one, with the
+// document's iCE colours: not a blank glyph or a hole. A cell drawn over
+// with something else, or erased, isn't marked any more.
+int lostBlinkCount(const AnsiDocument& doc);
+
+// Whether writeAnsi writes `a` and `b` alike with any iCE setting: the same
+// CP437 byte (so ß and β are one glyph, and a glyph it can't write is '?'
+// either way), the same palette colours and blink, and both transparent or
+// neither. Other attribute bits and the lost-blink mark don't count.
+bool writesAlike(const Cell& a, const Cell& b);
 
 // Whether writeAnsi writes `ch` as itself: it has a CP437 byte and that byte
 // isn't one the parser acts on (TAB, LF, CR, SUB, ESC) or NUL.

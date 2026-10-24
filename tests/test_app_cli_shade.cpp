@@ -86,7 +86,9 @@ std::string readFile(const QString& path) { return bwtest::readFile(path.toStdSt
 TEST_CASE("cli shade shades a blinking cell of an iCE-off file with bright backgrounds as the editor does",
           "[cli][shade]") {
     // A blinking red block, then a bright background: the editor opens the
-    // file with iCE on and the block without its blink, so it is on the ramp
+    // file with iCE on and the block without its blink, so it is on the ramp.
+    // The shade writes the block afresh as a rung, which ends its claim to
+    // the blink (#82), in the editor and the CLI alike.
     QTemporaryDir tmp;
     const QString path = writeIceOff(tmp, "blink.ans", "\x1b[0;5;31;40m\xdb\x1b[0;104mA");
 
@@ -97,7 +99,7 @@ TEST_CASE("cli shade shades a blinking cell of an iCE-off file with bright backg
     const Canvas& gui = w.document()->canvas();
     CHECK(rungOf(fire(), gui.at(0, 0)) == 5);
     const AnsiOutput saved = w.document()->encode();
-    CHECK(saved.blinkDropped == 1);
+    CHECK(saved.blinkDropped == 0);
 
     const AnsiDocument cli = cliShade(readFile(path), ShadeDirection::Lighten, 0, 0);
     CHECK(rungOf(fire(), cli.canvas.at(0, 0)) == 5);

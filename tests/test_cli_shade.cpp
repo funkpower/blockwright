@@ -225,6 +225,20 @@ TEST_CASE("cli shade opens a piece as the editor does: inferred iCE colours stay
     CHECK(parseAnsi(out.bytes).ice);
 }
 
+TEST_CASE("cli shade doesn't count a cell that lost its blink on open once it shades it, as the editor doesn't",
+          "[cli][shade]") {
+    // #82: the shade writes the cell afresh as a rung, which has no blink
+    // with iCE colours off or on, so its claim ends with it
+    AnsiDocument doc = parseIceOff("\x1b[0;101m \x1b[0;5;31m\xdb\x1b[0;5;31m\xdb");
+    bwcli::ShadeOptions o = options(fire(), ShadeDirection::Darken);
+    o.box = lint::Box{1, 0, 1, 0};
+    const bwcli::Shaded r = bwcli::shadeDocument(doc, o);
+    CHECK(rungOf(fire(), doc.canvas.at(1, 0)) == 3);
+    CHECK_FALSE(doc.canvas.at(1, 0).lostBlink);
+    CHECK(doc.canvas.at(2, 0).lostBlink);
+    CHECK(r.blinkDropped == 1);
+}
+
 TEST_CASE("cli shade counts no blink lost on a blank glyph, as the editor doesn't", "[cli][shade]") {
     // #42: a blinking black space beside a bright background loses nothing
     // on open, so the shaded piece isn't lossy

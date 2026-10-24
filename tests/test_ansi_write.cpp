@@ -1,6 +1,7 @@
 #include "util.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/irc.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -254,6 +255,9 @@ TEST_CASE("openAsEditor turns iCE colours on for a bright background and drops b
     const Opened r = openAsEditor(opened);
     CHECK(r.iceInferred);
     CHECK(r.blinkDropped == 1);
+    // #79: the lost cell is marked, and only it
+    CHECK(opened.canvas.at(0, 0).lostBlink);
+    CHECK_FALSE(opened.canvas.at(1, 0).lostBlink);
     CHECK(opened.ice);
     CHECK(opened.sauce->ice());
     CHECK_FALSE(opened.canvas.at(0, 0).attrs & attr::Blink);
@@ -310,7 +314,63 @@ TEST_CASE("openAsEditor loses no blink on a blank glyph, as writeAnsi doesn't", 
         REQUIRE(writeAnsi(doc).blinkDropped == 2);
         const Opened r = openAsEditor(doc);
         CHECK(r.blinkDropped == 2);
+        for (int x = 0; x < 6; ++x)
+            CHECK(doc.canvas.at(x, 0).lostBlink == (x == 3 || x == 4));
         for (int x = 0; x < 5; ++x)
             CHECK_FALSE(doc.canvas.at(x, 0).attrs & attr::Blink);
     }
+}
+
+TEST_CASE("the lost-blink mark is the editor's own: == and the encoders leave it out") {
+    // #82: Cell::lostBlink never reaches a file, an IRC export or a cell
+    // comparison; identical() is the one comparison that sees it
+    Cell a = cell(U'A', Red, Blue);
+    Cell b = a;
+    b.lostBlink = true;
+    CHECK(a == b);
+    CHECK_FALSE(identical(a, b));
+    CHECK(identical(b, b));
+
+    AnsiDocument doc = parseIceOff("\x1b[0;5;31;44mA\x1b[0;37;104mB\r\n\x1b[0;33;41mCD");
+    AnsiDocument marked = doc;
+    for (int y = 0; y < marked.canvas.height(); ++y)
+        for (int x = 0; x < marked.canvas.width(); ++x)
+            marked.canvas.at(x, y).lostBlink = true;
+    CHECK(marked.canvas == doc.canvas);
+    const AnsiOutput plain = writeAnsi(doc), withMarks = writeAnsi(marked);
+    CHECK(withMarks.bytes == plain.bytes);
+    CHECK(withMarks.blinkDropped == plain.blinkDropped);
+    CHECK_FALSE(parseAnsi(withMarks.bytes).canvas.at(0, 0).lostBlink);
+    CHECK(irc::encodeCanvas(marked.canvas) == irc::encodeCanvas(doc.canvas));
+}
+
+TEST_CASE("writesAlike compares two cells as writeAnsi writes them") {
+    // #82 round 1 (P3): by CP437 byte, not codepoint
+    const Cell a = cell(U'ß', Red, Blue);
+    Cell beta = a;
+    beta.ch = U'β';
+    CHECK(writesAlike(a, beta));
+    CHECK(writesAlike(cell(U'µ', Red, Blue), cell(U'μ', Red, Blue)));
+    CHECK_FALSE(writesAlike(a, cell(U'B', Red, Blue)));
+    // glyphs writeAnsi writes as '?'
+    CHECK(writesAlike(cell(U'★', Red, Blue), cell(U'?', Red, Blue)));
+    CHECK(writesAlike(cell(U'\t', Red, Blue), cell(U'?', Red, Blue)));
+    // colours by palette index, a 24-bit one as its nearest
+    Cell rgb = a;
+    rgb.fg = Color::fromRgb(kPalette[Red]);
+    CHECK(writesAlike(a, rgb));
+    CHECK_FALSE(writesAlike(a, cell(U'ß', LightRed, Blue)));
+    CHECK_FALSE(writesAlike(a, cell(U'ß', Red, LightBlue)));
+    // only the blink bit, and not the mark
+    Cell other = a;
+    other.attrs = 0x80;
+    other.lostBlink = true;
+    CHECK(writesAlike(a, other));
+    Cell blink = a;
+    blink.attrs = attr::Blink;
+    CHECK_FALSE(writesAlike(a, blink));
+    Cell hole = a;
+    hole.transparent = true;
+    CHECK_FALSE(writesAlike(a, hole));
+    CHECK(writesAlike(hole, Cell{U' ', {}, {}, 0, true}));
 }
