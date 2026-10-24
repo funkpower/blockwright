@@ -214,6 +214,19 @@ protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
 };
 
+// Smudge brush (PLAN §10): drags the ramp's rungs under it along the
+// stroke, either button, by the brush's strength.
+class SmudgeTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit SmudgeTool(QObject* parent = nullptr);
+
+    QString status() const override;
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+};
+
 // Glyph brush: left writes the brush's glyph in the pen's colours, right
 // erases to blank. F1-F10 pick the glyph from the current glyph set while
 // the tool is active; it starts as the full block.

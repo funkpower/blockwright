@@ -62,6 +62,7 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("form"), brush | O::Strength | O::Ramp | O::Light | O::Form},
         {QStringLiteral("soft"), brush | O::Strength | O::Ramp | O::Hardness},
         {QStringLiteral("despeckle"), brush | O::Ramp},
+        {QStringLiteral("smudge"), brush | O::Strength | O::Ramp},
         {QStringLiteral("glyph"), brush | O::Glyph},
         {QStringLiteral("colorize"), brush},
         {QStringLiteral("line"), draw},
@@ -115,7 +116,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     strength_->setRange(0, 100);
     strength_->setSingleStep(25);
     strength_->setSuffix(QStringLiteral("%"));
-    strength_->setToolTip(tr("Ramp shade: 25% is a rung a pass, 100% a whole colour"));
+    strength_->setToolTip(tr("Ramp shade: 25% is a rung a pass, 100% a whole colour. Smudge: how far it drags"));
 
     pressure_ = new QComboBox;
     pressure_->setObjectName(QStringLiteral("brushPressure"));

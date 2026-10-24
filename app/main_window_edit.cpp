@@ -46,6 +46,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(new FormTool);
     tools_->add(new SoftTool);
     tools_->add(new DespeckleTool);
+    tools_->add(new SmudgeTool);
     tools_->add(new GlyphTool);
     tools_->add(new ColorizeTool);
     QList<ShapeTool*> fillable;
@@ -190,6 +191,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("form"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T)},
         {QStringLiteral("soft"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N)},
         {QStringLiteral("despeckle"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D)},
+        {QStringLiteral("smudge"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_M)},
         {QStringLiteral("glyph"), QKeySequence(Qt::CTRL | Qt::Key_G)},
         {QStringLiteral("colorize"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C)},
         {QStringLiteral("line"), QKeySequence(Qt::CTRL | Qt::Key_L)},

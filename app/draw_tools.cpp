@@ -9,6 +9,7 @@
 #include "blockwright/brushes/drawing.h"
 #include "blockwright/brushes/form.h"
 #include "blockwright/brushes/shading.h"
+#include "blockwright/brushes/smudge.h"
 #include "blockwright/brushes/soft.h"
 #include "blockwright/glyph_sets.h"
 #include "blockwright/ramp.h"
@@ -252,6 +253,17 @@ QString DespeckleTool::status() const {
 
 std::unique_ptr<Brush> DespeckleTool::makeBrush(Qt::MouseButton) const {
     return std::make_unique<DespeckleBrush>(view()->ramp());
+}
+
+SmudgeTool::SmudgeTool(QObject* parent)
+    : BrushTool(QStringLiteral("smudge"), tr("S&mudge Brush"), parent) {}
+
+QString SmudgeTool::status() const {
+    return view() ? tr("Ramp %1").arg(QString::fromStdString(view()->ramp().name)) : QString();
+}
+
+std::unique_ptr<Brush> SmudgeTool::makeBrush(Qt::MouseButton) const {
+    return std::make_unique<SmudgeBrush>(view()->ramp());
 }
 
 GlyphTool::GlyphTool(QObject* parent)

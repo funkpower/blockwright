@@ -1,5 +1,5 @@
 // The shading brushes in the main window (PLAN §4, phase 2b): the form,
-// soft and despeckle tools in the Tools menu and toolbar, their settings in
+// soft, despeckle and smudge tools in the Tools menu and toolbar, their settings in
 // Tool Options, and a stroke of each through the window system.
 
 #include "tool_options.h"
@@ -14,6 +14,7 @@
 
 #include "blockwright/brush.h"
 #include "blockwright/brushes/form.h"
+#include "blockwright/layer.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
 
@@ -28,6 +29,7 @@
 #include <QUndoStack>
 
 #include <set>
+#include <string>
 #include <utility>
 
 using namespace bw;
@@ -84,7 +86,8 @@ TEST_CASE("the shading brushes are in the Tools menu and the toolbox, with their
     };
     for (const auto& [id, key] : {std::pair{"form", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T)},
                                   std::pair{"soft", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N)},
-                                  std::pair{"despeckle", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D)}}) {
+                                  std::pair{"despeckle", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D)},
+                                  std::pair{"smudge", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_M)}}) {
         INFO(id);
         QAction* a = act(w, QString::fromLatin1(id) + QStringLiteral("Tool"));
         CHECK(a->shortcut() == key);
@@ -225,4 +228,92 @@ TEST_CASE("despeckle brush: a mouse stroke clears a speck") {
     CHECK(rung(w, 20, 8) == 0);
     CHECK(rung(w, 40, 8) == 4);  // outside the stroke
     CHECK(w.document()->undoStack()->count() == 3);
+}
+
+namespace {
+
+// A band of 8s meeting 6s on row 8, x 10 to 21, as one undo step.
+void band(MainWindow& w) {
+    const Ramp r = *findRamp("steel");
+    CellEdit e;
+    for (int x = 10; x < 22; ++x)
+        e.changes.push_back({x, 8, Cell{}, rungCell(r, x < 16 ? 8 : 6)});
+    REQUIRE(w.document()->edit(e));
+}
+
+std::string bandRungs(MainWindow& w) {
+    std::string s;
+    for (int x = 10; x < 22; ++x)
+        s += char('0' + rung(w, x, 8));
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("smudge brush: a mouse stroke drags one plane over the next, previewed as it lands, one undo step") {
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setRamp(*findRamp("steel"));
+    band(w);
+    use(w, "smudge");
+    using O = ToolOptions::Option;
+    CHECK(ToolOptions::optionsFor(QStringLiteral("smudge")).testFlag(O::Strength));
+    CHECK(ToolOptions::optionsFor(QStringLiteral("smudge")).testFlag(O::Ramp));
+    CHECK(w.tools()->active()->status() == QStringLiteral("Ramp steel"));
+    w.toolOptions()->strengthBox()->setValue(50);
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 0.5, PressureTo::Nothing});
+    SECTION("the left button") {
+        bwtest::systemMouse(v, QEvent::MouseButtonPress, centre(v, 11, 8), Qt::LeftButton, Qt::LeftButton);
+        for (int x = 12; x <= 20; ++x)
+            bwtest::systemMouse(v, QEvent::MouseMove, centre(v, x, 8), Qt::NoButton, Qt::LeftButton);
+        auto* t = qobject_cast<DragTool*>(w.tools()->active());
+        REQUIRE(t);
+        const CellEdit shown = t->pending();
+        CHECK_FALSE(shown.empty());
+        bwtest::systemMouse(v, QEvent::MouseButtonRelease, centre(v, 20, 8), Qt::LeftButton, Qt::NoButton);
+        for (const CellChange& c : shown.changes)
+            CHECK(at(w, c.x, c.y) == c.after);
+        CHECK(bandRungs(w) == "888888776666");
+        CHECK(w.document()->undoStack()->count() == 2);
+        w.document()->undoStack()->undo();
+        CHECK(bandRungs(w) == "888888666666");
+    }
+    SECTION("the right button smudges too") {
+        systemDrag(v, 11, 20, 8, Qt::RightButton);
+        CHECK(bandRungs(w) == "888888776666");
+    }
+    SECTION("the selection stops it") {
+        v->setSelection(Selection(CellRect::fromCorners(10, 8, 16, 8)));
+        systemDrag(v, 11, 20, 8);
+        CHECK(bandRungs(w) == "888888766666");
+    }
+}
+
+TEST_CASE("smudge brush: it smudges the active layer, through the alpha lock", "[layers]") {
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    Document* doc = w.document();
+    v->setRamp(*findRamp("steel"));
+    band(w);
+    // a cells layer over the band, clear but for its own band at 17
+    doc->addLayer(LayerKind::Cells);
+    const Ramp r = *findRamp("steel");
+    CellEdit e;
+    for (int x = 10; x < 22; ++x)
+        if (x != 17)
+            e.changes.push_back({x, 8, transparentCell(), rungCell(r, x < 16 ? 8 : 6)});
+    REQUIRE(doc->edit(e));
+    const Canvas below = doc->layers().layers().front().cells;
+    use(w, "smudge");
+    w.toolOptions()->alphaLockBox()->setChecked(true);
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 0.5, PressureTo::Nothing});
+    systemDrag(v, 11, 20, 8);
+    // laid on the layer, 7 at 16; 17 is clear and stays so, and the carry
+    // starts again past it
+    CHECK(rungOf(r, doc->layerCanvas().at(16, 8)) == 7);
+    CHECK(doc->layerCanvas().at(17, 8) == transparentCell());
+    CHECK(rungOf(r, doc->layerCanvas().at(18, 8)) == 6);
+    CHECK(doc->layers().layers().front().cells == below);
 }

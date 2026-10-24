@@ -30,7 +30,8 @@ const QList<QStringList>& Toolbox::groups() {
         // The brushes that lay a colour or a glyph down.
         {QStringLiteral("halfBlock"), QStringLiteral("shade"), QStringLiteral("glyph"), QStringLiteral("colorize")},
         // The brushes that walk a ramp.
-        {QStringLiteral("rampShade"), QStringLiteral("form"), QStringLiteral("soft"), QStringLiteral("despeckle")},
+        {QStringLiteral("rampShade"), QStringLiteral("form"), QStringLiteral("soft"), QStringLiteral("despeckle"),
+         QStringLiteral("smudge")},
         // The detail brushes, which find an edge.
         {QStringLiteral("outline"), QStringLiteral("rimLight")},
         {QStringLiteral("line"), QStringLiteral("rectangle"), QStringLiteral("ellipse")},
@@ -98,6 +99,11 @@ QIcon toolIcon(const QString& id) {
         p.fillRect(QRectF(box.center().x() - 2, box.center().y() - 2, 4, 4), light);
         p.setPen(QPen(ink, 1.5));
         p.drawLine(box.topRight(), box.bottomLeft());
+    } else if (id == QLatin1String("smudge")) {
+        // a dark cell and a light one, smeared across the edge
+        cells({ink, light});
+        p.setPen(QPen(mid, 4, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(box.left() + 4, box.center().y()), QPointF(box.right() - 4, box.center().y()));
     } else if (id == QLatin1String("glyph")) {
         QFont f = p.font();
         f.setPixelSize(kIcon - 6);

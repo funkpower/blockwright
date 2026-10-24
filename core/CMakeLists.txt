@@ -13,6 +13,7 @@ add_library(blockwright_core STATIC
   src/brushes/gradient.cpp
   src/brushes/guard.cpp
   src/brushes/shading.cpp
+  src/brushes/smudge.cpp
   src/brushes/soft.cpp
   src/canvas.cpp
   src/cp437.cpp

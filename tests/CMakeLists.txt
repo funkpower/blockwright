@@ -36,6 +36,7 @@ add_executable(blockwright-tests
   test_pipeline.cpp
   test_project.cpp
   test_shading_brushes.cpp
+  test_smudge_brush.cpp
   test_soft_brush.cpp
   test_sauce.cpp
   test_selection.cpp
