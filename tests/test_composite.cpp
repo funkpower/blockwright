@@ -15,6 +15,7 @@
 #include <climits>
 #include <cstdio>
 #include <random>
+#include <set>
 
 using namespace bw;
 
@@ -721,11 +722,10 @@ std::uint8_t expectedFreeHalf(const Cell& under, bool bottom, std::uint8_t pixel
 // Cells a pixel layer covers in one half only where either half shows the
 // wrong colour: the free half not the colour above (a fallback speck), or
 // the covered half not its pixel's colour (a speck on the shape's edge).
-// The ladder lint can't see these (a half block is off the ladder, and
-// pixel noise skips pixels beside shade cells), so the test counts
-// them itself, as the rule for "no fallback specks" reads.
-int cutCellSpecks(const Canvas& field, const Layer& px, const Canvas& out, bool ice) {
-    int n = 0;
+// The test knows the field and the pixels, so it finds them all; the
+// ladder lint reads the canvas alone and finds those it can (#71).
+std::set<std::pair<int, int>> cutCellSpecks(const Canvas& field, const Layer& px, const Canvas& out, bool ice) {
+    std::set<std::pair<int, int>> n;
     for (int y = 0; y < field.height(); ++y)
         for (int x = 0; x < field.width(); ++x) {
             const LayerPixels p = layerPixels(px.cells.at(x, y));
@@ -737,7 +737,33 @@ int cutCellSpecks(const Canvas& field, const Layer& px, const Canvas& out, bool 
             const std::uint8_t pixel = p.top ? *p.top : *p.bottom;
             const std::uint8_t covered = freeBottom ? halves->top : halves->bottom;
             const std::uint8_t free = freeBottom ? halves->bottom : halves->top;
-            n += covered != pixel || free != expectedFreeHalf(field.at(x, y), freeBottom, pixel, ice);
+            if (covered != pixel || free != expectedFreeHalf(field.at(x, y), freeBottom, pixel, ice))
+                n.insert({x, y});
+        }
+    return n;
+}
+
+// The fallback specks #71 counts, as PR #68's test first did: cells cut in
+// one half whose free half shows a colour the shade under it doesn't mostly
+// show (░'s background, ▓'s foreground, either of ▒'s).
+std::set<std::pair<int, int>> fallbackSpecks(const Canvas& field, const Layer& px, const Canvas& out, bool ice) {
+    std::set<std::pair<int, int>> n;
+    for (int y = 0; y < field.height(); ++y)
+        for (int x = 0; x < field.width(); ++x) {
+            const LayerPixels p = layerPixels(px.cells.at(x, y));
+            if (bool(p.top) == bool(p.bottom))
+                continue;
+            const auto halves = halfBlocks(out.at(x, y), ice);
+            REQUIRE(halves);
+            const Cell shade = iceCell(field.at(x, y), ice);
+            const std::uint8_t free = p.top ? halves->bottom : halves->top;
+            const std::uint8_t fg = shade.fg.paletteIndex(), bg = shade.bg.paletteIndex();
+            const bool main = shade.ch == kShadeLight    ? free == bg
+                              : shade.ch == kShadeDark   ? free == fg
+                              : shade.ch == kShadeMedium ? free == fg || free == bg
+                                                         : true;
+            if (!main)
+                n.insert({x, y});
         }
     return n;
 }
@@ -791,13 +817,16 @@ TEST_CASE("shade under a pixel layer composites with no specks", "[layers][compo
             o.ice = ice;
             const Canvas out = composite(s, o);
             // the ladder and speckle checks and pixel noise
-            const auto rep = lint::checkLadder(out, steel);
+            lint::LadderOptions lo;
+            lo.fallback = true;
+            lo.ice = ice;
+            const auto rep = lint::checkLadder(out, steel, {}, lo);
             for (const auto& f : rep.findings)
                 UNSCOPED_INFO(f.message);
             CHECK(rep.clean());
             CHECK(rep.noise <= 0.02);
             // and no speck on either side where a shape cuts a cell
-            CHECK(cutCellSpecks(field, px, out, ice) == 0);
+            CHECK(cutCellSpecks(field, px, out, ice).empty());
 
             // plotting the same pixels into the shaded canvas, as a flat
             // canvas would, leaves fallback specks: the test can see them
@@ -816,7 +845,29 @@ TEST_CASE("shade under a pixel layer composites with no specks", "[layers][compo
                         }
                 plotPixels(flat, pts, colour, so).apply(flat);
             }
-            CHECK(cutCellSpecks(field, px, flat, ice) > 0);
+            const auto cut = cutCellSpecks(field, px, flat, ice);
+            CHECK(!cut.empty());
+            const auto specks = fallbackSpecks(field, px, flat, ice);
+            CHECK(specks.size() == (across ? 12u : 26u));
+            if (ice)  // with iCE off a free half falls dark, as it must
+                CHECK(fallbackSpecks(field, px, out, ice).empty());
+            // and the ladder lint finds them from the canvas alone, each a
+            // speck by both counts: with iCE on, all 26 down the sky and 8
+            // of the wall's 12 (two cells gone black, whose free half shows
+            // the black pixel, and two on the bottom row, whose free half
+            // faces off the canvas with no shading beside it). With iCE off
+            // a free half may fall to the dark counterpart of the shading's
+            // colours, as the composite's does, and the lint lets that
+            // pass, so it finds 10 down the sky and 4 on the wall
+            int fallback = 0;
+            for (const auto& f : lint::checkLadder(flat, steel, {}, lo).findings) {
+                if (f.kind != lint::LadderFinding::Kind::FallbackSpeck)
+                    continue;
+                ++fallback;
+                CHECK(specks.count({f.x, f.y}));
+                CHECK(cut.count({f.x, f.y}));
+            }
+            CHECK(fallback == (ice ? (across ? 8 : 26) : (across ? 4 : 10)));
         }
     }
 }

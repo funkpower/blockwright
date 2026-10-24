@@ -23,6 +23,7 @@ add_library(blockwright_core STATIC
   src/layer.cpp
   src/library.cpp
   src/lint.cpp
+  src/lint_fallback.cpp
   src/mirc.cpp
   src/palette.cpp
   src/pipeline.cpp

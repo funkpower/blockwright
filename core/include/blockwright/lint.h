@@ -68,6 +68,12 @@ struct LadderOptions {
     // Judge the box as a whole too (one glyph, noise). Off for a caller
     // that wants the findings at cells only: the noise reads every pixel.
     bool whole = true;
+    // Judge fallback specks (#71). Off by default: the brushes' guards
+    // don't place them yet, so they read what they always have.
+    bool fallback = false;
+    // The colours half blocks show, for fallback specks: with iCE off a
+    // bright background shows dark (iceCell).
+    bool ice = true;
 };
 
 struct LadderFinding {
@@ -76,6 +82,7 @@ struct LadderFinding {
         WideRung,           // a step of a gradient wider than maxRung along it
         RungSkip,           // a gradient jumping more than one rung
         Speckle,            // a lone cell lighter or darker than all its neighbours
+        FallbackSpeck,      // a ▀/▄ beside shading showing none of its colours
         OneGlyph,           // the shading uses one of ░▒▓ only
         Noise,              // pixel noise over maxNoise
     };
@@ -127,8 +134,8 @@ std::optional<int> outlineRung(const Ramp& ramp, int rung);
 
 // Checks the box (the whole canvas when empty) against the ramp's ladder:
 // shades only between ramp neighbours, rungs no wider than maxRung, no
-// skipped rungs, no specks, more than one shade glyph, and noise no higher
-// than maxNoise.
+// skipped rungs, no specks (nor fallback specks, with options.fallback),
+// more than one shade glyph, and noise no higher than maxNoise.
 //
 // Rows and columns are read as gradients. Only a step of one is judged for
 // width: a run of a shade rung with a lower rung at one end and a higher one
@@ -298,7 +305,7 @@ private:
     std::vector<int> seen_;
     std::vector<Wide> rowWide_, columnWide_;  // at a run's first cell
     std::vector<std::vector<Skip>> rowSkips_, columnSkips_;  // per line, in order along it
-    std::vector<char> speck_, shade_;  // speck: 0, 1 lighter, 2 darker
+    std::vector<char> speck_, shade_, fallback_;  // speck: 0, 1 lighter, 2 darker
     // one glyph: the shade cells, by glyph
     int shadeCells_ = 0;
     std::map<char32_t, int> glyphs_;
@@ -311,7 +318,7 @@ private:
     // bookkeeping for one update
     unsigned epoch_ = 0;
     std::vector<unsigned> cellMark_, rowMark_, columnMark_, nearRowMark_, nearColumnMark_, rowRunMark_, columnRunMark_,
-        pixelMark_, rowWideMark_, columnWideMark_, speckMark_, shadeMark_;
+        pixelMark_, rowWideMark_, columnWideMark_, speckMark_, shadeMark_, fallbackMark_;
 };
 
 // What changing `before` to `after` at `changed` adds, as

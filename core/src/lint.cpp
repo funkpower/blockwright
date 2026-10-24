@@ -1,5 +1,7 @@
 #include "blockwright/lint.h"
 
+#include "lint_fallback.h"
+
 #include <algorithm>
 #include <bit>
 #include <cstdio>
@@ -595,6 +597,14 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
             if (const auto lighter = speck(ramp, rungAt(x, y), nb))
                 r.findings.push_back(speckFinding(b->x0 + x, b->y0 + y, *lighter));
         }
+    // fallback specks (lint_fallback.cpp)
+    std::vector<char> fallback;
+    for (int y = b->y0; y <= b->y1 && options.fallback; ++y) {
+        fallback::row(canvas, ramp, *b, y, options.ice, fallback, readCount);
+        for (int x = 0; x < w; ++x)
+            if (fallback[size_t(x)])
+                r.findings.push_back(fallback::finding(b->x0 + x, y));
+    }
 
     if (!options.whole)
         return r;
@@ -709,7 +719,7 @@ LadderIndex::LadderIndex(const Canvas& canvas, const Ramp& ramp, const LadderOpt
         v->assign(n, -1);
     for (auto* v : {&rowFirst_, &rowEnd_, &columnFirst_, &columnEnd_, &rowCount_, &columnCount_, &seen_})
         v->assign(n, 0);
-    for (auto* v : {&judgedAcross_, &speck_, &shade_})
+    for (auto* v : {&judgedAcross_, &speck_, &shade_, &fallback_})
         v->assign(n, 0);
     rowWide_.assign(n, {});
     columnWide_.assign(n, {});
@@ -720,7 +730,7 @@ LadderIndex::LadderIndex(const Canvas& canvas, const Ramp& ramp, const LadderOpt
     length_.assign(static_cast<std::size_t>(h_), 0);
     pixel_.assign(2 * n, -1);
     counts_.assign(2 * n, 0);
-    for (auto* v : {&cellMark_, &rowRunMark_, &columnRunMark_, &rowWideMark_, &columnWideMark_, &speckMark_, &shadeMark_})
+    for (auto* v : {&cellMark_, &rowRunMark_, &columnRunMark_, &rowWideMark_, &columnWideMark_, &speckMark_, &shadeMark_, &fallbackMark_})
         v->assign(n, 0);
     pixelMark_.assign(2 * n, 0);
     rowMark_.assign(static_cast<std::size_t>(h_), 0);
@@ -1129,6 +1139,27 @@ std::vector<LadderFinding> LadderIndex::update(const std::vector<std::pair<int, 
     }
     for (const int i : specks)
         speck_[size_t(i)] = char(speckAt(i % w_, i / w_));
+    // A fallback speck reads its run along the row and the cells above and
+    // below it: a changed row is judged again whole, and the cells above
+    // and below a changed cell on the rows that didn't change.
+    std::vector<std::pair<int, char>> fallbackWas;
+    const Box all{0, 0, w_ - 1, h_ - 1};
+    auto fallbackIs = [&](int i, bool is) {
+        if (mark(fallbackMark_, i))
+            fallbackWas.push_back({i, fallback_[size_t(i)]});
+        fallback_[size_t(i)] = is;
+    };
+    std::vector<char> fallbackRow;
+    for (const int y : options_.fallback ? rows : std::vector<int>{}) {
+        fallback::row(canvas_, ramp_, all, y, options_.ice, fallbackRow, readCount);
+        for (int x = 0; x < w_; ++x)
+            fallbackIs(y * w_ + x, fallbackRow[size_t(x)]);
+    }
+    for (const int i : options_.fallback ? cellsAt : std::vector<int>{})
+        for (const int y : {i / w_ - 1, i / w_ + 1})
+            if (y >= 0 && y < h_ && !isRow(y))
+                fallbackIs(y * w_ + i % w_,
+                           fallback::speckAt(canvas_, ramp_, all, i % w_, y, options_.ice, readCount));
 
     for (const int i : pixels) {
         const int p = i / w_, x = i % w_;
@@ -1182,6 +1213,9 @@ std::vector<LadderFinding> LadderIndex::update(const std::vector<std::pair<int, 
     for (const auto& [i, was] : shadeWas)
         if (shade_[size_t(i)] && !was)
             out.push_back(shadeFinding(i % w_, i / w_));
+    for (const auto& [i, was] : fallbackWas)
+        if (fallback_[size_t(i)] && !was)
+            out.push_back(fallback::finding(i % w_, i / w_));
     if (options_.whole) {
         if (shadeCells_ >= 4 && glyphs_.size() == 1 && !wasOneGlyph)
             out.push_back(oneGlyphFinding(0, 0));
@@ -1248,6 +1282,7 @@ bool LadderIndex::has(const LadderFinding& f) const {
     switch (f.kind) {
     case Kind::NonNeighbourShade: return shade_[i] && f == shadeFinding(f.x, f.y);
     case Kind::Speckle: return speck_[i] && f == speckFinding(f.x, f.y, speck_[i] == 1);
+    case Kind::FallbackSpeck: return fallback_[i] && f == fallback::finding(f.x, f.y);
     case Kind::WideRung:
         return (rowWide_[i].width &&
                 f == wideFinding(f.x, f.y, rowWide_[i].width, options_.maxRung, rowWide_[i].last, f.y)) ||
@@ -1294,6 +1329,8 @@ std::vector<LadderFinding> LadderIndex::findings() const {
                 out.push_back(wideFinding(x, y, columnWide_[i].width, options_.maxRung, x, columnWide_[i].last));
             if (speck_[i])
                 out.push_back(speckFinding(x, y, speck_[i] == 1));
+            if (fallback_[i])
+                out.push_back(fallback::finding(x, y));
         }
     for (int y = 0; y < h_; ++y)
         for (const Skip& s : rowSkips_[size_t(y)])

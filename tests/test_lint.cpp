@@ -500,6 +500,195 @@ TEST_CASE("the ladder check finds what spoils shading", "[lint][ladder]") {
     }
 }
 
+// #71: a fallback speck is a ▀/▄ cell that was a shade cell's half where
+// neither half shows the pixel's colour or one the shading round it shows
+// there, read from the canvas alone: the shade's rung from the cells above
+// and below it and at the ends of its run along the row. The free half shows
+// a colour the cut shade cell had that the shading there doesn't show: on
+// K░w, grey (its foreground). A half in a colour no shade cell there has was
+// drawn, and so was its cell.
+TEST_CASE("the ladder check finds fallback specks beside shading", "[lint][ladder]") {
+    const Ramp r = steel();
+    // a field of K░w (rung 5, DarkGrey's main colour)
+    Canvas c(7, 5);
+    auto field = [&](int rung) {
+        for (int y = 0; y < 5; ++y)
+            for (int x = 0; x < 7; ++x)
+                c.at(x, y) = rungCell(r, rung);
+    };
+    auto fallback = [&](bool ice = true) {
+        lint::LadderOptions o;
+        o.fallback = true;
+        o.ice = ice;
+        return count(lint::checkLadder(c, r, {}, o), Kind::FallbackSpeck);
+    };
+    lint::LadderOptions on;
+    on.fallback = true;
+    field(5);
+    SECTION("a shape's edge whose free half fell is a speck") {
+        // a yellow shape's lower edge cut into the shade, its free half
+        // grey where the shade shows dark grey
+        c.at(3, 1) = cell(kFullBlock, Yellow, Black);
+        c.at(3, 2) = cell(kUpperHalf, Yellow, Grey);
+        // judged only when asked for
+        CHECK(count(lint::checkLadder(c, r), Kind::FallbackSpeck) == 0);
+        auto rep = lint::checkLadder(c, r, {}, on);
+        REQUIRE(count(rep, Kind::FallbackSpeck) == 1);
+        const auto it = std::find_if(rep.findings.begin(), rep.findings.end(),
+                                     [](const auto& f) { return f.kind == Kind::FallbackSpeck; });
+        CHECK(it->x == 3);
+        CHECK(it->y == 2);
+        // the same pixel over the shade's own colour isn't
+        c.at(3, 2) = cell(kUpperHalf, Yellow, DarkGrey);
+        CHECK(fallback() == 0);
+        c.at(3, 2) = cell(kLowerHalf, Yellow, DarkGrey);
+        CHECK(fallback() == 0);
+        // nor over white or black, which no shade cell there has: a rim
+        // drawn under the shape
+        c.at(3, 2) = cell(kUpperHalf, Yellow, White);
+        CHECK(fallback() == 0);
+        c.at(3, 2) = cell(kUpperHalf, Yellow, Black);
+        CHECK(fallback() == 0);
+        // nor is one of a single colour, or a full pixel
+        c.at(3, 2) = cell(kUpperHalf, White, White);
+        CHECK(fallback() == 0);
+        c.at(3, 2) = cell(kFullBlock, White, Black);
+        CHECK(fallback() == 0);
+        // in K▓k, which shows dark grey, a free half fallen to black is one
+        field(3);
+        c.at(3, 1) = cell(kFullBlock, Yellow, Black);
+        c.at(3, 2) = cell(kUpperHalf, Yellow, Black);
+        CHECK(fallback() == 1);
+    }
+    SECTION("a run of them along the row is read from its ends") {
+        for (int x = 1; x < 6; ++x) {
+            c.at(x, 1) = cell(kFullBlock, Yellow, Black);
+            c.at(x, 2) = cell(kUpperHalf, Yellow, Grey);
+        }
+        CHECK(fallback() == 5);
+        for (int x = 1; x < 6; ++x)
+            c.at(x, 2) = cell(kUpperHalf, Yellow, DarkGrey);
+        CHECK(fallback() == 0);
+    }
+    SECTION("only beside shading") {
+        // a solid field has no fallback to get wrong: a half block there is
+        // a pixel cell of its own
+        field(4);
+        c.at(3, 1) = cell(kFullBlock, Yellow, Black);
+        c.at(3, 2) = cell(kUpperHalf, Yellow, Grey);
+        CHECK(fallback() == 0);
+        // nor does black, or text
+        field(0);
+        c.at(3, 1) = cell(kFullBlock, Yellow, Black);
+        c.at(3, 2) = cell(kUpperHalf, Yellow, Grey);
+        CHECK(fallback() == 0);
+    }
+    SECTION("a rim drawn on purpose isn't a speck") {
+        // a grey bevel over a black outline, between white and the shading
+        // (cocktober's gravestone base): grey is what W▓w above the white
+        // would fall to, but no shade cell of the shading below is black
+        for (int x = 0; x < 7; ++x) {
+            c.at(x, 1) = rungCell(r, 12);
+            c.at(x, 2) = cell(kUpperHalf, Grey, Black);
+        }
+        CHECK(fallback() == 0);
+        // a stripe of white across the shading, its other half fallen grey
+        field(5);
+        for (int x = 0; x < 7; ++x)
+            c.at(x, 2) = cell(kLowerHalf, White, Grey);
+        CHECK(fallback() == 0);
+    }
+    SECTION("a lone pixel beside ink or the canvas's edge isn't judged") {
+        // a lone yellow pixel just above black ink, its free half the
+        // shade's own colour (a star over a silhouette): the pixel faces
+        // the shading, the free half faces the ink, and nothing says which
+        // half is which
+        c.at(3, 2) = cell(kUpperHalf, Yellow, DarkGrey);
+        c.at(3, 3) = cell(U' ', White, Black);
+        CHECK(fallback() == 0);
+        // nor at the canvas's edge
+        c.at(3, 3) = rungCell(r, 5);
+        c.at(3, 2) = rungCell(r, 5);
+        c.at(3, 4) = cell(kUpperHalf, Yellow, DarkGrey);
+        CHECK(fallback() == 0);
+    }
+    SECTION("what the canvas alone can't tell isn't flagged") {
+        // a black pixel cut into K▓k whose free half fell to black: a black
+        // space, as ink drawn there is
+        field(3);
+        c.at(3, 1) = cell(U' ', White, Black);
+        c.at(3, 2) = cell(U' ', White, Black);
+        CHECK(fallback() == 0);
+        // with iCE off, a yellow pixel on a yellow shape's edge over the
+        // shade that fell to brown, its dark counterpart (PR #68's F1): a
+        // brown rim under a yellow shape, as one drawn there is
+        field(5);
+        c.at(3, 1) = cell(kFullBlock, Yellow, Black);
+        c.at(3, 2) = cell(kLowerHalf, DarkGrey, Brown);
+        CHECK(fallback(false) == 0);
+        // a shape's edge on the bottom row, its free half facing off the
+        // canvas
+        c.at(3, 3) = cell(kFullBlock, Yellow, Black);
+        c.at(3, 4) = cell(kUpperHalf, Yellow, Grey);
+        CHECK(fallback() == 0);
+        // a lone yellow pixel cut into the shading, its free half fallen to
+        // grey: a yellow pixel drawn over a grey one, as a frame's rivet or
+        // a stripe's end is
+        field(5);
+        c.at(3, 2) = cell(kUpperHalf, Yellow, Grey);
+        CHECK(fallback() == 0);
+    }
+    SECTION("iCE off judges the colours a cell shows") {
+        // W▓w (rung 11) shows white; with iCE off a yellow shape's edge over
+        // it leaves the free half grey, white's dark counterpart
+        field(11);
+        c.at(3, 1) = cell(kFullBlock, Yellow, Black);
+        c.at(3, 2) = cell(kUpperHalf, Yellow, Grey);
+        CHECK(fallback(true) == 1);
+        CHECK(fallback(false) == 0);
+    }
+    SECTION("the index keeps them") {
+        c.at(3, 1) = c.at(4, 1) = cell(kFullBlock, Yellow, Black);
+        lint::LadderIndex index(c, r, on);
+        Canvas after = c;
+        after.at(3, 2) = cell(kUpperHalf, Yellow, Grey);
+        auto added = index.apply(after, {{3, 2}});
+        REQUIRE(added.size() == 1);
+        CHECK(added.front().kind == Kind::FallbackSpeck);
+        CHECK(index.has(added.front()));
+        // the run grows: the new cell is a speck, the old one stays one
+        Canvas more = after;
+        more.at(4, 2) = after.at(3, 2);
+        added = index.apply(more, {{4, 2}});
+        REQUIRE(added.size() == 1);
+        CHECK(added.front().x == 4);
+        auto sorted = [](std::vector<lint::LadderFinding> v) {
+            std::sort(v.begin(), v.end());
+            return v;
+        };
+        CHECK(sorted(index.findings()) == sorted(lint::checkLadder(more, r, {}, on).findings));
+    }
+}
+
+// Round 1 of the review of #99: drawn half-block rims beside shading (a
+// gravestone's bevel over its outline, a monitor frame's top border, a sun's
+// stripes) are drawn, not fallbacks, and finished pieces have rows of them.
+TEST_CASE("drawn half-block rims beside shading are not fallback specks", "[lint][ladder]") {
+    auto specksOnRow = [](const char* file, const char* ramp, int row) {
+        const AnsiDocument doc = parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden" / file));
+        lint::LadderOptions o;
+        o.fallback = true;
+        o.ice = doc.ice;
+        int n = 0;
+        for (const auto& f : lint::checkLadder(doc.canvas, *findRamp(ramp), {}, o).findings)
+            n += f.kind == Kind::FallbackSpeck && f.y == row;
+        return n;
+    };
+    CHECK(specksOnRow("cocktober.ans", "steel", 67) == 0);
+    CHECK(specksOnRow("battlestation.ans", "sunset", 3) == 0);
+    CHECK(specksOnRow("outrun-sunset.ans", "sunset", 12) == 0);
+}
+
 TEST_CASE("the ladder check reads short and odd lines safely", "[lint][ladder]") {
     // Build with -D_GLIBCXX_ASSERTIONS (or a sanitizer) to catch a read past
     // the end of a line's levels.
@@ -913,14 +1102,15 @@ std::string showDiff(const Ramp& r, const Canvas& before, const Canvas& after, c
 // checkLadder's, every field of every finding: over noise, gradients,
 // squares whose end rungs differ (a wide step moving from a row to a column
 // at one cell), shaded shapes in their outline colour, outlined ellipses and
-// shade glyph fields, one glyph and noise included. Most indexes take a few
+// shade glyph fields, one glyph, noise and fallback specks (half blocks of
+// the ramp's colours, iCE on and off) included. Most indexes take a few
 // changes; one in 25 takes 200-400, some of them undoing the one before.
 TEST_CASE("a change adds exactly the findings linting both whole canvases does", "[lint][ladder]") {
     std::mt19937 rng(2026102303);
     auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
     const Ramp r = steel();
     int cases = 0, swaps = 0, oneGlyph = 0, noisy = 0, lines = 0, longRuns = 0, reverts = 0, measured = 0,
-        continued = 0, moved = 0;
+        continued = 0, moved = 0, fallback = 0;
     for (int k = 0; k < 2500; ++k) {
         const int source = pick(0, 5);
         // shade glyph fields small, so a change can reach every odd glyph
@@ -929,6 +1119,8 @@ TEST_CASE("a change adds exactly the findings linting both whole canvases does",
         o.maxRung = pick(1, 4);
         o.maxNoise = pick(0, 4) * 0.02;
         o.whole = pick(0, 3) != 0;
+        o.fallback = pick(0, 3) != 0;
+        o.ice = pick(0, 3) != 0;
         Canvas canvas = source == 0   ? randomLadder(r, w, h, rng)
                         : source == 1 ? randomShapes(r, w, h, rng)
                         : source == 2 ? randomEllipse(r, w, h, rng)
@@ -987,8 +1179,18 @@ TEST_CASE("a change adds exactly the findings linting both whole canvases does",
                             after.at(x, y) = cell(kFullBlock, Red, Black);
                         else if (how == 1)
                             after.at(x, y) = cell(U' ', White, Black);
-                        else if (how == 2)
+                        else if (how == 2 && pick(0, 1))
                             after.at(x, y) = cell(pick(0, 1) ? kUpperHalf : kLowerHalf, White, pick(0, 1) ? Black : Red);
+                        else if (how == 2) {  // a pixel cut into a shade cell, or its fallback
+                            const bool top = pick(0, 1);
+                            const std::uint8_t pixel = pick(0, 2) ? r.colours[size_t(pick(0, 3))] : Yellow;
+                            after.at(x, y) = cell(top ? kUpperHalf : kLowerHalf, pixel, r.colours[size_t(pick(0, 3))]);
+                            // mostly on the edge of a shape of the pixel's colour
+                            if (const int edge = top ? y - 1 : y + 1; edge >= 0 && edge < h && pick(0, 3)) {
+                                after.at(x, edge) = cell(kFullBlock, pixel, Black);
+                                changed.push_back({x, edge});
+                            }
+                        }
                         else if (how == 3)
                             after.at(x, y) = canvas.at(pick(0, w - 1), pick(0, h - 1));  // a copy of another cell
                         else if (how < 6 || !was)
@@ -1035,6 +1237,7 @@ TEST_CASE("a change adds exactly the findings linting both whole canvases does",
                 oneGlyph += key.kind == Kind::OneGlyph;
                 noisy += key.kind == Kind::Noise;
                 lines += key.kind != Kind::OneGlyph && key.kind != Kind::Noise;
+                fallback += key.kind == Kind::FallbackSpeck;
                 // a wide step that went from a row to a column at one cell, or back
                 for (const auto& old : had)
                     swaps += key.kind == Kind::WideRung && old.kind == Kind::WideRung && key.x == old.x &&
@@ -1066,7 +1269,7 @@ TEST_CASE("a change adds exactly the findings linting both whole canvases does",
     }
     UNSCOPED_INFO("cases " << cases << " swaps " << swaps << " one glyph " << oneGlyph << " noise " << noisy << " lines "
                            << lines << " long runs " << longRuns << " reverts " << reverts << " measured " << measured
-                           << " continued " << continued << " moved " << moved);
+                           << " continued " << continued << " moved " << moved << " fallback " << fallback);
     CHECK(cases > 30000);
     CHECK(longRuns == 100);
     CHECK(reverts > 4000);
@@ -1077,6 +1280,7 @@ TEST_CASE("a change adds exactly the findings linting both whole canvases does",
     CHECK(oneGlyph > 50);
     CHECK(noisy > 50);
     CHECK(lines > 2000);
+    CHECK(fallback > 100);
 }
 
 // Codex round 1 on #55, the run-based repro: taking a wide step across a
@@ -1528,7 +1732,7 @@ long long work(lint::LadderIndex& index, const Canvas& after, const std::vector<
 // the work, and the answers stay exact.
 TEST_CASE("a change costs the lines through it, however large the canvas", "[lint][ladder]") {
     const Ramp r = steel();
-    std::vector<long long> flat, square, skipping;
+    std::vector<long long> flat, square, skipping, halves;
     for (const int n : {128, 256, 512}) {
         // Codex round 1 on #59 (#2): three rows of 1, 3, 5 over and over, a
         // skip every level, the last cell of the middle row moved to rung 2.
@@ -1580,6 +1784,30 @@ TEST_CASE("a change costs the lines through it, however large the canvas", "[lin
             CHECK(got == wholeDiff(before, after, r, {}));
             CHECK(keysOf(index.findings()) == keysOf(lint::checkLadder(after, r).findings));
         }
+        // #71: a rung-5 field with a yellow shape cut into it all but right
+        // across, its lower edge a row of pixels whose free halves fell to
+        // grey over a black line, and one cell of the line erased back to
+        // the shading. The pixel above it becomes a fallback speck, judged
+        // against the shading at the ends of its run along the row
+        {
+            lint::LadderOptions o;
+            o.fallback = true;
+            Canvas before = filled(n, n, rungCell(r, 5));
+            for (int x = 1; x < n - 1; ++x) {
+                before.at(x, n / 2 - 2) = cell(kFullBlock, Yellow, Black);
+                before.at(x, n / 2 - 1) = cell(kUpperHalf, Yellow, Grey);
+                before.at(x, n / 2) = cell(U' ', White, Black);
+            }
+            Canvas after = before;
+            after.at(n / 2, n / 2) = rungCell(r, 5);
+            lint::LadderIndex index(before, r, o);
+            std::set<FindingKey> got;
+            halves.push_back(work(index, after, {{n / 2, n / 2}}, got));
+            CHECK(got == wholeDiff(before, after, r, o));
+            CHECK(std::count_if(got.begin(), got.end(), [](const auto& f) { return f.kind == Kind::FallbackSpeck; }) ==
+                  1);
+            CHECK(keysOf(index.findings()) == keysOf(lint::checkLadder(after, r, {}, o).findings));
+        }
     }
     for (size_t k = 0; k + 1 < flat.size(); ++k) {
         INFO("flat field: " << flat[k] << " then " << flat[k + 1] << " reads");
@@ -1588,6 +1816,8 @@ TEST_CASE("a change costs the lines through it, however large the canvas", "[lin
         CHECK(square[k + 1] <= 2.1 * double(square[k]));
         INFO("skipping rows: " << skipping[k] << " then " << skipping[k + 1] << " reads");
         CHECK(skipping[k + 1] <= 2.1 * double(skipping[k]));
+        INFO("rows of fallback specks: " << halves[k] << " then " << halves[k + 1] << " reads");
+        CHECK(halves[k + 1] <= 2.1 * double(halves[k]));
     }
 }
 
