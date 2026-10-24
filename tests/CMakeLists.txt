@@ -23,6 +23,7 @@ add_executable(blockwright-tests
   test_edit.cpp
   test_form_brush.cpp
   test_golden.cpp
+  test_gradient.cpp
   test_irc.cpp
   test_layers.cpp
   test_library.cpp

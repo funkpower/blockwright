@@ -10,6 +10,7 @@ add_library(blockwright_core STATIC
   src/brushes/detail.cpp
   src/brushes/drawing.cpp
   src/brushes/form.cpp
+  src/brushes/gradient.cpp
   src/brushes/guard.cpp
   src/brushes/shading.cpp
   src/brushes/soft.cpp
