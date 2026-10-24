@@ -65,14 +65,19 @@ public:
     // What the brush tools paint with, like the pen: the brush settings
     // (size, tip, strength, what a stylus's pressure scales), the ramp the
     // ramp brushes walk, and the alpha lock, which leaves transparent cells
-    // alone (until layers have their own, PLAN §5). A change redoes a drag
+    // alone: the active layer's (PLAN §5), so setting it is an undo step on
+    // the document and it follows the active layer. A change redoes a drag
     // in progress, so what it shows stays what it lands.
     const BrushSettings& brushSettings() const { return brush_; }
     void setBrushSettings(const BrushSettings& settings);  // size and strength clamped
     const Ramp& ramp() const { return ramp_; }
     void setRamp(const Ramp& ramp);  // ignored if rampProblem finds one
-    bool lockTransparent() const { return lockTransparent_; }
+    bool lockTransparent() const;
     void setLockTransparent(bool on);
+    // Sample merged (PLAN §5): the eyedropper picks, and fill floods by,
+    // what the canvas shows (the composite) instead of the active layer.
+    bool sampleMerged() const { return sampleMerged_; }
+    void setSampleMerged(bool on);
     // The form brush's shape, rim light and glint (its light is the brush
     // settings' lightDirection), and the soft brush's hardness (0-1).
     const FormOptions& formOptions() const { return form_; }
@@ -271,7 +276,7 @@ private:
     bool stylusEvent(QTabletEvent* e);
     BrushSettings brush_;
     Ramp ramp_;
-    bool lockTransparent_ = false;
+    bool sampleMerged_ = false;
     FormOptions form_;
     double hardness_ = 0.0;
     OutlineShape outlineShape_ = OutlineShape::Ramp;

@@ -6,7 +6,8 @@
 // brush's form, rim light and glint, the soft brush's hardness, what the
 // outline brush takes as the shape, the symmetry and the pencil's
 // connectivity, the glyph brush's glyph, Filled Shapes for
-// the rectangle and ellipse, and the select tool's paste mode. Each row is
+// the rectangle and ellipse, the select tool's paste mode, and sample merged
+// for the eyedropper and fill. Each row is
 // shown while the active tool reads it (optionsFor). It edits the view's
 // settings and the tools' and follows them, so the menus and the dock stay
 // in step.
@@ -49,11 +50,12 @@ public:
         Filled = 1 << 12,
         PasteMode = 1 << 13,
         OutlineSelection = 1 << 14,  // the outline brush's shape is the selection
+        SampleMerged = 1 << 15,
     };
     Q_DECLARE_FLAGS(Options, Option)
 
     // The settings the tool with this id reads; empty for a tool with none
-    // (keyboard mode, the eyedropper). False in `known` for an id it has no
+    // (keyboard mode). False in `known` for an id it has no
     // entry for: such a tool shows every brush setting.
     static Options optionsFor(const QString& toolId, bool* known = nullptr);
 
@@ -86,6 +88,7 @@ public:
     QLabel* glyphLabel() const { return glyph_; }
     QCheckBox* filledBox() const { return filled_; }
     QComboBox* pasteModeBox() const { return pasteMode_; }
+    QCheckBox* sampleMergedBox() const { return merged_; }
 
 private:
     // Shows the view's and the tools' settings.
@@ -109,6 +112,7 @@ private:
     QComboBox* pressure_;
     QComboBox* ramp_;
     QCheckBox* lock_;
+    QCheckBox* merged_;
     QComboBox* light_;
     QComboBox* form_;
     QCheckBox* rim_;

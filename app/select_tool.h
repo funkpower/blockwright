@@ -92,6 +92,9 @@ private:
     enum class Drag { None, Select, Pending, Float };
 
     const Canvas& canvas() const;
+    // The cells of `sel` on the active layer, marked as a pixel layer's
+    // when it is one (CellBlock::pixelLayer).
+    CellBlock copied(const Selection& sel) const;
     // Lifts the selected cells into a floating selection.
     void lift();
     void setFloatPos(QPoint pos);

@@ -1,5 +1,8 @@
 #include "blockwright/selection.h"
 
+#include "blockwright/halfblock.h"
+#include "blockwright/layer.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdlib>
@@ -38,26 +41,26 @@ private:
     std::map<std::pair<int, int>, Cell> after_;  // (y, x) -> cell
 };
 
-void clearInto(EditBuilder& b, const Canvas& canvas, const Selection& sel) {
+void clearInto(EditBuilder& b, const Canvas& canvas, const Selection& sel, const Cell& blank) {
     const CellRect r = sel.clipped(canvas).bounds();
     for (int y = r.y; y < r.y + r.height; ++y)
         for (int x = r.x; x < r.x + r.width; ++x)
             if (sel.contains(x, y))
-                b.set(x, y, Cell{});
+                b.set(x, y, blank);
 }
 
 // Pastes over the canvas as `b` already has it, so a paste after a clear
 // sees the cleared cells (Under mode writes into them).
 void pasteInto(EditBuilder& b, const Canvas& canvas, const CellBlock& block, int x0, int y0, PasteMode mode,
-               const Selection* cleared) {
+               const Selection* cleared, const Cell& blank, PastePixels pixels = {}) {
     for (int by = 0; by < block.height; ++by)
         for (int bx = 0; bx < block.width; ++bx) {
             const long long lx = static_cast<long long>(x0) + bx, ly = static_cast<long long>(y0) + by;
             if (lx < 0 || ly < 0 || lx >= canvas.width() || ly >= canvas.height())
                 continue;
             const int x = static_cast<int>(lx), y = static_cast<int>(ly);
-            const Cell under = cleared && cleared->contains(x, y) ? Cell{} : canvas.at(x, y);
-            if (const auto c = pasteCell(block.at(bx, by), under, mode))
+            const Cell under = cleared && cleared->contains(x, y) ? blank : canvas.at(x, y);
+            if (const auto c = pasteCell(block.at(bx, by), under, mode, pixels, block.pixelLayer))
                 b.set(x, y, writtenOver(under, *c));
         }
 }
@@ -188,38 +191,48 @@ CellBlock copyBlock(const Canvas& canvas, const Selection& sel) {
             if (sel.contains(r.x + x, r.y + y))
                 b.at(x, y) = canvas.at(r.x + x, r.y + y);
             else
-                b.at(x, y).transparent = true;
+                b.at(x, y) = transparentCell();
         }
     return b;
 }
 
-CellEdit clearSelection(const Canvas& canvas, const Selection& sel) {
+CellEdit clearSelection(const Canvas& canvas, const Selection& sel, const Cell& blank) {
     EditBuilder b(canvas);
-    clearInto(b, canvas, sel);
+    clearInto(b, canvas, sel, blank);
     return b.finish();
 }
 
-std::optional<Cell> pasteCell(const Cell& cell, const Cell& under, PasteMode mode) {
+std::optional<Cell> pasteCell(const Cell& cell, const Cell& under, PasteMode mode, PastePixels pixels,
+                              bool pixelCell) {
+    if (cell.transparent) {
+        const LayerPixels p = layerPixels(cell);
+        if (!p.top && !p.bottom)
+            return std::nullopt;
+    }
+    Cell pasted = cell;
     if (cell.transparent)
-        return std::nullopt;
+        pasted = halfPixelOver(cell, under, pixels.pixelLayer, pixels.ice);
+    else if (pixelCell && !pixels.pixelLayer)
+        pasted = pixelCellOnCells(cell, pixels.ice);
     switch (mode) {
-    case PasteMode::Normal: return cell;
-    case PasteMode::Transparent: return isBlank(cell) ? std::nullopt : std::optional<Cell>(cell);
-    case PasteMode::Under: return isBlank(under) ? std::optional<Cell>(cell) : std::nullopt;
+    case PasteMode::Normal: return pasted;
+    case PasteMode::Transparent: return isBlank(cell) ? std::nullopt : std::optional<Cell>(pasted);
+    case PasteMode::Under: return isBlank(under) ? std::optional<Cell>(pasted) : std::nullopt;
     }
     return std::nullopt;
 }
 
-CellEdit pasteBlock(const Canvas& canvas, const CellBlock& block, int x, int y, PasteMode mode) {
-    return stampBlock(canvas, block, x, y, mode, nullptr);
+CellEdit pasteBlock(const Canvas& canvas, const CellBlock& block, int x, int y, PasteMode mode,
+                    PastePixels pixels) {
+    return stampBlock(canvas, block, x, y, mode, nullptr, Cell{}, pixels);
 }
 
 CellEdit stampBlock(const Canvas& canvas, const CellBlock& block, int x, int y, PasteMode mode,
-                    const Selection* liftedFrom) {
+                    const Selection* liftedFrom, const Cell& blank, PastePixels pixels) {
     EditBuilder b(canvas);
     if (liftedFrom)
-        clearInto(b, canvas, *liftedFrom);
-    pasteInto(b, canvas, block, x, y, mode, liftedFrom);
+        clearInto(b, canvas, *liftedFrom, blank);
+    pasteInto(b, canvas, block, x, y, mode, liftedFrom, blank, pixels);
     CellEdit e = b.finish();
     e.moves = true;
     return e;
@@ -260,6 +273,7 @@ CellBlock transformed(const CellBlock& block, Transform t) {
     switch (t) {
     case Transform::FlipHorizontal: {
         CellBlock out(w, h);
+        out.pixelLayer = block.pixelLayer;
         for (int y = 0; y < h; ++y)
             for (int x = 0; x < w; ++x)
                 out.at(w - 1 - x, y) = flipCell(block.at(x, y), Flip::Horizontal);
@@ -267,6 +281,7 @@ CellBlock transformed(const CellBlock& block, Transform t) {
     }
     case Transform::FlipVertical: {
         CellBlock out(w, h);
+        out.pixelLayer = block.pixelLayer;
         for (int y = 0; y < h; ++y)
             for (int x = 0; x < w; ++x)
                 out.at(x, h - 1 - y) = flipCell(block.at(x, y), Flip::Vertical);
@@ -274,6 +289,7 @@ CellBlock transformed(const CellBlock& block, Transform t) {
     }
     case Transform::RotateClockwise: {
         CellBlock out(h, w);
+        out.pixelLayer = block.pixelLayer;
         for (int y = 0; y < h; ++y)
             for (int x = 0; x < w; ++x)
                 out.at(h - 1 - y, x) = rotateCell(block.at(x, y), true);
@@ -281,6 +297,7 @@ CellBlock transformed(const CellBlock& block, Transform t) {
     }
     case Transform::RotateCounterClockwise: {
         CellBlock out(h, w);
+        out.pixelLayer = block.pixelLayer;
         for (int y = 0; y < h; ++y)
             for (int x = 0; x < w; ++x)
                 out.at(y, w - 1 - x) = rotateCell(block.at(x, y), false);
@@ -290,21 +307,22 @@ CellBlock transformed(const CellBlock& block, Transform t) {
     return {};
 }
 
-SelectionEdit transformSelection(const Canvas& canvas, const Selection& sel, Transform t) {
+SelectionEdit transformSelection(const Canvas& canvas, const Selection& sel, Transform t, const Cell& blank) {
     const Selection from = sel.clipped(canvas);
     if (from.empty())
         return {{}, from};
     const CellBlock block = transformed(copyBlock(canvas, from), t);
     const CellRect& r = from.bounds();
     EditBuilder b(canvas);
-    clearInto(b, canvas, from);
-    pasteInto(b, canvas, block, r.x, r.y, PasteMode::Normal, &from);
+    clearInto(b, canvas, from, blank);
+    pasteInto(b, canvas, block, r.x, r.y, PasteMode::Normal, &from, blank);
     CellEdit e = b.finish();
     e.moves = true;
     return {e, Selection(CellRect{r.x, r.y, block.width, block.height}).clipped(canvas)};
 }
 
-SelectionEdit moveSelection(const Canvas& canvas, const Selection& sel, int dx, int dy, PasteMode mode) {
+SelectionEdit moveSelection(const Canvas& canvas, const Selection& sel, int dx, int dy, PasteMode mode,
+                            const Cell& blank) {
     const Selection from = sel.clipped(canvas);
     if (from.empty())
         return {{}, from};
@@ -313,9 +331,9 @@ SelectionEdit moveSelection(const Canvas& canvas, const Selection& sel, int dx, 
     // Far enough off the canvas that nothing lands: just the clear.
     const long long w = canvas.width(), h = canvas.height();
     if (nx >= w || ny >= h || nx + r.width <= 0 || ny + r.height <= 0)
-        return {clearSelection(canvas, from), {}};
+        return {clearSelection(canvas, from, blank), {}};
     const CellRect to{static_cast<int>(nx), static_cast<int>(ny), r.width, r.height};
-    return {stampBlock(canvas, copyBlock(canvas, from), to.x, to.y, mode, &from), Selection(to).clipped(canvas)};
+    return {stampBlock(canvas, copyBlock(canvas, from), to.x, to.y, mode, &from, blank), Selection(to).clipped(canvas)};
 }
 
 int mirrorColumn(int width, int x) { return width - 1 - x; }

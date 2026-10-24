@@ -69,7 +69,7 @@ EditResult typeGlyph(const Canvas& canvas, Cursor c, char32_t ch, const Pen& pen
 }
 
 EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, std::u32string_view text,
-                       const Pen& pen) {
+                       const Pen& pen, const Cell& blank) {
     if (!canvas.contains(c.x, c.y) || !std::all_of(text.begin(), text.end(), isTypeable))
         return {{}, c};
     const long long w = canvas.width();
@@ -82,7 +82,7 @@ EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, st
     std::vector<Cell> row(static_cast<size_t>(w));
     for (int x = 0; x < w; ++x)
         row[x] = canvas.at(x, c.y);
-    std::fill(row.begin() + first, row.begin() + last, Cell{});
+    std::fill(row.begin() + first, row.begin() + last, blank);
     long long x = std::min(first, w - 1);
     for (const char32_t ch : text) {
         row[x] = Cell{ch, pen.fg, pen.bg, 0, false};
@@ -97,15 +97,17 @@ EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, st
     return r;
 }
 
-EditResult backspace(const Canvas& canvas, Cursor c) {
+EditResult backspace(const Canvas& canvas, Cursor c, const Cell& blank) {
     if (c.pastEnd && c.x == canvas.width() - 1 && canvas.contains(c.x, c.y))
-        return {setCell(canvas, c, Cell{}), {c.x, c.y}};
+        return {setCell(canvas, c, blank), {c.x, c.y}};
     if (c.x <= 0 || !canvas.contains(c.x, c.y))
         return {{}, c};
     const Cursor left{c.x - 1, c.y};
-    return {setCell(canvas, left, Cell{}), left};
+    return {setCell(canvas, left, blank), left};
 }
 
-EditResult deleteCell(const Canvas& canvas, Cursor c) { return {setCell(canvas, c, Cell{}), {c.x, c.y}}; }
+EditResult deleteCell(const Canvas& canvas, Cursor c, const Cell& blank) {
+    return {setCell(canvas, c, blank), {c.x, c.y}};
+}
 
 } // namespace bw

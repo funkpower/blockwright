@@ -1,10 +1,11 @@
-// The workspace (PLAN §11): the Toolbox, Tool Options and glyph bar docks,
-// the Window menu, and the dock layout saved between runs.
+// The workspace (PLAN §11): the Toolbox, Tool Options, glyph bar and Layers
+// docks, the Layer menu, the Window menu, and the dock layout saved between runs.
 
 #include "main_window.h"
 
 #include "canvas_view.h"
 #include "glyph_bar.h"
+#include "layers_dock.h"
 #include "palette_widget.h"
 #include "select_tool.h"
 #include "settings.h"
@@ -22,7 +23,7 @@ namespace bw {
 namespace {
 
 // Bumped when the docks change, so an older saved layout is dropped.
-constexpr int kLayoutVersion = 1;
+constexpr int kLayoutVersion = 2;
 
 } // namespace
 
@@ -45,6 +46,16 @@ void MainWindow::createDocks() {
     toolOptionsDock_ = dock(tr("Tool Options"), "toolOptionsDock", optionsScroll);
     glyphBar_ = new GlyphBar(view_);
     glyphBarDock_ = dock(tr("Glyphs"), "glyphBarDock", glyphBar_);
+    layers_ = new LayersDock(&doc_);
+    layersDock_ = dock(tr("Layers"), "layersDock", layers_);
+
+    // Layer: the Layers dock's actions, no shortcuts.
+    layerMenu_->addAction(layers_->newCellsAction());
+    layerMenu_->addAction(layers_->newPixelsAction());
+    layerMenu_->addAction(layers_->deleteAction());
+    layerMenu_->addSeparator();
+    layerMenu_->addAction(layers_->raiseAction());
+    layerMenu_->addAction(layers_->lowerAction());
 
     // The pen's swap arrow and reset corner.
     QAction* swap = findChild<QAction*>(QStringLiteral("swapColours"));
@@ -70,16 +81,17 @@ void MainWindow::createDocks() {
 }
 
 QList<QDockWidget*> MainWindow::docks() const {
-    return {toolboxDock_, toolOptionsDock_, previewDock_, paletteDock_, libraryDock_, glyphBarDock_};
+    return {toolboxDock_, toolOptionsDock_, previewDock_, paletteDock_, layersDock_, libraryDock_, glyphBarDock_};
 }
 
 void MainWindow::resetLayout() {
-    // Left: the toolbox over its options. Right: the preview, the palette
-    // and the library. Bottom: the glyph bar.
+    // Left: the toolbox over its options. Right: the preview, the palette,
+    // the layers and the library. Bottom: the glyph bar.
     const std::pair<QDockWidget*, Qt::DockWidgetArea> places[] = {
         {toolboxDock_, Qt::LeftDockWidgetArea},  {toolOptionsDock_, Qt::LeftDockWidgetArea},
         {previewDock_, Qt::RightDockWidgetArea}, {paletteDock_, Qt::RightDockWidgetArea},
-        {libraryDock_, Qt::RightDockWidgetArea}, {glyphBarDock_, Qt::BottomDockWidgetArea},
+        {layersDock_, Qt::RightDockWidgetArea},  {libraryDock_, Qt::RightDockWidgetArea},
+        {glyphBarDock_, Qt::BottomDockWidgetArea},
     };
     for (const auto& [d, area] : places) {
         d->setFloating(false);

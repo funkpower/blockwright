@@ -66,8 +66,8 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("line"), draw},
         {QStringLiteral("rectangle"), draw | O::Filled},
         {QStringLiteral("ellipse"), draw | O::Filled},
-        {QStringLiteral("fill"), draw},
-        {QStringLiteral("eyedropper"), {}},
+        {QStringLiteral("fill"), draw | O::SampleMerged},
+        {QStringLiteral("eyedropper"), O::SampleMerged},
         {QStringLiteral("outline"), brush | O::Ramp | O::OutlineSelection},
         {QStringLiteral("rimLight"), brush | O::Ramp | O::Light},
     };
@@ -128,7 +128,11 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
 
     lock_ = new QCheckBox(tr("Alpha lock"));
     lock_->setObjectName(QStringLiteral("brushAlphaLock"));
-    lock_->setToolTip(tr("Leave transparent cells alone"));
+    lock_->setToolTip(tr("Leave transparent cells alone (the active layer's alpha lock)"));
+
+    merged_ = new QCheckBox(tr("Sample merged"));
+    merged_->setObjectName(QStringLiteral("sampleMerged"));
+    merged_->setToolTip(tr("Pick and fill by what the canvas shows, not the active layer alone"));
 
     light_ = new QComboBox;
     light_->setObjectName(QStringLiteral("brushLightDirection"));
@@ -234,6 +238,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(pencil4_);
     form->addRow(tr("Paste"), pasteMode_);
     form->addRow(lock_);
+    form->addRow(merged_);
     form->addRow(tr("Symmetry"), symmetry_);
     form->addRow(tr("Folds"), folds_);
     form->addRow(centreRow);
@@ -254,6 +259,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     connect(pressure_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
     connect(ramp_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
     connect(lock_, &QCheckBox::toggled, this, &ToolOptions::apply);
+    connect(merged_, &QCheckBox::toggled, this, &ToolOptions::apply);
     connect(form_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
     connect(rim_, &QCheckBox::toggled, this, &ToolOptions::apply);
     connect(specular_, &QCheckBox::toggled, this, &ToolOptions::apply);
@@ -297,6 +303,7 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
     f->setRowVisible(pasteMode_, o.testFlag(O::PasteMode));
     f->setRowVisible(lock_, o.testFlag(O::AlphaLock));
+    f->setRowVisible(merged_, o.testFlag(O::SampleMerged));
     f->setRowVisible(symmetry_, o.testFlag(O::Symmetry));
     f->setRowVisible(folds_, o.testFlag(O::Symmetry));
     f->setRowVisible(f->rowCount() - 1, o.testFlag(O::Symmetry));  // the radial centre
@@ -320,6 +327,7 @@ void ToolOptions::sync() {
     pressure_->setCurrentIndex(pressure_->findData(int(s.pressure)));
     ramp_->setCurrentIndex(ramp_->findData(QString::fromStdString(view_->ramp().name)));
     lock_->setChecked(view_->lockTransparent());
+    merged_->setChecked(view_->sampleMerged());
     light_->setCurrentIndex(light_->findData(int(s.lightDirection)));
     const FormOptions& f = view_->formOptions();
     form_->setCurrentIndex(form_->findData(int(f.shape)));
@@ -361,6 +369,7 @@ void ToolOptions::apply() {
     s.pressure = PressureTo(pressure_->currentData().toInt());
     const auto ramp = findRamp(ramp_->currentData().toString().toStdString());
     const bool lock = lock_->isChecked();
+    const bool merged = merged_->isChecked();
     s.lightDirection = Compass(light_->currentData().toInt());
     FormOptions f;
     f.shape = FormShape(form_->currentData().toInt());
@@ -376,6 +385,7 @@ void ToolOptions::apply() {
     if (ramp)
         view_->setRamp(*ramp);
     view_->setLockTransparent(lock);
+    view_->setSampleMerged(merged);
     view_->setFormOptions(f);
     view_->setHardness(hardness);
     view_->setOutlineShape(outline);

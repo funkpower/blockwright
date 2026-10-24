@@ -18,7 +18,13 @@ namespace bw {
 
 SelectTool::SelectTool(QObject* parent) : Tool(QStringLiteral("select"), tr("&Select"), parent) {}
 
-const Canvas& SelectTool::canvas() const { return view()->document()->canvas(); }
+const Canvas& SelectTool::canvas() const { return view()->document()->layerCanvas(); }
+
+CellBlock SelectTool::copied(const Selection& sel) const {
+    CellBlock b = copyBlock(canvas(), sel);
+    b.pixelLayer = view()->document()->pastePixels().pixelLayer;
+    return b;
+}
 
 void SelectTool::activate(CanvasView* v) {
     Tool::activate(v);
@@ -82,7 +88,7 @@ void SelectTool::lift() {
     if (!view() || floating_ || selection().empty())
         return;
     liftedFrom_ = selection();
-    float_ = copyBlock(canvas(), liftedFrom_);
+    float_ = copied(liftedFrom_);
     floatPos_ = {liftedFrom_.bounds().x, liftedFrom_.bounds().y};
     floating_ = lifted_ = true;
     previewStale_ = true;
@@ -111,14 +117,18 @@ void SelectTool::moveBy(int dx, int dy) {
 void SelectTool::stamp() {
     if (!view() || !floating_)
         return;
+    const Document* doc = view()->document();
     const CellEdit edit = stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), effectivePasteMode(),
-                                     lifted_ ? &liftedFrom_ : nullptr);
+                                     lifted_ ? &liftedFrom_ : nullptr, doc->blankCell(), doc->pastePixels());
+    const bool lifted = lifted_;
     floating_ = lifted_ = false;
     floatMode_.reset();
     drag_ = Drag::None;
-    setSelection(Selection({floatPos_.x(), floatPos_.y(), float_.width, float_.height}));
     previewStale_ = true;
-    view()->applyEdit(edit);
+    // a refused move (the alpha lock) leaves the selection on the cells
+    // that stayed
+    const bool applied = view()->applyEdit(edit);
+    setSelection(!applied && lifted ? liftedFrom_ : Selection({floatPos_.x(), floatPos_.y(), float_.width, float_.height}));
     emit changed();
 }
 
@@ -147,7 +157,7 @@ void SelectTool::copy() {
     if (floating_)
         clipboard_ = float_;
     else if (view() && !selection().empty())
-        clipboard_ = copyBlock(canvas(), selection());
+        clipboard_ = copied(selection());
     else
         return;
     emit changed();
@@ -164,7 +174,7 @@ void SelectTool::clear() {
     if (!view())
         return;
     if (floating_) {
-        const CellEdit edit = lifted_ ? clearSelection(canvas(), liftedFrom_) : CellEdit{};
+        const CellEdit edit = lifted_ ? clearSelection(canvas(), liftedFrom_, view()->document()->blankCell()) : CellEdit{};
         floating_ = lifted_ = false;
         floatMode_.reset();
         drag_ = Drag::None;
@@ -173,7 +183,7 @@ void SelectTool::clear() {
         view()->applyEdit(edit);
         emit changed();
     } else if (!selection().empty()) {
-        view()->applyEdit(clearSelection(canvas(), selection()));
+        view()->applyEdit(clearSelection(canvas(), selection(), view()->document()->blankCell()));
     }
 }
 
@@ -203,9 +213,9 @@ void SelectTool::transform(Transform t) {
         float_ = transformed(float_, t);
         setFloatPos(floatPos_);
     } else if (!selection().empty()) {
-        const SelectionEdit r = transformSelection(canvas(), selection(), t);
-        view()->applyEdit(r.edit);
-        setSelection(r.selection);
+        const SelectionEdit r = transformSelection(canvas(), selection(), t, view()->document()->blankCell());
+        if (view()->applyEdit(r.edit))
+            setSelection(r.selection);
     }
 }
 
@@ -311,9 +321,10 @@ void SelectTool::updatePreview() const {
     preview_.clear();
     if (!view() || !floating_)
         return;
+    const Document* doc = view()->document();
     preview_.set(*view(), view()->mirrored(stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(),
-                                                       effectivePasteMode(),
-                                                       lifted_ ? &liftedFrom_ : nullptr)));
+                                                       effectivePasteMode(), lifted_ ? &liftedFrom_ : nullptr,
+                                                       doc->blankCell(), doc->pastePixels())));
 }
 
 void SelectTool::paintCells(QPainter& p, const QRect& exposed) const {

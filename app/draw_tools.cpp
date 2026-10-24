@@ -88,7 +88,7 @@ void DragTool::paintCells(QPainter& p, const QRect& exposed) const {
         preview_.paint(p, *view(), exposed);
 }
 
-const Canvas& DragTool::canvas() const { return view()->document()->canvas(); }
+const Canvas& DragTool::canvas() const { return view()->document()->layerCanvas(); }
 
 std::uint8_t DragTool::colourFor(Qt::MouseButton button) const {
     const Pen& pen = view()->pen();
@@ -96,10 +96,10 @@ std::uint8_t DragTool::colourFor(Qt::MouseButton button) const {
 }
 
 void DragTool::takeSettings() {
-    options_ = StrokeOptions{};
+    const Layer* layer = view()->document()->active();
+    options_ = layer ? layerStrokeOptions(*layer) : StrokeOptions{};
     options_.selection = selectionMask(view()->selection(), canvas().width(), canvas().height());
     options_.ice = view()->document()->ansi().ice;
-    options_.lockTransparent = view()->lockTransparent();
     options_.symmetry = view()->symmetry();
     brushSettings_ = view()->brushSettings();
     mirror_ = view()->mirror();
@@ -280,7 +280,7 @@ QString GlyphTool::status() const {
 
 std::unique_ptr<Brush> GlyphTool::makeBrush(Qt::MouseButton button) const {
     if (button == Qt::RightButton)
-        return std::make_unique<GlyphBrush>(Cell{});
+        return std::make_unique<GlyphBrush>(view()->document()->blankCell());
     Cell c;
     c.ch = glyph_;
     c.fg = pen().fg;
@@ -396,9 +396,58 @@ bool FillTool::begin(const ToolEvent& e) {
     return true;
 }
 
-void FillTool::rebuild() { pixels_ = floodPixels(canvas(), at_.x(), at_.y(), options()); }
+void FillTool::rebuild() {
+    if (!view()->sampleMerged()) {
+        pixels_ = floodPixels(canvas(), at_.x(), at_.y(), options());
+        return;
+    }
+    // The composite is flat cells, and the layer's lock is for the paint.
+    StrokeOptions merged = options();
+    merged.lockTransparent = false;
+    merged.pixelLayer = false;
+    pixels_ = floodPixels(view()->document()->canvas(), at_.x(), at_.y(), merged);
+}
 
-CellEdit FillTool::edit() const { return plotPixels(canvas(), pixels_, colour_, options(), mirror()); }
+CellEdit FillTool::edit() const {
+    if (!view()->sampleMerged() || options().pixelLayer || options().lockTransparent)
+        return plotPixels(canvas(), pixels_, colour_, options(), mirror());
+    // The region was found in the composite, so a pixel lands in a clear
+    // cell of a cells layer over what that cell showed through to, the
+    // layers below it: the half outside the region keeps that colour, not
+    // the clear cell's black, and nothing is copied from the layers above.
+    // (A pixel layer keeps that half clear itself; under the alpha lock
+    // clear cells aren't painted.)
+    Canvas base = canvas();
+    const Document* doc = view()->document();
+    for (int y = 0; y < base.height(); ++y)
+        for (int x = 0; x < base.width(); ++x)
+            if (base.at(x, y).transparent)
+                base.at(x, y) = doc->shownBelow(x, y);
+    return plotPixels(base, pixels_, colour_, options(), mirror());
+}
+
+namespace {
+
+// What the eyedropper picks from the active layer alone: nothing on a
+// transparent cell or pixel, a pixel layer's pixel as its colour, and any
+// other cell as it shows (pickColour).
+std::optional<Color> pickLayerColour(const Document& doc, int x, int py, bool background) {
+    const Canvas& cv = doc.layerCanvas();
+    const Layer* layer = doc.active();
+    if (!layer || py < 0 || !cv.contains(x, py / 2))
+        return std::nullopt;
+    const Cell& cell = cv.at(x, py / 2);
+    if (layer->props.kind == LayerKind::Pixels) {
+        const LayerPixels p = layerPixels(cell);
+        const std::optional<std::uint8_t> half = py % 2 ? p.bottom : p.top;
+        return half ? std::optional<Color>(Color::indexed(*half)) : std::nullopt;
+    }
+    if (cell.transparent)
+        return std::nullopt;
+    return pickColour(cv, x, py, background, doc.ansi().ice);
+}
+
+} // namespace
 
 EyedropperTool::EyedropperTool(QObject* parent) : Tool(QStringLiteral("eyedropper"), tr("E&yedropper"), parent) {}
 
@@ -407,7 +456,8 @@ bool EyedropperTool::mousePress(const ToolEvent& e) {
         return false;
     const bool bg = e.button == Qt::RightButton;
     const Document* doc = view()->document();
-    if (const auto c = pickColour(doc->canvas(), e.cell.x(), e.halfRow, bg, doc->ansi().ice)) {
+    if (const auto c = view()->sampleMerged() ? pickColour(doc->canvas(), e.cell.x(), e.halfRow, bg, doc->ansi().ice)
+                                              : pickLayerColour(*doc, e.cell.x(), e.halfRow, bg)) {
         Pen pen = view()->pen();
         (bg ? pen.bg : pen.fg) = *c;
         view()->setPen(pen);

@@ -23,26 +23,118 @@ AnsiDocument blank() {
 
 } // namespace
 
-// One edit on the stack. QUndoStack::push calls redo() at once, so pushing
-// is what applies the edit.
-class EditCommand : public QUndoCommand {
+// One edit on the stack: a layer's cell delta, in its own cells.
+// QUndoStack::push calls redo() at once, so pushing is what applies the
+// edit.
+class LayerEditCommand : public QUndoCommand {
 public:
-    EditCommand(Document* doc, CellEdit edit, Cursor before, Cursor after)
-        : QUndoCommand(Document::tr("Edit")), doc_(doc), edit_(std::move(edit)), before_(before), after_(after) {}
+    LayerEditCommand(Document* doc, LayerId id, CellEdit edit, Cursor before, Cursor after)
+        : QUndoCommand(Document::tr("Edit")), doc_(doc), id_(id), edit_(std::move(edit)), before_(before),
+          after_(after) {}
 
     void redo() override {
-        doc_->apply(edit_);
+        doc_->applyLayerEdit(id_, edit_, false);
         emit doc_->cursorRequested(after_);
     }
     void undo() override {
-        doc_->apply(edit_, true);
+        doc_->applyLayerEdit(id_, edit_, true);
         emit doc_->cursorRequested(before_);
     }
 
 private:
     Document* doc_;
+    LayerId id_;
     CellEdit edit_;
     Cursor before_, after_;
+};
+
+// Adding, deleting or moving a layer. The layer keeps its id through undo
+// and redo, so the edits on the stack that name it still find it.
+class LayerStackCommand : public QUndoCommand {
+public:
+    enum class Op { Add, Remove, Move };
+
+    // Add `layer` (id 0) at `index` and make it active.
+    static LayerStackCommand* add(Document* doc, Layer layer, std::size_t index, const QString& text) {
+        auto* c = new LayerStackCommand(doc, Op::Add, text);
+        c->layer_ = std::move(layer);
+        c->index_ = index;
+        c->activeBefore_ = doc->activeLayer();
+        return c;
+    }
+    // Delete layer `id`; `activeAfter` is active once it has gone.
+    static LayerStackCommand* remove(Document* doc, LayerId id, LayerId activeAfter, const QString& text) {
+        auto* c = new LayerStackCommand(doc, Op::Remove, text);
+        c->layer_.props.id = id;
+        c->index_ = *doc->layers().indexOf(id);
+        c->activeBefore_ = doc->activeLayer();
+        c->activeAfter_ = activeAfter;
+        return c;
+    }
+    static LayerStackCommand* move(Document* doc, LayerId id, std::size_t to, const QString& text) {
+        auto* c = new LayerStackCommand(doc, Op::Move, text);
+        c->layer_.props.id = id;
+        c->from_ = *doc->layers().indexOf(id);
+        c->index_ = to;
+        return c;
+    }
+
+    LayerId layerId() const { return layer_.props.id; }
+
+    void redo() override {
+        switch (op_) {
+        case Op::Add: {
+            const LayerId id = doc_->insertLayer(layer_, index_);
+            layer_.props.id = id;
+            doc_->makeActive(id);
+            break;
+        }
+        case Op::Remove: {
+            const LayerId id = layer_.props.id;
+            layer_ = doc_->takeLayer(id);
+            doc_->makeActive(activeAfter_);
+            break;
+        }
+        case Op::Move: doc_->placeLayer(layer_.props.id, index_); break;
+        }
+    }
+    void undo() override {
+        switch (op_) {
+        case Op::Add:
+            layer_ = doc_->takeLayer(layer_.props.id);
+            doc_->makeActive(activeBefore_);
+            break;
+        case Op::Remove:
+            doc_->insertLayer(layer_, index_);
+            doc_->makeActive(activeBefore_);
+            break;
+        case Op::Move: doc_->placeLayer(layer_.props.id, from_); break;
+        }
+    }
+
+private:
+    LayerStackCommand(Document* doc, Op op, const QString& text) : QUndoCommand(text), doc_(doc), op_(op) {}
+
+    Document* doc_;
+    Op op_;
+    // The layer (Add, and Remove once done) or just its id (Move).
+    Layer layer_;
+    std::size_t index_ = 0, from_ = 0;
+    LayerId activeBefore_ = 0, activeAfter_ = 0;
+};
+
+// A layer's properties (name, visibility, alpha lock), before and after.
+class LayerPropsCommand : public QUndoCommand {
+public:
+    LayerPropsCommand(Document* doc, LayerProperties before, LayerProperties after, const QString& text)
+        : QUndoCommand(text), doc_(doc), before_(std::move(before)), after_(std::move(after)) {}
+
+    void redo() override { doc_->putProperties(after_.id, after_); }
+    void undo() override { doc_->putProperties(before_.id, before_); }
+
+private:
+    Document* doc_;
+    LayerProperties before_, after_;
 };
 
 // One format change (SAUCE, iCE, letter spacing) on the stack.
@@ -60,6 +152,7 @@ private:
 };
 
 Document::Document(QObject* parent) : QObject(parent), doc_(blank()) {
+    resetLayers(LayerStack::fromCanvas(doc_.canvas));
     connect(&undo_, &QUndoStack::cleanChanged, this, [this](bool clean) { setModified(!clean); });
 }
 
@@ -167,13 +260,21 @@ bool Document::setLetterSpacing(int px) {
 
 void Document::applyFormat(const DocumentFormat& format) {
     doc_.sauce = format.sauce;
+    const bool ice = doc_.ice != format.ice;
     doc_.ice = format.ice;
+    // iCE changes how pixel layers fit over what is under them.
+    const bool pixels = std::any_of(stack_.layers().begin(), stack_.layers().end(),
+                                    [](const Layer& l) { return l.props.kind == LayerKind::Pixels; });
+    const QRegion cells = ice && pixels ? recomposite(stack_.canvasRect()) : QRegion();
     emit formatChanged();
+    if (!cells.isEmpty())
+        emit cellsChanged(cells);
 }
 
 void Document::replace(AnsiDocument doc, const QString& path) {
     undo_.clear();
     doc_ = std::move(doc);
+    resetLayers(LayerStack::fromCanvas(doc_.canvas));
     countLostBlink_ = false;
     const Canvas& cv = doc_.canvas;
     for (int y = 0; y < cv.height() && !countLostBlink_; ++y)
@@ -181,6 +282,8 @@ void Document::replace(AnsiDocument doc, const QString& path) {
             countLostBlink_ = cv.at(x, y).lostBlink;
     path_ = path;
     emit reset();
+    emit layersChanged();
+    emit activeLayerChanged(active_);
     emit pathChanged(path_);
     setModified(false);
 }
@@ -188,9 +291,12 @@ void Document::replace(AnsiDocument doc, const QString& path) {
 void Document::clear() {
     undo_.clear();
     doc_ = blank();
+    resetLayers(LayerStack::fromCanvas(doc_.canvas));
     countLostBlink_ = false;
     path_.clear();
     emit reset();
+    emit layersChanged();
+    emit activeLayerChanged(active_);
     emit pathChanged(path_);
     setModified(false);
 }
@@ -255,22 +361,279 @@ QRegion Document::changedCells(const CellEdit& edit) {
 }
 
 bool Document::edit(const CellEdit& edit, Cursor before, Cursor after) {
-    const CellEdit e = settleLostBlink(edit);
-    if ((changedCells(e) & QRect(0, 0, doc_.canvas.width(), doc_.canvas.height())).isEmpty())
+    if (!editable())
         return false;
-    undo_.push(new EditCommand(this, e, before, after));
+    const std::optional<CellEdit> e = fitLayerEdit(*active(), settleLostBlink(edit), below(), doc_.ice);
+    if (!e || e->changes.empty())
+        return false;
+    undo_.push(new LayerEditCommand(this, active_, *e, before, after));
     return true;
 }
 
-void Document::apply(const CellEdit& edit, bool revert) {
-    const QRegion cells = changedCells(edit) & QRect(0, 0, doc_.canvas.width(), doc_.canvas.height());
-    if (cells.isEmpty())
+CellEdit Document::previewEdit(const CellEdit& edit) {
+    if (!editable())
+        return {};
+    Layer& layer = *stack_.find(active_);
+    const std::optional<CellEdit> e = fitLayerEdit(layer, settleLostBlink(edit), below(), doc_.ice);
+    if (!e)
+        return {};
+    // Applied for the moment, to read the composite, and taken off again.
+    e->apply(layer.cells);
+    CellEdit out;
+    out.changes.reserve(e->changes.size());
+    const CompositeOptions opts = compositeOptions();
+    for (const CellChange& c : e->changes) {
+        const int x = c.x + layer.props.x, y = c.y + layer.props.y;
+        if (doc_.canvas.contains(x, y))
+            out.changes.push_back({x, y, doc_.canvas.at(x, y), compositeCell(stack_, x, y, opts)});
+    }
+    e->revert(layer.cells);
+    return out;
+}
+
+// ---- layers -------------------------------------------------------------
+
+bool Document::setActiveLayer(LayerId id) {
+    if (!stack_.find(id))
+        return false;
+    if (id == active_)
+        return true;
+    emit layersAboutToChange();
+    makeActive(id);
+    return true;
+}
+
+Cell Document::blankCell() const {
+    const Layer* l = active();
+    if (l && l->props.kind != LayerKind::Pixels && stack_.indexOf(active_) == std::size_t(0))
+        return Cell{};
+    return transparentCell();
+}
+
+PastePixels Document::pastePixels() const {
+    const Layer* l = active();
+    return {l && l->props.kind == LayerKind::Pixels, doc_.ice};
+}
+
+Cell Document::shownBelow(int x, int y) const {
+    return compositeCellBelow(stack_, stack_.indexOf(active_).value_or(0), x, y, compositeOptions());
+}
+
+std::function<Cell(int, int)> Document::below() const {
+    return [this](int x, int y) { return shownBelow(x, y); };
+}
+
+bool Document::editable() const {
+    const Layer* l = active();
+    if (!l || !l->props.visible || l->props.locked)
+        return false;
+    switch (l->props.kind) {
+    case LayerKind::Cells:
+    case LayerKind::Text:
+    case LayerKind::Pixels: return true;
+    case LayerKind::Generator:
+    case LayerKind::Reference: return false;
+    }
+    return false;
+}
+
+LayerId Document::addLayer(LayerKind kind) {
+    int n = 1;
+    const auto taken = [this](const std::string& name) {
+        return std::any_of(stack_.layers().begin(), stack_.layers().end(),
+                           [&](const Layer& l) { return l.props.name == name; });
+    };
+    while (taken(tr("Layer %1").arg(n).toStdString()))
+        ++n;
+    emit layersAboutToChange();
+    const std::optional<std::size_t> at = stack_.indexOf(active_);
+    Layer layer = makeLayer(kind, stack_.width(), stack_.height(), tr("Layer %1").arg(n).toStdString());
+    auto* c = LayerStackCommand::add(this, std::move(layer), at ? *at + 1 : stack_.size(),
+                                     kind == LayerKind::Pixels ? tr("New Pixel Layer") : tr("New Cells Layer"));
+    undo_.push(c);
+    return c->layerId();
+}
+
+bool Document::removeLayer(LayerId id) {
+    const std::optional<std::size_t> at = stack_.indexOf(id);
+    if (!at || stack_.size() < 2)
+        return false;
+    emit layersAboutToChange();
+    LayerId after = active_;
+    if (id == active_)
+        after = stack_[*at > 0 ? *at - 1 : 1].props.id;
+    undo_.push(LayerStackCommand::remove(this, id, after, tr("Delete Layer")));
+    return true;
+}
+
+bool Document::moveLayer(LayerId id, std::size_t index) {
+    const std::optional<std::size_t> at = stack_.indexOf(id);
+    if (!at || stack_.empty())
+        return false;
+    index = std::min(index, stack_.size() - 1);
+    if (index == *at)
+        return false;
+    emit layersAboutToChange();
+    undo_.push(LayerStackCommand::move(this, id, index, index > *at ? tr("Raise Layer") : tr("Lower Layer")));
+    return true;
+}
+
+bool Document::setLayerProperties(LayerId id, LayerProperties props, const QString& text) {
+    const Layer* l = stack_.find(id);
+    if (!l)
+        return false;
+    const LayerProperties before = l->props;
+    props.id = id;
+    if (props == before)
+        return false;
+    // A name or the alpha lock changes no cell: a tool keeps what it holds
+    // (a drag redoes itself with the new lock).
+    LayerProperties same = props;
+    same.name = before.name;
+    same.alphaLocked = before.alphaLocked;
+    if (same != before)
+        emit layersAboutToChange();
+    undo_.push(new LayerPropsCommand(this, before, props, text));
+    return true;
+}
+
+bool Document::renameLayer(LayerId id, const QString& name) {
+    const Layer* l = stack_.find(id);
+    const QString trimmed = name.trimmed();
+    if (!l || trimmed.isEmpty())
+        return false;
+    LayerProperties p = l->props;
+    p.name = trimmed.toStdString();
+    return setLayerProperties(id, p, tr("Rename Layer"));
+}
+
+bool Document::setLayerVisible(LayerId id, bool visible) {
+    const Layer* l = stack_.find(id);
+    if (!l)
+        return false;
+    LayerProperties p = l->props;
+    p.visible = visible;
+    return setLayerProperties(id, p, visible ? tr("Show Layer") : tr("Hide Layer"));
+}
+
+bool Document::setLayerAlphaLocked(LayerId id, bool on) {
+    const Layer* l = stack_.find(id);
+    if (!l)
+        return false;
+    LayerProperties p = l->props;
+    p.alphaLocked = on;
+    return setLayerProperties(id, p, on ? tr("Alpha Lock On") : tr("Alpha Lock Off"));
+}
+
+void Document::resetLayers(LayerStack stack) {
+    stack_ = std::move(stack);
+    active_ = stack_.empty() ? 0 : stack_[0].props.id;
+    doc_.canvas = composite(stack_, compositeOptions());
+    refreshLayerCanvas();
+}
+
+void Document::refreshLayerCanvas() {
+    const Layer* l = active();
+    layerCanvas_ = l ? bw::layerCanvas(*l, stack_.width(), stack_.height()) : Canvas(stack_.width(), stack_.height());
+}
+
+QRegion Document::recomposite(CellRect rect) {
+    rect = intersect(rect, stack_.canvasRect());
+    const CompositeOptions opts = compositeOptions();
+    CellEdit diff;
+    for (int y = rect.y; y < rect.y + rect.height; ++y)
+        for (int x = rect.x; x < rect.x + rect.width; ++x) {
+            Cell& cell = doc_.canvas.at(x, y);
+            const Cell now = compositeCell(stack_, x, y, opts);
+            if (!identical(now, cell)) {
+                diff.changes.push_back({x, y, cell, now});
+                cell = now;
+            }
+        }
+    return changedCells(diff);
+}
+
+void Document::applyLayerEdit(LayerId id, const CellEdit& layerEdit, bool revert) {
+    Layer* layer = stack_.find(id);
+    if (!layer)
         return;
     if (revert)
-        edit.revert(doc_.canvas);
+        layerEdit.revert(layer->cells);
     else
-        edit.apply(doc_.canvas);
-    emit cellsChanged(cells);
+        layerEdit.apply(layer->cells);
+    const CompositeOptions opts = compositeOptions();
+    CellEdit diff;
+    for (const CellChange& c : layerEdit.changes) {
+        const int x = c.x + layer->props.x, y = c.y + layer->props.y;
+        if (!doc_.canvas.contains(x, y))
+            continue;
+        if (id == active_)
+            layerCanvas_.at(x, y) = layer->cells.at(c.x, c.y);
+        Cell& cell = doc_.canvas.at(x, y);
+        const Cell now = compositeCell(stack_, x, y, opts);
+        if (!identical(now, cell)) {
+            diff.changes.push_back({x, y, cell, now});
+            cell = now;
+        }
+    }
+    const QRegion cells = changedCells(diff);
+    if (!cells.isEmpty())
+        emit cellsChanged(cells);
+}
+
+LayerId Document::insertLayer(Layer layer, std::size_t index) {
+    const CellRect bounds = layer.bounds();
+    const LayerId id = stack_.add(std::move(layer), index);
+    const QRegion cells = recomposite(bounds);
+    emit layersChanged();
+    if (!cells.isEmpty())
+        emit cellsChanged(cells);
+    return id;
+}
+
+Layer Document::takeLayer(LayerId id) {
+    Layer layer = *stack_.remove(id);
+    const QRegion cells = recomposite(layer.bounds());
+    emit layersChanged();
+    if (!cells.isEmpty())
+        emit cellsChanged(cells);
+    return layer;
+}
+
+void Document::placeLayer(LayerId id, std::size_t index) {
+    stack_.move(id, index);
+    const QRegion cells = recomposite(stack_.find(id)->bounds());
+    emit layersChanged();
+    if (!cells.isEmpty())
+        emit cellsChanged(cells);
+}
+
+void Document::putProperties(LayerId id, const LayerProperties& props) {
+    Layer* layer = stack_.find(id);
+    if (!layer)
+        return;
+    const LayerProperties was = layer->props;
+    const CellRect before = layer->bounds();
+    layer->props = props;
+    layer->props.id = id;
+    const LayerProperties& now = layer->props;
+    // Only these change the composite (locks and the name are the tools').
+    const bool shows = was.visible != now.visible || was.kind != now.kind || was.mode != now.mode ||
+                       before != layer->bounds();
+    const QRegion cells = shows ? recomposite(unite(before, layer->bounds(), stack_.canvasRect())) : QRegion();
+    if (id == active_ && before != layer->bounds())
+        refreshLayerCanvas();
+    emit layersChanged();
+    if (!cells.isEmpty())
+        emit cellsChanged(cells);
+}
+
+void Document::makeActive(LayerId id) {
+    if (!stack_.find(id) || id == active_)
+        return;
+    active_ = id;
+    refreshLayerCanvas();
+    emit activeLayerChanged(id);
 }
 
 void Document::setModified(bool on) {

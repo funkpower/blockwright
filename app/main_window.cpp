@@ -236,6 +236,7 @@ void MainWindow::createActions() {
 
     createEditingActions(file, edit, view);
     // Filled in by createDocks.
+    layerMenu_ = menuBar()->addMenu(tr("&Layer"));
     windowMenu_ = menuBar()->addMenu(tr("&Window"));
 
     QMenu* help = menuBar()->addMenu(tr("&Help"));

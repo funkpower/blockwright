@@ -12,6 +12,8 @@
 #include "select_tool.h"
 #include "tool.h"
 
+#include "blockwright/halfblock.h"
+#include "blockwright/layer.h"
 #include "blockwright/library.h"
 #include "blockwright/render.h"
 
@@ -788,4 +790,34 @@ TEST_CASE("a bundled tree is placed on a blank canvas, moved, then committed") {
                 ++(placed.contains(x, y) ? changed : outside);
     CHECK(changed > art.width() * art.height() * 8 * 16 / 4);
     CHECK(outside == 0);
+}
+
+TEST_CASE("Save to Library on a float lifted off a pixel layer writes its pixels as they show and without blink") {
+    Fixture f;
+    Document* doc = f.w.document();
+    REQUIRE(doc->setIce(false));
+    doc->addLayer(LayerKind::Pixels);
+    // two bright pixels in one cell (stored ▀ fg 12 bg 14), and a red top pixel
+    const Cell both = pixelLayerCell(LayerPixels{LightRed, Yellow});
+    const Cell top = pixelLayerCell(LayerPixels{Red, std::nullopt});
+    REQUIRE(doc->edit(CellEdit{{{5, 0, Cell{}, both}, {6, 0, Cell{}, top}}}));
+    f.w.tools()->setActive(f.w.selectTool());
+    f.w.selectTool()->select({5, 0, 2, 1});
+    f.w.selectTool()->moveBy(0, 0);
+    REQUIRE(f.w.selectTool()->floating());
+    QString error;
+    const QString path = f.w.saveSelectionToLibrary(QStringLiteral("Pixels"), QStringLiteral("test"), {}, &error);
+    INFO(error.toStdString());
+    REQUIRE(!path.isEmpty());
+    const library::Stamp read = library::readStamp(fspath(path));
+    REQUIRE_FALSE(read.art.ice);
+    const Cell a = read.art.canvas.at(0, 0), b = read.art.canvas.at(1, 0);
+    INFO("a: ch " << int(a.ch) << " fg " << int(a.fg.paletteIndex()) << " bg " << int(a.bg.paletteIndex())
+                  << " attrs " << int(a.attrs));
+    // as the pixel layer showed it with iCE off: the bottom goes dark, nothing blinks
+    CHECK_FALSE(a.attrs & attr::Blink);
+    CHECK(halfBlocks(a, false) == HalfPair{LightRed, Brown});
+    // the half pixel is kept, over black
+    INFO("b: ch " << int(b.ch) << " fg " << int(b.fg.paletteIndex()) << " bg " << int(b.bg.paletteIndex()));
+    CHECK(halfBlocks(b, false) == HalfPair{Red, Black});
 }

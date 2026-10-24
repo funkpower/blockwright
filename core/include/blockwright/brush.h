@@ -189,9 +189,17 @@ struct StrokeOptions {
     // Empty: the whole canvas. Shared, not copied: a tool copies its options
     // into a stroke or painter on every move, and a mask is canvas-sized.
     std::shared_ptr<const Mask> selection;
-    // Leave transparent cells alone: the alpha lock, until layers have their
-    // own (PLAN §5).
+    // Leave transparent cells alone: the active layer's alpha lock
+    // (layerStrokeOptions). On a pixel layer it is per pixel: only a pixel
+    // that is set is painted. Nothing opaque is cleared either: a stroke
+    // doesn't make an opaque cell transparent, nor on a pixel layer change
+    // which pixels are set (Stroke::set).
     bool lockTransparent = false;
+    // The canvas is a pixel layer's cells (layer.h): the half-block tools
+    // write each pixel with setLayerPixel, so the other half stays as it is,
+    // set or transparent, and fill takes a transparent pixel as a colour of
+    // its own.
+    bool pixelLayer = false;
     // The document's iCE colours setting. Half-block pixels (halfblock.h)
     // read and write cells by the colours they show with it.
     bool ice = true;
@@ -239,7 +247,7 @@ public:
     bool paintable(int x, int y) const;
     // Paints a cell, at the strength of the dab that painted it, as the
     // symmetry image `image` (-1: the dab being stamped); refused (false)
-    // where it isn't paintable.
+    // where it isn't paintable or the alpha lock would clear something opaque.
     bool set(int x, int y, const Cell& c, double strength = 1.0, int image = -1);
 
     // The canvas with the stroke so far, for a live preview.

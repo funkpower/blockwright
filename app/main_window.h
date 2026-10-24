@@ -1,11 +1,11 @@
 #pragma once
 // The main window: the canvas view in a scroll area, the Toolbox and Tool
-// Options docks on the left, the 1x preview, palette and Library docks on
-// the right, the glyph bar at the bottom, the F-key glyph set in the status
-// bar, and the File, Edit, View, Colours, Glyphs, Tools, Selection, Window and
-// Help menus. File > SAUCE... and the View menu's iCE and letter-spacing
-// toggles live in main_window_format.cpp; the docks, the Window menu and the
-// saved layout in main_window_docks.cpp.
+// Options docks on the left, the 1x preview, palette, Layers and Library
+// docks on the right, the glyph bar at the bottom, the F-key glyph set in the
+// status bar, and the File, Edit, View, Colours, Glyphs, Tools, Selection,
+// Layer, Window and Help menus. File > SAUCE... and the View menu's iCE and
+// letter-spacing toggles live in main_window_format.cpp; the docks, the Layer
+// and Window menus and the saved layout in main_window_docks.cpp.
 
 #include "blockwright/canvas_renderer.h"
 
@@ -49,6 +49,7 @@ QString saveWarning(const AnsiOutput& out);
 
 class SelectTool;
 class GlyphBar;
+class LayersDock;
 class LibraryDock;
 class ToolOptions;
 class Toolbox;
@@ -71,6 +72,8 @@ public:
     QDockWidget* toolboxDock() const { return toolboxDock_; }
     GlyphBar* glyphBar() const { return glyphBar_; }
     QDockWidget* glyphBarDock() const { return glyphBarDock_; }
+    LayersDock* layersWidget() const { return layers_; }
+    QDockWidget* layersDock() const { return layersDock_; }
     // Every dock, in the Window menu's order.
     QList<QDockWidget*> docks() const;
     QLabel* glyphSetLabel() const { return glyphSetLabel_; }
@@ -175,6 +178,9 @@ private:
     QDockWidget* toolboxDock_ = nullptr;
     GlyphBar* glyphBar_ = nullptr;
     QDockWidget* glyphBarDock_ = nullptr;
+    LayersDock* layers_ = nullptr;
+    QDockWidget* layersDock_ = nullptr;
+    QMenu* layerMenu_ = nullptr;
     QMenu* windowMenu_ = nullptr;
     QHash<QString, QAction*> toolActions_;  // the Tools menu's, by tool id
     LibraryDock* library_ = nullptr;

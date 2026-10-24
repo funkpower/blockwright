@@ -420,7 +420,7 @@ TEST_CASE("a lossy save is refused unless allowed") {
     MainWindow w;
     CellEdit e;
     e.changes.push_back({0, 0, Cell{}, Cell{U'★'}});
-    w.document()->apply(e);
+    REQUIRE(w.document()->edit(e));
     QString error;
     const QString out = tmp.filePath(QStringLiteral("lossy.ans"));
     CHECK_FALSE(w.saveFile(out, &error));

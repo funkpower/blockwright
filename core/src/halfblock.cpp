@@ -1,6 +1,7 @@
 #include "blockwright/halfblock.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/layer.h"
 #include "blockwright/ramp.h"
 
 #include <algorithm>
@@ -121,7 +122,23 @@ bool PixelPainter::paintable(int x, int y) const {
         return false;
     if (options_.selection && !options_.selection->contains(x, y))
         return false;
-    return !(options_.lockTransparent && canvas_.at(x, y).transparent);
+    if (!options_.lockTransparent)
+        return true;
+    if (options_.pixelLayer) {
+        const LayerPixels p = layerPixels(canvas_.at(x, y));
+        return p.top || p.bottom;
+    }
+    return !canvas_.at(x, y).transparent;
+}
+
+bool PixelPainter::pixelPaintable(int x, int py) const {
+    const int y = cellRow(py);
+    if (!paintable(x, y))
+        return false;
+    if (!options_.pixelLayer || !options_.lockTransparent)
+        return true;
+    const LayerPixels p = layerPixels(canvas_.at(x, y));
+    return bool(bottomHalf(py) ? p.bottom : p.top);
 }
 
 bool PixelPainter::plot(int x, int py) {
@@ -137,7 +154,7 @@ bool PixelPainter::plot(int x, int py) {
 
 bool PixelPainter::plotOne(int x, int py) {
     const int y = cellRow(py);
-    if (!paintable(x, y))
+    if (!pixelPaintable(x, py))
         return false;
     cover(x, y);
     halves_[static_cast<size_t>(y - wy_) * ww_ + (x - wx_)] |= bottomHalf(py) ? 2 : 1;
@@ -176,6 +193,14 @@ void PixelPainter::cover(int x, int y) {
 
 Cell PixelPainter::painted(int x, int y, std::uint8_t halves) const {
     const Cell& c = canvas_.at(x, y);
+    if (options_.pixelLayer) {
+        Cell out = c;
+        if (halves & 1)
+            out = setLayerPixel(out, false, colour_);
+        if (halves & 2)
+            out = setLayerPixel(out, true, colour_);
+        return out;
+    }
     if (halves == 3)
         return setHalfBlocks(c, colour_, options_.ice);
     return setHalfBlock(c, halves == 2, colour_, options_.ice);
@@ -297,10 +322,16 @@ void HalfBlockStroke::addImage(long long x, long long py, bool join,
 std::vector<std::pair<int, int>> floodPixels(const Canvas& canvas, int x, int py, const StrokeOptions& options) {
     const PixelPainter area(canvas, 0, options);
     const int w = canvas.width(), h = 2 * canvas.height();
-    // the colour at a pixel, if it is a paintable pixel
-    auto colourAt = [&](int px, int ppy) -> std::optional<std::uint8_t> {
-        if (px < 0 || ppy < 0 || px >= w || ppy >= h || !area.paintable(px, cellRow(ppy)))
+    // the colour at a pixel, if it is a paintable pixel; on a pixel layer a
+    // transparent pixel is -1, a colour of its own
+    auto colourAt = [&](int px, int ppy) -> std::optional<int> {
+        if (px < 0 || ppy < 0 || px >= w || ppy >= h || !area.pixelPaintable(px, ppy))
             return std::nullopt;
+        if (options.pixelLayer) {
+            const LayerPixels p = layerPixels(canvas.at(px, cellRow(ppy)));
+            const auto& half = bottomHalf(ppy) ? p.bottom : p.top;
+            return half ? int(*half) : -1;
+        }
         const auto pair = halfBlocks(canvas.at(px, cellRow(ppy)), options.ice);
         if (!pair)
             return std::nullopt;

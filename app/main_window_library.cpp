@@ -120,8 +120,14 @@ QString MainWindow::libraryPathFor(const QString& name, bool* exists, QString* e
 
 QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& category, const QStringList& tags,
                                            QString* error, bool replace) {
-    const CellBlock cells = selectTool_->floating() ? selectTool_->floatingBlock()
-                                                    : copyBlock(doc_.canvas(), view_->selection());
+    CellBlock cells = selectTool_->floating() ? selectTool_->floatingBlock()
+                                              : copyBlock(doc_.canvas(), view_->selection());
+    if (cells.pixelLayer)
+        // a float lifted off a pixel layer: its pixels as a paste onto blank
+        // cells writes them (pasteCell), with the document's iCE setting
+        for (Cell& c : cells.cells)
+            if (const auto p = pasteCell(c, Cell{}, PasteMode::Normal, {false, doc_.ansi().ice}, true))
+                c = *p;
     if (cells.empty()) {
         *error = tr("nothing is selected");
         return {};

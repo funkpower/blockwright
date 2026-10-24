@@ -13,6 +13,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
+#include "blockwright/layer.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
 
@@ -37,6 +38,7 @@
 #include <algorithm>
 #include <random>
 #include <set>
+#include <string>
 #include <utility>
 
 using namespace bw;
@@ -325,19 +327,23 @@ TEST_CASE("the alpha lock leaves transparent cells alone") {
         INFO(id);
         MainWindow w;
         CanvasView* v = w.canvasView();
-        Cell clear;
-        clear.transparent = true;
-        REQUIRE(w.document()->edit(CellEdit{{{1, 0, Cell{}, clear}}}));
+        Document* doc = w.document();
+        // a cells layer over the background, opaque at 0 and 2, clear at 1
+        doc->addLayer(LayerKind::Cells);
+        const Cell clear = transparentCell();
+        REQUIRE(doc->edit(CellEdit{{{0, 0, clear, Cell{}}, {2, 0, clear, Cell{}}}}));
         use(w, id);
         v->setForeground(LightGreen);
         w.toolOptions()->alphaLockBox()->setChecked(true);
+        CHECK(doc->active()->props.alphaLocked);
         drag(v, {{0, 0}, {2, 0}});
-        CHECK(at(w, 1, 0) == clear);
-        CHECK_FALSE(at(w, 0, 0) == Cell{});
-        CHECK_FALSE(at(w, 2, 0) == Cell{});
+        CHECK(doc->layerCanvas().at(1, 0) == clear);
+        CHECK_FALSE(doc->layerCanvas().at(0, 0) == Cell{});
+        CHECK_FALSE(doc->layerCanvas().at(2, 0) == Cell{});
         w.toolOptions()->alphaLockBox()->setChecked(false);
         drag(v, {{1, 0}});
-        CHECK_FALSE(at(w, 1, 0) == clear);
+        // colorize recolours what is there, and a hole has nothing to recolour
+        CHECK((doc->layerCanvas().at(1, 0) == clear) == (std::string(id) == "colorize"));
     }
 }
 

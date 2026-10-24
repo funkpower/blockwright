@@ -109,7 +109,8 @@ Layer bake(Layer layer) {
 }
 
 StrokeOptions layerStrokeOptions(const Layer& layer, StrokeOptions base) {
-    base.lockTransparent = layer.props.alphaLocked && layer.props.kind != LayerKind::Pixels;
+    base.lockTransparent = layer.props.alphaLocked;
+    base.pixelLayer = layer.props.kind == LayerKind::Pixels;
     return base;
 }
 
@@ -169,6 +170,27 @@ Cell setLayerPixel(const Cell& cell, bool bottom, std::optional<std::uint8_t> co
     return pixelLayerCell(p);
 }
 
+Cell halfPixelOver(const Cell& half, const Cell& under, bool pixelLayer, bool ice) {
+    const LayerPixels p = layerPixels(half);
+    Cell out = under;
+    // as PixelPainter::painted plots a pixel
+    const bool layerCell = pixelLayer || under.transparent;
+    if (p.top)
+        out = layerCell ? setLayerPixel(out, false, p.top) : setHalfBlock(out, false, *p.top, ice);
+    if (p.bottom)
+        out = layerCell ? setLayerPixel(out, true, p.bottom) : setHalfBlock(out, true, *p.bottom, ice);
+    return out;
+}
+
+Cell pixelCellOnCells(const Cell& cell, bool ice) {
+    if (const auto pair = halfBlocks(cell, true))
+        return halfBlockCell(*pair, ice);
+    Cell c = cell;
+    if (!ice)
+        c.bg = Color::indexed(c.bg.paletteIndex() & 7);
+    return c;
+}
+
 CellEdit toLayerEdit(const Layer& layer, const CellEdit& canvasEdit) {
     CellEdit out;
     // a cell named twice keeps its first place and takes its last change
@@ -186,6 +208,62 @@ CellEdit toLayerEdit(const Layer& layer, const CellEdit& canvasEdit) {
     }
     std::erase_if(out.changes, [](const CellChange& c) { return identical(c.after, c.before); });
     out.moves = canvasEdit.moves;
+    return out;
+}
+
+std::optional<CellEdit> fitLayerEdit(const Layer& layer, const CellEdit& canvasEdit,
+                                     const std::function<Cell(int, int)>& below, bool ice) {
+    CellEdit e = toLayerEdit(layer, canvasEdit);
+    const bool pixels = layer.props.kind == LayerKind::Pixels;
+    for (CellChange& c : e.changes) {
+        if (pixels) {
+            if (!c.after.transparent && !halfBlocks(c.after, true))
+                return std::nullopt;
+            c.after = pixelLayerCell(layerPixels(c.after));
+        } else if (c.after.transparent) {
+            const LayerPixels half = layerPixels(c.after);
+            if (half.top || half.bottom) {
+                // a half pixel (pasted from a pixel layer) over what the
+                // layers below show, as its clear half showed them
+                const Cell under = below ? below(c.x + layer.props.x, c.y + layer.props.y) : Cell{};
+                c.after = halfPixelOver(c.after, under, false, ice);
+            } else {
+                c.after = transparentCell();
+            }
+        }
+    }
+    std::erase_if(e.changes, [](const CellChange& c) { return identical(c.after, c.before); });
+    if (layer.props.alphaLocked) {
+        // what is opaque is frozen both ways: a cell (a pixel, on a pixel
+        // layer) is neither cleared nor painted where it was clear
+        const auto clears = [pixels](const CellChange& c) {
+            if (!pixels)
+                return c.after.transparent && !c.before.transparent;
+            const LayerPixels a = layerPixels(c.after), b = layerPixels(c.before);
+            return (b.top && !a.top) || (b.bottom && !a.bottom);
+        };
+        const auto frozen = [pixels](const CellChange& c) {
+            if (!pixels)
+                return c.after.transparent != c.before.transparent;
+            const LayerPixels a = layerPixels(c.after), b = layerPixels(c.before);
+            return a.top.has_value() != b.top.has_value() || a.bottom.has_value() != b.bottom.has_value();
+        };
+        // a move keeps what it lifts only by copying it: refused whole
+        if (e.moves && std::any_of(e.changes.begin(), e.changes.end(), clears))
+            return std::nullopt;
+        std::erase_if(e.changes, frozen);
+    }
+    return e;
+}
+
+Canvas layerCanvas(const Layer& layer, int width, int height) {
+    Canvas out(width, height);
+    const Cell t = transparentCell();
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            const Cell* c = layer.cellAt(x, y);
+            out.at(x, y) = c ? *c : t;
+        }
     return out;
 }
 

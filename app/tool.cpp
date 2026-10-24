@@ -28,10 +28,9 @@ void EditPreview::clear() {
 void EditPreview::set(const CanvasView& view, const CellEdit& edit) {
     clear();
     const Canvas& cv = view.document()->canvas();
-    changes_.reserve(edit.changes.size());
-    for (const CellChange& c : edit.changes)
-        if (cv.contains(c.x, c.y))
-            changes_.push_back(c);
+    // The tool's edit is on the active layer; what it shows is the
+    // composite with it applied.
+    changes_ = view.document()->previewEdit(edit).changes;
     const auto rowMajor = [](const CellChange& a, const CellChange& b) {
         return a.y != b.y ? a.y < b.y : a.x < b.x;
     };

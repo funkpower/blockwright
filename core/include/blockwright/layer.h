@@ -38,6 +38,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -130,10 +131,10 @@ Layer makeLayer(LayerKind kind, int width, int height, std::string name = {}, in
 Layer bake(Layer layer);
 
 // The stroke options a tool editing this layer uses: `base` with the
-// layer's alpha lock as the transparent lock, for cells and text layers. A
-// pixel layer's transparency is per pixel (a cell with one pixel set is a
-// transparent cell), so its stroke options never lock transparent cells:
-// a tool writing a pixel layer checks each pixel with layerPixelPaintable.
+// layer's alpha lock as the transparent lock, and for a pixel layer
+// StrokeOptions::pixelLayer, so the half-block tools write its pixels with
+// setLayerPixel and read the lock per pixel (layerPixelPaintable): a cell
+// with one pixel set is a transparent cell whose set half is paintable.
 StrokeOptions layerStrokeOptions(const Layer& layer, StrokeOptions base = {});
 // Whether a tool may write the layer's cell at canvas cell (cx, cy): in the
 // layer, the layer not locked, and under the alpha lock an opaque cell (a
@@ -160,6 +161,25 @@ Cell pixelLayerCell(LayerPixels pixels);
 // The cell with one half set to `colour`, or made transparent when it is
 // empty; the other half is kept.
 Cell setLayerPixel(const Cell& cell, bool bottom, std::optional<std::uint8_t> colour);
+// A half pixel (`half`: a transparent cell holding one, as a copy of a pixel
+// layer holds it) plotted over `under` as the half-block tools plot that
+// pixel there. On a pixel layer (`pixelLayer`) it is setLayerPixel, the
+// cells read with iCE on as the layer stores them. On a cells or text layer
+// it is setHalfBlock with the document's iCE setting `ice`: `under` is read
+// by the colours it shows (a blinking letter's bright background with iCE
+// on), and with iCE off a bright colour that would share the cell with a
+// different bright one is written dark, so no bright background is written
+// (it would save as blink). Over a hole it stays the half pixel either way.
+Cell halfPixelOver(const Cell& half, const Cell& under, bool pixelLayer, bool ice);
+// A pixel layer's opaque cell (both halves set, as a copy of the layer
+// holds it) written onto a cells or text layer: the whole cell, as the
+// compositor shows the pixels with the document's iCE setting `ice`
+// (halfBlockCell, which the half-block tools write with too). With iCE off
+// two different bright colours can't share the cell, so the bottom one is
+// written dark rather than as a bright background (it would save as
+// blink). A copy turned a quarter (a ▌ or ▐ that holds no pixels) keeps its
+// glyph, its background dark with iCE off: a pixel never blinks.
+Cell pixelCellOnCells(const Cell& cell, bool ice);
 
 // ---- edits -----------------------------------------------------------------
 
@@ -172,6 +192,32 @@ Cell setLayerPixel(const Cell& cell, bool bottom, std::optional<std::uint8_t> co
 // the layer exactly. The tools work in canvas cells; the layer's undo
 // command applies the result to Layer::cells.
 CellEdit toLayerEdit(const Layer& layer, const CellEdit& canvasEdit);
+// A tool's canvas-cell edit as the layer can hold it: toLayerEdit, with
+// each cell written as the layer's kind stores it. In a cells or text layer
+// every transparent cell is the plain transparentCell() (a transparent
+// cell shows nothing, whatever glyph it carries), except one that holds a
+// half pixel (pasted from a pixel layer): that is plotted over what the
+// layers below show at its canvas cell, `below(x, y)` (the ground, a blank
+// cell, when `below` is empty), with the document's iCE setting `ice`
+// (halfPixelOver), an opaque cell. In a pixel layer a cell is stored as its
+// pixels (pixelLayerCell of layerPixels): a pixel cell as halfblock.h reads
+// it with iCE on, or a transparent cell; an edit that writes anything else
+// there (a glyph, a shade, a half block turned on its side) can't be held,
+// and comes back empty. Changes that then leave the layer's cell as it is
+// are dropped, and so, on an alpha-locked layer, are changes that would
+// clear an opaque cell or make a transparent one opaque (on a pixel layer:
+// change which of its two pixels are set), whatever tool made them. Under
+// the lock an edit that moves cells (CellEdit::moves: a selection moved,
+// flipped or turned, its lift and stamp one edit) and would clear a cell
+// comes back empty instead: the lock would keep what it lifts and drop
+// what lands on clear cells, copying one glyph and losing another. A paste
+// clears nothing, so it lands on the opaque cells and not on the clear ones.
+std::optional<CellEdit> fitLayerEdit(const Layer& layer, const CellEdit& canvasEdit,
+                                     const std::function<Cell(int, int)>& below = {}, bool ice = true);
+// The layer's cells as a canvas of width by height cells, each at its
+// place on the canvas (its offset), and transparent cells where the layer
+// has none: what the tools read when they edit the layer.
+Canvas layerCanvas(const Layer& layer, int width, int height);
 // A layer edit's changes in canvas cells (moved by the offset), for the
 // region to recomposite.
 CellEdit toCanvasEdit(const Layer& layer, const CellEdit& layerEdit);

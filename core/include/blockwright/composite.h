@@ -80,6 +80,11 @@ void recomposite(const LayerStack& stack, Canvas& out, CellRect rect, const Comp
 
 // One composited cell; the ground off the canvas.
 Cell compositeCell(const LayerStack& stack, int x, int y, const CompositeOptions& options = {});
+// One cell composited from the visible layers under the layer at `index`
+// (the bottom `index` layers), the ground if there are none: what a clear
+// cell of that layer shows through to.
+Cell compositeCellBelow(const LayerStack& stack, std::size_t index, int x, int y,
+                        const CompositeOptions& options = {});
 
 // What exports write: the visible composite. (LayerStack::fromCanvas of it
 // is the stack flattened to one layer.)

@@ -74,10 +74,13 @@ protected:
     // Forgets the drag.
     virtual void reset() = 0;
 
+    // The active layer's cells (Document::layerCanvas), which the tools
+    // edit.
     const Canvas& canvas() const;
-    // What a stroke may paint (the selection, if any) and the document's
-    // iCE setting, and whether to mirror: as they were at the press, or at
-    // the last settingsChanged.
+    // What a stroke may paint (the selection, if any, and the active
+    // layer's alpha lock, layerStrokeOptions) and the document's iCE
+    // setting, and whether to mirror: as they were at the press, or at the
+    // last settingsChanged.
     const StrokeOptions& options() const { return options_; }
     bool mirror() const { return mirror_; }
     // The view's brush settings, as they were at the press or the last
@@ -289,7 +292,12 @@ private:
 
 // Fill: floods the 4-connected half-block pixels of the colour under the
 // press (halfblock.h, floodPixels), once, at the press; it lands on
-// release wherever the pointer is.
+// release wherever the pointer is. It floods the active layer, or with
+// sample merged (CanvasView::sampleMerged) the composite, and paints the
+// region into the active layer either way. Sample merged, a pixel painted
+// into a clear cell of a cells layer keeps the other half as the layers
+// below the active one show it (Document::shownBelow), so only the region
+// changes and nothing from the layers above is copied into the layer.
 class FillTool : public DragTool {
     Q_OBJECT
 public:
@@ -311,7 +319,9 @@ private:
 // Eyedropper: left picks the colour under the pointer into the pen's
 // foreground, right into its background. On a half-block pixel it is the
 // half's colour as it shows under the document's iCE setting, elsewhere
-// the cell's foreground or the background it shows.
+// the cell's foreground or the background it shows. It picks from the
+// active layer, where a transparent cell or pixel picks nothing, or with
+// sample merged (CanvasView::sampleMerged) from the composite.
 class EyedropperTool : public Tool {
     Q_OBJECT
 public:

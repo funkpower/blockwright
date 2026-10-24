@@ -88,8 +88,12 @@ public:
 
     const Canvas& canvas() const { return canvas_; }
     // Whether the cell may be painted: on the canvas, in the selection and
-    // not transparent under the lock.
+    // not transparent under the lock (on a pixel layer, StrokeOptions::
+    // pixelLayer: with a pixel set).
     bool paintable(int x, int y) const;
+    // Whether pixel (x, py) may be painted: its cell is paintable, and on a
+    // pixel layer under the lock the pixel itself is set.
+    bool pixelPaintable(int x, int py) const;
     // Plots one pixel in the painter's colour, and its images under the
     // symmetry; false where none is paintable.
     bool plot(int x, int py);
@@ -182,10 +186,12 @@ private:
 
 // Fill: the 4-connected pixels of the same colour as (x, py), as they show
 // with the options' iCE setting, through pixel cells only (text and shades
-// bound a region) and paintable cells only (the selection bounds it too),
-// set to `colour`, as one edit. Empty when (x, py) is off the canvas, not
-// in a pixel cell or not paintable. In mirror mode the filled pixels are
-// plotted mirrored too (the region's mirror image, not a second fill).
+// bound a region) and paintable pixels only (the selection bounds it too),
+// set to `colour`, as one edit. On a pixel layer (StrokeOptions::pixelLayer)
+// transparent pixels are a region of their own. Empty when (x, py) is off
+// the canvas, not in a pixel cell or not paintable. In mirror mode the
+// filled pixels are plotted mirrored too (the region's mirror image, not a
+// second fill).
 std::vector<std::pair<int, int>> floodPixels(const Canvas& canvas, int x, int py, const StrokeOptions& options = {});
 CellEdit fillPixels(const Canvas& canvas, int x, int py, std::uint8_t colour, const StrokeOptions& options = {},
                     bool mirror = false);

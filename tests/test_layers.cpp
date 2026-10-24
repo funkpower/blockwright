@@ -2,11 +2,17 @@
 // (PLAN §5).
 
 #include "blockwright/layer.h"
+#include "blockwright/ansi.h"
+#include "blockwright/brush.h"
+#include "blockwright/brushes/drawing.h"
+#include "blockwright/edit.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/ramp.h"
+#include "blockwright/selection.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <climits>
 
 using namespace bw;
@@ -206,9 +212,10 @@ TEST_CASE("the alpha lock on a pixel layer is per pixel", "[layers][pixels]") {
     CHECK_FALSE(layerPixelPaintable(px, 2, 0));
     CHECK(layerPaintable(px, 0, 0));  // the cell has a pixel to paint
     CHECK_FALSE(layerPaintable(px, 2, 0));
-    // the stroke options leave pixel layers to the per-pixel check, so a
-    // painter reading them doesn't refuse a half-set cell's set half
-    CHECK_FALSE(layerStrokeOptions(px).lockTransparent);
+    // the stroke options carry the lock and say the layer holds pixels, so
+    // a painter locks per pixel and doesn't refuse a half-set cell's set half
+    CHECK(layerStrokeOptions(px).lockTransparent);
+    CHECK(layerStrokeOptions(px).pixelLayer);
     px.props.alphaLocked = false;
     CHECK(layerPixelPaintable(px, 0, 1));
     CHECK(layerPixelPaintable(px, 2, 0));
@@ -350,4 +357,366 @@ TEST_CASE("rectangles intersect and unite", "[layers]") {
     CHECK(unite({INT_MIN, 0, 1, 1}, {INT_MAX - 1, 0, 1, 1}, {0, 0, 4, 4}).empty());
     CHECK(unite({-3, -3, 5, 5}, {3, 3, 5, 5}, {0, 0, 4, 4}) == CellRect{0, 0, 4, 4});
     CHECK(intersect({-3, 0, 5, 1}, {0, 0, 10, 1}) == CellRect{0, 0, 2, 1});
+}
+
+// ---- editing a layer (Phase 3b) --------------------------------------------
+
+namespace {
+
+Cell glyphCell(char32_t ch, std::uint8_t fg = White, std::uint8_t bg = Black) {
+    Cell c;
+    c.ch = ch;
+    c.fg = Color::indexed(fg);
+    c.bg = Color::indexed(bg);
+    return c;
+}
+
+} // namespace
+
+TEST_CASE("a cells layer stores every transparent cell as the plain one", "[layers]") {
+    const Layer l = makeLayer(LayerKind::Cells, 3, 1);
+    Cell odd = glyphCell(U'x', Red);
+    odd.transparent = true;
+    const auto e = fitLayerEdit(l, CellEdit{{{0, 0, Cell{}, odd}, {1, 0, Cell{}, glyphCell(U'a')}}});
+    REQUIRE(e);
+    // the odd transparent cell is the layer's own cell already: dropped
+    REQUIRE(e->changes.size() == 1);
+    CHECK(e->changes[0].x == 1);
+    CHECK(e->changes[0].before == transparentCell());
+    CHECK(e->changes[0].after == glyphCell(U'a'));
+}
+
+TEST_CASE("a pixel layer takes pixels and refuses glyphs", "[layers][pixels]") {
+    const Layer px = makeLayer(LayerKind::Pixels, 3, 1);
+    // a half block written by a painter is stored as its pixels
+    const auto e = fitLayerEdit(px, CellEdit{{{0, 0, Cell{}, glyphCell(kUpperHalf, Red, Blue)}}});
+    REQUIRE(e);
+    REQUIRE(e->changes.size() == 1);
+    CHECK(layerPixels(e->changes[0].after) == LayerPixels{Red, Blue});
+    // a half pixel (transparent, one half set) is kept as it is
+    const Cell half = setLayerPixel(transparentCell(), true, Yellow);
+    const auto h = fitLayerEdit(px, CellEdit{{{1, 0, Cell{}, half}}});
+    REQUIRE(h);
+    CHECK(layerPixels(h->changes[0].after) == LayerPixels{std::nullopt, Yellow});
+    // a shade, a letter or a sideways half block can't be held
+    CHECK_FALSE(fitLayerEdit(px, CellEdit{{{0, 0, Cell{}, glyphCell(kShadeMedium)}}}));
+    CHECK_FALSE(fitLayerEdit(px, CellEdit{{{0, 0, Cell{}, glyphCell(U'a')}}}));
+    CHECK_FALSE(fitLayerEdit(px, CellEdit{{{0, 0, Cell{}, glyphCell(U'▌')}}}));
+    // erasing to a transparent cell is fine
+    const auto erase = fitLayerEdit(px, CellEdit{{{2, 0, Cell{}, transparentCell()}}});
+    REQUIRE(erase);
+    CHECK(erase->empty());
+}
+
+TEST_CASE("a half pixel on a cells layer goes over what shows below it", "[layers][pixels]") {
+    Layer l = makeLayer(LayerKind::Cells, 3, 1);
+    l.props.x = 1;
+    const Cell half = setLayerPixel(transparentCell(), false, Red);
+    // `below` is asked for the canvas cell, here the layer's offset plus 1
+    std::vector<std::pair<int, int>> asked;
+    const auto blue = [&](int x, int y) {
+        asked.emplace_back(x, y);
+        return pixelLayerCell({Blue, Blue});
+    };
+    const auto e = fitLayerEdit(l, CellEdit{{{2, 0, Cell{}, half}}}, blue);
+    REQUIRE(e);
+    REQUIRE(e->changes.size() == 1);
+    CHECK(asked == std::vector<std::pair<int, int>>{{2, 0}});
+    CHECK_FALSE(e->changes[0].after.transparent);
+    CHECK(layerPixels(e->changes[0].after) == LayerPixels{Red, Blue});
+    // with nothing below, over the blank ground
+    const auto ground = fitLayerEdit(l, CellEdit{{{2, 0, Cell{}, half}}});
+    REQUIRE(ground);
+    CHECK(layerPixels(ground->changes[0].after) == LayerPixels{Red, Black});
+    // a hole is still the plain transparent cell, and below isn't asked
+    asked.clear();
+    Cell hole = glyphCell(U'x', Red);
+    hole.transparent = true;
+    l.cells.at(0, 0) = glyphCell(U'a');
+    const auto cleared = fitLayerEdit(l, CellEdit{{{1, 0, Cell{}, hole}}}, blue);
+    REQUIRE(cleared);
+    CHECK(cleared->changes[0].after == transparentCell());
+    CHECK(asked.empty());
+}
+
+TEST_CASE("an alpha-locked layer keeps every edit off its transparency", "[layers][pixels]") {
+    Layer l = makeLayer(LayerKind::Cells, 3, 1);
+    l.cells.at(0, 0) = glyphCell(U'a');
+    l.props.alphaLocked = true;
+    const auto e = fitLayerEdit(l, CellEdit{{{0, 0, Cell{}, transparentCell()},
+                                             {1, 0, Cell{}, glyphCell(U'b')},
+                                             {2, 0, Cell{}, setLayerPixel(transparentCell(), false, Red)}}});
+    REQUIRE(e);
+    CHECK(e->empty());
+    // opaque over opaque goes through
+    const auto recolour = fitLayerEdit(l, CellEdit{{{0, 0, Cell{}, glyphCell(U'a', Red)}}});
+    REQUIRE(recolour);
+    REQUIRE(recolour->changes.size() == 1);
+    CHECK(recolour->changes[0].after == glyphCell(U'a', Red));
+
+    // a pixel layer: per pixel
+    Layer px = makeLayer(LayerKind::Pixels, 2, 1);
+    px.cells.at(0, 0) = pixelLayerCell({Blue, std::nullopt});
+    px.props.alphaLocked = true;
+    const auto p = fitLayerEdit(px, CellEdit{{{0, 0, Cell{}, pixelLayerCell({Red, std::nullopt})},
+                                              {1, 0, Cell{}, pixelLayerCell({Red, std::nullopt})}}});
+    REQUIRE(p);
+    REQUIRE(p->changes.size() == 1);  // the set pixel repainted, the clear cell left
+    CHECK(layerPixels(p->changes[0].after) == LayerPixels{Red, std::nullopt});
+    const auto both = fitLayerEdit(px, CellEdit{{{0, 0, Cell{}, pixelLayerCell({Red, Red})}}});
+    REQUIRE(both);
+    CHECK(both->empty());
+    const auto clear = fitLayerEdit(px, CellEdit{{{0, 0, Cell{}, transparentCell()}}});
+    REQUIRE(clear);
+    CHECK(clear->empty());
+}
+
+TEST_CASE("a layer's canvas is its cells in place, transparent round them", "[layers]") {
+    Layer l = makeLayer(LayerKind::Cells, 2, 2, "", 1, 1);
+    l.cells.at(0, 0) = glyphCell(U'a');
+    l.cells.at(1, 1) = glyphCell(U'b');
+    const Canvas c = layerCanvas(l, 4, 3);
+    CHECK(c.width() == 4);
+    CHECK(c.height() == 3);
+    CHECK(c.at(1, 1) == glyphCell(U'a'));
+    CHECK(c.at(2, 2) == glyphCell(U'b'));
+    CHECK(c.at(2, 1) == transparentCell());
+    CHECK(c.at(0, 0) == transparentCell());
+    CHECK(c.at(3, 2) == transparentCell());
+}
+
+TEST_CASE("painting a pixel layer sets one pixel and keeps the other clear", "[layers][pixels]") {
+    Layer px = makeLayer(LayerKind::Pixels, 3, 2);
+    const Canvas cv = layerCanvas(px, 3, 2);
+    const CellEdit e = plotPixels(cv, {{0, 0}, {1, 3}}, LightGreen, layerStrokeOptions(px));
+    const auto fit = fitLayerEdit(px, e);
+    REQUIRE(fit);
+    fit->apply(px.cells);
+    CHECK(layerPixels(px.cells.at(0, 0)) == LayerPixels{LightGreen, std::nullopt});
+    CHECK(layerPixels(px.cells.at(1, 1)) == LayerPixels{std::nullopt, LightGreen});
+    CHECK(px.cells.at(0, 0).transparent);
+    CHECK(px.cells.at(2, 0) == transparentCell());
+
+    // under the alpha lock only the set pixels take paint
+    px.props.alphaLocked = true;
+    const Canvas locked = layerCanvas(px, 3, 2);
+    const CellEdit l = plotPixels(locked, {{0, 0}, {0, 1}, {2, 0}}, Red, layerStrokeOptions(px));
+    const auto lf = fitLayerEdit(px, l);
+    REQUIRE(lf);
+    lf->apply(px.cells);
+    CHECK(layerPixels(px.cells.at(0, 0)) == LayerPixels{Red, std::nullopt});
+    CHECK(px.cells.at(2, 0) == transparentCell());
+}
+
+TEST_CASE("a fill on a pixel layer fills the clear pixels as a region", "[layers][pixels]") {
+    // a 3x1 layer: a bar of set pixels down the middle column splits it
+    Layer px = makeLayer(LayerKind::Pixels, 3, 1);
+    px.cells.at(1, 0) = pixelLayerCell({Blue, Blue});
+    const Canvas cv = layerCanvas(px, 3, 1);
+    const StrokeOptions o = layerStrokeOptions(px);
+    auto region = floodPixels(cv, 0, 0, o);
+    std::sort(region.begin(), region.end());
+    CHECK(region == std::vector<std::pair<int, int>>{{0, 0}, {0, 1}});
+    auto bar = floodPixels(cv, 1, 1, o);
+    std::sort(bar.begin(), bar.end());
+    CHECK(bar == std::vector<std::pair<int, int>>{{1, 0}, {1, 1}});
+}
+
+TEST_CASE("erasing leaves the cell it is given", "[layers][edit]") {
+    Canvas c(3, 1);
+    c.at(0, 0) = glyphCell(U'a');
+    c.at(1, 0) = glyphCell(U'b');
+    const Cell clear = transparentCell();
+    const EditResult del = deleteCell(c, {0, 0}, clear);
+    REQUIRE(del.edit.changes.size() == 1);
+    CHECK(del.edit.changes[0].after == clear);
+    const EditResult back = backspace(c, {2, 0}, clear);
+    REQUIRE(back.edit.changes.size() == 1);
+    CHECK(back.edit.changes[0].x == 1);
+    CHECK(back.edit.changes[0].after == clear);
+    // the default is a blank cell, as before layers
+    CHECK(deleteCell(c, {0, 0}).edit.changes[0].after == Cell{});
+}
+
+TEST_CASE("selections clear to the cell given and copy holes as transparent cells", "[layers][selection]") {
+    Canvas c(3, 1);
+    c.at(0, 0) = glyphCell(U'a');
+    c.at(1, 0) = glyphCell(U'b');
+    const CellEdit cleared = clearSelection(c, Selection(CellRect{0, 0, 2, 1}), transparentCell());
+    REQUIRE(cleared.changes.size() == 2);
+    for (const CellChange& ch : cleared.changes)
+        CHECK(ch.after == transparentCell());
+    const CellEdit plain = clearSelection(c, Selection(CellRect{0, 0, 1, 1}));
+    CHECK(plain.changes[0].after == Cell{});
+}
+
+TEST_CASE("a pasted half pixel writes, a hole doesn't", "[layers][selection][pixels]") {
+    const Cell under = glyphCell(U'a');
+    const Cell half = setLayerPixel(transparentCell(), false, Red);
+    // over a letter it replaces it, the letter's background below
+    CHECK(pasteCell(half, under, PasteMode::Normal) == pixelLayerCell({Red, under.bg.paletteIndex()}));
+    CHECK(pasteCell(half, under, PasteMode::Under) == std::nullopt);  // the cell under isn't blank
+    CHECK_FALSE(pasteCell(half, under, PasteMode::Transparent));
+    CHECK_FALSE(pasteCell(transparentCell(), under, PasteMode::Normal));
+    // over a hole it is the half pixel alone
+    CHECK(pasteCell(half, transparentCell(), PasteMode::Normal) == half);
+    CHECK(pasteCell(half, transparentCell(), PasteMode::Under) == half);
+}
+
+TEST_CASE("a pasted half pixel keeps the pixel under its clear half", "[layers][selection][pixels]") {
+    const Cell top = setLayerPixel(transparentCell(), false, Red);
+    const Cell bottom = setLayerPixel(transparentCell(), true, Yellow);
+    const Cell blue = pixelLayerCell({Blue, Blue});
+    CHECK(layerPixels(*pasteCell(top, blue, PasteMode::Normal)) == LayerPixels{Red, Blue});
+    CHECK(layerPixels(*pasteCell(bottom, blue, PasteMode::Normal)) == LayerPixels{Blue, Yellow});
+    // over another half pixel the two make a whole cell
+    CHECK(layerPixels(*pasteCell(top, bottom, PasteMode::Normal)) == LayerPixels{Red, Yellow});
+    CHECK(layerPixels(*pasteCell(top, top, PasteMode::Normal)) == LayerPixels{Red, std::nullopt});
+    // a blank cell under it is pixels too (black ones): Under writes into it
+    const auto under = pasteCell(top, Cell{}, PasteMode::Under);
+    REQUIRE(under);
+    CHECK_FALSE(under->transparent);
+    CHECK(layerPixels(*under) == LayerPixels{Red, Black});
+    // a whole pixel cell replaces the cell under it, as any opaque cell does
+    CHECK(pasteCell(pixelLayerCell({Red, Red}), blue, PasteMode::Normal) == pixelLayerCell({Red, Red}));
+}
+
+TEST_CASE("an opaque pixel cell pasted onto a cells layer is written as it shows, under the iCE setting",
+          "[layers][selection][pixels]") {
+    // light red over yellow, as a pixel layer stores it: ▀ fg 12 bg 14
+    const Cell both = pixelLayerCell({LightRed, Yellow});
+    REQUIRE(both.bg.paletteIndex() == Yellow);
+    const Cell letter = glyphCell(U'a');
+    const PastePixels off{false, false}, on{false, true};
+    // iCE off: as the compositor shows it, the bottom dark, so no blink
+    const auto dark = pasteCell(both, letter, PasteMode::Normal, off, true);
+    REQUIRE(dark);
+    CHECK(*dark == halfBlockCell({LightRed, Yellow}, false));
+    CHECK(dark->bg.paletteIndex() < 8);
+    CHECK_FALSE(iceCell(*dark, false).attrs & attr::Blink);
+    // over a hole (a clear cell of an upper layer) it is the same whole cell
+    CHECK(pasteCell(both, transparentCell(), PasteMode::Normal, off, true) == dark);
+    // iCE on, or onto a pixel layer: as it is stored
+    CHECK(pasteCell(both, letter, PasteMode::Normal, on, true) == both);
+    CHECK(pasteCell(both, letter, PasteMode::Normal, PastePixels{true, false}, true) == both);
+    // a cell not from a pixel layer is written as it is
+    CHECK(pasteCell(both, letter, PasteMode::Normal, off) == both);
+    // turned a quarter it holds no pixels: the glyph stays, the background goes dark
+    const Cell turned{U'▐', Color::indexed(LightRed), Color::indexed(Yellow), 0, false};
+    const auto t = pasteCell(turned, letter, PasteMode::Normal, off, true);
+    REQUIRE(t);
+    CHECK(t->ch == U'▐');
+    CHECK(t->fg.paletteIndex() == LightRed);
+    CHECK(t->bg.paletteIndex() == Brown);
+    // a block keeps the mark through flips and turns
+    CellBlock b(1, 1);
+    b.at(0, 0) = both;
+    b.pixelLayer = true;
+    CHECK(transformed(b, Transform::FlipVertical).pixelLayer);
+    CHECK(transformed(b, Transform::RotateClockwise).pixelLayer);
+}
+
+TEST_CASE("a pasted half pixel is plotted as the half-block tools plot it, under the iCE setting",
+          "[layers][selection][pixels]") {
+    const Cell top = setLayerPixel(transparentCell(), false, LightRed);
+    // a yellow bottom pixel on a cells layer: ▄ yellow on black
+    const Cell yellow = halfBlockCell({Black, Yellow}, false);
+    // iCE off: the bright red would need a bright background, so it goes dark
+    const PastePixels off{false, false};
+    const auto dark = pasteCell(top, yellow, PasteMode::Normal, off);
+    REQUIRE(dark);
+    CHECK(*dark == setHalfBlock(yellow, false, LightRed, false));
+    CHECK(dark->bg.paletteIndex() < 8);
+    CHECK(halfBlocks(*dark, false) == HalfPair{Red, Yellow});
+    // iCE on: both bright colours stay
+    const auto bright = pasteCell(top, yellow, PasteMode::Normal, PastePixels{false, true});
+    REQUIRE(bright);
+    CHECK(halfBlocks(*bright, true) == HalfPair{LightRed, Yellow});
+    // a blinking letter on blue shows light blue with iCE on: that is the clear half
+    const Cell letter{U'A', Color::indexed(White), Color::indexed(Blue), attr::Blink, false};
+    const Cell red = setLayerPixel(transparentCell(), false, Red);
+    const auto over = pasteCell(red, letter, PasteMode::Normal, PastePixels{false, true});
+    REQUIRE(over);
+    CHECK(halfBlocks(iceCell(*over, true), true) == HalfPair{Red, LightBlue});
+    // a pixel layer stores its pixels with iCE on, whatever the document's setting
+    CHECK(pasteCell(top, yellow, PasteMode::Normal, PastePixels{true, false}) == setLayerPixel(yellow, false, LightRed));
+    // over a hole it stays the half pixel, on either kind of layer
+    CHECK(pasteCell(top, transparentCell(), PasteMode::Normal, off) == top);
+    CHECK(pasteCell(top, transparentCell(), PasteMode::Normal, PastePixels{true, false}) == top);
+
+    // on a clear cell of a cells layer it goes over what shows below the same way
+    Layer l = makeLayer(LayerKind::Cells, 1, 1);
+    const auto below = [&](int, int) { return yellow; };
+    const auto fit = fitLayerEdit(l, CellEdit{{{0, 0, Cell{}, top}}}, below, false);
+    REQUIRE(fit);
+    REQUIRE(fit->changes.size() == 1);
+    CHECK(fit->changes[0].after == setHalfBlock(yellow, false, LightRed, false));
+    CHECK_FALSE(iceCell(fit->changes[0].after, false).attrs & attr::Blink);
+}
+
+TEST_CASE("under the alpha lock a move that would clear a cell is refused whole", "[layers][selection]") {
+    // b c . moved one right: b lifted (cleared), b onto c, c onto the clear cell
+    Layer l = makeLayer(LayerKind::Cells, 3, 1);
+    l.cells.at(0, 0) = glyphCell(U'b');
+    l.cells.at(1, 0) = glyphCell(U'c');
+    l.props.alphaLocked = true;
+    CellEdit move{{{0, 0, Cell{}, transparentCell()}, {1, 0, Cell{}, glyphCell(U'b')}, {2, 0, Cell{}, glyphCell(U'c')}}};
+    move.moves = true;
+    CHECK_FALSE(fitLayerEdit(l, move));
+    // the same changes not as a move: each kept or dropped on its own
+    move.moves = false;
+    const auto apart = fitLayerEdit(l, move);
+    REQUIRE(apart);
+    REQUIRE(apart->changes.size() == 1);
+    CHECK(apart->changes[0].after == glyphCell(U'b'));
+    // a paste (a move that clears nothing) lands on the opaque cells
+    CellEdit paste{{{1, 0, Cell{}, glyphCell(U'x')}, {2, 0, Cell{}, glyphCell(U'y')}}};
+    paste.moves = true;
+    const auto pasted = fitLayerEdit(l, paste);
+    REQUIRE(pasted);
+    REQUIRE(pasted->changes.size() == 1);
+    CHECK(pasted->changes[0].x == 1);
+    // unlocked the move goes through
+    l.props.alphaLocked = false;
+    move.moves = true;
+    const auto free = fitLayerEdit(l, move);
+    REQUIRE(free);
+    CHECK(free->changes.size() == 3);
+
+    // a pixel layer: a move that clears a set pixel
+    Layer px = makeLayer(LayerKind::Pixels, 2, 1);
+    px.cells.at(0, 0) = pixelLayerCell({Blue, Blue});
+    px.cells.at(1, 0) = pixelLayerCell({Red, std::nullopt});
+    px.props.alphaLocked = true;
+    CellEdit shift{{{0, 0, Cell{}, pixelLayerCell({std::nullopt, Blue})}, {1, 0, Cell{}, pixelLayerCell({Blue, std::nullopt})}}};
+    shift.moves = true;
+    CHECK_FALSE(fitLayerEdit(px, shift));
+}
+
+TEST_CASE("the alpha lock keeps an erase off opaque cells and set pixels", "[layers][pixels]") {
+    // cells: an opaque cell stays opaque under the lock
+    Canvas cells(2, 1);
+    cells.at(0, 0) = glyphCell(U'b');
+    cells.at(1, 0) = transparentCell();
+    StrokeOptions locked;
+    locked.lockTransparent = true;
+    const GlyphBrush erase(transparentCell());
+    CHECK(paintStroke(cells, erase, {}, {{0, 0}, {1, 0}}, locked).empty());
+    const CellEdit free = paintStroke(cells, erase, {}, {{0, 0}, {1, 0}});
+    REQUIRE(free.changes.size() == 1);
+    CHECK(free.changes[0].after == transparentCell());
+
+    // pixels: set pixels stay set, whichever brush would clear them
+    Canvas px(1, 1);
+    px.at(0, 0) = pixelLayerCell({Blue, Blue});
+    StrokeOptions pixelsLocked = locked;
+    pixelsLocked.pixelLayer = true;
+    CHECK(paintStroke(px, erase, {}, {{0, 0}}, pixelsLocked).empty());
+    CHECK(paintStroke(px, GlyphBrush(Cell{}), {}, {{0, 0}}, pixelsLocked).changes.size() == 1);  // repainted, still set
+    // and a write that would set a clear pixel is refused too
+    px.at(0, 0) = pixelLayerCell({Blue, std::nullopt});
+    Cell full;
+    full.ch = kFullBlock;
+    full.fg = Color::indexed(Red);
+    CHECK(paintStroke(px, GlyphBrush(full), {}, {{0, 0}}, pixelsLocked).empty());
 }

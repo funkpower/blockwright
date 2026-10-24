@@ -116,7 +116,8 @@ class EditPreview {
 public:
     void clear();
     bool empty() const { return changes_.empty(); }
-    // Keeps `edit` to draw over the view's canvas.
+    // Keeps what `edit`, built on the active layer, makes of the composite
+    // (Document::previewEdit), to draw over the view's canvas.
     void set(const CanvasView& view, const CellEdit& edit);
     // Draws it in view pixels, the part within `exposed`.
     void paint(QPainter& p, const CanvasView& view, const QRect& exposed) const;

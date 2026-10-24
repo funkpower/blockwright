@@ -53,10 +53,12 @@ private:
 
 // A block of cells lifted off a canvas: the clipboard and the floating
 // selection. A cell with its transparent flag set is a hole, which no paste
-// writes.
+// writes. A block lifted off a pixel layer (`pixelLayer`) holds its cells as
+// the layer stores them: half pixels, and pixel cells read with iCE on.
 struct CellBlock {
     int width = 0, height = 0;
     std::vector<Cell> cells;  // row-major
+    bool pixelLayer = false;
 
     CellBlock() = default;
     CellBlock(int w, int h) : width(w), height(h), cells(static_cast<size_t>(w) * h) {}
@@ -73,9 +75,12 @@ struct CellBlock {
 bool isBlank(const Cell& c);
 
 // The selected cells, clipped to the canvas. Empty if nothing is selected.
+// Cells outside a mask are holes (transparentCell()).
 CellBlock copyBlock(const Canvas& canvas, const Selection& sel);
-// Clears the selected cells to blank (Delete, and the second half of Cut).
-CellEdit clearSelection(const Canvas& canvas, const Selection& sel);
+// Clears the selected cells to `blank` (Delete, and the second half of
+// Cut): a blank cell on the bottom layer, a transparent cell above it
+// (Document::blankCell), so the layer beneath shows through.
+CellEdit clearSelection(const Canvas& canvas, const Selection& sel, const Cell& blank = Cell{});
 
 enum class PasteMode {
     Normal,       // every cell of the block is written
@@ -83,19 +88,44 @@ enum class PasteMode {
     Under,        // only blank cells of the canvas are written
 };
 
+// How a paste writes a half pixel over the cell under it (halfPixelOver in
+// layer.h): as the half-block tools plot a pixel on the layer it lands on,
+// a pixel layer (`pixelLayer`) or a cells or text layer, read and written
+// by the colours it shows with iCE colours `ice` (the document's setting).
+struct PastePixels {
+    bool pixelLayer = false;
+    bool ice = true;
+};
+
 // What a paste leaves in a canvas cell that holds `under`: the block's
-// `cell`, or nothing to keep `under`. Holes never write.
-std::optional<Cell> pasteCell(const Cell& cell, const Cell& under, PasteMode mode);
+// `cell`, or nothing to keep `under`. Holes never write. A transparent cell
+// that holds a pixel (a pixel layer's cell with one half set, layer.h) is
+// not a hole: Normal and Under write it, so a move on a pixel layer keeps
+// its half pixels. It is plotted into the cell under it as the half-block
+// tools plot that pixel there (halfPixelOver, `pixels`): its clear half
+// keeps a pixel cell's other half (a red top pixel over blue/blue is red
+// over blue) or any other opaque cell's background as it shows (over a
+// letter on black it is red over black), and over a hole it stays a half
+// pixel (on a cells layer fitLayerEdit puts it over the layers below).
+// Transparent mode takes it as blank and leaves the cell under it as it is.
+// An opaque `cell` from a pixel layer's block (`pixelCell`, CellBlock::
+// pixelLayer) is written whole onto a cells or text layer as the pixel
+// layer shows it with the document's iCE setting (pixelCellOnCells), so
+// with iCE off no bright background is written; onto a pixel layer it is
+// written as it is.
+std::optional<Cell> pasteCell(const Cell& cell, const Cell& under, PasteMode mode, PastePixels pixels = {},
+                              bool pixelCell = false);
 
 // Pastes `block` with its top-left at (x, y); the part off the canvas is
 // dropped.
-CellEdit pasteBlock(const Canvas& canvas, const CellBlock& block, int x, int y, PasteMode mode);
+CellEdit pasteBlock(const Canvas& canvas, const CellBlock& block, int x, int y, PasteMode mode,
+                    PastePixels pixels = {});
 
 // Stamps a floating block at (x, y). With `liftedFrom`, the block was
-// lifted off those cells (a move): they are cleared first, and the clear and
-// the paste are one edit.
+// lifted off those cells (a move): they are cleared to `blank` first, and
+// the clear and the paste are one edit.
 CellEdit stampBlock(const Canvas& canvas, const CellBlock& block, int x, int y, PasteMode mode,
-                    const Selection* liftedFrom = nullptr);
+                    const Selection* liftedFrom = nullptr, const Cell& blank = Cell{}, PastePixels pixels = {});
 
 // Glyph remaps. A glyph that faces one way is swapped for its mirror image
 // or turned copy where CP437 has one: half blocks, box-drawing corners, tees
@@ -125,13 +155,16 @@ struct SelectionEdit {
 // Transforms the selected cells in place. A flip keeps the rectangle; a
 // rotation keeps its top-left corner and swaps its sides, clearing the cells
 // of the old rectangle the new one doesn't cover. Cells turned past the
-// canvas edge are dropped, and the selection is clipped to match.
-SelectionEdit transformSelection(const Canvas& canvas, const Selection& sel, Transform t);
+// canvas edge are dropped, and the selection is clipped to match. Cleared
+// cells become `blank`.
+SelectionEdit transformSelection(const Canvas& canvas, const Selection& sel, Transform t,
+                                 const Cell& blank = Cell{});
 
-// Moves the selected cells by (dx, dy), leaving blank cells behind, pasting
-// them in `mode`. The selection moves with them, clipped to the canvas.
+// Moves the selected cells by (dx, dy), leaving `blank` cells behind,
+// pasting them in `mode`. The selection moves with them, clipped to the
+// canvas.
 SelectionEdit moveSelection(const Canvas& canvas, const Selection& sel, int dx, int dy,
-                            PasteMode mode = PasteMode::Normal);
+                            PasteMode mode = PasteMode::Normal, const Cell& blank = Cell{});
 
 // Mirror mode (PLAN §3): a transform of an edit, not a re-draw. Every change
 // at column x is also made at width - 1 - x with its glyph flipped

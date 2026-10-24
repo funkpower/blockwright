@@ -669,6 +669,25 @@ TEST_CASE("a dirty-rect recomposite equals a full composite on that rect", "[lay
     CHECK_THROWS_AS(recomposite(LayerStack(4, 4), wrong, {0, 0, 1, 1}), LayerError);
 }
 
+TEST_CASE("compositeCellBelow composites only the layers under the one given", "[layers][composite]") {
+    Rng r(14);
+    for (int n = 0; n < 40; ++n) {
+        const LayerStack s = randomStack(r, 24, 12);
+        CompositeOptions o;
+        o.ice = r.chance(50);
+        for (std::size_t i = 0; i <= s.size() + 1; ++i) {
+            LayerStack under(24, 12);
+            for (std::size_t j = 0; j < std::min(i, s.size()); ++j)
+                under.add(s[j]);
+            const Canvas want = composite(under, o);
+            for (int y = 0; y < 12; ++y)
+                for (int x = 0; x < 24; ++x)
+                    REQUIRE(compositeCellBelow(s, i, x, y, o) == want.at(x, y));
+        }
+        CHECK(compositeCellBelow(s, s.size(), -1, 0, o) == Cell{});
+    }
+}
+
 TEST_CASE("a move to a far offset recomposites the cells it left", "[layers][composite][dirty]") {
     for (int far : {INT_MIN, INT_MAX, INT_MIN + 1, INT_MAX - 1}) {
         LayerStack s = stackOf(1, 1, {filledLayer(LayerKind::Cells, 1, 1, cell(U'X', White, Black))});

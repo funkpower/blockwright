@@ -3,6 +3,8 @@
 #include "blockwright/ansi.h"
 #include "blockwright/ramp.h"
 
+#include <algorithm>
+
 #include <utility>
 #include <vector>
 
@@ -142,14 +144,19 @@ Canvas composite(const LayerStack& stack, const CompositeOptions& options) {
 }
 
 Cell compositeCell(const LayerStack& stack, int x, int y, const CompositeOptions& options) {
+    return compositeCellBelow(stack, stack.size(), x, y, options);
+}
+
+Cell compositeCellBelow(const LayerStack& stack, std::size_t index, int x, int y, const CompositeOptions& options) {
     Cell acc = options.ground;
     if (!stack.canvasRect().contains(x, y))
         return acc;
     bool text = false;
-    for (const Layer& l : stack.layers())
-        if (composites(l))
-            if (const Cell* c = l.cellAt(x, y))
-                over(acc, text, l.props, *c, options.ice);
+    const auto& layers = stack.layers();
+    for (std::size_t i = 0; i < std::min(index, layers.size()); ++i)
+        if (composites(layers[i]))
+            if (const Cell* c = layers[i].cellAt(x, y))
+                over(acc, text, layers[i].props, *c, options.ice);
     return acc;
 }
 

@@ -141,6 +141,16 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
             cancelDrag();
     });
     connect(doc_, &Document::formatChanged, this, &CanvasView::cancelDrag);
+    // A layer panel change lands what the tool holds on the layer it was
+    // editing first. The alpha lock is the active layer's, so a change of
+    // layer properties or of active layer changes the brush settings; a new
+    // active layer is other cells under the tool.
+    connect(doc_, &Document::layersAboutToChange, this, &CanvasView::finishTool);
+    connect(doc_, &Document::layersChanged, this, &CanvasView::brushSettingsChanged);
+    connect(doc_, &Document::activeLayerChanged, this, [this] {
+        cancelTool();
+        brushSettingsChanged();
+    });
     // A stylus stroke kept through a menu opened from the keyboard: the menu
     // bar has the focus, so no focus-out comes here to end the stroke. The
     // focus going anywhere but back here or to a menu ends it, as one here
@@ -177,10 +187,24 @@ void CanvasView::setRamp(const Ramp& ramp) {
     brushSettingsChanged();
 }
 
+bool CanvasView::lockTransparent() const {
+    const Layer* l = doc_->active();
+    return l && l->props.alphaLocked;
+}
+
 void CanvasView::setLockTransparent(bool on) {
-    if (on == lockTransparent_)
+    if (on == lockTransparent())
         return;
-    lockTransparent_ = on;
+    // The view's own command: a drag in progress is redone with the new
+    // lock (layersChanged), not dropped.
+    const QScopedValueRollback<bool> own(ownEdit_, true);
+    doc_->setLayerAlphaLocked(doc_->activeLayer(), on);
+}
+
+void CanvasView::setSampleMerged(bool on) {
+    if (on == sampleMerged_)
+        return;
+    sampleMerged_ = on;
     brushSettingsChanged();
 }
 
@@ -302,7 +326,7 @@ bool CanvasView::applyEdit(const CellEdit& edit, bool mirrored) {
 }
 
 CellEdit CanvasView::mirrored(const CellEdit& edit) const {
-    return mirror_ && symmetry_.mode == SymmetryMode::MirrorX ? mirrorEdit(doc_->canvas(), edit) : edit;
+    return mirror_ && symmetry_.mode == SymmetryMode::MirrorX ? mirrorEdit(doc_->layerCanvas(), edit) : edit;
 }
 
 void CanvasView::setSelection(const Selection& selection) {
@@ -667,7 +691,7 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
         syncDrag();
         return;
     }
-    const Canvas& cv = doc_->canvas();
+    const Canvas& cv = doc_->layerCanvas();
     switch (e->key()) {
     case Qt::Key_Left: setCellCursor(moveCursor(cv, cursor_, -1, 0)); return;
     case Qt::Key_Right: setCellCursor(moveCursor(cv, cursor_, 1, 0)); return;
@@ -677,8 +701,8 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
     case Qt::Key_End: setCellCursor({cv.width() - 1, cursor_.y}); return;
     case Qt::Key_Return:
     case Qt::Key_Enter: setCellCursor(moveCursor(cv, {0, cursor_.y}, 0, 1)); return;
-    case Qt::Key_Backspace: finishTool(); commit(backspace(cv, cursor_)); return;
-    case Qt::Key_Delete: finishTool(); commit(deleteCell(cv, cursor_)); return;
+    case Qt::Key_Backspace: finishTool(); commit(backspace(cv, cursor_, doc_->blankCell())); return;
+    case Qt::Key_Delete: finishTool(); commit(deleteCell(cv, cursor_, doc_->blankCell())); return;
     default: break;
     }
     if (e->key() >= Qt::Key_F1 && e->key() < Qt::Key_F1 + kGlyphSetKeys &&
@@ -719,7 +743,7 @@ void CanvasView::typeText(const QString& text, int replaceStart, int replaceLeng
         return;
     // A floating selection lands first; the typing goes on top of it.
     finishTool();
-    commit(replaceText(doc_->canvas(), cursor_, replaceStart, replaceLength, glyphs, pen_));
+    commit(replaceText(doc_->layerCanvas(), cursor_, replaceStart, replaceLength, glyphs, pen_, doc_->blankCell()));
 }
 
 namespace {

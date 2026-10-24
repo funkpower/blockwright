@@ -11,6 +11,8 @@ add_library(blockwright_app STATIC
   glyph_bar.cpp
   glyph_bar.h
   document.h
+  layers_dock.cpp
+  layers_dock.h
   library_dock.cpp
   library_dock.h
   main_window.cpp

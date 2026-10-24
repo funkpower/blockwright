@@ -1,5 +1,7 @@
 #include "blockwright/brush.h"
 
+#include "blockwright/layer.h"
+
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -501,6 +503,19 @@ std::vector<std::pair<int, int>> Stroke::paintedCells() const {
 bool Stroke::set(int x, int y, const Cell& c, double strength, int image) {
     if (!paintable(x, y))
         return false;
+    // The alpha lock freezes what is opaque: a write may not clear an opaque
+    // cell (the glyph brush's erase) or, on a pixel layer, change which
+    // pixels are set.
+    if (options_.lockTransparent) {
+        const Cell& before = canvas_.at(x, y);
+        if (options_.pixelLayer) {
+            const LayerPixels was = layerPixels(before), now = layerPixels(c);
+            if (bool(was.top) != bool(now.top) || bool(was.bottom) != bool(now.bottom))
+                return false;
+        } else if (c.transparent && !before.transparent) {
+            return false;
+        }
+    }
     painted_[{y, x}] = Painted{c, strength, image < 0 ? current_.image : image};
     return true;
 }

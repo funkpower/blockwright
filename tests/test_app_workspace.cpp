@@ -199,11 +199,14 @@ TEST_CASE("Tool Options shows only the active tool's settings") {
         CHECK(shows(o->glyphLabel()) == want.testFlag(ToolOptions::Option::Glyph));
         CHECK(shows(o->filledBox()) == want.testFlag(ToolOptions::Option::Filled));
         CHECK(shows(o->pasteModeBox()) == want.testFlag(ToolOptions::Option::PasteMode));
+        CHECK(shows(o->sampleMergedBox()) == want.testFlag(ToolOptions::Option::SampleMerged));
     }
     // spot checks against the tools themselves
     using O = ToolOptions::Option;
     CHECK(ToolOptions::optionsFor(QStringLiteral("keyboard")) == ToolOptions::Options());
-    CHECK(ToolOptions::optionsFor(QStringLiteral("eyedropper")) == ToolOptions::Options());
+    CHECK(ToolOptions::optionsFor(QStringLiteral("eyedropper")) == ToolOptions::Options(O::SampleMerged));
+    CHECK(ToolOptions::optionsFor(QStringLiteral("fill")).testFlag(O::SampleMerged));
+    CHECK_FALSE(ToolOptions::optionsFor(QStringLiteral("halfBlock")).testFlag(O::SampleMerged));
     CHECK(ToolOptions::optionsFor(QStringLiteral("select")) == ToolOptions::Options(O::PasteMode));
     CHECK(ToolOptions::optionsFor(QStringLiteral("rampShade")).testFlag(O::Strength));
     CHECK_FALSE(ToolOptions::optionsFor(QStringLiteral("shade")).testFlag(O::Strength));
@@ -367,7 +370,7 @@ TEST_CASE("the Window menu lists every dock and hides and shows it") {
     QMenu* menu = windowMenu(w);
     REQUIRE(menu);
     const QList<QDockWidget*> docks = w.docks();
-    CHECK(docks.size() == 6);
+    CHECK(docks.size() == 7);
     CHECK(w.findChildren<QDockWidget*>().size() == docks.size());
     for (QDockWidget* d : docks) {
         INFO(d->objectName().toStdString());
@@ -375,7 +378,8 @@ TEST_CASE("the Window menu lists every dock and hides and shows it") {
         CHECK(menu->actions().contains(a));
         CHECK(a->isCheckable());
         CHECK(a->isChecked());
-        // the preview, the palette and the Library are always shown
+        // the preview, the palette and the Library are always shown; the
+        // Layers dock can close like the toolbox
         const bool closable = d->features().testFlag(QDockWidget::DockWidgetClosable);
         CHECK(closable == (d != w.previewDock() && d != w.paletteDock() && d != w.libraryDock()));
         CHECK(a->isEnabled() == closable);
@@ -403,6 +407,7 @@ TEST_CASE("Reset Layout puts every dock back, shown and docked") {
     w.addDockWidget(Qt::TopDockWidgetArea, w.libraryDock());
     w.toolOptionsDock()->setFloating(true);
     w.glyphBarDock()->hide();
+    w.layersDock()->setFloating(true);
     w.paletteDock()->hide();
     w.tabifyDockWidget(w.previewDock(), w.paletteDock());
     REQUIRE(w.dockWidgetArea(w.toolboxDock()) == Qt::RightDockWidgetArea);
@@ -411,7 +416,8 @@ TEST_CASE("Reset Layout puts every dock back, shown and docked") {
     const std::pair<QDockWidget*, Qt::DockWidgetArea> want[] = {
         {w.toolboxDock(), Qt::LeftDockWidgetArea},  {w.toolOptionsDock(), Qt::LeftDockWidgetArea},
         {w.previewDock(), Qt::RightDockWidgetArea}, {w.paletteDock(), Qt::RightDockWidgetArea},
-        {w.libraryDock(), Qt::RightDockWidgetArea}, {w.glyphBarDock(), Qt::BottomDockWidgetArea},
+        {w.layersDock(), Qt::RightDockWidgetArea},  {w.libraryDock(), Qt::RightDockWidgetArea},
+        {w.glyphBarDock(), Qt::BottomDockWidgetArea},
     };
     for (const auto& [d, area] : want) {
         INFO(d->objectName().toStdString());

@@ -89,14 +89,18 @@ EditResult typeGlyph(const Canvas& canvas, Cursor c, char32_t ch, const Pen& pen
 // it), replaced cells it doesn't reach are cleared, and the cursor ends after
 // the text (past the last column if the text reached it). All or nothing: if any character isn't typeable, nothing changes
 // and the cursor stays.
+//
+// A cleared cell becomes `blank`: a blank cell on the bottom layer, a
+// transparent cell above it (Document::blankCell), so the layer beneath
+// shows through.
 EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, std::u32string_view text,
-                       const Pen& pen);
+                       const Pen& pen, const Cell& blank = Cell{});
 
-// Moves one cell left and clears that cell; nothing on the first column.
-// A cursor past the end clears the last column and stays there.
-EditResult backspace(const Canvas& canvas, Cursor c);
+// Moves one cell left and clears that cell to `blank`; nothing on the first
+// column. A cursor past the end clears the last column and stays there.
+EditResult backspace(const Canvas& canvas, Cursor c, const Cell& blank = Cell{});
 
-// Clears the cell under the cursor; the cursor stays.
-EditResult deleteCell(const Canvas& canvas, Cursor c);
+// Clears the cell under the cursor to `blank`; the cursor stays.
+EditResult deleteCell(const Canvas& canvas, Cursor c, const Cell& blank = Cell{});
 
 } // namespace bw
