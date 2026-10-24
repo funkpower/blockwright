@@ -195,9 +195,21 @@ private:
 // outside or a fringe, whatever its normal sums to. A neighbour off the
 // canvas is neither, and off the canvas is not outside. The direction is
 // Tool Options' light direction (BrushSettings::lightDirection), the way
-// the light comes from (NW: from the top left). It is an accent, not held
-// to the ladder lint: a lit cell can make a rung skip or a speck, which
-// the lint reports.
+// the light comes from (NW: from the top left). By default it is an
+// accent, not held to the ladder lint: a lit cell can make a rung skip or
+// a speck, which the lint reports. With keepLint (Tool Options' "Keep the
+// lint clean") each stamp is judged by the stroke's lint guard (StrokeLint,
+// guard.h), taken at its first dab: a cell whose step would add a finding
+// to the stroke's start stays as it is, blamed cell by cell as the form
+// brush takes cells back, and is tried again only by a later stamp that
+// would light a cell beside it (a cell that would be a speck alone can be
+// lit with the next one along the rim); a stamp looks up only its own
+// cells' eight neighbours among the cells refused so far. Under a mirror
+// (X, Y or both) a cell lights only with its whole orbit, every image the
+// mirror makes of it: each image unpainted, selected and lit by the
+// rim-light rule from the same (unmirrored) light. An orbit with an image
+// outside the selection or out of the light stays as it is, so a symmetric
+// canvas stays symmetric on every axis of the mirror.
 //
 // Known limits (PLAN §10):
 // - canvas edges: a shape within three columns of the left or right edge,
@@ -211,13 +223,36 @@ private:
 // - thin bars by their ends: the full row of a bar three pixels tall under
 //   ▄ fringes, at the bar's end or a column in from it, can face up or
 //   sideways (rimNormal, above), so it can be lit from N, NE or NW and not
-//   from S.
+//   from S;
+// - keepLint on diagonal rims: a staircase rim lights one cell a row, each
+//   a speck, so it stays unlit; a flat █ shape with no ░▒▓ lights only the
+//   few cells the one-glyph rule allows;
+// - keepLint under a mirror lights every stamp's images, so it can light a
+//   cell the accent's stroke didn't reach (an image's joining line isn't
+//   always the exact mirror of the first); radial symmetry is judged a
+//   stamp at a time;
+// - keepLint under a mirror whose axis the light crosses (N under mirror
+//   Y) lights only cells whose images face the light too: a flat top row
+//   under mirror Y lights nothing from N;
+// - keepLint lights all it safely can only among the cells a stamp tries:
+//   after each stamp, every cell it tried (its own, and those left unlit
+//   before beside them; with their images under a mirror) is lit or would
+//   add a finding lit alone, but not every cell of the canvas. A change
+//   further off that makes a cell left unlit safe (a stamp elsewhere that
+//   brings in a second shade glyph) doesn't light it; it waits for a later
+//   stamp beside it.
 class RimLightBrush : public Brush {
 public:
-    RimLightBrush(Ramp ramp, Compass light);
+    RimLightBrush(Ramp ramp, Compass light, bool keepLint = false);
 
     std::string_view name() const override { return "rim-light"; }
+    // Brush::dab, or with keepLint the stamp held to the lint guard.
+    void dab(Stroke& stroke, const Dab& d, int size, double strength) const override;
     std::optional<Cell> paintCell(const Stroke& stroke, int x, int y, double strength) const override;
+
+    // How many refused cells the keepLint retry has looked up on this thread
+    // so far: a work counter, for tests of what a stamp costs.
+    static long long refusalLookups();
 
     // Whether an edge normal faces a light from `light`.
     static bool facesLight(std::pair<double, double> normal, Compass light);
@@ -225,6 +260,7 @@ public:
 private:
     Ramp ramp_;
     Compass light_;
+    bool keepLint_;
 };
 
 } // namespace bw

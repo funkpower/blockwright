@@ -75,7 +75,7 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("gradient"), O::AlphaLock | O::Ramp | O::Gradient},
         {QStringLiteral("eyedropper"), O::SampleMerged},
         {QStringLiteral("outline"), brush | O::Ramp | O::OutlineSelection},
-        {QStringLiteral("rimLight"), brush | O::Ramp | O::Light},
+        {QStringLiteral("rimLight"), brush | O::Ramp | O::Light | O::RimLint},
         {QStringLiteral("texture"), brush | O::Ramp | O::Light | O::Texture},
         // The clone stamp copies whole cells: no strength, no ramp.
         {QStringLiteral("clone"), brush | O::CloneAligned},
@@ -93,7 +93,8 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     : QWidget(parent), view_(view), select_(select),
       glyphTool_(qobject_cast<GlyphTool*>(tools->find(QStringLiteral("glyph")))),
       gradientTool_(qobject_cast<GradientTool*>(tools->find(QStringLiteral("gradient")))),
-      cloneTool_(qobject_cast<CloneTool*>(tools->find(QStringLiteral("clone")))) {
+      cloneTool_(qobject_cast<CloneTool*>(tools->find(QStringLiteral("clone")))),
+      rimTool_(qobject_cast<RimLightTool*>(tools->find(QStringLiteral("rimLight")))) {
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("toolOptionsTitle"));
     QFont bold = title_->font();
@@ -280,6 +281,11 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     cloneAligned_->setToolTip(tr("Clone stamp: keep the distance to the source from stroke to stroke; off, "
                                  "each stroke copies from the source again (Ctrl+click sets it)"));
 
+    rimLint_ = new QCheckBox(tr("Keep the lint clean"));
+    rimLint_->setObjectName(QStringLiteral("rimLint"));
+    rimLint_->setToolTip(tr("Rim light: leave a cell unlit where lighting it would add a ladder-lint finding "
+                            "(a rung skip, a speck); off, the rim is an accent the lint checks"));
+
     auto* form = form_layout_ = new QFormLayout(this);
     form->addRow(title_);
     form->addRow(none_);
@@ -294,6 +300,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(tr("To rung"), gradientTo_);
     form->addRow(tr("Banding"), gradientBanding_);
     form->addRow(tr("Light"), light_);
+    form->addRow(rimLint_);
     form->addRow(tr("Form"), form_);
     form->addRow(rim_);
     form->addRow(specular_);
@@ -328,6 +335,13 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
         connect(cloneAligned_, &QCheckBox::toggled, this, [this](bool on) {
             if (!syncing_)
                 cloneTool_->setAligned(on);
+        });
+    }
+    if (rimTool_) {
+        connect(rimTool_, &Tool::changed, this, &ToolOptions::sync);
+        connect(rimLint_, &QCheckBox::toggled, this, [this](bool on) {
+            if (!syncing_)
+                rimTool_->setKeepLint(on);
         });
     }
     connect(gradientShape_, &QComboBox::currentIndexChanged, this, &ToolOptions::applyGradientShape);
@@ -391,6 +405,7 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(textureDensity_, o.testFlag(O::Texture));
     f->setRowVisible(textureSeed_, o.testFlag(O::Texture));
     f->setRowVisible(cloneAligned_, o.testFlag(O::CloneAligned));
+    f->setRowVisible(rimLint_, o.testFlag(O::RimLint));
     f->setRowVisible(filled_, o.testFlag(O::Filled));
     f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
     f->setRowVisible(pasteMode_, o.testFlag(O::PasteMode));
@@ -461,6 +476,8 @@ void ToolOptions::sync() {
     }
     if (cloneTool_)
         cloneAligned_->setChecked(cloneTool_->aligned());
+    if (rimTool_)
+        rimLint_->setChecked(rimTool_->keepLint());
     // A Library stamp floats in a mode of its own; the dock shows it.
     pasteMode_->setCurrentIndex(pasteMode_->findData(int(select_->effectivePasteMode())));
 }

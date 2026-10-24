@@ -421,16 +421,24 @@ protected:
 
 // Rim-light brush (PLAN §10, "Detail"): the edge cells of the view's ramp
 // shape under it that face Tool Options' light direction go one rung
-// lighter (RimLightBrush). Either button.
+// lighter (RimLightBrush). Keep the lint clean (off by default, kept in the
+// settings) holds each stamp to the stroke's lint guard: a cell whose step
+// would add a ladder-lint finding stays as it is. Either button.
 class RimLightTool : public BrushTool {
     Q_OBJECT
 public:
     explicit RimLightTool(QObject* parent = nullptr);
 
+    bool keepLint() const { return keepLint_; }
+    void setKeepLint(bool keep);
+
     QString status() const override;
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+
+private:
+    bool keepLint_ = false;
 };
 
 // The name a texture kind goes by in Tool Options and the status bar.

@@ -15,10 +15,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <climits>
 #include <cmath>
 #include <map>
+#include <memory>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <set>
@@ -2025,6 +2028,662 @@ TEST_CASE("the rim light is an accent and not held to the ladder lint", "[detail
         if (f.kind == lint::LadderFinding::Kind::RungSkip)
             skips.insert({f.x, f.y});
     CHECK(skips == std::set<Point>{{4, 1}, {4, 4}});
+}
+
+namespace {
+
+// The rim light as it lit before keepLint: the default dab over its cells.
+class Accent : public Brush {
+public:
+    Accent(Ramp ramp, Compass from) : rim_(std::move(ramp), from) {}
+    std::string_view name() const override { return "accent"; }
+    std::optional<Cell> paintCell(const Stroke& s, int x, int y, double strength) const override {
+        return rim_.paintCell(s, x, y, strength);
+    }
+
+private:
+    RimLightBrush rim_;
+};
+
+// What `after` adds to the lint findings of `before` by the lint's rule.
+std::vector<std::string> lintAdded(const Canvas& before, const Canvas& after) {
+    std::vector<std::pair<int, int>> changed;
+    for (int y = 0; y < after.height(); ++y)
+        for (int x = 0; x < after.width(); ++x)
+            if (!(before.at(x, y) == after.at(x, y)))
+                changed.emplace_back(x, y);
+    std::vector<std::string> out;
+    for (const auto& f : lint::addedFindingsOnce(before, after, steel(), changed))
+        out.push_back(f.message);
+    return out;
+}
+
+std::string rungMap(const Canvas& c) {
+    std::string out;
+    for (int y = 0; y < c.height(); ++y) {
+        for (int x = 0; x < c.width(); ++x) {
+            const auto g = rungOf(steel(), c.at(x, y));
+            out += !g ? '.' : *g < 10 ? char('0' + *g) : char('a' + *g - 10);
+        }
+        out += '\n';
+    }
+    return out;
+}
+
+// A shaded block on black: cells 2-13 by 1-6, rung 2 + (x + y) / 2 % 9
+// (rows 1-6: 34455667788 9, ..., 66778899aa 22).
+Canvas graded() {
+    Canvas c(16, 8);
+    for (int y = 1; y <= 6; ++y)
+        for (int x = 2; x <= 13; ++x)
+            c.at(x, y) = rungCell(steel(), 2 + (x + y) / 2 % 9);
+    return c;
+}
+
+// One dab over the whole canvas.
+Canvas lit(const Canvas& c, const Brush& b) {
+    BrushSettings s;
+    s.size = kMaxBrushSize;
+    Stroke st(c, b, s);
+    st.addDab({c.width() / 2, c.height() / 2});
+    return st.preview();
+}
+
+std::set<Point> changedCells(const Canvas& before, const Canvas& after) {
+    std::set<Point> out;
+    for (int y = 0; y < after.height(); ++y)
+        for (int x = 0; x < after.width(); ++x)
+            if (!(before.at(x, y) == after.at(x, y)))
+                out.insert({x, y});
+    return out;
+}
+
+// The cells the accent lit that the lint-aware stroke left unlit though,
+// lit on what it left, they would add nothing to the start: none when it
+// lit every cell it safely could, as one stamp does with its own cells.
+// Over several stamps a change far from a cell left unlit can make it safe
+// without its being tried again, so this can find cells there. Under a mirror a cell is lit with its
+// images, as the accent lights them (`anywhere`), and one with an image
+// the accent doesn't light can't light.
+std::vector<Point> missed(const Canvas& start, const Canvas& accent, const Canvas& kept, const Symmetry& sym = {},
+                          const Canvas* anywhere = nullptr) {
+    std::vector<Point> out;
+    const int W = start.width(), H = start.height();
+    for (const auto& [x, y] : changedCells(start, accent))
+        if (kept.at(x, y) == start.at(x, y)) {
+            Canvas t = kept;
+            t.at(x, y) = accent.at(x, y);
+            bool whole = true;
+            if (anywhere)
+                for (const Dab& o : symmetryDabs(sym, Dab{x, y}, W, H)) {
+                    whole = whole && !(anywhere->at(o.x, o.y) == start.at(o.x, o.y));
+                    if (kept.at(o.x, o.y) == start.at(o.x, o.y))
+                        t.at(o.x, o.y) = anywhere->at(o.x, o.y);
+                }
+            if (whole && lintAdded(start, t).empty())
+                out.push_back({x, y});
+        }
+    return out;
+}
+
+// Every cell the lint-aware stroke changed, the accent changed the same way.
+bool within(const Canvas& start, const Canvas& accent, const Canvas& kept) {
+    for (const auto& [x, y] : changedCells(start, kept))
+        if (!(kept.at(x, y) == accent.at(x, y)))
+            return false;
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("the lint-aware rim light leaves out a cell that would be a speck", "[detail][lint]") {
+    // From N on the shaded block, the accent lights the top row and the
+    // rounding down the right; (13,1), rung 9 lit to 10 beside 9s and black,
+    // is then lighter than every neighbour. The lint-aware rim lights the
+    // rest and leaves (13,1)
+    const Canvas c = graded();
+    REQUIRE(lint::checkLadder(c, steel()).clean());
+    const Canvas accent = lit(c, Accent(steel(), Compass::N));
+    const Canvas kept = lit(c, RimLightBrush(steel(), Compass::N, true));
+    CHECK(lintAdded(c, accent) == std::vector<std::string>{"cell 13,1: a speck, lighter than every neighbour"});
+    CHECK(lintAdded(c, kept).empty());
+    std::set<Point> rest = changedCells(c, accent);
+    REQUIRE(rest.erase({13, 1}) == 1);
+    CHECK(changedCells(c, kept) == rest);
+    CHECK(within(c, accent, kept));
+    CHECK(missed(c, accent, kept).empty());
+    // and the default is the accent
+    CHECK(lit(c, RimLightBrush(steel(), Compass::N)) == accent);
+}
+
+TEST_CASE("the lint-aware rim light leaves out a cell that would skip a rung", "[detail][lint]") {
+    // The blob from E: both cells the accent lights skip a rung beside
+    // rung 10 (the accent test above), so neither lights
+    const Canvas b = blob();
+    BrushSettings s;
+    s.size = 12;
+    CHECK(paintStroke(b, RimLightBrush(steel(), Compass::E), s, {{4, 2}}).changes.size() == 2);
+    CHECK(paintStroke(b, RimLightBrush(steel(), Compass::E, true), s, {{4, 2}}).empty());
+    // From S on the shaded block the accent lights the bottom row two rungs
+    // above the row over it, every other column; the lint-aware rim lights
+    // only the cells that skip nothing
+    const Canvas c = graded();
+    const Canvas accent = lit(c, Accent(steel(), Compass::S));
+    const Canvas kept = lit(c, RimLightBrush(steel(), Compass::S, true));
+    const auto skips = lintAdded(c, accent);
+    CHECK(skips.size() == 5);
+    for (const std::string& m : skips)
+        CHECK(m.find("more than one rung apart") != std::string::npos);
+    CHECK(lintAdded(c, kept).empty());
+    CHECK(within(c, accent, kept));
+    CHECK(missed(c, accent, kept).empty());
+    for (const Point p : {Point{2, 6}, Point{4, 6}, Point{6, 6}, Point{8, 6}, Point{10, 6}})
+        CHECK(kept.at(p.first, p.second) == c.at(p.first, p.second));
+    CHECK(changedCells(c, kept).size() == 6);
+}
+
+TEST_CASE("the lint-aware rim light lights a rim cell by cell", "[detail][lint]") {
+    // A flat block lit from N a cell at a time (a region pass, or a stroke
+    // along the top row): each top cell alone would be a speck, lighter than
+    // its three neighbours on the ladder, so it waits for the next one along
+    // and lights with it, and the whole row lights as the accent lights it
+    Canvas c(12, 6);
+    for (int y = 1; y <= 4; ++y)
+        for (int x = 2; x <= 9; ++x)
+            c.at(x, y) = rungCell(steel(), 6);
+    const RimLightBrush rim(steel(), Compass::N, true);
+    const CellEdit accent = paintRegion(c, Accent(steel(), Compass::N), {});
+    REQUIRE(accent.changes.size() == 8);
+    CHECK(paintRegion(c, rim, {}).changes == accent.changes);
+    std::vector<Dab> along;
+    for (int x = 2; x <= 9; ++x)
+        along.push_back({x, 1});
+    CHECK(paintStroke(c, rim, {}, along).changes == accent.changes);
+    // a single cell of the row stays as it is
+    CHECK(paintStroke(c, rim, {}, {{5, 1}}).empty());
+    CHECK(paintStroke(c, Accent(steel(), Compass::N), {}, {{5, 1}}).changes.size() == 1);
+}
+
+TEST_CASE("the lint-aware rim light tries a refused cell again only beside a later stamp", "[detail][lint]") {
+    // Codex round 2 on #128: two flat blocks on one canvas, rung 3 and rung
+    // 8, with (5,1) at rung 2, lit from N with a square of 2. The stamp at
+    // (6,1) refuses (5,1) (lit to 3, the blocks would show ▓ and █ only, one
+    // shade glyph) and (6,1) (a speck). The stamp at (18,1) lights (17,1)
+    // and (18,1) from 8 to 9, which brings in ░: lighting (5,1) alone now
+    // adds nothing, but it is three blocks away, so it isn't tried again and
+    // stays unlit (the known limit). The next stamp that would light a cell
+    // beside it tries it again, and it lights
+    Canvas c(24, 8);
+    for (int y = 1; y <= 4; ++y) {
+        for (int x = 2; x <= 9; ++x)
+            c.at(x, y) = rungCell(steel(), 3);
+        for (int x = 14; x <= 21; ++x)
+            c.at(x, y) = rungCell(steel(), 8);
+    }
+    c.at(5, 1) = rungCell(steel(), 2);
+    REQUIRE(lint::checkLadder(c, steel()).clean());
+    BrushSettings s;
+    s.size = 2;
+    s.tip = Tip::Square;
+    const Accent accent(steel(), Compass::N);
+    const RimLightBrush rim(steel(), Compass::N, true);
+    Stroke sa(c, accent, s), sk(c, rim, s);
+    const auto dab = [&](Dab d) {
+        sa.addDab(d, false);
+        sk.addDab(d, false);
+    };
+    dab({6, 1});
+    CHECK(changedCells(c, sa.preview()) == std::set<Point>{{5, 1}, {6, 1}});
+    CHECK(changedCells(c, sk.preview()).empty());
+    CHECK(missed(c, sa.preview(), sk.preview()).empty());
+    dab({18, 1});
+    CHECK(changedCells(c, sk.preview()) == std::set<Point>{{17, 1}, {18, 1}});
+    CHECK(missed(c, sa.preview(), sk.preview()) == std::vector<Point>{{5, 1}});
+    CHECK(sk.preview().at(5, 1) == c.at(5, 1));
+    dab({4, 1});
+    CHECK(sk.preview().at(5, 1) == sa.preview().at(5, 1));
+    CHECK(lintAdded(c, sk.preview()).empty());
+    CHECK(missed(c, sa.preview(), sk.preview()).empty());
+}
+
+namespace {
+
+// A flat block of rung 6 on black: cells 2-9 by 1-4 of a 12 by 6 canvas.
+Canvas flatBlock() {
+    Canvas c(12, 6);
+    for (int y = 1; y <= 4; ++y)
+        for (int x = 2; x <= 9; ++x)
+            c.at(x, y) = rungCell(steel(), 6);
+    return c;
+}
+
+// A changed cell of `out` whose mirror orbit under `sym` isn't changed
+// whole, each image to its rung; empty when every orbit is.
+std::optional<Point> brokenOrbit(const Canvas& start, const Canvas& out, const Symmetry& sym) {
+    for (const auto& [x, y] : changedCells(start, out))
+        for (const Dab& o : symmetryDabs(sym, Dab{x, y}, out.width(), out.height()))
+            if (out.at(o.x, o.y) == start.at(o.x, o.y) || rungOf(steel(), out.at(o.x, o.y)) != rungOf(steel(), out.at(x, y)))
+                return Point{x, y};
+    return std::nullopt;
+}
+
+// One dab over the whole canvas under these options.
+Canvas litWith(const Canvas& c, const Brush& b, const StrokeOptions& o) {
+    BrushSettings s;
+    s.size = kMaxBrushSize;
+    Stroke st(c, b, s, o);
+    st.addDab({c.width() / 2, c.height() / 2});
+    return st.preview();
+}
+
+} // namespace
+
+TEST_CASE("the lint-aware rim light lights a mirror orbit whole or not at all", "[detail][lint][symmetry]") {
+    // From N the flat block's top row lights, and under mirror X it is its
+    // own image: it lights as without the mirror. Under mirror Y (or both)
+    // a top cell's image is on the bottom row, which faces S and isn't lit
+    // from N, so neither lights though the accent lights the top row
+    const Canvas c = flatBlock();
+    const RimLightBrush rim(steel(), Compass::N, true);
+    const Accent accent(steel(), Compass::N);
+    std::set<Point> top;
+    for (int x = 2; x <= 9; ++x)
+        top.insert({x, 1});
+    for (const SymmetryMode mode : {SymmetryMode::MirrorX, SymmetryMode::MirrorY, SymmetryMode::MirrorXY}) {
+        INFO("mode " << int(mode));
+        StrokeOptions o;
+        o.symmetry = {mode};
+        const Canvas a = litWith(c, accent, o), kept = litWith(c, rim, o);
+        CHECK(changedCells(c, a) == top);
+        CHECK_FALSE(brokenOrbit(c, kept, o.symmetry));
+        CHECK(changedCells(c, kept) == (mode == SymmetryMode::MirrorX ? top : std::set<Point>{}));
+        CHECK(lintAdded(c, kept).empty());
+    }
+    // a selection holding a cell but not its image keeps both as they are:
+    // (2,1) and (3,1) are selected, their images (9,1) and (8,1) aren't
+    StrokeOptions o;
+    o.symmetry = {SymmetryMode::MirrorX};
+    o.selection = std::make_shared<const Mask>(Mask::rect(12, 6, 2, 1, 3, 1));
+    CHECK(changedCells(c, litWith(c, accent, o)) == std::set<Point>{{2, 1}, {3, 1}});
+    CHECK(changedCells(c, litWith(c, rim, o)).empty());
+    // with the images selected too, the row lights
+    o.selection = std::make_shared<const Mask>(Mask::rect(12, 6, 2, 1, 9, 1));
+    CHECK(changedCells(c, litWith(c, rim, o)) == top);
+}
+
+TEST_CASE("the lint-aware rim light looks up only the refusals beside a stamp's cells", "[detail][lint]") {
+    // Flat blocks, each 6 by 4 in a tile 10 by 6 of one canvas, lit from N
+    // one top cell at a time, each on a new segment: every cell alone is a
+    // speck, so every stamp is refused. The last stamp, on a block of its
+    // own, looks up its cell's eight neighbours after 10 refusals as after
+    // 1000
+    constexpr int TX = 40, TY = 26, TW = 10, TH = 6;
+    Canvas c(TX * TW, TY * TH);
+    for (int t = 0; t < TX * TY; ++t)
+        for (int y = 1; y <= 4; ++y)
+            for (int x = 2; x <= 7; ++x)
+                c.at(t % TX * TW + x, t / TX * TH + y) = rungCell(steel(), 6);
+    const RimLightBrush rim(steel(), Compass::N, true);
+    const auto onBlock = [&](int t) { return Dab{t % TX * TW + 4, t / TX * TH + 1}; };
+    const auto lastStamp = [&](int refusals) {
+        Stroke st(c, rim, {});
+        for (int t = 0; t < refusals; ++t)
+            st.addDab(onBlock(t), false);
+        REQUIRE(st.edit().empty());
+        const long long before = RimLightBrush::refusalLookups();
+        st.addDab(onBlock(TX * TY - 1), false);
+        REQUIRE(st.edit().empty());
+        return RimLightBrush::refusalLookups() - before;
+    };
+    const long long few = lastStamp(10), many = lastStamp(1000);
+    CHECK(few == many);
+    CHECK(many == 8);
+}
+
+namespace {
+
+// A rung written with a bright background: a shade the other way round
+// (K▓w as w░K), a bright solid colour as a space on it. Other cells as
+// they are.
+Cell brightBackground(Cell c) {
+    if (c.ch == U'░' || c.ch == U'▒' || c.ch == U'▓') {
+        c.ch = c.ch == U'░' ? U'▓' : c.ch == U'▓' ? U'░' : U'▒';
+        std::swap(c.fg, c.bg);
+    } else if (c.ch == U'█' && c.fg.index >= 8) {
+        c.ch = U' ';
+        c.bg = c.fg;
+    }
+    return c;
+}
+
+// A random canvas for the rim light: one to three filled ellipses and
+// rectangles drawn as the shape tools draw them, in steel w, the full
+// cells then shaded flat, as a gradient or at random rungs. On half the
+// canvases about one full cell in eight is then written with a bright
+// background and one in eight blinks. With `mx` and
+// `my` the pixels and the rungs are mirrored left to right and top to
+// bottom, and the shapes kept four columns and a row in from the canvas's
+// edges, where the rim light lights a shape differently (its known limit).
+Canvas rimShapes(std::mt19937& rng, int W, int H, bool mx = false, bool my = false) {
+    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const bool in = mx || my;
+    const int lx = in ? 4 : -2, hx = in ? W - 5 : W + 1, ly = in ? 2 : -2, hy = in ? 2 * H - 3 : 2 * H + 1;
+    Pixels px;
+    for (int i = 0, n = pick(1, 3); i < n; ++i) {
+        int x0 = pick(lx, hx), x1 = pick(lx, hx), y0 = pick(ly, hy), y1 = pick(ly, hy);
+        if (x0 > x1)
+            std::swap(x0, x1);
+        if (y0 > y1)
+            std::swap(y0, y1);
+        const Pixels p = pick(0, 1) ? ellipseShape(x0, y0, x1, y1, true, W, 2 * H) : rectShape(x0, y0, x1, y1, true, W, 2 * H);
+        px.insert(px.end(), p.begin(), p.end());
+    }
+    for (size_t i = 0, n = px.size(); i < n; ++i) {
+        const auto [x, py] = px[i];
+        if (mx)
+            px.push_back({W - 1 - x, py});
+        if (my)
+            px.push_back({x, 2 * H - 1 - py});
+        if (mx && my)
+            px.push_back({W - 1 - x, 2 * H - 1 - py});
+    }
+    Canvas c(W, H);
+    plotPixels(c, px, 7).apply(c);
+    const int kind = pick(0, 2), top = steel().topRung();
+    const int flat = pick(1, top - 1), from = pick(1, top / 2), every = pick(1, 3), way = pick(0, 3);
+    std::vector<int> noise(size_t(W) * H), odd(size_t(W) * H);
+    for (int& g : noise)
+        g = pick(1, top);
+    const bool odds = pick(0, 1);
+    for (int& v : odd)
+        v = odds ? pick(0, 7) : 2;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            // a full cell of w, as the shape tools write it
+            if (!(c.at(x, y).ch == U' ' && c.at(x, y).bg.index == 7) && c.at(x, y).ch != U'█')
+                continue;
+            const int sx = mx ? std::min(x, W - 1 - x) : x, sy = my ? std::min(y, H - 1 - y) : y;
+            const int along = way == 0 ? sx : way == 1 ? sy : way == 2 ? sx + sy : sx + H - sy;
+            const int g = kind == 0 ? flat : kind == 1 ? std::min(top, from + along / every) : noise[size_t(sy) * W + sx];
+            Cell cell = rungCell(steel(), g);
+            if (const int v = odd[size_t(sy) * W + sx]; v == 0)
+                cell = brightBackground(cell);
+            else if (v == 1)
+                cell.attrs |= attr::Blink;
+            c.at(x, y) = cell;
+        }
+    return c;
+}
+
+// The lint-aware rim light, checked after every stamp for what it promises:
+// each cell the stamp tried, with its images under a mirror (the cells it
+// covers that the accent lights, and the cells an earlier stamp tried and
+// left unlit beside them), is lit or would add a finding to the start lit
+// alone on what the stroke has left. `anywhere` is the start as the accent
+// lights all of it. A stamp under a mirror lights its images together, so
+// an image the stroke stamps again after (the same dab, size and
+// strength) tries nothing, as in the brush.
+class StampChecked : public Brush {
+public:
+    StampChecked(const Canvas& start, const Canvas& anywhere, Compass from)
+        : rim_(steel(), from, true), start_(start), anywhere_(anywhere) {}
+    std::string_view name() const override { return "stamp-checked"; }
+    std::optional<Cell> paintCell(const Stroke& s, int x, int y, double strength) const override {
+        return rim_.paintCell(s, x, y, strength);
+    }
+    void dab(Stroke& s, const Dab& d, int size, double strength) const override {
+        const int W = start_.width(), H = start_.height();
+        const Symmetry& sym = s.options().symmetry;
+        const bool mirror = sym.mode != SymmetryMode::None;
+        std::vector<Dab> images{d};
+        bool again = false;
+        if (mirror) {
+            if (d.image == 0 && lastImage_ != 0)
+                done_.clear();
+            lastImage_ = d.image;
+            again = !done_.insert({d.x, d.y, d.flipX, d.flipY, size, strength}).second;
+            images = symmetryDabs(sym, d, W, H);
+            for (const Dab& o : images)
+                done_.insert({o.x, o.y, o.flipX, o.flipY, size, strength});
+        }
+        const auto orbit = [&](Point p) {
+            std::vector<Point> out{p};
+            if (mirror)
+                for (const Dab& o : symmetryDabs(sym, Dab{p.first, p.second}, W, H))
+                    out.push_back({o.x, o.y});
+            return out;
+        };
+        // every image unlit so far, and one the accent lights
+        const auto open = [&](Point p) {
+            for (const auto& [x, y] : orbit(p))
+                if (s.painted(x, y) || !s.paintable(x, y) || anywhere_.at(x, y) == start_.at(x, y))
+                    return false;
+            return true;
+        };
+        std::set<Point> own;
+        if (!again)
+            for (const Dab& o : images)
+                for (const auto& [x, y] : footprint(o.x, o.y, size, s.settings().tip, W, H, o.flipX, o.flipY))
+                    if (!s.painted(x, y) && s.paintable(x, y) && anywhere_.at(x, y) != start_.at(x, y))
+                        own.insert({x, y});
+        std::set<Point> tried = own;
+        for (const Point p : left_)
+            if (!s.painted(p.first, p.second) && std::any_of(own.begin(), own.end(), [&](Point q) {
+                    return std::abs(p.first - q.first) <= 1 && std::abs(p.second - q.second) <= 1;
+                }))
+                tried.insert(p);
+        rim_.dab(s, d, size, strength);
+        if (tried.empty() || !failure.empty())
+            return;
+        const Canvas now = s.preview();
+        for (const Point p : tried) {
+            if (!open(p)) {
+                retried += !own.count(p) && s.painted(p.first, p.second);
+                continue;
+            }
+            ++held;
+            left_.insert(p);
+            Canvas t = now;
+            for (const auto& [x, y] : orbit(p))
+                t.at(x, y) = anywhere_.at(x, y);
+            if (lintAdded(start_, t).empty()) {
+                failure = "stamp (" + std::to_string(d.x) + "," + std::to_string(d.y) + ") left (" +
+                          std::to_string(p.first) + "," + std::to_string(p.second) +
+                          ") unlit, which it tried and which adds nothing\n" + rungMap(now);
+                return;
+            }
+        }
+    }
+    // The first stamp that left a cell it tried unlit though it was safe.
+    mutable std::string failure;
+    // How often a stamp left a cell it tried unlit, and how many cells left
+    // unlit before a stamp lit beside its own (none without the retry).
+    mutable int held = 0, retried = 0;
+
+private:
+    RimLightBrush rim_;
+    const Canvas& start_;
+    const Canvas& anywhere_;
+    mutable std::set<std::tuple<int, int, bool, bool, int, double>> done_;
+    mutable int lastImage_ = 0;
+    // the cells a stamp has tried and left unlit, with their images open
+    mutable std::set<Point> left_;
+};
+
+} // namespace
+
+TEST_CASE("the lint-aware rim light adds nothing to the start and lights what each stamp tries safely", "[detail][lint][symmetry]") {
+    // 600 random strokes over shaded shapes (some with bright backgrounds
+    // and blinking cells; iCE on and off, no symmetry or a mirror, joined
+    // walks and new segments, sizes 1-12 on both tips), lit from all eight
+    // points. After every dab the lint-aware stroke adds no finding to its
+    // start by the lint's own rule, every cell it changed is one the accent
+    // lights, the same way (under a mirror it lights each stamp's images,
+    // which can lie beside another image's joining line, so not only the
+    // cells the accent's stroke lit), and after every stamp each cell the
+    // stamp tried and left unlit (its own, and earlier refusals beside them)
+    // would add a finding lit alone, with its images (StampChecked). A cell
+    // the stamp didn't try isn't checked: a change further off can make it
+    // safe to light, and it waits for a stamp beside it. Off, the brush
+    // paints what the accent painted before the option, cell for cell
+    constexpr int W = 24, H = 12;
+    std::mt19937 rng(2026102454);
+    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const SymmetryMode modes[4] = {SymmetryMode::None, SymmetryMode::MirrorX, SymmetryMode::MirrorY,
+                                   SymmetryMode::MirrorXY};
+    int failed = 0, dabs = 0, accentLit[2] = {}, keptLit[2] = {}, refusing = 0, mirrored = 0, iced = 0, odd[2] = {},
+        held = 0, retried = 0;
+    std::string first;
+    for (int k = 0; k < 600; ++k) {
+        const Canvas start = rimShapes(rng, W, H);
+        const Compass from = kCompass[pick(0, 7)];
+        StrokeOptions o;
+        o.ice = pick(0, 1);
+        o.symmetry = {modes[pick(0, 3)]};
+        const bool mirror = o.symmetry.mode != SymmetryMode::None;
+        mirrored += mirror;
+        iced += o.ice;
+        bool oddCells = false;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                oddCells = oddCells || (start.at(x, y).attrs & attr::Blink) || start.at(x, y).bg.index >= 8;
+        odd[o.ice] += oddCells;
+        BrushSettings s;
+        s.size = pick(1, 12);
+        s.tip = pick(0, 1) ? Tip::Round : Tip::Square;
+        s.strength = std::array{0.25, 0.5, 1.0}[size_t(pick(0, 2))];
+        const Accent accent(steel(), from);
+        StrokeOptions plain;
+        plain.ice = o.ice;
+        const Canvas anywhere = litWith(start, accent, plain);
+        const RimLightBrush off(steel(), from);
+        const StampChecked on(start, anywhere, from);
+        Stroke sa(start, accent, s, o), so(start, off, s, o), sk(start, on, s, o);
+        int x = pick(0, W - 1), y = pick(0, H - 1);
+        std::ostringstream trail;
+        std::string failure;
+        for (int i = 0, n = pick(1, 8); i < n && failure.empty(); ++i) {
+            const bool join = i == 0 || pick(0, 4) != 0;
+            if (!join) {
+                x = pick(0, W - 1);
+                y = pick(0, H - 1);
+            }
+            for (Stroke* st : {&sa, &so, &sk})
+                st->addDab({x, y}, join);
+            ++dabs;
+            trail << "(" << x << "," << y << (join ? "" : " new") << ") ";
+            const Canvas kept = sk.preview(), was = sa.preview();
+            if (const auto found = lintAdded(start, kept); !found.empty())
+                failure = "dab " + std::to_string(i) + " added " + found.front() + "\n" + rungMap(kept);
+            else if (!within(start, anywhere, kept))
+                failure = "dab " + std::to_string(i) + " changed a cell the accent doesn't light\n" + rungMap(kept);
+            else if (!(so.preview() == was))
+                failure = "dab " + std::to_string(i) + ": off isn't the accent\n" + rungMap(so.preview());
+            else if (!on.failure.empty())
+                failure = "dab " + std::to_string(i) + ": " + on.failure;
+            x = std::clamp(x + pick(-4, 4), 0, W - 1);
+            y = std::clamp(y + pick(-3, 3), 0, H - 1);
+        }
+        const Canvas kept = sk.preview(), was = sa.preview();
+        if (failure.empty() && !(so.edit().changes == sa.edit().changes))
+            failure = "off's edit isn't the accent's";
+        accentLit[mirror] += int(changedCells(start, was).size());
+        keptLit[mirror] += int(changedCells(start, kept).size());
+        refusing += !lintAdded(start, was).empty();
+        held += on.held;
+        retried += on.retried;
+        if (!failure.empty() && failed++ == 0) {
+            std::ostringstream out;
+            out << "stroke " << k << ": from " << int(from) << " ice " << o.ice << " symmetry "
+                << int(o.symmetry.mode) << " size " << s.size << " tip " << int(s.tip) << "\n"
+                << trail.str() << "\nstart\n"
+                << rungMap(start) << "accent\n"
+                << rungMap(was) << failure;
+            first = out.str();
+        }
+    }
+    INFO(failed << " of 600 strokes (" << dabs << " dabs, " << mirrored << " mirrored, " << iced << " iCE, "
+                << odd[0] << " and " << odd[1] << " with bright backgrounds or blink, iCE off and on) failed; the accent lit "
+                << accentLit[0] << " cells unmirrored and " << accentLit[1] << " mirrored and added findings in "
+                << refusing << " strokes, the lint-aware rim lit " << keptLit[0] << " and " << keptLit[1]
+                << "; stamps left a cell they tried unlit " << held << " times and lit " << retried
+                << " cells refused before beside their own\n"
+                << first);
+    CHECK(failed == 0);
+    CHECK(refusing > 100);
+    CHECK(keptLit[0] > accentLit[0] / 5);
+    CHECK(keptLit[1] > 0);
+    CHECK(held > 1000);
+    CHECK(retried > 0);
+    CHECK(odd[0] > 100);
+    CHECK(odd[1] > 100);
+}
+
+TEST_CASE("the lint-aware rim light keeps a symmetric canvas symmetric under a mirror", "[detail][lint][symmetry]") {
+    // 400 random mirror strokes over shapes mirrored the same way, lit from
+    // all eight points: after every dab each cell lit has every image the
+    // mirror makes (both axes under mirror X and Y) lit, at its rung, though
+    // the light may not face an image the way it faces the cell
+    std::mt19937 rng(2026102455);
+    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const SymmetryMode modes[3] = {SymmetryMode::MirrorX, SymmetryMode::MirrorY, SymmetryMode::MirrorXY};
+    int failed = 0, lit = 0, held = 0, accentAsymmetric = 0, kept[8] = {};
+    std::string first;
+    for (int k = 0; k < 400; ++k) {
+        const SymmetryMode mode = modes[k % 3];
+        // odd and even sizes: the axis on a cell and between two
+        const int W = pick(12, 28), H = pick(6, 13);
+        const bool mx = mode != SymmetryMode::MirrorY, my = mode != SymmetryMode::MirrorX;
+        const Canvas start = rimShapes(rng, W, H, mx, my);
+        const int point = pick(0, 7);
+        const Compass from = kCompass[point];
+        StrokeOptions o;
+        o.ice = pick(0, 1);
+        o.symmetry = {mode};
+        BrushSettings s;
+        s.size = pick(1, 8);
+        s.tip = pick(0, 1) ? Tip::Round : Tip::Square;
+        const Accent accent(steel(), from);
+        const RimLightBrush rim(steel(), from, true);
+        Stroke sa(start, accent, s, o), sk(start, rim, s, o);
+        const bool join = pick(0, 1);
+        std::ostringstream trail;
+        bool broke = false, accentBroke = false;
+        for (int i = pick(1, 5); i > 0 && !broke; --i) {
+            const Dab d{pick(-1, W), pick(-1, H)};
+            trail << "(" << d.x << "," << d.y << ") ";
+            sa.addDab(d, join);
+            sk.addDab(d, join);
+            accentBroke = accentBroke || brokenOrbit(start, sa.preview(), o.symmetry);
+            broke = bool(brokenOrbit(start, sk.preview(), o.symmetry));
+        }
+        const bool any = !changedCells(start, sk.preview()).empty();
+        lit += any;
+        kept[point] += any;
+        accentAsymmetric += accentBroke;
+        held += changedCells(start, sk.preview()) != changedCells(start, sa.preview());
+        if (broke && failed++ == 0) {
+            std::ostringstream m;
+            m << "stroke " << k << ": mode " << int(mode) << " from " << int(from) << " " << W << "x" << H
+              << " size " << s.size << " tip " << int(s.tip) << " join " << join << " accent broke " << accentBroke
+              << "\n"
+              << trail.str() << "\nstart\n"
+              << rungMap(start) << "accent\n"
+              << rungMap(sa.preview()) << "lint-aware\n"
+              << rungMap(sk.preview());
+            first = m.str();
+        }
+    }
+    INFO(failed << " of 400 strokes broke symmetry; " << lit << " lit, " << held << " left a cell unlit, "
+                << accentAsymmetric << " where the accent's stroke isn't symmetric\n"
+                << first);
+    CHECK(failed == 0);
+    CHECK(accentAsymmetric > 100);
+    CHECK(lit > 40);
+    CHECK(held > 40);
+    // every point lights something somewhere
+    for (const int n : kept)
+        CHECK(n > 0);
 }
 
 TEST_CASE("the half-block pencil joins radial images in 64 bits", "[symmetry][halfblock]") {

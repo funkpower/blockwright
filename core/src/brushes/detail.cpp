@@ -1,6 +1,7 @@
 #include "blockwright/brushes/detail.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/brushes/guard.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/lint.h"
 #include "blockwright/selection.h"
@@ -1637,7 +1638,16 @@ void OutlineBrush::composite(Stroke& stroke, Plan& plan) const {
             stroke.set(shows[k].first, shows[k].second, shown.at(shows[k].first, shows[k].second), strengths[k]);
 }
 
-RimLightBrush::RimLightBrush(Ramp ramp, Compass light) : ramp_(std::move(ramp)), light_(light) {}
+namespace {
+
+thread_local long long refusalLookupCount = 0;
+
+} // namespace
+
+long long RimLightBrush::refusalLookups() { return refusalLookupCount; }
+
+RimLightBrush::RimLightBrush(Ramp ramp, Compass light, bool keepLint)
+    : ramp_(std::move(ramp)), light_(light), keepLint_(keepLint) {}
 
 bool RimLightBrush::facesLight(std::pair<double, double> normal, Compass light) {
     // the compass is on screen, as the normal is
@@ -1659,6 +1669,195 @@ std::optional<Cell> RimLightBrush::paintCell(const Stroke& stroke, int x, int y,
     if (!n || !facesLight(*n, light_) || !exposedTo(w, light_) || !openTowards(c, ramp_, x, y, ice, light_))
         return std::nullopt;
     return stepRung(ramp_, c.at(x, y), 1, ice);
+}
+
+void RimLightBrush::dab(Stroke& stroke, const Dab& d, int size, double strength) const {
+    if (!keepLint_) {
+        Brush::dab(stroke, d, size, strength);
+        return;
+    }
+    const Canvas& c = stroke.canvas();
+    const int W = c.width(), H = c.height();
+    const Tip tip = stroke.settings().tip;
+    using Pos = std::pair<int, int>;
+    // The stroke's lint guard, read from its start at the first dab, the
+    // canvas a stamp is judged on (the guard's, between stamps), and the
+    // cells a stamp would have lit and the guard refused.
+    struct State {
+        std::set<std::tuple<int, int, bool, bool, int, double>> done;
+        int lastImage = 0;
+        std::optional<StrokeLint> guard;
+        std::optional<Canvas> next;
+        std::set<Pos> refused;
+    };
+    auto& slot = stroke.brushState();
+    if (!slot)
+        slot = std::make_shared<State>();
+    State& st = *static_cast<State*>(slot.get());
+    if (!st.guard) {
+        st.guard.emplace(c, ramp_);
+        st.next = c;
+    }
+    // Under a mirror the dab's images are lit together, each cell with its
+    // images, as the despeckle brush cleans them, so a symmetric canvas
+    // stays symmetric.
+    std::vector<Dab> images{d};
+    const Symmetry& sym = stroke.options().symmetry;
+    const bool mirror =
+        sym.mode == SymmetryMode::MirrorX || sym.mode == SymmetryMode::MirrorY || sym.mode == SymmetryMode::MirrorXY;
+    if (mirror) {
+        if (d.image == 0 && st.lastImage != 0)
+            st.done.clear();
+        st.lastImage = d.image;
+        if (st.done.count({d.x, d.y, d.flipX, d.flipY, size, strength}))
+            return;
+        images = symmetryDabs(sym, d, W, H);
+        for (const Dab& o : images)
+            st.done.insert({o.x, o.y, o.flipX, o.flipY, size, strength});
+    }
+    // The cells the stamp would light, and the ones refused before beside
+    // them: a cell that would be a speck alone can be lit with the next one
+    // along the rim.
+    std::map<Pos, Cell> lit;  // (y, x) -> its lit cell
+    auto consider = [&](int x, int y) {
+        if (lit.count({y, x}))
+            return true;
+        if (stroke.painted(x, y) || !stroke.paintable(x, y))
+            return false;
+        const auto out = paintCell(stroke, x, y, strength);
+        if (!out || *out == c.at(x, y))
+            return false;
+        lit.emplace(Pos{y, x}, *out);
+        return true;
+    };
+    // A cell with its images under the mirror, itself first.
+    auto orbit = [&](int x, int y) {
+        std::vector<Pos> out{{x, y}};
+        if (mirror)
+            for (const Dab& o : symmetryDabs(sym, Dab{x, y}, W, H))
+                if (std::find(out.begin(), out.end(), Pos{o.x, o.y}) == out.end())
+                    out.push_back({o.x, o.y});
+        return out;
+    };
+    for (const Dab& o : images)
+        for (const auto& [x, y] : footprint(o.x, o.y, size, tip, W, H, o.flipX, o.flipY))
+            consider(x, y);
+    if (lit.empty())
+        return;
+    // The refused cells among the eight neighbours of the cells the stamp
+    // would light, looked up there: the work a stamp does is its own cells',
+    // however many cells the stroke has refused. Each is tried again with
+    // its images; one that can no longer light leaves the refused cells.
+    std::set<Pos> again;  // (x, y)
+    for (const auto& [at, out] : lit)
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+                if (dx || dy) {
+                    ++refusalLookupCount;
+                    if (const Pos p{at.second + dx, at.first + dy}; st.refused.count(p))
+                        again.insert(p);
+                }
+    for (const auto& [x, y] : again) {
+        const auto members = orbit(x, y);
+        if (!std::all_of(members.begin(), members.end(), [&](const Pos& p) { return consider(p.first, p.second); }))
+            for (const Pos& p : members)
+                st.refused.erase(p);
+    }
+    // Each cell with its images under the mirror: a group lights or gives
+    // way as one, and a cell lights only when every image of it would (each
+    // image unpainted, selected and facing the light), so an orbit with an
+    // image the stamp can't light stays as it is. Groups in row order, by
+    // their first cell.
+    std::vector<std::vector<std::pair<Pos, Cell>>> groups;  // ((x, y), cell)
+    {
+        std::set<Pos> seen;  // (y, x)
+        for (const auto& [at, out] : lit) {
+            if (seen.count(at))
+                continue;
+            std::vector<std::pair<Pos, Cell>> group;
+            bool whole = true;
+            for (const Pos& p : orbit(at.second, at.first)) {
+                seen.insert({p.second, p.first});
+                if (const auto it = lit.find({p.second, p.first}); it != lit.end())
+                    group.push_back({p, it->second});
+                else
+                    whole = false;
+            }
+            if (whole)
+                groups.push_back(std::move(group));
+            else
+                for (const auto& [p, cell] : group)
+                    st.refused.erase(p);
+        }
+    }
+    if (groups.empty())
+        return;
+    // The stamp is judged by the findings it would add to the stroke's
+    // start, by the guard. A finding takes back the groups with a cell at it
+    // or next to it, either end of a skip or a wide rung's run, and where no
+    // group is that near every one, as the form brush takes cells back; then
+    // each group taken back is tried alone, in row order, again while one
+    // lights, so a group the stamp tries is left unlit only where lighting
+    // it alone would add a finding.
+    StrokeLint& guard = *st.guard;
+    Canvas& next = *st.next;
+    std::vector<char> on(groups.size(), 1);
+    auto judge = [&](const std::vector<size_t>& trying) {
+        std::vector<std::pair<int, int>> changed;
+        for (size_t g : trying)
+            for (const auto& [p, out] : groups[g]) {
+                next.at(p.first, p.second) = out;
+                changed.push_back(p);
+            }
+        const auto found = guard.judge(next, changed);
+        if (found.empty())
+            guard.keep();
+        else
+            for (const auto& p : changed)
+                next.at(p.first, p.second) = guard.canvas().at(p.first, p.second);
+        return found;
+    };
+    for (;;) {
+        std::vector<size_t> trying;
+        for (size_t g = 0; g < groups.size(); ++g)
+            if (on[g])
+                trying.push_back(g);
+        if (trying.empty())
+            break;
+        const auto found = judge(trying);
+        if (found.empty())
+            break;
+        bool dropped = false;
+        for (size_t g : trying)
+            for (const auto& [p, out] : groups[g]) {
+                const bool near = std::any_of(found.begin(), found.end(), [&](const lint::LadderFinding& f) {
+                    return (std::abs(p.first - f.x) <= 1 && std::abs(p.second - f.y) <= 1) ||
+                           (std::abs(p.first - f.nx) <= 1 && std::abs(p.second - f.ny) <= 1);
+                });
+                if (near) {
+                    on[g] = 0;
+                    dropped = true;
+                    break;
+                }
+            }
+        if (!dropped)
+            std::fill(on.begin(), on.end(), 0);
+    }
+    for (bool more = true; more;) {
+        more = false;
+        for (size_t g = 0; g < groups.size(); ++g)
+            if (!on[g] && judge({g}).empty())
+                on[g] = 1, more = true;
+    }
+    for (size_t g = 0; g < groups.size(); ++g)
+        for (const auto& [p, out] : groups[g]) {
+            if (on[g]) {
+                stroke.set(p.first, p.second, out, strength);
+                st.refused.erase(p);
+            } else {
+                st.refused.insert(p);
+            }
+        }
 }
 
 } // namespace bw

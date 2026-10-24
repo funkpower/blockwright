@@ -9,8 +9,8 @@
 // connectivity, the glyph brush's glyph, Filled Shapes for
 // the rectangle and ellipse, the ramp gradient's shape, rungs and banding,
 // the select tool's paste mode, sample merged for the eyedropper and
-// fill, and the clone stamp's Aligned. Each row is
-// shown while the active tool reads it (optionsFor). It edits the view's
+// fill, the clone stamp's Aligned and the rim light's Keep the lint clean.
+// Each row is shown while the active tool reads it (optionsFor). It edits the view's
 // settings and the tools' and follows them, so the menus and the dock stay
 // in step.
 
@@ -31,6 +31,7 @@ class CanvasView;
 class CloneTool;
 class GlyphTool;
 class GradientTool;
+class RimLightTool;
 class SelectTool;
 class Tool;
 class ToolRegistry;
@@ -59,6 +60,7 @@ public:
         Gradient = 1 << 16,  // the ramp gradient's shape, rungs and banding
         Texture = 1 << 17,   // the texture stamp's kind, density and seed
         CloneAligned = 1 << 18,  // the clone stamp keeps its distance across strokes
+        RimLint = 1 << 19,       // the rim light keeps the ladder lint clean
     };
     Q_DECLARE_FLAGS(Options, Option)
 
@@ -105,6 +107,7 @@ public:
     QSpinBox* gradientToBox() const { return gradientTo_; }
     QComboBox* gradientBandingBox() const { return gradientBanding_; }
     QCheckBox* cloneAlignedBox() const { return cloneAligned_; }
+    QCheckBox* rimLintBox() const { return rimLint_; }
 
 private:
     // Shows the view's and the tools' settings.
@@ -125,6 +128,7 @@ private:
     GlyphTool* glyphTool_;
     GradientTool* gradientTool_;
     CloneTool* cloneTool_;
+    RimLightTool* rimTool_;
     QFormLayout* form_layout_;
     QLabel* title_;
     QLabel* none_;
@@ -158,6 +162,7 @@ private:
     QSpinBox* gradientTo_;
     QComboBox* gradientBanding_;
     QCheckBox* cloneAligned_;
+    QCheckBox* rimLint_;
     Options shown_;
     bool syncing_ = false;
 };

@@ -625,17 +625,36 @@ std::unique_ptr<Brush> OutlineTool::makeBrush(Qt::MouseButton) const {
     return std::make_unique<OutlineBrush>(view()->ramp(), view()->outlineShape());
 }
 
-RimLightTool::RimLightTool(QObject* parent) : BrushTool(QStringLiteral("rimLight"), tr("R&im Light Brush"), parent) {}
+namespace {
+
+const QString kRimKeepLintKey = QStringLiteral("rimLight/keepLint");
+
+} // namespace
+
+RimLightTool::RimLightTool(QObject* parent) : BrushTool(QStringLiteral("rimLight"), tr("R&im Light Brush"), parent) {
+    keepLint_ = appSettings()->value(kRimKeepLintKey, false).toBool();
+}
+
+void RimLightTool::setKeepLint(bool keep) {
+    if (keep == keepLint_)
+        return;
+    keepLint_ = keep;
+    appSettings()->setValue(kRimKeepLintKey, keep);
+    settingsChanged();
+    emit changed();
+}
 
 QString RimLightTool::status() const {
-    return view() ? tr("Ramp %1, light from %2")
-                        .arg(QString::fromStdString(view()->ramp().name),
-                             compassName(view()->brushSettings().lightDirection))
-                  : QString();
+    if (!view())
+        return QString();
+    const QString s = tr("Ramp %1, light from %2")
+                          .arg(QString::fromStdString(view()->ramp().name),
+                               compassName(view()->brushSettings().lightDirection));
+    return keepLint_ ? tr("%1, keeping the lint clean").arg(s) : s;
 }
 
 std::unique_ptr<Brush> RimLightTool::makeBrush(Qt::MouseButton) const {
-    return std::make_unique<RimLightBrush>(view()->ramp(), brushSettings().lightDirection);
+    return std::make_unique<RimLightBrush>(view()->ramp(), brushSettings().lightDirection, keepLint_);
 }
 
 QString textureKindName(TextureKind kind) {

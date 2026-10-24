@@ -545,6 +545,133 @@ TEST_CASE("the rim-light brush lights the edges facing the dock's light by one r
     CHECK(cells(west) == std::set<Point>{{2, 1}, {2, 2}, {2, 3}, {2, 4}, {3, 1}, {3, 4}});
 }
 
+namespace {
+
+RimLightTool* rimTool(MainWindow& w) {
+    auto* t = qobject_cast<RimLightTool*>(w.tools()->find(QStringLiteral("rimLight")));
+    REQUIRE(t);
+    return t;
+}
+
+// The rim light's settings, forgotten before and after a test, from the
+// scratch settings only.
+struct FreshRimSettings {
+    static QString dir() { return QFileInfo(bwtest::scratchSettingsFile()).absolutePath(); }
+    FreshRimSettings() {
+        REQUIRE(bwtest::settingsInScratch(dir()));
+        appSettings()->remove(QStringLiteral("rimLight"));
+    }
+    ~FreshRimSettings() {
+        if (bwtest::settingsInScratch(dir()))
+            appSettings()->remove(QStringLiteral("rimLight"));
+    }
+};
+
+} // namespace
+
+TEST_CASE("the rim light's Keep the lint clean, from the dock, leaves out the cells that would skip a rung", "[settings]") {
+    FreshRimSettings fresh;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setRamp(steel());
+    v->setBrushSettings(BrushSettings{12, Tip::Square, 1.0, PressureTo::Nothing});
+    paintBlob(w);
+    QCheckBox* keep = dock(w)->rimLintBox();
+    // only the rim light shows it
+    use(w, "form");
+    CHECK_FALSE(keep->isVisibleTo(dock(w)));
+    use(w, "rimLight");
+    CHECK(dock(w)->shown().testFlag(ToolOptions::Option::RimLint));
+    CHECK(keep->isVisibleTo(dock(w)));
+    CHECK_FALSE(keep->isChecked());
+    CHECK_FALSE(rimTool(w)->keepLint());
+    CHECK_FALSE(rimTool(w)->status().contains(QStringLiteral("lint")));
+    // from the east the accent lights the rounding at the top and bottom
+    // right, rung 11 to 12 beside rung 10: two rung skips (as the core's)
+    QComboBox* light = dock(w)->lightBox();
+    light->setCurrentIndex(light->findData(int(Compass::E)));
+    const int steps = w.document()->undoStack()->index();
+    const CellEdit accent = drag(w, {{4, 4}});
+    landed(w, accent, steps);
+    CHECK(cells(accent) == std::set<Point>{{5, 1}, {5, 4}});
+    w.document()->undoStack()->undo();
+    // kept clean, neither lights
+    keep->setChecked(true);
+    CHECK(rimTool(w)->keepLint());
+    CHECK(rimTool(w)->status().contains(QStringLiteral("keeping the lint clean")));
+    CHECK(drag(w, {{4, 4}}).empty());
+    CHECK(w.document()->undoStack()->index() == steps);
+    CHECK(lint::checkLadder(w.document()->canvas(), steel()).clean());
+    // from the north the top row lights as the accent lights it: it adds
+    // nothing
+    light->setCurrentIndex(light->findData(int(Compass::N)));
+    const CellEdit north = drag(w, {{4, 4}});
+    landed(w, north, steps);
+    CHECK(cells(north) == std::set<Point>{{2, 1}, {3, 1}, {4, 1}, {5, 1}});
+    CHECK(lint::checkLadder(w.document()->canvas(), steel()).clean());
+    // and the dock follows the tool
+    rimTool(w)->setKeepLint(false);
+    CHECK_FALSE(keep->isChecked());
+}
+
+TEST_CASE("the rim light's Keep the lint clean, changed mid-stroke, redoes the stroke with it", "[settings]") {
+    FreshRimSettings fresh;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setRamp(steel());
+    v->setBrushSettings(BrushSettings{12, Tip::Square, 1.0, PressureTo::Nothing});
+    paintBlob(w);
+    use(w, "rimLight");
+    QComboBox* light = dock(w)->lightBox();
+    light->setCurrentIndex(light->findData(int(Compass::E)));
+    RimLightTool* t = rimTool(w);
+    const int steps = w.document()->undoStack()->index();
+    // pressed as the accent, the two rung skips show; turned on before the
+    // release, the stroke is kept clean and lands nothing
+    REQUIRE_FALSE(t->keepLint());
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 4, 4), Qt::LeftButton, Qt::LeftButton);
+    CHECK(cells(t->pending()) == std::set<Point>{{5, 1}, {5, 4}});
+    dock(w)->rimLintBox()->setChecked(true);
+    CHECK(t->keepLint());
+    CHECK(t->pending().empty());
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 4, 4), Qt::LeftButton, Qt::NoButton);
+    CHECK(w.document()->undoStack()->index() == steps);
+    CHECK(lint::checkLadder(w.document()->canvas(), steel()).clean());
+    // and back: pressed kept clean, turned off before the release, the
+    // accent's cells land
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 4, 4), Qt::LeftButton, Qt::LeftButton);
+    CHECK(t->pending().empty());
+    t->setKeepLint(false);
+    CHECK_FALSE(dock(w)->rimLintBox()->isChecked());
+    const CellEdit accent = t->pending();
+    CHECK(cells(accent) == std::set<Point>{{5, 1}, {5, 4}});
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 4, 4), Qt::LeftButton, Qt::NoButton);
+    landed(w, accent, steps);
+}
+
+TEST_CASE("the rim light's Keep the lint clean is kept between runs", "[settings]") {
+    FreshRimSettings fresh;
+    {
+        MainWindow w;
+        CHECK_FALSE(rimTool(w)->keepLint());
+        CHECK_FALSE(dock(w)->rimLintBox()->isChecked());
+        dock(w)->rimLintBox()->setChecked(true);
+        CHECK(rimTool(w)->keepLint());
+    }
+    REQUIRE(bwtest::settingsInScratch(FreshRimSettings::dir()));
+    CHECK(appSettings()->value(QStringLiteral("rimLight/keepLint")).toBool());
+    {
+        MainWindow w;
+        CHECK(rimTool(w)->keepLint());
+        CHECK(dock(w)->rimLintBox()->isChecked());
+        rimTool(w)->setKeepLint(false);
+        CHECK_FALSE(dock(w)->rimLintBox()->isChecked());
+    }
+    CHECK(appSettings()->value(QStringLiteral("rimLight/keepLint")).toBool() == false);
+}
+
 TEST_CASE("the pencil is 4-connected by default and 8-connected from the dock") {
     MainWindow w;
     REQUIRE(bwtest::showExposed(&w));
