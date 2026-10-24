@@ -3,6 +3,7 @@
 #include "canvas_view.h"
 #include "select_tool.h"
 #include "palette_widget.h"
+#include "publish.h"
 
 #include "blockwright/credits.h"
 #include "blockwright/glyph_sets.h"
@@ -156,6 +157,8 @@ void MainWindow::createActions() {
     file->addSeparator();
     a = file->addAction(tr("SA&UCE..."), this, &MainWindow::editSauce);
     a->setObjectName(QStringLiteral("sauce"));
+    file->addSeparator();
+    (new Publisher(this))->addActions(file);
     file->addSeparator();
     a = file->addAction(tr("&Quit"), this, &QWidget::close);
     a->setShortcut(QKeySequence::Quit);

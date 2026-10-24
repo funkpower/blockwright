@@ -31,6 +31,7 @@ add_executable(blockwright-tests
   test_mirc.cpp
   test_outline.cpp
   test_outline_property.cpp
+  test_pipeline.cpp
   test_shading_brushes.cpp
   test_soft_brush.cpp
   test_sauce.cpp
@@ -153,6 +154,19 @@ target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_C
                                                         BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
 set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
 catch_discover_tests(blockwright-app-tests
+  PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
+  DISCOVERY_MODE PRE_TEST)
+
+# File > Publish to Library and Send to WeeChat: its main points the settings
+# and the Library at scratch folders before the QApplication exists.
+add_executable(blockwright-publish-tests
+  test_app_publish.cpp
+  scratch_settings.h
+  util.h
+)
+target_link_libraries(blockwright-publish-tests PRIVATE blockwright_app Catch2::Catch2)
+target_compile_definitions(blockwright-publish-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+catch_discover_tests(blockwright-publish-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
 

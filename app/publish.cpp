@@ -1,0 +1,306 @@
+#include "publish.h"
+
+#include "canvas_view.h"
+#include "document.h"
+#include "main_window.h"
+#include "settings.h"
+
+#include <QAction>
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFormLayout>
+#include <QHBoxLayout>
+#include <QLineEdit>
+#include <QMenu>
+#include <QMessageBox>
+#include <QProcess>
+#include <QPushButton>
+#include <QSettings>
+#include <QSpinBox>
+#include <QStatusBar>
+
+namespace bw {
+
+namespace {
+
+std::filesystem::path fspath(const QString& s) { return std::filesystem::path(QFile::encodeName(s).toStdString()); }
+
+QString qpath(const std::filesystem::path& p) { return QFile::decodeName(QByteArray::fromStdString(p.string())); }
+
+const QString kLibraryKey = QStringLiteral("pipeline/library");
+const QString kHostKey = QStringLiteral("pipeline/host");
+const QString kWipKey = QStringLiteral("pipeline/wipDir");
+QString roundKey(const QString& slug) { return QStringLiteral("pipeline/rounds/") + slug; }
+
+QString lossRefusal(const AnsiOutput& out) {
+    return QObject::tr("The .ans would lose data:\n%1").arg(saveWarning(out));
+}
+
+QDialog* formDialog(QWidget* parent, const QString& title, QFormLayout** form, QDialogButtonBox** buttons) {
+    auto* d = new QDialog(parent);
+    d->setWindowTitle(title);
+    *form = new QFormLayout(d);
+    *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, d);
+    QObject::connect(*buttons, &QDialogButtonBox::accepted, d, &QDialog::accept);
+    QObject::connect(*buttons, &QDialogButtonBox::rejected, d, &QDialog::reject);
+    return d;
+}
+
+QLineEdit* field(QDialog* d, const char* name, const QString& value) {
+    auto* e = new QLineEdit(value, d);
+    e->setObjectName(QString::fromLatin1(name));
+    return e;
+}
+
+} // namespace
+
+Publisher::Publisher(MainWindow* window) : QObject(window), window_(window) {
+    setObjectName(QStringLiteral("publisher"));
+}
+
+void Publisher::addActions(QMenu* file) {
+    QAction* a = file->addAction(tr("Publish to &Library..."), this, &Publisher::publishInteractive);
+    a->setObjectName(QStringLiteral("publishToLibrary"));
+    a = file->addAction(tr("Send to &WeeChat..."), this, &Publisher::sendInteractive);
+    a->setObjectName(QStringLiteral("sendToWeechat"));
+}
+
+QString Publisher::defaultSlug() const {
+    const QString path = window_->document()->path();
+    if (path.isEmpty())
+        return {};
+    return QString::fromStdString(pipeline::slugFrom(QFileInfo(path).completeBaseName().toStdString()));
+}
+
+std::optional<pipeline::PublishPlan> Publisher::planPublish(const QString& library, const QString& slug,
+                                                            const QString& tags, QString* error,
+                                                            bool allowLossy) {
+    // A floating selection is published where it floats, as Save does.
+    window_->canvasView()->finishTool();
+    const AnsiOutput out = window_->document()->encode();
+    if (out.lossy() && !allowLossy) {
+        *error = lossRefusal(out);
+        return std::nullopt;
+    }
+    try {
+        pipeline::PublishRequest r;
+        r.library = fspath(library);
+        r.slug = slug.toStdString();
+        r.tags = pipeline::parseTags(tags.toStdString());
+        r.ans = out.bytes;
+        r.now = QDateTime::currentSecsSinceEpoch();
+        return pipeline::planPublish(r);
+    } catch (const pipeline::PipelineError& e) {
+        *error = QString::fromStdString(e.what());
+        return std::nullopt;
+    }
+}
+
+bool Publisher::publish(const pipeline::PublishPlan& plan, QString* error) {
+    try {
+        pipeline::publish(plan);
+        return true;
+    } catch (const pipeline::PipelineError& e) {
+        *error = QString::fromStdString(e.what());
+        return false;
+    }
+}
+
+int Publisher::nextRound(const QString& slug) const { return appSettings()->value(roundKey(slug), 0).toInt() + 1; }
+
+Publisher::SendResult Publisher::sendToWeechat(const QString& host, const QString& wipDir, const QString& slug,
+                                               int round, bool allowLossy) {
+    SendResult result;
+    window_->canvasView()->finishTool();
+    const AnsiOutput out = window_->document()->encode();
+    if (out.lossy() && !allowLossy) {
+        result.message = lossRefusal(out);
+        return result;
+    }
+    QStringList args;
+    try {
+        for (const std::string& a :
+             pipeline::sshArguments({host.toStdString(), wipDir.toStdString()}, slug.toStdString(), round,
+                                    out.bytes.size()))
+            args << QString::fromStdString(a);
+    } catch (const pipeline::PipelineError& e) {
+        result.message = QString::fromStdString(e.what());
+        return result;
+    }
+
+    QProcess ssh;
+    ssh.start(ssh_, args);
+    if (!ssh.waitForStarted(5000)) {
+        result.message = tr("Could not run %1: %2").arg(ssh_, ssh.errorString());
+        return result;
+    }
+    ssh.write(out.bytes.data(), qint64(out.bytes.size()));
+    ssh.closeWriteChannel();
+    // The connect timeout is 10 s and the fifo write 5 s.
+    if (!ssh.waitForFinished(30000)) {
+        ssh.kill();
+        ssh.waitForFinished(1000);
+        result.message = tr("%1 took more than 30 seconds and was stopped").arg(ssh_);
+        return result;
+    }
+    const QStringList lines =
+        QString::fromUtf8(ssh.readAllStandardOutput()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    const QString last = lines.isEmpty() ? QString() : lines.last().trimmed();
+    if (ssh.exitStatus() != QProcess::NormalExit || ssh.exitCode() != 0 ||
+        (last != QLatin1String(pipeline::kReloaded.data(), qsizetype(pipeline::kReloaded.size())) &&
+         last != QLatin1String(pipeline::kNoFifo.data(), qsizetype(pipeline::kNoFifo.size())))) {
+        const QString err = QString::fromUtf8(ssh.readAllStandardError()).trimmed();
+        result.message = tr("Sending to %1 failed (exit %2)%3").arg(host).arg(ssh.exitCode()).arg(
+            err.isEmpty() ? QString() : QStringLiteral(":\n") + err);
+        return result;
+    }
+    result.ok = true;
+    result.reloaded = last == QLatin1String(pipeline::kReloaded.data(), qsizetype(pipeline::kReloaded.size()));
+    if (!result.reloaded)
+        result.message = tr("No running WeeChat on %1 has a fifo: run /fifo enable, then /ascii reload, in WeeChat")
+                             .arg(host);
+    const auto s = appSettings();
+    if (s->value(roundKey(slug), 0).toInt() < round)
+        s->setValue(roundKey(slug), round);
+    return result;
+}
+
+void Publisher::publishInteractive() {
+    QFormLayout* form;
+    QDialogButtonBox* buttons;
+    QDialog* d = formDialog(window_, tr("Publish to Library"), &form, &buttons);
+    d->setObjectName(QStringLiteral("publishDialog"));
+    QLineEdit* library = field(d, "publishLibrary", appSettings()->value(kLibraryKey).toString());
+    auto* browse = new QPushButton(tr("Browse..."), d);
+    auto* row = new QHBoxLayout;
+    row->addWidget(library);
+    row->addWidget(browse);
+    QLineEdit* slug = field(d, "publishSlug", defaultSlug());
+    QLineEdit* tags = field(d, "publishTags", QString());
+    tags->setPlaceholderText(tr("comma or space separated; %1 is always added")
+                                 .arg(QString::fromLatin1(pipeline::kArtist.data(),
+                                                          qsizetype(pipeline::kArtist.size()))));
+    form->addRow(tr("Library folder:"), row);
+    form->addRow(tr("Piece name:"), slug);
+    form->addRow(tr("Tags:"), tags);
+    form->addRow(buttons);
+    const auto validate = [=] {
+        buttons->button(QDialogButtonBox::Ok)
+            ->setEnabled(!library->text().trimmed().isEmpty() && pipeline::validSlug(slug->text().toStdString()));
+    };
+    connect(library, &QLineEdit::textChanged, d, validate);
+    connect(slug, &QLineEdit::textChanged, d, validate);
+    connect(browse, &QPushButton::clicked, d, [=] {
+        const QString dir = QFileDialog::getExistingDirectory(d, tr("Library Folder"), library->text());
+        if (!dir.isEmpty())
+            library->setText(dir);
+    });
+    validate();
+    const bool accepted = d->exec() == QDialog::Accepted;
+    const QString libraryDir = library->text().trimmed(), name = slug->text(), tagText = tags->text();
+    delete d;
+    if (!accepted)
+        return;
+
+    QString error;
+    const std::optional<pipeline::PublishPlan> plan = planPublish(libraryDir, name, tagText, &error, true);
+    if (!plan) {
+        QMessageBox::warning(window_, tr("Publish to Library"), tr("Could not publish:\n%1").arg(error));
+        return;
+    }
+    appSettings()->setValue(kLibraryKey, libraryDir);
+    QStringList tagList;
+    for (const std::string& t : plan->tags)
+        tagList << QString::fromStdString(t);
+    QString question =
+        tr("%1 %2, tagged %3.\n\nThis writes:\n%4\n%5\n%6\n%7")
+            .arg(plan->replaces ? tr("Replace") : tr("Publish"), QString::fromStdString(plan->key),
+                 tagList.join(QStringLiteral(", ")), qpath(plan->ansPath), qpath(plan->txtPath),
+                 qpath(plan->tagsPath), qpath(plan->datesPath));
+    const AnsiOutput out = window_->document()->encode();
+    if (out.lossy())
+        question += QStringLiteral("\n\n") + saveWarning(out);
+    else
+        question += tr("\n\nPublish?");
+    if (QMessageBox::question(window_, tr("Publish to Library"), question, QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes)
+        return;
+    if (!publish(*plan, &error)) {
+        QMessageBox::warning(window_, tr("Publish to Library"), tr("Could not publish:\n%1").arg(error));
+        return;
+    }
+    window_->statusBar()->showMessage(tr("Published %1").arg(QString::fromStdString(plan->key)), 5000);
+}
+
+void Publisher::sendInteractive() {
+    QFormLayout* form;
+    QDialogButtonBox* buttons;
+    QDialog* d = formDialog(window_, tr("Send to WeeChat"), &form, &buttons);
+    d->setObjectName(QStringLiteral("sendDialog"));
+    const auto s = appSettings();
+    QLineEdit* host = field(d, "sendHost", s->value(kHostKey).toString());
+    host->setPlaceholderText(tr("ssh host, as in ssh's config"));
+    QLineEdit* wip = field(d, "sendWipDir", s->value(kWipKey, QString::fromStdString(pipeline::WeechatTarget{}.wipDir)).toString());
+    QLineEdit* slug = field(d, "sendSlug", defaultSlug());
+    auto* round = new QSpinBox(d);
+    round->setObjectName(QStringLiteral("sendRound"));
+    round->setRange(1, 999);
+    round->setValue(nextRound(slug->text()));
+    form->addRow(tr("Host:"), host);
+    form->addRow(tr("Wip folder:"), wip);
+    form->addRow(tr("Piece name:"), slug);
+    form->addRow(tr("Round:"), round);
+    form->addRow(buttons);
+    const auto validate = [=] {
+        buttons->button(QDialogButtonBox::Ok)
+            ->setEnabled(pipeline::validHost(host->text().toStdString()) &&
+                         pipeline::validRemoteDir(wip->text().toStdString()) &&
+                         pipeline::validSlug(slug->text().toStdString()));
+    };
+    connect(host, &QLineEdit::textChanged, d, validate);
+    connect(wip, &QLineEdit::textChanged, d, validate);
+    connect(slug, &QLineEdit::textChanged, d, validate);
+    connect(slug, &QLineEdit::textChanged, d, [=, this](const QString& text) { round->setValue(nextRound(text)); });
+    validate();
+    const bool accepted = d->exec() == QDialog::Accepted;
+    const QString hostName = host->text(), wipDir = wip->text(), name = slug->text();
+    const int roundNo = round->value();
+    delete d;
+    if (!accepted)
+        return;
+
+    // Stamped before the loss check below, so the warning covers it.
+    window_->canvasView()->finishTool();
+    const QString target = QStringLiteral("%1:%2/%3")
+                               .arg(hostName, wipDir,
+                                    QString::fromStdString(pipeline::wipName(name.toStdString(), roundNo)));
+    QString question = tr("Copy the piece to %1 and reload WeeChat's ascii script?").arg(target);
+    const AnsiOutput out = window_->document()->encode();
+    if (out.lossy())
+        question += QStringLiteral("\n\n") + saveWarning(out);
+    if (QMessageBox::question(window_, tr("Send to WeeChat"), question, QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes)
+        return;
+    s->setValue(kHostKey, hostName);
+    s->setValue(kWipKey, wipDir);
+    const SendResult r = sendToWeechat(hostName, wipDir, name, roundNo, true);
+    if (!r.ok) {
+        QMessageBox::warning(window_, tr("Send to WeeChat"), r.message);
+        return;
+    }
+    if (!r.reloaded) {
+        QMessageBox::information(window_, tr("Send to WeeChat"), tr("Copied to %1.\n\n%2").arg(target, r.message));
+        return;
+    }
+    window_->statusBar()->showMessage(
+        tr("Sent; /ascii %1 is ready").arg(QString::fromStdString(pipeline::wipName(name.toStdString(), roundNo))
+                                                .chopped(4)),
+        5000);
+}
+
+} // namespace bw

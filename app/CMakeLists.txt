@@ -21,6 +21,8 @@ add_library(blockwright_app STATIC
   main_window_library.cpp
   palette_widget.cpp
   palette_widget.h
+  publish.cpp
+  publish.h
   reference_scale.cpp
   reference_scale.h
   sauce_dialog.cpp

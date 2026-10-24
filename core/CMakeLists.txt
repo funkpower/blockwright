@@ -1,6 +1,7 @@
 # The core library: cell model, palette, CP437, ANSI and SAUCE codecs, IRC
 # text (mIRC colours and the row encoder), ramps, brushes and the lint.
-# Plain C++20 (QtCore for the Library only); it must never link QtWidgets.
+# Plain C++20 (QtCore for the Library and tag case folding only); it must
+# never link QtWidgets.
 add_library(blockwright_core STATIC
   src/ansi.cpp
   src/brush.cpp
@@ -24,6 +25,7 @@ add_library(blockwright_core STATIC
   src/lint.cpp
   src/mirc.cpp
   src/palette.cpp
+  src/pipeline.cpp
   src/ramp.cpp
   src/sauce.cpp
   src/selection.cpp
@@ -32,7 +34,8 @@ add_library(blockwright_core STATIC
 add_library(blockwright::core ALIAS blockwright_core)
 target_include_directories(blockwright_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # The Library (library.cpp) reads JSON sidecars and finds the app data
-# directory through QtCore, which PLAN §4 allows in core; nothing else does.
+# directory through QtCore, and the pipeline (pipeline.cpp) lowercases tags
+# with QString, which PLAN §4 allows in core; nothing else does.
 target_link_libraries(blockwright_core PRIVATE Qt6::Core)
 # Where the bundled library is installed, from the binaries' directory.
 file(RELATIVE_PATH BW_LIBRARY_FROM_BINDIR ${CMAKE_INSTALL_FULL_BINDIR}
