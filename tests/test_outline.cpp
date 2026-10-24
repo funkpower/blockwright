@@ -337,7 +337,8 @@ TEST_CASE("the outline finds edges whose sides cancel", "[detail]") {
 TEST_CASE("the outline takes half-block fringes as part of the shape", "[detail]") {
     // a w shape whose top row is ▄ fringe (w below, black above), as the
     // ellipse tool and the pencil leave it: the line goes into the fringe's
-    // black half, outside it, and the cells under the fringe stay w
+    // black half, outside it, and the cells under the fringe stay w; the
+    // fringe's ends, with the outside beside them, take the whole line
     Canvas c(10, 6);
     for (int y = 2; y <= 4; ++y)
         for (int x = 2; x <= 7; ++x)
@@ -349,7 +350,11 @@ TEST_CASE("the outline takes half-block fringes as part of the shape", "[detail]
         o.ice = ice;
         const CellEdit e = outlineAll(c, steel(), o);
         const auto w = written(e);
-        for (int x = 3; x <= 6; ++x) {
+        for (const int x : {3, 6}) {
+            REQUIRE(w.count({x, 1}));
+            CHECK(w.at({x, 1}) == rungCell(steel(), 4));
+        }
+        for (int x = 4; x <= 5; ++x) {
             REQUIRE(w.count({x, 1}));
             const Cell& f = w.at({x, 1});
             // K above, w below: with iCE off written ▀ K on w, keeping the
@@ -1897,4 +1902,79 @@ TEST_CASE("a small dab on a thin part takes the line of its body far off", "[det
         CHECK(rungOf(steel(), w.at({20, y})) == 8);
     }
     CHECK(lint::addedFindingsOnce(c, applied(c, e), steel(), cellsOf(e)).empty());
+}
+
+TEST_CASE("the outline closes a fringe's shape half at its ends", "[detail]") {
+    // #53: a ▄/▀ fringe with the outside beside it along the row (an
+    // ellipse's top and bottom rows step in a cell at a time) keeps its shape
+    // half beside the black ground past the half line, so the whole cell
+    // takes the line there: no White pixel of a filled ellipse is left
+    // against black, with iCE on or off
+    const auto exposed = [](const Canvas& c, bool ice) {
+        const int w = c.width(), ph = 2 * c.height();
+        const auto px = [&](int x, int py) -> std::optional<std::uint8_t> {
+            if (x < 0 || py < 0 || x >= w || py >= ph)
+                return std::nullopt;
+            const auto hb = halfBlocks(c.at(x, py / 2), ice);
+            if (!hb)
+                return std::nullopt;
+            return py % 2 ? hb->bottom : hb->top;
+        };
+        int n = 0;
+        for (int py = 0; py < ph; ++py)
+            for (int x = 0; x < w; ++x) {
+                if (px(x, py) != std::optional<std::uint8_t>{White})
+                    continue;
+                bool open = false;
+                for (const auto& [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}})
+                    open = open || px(x + dx, py + dy) == std::optional<std::uint8_t>{Black};
+                if (open) {
+                    ++n;
+                    UNSCOPED_INFO("exposed pixel " << x << "," << py);
+                }
+            }
+        return n;
+    };
+    // the issue's ellipse, and two more sizes
+    for (const auto& box : {std::array{6, 4, 33, 35}, std::array{3, 2, 20, 30}, std::array{10, 1, 37, 24}})
+        for (const bool ice : {true, false}) {
+            INFO("box " << box[0] << "," << box[1] << "," << box[2] << "," << box[3] << " ice " << ice);
+            StrokeOptions o;
+            o.ice = ice;
+            Canvas c(40, 20);
+            plotPixels(c, ellipseShape(box[0], box[1], box[2], box[3], true, 40, 40), White, o).apply(c);
+            REQUIRE(exposed(c, ice) > 0);
+            const Canvas out = applied(c, outlineAll(c, steel(), o));
+            CHECK(exposed(out, ice) == 0);
+            CHECK(lint::checkLadder(out, steel()).clean());
+            CHECK(outlineAll(out, steel(), o).empty());
+        }
+    // a ▐ fringe down a w block's left side: its ends, with the outside above
+    // and below, take the whole line; the middle takes it in the black half
+    Canvas c(10, 8);
+    for (int y = 1; y <= 6; ++y)
+        for (int x = 3; x <= 6; ++x)
+            c.at(x, y) = rungCell(steel(), 8);
+    for (int y = 2; y <= 5; ++y)
+        c.at(2, y) = Cell{U'▐', Color::indexed(Grey), Color::indexed(Black)};
+    for (const bool ice : {true, false}) {
+        INFO("ice " << ice);
+        StrokeOptions o;
+        o.ice = ice;
+        const CellEdit e = outlineAll(c, steel(), o);
+        const auto w = written(e);
+        for (const int y : {2, 5}) {
+            REQUIRE(w.count({2, y}));
+            CHECK(w.at({2, y}) == rungCell(steel(), 4));
+        }
+        for (int y = 3; y <= 4; ++y) {
+            REQUIRE(w.count({2, y}));
+            if (ice)
+                CHECK(w.at({2, y}) == Cell{U'▐', Color::indexed(Grey), Color::indexed(DarkGrey)});
+            else
+                CHECK(w.at({2, y}) == Cell{U'▌', Color::indexed(DarkGrey), Color::indexed(Grey)});
+        }
+        CHECK(lint::addedFindingsOnce(c, applied(c, e), steel(), cellsOf(e)).empty());
+        CHECK(outlineAll(applied(c, e), steel(), o).empty());
+    }
 }

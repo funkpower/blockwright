@@ -237,7 +237,8 @@ public:
     // The values the line may give the edge cell at (x, y), darkest first:
     // the outline colour of the level inside it (lint::outlineRung, or the
     // darkest colour above the ground where that is the ground), then each
-    // rung lighter up to the cell's own. Empty where the line leaves it: off
+    // rung lighter up to the cell's own (for a fringe, the whole cell where
+    // it must close, then its black half). Empty where the line leaves it: off
     // the edge, no interior to read, a cell darker than the line already, a
     // half block of two colours, or a fringe whose shape half is no lighter
     // than the line. The cell as it is is always the last resort.
@@ -252,21 +253,33 @@ public:
             // half, where it is darker than that half
             if (!p->fringe || line / kRungsPerStep >= p->level)
                 return {};
-            Cell out = shown;
+            std::vector<Cell> out;
+            // a shape half with an outside cell beside it along the half
+            // (left or right of a ▀/▄, above or below a ▌/▐) would still
+            // touch the outside past the line: the whole cell takes the
+            // line first (#53)
+            const bool rows = shown.ch == kUpperHalf || shown.ch == kLowerHalf;
+            const auto outside = [&](int nx, int ny) {
+                return nx >= 0 && ny >= 0 && nx < w_ && ny < h_ && !part_[at(nx, ny)];
+            };
+            if (rows ? outside(x - 1, y) || outside(x + 1, y) : outside(x, y - 1) || outside(x, y + 1))
+                out.push_back(rungCell(ramp_, line));
+            Cell half = shown;
             const std::uint8_t ink = ramp_.colours[static_cast<size_t>(line / kRungsPerStep)];
-            (out.fg.index == Black ? out.fg : out.bg) = Color::indexed(ink);
-            if (!ice_ && out.bg.index >= 8) {
-                if (out.fg.index >= 8)
-                    return {};
+            (half.fg.index == Black ? half.fg : half.bg) = Color::indexed(ink);
+            if (!ice_ && half.bg.index >= 8) {
+                if (half.fg.index >= 8)
+                    return out;
                 // the other glyph of the pair, colours swapped: the same
                 // picture with the background dark
-                out.ch = out.ch == kUpperHalf ? kLowerHalf
-                         : out.ch == kLowerHalf ? kUpperHalf
-                         : out.ch == U'▌'       ? U'▐'
-                                                : U'▌';
-                std::swap(out.fg, out.bg);
+                half.ch = half.ch == kUpperHalf ? kLowerHalf
+                          : half.ch == kLowerHalf ? kUpperHalf
+                          : half.ch == U'▌'       ? U'▐'
+                                                  : U'▌';
+                std::swap(half.fg, half.bg);
             }
-            return {out};
+            out.push_back(half);
+            return out;
         }
         const int own = *rung(shown);
         // a cell darker than the line is a line already; a shade into the
@@ -923,8 +936,12 @@ Canvas settleWith(Layer& layer, int ox, int oy, const Canvas& canvas, const Ramp
             }
         }
         // the line's lone fragments
-        const auto lineCell = [&](size_t i) { return already[i] || (darkest[i] && sim.at(i % w, i / w) == *darkest[i]); };
+        // (a fringe the line went into, whole or by its black half, is of it)
         const auto written = [&](size_t i) { return !(sim.at(i % w, i / w) == canvas.at(i % w, i / w)); };
+        const auto lineCell = [&](size_t i) {
+            return already[i] || (darkest[i] && (sim.at(i % w, i / w) == *darkest[i] ||
+                                                 (!outliner.rung(canvas.at(i % w, i / w)) && written(i))));
+        };
         std::vector<char> seen(cands.size(), 0);
         std::vector<size_t> prune, piece(cands.size(), 0);  // the size of each line cell's piece
         for (const auto& [x0, y0] : cells) {

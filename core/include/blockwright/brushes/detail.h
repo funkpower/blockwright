@@ -121,7 +121,10 @@ std::optional<std::pair<double, double>> edgeNormal(const Canvas& canvas, const 
 // fringe keeps its shape half
 // and takes the line in its black half, outside the shape, when the line is
 // darker than that half; with iCE off it is written the way round that keeps
-// the background dark, or left when it can't be.
+// the background dark, or left when it can't be. Where an outside cell lies
+// beside the fringe along its half (left or right of a ▀/▄, above or below a
+// ▌/▐), the shape half would still meet the ground past that line, so the
+// whole cell takes the line first and the half is the next step lighter.
 class OutlineBrush : public Brush {
 public:
     explicit OutlineBrush(Ramp ramp);
