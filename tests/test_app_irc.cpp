@@ -23,6 +23,9 @@
 #include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QUndoStack>
+
+#include <filesystem>
 
 using namespace bw;
 
@@ -61,10 +64,11 @@ AnsiDocument noisyPiece() {
 // The document's canvas as Save writes it and the CLI reads it back.
 Canvas asSaved(const Document& doc) { return parseAnsi(doc.encode().bytes).canvas; }
 
-// A row of 40 half blocks in changing colours: 293 bytes as an IRC line.
-CellBlock halfBlockRow() {
-    CellBlock b(40, 1);
-    for (int x = 0; x < 40; ++x)
+// A row of `n` half blocks in changing colours: 40 are 293 bytes as an IRC
+// line.
+CellBlock halfBlockRow(int n = 40) {
+    CellBlock b(n, 1);
+    for (int x = 0; x < n; ++x)
         b.at(x, 0) = cell(U'▀', std::uint8_t(x % 15 + 1), std::uint8_t((x * 7) % 15 + 1));
     return b;
 }
@@ -79,6 +83,52 @@ QByteArray readAll(const QString& path) {
     QFile f(path);
     REQUIRE(f.open(QIODevice::ReadOnly));
     return f.readAll();
+}
+
+std::filesystem::path fpath(const QString& p) { return std::filesystem::path(QFile::encodeName(p).toStdString()); }
+
+// An 80x25 project at `path` whose budget is `bytes`: row 3 is 293 bytes as
+// an IRC line and row 4 between 301 and 407.
+void writeBudgetProject(const QString& path, std::size_t bytes) {
+    AnsiDocument d = blankDoc(80, 25);
+    const CellBlock row3 = halfBlockRow(40), row4 = halfBlockRow(50);
+    for (int x = 0; x < row3.width; ++x)
+        d.canvas.at(x, 3) = row3.at(x, 0);
+    for (int x = 0; x < row4.width; ++x)
+        d.canvas.at(x, 4) = row4.at(x, 0);
+    project::Project p = project::fromAnsi(d);
+    p.ircBudget = {std::string(irc::kCustomProfile), bytes};
+    project::writeZip(p, fpath(path));
+}
+
+// What `blockwright-cli export --irc [--fit]` does with the project at
+// `path` (cli/main.cpp, exportIrc): the lines it writes and the budget it
+// holds them to, the project's own.
+std::vector<std::string> cliExport(const QString& path, bool fit, std::size_t* budget) {
+    const project::Project p = project::read(fpath(path));
+    *budget = p.ircBudget.bytes;
+    irc::EncodeOptions o;
+    o.fit = fit ? p.ircBudget.bytes : 0;
+    std::vector<std::string> out;
+    for (irc::Line& l : irc::exportLines(project::toAnsi(p).canvas, o))
+        out.push_back(std::move(l.text));
+    return out;
+}
+
+// Picks `bytes` in View > IRC > Budget... and accepts it.
+void pickBudget(MainWindow& w, int bytes) {
+    bool ran = false;
+    QTimer::singleShot(0, &w, [&] {
+        auto* dialog = qobject_cast<IrcBudgetDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialog);
+        dialog->bytesBox()->setValue(bytes);
+        dialog->accept();
+        ran = true;
+    });
+    auto* a = w.findChild<QAction*>(QStringLiteral("ircBudget"));
+    REQUIRE(a);
+    a->trigger();
+    REQUIRE(ran);
 }
 
 } // namespace
@@ -380,7 +430,7 @@ TEST_CASE("the IRC meter follows a lifted selection as it moves") {
 
     // fit measures the floating cells too, against the same budget Export uses
     w.selectTool()->moveBy(0, 4);
-    m->setBudget({std::string(irc::kCustomProfile), 200});
+    w.document()->setIrcBudget({std::string(irc::kCustomProfile), 200});
     act(w, "ircFit")->trigger();
     const std::size_t fitted = m->bytes(6);
     CHECK(fitted <= 200);
@@ -486,4 +536,135 @@ TEST_CASE("the IRC meter follows the alpha lock under a float, as Export lands i
     REQUIRE(w.exportIrcText(path, &error, true));
     CHECK(std::size_t(readAll(path).size()) == (locked ? locked + 1 : 0));
     CHECK(locked == 0);
+}
+
+TEST_CASE("an opened project's IRC budget is the one the meter, fit and Export hold lines to, as the CLI does") {
+    QTemporaryDir dir;
+    const QString bwp = dir.filePath(QStringLiteral("budget.bwp"));
+    writeBudgetProject(bwp, 300);
+    std::size_t cliBudget = 0;
+    const std::vector<std::string> plain = cliExport(bwp, false, &cliBudget);
+    REQUIRE(cliBudget == 300);
+    const auto cliOver = irc::overBudget(plain, cliBudget);
+    REQUIRE(cliOver.size() == 1);
+    REQUIRE(cliOver[0].bytes > 300);
+    REQUIRE(cliOver[0].bytes <= 407);
+
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(bwp, &error));
+    IrcMeter* m = w.ircMeter();
+    CHECK(m->budget() == w.document()->extras().ircBudget);
+    CHECK(m->budget().bytes == 300);
+    CHECK(m->bytes(3) == 293);
+    CHECK(m->state(3) == IrcMeter::RowState::Fits);
+    CHECK(m->bytes(4) == cliOver[0].bytes);
+    CHECK(m->state(4) == IrcMeter::RowState::Over);
+
+    // Export refuses the line the CLI refuses, and writes what the CLI writes
+    const QString txt = dir.filePath(QStringLiteral("budget.txt"));
+    CHECK_FALSE(w.exportIrcText(txt, &error));
+    CHECK(error.contains(QStringLiteral("over the 300-byte budget")));
+    CHECK_FALSE(QFile::exists(txt));
+    REQUIRE(w.exportIrcText(txt, &error, true));
+    CHECK(readAll(txt).toStdString() == irc::joinLines(plain));
+
+    // fit fits to the project's budget: no line over 300, as --fit writes
+    act(w, "ircFit")->trigger();
+    const std::vector<std::string> fitted = cliExport(bwp, true, &cliBudget);
+    REQUIRE(irc::overBudget(fitted, 300).empty());
+    CHECK(m->state(4) == IrcMeter::RowState::Merged);
+    CHECK(m->bytes(4) <= 300);
+    REQUIRE(w.exportIrcText(txt, &error));
+    CHECK(readAll(txt).toStdString() == irc::joinLines(fitted));
+
+    // the dialog starts from the project's budget
+    bool ran = false;
+    QTimer::singleShot(0, &w, [&] {
+        auto* dialog = qobject_cast<IrcBudgetDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialog);
+        CHECK(dialog->bytesBox()->value() == 300);
+        dialog->reject();
+        ran = true;
+    });
+    act(w, "ircBudget")->trigger();
+    CHECK(ran);
+    CHECK(m->budget().bytes == 300);
+    CHECK_FALSE(w.document()->isModified());
+}
+
+TEST_CASE("a budget picked in View > IRC > Budget... is an undo step saved with the project") {
+    QTemporaryDir dir;
+    const QString bwp = dir.filePath(QStringLiteral("budget.bwp"));
+    writeBudgetProject(bwp, 300);
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(bwp, &error));
+    Document* doc = w.document();
+    IrcMeter* m = w.ircMeter();
+    REQUIRE(m->state(4) == IrcMeter::RowState::Over);
+
+    pickBudget(w, 400);
+    CHECK(doc->extras().ircBudget == project::IrcBudget{std::string(irc::kCustomProfile), 400});
+    CHECK(m->budget() == doc->extras().ircBudget);
+    CHECK(m->state(4) == IrcMeter::RowState::Fits);
+    CHECK(doc->isModified());
+    CHECK(w.isWindowModified());
+    CHECK(doc->undoStack()->undoText() == QStringLiteral("IRC Budget"));
+
+    // the meter follows undo and redo
+    doc->undoStack()->undo();
+    CHECK(m->budget().bytes == 300);
+    CHECK(m->state(4) == IrcMeter::RowState::Over);
+    CHECK_FALSE(doc->isModified());
+    doc->undoStack()->redo();
+    CHECK(m->budget().bytes == 400);
+    CHECK(m->state(4) == IrcMeter::RowState::Fits);
+
+    // the same budget again changes nothing
+    pickBudget(w, 400);
+    CHECK(doc->undoStack()->count() == 1);
+
+    REQUIRE(w.save());
+    CHECK_FALSE(doc->isModified());
+    CHECK(project::read(fpath(bwp)).ircBudget == project::IrcBudget{std::string(irc::kCustomProfile), 400});
+    std::size_t cliBudget = 0;
+    const std::vector<std::string> lines = cliExport(bwp, false, &cliBudget);
+    CHECK(cliBudget == 400);
+    CHECK(irc::overBudget(lines, cliBudget).empty());
+
+    MainWindow again;
+    REQUIRE(again.openFile(bwp, &error));
+    CHECK(again.ircMeter()->budget().bytes == 400);
+    CHECK(again.ircMeter()->state(4) == IrcMeter::RowState::Fits);
+}
+
+TEST_CASE("a flat file or a new canvas after a project measures against the default budget") {
+    QTemporaryDir dir;
+    const QString bwp = dir.filePath(QStringLiteral("budget.bwp"));
+    writeBudgetProject(bwp, 300);
+    MainWindow w;
+    QString error;
+    IrcMeter* m = w.ircMeter();
+    REQUIRE(w.openFile(bwp, &error));
+    REQUIRE(m->budget().bytes == 300);
+
+    REQUIRE(w.openFile(QString::fromStdString((bwtest::dataDir() / "golden" / "tux.ans").string()), &error));
+    CHECK(m->budget() == project::IrcBudget{});
+    CHECK(w.document()->extras().ircBudget == project::IrcBudget{});
+
+    REQUIRE(w.openFile(bwp, &error));
+    REQUIRE(m->budget().bytes == 300);
+    REQUIRE(m->state(4) == IrcMeter::RowState::Over);
+    w.newFile();
+    CHECK(m->budget() == project::IrcBudget{});
+    CHECK(m->bytes(4) == 0);
+
+    // a budget picked on a flat file is the document's too: an .ans can't
+    // hold it, so only a project save keeps it
+    REQUIRE(w.openFile(QString::fromStdString((bwtest::dataDir() / "golden" / "tux.ans").string()), &error));
+    pickBudget(w, 200);
+    CHECK(w.document()->extras().ircBudget.bytes == 200);
+    CHECK(w.document()->isModified());
+    CHECK_FALSE(w.document()->flatHoldsAll());
 }

@@ -58,6 +58,7 @@ IrcMeter::IrcMeter(Document* doc, CanvasView* view, GutterScrollArea* scroll)
     connect(doc_, &Document::cellsChanged, this, &IrcMeter::invalidate);
     connect(doc_, &Document::reset, this, &IrcMeter::resetRows);
     connect(doc_, &Document::formatChanged, this, &IrcMeter::resetRows);
+    connect(doc_, &Document::ircBudgetChanged, this, &IrcMeter::resetRows);
     connect(view_, &CanvasView::toolChanged, this, &IrcMeter::toolChanged);
     toolChanged();
     // The rows follow the canvas as it scrolls, zooms and moves.
@@ -67,12 +68,7 @@ IrcMeter::IrcMeter(Document* doc, CanvasView* view, GutterScrollArea* scroll)
     setShown(true);
 }
 
-void IrcMeter::setBudget(const project::IrcBudget& budget) {
-    if (budget == budget_)
-        return;
-    budget_ = budget;
-    resetRows();
-}
+const project::IrcBudget& IrcMeter::budget() const { return doc_->extras().ircBudget; }
 
 void IrcMeter::setFit(bool on) {
     if (on != fit_) {
@@ -99,7 +95,7 @@ irc::EncodeOptions IrcMeter::options() const {
     irc::EncodeOptions o;
     o.swapShades = swapShades_;
     o.pad = pad_;
-    o.fit = fit_ ? budget_.bytes : 0;
+    o.fit = fit_ ? budget().bytes : 0;
     return o;
 }
 
@@ -162,7 +158,7 @@ int IrcMeter::merged(int y) { return row(y).line.merged; }
 
 IrcMeter::RowState IrcMeter::state(int y) {
     const irc::Line& l = row(y).line;
-    if (l.text.size() > budget_.bytes)
+    if (l.text.size() > budget().bytes)
         return RowState::Over;
     return l.merged > 0 ? RowState::Merged : RowState::Fits;
 }
@@ -170,9 +166,9 @@ IrcMeter::RowState IrcMeter::state(int y) {
 QString IrcMeter::describe(int y) {
     const irc::Line& l = row(y).line;
     const std::size_t n = l.text.size();
-    QString s = tr("Row %1: %2 of %3 bytes").arg(y).arg(n).arg(budget_.bytes);
-    if (n > budget_.bytes)
-        s += tr(", over by %1").arg(n - budget_.bytes);
+    QString s = tr("Row %1: %2 of %3 bytes").arg(y).arg(n).arg(budget().bytes);
+    if (n > budget().bytes)
+        s += tr(", over by %1").arg(n - budget().bytes);
     if (l.merged > 0)
         s += tr(", %n cell(s) merged to fit", nullptr, l.merged);
     return s;
@@ -272,7 +268,7 @@ void IrcMeter::paintEvent(QPaintEvent* e) {
     const int first = std::max(0, rowAt(e->rect().top()));
     const int last = std::min(int(rows_.size()) - 1, rowAt(e->rect().bottom()));
     const QFontMetrics fm = fontMetrics();
-    const std::size_t budget = std::max<std::size_t>(1, budget_.bytes);
+    const std::size_t limit = std::max<std::size_t>(1, budget().bytes);
     for (int y = first; y <= last; ++y) {
         const QRect band = rowRect(y);
         const RowState st = state(y);
@@ -281,7 +277,7 @@ void IrcMeter::paintEvent(QPaintEvent* e) {
                         : st == RowState::Merged ? QColor(0xe0, 0x9a, 0x20)
                                                  : palette().color(QPalette::Mid);
         // A bar as long as the row's share of the budget, full when over.
-        const int w = int(std::lround(double(band.width()) * std::min<double>(1.0, double(n) / double(budget))));
+        const int w = int(std::lround(double(band.width()) * std::min<double>(1.0, double(n) / double(limit))));
         p.fillRect(QRect(band.left(), band.top(), w, std::max(1, band.height() - 1)), colour);
         if (band.height() >= fm.height() && n > 0) {
             p.setPen(st == RowState::Fits ? palette().color(QPalette::Text) : Qt::black);

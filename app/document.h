@@ -55,10 +55,12 @@ enum class FileForm { Ansi, ProjectZip, ProjectDirectory };
 // flat .ans.
 FileForm fileFormFor(const QString& path);
 
-// What a project holds that the editor keeps without showing it: the IRC
-// budget, notes.md, the snapshots and the files kept byte for byte (refs/,
-// scripts/, thumbnail.png, what a newer minor version added). Opened with a
-// project and saved back with it; a flat file has the defaults.
+// What a project holds besides its art: the IRC budget (the one the row
+// meter and Export IRC Text hold lines to, set in View > IRC > Budget...),
+// and, kept without showing them, notes.md, the snapshots and the files kept
+// byte for byte (refs/, scripts/, thumbnail.png, what a newer minor version
+// added). Opened with a project and saved back with it; a flat file and a
+// new canvas have the defaults.
 struct ProjectExtras {
     project::IrcBudget ircBudget;
     std::string notes;
@@ -153,6 +155,12 @@ public:
     // ("Snapshot rN"), so it sets the modified flag and the next project
     // save writes it; undo takes it off again.
     void addSnapshot(project::Snapshot snapshot);
+    // Sets the IRC budget (extras().ircBudget) as one undo command ("IRC
+    // Budget"), so it sets the modified flag and the next project save
+    // writes it; false, and nothing pushed, if it changes nothing. An .ans
+    // can't hold it, so a flat save no longer holds all of the document
+    // (flatHoldsAll) unless it is the default.
+    bool setIrcBudget(const project::IrcBudget& budget);
 
     // The SAUCE record, iCE and the composite as one flat document.
     const AnsiDocument& ansi() const { return doc_; }
@@ -272,14 +280,19 @@ signals:
     // and their undo and redo).
     void layersChanged();
     void activeLayerChanged(bw::LayerId id);
+    // extras().ircBudget changed (setIrcBudget, its undo and redo; not on
+    // open or new, see reset).
+    void ircBudgetChanged();
 
 private:
     friend class LayerEditCommand;
     friend class LayerStackCommand;
     friend class LayerPropsCommand;
     friend class SnapshotCommand;
+    friend class IrcBudgetCommand;
 
     void setModified(bool on);
+    void applyIrcBudget(const project::IrcBudget& budget);
     CompositeOptions compositeOptions() const { return {doc_.ice, Cell{}}; }
     // shownBelow, for fitLayerEdit
     std::function<Cell(int, int)> below() const;

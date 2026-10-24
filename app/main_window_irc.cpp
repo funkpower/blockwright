@@ -1,6 +1,6 @@
 // The MainWindow parts for IRC (PLAN §8): File > Export IRC Text... and
-// the View > IRC menu, the row meter and the budget and encoder options
-// it measures with.
+// the View > IRC menu, the row meter, the document's budget and the
+// encoder options it measures with.
 
 #include "main_window.h"
 
@@ -63,7 +63,7 @@ void MainWindow::createIrcActions(QMenu* file, QMenu* view) {
 void MainWindow::editIrcBudget() {
     IrcBudgetDialog dialog(ircMeter_->budget(), this);
     if (dialog.exec() == QDialog::Accepted)
-        ircMeter_->setBudget(dialog.budget());
+        doc_.setIrcBudget(dialog.budget());
 }
 
 bool MainWindow::exportIrcText(const QString& path, QString* error, bool allowOverBudget) {

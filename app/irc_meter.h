@@ -2,8 +2,9 @@
 // The IRC row meter (PLAN §8): a gutter right of the canvas giving every
 // row's size as the IRC encoder writes it, against the byte budget, and
 // the scroll area that makes room for it. Rows over the budget show red;
-// rows fit to the budget by merging colours, amber. The budget and the
-// encoder options are the window's (View > IRC); File > Export IRC Text...
+// rows fit to the budget by merging colours, amber. The budget is the
+// document's (Document::extras, saved with a project); the encoder options
+// are the window's (View > IRC). File > Export IRC Text...
 // writes the lines the meter measures. It measures what the canvas shows:
 // the tool's edit in progress (a floating selection, a drag) over the
 // document's cells, which Export lands before it writes.
@@ -60,8 +61,8 @@ public:
     // holds the view.
     IrcMeter(Document* doc, CanvasView* view, GutterScrollArea* scroll);
 
-    const project::IrcBudget& budget() const { return budget_; }
-    void setBudget(const project::IrcBudget& budget);
+    // The document's budget (Document::setIrcBudget changes it).
+    const project::IrcBudget& budget() const;
     bool fit() const { return fit_; }
     void setFit(bool on);
     bool pad() const { return pad_; }
@@ -120,7 +121,6 @@ private:
     Document* doc_;
     CanvasView* view_;
     GutterScrollArea* scroll_;
-    project::IrcBudget budget_;
     bool fit_ = false;
     bool pad_ = false;
     bool swapShades_ = false;

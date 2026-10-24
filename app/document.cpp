@@ -170,6 +170,20 @@ private:
     project::Snapshot snapshot_;
 };
 
+// A change of the project's IRC budget.
+class IrcBudgetCommand : public QUndoCommand {
+public:
+    IrcBudgetCommand(Document* doc, project::IrcBudget before, project::IrcBudget after)
+        : QUndoCommand(Document::tr("IRC Budget")), doc_(doc), before_(std::move(before)), after_(std::move(after)) {}
+
+    void redo() override { doc_->applyIrcBudget(after_); }
+    void undo() override { doc_->applyIrcBudget(before_); }
+
+private:
+    Document* doc_;
+    project::IrcBudget before_, after_;
+};
+
 // One format change (SAUCE, iCE, letter spacing) on the stack.
 class FormatCommand : public QUndoCommand {
 public:
@@ -301,6 +315,18 @@ bool Document::nextSnapshot(project::Snapshot* snapshot, AnsiOutput* out, QStrin
 
 void Document::addSnapshot(project::Snapshot snapshot) {
     undo_.push(new SnapshotCommand(this, std::move(snapshot)));
+}
+
+bool Document::setIrcBudget(const project::IrcBudget& budget) {
+    if (budget == extras_.ircBudget)
+        return false;
+    undo_.push(new IrcBudgetCommand(this, extras_.ircBudget, budget));
+    return true;
+}
+
+void Document::applyIrcBudget(const project::IrcBudget& budget) {
+    extras_.ircBudget = budget;
+    emit ircBudgetChanged();
 }
 
 bool Document::setFormat(const DocumentFormat& format, const QString& text) {

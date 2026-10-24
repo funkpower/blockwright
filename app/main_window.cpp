@@ -404,10 +404,12 @@ bool MainWindow::maybeSave() {
     if (!doc_.isModified())
         return true;
     QString text = tr("The canvas has unsaved changes.");
-    // Save writes the .ans, which can't hold the layers: they stay open.
+    // Save writes the .ans, which can't hold the layers or an IRC budget:
+    // they stay open.
     const bool flatLoses = doc_.form() == FileForm::Ansi && !doc_.path().isEmpty() && !doc_.flatHoldsAll();
     if (flatLoses)
-        text += tr("\nSave writes %1 flattened and keeps the layers open; only a project saves them.")
+        text += tr("\nSave writes %1 flattened and keeps the document open; only a project saves its layers and "
+                   "IRC budget.")
                     .arg(QFileInfo(doc_.path()).fileName());
     const auto answer = QMessageBox::warning(this, tr("Blockwright"), text,
                                              QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
