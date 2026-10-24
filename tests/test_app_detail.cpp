@@ -40,6 +40,7 @@
 
 #include <map>
 #include <set>
+#include <tuple>
 #include <utility>
 
 using namespace bw;
@@ -155,6 +156,20 @@ struct FreshCloneSettings {
     ~FreshCloneSettings() {
         if (bwtest::settingsInScratch(dir()))
             appSettings()->remove(QStringLiteral("clone"));
+    }
+};
+
+// The texture stamp's settings, forgotten before and after a test, from the
+// scratch settings only.
+struct FreshTextureSettings {
+    static QString dir() { return QFileInfo(bwtest::scratchSettingsFile()).absolutePath(); }
+    FreshTextureSettings() {
+        REQUIRE(bwtest::settingsInScratch(dir()));
+        appSettings()->remove(QStringLiteral("texture"));
+    }
+    ~FreshTextureSettings() {
+        if (bwtest::settingsInScratch(dir()))
+            appSettings()->remove(QStringLiteral("texture"));
     }
 };
 
@@ -780,6 +795,7 @@ TEST_CASE("the dock's radial centre stays on the canvas") {
 }
 
 TEST_CASE("the texture stamp is in the Tools menu and the toolbox, with its key and its rows") {
+    FreshTextureSettings fresh;
     MainWindow w;
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
@@ -807,7 +823,7 @@ TEST_CASE("the texture stamp is in the Tools menu and the toolbox, with its key 
     CHECK_FALSE(d->strengthBox()->isVisibleTo(d));
 
     CHECK(v->textureOptions() == TextureOptions{});
-    REQUIRE(kind->count() == 3);
+    REQUIRE(kind->count() == 5);
     CHECK(kind->currentData().toInt() == int(TextureKind::Scales));
     kind->setCurrentIndex(kind->findData(int(TextureKind::Hoard)));
     density->setValue(0.8);
@@ -826,32 +842,104 @@ TEST_CASE("the texture stamp is in the Tools menu and the toolbox, with its key 
     CHECK(v->textureOptions() == TextureOptions{TextureKind::Scales, kMaxTextureDensity, 0});
 }
 
-TEST_CASE("a texture stamp drag paints the dock's texture, one undo step") {
+TEST_CASE("the texture picker offers every kind by name, brick and noise last") {
+    FreshTextureSettings fresh;
     MainWindow w;
-    REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
-    v->setRamp(steel());
-    v->setBrushSettings(BrushSettings{9, Tip::Square, 1.0, PressureTo::Nothing, Compass::NE});
-    const TextureOptions t{TextureKind::Hoard, 1.6, 9};
-    v->setTextureOptions(t);
-    const int steps = w.document()->undoStack()->index();
     use(w, "texture");
-    const CellEdit shown = drag(w, {{10, 20}, {16, 20}, {20, 24}});
-    landed(w, shown, steps);
-    const Canvas& c = w.document()->canvas();
-    int lit = 0;
-    for (const auto& [p, cell] : written(shown)) {
-        INFO(p.first << "," << p.second);
-        const int r = textureRung(steel(), t, Compass::NE, p.first, p.second, true, c.width(), c.height());
-        CHECK(cell == rungCell(steel(), r));
-        lit += r > 0;
+    QComboBox* kind = dock(w)->textureKindBox();
+    const std::pair<TextureKind, QString> kinds[] = {{TextureKind::Scales, "Scales"},
+                                                     {TextureKind::Foliage, "Foliage"},
+                                                     {TextureKind::Hoard, "Hoard"},
+                                                     {TextureKind::Brick, "Brick"},
+                                                     {TextureKind::Noise, "Noise"}};
+    REQUIRE(kind->count() == 5);
+    for (int i = 0; i < 5; ++i) {
+        INFO(i);
+        CHECK(kind->itemData(i).toInt() == int(kinds[i].first));
+        CHECK(kind->itemText(i) == kinds[i].second);
+        CHECK(textureKindName(kinds[i].first) == kinds[i].second);
     }
-    CHECK(lit > 10);
-    // only the texture's cells: a second drag over the first changes nothing
-    const int after = w.document()->undoStack()->index();
-    const CellEdit again = dragTool(w)->pending();
-    CHECK(again.empty());
-    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 12, 20), Qt::LeftButton, Qt::LeftButton);
-    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 12, 20), Qt::LeftButton, Qt::NoButton);
-    CHECK(w.document()->undoStack()->index() == after);
+    for (const auto& [k, name] : kinds) {
+        kind->setCurrentIndex(kind->findData(int(k)));
+        CHECK(v->textureOptions().kind == k);
+        CHECK(w.tools()->active()->status().contains(name.toLower()));
+    }
+}
+
+TEST_CASE("the texture stamp's kind, density and seed are kept between runs", "[settings]") {
+    FreshTextureSettings fresh;
+    {
+        MainWindow w;
+        CHECK(w.canvasView()->textureOptions() == TextureOptions{});
+        ToolOptions* d = dock(w);
+        d->textureKindBox()->setCurrentIndex(d->textureKindBox()->findData(int(TextureKind::Noise)));
+        d->textureDensityBox()->setValue(0.7);
+        d->textureSeedBox()->setValue(13);
+    }
+    REQUIRE(bwtest::settingsInScratch(FreshTextureSettings::dir()));
+    // the kind by name, so a kind added later doesn't shift a saved one
+    CHECK(appSettings()->value(QStringLiteral("texture/kind")).toString() == QLatin1String("noise"));
+    {
+        MainWindow w;
+        CHECK(w.canvasView()->textureOptions() == TextureOptions{TextureKind::Noise, 0.7, 13});
+        ToolOptions* d = dock(w);
+        CHECK(d->textureKindBox()->currentData().toInt() == int(TextureKind::Noise));
+        CHECK(d->textureDensityBox()->value() == 0.7);
+        CHECK(d->textureSeedBox()->value() == 13);
+        w.canvasView()->setTextureOptions(TextureOptions{TextureKind::Brick, 2.5, 0});
+    }
+    {
+        MainWindow w;
+        CHECK(w.canvasView()->textureOptions() == TextureOptions{TextureKind::Brick, 2.5, 0});
+    }
+    // a kind not known, or a number, reads as scales; density and seed out of
+    // range are taken into it, and not numbers at all leave the defaults
+    for (const auto& [kind, density, seed, want] :
+         {std::tuple{QStringLiteral("marble"), QVariant(9.0), QVariant(-4), TextureOptions{TextureKind::Scales, 2.5, 0}},
+          std::tuple{QStringLiteral("4"), QVariant(0.01), QVariant(1000000), TextureOptions{TextureKind::Scales, 0.3, 99999}},
+          std::tuple{QStringLiteral("hoard"), QVariant(QStringLiteral("thick")), QVariant(QStringLiteral("x")),
+                     TextureOptions{TextureKind::Hoard, 1.6, 1}}}) {
+        INFO(kind.toStdString());
+        appSettings()->setValue(QStringLiteral("texture/kind"), kind);
+        appSettings()->setValue(QStringLiteral("texture/density"), density);
+        appSettings()->setValue(QStringLiteral("texture/seed"), seed);
+        MainWindow w;
+        CHECK(w.canvasView()->textureOptions() == want);
+        CHECK(dock(w)->textureKindBox()->currentData().toInt() == int(want.kind));
+    }
+}
+
+TEST_CASE("a texture stamp drag paints the dock's texture, one undo step") {
+    FreshTextureSettings fresh;
+    for (const TextureKind k : {TextureKind::Hoard, TextureKind::Brick, TextureKind::Noise}) {
+        INFO(textureKindName(k).toStdString());
+        MainWindow w;
+        REQUIRE(bwtest::showExposed(&w));
+        CanvasView* v = w.canvasView();
+        v->setRamp(steel());
+        v->setBrushSettings(BrushSettings{9, Tip::Square, 1.0, PressureTo::Nothing, Compass::NE});
+        const TextureOptions t{k, 1.6, 9};
+        v->setTextureOptions(t);
+        const int steps = w.document()->undoStack()->index();
+        use(w, "texture");
+        const CellEdit shown = drag(w, {{10, 20}, {16, 20}, {20, 24}});
+        landed(w, shown, steps);
+        const Canvas& c = w.document()->canvas();
+        int lit = 0;
+        for (const auto& [p, cell] : written(shown)) {
+            INFO(p.first << "," << p.second);
+            const int r = textureRung(steel(), t, Compass::NE, p.first, p.second, true, c.width(), c.height());
+            CHECK(cell == rungCell(steel(), r));
+            lit += r > 0;
+        }
+        CHECK(lit > 10);
+        // only the texture's cells: a second drag over the first changes nothing
+        const int after = w.document()->undoStack()->index();
+        const CellEdit again = dragTool(w)->pending();
+        CHECK(again.empty());
+        bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 12, 20), Qt::LeftButton, Qt::LeftButton);
+        bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 12, 20), Qt::LeftButton, Qt::NoButton);
+        CHECK(w.document()->undoStack()->index() == after);
+    }
 }

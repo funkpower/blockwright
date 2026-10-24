@@ -644,6 +644,10 @@ QString textureKindName(TextureKind kind) {
         return TextureTool::tr("Foliage");
     case TextureKind::Hoard:
         return TextureTool::tr("Hoard");
+    case TextureKind::Brick:
+        return TextureTool::tr("Brick");
+    case TextureKind::Noise:
+        return TextureTool::tr("Noise");
     case TextureKind::Scales:
         break;
     }

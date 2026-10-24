@@ -180,7 +180,8 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
 
     textureKind_ = new QComboBox;
     textureKind_->setObjectName(QStringLiteral("brushTextureKind"));
-    for (const TextureKind k : {TextureKind::Scales, TextureKind::Foliage, TextureKind::Hoard})
+    for (const TextureKind k : {TextureKind::Scales, TextureKind::Foliage, TextureKind::Hoard, TextureKind::Brick,
+                                TextureKind::Noise})
         textureKind_->addItem(textureKindName(k), int(k));
     textureKind_->setToolTip(tr("Texture stamp: the lit forms it stamps"));
 
@@ -189,7 +190,8 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     textureDensity_->setRange(kMinTextureDensity, kMaxTextureDensity);
     textureDensity_->setDecimals(1);
     textureDensity_->setSingleStep(0.1);
-    textureDensity_->setToolTip(tr("Texture stamp: how closely the forms pack (under 1 leaves gaps)"));
+    textureDensity_->setToolTip(tr("Texture stamp: how closely the forms pack (under 1 leaves gaps); "
+                                       "for brick, how small the bricks are; for noise, how fine its grain"));
 
     textureSeed_ = new QSpinBox;
     textureSeed_->setObjectName(QStringLiteral("brushTextureSeed"));

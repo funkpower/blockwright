@@ -89,7 +89,8 @@ public:
     // in the selection (a seam beside another shape takes the line).
     OutlineShape outlineShape() const { return outlineShape_; }
     void setOutlineShape(OutlineShape shape);
-    // The texture stamp's kind, density and seed (brushes/texture.h).
+    // The texture stamp's kind, density and seed (brushes/texture.h), kept
+    // in the settings between runs.
     const TextureOptions& textureOptions() const { return texture_; }
     void setTextureOptions(const TextureOptions& options);  // density and seed clamped
 

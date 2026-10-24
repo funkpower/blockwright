@@ -3,6 +3,7 @@
 #include "device_grid.h"
 #include "document.h"
 #include "reference_scale.h"
+#include "settings.h"
 #include "tool.h"
 
 #include "blockwright/glyph_sets.h"
@@ -91,6 +92,42 @@ long long floorDiv(long long x, long long d) { return x >= 0 ? x / d : -((-x + d
 
 int clampInt(long long v) { return int(std::clamp(v, (long long)INT_MIN, (long long)INT_MAX)); }
 
+// The texture stamp's settings: its kind by name (a name not known reads as
+// scales), density and seed.
+const QString kTextureKindKey = QStringLiteral("texture/kind");
+const QString kTextureDensityKey = QStringLiteral("texture/density");
+const QString kTextureSeedKey = QStringLiteral("texture/seed");
+constexpr std::pair<TextureKind, const char*> kTextureKindNames[] = {
+    {TextureKind::Scales, "scales"}, {TextureKind::Foliage, "foliage"}, {TextureKind::Hoard, "hoard"},
+    {TextureKind::Brick, "brick"},   {TextureKind::Noise, "noise"},
+};
+
+TextureOptions savedTextureOptions() {
+    const auto s = appSettings();
+    TextureOptions t;
+    const QString kind = s->value(kTextureKindKey).toString();
+    for (const auto& [k, name] : kTextureKindNames)
+        if (kind == QLatin1String(name))
+            t.kind = k;
+    bool ok = false;
+    const double density = s->value(kTextureDensityKey).toDouble(&ok);
+    if (ok && std::isfinite(density))
+        t.density = std::clamp(density, kMinTextureDensity, kMaxTextureDensity);
+    const int seed = s->value(kTextureSeedKey).toInt(&ok);
+    if (ok)
+        t.seed = std::clamp(seed, 0, kMaxTextureSeed);
+    return t;
+}
+
+void saveTextureOptions(const TextureOptions& t) {
+    const auto s = appSettings();
+    for (const auto& [k, name] : kTextureKindNames)
+        if (k == t.kind)
+            s->setValue(kTextureKindKey, QLatin1String(name));
+    s->setValue(kTextureDensityKey, t.density);
+    s->setValue(kTextureSeedKey, t.seed);
+}
+
 // Saves the painter's state and puts it back, even when drawing throws.
 class SavedPainter {
 public:
@@ -115,6 +152,7 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     brush_.strength = 0.25;
     brush_.pressure = PressureTo::Size;
     ramp_ = *findRamp("steel");
+    texture_ = savedTextureOptions();
     // Dead keys and compose sequences arrive as input-method commits.
     setAttribute(Qt::WA_InputMethodEnabled);
     // The pen's hover reaches the view, so a stylus drag whose release went
@@ -237,6 +275,7 @@ void CanvasView::setTextureOptions(const TextureOptions& options) {
     if (t == texture_)
         return;
     texture_ = t;
+    saveTextureOptions(t);
     brushSettingsChanged();
 }
 
