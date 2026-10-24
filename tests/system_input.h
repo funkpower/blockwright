@@ -62,6 +62,19 @@ inline void systemTablet(QWidget* w, QPointF at, Qt::MouseButtons held, double p
     QWindowSystemInterface::flushWindowSystemEvents();
 }
 
+// A key pressed and released through w's window, as the keyboard sends it:
+// Qt tries it as a shortcut first, then gives it to the focus widget or an
+// open popup.
+inline void systemKey(QWidget* w, int key, Qt::KeyboardModifiers mods = Qt::NoModifier,
+                      const QString& text = QString()) {
+    QWindow* win = w->window()->windowHandle();
+    QWindowSystemInterface::handleKeyEvent<QWindowSystemInterface::SynchronousDelivery>(win, QEvent::KeyPress, key,
+                                                                                         mods, text);
+    QWindowSystemInterface::handleKeyEvent<QWindowSystemInterface::SynchronousDelivery>(win, QEvent::KeyRelease, key,
+                                                                                         mods, text);
+    QApplication::processEvents();
+}
+
 // A menu pops up over w mid-drag. If `takeRelease`, `button` comes up over
 // the menu, which gets the release (`held` still down after it); then the
 // menu closes.

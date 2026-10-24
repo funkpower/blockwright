@@ -26,6 +26,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
+#include <QMenuBar>
 #include <QMouseEvent>
 #include <QPointingDevice>
 #include <QSpinBox>
@@ -1093,6 +1094,161 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
         CHECK(changed(w).empty());
         CHECK(w.document()->undoStack()->count() == 0);
     }
+}
+
+TEST_CASE("a menu opened from the keyboard ends a mouse drag; a stylus stroke goes on (#47)") {
+    // Alt+F takes the focus from the canvas twice, for the popup and then for
+    // the menu bar; a click on the menu bar takes it only for the popup.
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    use(w, "glyph");
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    QMenu* file = w.menuBar()->actions().at(0)->menu();
+    REQUIRE(file);
+    REQUIRE(file->title() == QStringLiteral("&File"));
+    const auto fileMenuByKeyboard = [&] {
+        bwtest::systemKey(v, Qt::Key_F, Qt::AltModifier, QStringLiteral("f"));
+        CHECK(file->isVisible());
+        CHECK_FALSE(v->hasFocus());
+        bwtest::systemKey(file, Qt::Key_Escape);
+        CHECK_FALSE(file->isVisible());
+        bwtest::systemKey(w.menuBar(), Qt::Key_Escape);
+    };
+
+    SECTION("a stylus stroke") {
+        bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+        CHECK(dragTool(w)->dragging());
+        fileMenuByKeyboard();
+        CHECK(dragTool(w)->dragging());
+        bwtest::systemTablet(v, pixel(v, 3, 4), Qt::LeftButton, 1.0);
+        bwtest::systemTablet(v, pixel(v, 4, 4), Qt::LeftButton, 1.0);
+        bwtest::systemTablet(v, pixel(v, 4, 4), Qt::NoButton, 0.0);
+        CHECK_FALSE(dragTool(w)->dragging());
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {4, 2}});
+        CHECK(w.document()->undoStack()->count() == 1);
+    }
+    SECTION("a stylus stroke the menu bar alone takes the focus from") {
+        bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+        QFocusEvent bar(QEvent::FocusOut, Qt::MenuBarFocusReason);
+        QApplication::sendEvent(v, &bar);
+        CHECK(dragTool(w)->dragging());
+        bwtest::systemTablet(v, pixel(v, 4, 4), Qt::LeftButton, 1.0);
+        bwtest::systemTablet(v, pixel(v, 4, 4), Qt::NoButton, 0.0);
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {4, 2}});
+        CHECK(w.document()->undoStack()->count() == 1);
+    }
+    SECTION("a mouse drag") {
+        const auto mouseAt = [&](QEvent::Type type, int x, Qt::MouseButton button, Qt::MouseButtons held) {
+            bwtest::systemMouse(v, type, pixel(v, x, 4), button, held);
+        };
+        mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+        mouseAt(QEvent::MouseMove, 3, Qt::NoButton, Qt::LeftButton);
+        CHECK(dragTool(w)->dragging());
+        fileMenuByKeyboard();
+        CHECK_FALSE(dragTool(w)->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+        mouseAt(QEvent::MouseMove, 4, Qt::NoButton, Qt::LeftButton);
+        mouseAt(QEvent::MouseButtonRelease, 4, Qt::LeftButton, Qt::NoButton);
+        CHECK_FALSE(dragTool(w)->dragging());
+        CHECK(changed(w).empty());
+        CHECK(w.document()->undoStack()->count() == 0);
+    }
+    SECTION("a pen's mouse stroke") {
+        const auto pen = [&](QEvent::Type type, int x, Qt::MouseButton button, Qt::MouseButtons held) {
+            bwtest::systemMouse(v, type, pixel(v, x, 4), button, held, bwtest::systemStylus());
+        };
+        pen(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+        CHECK(dragTool(w)->dragging());
+        fileMenuByKeyboard();
+        CHECK_FALSE(dragTool(w)->dragging());
+        pen(QEvent::MouseMove, 4, Qt::NoButton, Qt::LeftButton);
+        pen(QEvent::MouseButtonRelease, 4, Qt::LeftButton, Qt::NoButton);
+        CHECK(changed(w).empty());
+        CHECK(w.document()->undoStack()->count() == 0);
+    }
+}
+
+TEST_CASE("a window switch ends a stylus stroke a menu opened from the keyboard kept (#47)") {
+    // The menu bar has the focus, not the canvas, so the canvas sees no
+    // focus-out when the window goes inactive.
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    use(w, "glyph");
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    QMenu* file = w.menuBar()->actions().at(0)->menu();
+    const auto switchAway = [&](QWidget& other) {
+        other.resize(100, 100);
+        REQUIRE(bwtest::showExposed(&other));
+        QWindowSystemInterface::handleFocusWindowChanged<QWindowSystemInterface::SynchronousDelivery>(
+            other.windowHandle(), Qt::ActiveWindowFocusReason);
+        QApplication::processEvents();
+        REQUIRE(QApplication::activeWindow() == &other);
+    };
+    bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+    bwtest::systemKey(v, Qt::Key_F, Qt::AltModifier, QStringLiteral("f"));
+    REQUIRE(file->isVisible());
+    SECTION("popup still open") {
+        QWidget other;
+        switchAway(other);
+        CHECK_FALSE(dragTool(w)->dragging());
+    }
+    SECTION("popup closed, menu bar holds the focus") {
+        bwtest::systemKey(file, Qt::Key_Escape);
+        REQUIRE(QApplication::focusWidget() == w.menuBar());
+        {
+            QWidget other;
+            switchAway(other);
+            CHECK_FALSE(dragTool(w)->dragging());
+        }
+        QWindowSystemInterface::handleFocusWindowChanged<QWindowSystemInterface::SynchronousDelivery>(
+            w.windowHandle(), Qt::ActiveWindowFocusReason);
+        QApplication::processEvents();
+        bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 10, 10), Qt::LeftButton, Qt::LeftButton);
+        bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 10, 10), Qt::LeftButton, Qt::NoButton);
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{10, 5}});
+        bwtest::systemTablet(v, pixel(v, 6, 4), Qt::NoButton, 0.0);  // the pen hovers back
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{10, 5}});
+    }
+    SECTION("popup closed, the focus moves on in the window") {
+        bwtest::systemKey(file, Qt::Key_Escape);
+        REQUIRE(QApplication::focusWidget() == w.menuBar());
+        QWidget* other = nullptr;
+        for (QWidget* c : w.findChildren<QWidget*>())
+            if (c != v && c != w.menuBar() && c->isVisible() && c->isEnabled() && (c->focusPolicy() & Qt::ClickFocus)) {
+                other = c;
+                break;
+            }
+        REQUIRE(other);
+        other->setFocus(Qt::MouseFocusReason);
+        REQUIRE(QApplication::focusWidget() == other);
+        CHECK_FALSE(dragTool(w)->dragging());
+        bwtest::systemTablet(v, pixel(v, 6, 4), Qt::NoButton, 0.0);  // the pen hovers back
+        CHECK(changed(w).empty());
+        CHECK(w.document()->undoStack()->count() == 0);
+    }
+}
+
+TEST_CASE("the undo key during a stylus stroke undoes nothing while the menu bar has the focus (#47)") {
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    use(w, "glyph");
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    QMenu* file = w.menuBar()->actions().at(0)->menu();
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 10, 10), Qt::LeftButton, Qt::LeftButton);
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 10, 10), Qt::LeftButton, Qt::NoButton);
+    REQUIRE(w.document()->undoStack()->index() == 1);
+    bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+    bwtest::systemKey(v, Qt::Key_F, Qt::AltModifier, QStringLiteral("f"));
+    bwtest::systemKey(file, Qt::Key_Escape);
+    REQUIRE(QApplication::focusWidget() == w.menuBar());
+    REQUIRE(dragTool(w)->dragging());
+    bwtest::systemKey(w.menuBar(), Qt::Key_Z, Qt::ControlModifier);
+    CHECK_FALSE(dragTool(w)->dragging());
+    CHECK(w.document()->undoStack()->index() == 1);
+    CHECK(changed(w) == std::set<std::pair<int, int>>{{10, 5}});
 }
 
 TEST_CASE("another device's click mid-drag leaves the owner's drag to finish (#45)") {

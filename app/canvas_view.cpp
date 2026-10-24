@@ -13,10 +13,12 @@
 #include <QInputMethod>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
+#include <QMenuBar>
 #include <QMouseEvent>
 #include <QTabletEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPointingDevice>
 #include <QScopedValueRollback>
 #include <QTimer>
 #include <QUndoStack>
@@ -139,6 +141,15 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
             cancelDrag();
     });
     connect(doc_, &Document::formatChanged, this, &CanvasView::cancelDrag);
+    // A stylus stroke kept through a menu opened from the keyboard: the menu
+    // bar has the focus, so no focus-out comes here to end the stroke. The
+    // focus going anywhere but back here or to a menu ends it, as one here
+    // would.
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget*, QWidget* now) {
+        const bool menu = now && (qobject_cast<QMenuBar*>(now) || now->window()->windowType() == Qt::Popup);
+        if (drag_ == Pointer::Stylus && now != this && !menu)
+            cancelDrag();
+    });
     updateSize();
 }
 
@@ -633,6 +644,20 @@ bool CanvasView::event(QEvent* e) {
     return QWidget::event(e);
 }
 
+bool CanvasView::eventFilter(QObject* watched, QEvent* e) {
+    // The window, while a stylus stroke is kept through a menu opened from
+    // the keyboard: the menu bar has the focus and passes the undo key on,
+    // and it is still the view's (event()).
+    if ((e->type() == QEvent::ShortcutOverride || e->type() == QEvent::KeyPress) && drag_ == Pointer::Stylus &&
+        tool_ && tool_->dragging() && static_cast<QKeyEvent*>(e)->matches(QKeySequence::Undo)) {
+        if (e->type() == QEvent::KeyPress)
+            cancelDrag();
+        e->accept();
+        return true;
+    }
+    return QWidget::eventFilter(watched, e);
+}
+
 void CanvasView::keyPressEvent(QKeyEvent* e) {
     if (tool_ && tool_->dragging() && e->matches(QKeySequence::Undo)) {
         cancelDrag();
@@ -737,6 +762,8 @@ CanvasView::Pointer CanvasView::pointerOf(const QMouseEvent* e) {
 
 void CanvasView::setDrag(Pointer p) {
     drag_ = p;
+    if (p != Pointer::Stylus)
+        window()->removeEventFilter(this);
     // A drag the mouse's events drive holds the mouse grab. Qt sends a
     // press's moves and release to the widget it was pressed on only until
     // a release with no buttons held, and another device's release is one
@@ -908,9 +935,15 @@ void CanvasView::focusOutEvent(QFocusEvent* e) {
     // from before it stays. Once a popup has had a mouse event, Qt no longer
     // sends the drag's release here, so a popup that opens ends a mouse drag
     // at once. A stylus's tablet events come here popup or not, so its drag
-    // goes on and its own release ends it.
-    if (e->reason() != Qt::PopupFocusReason || drag_ != Pointer::Stylus)
+    // goes on and its own release ends it, through a menu opened from the
+    // keyboard too (Alt+F takes the focus for the popup, then for the menu
+    // bar; Alt tapped alone, for the menu bar). The window then watches the
+    // undo key for the view (eventFilter).
+    const bool menu = e->reason() == Qt::PopupFocusReason || e->reason() == Qt::MenuBarFocusReason;
+    if (!menu || drag_ != Pointer::Stylus)
         cancelDrag();
+    else
+        window()->installEventFilter(this);
     QWidget::focusOutEvent(e);
 }
 

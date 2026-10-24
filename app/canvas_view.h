@@ -26,7 +26,6 @@
 #include "blockwright/selection.h"
 
 #include <QImage>
-#include <QPointingDevice>
 #include <QWidget>
 #include <QtGlobal>
 
@@ -203,6 +202,9 @@ signals:
 
 protected:
     bool event(QEvent* e) override;
+    // Installed on the window while a stylus stroke goes on through a menu
+    // opened from the keyboard.
+    bool eventFilter(QObject* watched, QEvent* e) override;
     void paintEvent(QPaintEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
     void inputMethodEvent(QInputMethodEvent* e) override;
