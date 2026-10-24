@@ -19,6 +19,7 @@ add_executable(blockwright-tests
   test_composite.cpp
   test_cp437.cpp
   test_detail.cpp
+  test_texture.cpp
   test_draw.cpp
   test_edit.cpp
   test_form_brush.cpp

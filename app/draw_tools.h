@@ -32,6 +32,7 @@
 #include "blockwright/brushes/form.h"
 #include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/guard.h"
+#include "blockwright/brushes/texture.h"
 #include "blockwright/halfblock.h"
 
 #include <memory>
@@ -424,6 +425,24 @@ class RimLightTool : public BrushTool {
     Q_OBJECT
 public:
     explicit RimLightTool(QObject* parent = nullptr);
+
+    QString status() const override;
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+};
+
+// The name a texture kind goes by in Tool Options and the status bar.
+QString textureKindName(TextureKind kind);
+
+// Texture stamp (PLAN §10, "Detail"): stamps the view's texture (its kind,
+// density and seed) along the view's ramp, lit from Tool Options' light
+// direction (TextureBrush). The texture is fixed to the canvas by its seed,
+// so strokes over one another paint one texture. Either button.
+class TextureTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit TextureTool(QObject* parent = nullptr);
 
     QString status() const override;
 

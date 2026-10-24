@@ -230,6 +230,16 @@ void CanvasView::setOutlineShape(OutlineShape shape) {
     brushSettingsChanged();
 }
 
+void CanvasView::setTextureOptions(const TextureOptions& options) {
+    TextureOptions t = options;
+    t.density = std::clamp(t.density, kMinTextureDensity, kMaxTextureDensity);
+    t.seed = std::clamp(t.seed, 0, kMaxTextureSeed);
+    if (t == texture_)
+        return;
+    texture_ = t;
+    brushSettingsChanged();
+}
+
 void CanvasView::brushSettingsChanged() {
     emit brushChanged();
     if (tool_)

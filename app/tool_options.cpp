@@ -11,6 +11,7 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHash>
@@ -75,13 +76,14 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("eyedropper"), O::SampleMerged},
         {QStringLiteral("outline"), brush | O::Ramp | O::OutlineSelection},
         {QStringLiteral("rimLight"), brush | O::Ramp | O::Light},
+        {QStringLiteral("texture"), brush | O::Ramp | O::Light | O::Texture},
     };
     const auto it = table.find(toolId);
     if (known)
         *known = it != table.end();
     if (it != table.end())
         return *it;
-    return brush | O::Strength | O::Ramp | O::Light | O::Form | O::Hardness | O::OutlineSelection;
+    return brush | O::Strength | O::Ramp | O::Light | O::Form | O::Hardness | O::OutlineSelection | O::Texture;
 }
 
 ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* select, QAction* filledShapes,
@@ -145,7 +147,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     const QString compass[] = {tr("N"), tr("NE"), tr("E"), tr("SE"), tr("S"), tr("SW"), tr("W"), tr("NW")};
     for (int i = 0; i < 8; ++i)
         light_->addItem(compass[i], i);
-    light_->setToolTip(tr("Where the light comes from, for the rim-light and form brushes"));
+    light_->setToolTip(tr("Where the light comes from, for the rim-light, form and texture brushes"));
 
     form_ = new QComboBox;
     form_->setObjectName(QStringLiteral("brushForm"));
@@ -172,6 +174,24 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     outlineSelection_->setObjectName(QStringLiteral("brushOutlineSelection"));
     outlineSelection_->setToolTip(
         tr("Outline brush: the selection is the shape, so its seam with a shape beside it takes the line"));
+
+    textureKind_ = new QComboBox;
+    textureKind_->setObjectName(QStringLiteral("brushTextureKind"));
+    for (const TextureKind k : {TextureKind::Scales, TextureKind::Foliage, TextureKind::Hoard})
+        textureKind_->addItem(textureKindName(k), int(k));
+    textureKind_->setToolTip(tr("Texture stamp: the lit forms it stamps"));
+
+    textureDensity_ = new QDoubleSpinBox;
+    textureDensity_->setObjectName(QStringLiteral("brushTextureDensity"));
+    textureDensity_->setRange(kMinTextureDensity, kMaxTextureDensity);
+    textureDensity_->setDecimals(1);
+    textureDensity_->setSingleStep(0.1);
+    textureDensity_->setToolTip(tr("Texture stamp: how closely the forms pack (under 1 leaves gaps)"));
+
+    textureSeed_ = new QSpinBox;
+    textureSeed_->setObjectName(QStringLiteral("brushTextureSeed"));
+    textureSeed_->setRange(0, kMaxTextureSeed);
+    textureSeed_->setToolTip(tr("Texture stamp: which texture; the same seed paints the same one"));
 
     symmetry_ = new QComboBox;
     symmetry_->setObjectName(QStringLiteral("brushSymmetry"));
@@ -269,6 +289,9 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(specular_);
     form->addRow(tr("Hardness"), hardness_);
     form->addRow(outlineSelection_);
+    form->addRow(tr("Texture"), textureKind_);
+    form->addRow(tr("Density"), textureDensity_);
+    form->addRow(tr("Seed"), textureSeed_);
     form->addRow(filled_);
     form->addRow(pencil4_);
     form->addRow(tr("Paste"), pasteMode_);
@@ -305,6 +328,9 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     connect(specular_, &QCheckBox::toggled, this, &ToolOptions::apply);
     connect(hardness_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
     connect(outlineSelection_, &QCheckBox::toggled, this, &ToolOptions::apply);
+    connect(textureKind_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
+    connect(textureDensity_, &QDoubleSpinBox::valueChanged, this, &ToolOptions::apply);
+    connect(textureSeed_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
     connect(light_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
     connect(symmetry_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
     connect(folds_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
@@ -343,6 +369,9 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(specular_, o.testFlag(O::Form));
     f->setRowVisible(hardness_, o.testFlag(O::Hardness));
     f->setRowVisible(outlineSelection_, o.testFlag(O::OutlineSelection));
+    f->setRowVisible(textureKind_, o.testFlag(O::Texture));
+    f->setRowVisible(textureDensity_, o.testFlag(O::Texture));
+    f->setRowVisible(textureSeed_, o.testFlag(O::Texture));
     f->setRowVisible(filled_, o.testFlag(O::Filled));
     f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
     f->setRowVisible(pasteMode_, o.testFlag(O::PasteMode));
@@ -379,6 +408,10 @@ void ToolOptions::sync() {
     specular_->setChecked(f.specular);
     hardness_->setValue(int(std::lround(view_->hardness() * 100)));
     outlineSelection_->setChecked(view_->outlineShape() == OutlineShape::Selection);
+    const TextureOptions& t = view_->textureOptions();
+    textureKind_->setCurrentIndex(textureKind_->findData(int(t.kind)));
+    textureDensity_->setValue(t.density);
+    textureSeed_->setValue(t.seed);
     const Symmetry& choice = view_->symmetryChoice();
     symmetry_->setCurrentIndex(symmetry_->findData(int(view_->symmetry().mode)));
     folds_->setValue(choice.folds);
@@ -431,6 +464,8 @@ void ToolOptions::apply() {
     f.specular = specular_->isChecked();
     const double hardness = hardness_->value() / 100.0;
     const OutlineShape outline = outlineSelection_->isChecked() ? OutlineShape::Selection : OutlineShape::Ramp;
+    const TextureOptions texture{TextureKind(textureKind_->currentData().toInt()), textureDensity_->value(),
+                                 textureSeed_->value()};
     Symmetry sym{SymmetryMode(symmetry_->currentData().toInt()), folds_->value(), std::nullopt};
     if (centre_->isChecked())
         sym.centre = std::pair{centreX_->value(), centreY_->value()};
@@ -443,6 +478,7 @@ void ToolOptions::apply() {
     view_->setFormOptions(f);
     view_->setHardness(hardness);
     view_->setOutlineShape(outline);
+    view_->setTextureOptions(texture);
     view_->setSymmetry(sym);
     view_->setPencilConnectivity(pencil);
 }

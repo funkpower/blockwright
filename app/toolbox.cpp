@@ -32,8 +32,8 @@ const QList<QStringList>& Toolbox::groups() {
         // The brushes that walk a ramp.
         {QStringLiteral("rampShade"), QStringLiteral("form"), QStringLiteral("soft"), QStringLiteral("despeckle"),
          QStringLiteral("smudge")},
-        // The detail brushes, which find an edge.
-        {QStringLiteral("outline"), QStringLiteral("rimLight")},
+        // The detail brushes: those that find an edge, and the texture stamp.
+        {QStringLiteral("outline"), QStringLiteral("rimLight"), QStringLiteral("texture")},
         {QStringLiteral("line"), QStringLiteral("rectangle"), QStringLiteral("ellipse")},
         // The fills: the bucket and the ramp gradient.
         {QStringLiteral("fill"), QStringLiteral("gradient")},
@@ -153,6 +153,19 @@ QIcon toolIcon(const QString& id) {
         p.drawEllipse(box);
         p.setPen(QPen(light, 3));
         p.drawArc(box.adjusted(1.5, 1.5, -1.5, -1.5), 30 * 16, 120 * 16);
+    } else if (id == QLatin1String("texture")) {
+        // overlapping scales, each lit at its top left, on a dark seam
+        p.fillRect(box, ink);
+        p.setPen(Qt::NoPen);
+        const qreal w = box.width() / 2, h = box.height() / 3;
+        for (int row = 0; row < 3; ++row)
+            for (int col = 0; col < 2 + (row & 1); ++col) {
+                const QRectF s(box.left() + col * w - (row & 1) * w / 2, box.top() + row * h, w - 1, h + 1);
+                p.setBrush(mid);
+                p.drawEllipse(s.intersected(box));
+                p.setBrush(light);
+                p.drawEllipse(QRectF(s.left() + 1.5, s.top() + 1, s.width() / 3, s.height() / 3).intersected(box));
+            }
     } else {
         // A tool with no picture of its own: its name's first letter.
         p.drawText(QRectF(0, 0, kIcon, kIcon), Qt::AlignCenter, id.left(1).toUpper());

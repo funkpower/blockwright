@@ -19,6 +19,7 @@
 #include "blockwright/brush.h"
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/form.h"
+#include "blockwright/brushes/texture.h"
 #include "blockwright/canvas_renderer.h"
 #include "blockwright/edit.h"
 #include "blockwright/halfblock.h"
@@ -88,6 +89,9 @@ public:
     // in the selection (a seam beside another shape takes the line).
     OutlineShape outlineShape() const { return outlineShape_; }
     void setOutlineShape(OutlineShape shape);
+    // The texture stamp's kind, density and seed (brushes/texture.h).
+    const TextureOptions& textureOptions() const { return texture_; }
+    void setTextureOptions(const TextureOptions& options);  // density and seed clamped
 
     // The F-key glyph set (glyph_sets.h), wrapping round at either end.
     int glyphSet() const { return glyphSet_; }
@@ -282,6 +286,7 @@ private:
     FormOptions form_;
     double hardness_ = 0.0;
     OutlineShape outlineShape_ = OutlineShape::Ramp;
+    TextureOptions texture_;
     double stylusPressure_ = 1.0;  // the last press or move's, for its release
     // The stylus's buttons as its last tablet event here held them, and the
     // point the view last saw it at (tabletEvent).

@@ -11,6 +11,7 @@
 #include "blockwright/brushes/shading.h"
 #include "blockwright/brushes/smudge.h"
 #include "blockwright/brushes/soft.h"
+#include "blockwright/brushes/texture.h"
 #include "blockwright/glyph_sets.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
@@ -632,6 +633,35 @@ QString RimLightTool::status() const {
 
 std::unique_ptr<Brush> RimLightTool::makeBrush(Qt::MouseButton) const {
     return std::make_unique<RimLightBrush>(view()->ramp(), brushSettings().lightDirection);
+}
+
+QString textureKindName(TextureKind kind) {
+    switch (kind) {
+    case TextureKind::Foliage:
+        return TextureTool::tr("Foliage");
+    case TextureKind::Hoard:
+        return TextureTool::tr("Hoard");
+    case TextureKind::Scales:
+        break;
+    }
+    return TextureTool::tr("Scales");
+}
+
+TextureTool::TextureTool(QObject* parent) : BrushTool(QStringLiteral("texture"), tr("Te&xture Stamp"), parent) {}
+
+QString TextureTool::status() const {
+    if (!view())
+        return QString();
+    const TextureOptions& t = view()->textureOptions();
+    return tr("Ramp %1, %2, density %3, seed %4, light from %5")
+        .arg(QString::fromStdString(view()->ramp().name), textureKindName(t.kind).toLower())
+        .arg(t.density, 0, 'f', 1)
+        .arg(t.seed)
+        .arg(compassName(view()->brushSettings().lightDirection));
+}
+
+std::unique_ptr<Brush> TextureTool::makeBrush(Qt::MouseButton) const {
+    return std::make_unique<TextureBrush>(view()->ramp(), view()->textureOptions(), brushSettings().lightDirection);
 }
 
 } // namespace bw

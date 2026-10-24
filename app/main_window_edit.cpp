@@ -58,6 +58,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(new EyedropperTool);
     tools_->add(new OutlineTool);
     tools_->add(new RimLightTool);
+    tools_->add(new TextureTool);
     view_->setTool(tools_->active());
     connect(tools_, &ToolRegistry::activeChanged, view_, &CanvasView::setTool);
 
@@ -201,7 +202,8 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("gradient"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G)},
         {QStringLiteral("eyedropper"), QKeySequence(Qt::CTRL | Qt::Key_I)},
         {QStringLiteral("outline"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E)},
-        {QStringLiteral("rimLight"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)}};
+        {QStringLiteral("rimLight"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)},
+        {QStringLiteral("texture"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P)}};
     QHash<Tool*, QAction*> toolActions;
     for (Tool* t : tools_->tools()) {
         const QKeySequence key = toolKeys.value(t->id());

@@ -4,7 +4,8 @@
 // a stylus's pressure scales), the ramp the ramp brushes walk, the alpha
 // lock, the light direction (the rim-light and form brushes), the form
 // brush's form, rim light and glint, the soft brush's hardness, what the
-// outline brush takes as the shape, the symmetry and the pencil's
+// outline brush takes as the shape, the texture stamp's kind, density and
+// seed, the symmetry and the pencil's
 // connectivity, the glyph brush's glyph, Filled Shapes for
 // the rectangle and ellipse, the ramp gradient's shape, rungs and banding,
 // the select tool's paste mode, and sample merged for the eyedropper and
@@ -19,6 +20,7 @@
 class QAction;
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QFormLayout;
 class QLabel;
 class QSpinBox;
@@ -54,6 +56,7 @@ public:
         OutlineSelection = 1 << 14,  // the outline brush's shape is the selection
         SampleMerged = 1 << 15,
         Gradient = 1 << 16,  // the ramp gradient's shape, rungs and banding
+        Texture = 1 << 17,   // the texture stamp's kind, density and seed
     };
     Q_DECLARE_FLAGS(Options, Option)
 
@@ -82,6 +85,9 @@ public:
     QCheckBox* specularBox() const { return specular_; }
     QSpinBox* hardnessBox() const { return hardness_; }
     QCheckBox* outlineSelectionBox() const { return outlineSelection_; }
+    QComboBox* textureKindBox() const { return textureKind_; }
+    QDoubleSpinBox* textureDensityBox() const { return textureDensity_; }
+    QSpinBox* textureSeedBox() const { return textureSeed_; }
     QComboBox* symmetryBox() const { return symmetry_; }
     QSpinBox* foldsBox() const { return folds_; }
     QCheckBox* centreBox() const { return centre_; }
@@ -131,6 +137,9 @@ private:
     QCheckBox* specular_;
     QSpinBox* hardness_;
     QCheckBox* outlineSelection_;
+    QComboBox* textureKind_;
+    QDoubleSpinBox* textureDensity_;
+    QSpinBox* textureSeed_;
     QComboBox* symmetry_;
     QSpinBox* folds_;
     QCheckBox* centre_;

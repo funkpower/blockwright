@@ -1,9 +1,10 @@
-// The detail tools in the main window (PLAN §10, "Detail"): the outline and
-// rim-light brushes, the pencil's 8-connected mode and the symmetry modes,
+// The detail tools in the main window (PLAN §10, "Detail"): the outline,
+// rim-light and texture brushes, the pencil's 8-connected mode and the symmetry modes,
 // from the Tools and Edit menus and Tool Options, with the mouse delivered
 // as the platform delivers it.
 
 #include "tool_options.h"
+#include "toolbox.h"
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
@@ -14,6 +15,7 @@
 #include "system_input.h"
 
 #include "blockwright/brush.h"
+#include "blockwright/brushes/texture.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/lint.h"
 #include "blockwright/palette.h"
@@ -26,6 +28,9 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QMenu>
+#include <QToolButton>
 #include <QSpinBox>
 #include <QUndoStack>
 
@@ -482,4 +487,81 @@ TEST_CASE("the dock's radial centre stays on the canvas") {
     CHECK(w.canvasView()->symmetry().centre == Point{11, 4});
     CHECK(d->centreXBox()->value() == 11);
     CHECK(d->centreYBox()->value() == 4);
+}
+
+TEST_CASE("the texture stamp is in the Tools menu and the toolbox, with its key and its rows") {
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    QAction* a = act(w, QStringLiteral("textureTool"));
+    // Codex round 1 P3: Ctrl+Shift+X is the planned Text tool's (PLAN §15)
+    CHECK(a->shortcut() == QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P));
+    QToolButton* b = w.toolbox()->buttonFor(QStringLiteral("texture"));
+    REQUIRE(b);
+    // with the other detail brushes
+    CHECK(b == w.toolbox()->buttonFor(QStringLiteral("outline")));
+    CHECK((b->defaultAction() == a || (b->menu() && b->menu()->actions().contains(a))));
+
+    ToolOptions* d = dock(w);
+    QComboBox* kind = d->textureKindBox();
+    QDoubleSpinBox* density = d->textureDensityBox();
+    QSpinBox* seed = d->textureSeedBox();
+    // shown for the texture stamp only, with the ramp and the light
+    use(w, "rimLight");
+    CHECK_FALSE(kind->isVisibleTo(d));
+    use(w, "texture");
+    CHECK(a->isChecked());
+    for (QWidget* row : {static_cast<QWidget*>(kind), static_cast<QWidget*>(density), static_cast<QWidget*>(seed),
+                         static_cast<QWidget*>(d->rampBox()), static_cast<QWidget*>(d->lightBox())})
+        CHECK(row->isVisibleTo(d));
+    CHECK_FALSE(d->strengthBox()->isVisibleTo(d));
+
+    CHECK(v->textureOptions() == TextureOptions{});
+    REQUIRE(kind->count() == 3);
+    CHECK(kind->currentData().toInt() == int(TextureKind::Scales));
+    kind->setCurrentIndex(kind->findData(int(TextureKind::Hoard)));
+    density->setValue(0.8);
+    seed->setValue(42);
+    CHECK(v->textureOptions() == TextureOptions{TextureKind::Hoard, 0.8, 42});
+    CHECK(density->minimum() == kMinTextureDensity);
+    CHECK(density->maximum() == kMaxTextureDensity);
+    CHECK(seed->maximum() == kMaxTextureSeed);
+    // and follows the view
+    v->setTextureOptions(TextureOptions{TextureKind::Foliage, 2.0, 7});
+    CHECK(kind->currentData().toInt() == int(TextureKind::Foliage));
+    CHECK(density->value() == 2.0);
+    CHECK(seed->value() == 7);
+    // the view keeps its settings in range
+    v->setTextureOptions(TextureOptions{TextureKind::Scales, 99.0, -5});
+    CHECK(v->textureOptions() == TextureOptions{TextureKind::Scales, kMaxTextureDensity, 0});
+}
+
+TEST_CASE("a texture stamp drag paints the dock's texture, one undo step") {
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setRamp(steel());
+    v->setBrushSettings(BrushSettings{9, Tip::Square, 1.0, PressureTo::Nothing, Compass::NE});
+    const TextureOptions t{TextureKind::Hoard, 1.6, 9};
+    v->setTextureOptions(t);
+    const int steps = w.document()->undoStack()->index();
+    use(w, "texture");
+    const CellEdit shown = drag(w, {{10, 20}, {16, 20}, {20, 24}});
+    landed(w, shown, steps);
+    const Canvas& c = w.document()->canvas();
+    int lit = 0;
+    for (const auto& [p, cell] : written(shown)) {
+        INFO(p.first << "," << p.second);
+        const int r = textureRung(steel(), t, Compass::NE, p.first, p.second, true, c.width(), c.height());
+        CHECK(cell == rungCell(steel(), r));
+        lit += r > 0;
+    }
+    CHECK(lit > 10);
+    // only the texture's cells: a second drag over the first changes nothing
+    const int after = w.document()->undoStack()->index();
+    const CellEdit again = dragTool(w)->pending();
+    CHECK(again.empty());
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 12, 20), Qt::LeftButton, Qt::LeftButton);
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 12, 20), Qt::LeftButton, Qt::NoButton);
+    CHECK(w.document()->undoStack()->index() == after);
 }
