@@ -156,6 +156,20 @@ catch_discover_tests(blockwright-app-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
 
+# On an X server of their own (xcb_test.sh), with input through XTest:
+# skipped where Xvfb or the xcb libraries aren't installed.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(XCB_TEST IMPORTED_TARGET xcb xcb-xtest)
+endif()
+if(XCB_TEST_FOUND)
+  add_executable(blockwright-app-xcb-tests test_app_xcb.cpp)
+  target_link_libraries(blockwright-app-xcb-tests PRIVATE blockwright_app Catch2::Catch2 PkgConfig::XCB_TEST)
+  add_test(NAME app_xcb
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/xcb_test.sh $<TARGET_FILE:blockwright-app-xcb-tests>)
+  set_tests_properties(app_xcb PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 # At a fractional device pixel ratio: its main sets QT_SCALE_FACTOR before the
 # QApplication exists.
 add_executable(blockwright-app-scale-tests

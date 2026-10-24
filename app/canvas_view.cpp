@@ -20,6 +20,7 @@
 #include <QScopedValueRollback>
 #include <QTimer>
 #include <QUndoStack>
+#include <QWindow>
 
 #include <algorithm>
 #include <climits>
@@ -273,9 +274,12 @@ void CanvasView::setTool(Tool* tool) {
         tool_->deactivate();
     }
     tool_ = tool;
-    drag_ = Pointer::None;
+    setDrag(Pointer::None);
     if (tool_) {
         connect(tool_, &Tool::changed, this, qOverload<>(&QWidget::update));
+        // A drag can end in the tool, from a menu action or the document:
+        // the grab ends with it.
+        connect(tool_, &Tool::changed, this, &CanvasView::syncDrag);
         tool_->activate(this);
     }
     update();
@@ -302,21 +306,24 @@ void CanvasView::setSelection(const Selection& selection) {
 }
 
 void CanvasView::cancelTool() {
-    drag_ = Pointer::None;
+    setDrag(Pointer::None);
     if (tool_)
         tool_->cancel();
 }
 
 void CanvasView::cancelDrag() {
-    if (!tool_ || !tool_->dragging())
+    if (!tool_ || !tool_->dragging()) {
+        syncDrag();
         return;
-    drag_ = Pointer::None;
+    }
+    setDrag(Pointer::None);
     tool_->cancelDrag();
 }
 
 void CanvasView::finishTool() {
     if (tool_)
         tool_->finish();
+    syncDrag();
 }
 
 void CanvasView::setMirror(bool on) {
@@ -631,8 +638,10 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
         cancelDrag();
         return;
     }
-    if (tool_ && tool_->keyPress(e))
+    if (tool_ && tool_->keyPress(e)) {
+        syncDrag();
         return;
+    }
     const Canvas& cv = doc_->canvas();
     switch (e->key()) {
     case Qt::Key_Left: setCellCursor(moveCursor(cv, cursor_, -1, 0)); return;
@@ -726,9 +735,39 @@ CanvasView::Pointer CanvasView::pointerOf(const QMouseEvent* e) {
     return fromStylus(e) ? Pointer::StylusMouse : Pointer::Mouse;
 }
 
-bool CanvasView::othersDrag(Pointer p) {
+void CanvasView::setDrag(Pointer p) {
+    drag_ = p;
+    // A drag the mouse's events drive holds the mouse grab. Qt sends a
+    // press's moves and release to the widget it was pressed on only until
+    // a release with no buttons held, and another device's release is one
+    // (#45): without the grab the drag's own would then go nowhere.
+    // A view that isn't shown takes none: Qt would grab for a widget no
+    // input can reach.
+    const bool grab =
+        (p == Pointer::Mouse || p == Pointer::StylusMouse) && tool_ && tool_->dragging() && isVisible();
+    if (grab == (QWidget::mouseGrabber() == this))
+        return;
+    if (grab)
+        grabMouse();
+    else
+        releaseMouse();
+    // A popup that opened during the drag holds the pointer grab of the
+    // window system, and the view's grab or release can take it away: on
+    // xcb a release ungrabs the device whatever window holds it. Qt grabs
+    // for the popup before it tells the view the popup took the focus,
+    // which ends the drag, so the popup's grab is set again here.
+    if (QWidget* popup = QApplication::activePopupWidget())
+        if (QWindow* w = popup->windowHandle())
+            w->setMouseGrabEnabled(true);
+}
+
+void CanvasView::syncDrag() {
     if (!tool_ || !tool_->dragging())
-        drag_ = Pointer::None;
+        setDrag(Pointer::None);
+}
+
+bool CanvasView::othersDrag(Pointer p) {
+    syncDrag();
     return drag_ != Pointer::None && drag_ != p;
 }
 
@@ -743,9 +782,10 @@ void CanvasView::mouseReleaseEvent(QMouseEvent* e) {
     if (othersDrag(pointerOf(e)))
         return;
     if (e->buttons() == Qt::NoButton)
-        drag_ = Pointer::None;
+        setDrag(Pointer::None);
     if (!tool_ || !tool_->mouseRelease(toolEvent(*this, e)))
         QWidget::mouseReleaseEvent(e);
+    syncDrag();
 }
 
 void CanvasView::tabletEvent(QTabletEvent* e) {
@@ -814,7 +854,7 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
         te.button = b;
         te.buttons &= ~b;
         if (te.buttons == Qt::NoButton)
-            drag_ = Pointer::None;
+            setDrag(Pointer::None);
         if (seen) {
             type = QEvent::TabletRelease;
             button = b;
@@ -840,7 +880,7 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
         te.buttons |= b;
         if (tool_ && tool_->mousePress(te)) {
             taken = true;
-            drag_ = Pointer::Stylus;
+            setDrag(Pointer::Stylus);
             setFocus(Qt::MouseFocusReason);
         }
     }
@@ -878,7 +918,7 @@ void CanvasView::mousePressEvent(QMouseEvent* e) {
     if (othersDrag(pointerOf(e)))
         return;
     if (tool_ && tool_->mousePress(toolEvent(*this, e))) {
-        drag_ = pointerOf(e);
+        setDrag(pointerOf(e));
         setFocus(Qt::MouseFocusReason);
         return;
     }

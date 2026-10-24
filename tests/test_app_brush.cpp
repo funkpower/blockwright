@@ -725,9 +725,8 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
         CHECK(w.document()->undoStack()->count() == 0);
     }
     SECTION("a pen's mouse stroke ignores the mouse's click") {
-        // The mouse's click is another device's: the pen's drag goes on and
-        // the click paints nothing. The pen's own release after it doesn't
-        // reach the view yet (#45).
+        // The mouse's click is another device's: the pen's drag goes on, the
+        // click paints nothing, and the pen's own release lands it (#45).
         const auto pen = [&](QEvent::Type type, int x, Qt::MouseButtons held) {
             bwtest::systemMouse(v, type, pixel(v, x, 4), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
                                 held, bwtest::systemStylus());
@@ -739,6 +738,12 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
         CHECK(dragTool(w)->dragging());
         CHECK(changed(w).empty());
         CHECK(w.document()->undoStack()->count() == 0);
+        pen(QEvent::MouseMove, 4, Qt::LeftButton);
+        pen(QEvent::MouseButtonRelease, 4, Qt::NoButton);
+        CHECK_FALSE(dragTool(w)->dragging());
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {4, 2}});
+        CHECK(w.document()->undoStack()->count() == 1);
+        CHECK(QWidget::mouseGrabber() == nullptr);
     }
     SECTION("a stylus stroke a popup opens and closes over") {
         // Qt sends the pen's events to the canvas, popup or not: the pen's
@@ -1088,6 +1093,170 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
         CHECK(changed(w).empty());
         CHECK(w.document()->undoStack()->count() == 0);
     }
+}
+
+TEST_CASE("another device's click mid-drag leaves the owner's drag to finish (#45)") {
+    // Through Qt's own delivery. A release from another device ends Qt's
+    // record of which widget the owner pressed, so without a grab Qt drops
+    // the owner's later moves and its release.
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    use(w, "glyph");
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    const auto mouseAt = [&](QEvent::Type type, int x, Qt::MouseButton button, Qt::MouseButtons held) {
+        bwtest::systemMouse(v, type, pixel(v, x, 4), button, held);
+    };
+    const auto pen = [&](QEvent::Type type, int x, Qt::MouseButton button, Qt::MouseButtons held) {
+        bwtest::systemMouse(v, type, pixel(v, x, 4), button, held, bwtest::systemStylus());
+    };
+    const std::set<std::pair<int, int>> stroke = {{2, 2}, {3, 2}, {4, 2}};
+
+    SECTION("a pen's click during a mouse drag") {
+        mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+        mouseAt(QEvent::MouseMove, 3, Qt::NoButton, Qt::LeftButton);
+        CHECK(QWidget::mouseGrabber() == v);
+        pen(QEvent::MouseButtonPress, 10, Qt::LeftButton, Qt::LeftButton);
+        pen(QEvent::MouseButtonRelease, 10, Qt::LeftButton, Qt::NoButton);
+        CHECK(dragTool(w)->dragging());
+        CHECK(changed(w).empty());
+        mouseAt(QEvent::MouseMove, 4, Qt::NoButton, Qt::LeftButton);
+        mouseAt(QEvent::MouseButtonRelease, 4, Qt::LeftButton, Qt::NoButton);
+        CHECK_FALSE(dragTool(w)->dragging());
+        CHECK(changed(w) == stroke);
+        CHECK(w.document()->undoStack()->count() == 1);
+        CHECK(QWidget::mouseGrabber() == nullptr);
+        // the next click is a stroke of its own, joined to nothing
+        mouseAt(QEvent::MouseButtonPress, 30, Qt::LeftButton, Qt::LeftButton);
+        mouseAt(QEvent::MouseButtonRelease, 30, Qt::LeftButton, Qt::NoButton);
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {4, 2}, {30, 2}});
+        CHECK(w.document()->undoStack()->count() == 2);
+    }
+    SECTION("the mouse's click on another widget during a pen's mouse stroke") {
+        // The click is the canvas's to ignore: it doesn't reach the widget
+        // under it, which would otherwise keep the pen's moves too.
+        QStatusBar* bar = w.statusBar();
+        REQUIRE(bar->isVisible());
+        int barPresses = 0;
+        struct Counter : QObject {
+            int* n;
+            explicit Counter(int* n) : n(n) {}
+            bool eventFilter(QObject*, QEvent* e) override {
+                if (e->type() == QEvent::MouseButtonPress)
+                    ++*n;
+                return false;
+            }
+        } counter(&barPresses);
+        bar->installEventFilter(&counter);
+        pen(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+        pen(QEvent::MouseMove, 3, Qt::NoButton, Qt::LeftButton);
+        bwtest::systemMouse(bar, QEvent::MouseButtonPress, QPointF(5, 5), Qt::LeftButton, Qt::LeftButton);
+        bwtest::systemMouse(bar, QEvent::MouseButtonRelease, QPointF(5, 5), Qt::LeftButton, Qt::NoButton);
+        CHECK(barPresses == 0);
+        CHECK(dragTool(w)->dragging());
+        pen(QEvent::MouseMove, 4, Qt::NoButton, Qt::LeftButton);
+        pen(QEvent::MouseButtonRelease, 4, Qt::LeftButton, Qt::NoButton);
+        CHECK_FALSE(dragTool(w)->dragging());
+        CHECK(changed(w) == stroke);
+        CHECK(w.document()->undoStack()->count() == 1);
+        CHECK(QWidget::mouseGrabber() == nullptr);
+        // with the drag over, a click reaches the widget under it again
+        bwtest::systemMouse(bar, QEvent::MouseButtonPress, QPointF(5, 5), Qt::LeftButton, Qt::LeftButton);
+        bwtest::systemMouse(bar, QEvent::MouseButtonRelease, QPointF(5, 5), Qt::LeftButton, Qt::NoButton);
+        CHECK(barPresses == 1);
+        bar->removeEventFilter(&counter);
+    }
+    SECTION("the grab ends with the drag, however it ends") {
+        SECTION("Esc, the button still held") {
+            mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+            REQUIRE(QWidget::mouseGrabber() == v);
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(v, &esc);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(QWidget::mouseGrabber() == nullptr);
+            mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
+        }
+        SECTION("the undo key") {
+            pen(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+            REQUIRE(QWidget::mouseGrabber() == v);
+            QKeyEvent undo(QEvent::KeyPress, Qt::Key_Z, Qt::ControlModifier);
+            QApplication::sendEvent(v, &undo);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(QWidget::mouseGrabber() == nullptr);
+            pen(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
+        }
+        SECTION("a popup") {
+            mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+            REQUIRE(QWidget::mouseGrabber() == v);
+            bwtest::popupOver(v, true);
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(QWidget::mouseGrabber() == nullptr);
+        }
+        SECTION("a tool switch") {
+            pen(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+            REQUIRE(QWidget::mouseGrabber() == v);
+            use(w, "line");
+            CHECK(QWidget::mouseGrabber() == nullptr);
+            pen(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
+        }
+        SECTION("a new canvas") {
+            mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+            REQUIRE(QWidget::mouseGrabber() == v);
+            w.document()->clear();
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(QWidget::mouseGrabber() == nullptr);
+            mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
+        }
+        SECTION("Select All, which starts the selection tool") {
+            mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+            REQUIRE(QWidget::mouseGrabber() == v);
+            act(w, QStringLiteral("selectAll"))->trigger();
+            CHECK(QWidget::mouseGrabber() == nullptr);
+            mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
+        }
+        SECTION("Deselect leaves the brush's drag going, and the grab") {
+            mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+            act(w, QStringLiteral("deselect"))->trigger();
+            CHECK(dragTool(w)->dragging());
+            CHECK(QWidget::mouseGrabber() == v);
+            mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
+        }
+        SECTION("the focus going elsewhere") {
+            mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
+            REQUIRE(QWidget::mouseGrabber() == v);
+            v->clearFocus();
+            CHECK_FALSE(dragTool(w)->dragging());
+            CHECK(QWidget::mouseGrabber() == nullptr);
+            mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
+        }
+        CHECK(w.document()->undoStack()->count() <= 1);
+    }
+    SECTION("a stylus stroke driven by tablet events takes no grab") {
+        bwtest::systemTablet(v, pixel(v, 2, 4), Qt::LeftButton, 1.0);
+        CHECK(dragTool(w)->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+        bwtest::systemTablet(v, pixel(v, 2, 4), Qt::NoButton, 0.0);
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}});
+    }
+    CHECK(QWidget::mouseGrabber() == nullptr);
+}
+
+TEST_CASE("a canvas that isn't shown takes no mouse grab") {
+    // QWidget::grabMouse() wants a visible widget. The drag works all the
+    // same.
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    REQUIRE_FALSE(v->isVisible());
+    use(w, "glyph");
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    mouse(v, QEvent::MouseButtonPress, 2, 4);
+    CHECK(dragTool(w)->dragging());
+    CHECK(QWidget::mouseGrabber() == nullptr);
+    mouse(v, QEvent::MouseMove, 3, 4);
+    mouse(v, QEvent::MouseButtonRelease, 3, 4);
+    CHECK_FALSE(dragTool(w)->dragging());
+    CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}});
+    CHECK(QWidget::mouseGrabber() == nullptr);
 }
 
 TEST_CASE("mirror mode with Pressure->Strength: a cell both strokes reach takes the stronger dab") {

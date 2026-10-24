@@ -99,7 +99,8 @@ public:
 
 signals:
     // The tool's state or overlay changed: the view repaints and the menus
-    // update.
+    // update. A drag that ends emits it, after dragging() turns false, so
+    // the view lets go of the drag's mouse grab.
     void changed();
 
 private:

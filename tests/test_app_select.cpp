@@ -9,6 +9,7 @@
 #include "tool.h"
 
 #include "system_input.h"
+#include "util.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -934,6 +935,112 @@ TEST_CASE("the undo key during a selection drag ends the drag and undoes nothing
     CHECK(w.selectTool()->floatingPos() == QPoint(0, 0));
     CHECK(undo->count() == typed);
     CHECK(undo->index() == typed);
+}
+
+TEST_CASE("an action that ends a selection drag lets go of the mouse grab (#45)") {
+    // A mouse drag holds the mouse grab until it ends, however it ends,
+    // the menus' actions included: they work on the tool directly, not
+    // through the view's handlers. A drag they leave going keeps it.
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    write(w, 0, 0, QStringLiteral("AB"));
+    act(w, "selectTool")->trigger();
+    w.selectTool()->select({0, 0, 1, 1});
+    act(w, "copy")->trigger();
+    const auto sys = [&](QEvent::Type type, QPoint cell) {
+        bwtest::systemMouse(v, type, v->cellRect(cell).center(),
+                            type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+                            type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton);
+    };
+    const auto grabFollowsDrag = [&] {
+        CHECK(QWidget::mouseGrabber() == (w.selectTool()->dragging() ? v : nullptr));
+    };
+    // the floating selection, dragged with the mouse
+    sys(QEvent::MouseButtonPress, {0, 0});
+    sys(QEvent::MouseMove, {2, 1});
+    REQUIRE(w.selectTool()->floating());
+    REQUIRE(w.selectTool()->dragging());
+    REQUIRE(QWidget::mouseGrabber() == v);
+
+    SECTION("Paste") {
+        act(w, "paste")->trigger();
+        CHECK_FALSE(w.selectTool()->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+        // and focus lost afterwards finds no grab to keep either
+        v->clearFocus();
+        CHECK(QWidget::mouseGrabber() == nullptr);
+    }
+    SECTION("Cut") {
+        act(w, "cut")->trigger();
+        CHECK_FALSE(w.selectTool()->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+    }
+    SECTION("Delete") {
+        act(w, "deleteSelection")->trigger();
+        CHECK_FALSE(w.selectTool()->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+    }
+    SECTION("Select All") {
+        act(w, "selectAll")->trigger();
+        CHECK_FALSE(w.selectTool()->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+    }
+    SECTION("Deselect") {
+        act(w, "deselect")->trigger();
+        CHECK_FALSE(w.selectTool()->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+    }
+    SECTION("Undo and Redo from the menu") {
+        act(w, "undo")->trigger();
+        CHECK_FALSE(w.selectTool()->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+        act(w, "redo")->trigger();
+        CHECK(QWidget::mouseGrabber() == nullptr);
+    }
+    SECTION("a Library stamp placed") {
+        QString error;
+        REQUIRE(w.placeStamp(QString::fromStdString((bwtest::dataDir() / "library" / "sky" / "small-star.ans").string()),
+                             {5, 5}, &error));
+        CHECK_FALSE(w.selectTool()->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+    }
+    SECTION("a new canvas") {
+        w.document()->clear();
+        CHECK_FALSE(w.selectTool()->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+    }
+    SECTION("a flip, a rotation or a paste mode leaves the drag going, and the grab") {
+        act(w, "flipHorizontal")->trigger();
+        act(w, "rotateClockwise")->trigger();
+        act(w, "pasteUnder")->trigger();
+        CHECK(w.selectTool()->dragging());
+        CHECK(QWidget::mouseGrabber() == v);
+    }
+    SECTION("a modal dialog") {
+        // The dialog takes focus from the canvas, which ends the drag: the
+        // grab doesn't outlast it into the dialog.
+        QMessageBox box(QMessageBox::Information, QStringLiteral("t"), QStringLiteral("t"), QMessageBox::Ok, &w);
+        QWidget* grabber = v;
+        bool dragging = true;
+        QTimer poll;
+        QObject::connect(&poll, &QTimer::timeout, &box, [&] {
+            if (QApplication::activeModalWidget() != &box || QApplication::focusWidget() == v)
+                return;
+            grabber = QWidget::mouseGrabber();
+            dragging = w.selectTool()->dragging();
+            box.done(0);
+        });
+        poll.start(5);
+        QTimer::singleShot(3000, &box, [&] { box.done(1); });
+        CHECK(box.exec() == 0);
+        CHECK_FALSE(dragging);
+        CHECK(grabber == nullptr);
+    }
+    grabFollowsDrag();
+    sys(QEvent::MouseButtonRelease, {2, 1});
+    CHECK_FALSE(w.selectTool()->dragging());
+    CHECK(QWidget::mouseGrabber() == nullptr);
 }
 
 TEST_CASE("saving writes a floating selection where it floats") {

@@ -251,6 +251,13 @@ private:
     enum class Pointer { None, Mouse, Stylus, StylusMouse };
     Pointer drag_ = Pointer::None;
     static Pointer pointerOf(const QMouseEvent* e);
+    // Sets the drag's owner; the view holds the mouse grab while the owner
+    // is one whose mouse events drive the drag and the view is shown. An
+    // open popup keeps its own grab.
+    void setDrag(Pointer p);
+    // Clears the owner of a drag that has ended, and lets go of its grab;
+    // runs on every Tool::changed.
+    void syncDrag();
     // Whether the tool's drag is going on and another device than `p` owns
     // it; clears the owner of a drag that has ended.
     bool othersDrag(Pointer p);
