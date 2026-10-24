@@ -42,8 +42,11 @@
 // bright colours, the top keeps its colour (as halfBlockCell writes). A
 // cell a pixel layer covers entirely has no attributes; one it half covers
 // keeps those of the cell under it that the colours don't use (Blink with
-// iCE off), the blink only while the foreground is still the half under:
-// a pixel doesn't blink.
+// iCE off), the blink only where the half under was blinking (it showed the
+// foreground, a colour other than the background's) and keeps its colour:
+// it stays the foreground, ▀ or ▄ as needed, unless the pixel is bright
+// with iCE off and has to be. A pixel doesn't blink, and nor does a half
+// under that showed the background.
 //
 // A cell depends only on the layers' cells at that cell, so recompositing
 // the cells an edit changed (dirtyRect in layer.h) brings a composite up to

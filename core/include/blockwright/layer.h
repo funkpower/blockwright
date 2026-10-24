@@ -166,10 +166,11 @@ Cell setLayerPixel(const Cell& cell, bool bottom, std::optional<std::uint8_t> co
 // A canvas-coordinate edit as the layer's own: each change moved by the
 // layer's offset, those outside the layer dropped. Each change's before is
 // the layer's own cell, whatever the canvas edit says (a tool builds its
-// edit against the composite it shows), and a change that leaves the
-// layer's cell as it is is dropped, so undo restores the layer exactly. The
-// tools work in canvas cells; the layer's undo command applies the result
-// to Layer::cells.
+// edit against the composite it shows), a cell the edit changes more than
+// once is one change, to its last value, in the place of its first, and a
+// change that leaves the layer's cell as it is is dropped, so undo restores
+// the layer exactly. The tools work in canvas cells; the layer's undo
+// command applies the result to Layer::cells.
 CellEdit toLayerEdit(const Layer& layer, const CellEdit& canvasEdit);
 // A layer edit's changes in canvas cells (moved by the offset), for the
 // region to recomposite.

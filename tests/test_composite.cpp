@@ -358,9 +358,11 @@ TEST_CASE("a pixel half over a pixel cell keeps its colour and the half under", 
     // every pixel cell, blinking or not, both iCE settings, every colour in
     // either half: the pixel shows its colour, the other half the colour
     // under it (its dark counterpart with iCE off where two bright colours
-    // would share the cell), and the cell blinks only where the blinking
-    // half under is still the foreground. Without those two cases it is what
-    // the half-block tools paint.
+    // would share the cell), and the cell blinks only where the half under
+    // was blinking (the foreground, a different colour from the background)
+    // and the pixel's colour can be the background (dark, with iCE off):
+    // then the half under stays the foreground. Without those two cases it
+    // is what the half-block tools paint.
     int same = 0;
     for (bool ice : {true, false})
         for (char32_t ch : {U' ', kFullBlock, kUpperHalf, kLowerHalf})
@@ -380,20 +382,26 @@ TEST_CASE("a pixel half over a pixel cell keeps its colour and the half under", 
                                 const Cell got = composite(s, o).at(0, 0);
                                 const HalfPair under = *halfBlocks(below, ice);
                                 std::uint8_t other = py ? under.top : under.bottom;
+                                const Cell shownBelow = iceCell(below, ice);
+                                const std::uint8_t fgBelow = shownBelow.fg.paletteIndex();
+                                const bool blinkingHalf = (shownBelow.attrs & attr::Blink) && other == fgBelow &&
+                                                          fgBelow != shownBelow.bg.paletteIndex();
                                 const bool clash = !ice && colour >= 8 && other >= 8 && other != colour;
                                 if (clash)
                                     other &= 7;
                                 const HalfPair want = py ? HalfPair{other, std::uint8_t(colour)}
                                                          : HalfPair{std::uint8_t(colour), other};
                                 const bool blinkUnder = iceCell(below, ice).attrs & attr::Blink;
+                                const bool keepsBlink = blinkingHalf && !clash && colour != other && colour < 8;
+                                const std::uint8_t wantAttrs = keepsBlink ? attr::Blink : 0;
                                 const bool fgUnder = got.ch == (py ? kUpperHalf : kLowerHalf);
-                                const std::uint8_t wantAttrs = blinkUnder && fgUnder ? attr::Blink : 0;
                                 if (!clash && !blinkUnder) {
                                     const Cell tool = setHalfBlock(below, py == 1, std::uint8_t(colour), ice);
                                     CHECK(halfBlocks(tool, ice) == want);
                                     ++same;
                                 }
-                                if (halfBlocks(got, ice) != want || iceCell(got, ice).attrs != wantAttrs) {
+                                if (halfBlocks(got, ice) != want || iceCell(got, ice).attrs != wantAttrs ||
+                                    (keepsBlink && !fgUnder)) {
                                     INFO("ice " << ice << " ch " << int(ch) << " fg " << fg << " bg " << bg
                                                 << " blink " << int(a) << " py " << py << " colour " << colour);
                                     FAIL();
@@ -438,6 +446,33 @@ TEST_CASE("with iCE off a pixel doesn't take the blink of the cell under it", "[
     // a blinking half under that stays the foreground keeps its blink
     c = over(cell(kUpperHalf, Red, Blue, attr::Blink), 1, Green);
     CHECK(c == cell(kUpperHalf, Red, Green, attr::Blink));
+    // and is written as the foreground to keep it: ▄ rather than ▀ Green/Red
+    c = over(cell(kLowerHalf, Red, Blue, attr::Blink), 0, Green);
+    CHECK(c == cell(kLowerHalf, Red, Green, attr::Blink));
+    c = over(cell(kShadeDark, Red, Black, attr::Blink), 0, Green);
+    CHECK(c == cell(kLowerHalf, Red, Green, attr::Blink));
+    c = over(cell(kFullBlock, Cyan, Black, attr::Blink), 1, Blue);
+    CHECK(c == cell(kUpperHalf, Cyan, Blue, attr::Blink));
+    // ▒ shows its darker colour on top: Red, its foreground, blinks
+    c = over(cell(kShadeMedium, Red, Grey, attr::Blink), 1, Green);
+    CHECK(c == cell(kUpperHalf, Red, Green, attr::Blink));
+    // a bright pixel can only be the foreground with iCE off: the blink goes
+    c = over(cell(kLowerHalf, Red, Blue, attr::Blink), 0, Yellow);
+    CHECK(c == cell(kUpperHalf, Yellow, Red));
+    // a half under that showed the background wasn't blinking and doesn't start
+    c = over(cell(kShadeLight, Red, Blue, attr::Blink), 1, Green);
+    CHECK(c == cell(kUpperHalf, Blue, Green));
+    c = over(cell(kLowerHalf, Red, Blue, attr::Blink), 1, Green);
+    CHECK(c == cell(kUpperHalf, Blue, Green));
+    c = over(cell(U'a', Red, Blue, attr::Blink), 1, Green);
+    CHECK(c == cell(kUpperHalf, Blue, Green));
+    // nor does a blink that showed nothing, the foreground the background's colour
+    c = over(cell(kLowerHalf, Red, Red, attr::Blink), 0, Green);
+    CHECK(c == cell(kUpperHalf, Green, Red));
+    // a pixel of the half under's colour fills the cell, which doesn't blink
+    c = over(cell(kLowerHalf, Red, Blue, attr::Blink), 0, Red);
+    CHECK(halfBlocks(c, false) == HalfPair{Red, Red});
+    CHECK(c.attrs == 0);
 }
 
 TEST_CASE("hidden layers add nothing; locked ones composite as any other", "[layers][composite]") {

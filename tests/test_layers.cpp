@@ -311,6 +311,29 @@ TEST_CASE("a layer edit's before is the layer's cell, so undo restores it", "[la
     CHECK(l.cells.at(0, 0).transparent);
 }
 
+TEST_CASE("a layer edit names each cell once, its last change", "[layers]") {
+    Layer l = makeLayer(LayerKind::Cells, 3, 1, "", 0, 0);
+    const Layer original = l;
+    const Cell a{U'A', Color::indexed(White), Color::indexed(Black), 0, false};
+    const Cell b{U'B', Color::indexed(Yellow), Color::indexed(Blue), 0, false};
+    CellEdit canvasEdit;
+    canvasEdit.changes = {
+        {0, 0, transparentCell(), a}, {1, 0, transparentCell(), a}, {2, 0, transparentCell(), a},
+        {0, 0, a, transparentCell()},  // (0, 0) back as it was: nothing to do there
+        {1, 0, a, b},                  // (1, 0) ends as b
+    };
+    const CellEdit e = toLayerEdit(l, canvasEdit);
+    REQUIRE(e.changes.size() == 2);
+    CHECK(e.changes[0] == CellChange{1, 0, transparentCell(), b});
+    CHECK(e.changes[1] == CellChange{2, 0, transparentCell(), a});
+    e.apply(l.cells);
+    CHECK(l.cells.at(0, 0).transparent);
+    CHECK(l.cells.at(1, 0) == b);
+    CHECK(l.cells.at(2, 0) == a);
+    e.revert(l.cells);
+    CHECK(l == original);
+}
+
 TEST_CASE("rectangles intersect and unite", "[layers]") {
     CHECK(intersect({0, 0, 4, 4}, {2, 2, 4, 4}) == CellRect{2, 2, 2, 2});
     CHECK(intersect({0, 0, 4, 4}, {4, 0, 4, 4}).empty());

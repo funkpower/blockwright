@@ -3,6 +3,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/ramp.h"
 
+#include <utility>
 #include <vector>
 
 namespace bw {
@@ -60,6 +61,12 @@ void over(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, b
     const std::uint8_t colour = bottom ? *p.bottom : *p.top;
     std::uint8_t& other = bottom ? pair.top : pair.bottom;
     const Cell shown = iceCell(acc, ice);
+    // With iCE off the foreground blinks: the half under was blinking if it
+    // showed the foreground, and the blink showed if that differs from the
+    // background.
+    const std::uint8_t shownFg = shown.fg.paletteIndex();
+    const bool blinking = (shown.attrs & attr::Blink) && other == shownFg && shownFg != shown.bg.paletteIndex();
+    const std::uint8_t under = other;
     // iCE off fits one bright colour, and the pixel, on top, keeps its own:
     // the half under shows dark. Under a shade (or any cell not pixels) that
     // is its background, which iCE off always shows dark; under a pixel
@@ -73,11 +80,18 @@ void over(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, b
     (bottom ? pair.bottom : pair.top) = colour;
     acc = halfBlockCell(pair, ice);
     // The attributes the colours don't use stay (Blink with iCE off), but the
-    // blink only while the foreground is the half under: the pixel has no
-    // blink of its own.
-    acc.attrs = shown.attrs;
-    if (acc.ch != (bottom ? kUpperHalf : kLowerHalf))
-        acc.attrs &= std::uint8_t(~attr::Blink);
+    // blink only on a blinking half under, kept as it was: the pixel has no
+    // blink of its own. That half stays the foreground where the pixel's
+    // colour can be the background (dark, with iCE off).
+    acc.attrs = shown.attrs & std::uint8_t(~attr::Blink);
+    const char32_t underFg = bottom ? kUpperHalf : kLowerHalf;
+    if (blinking && other == under && colour != under && (ice || colour < 8)) {
+        if (acc.ch != underFg) {
+            acc.ch = underFg;
+            std::swap(acc.fg, acc.bg);
+        }
+        acc.attrs |= attr::Blink;
+    }
 }
 
 } // namespace

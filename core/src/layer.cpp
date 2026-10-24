@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <unordered_map>
 
 namespace bw {
 
@@ -170,16 +171,20 @@ Cell setLayerPixel(const Cell& cell, bool bottom, std::optional<std::uint8_t> co
 
 CellEdit toLayerEdit(const Layer& layer, const CellEdit& canvasEdit) {
     CellEdit out;
+    // a cell named twice keeps its first place and takes its last change
+    std::unordered_map<long long, std::size_t> seen;
     for (const CellChange& c : canvasEdit.changes) {
         const long long lx = 1LL * c.x - layer.props.x, ly = 1LL * c.y - layer.props.y;
         if (lx < 0 || ly < 0 || lx >= layer.width() || ly >= layer.height())
             continue;
-        // the layer's own cell, not what the tool saw there (the composite)
-        const Cell& before = layer.cells.at(int(lx), int(ly));
-        if (c.after == before)
-            continue;
-        out.changes.push_back({int(lx), int(ly), before, c.after});
+        const auto [it, added] = seen.try_emplace(ly * layer.width() + lx, out.changes.size());
+        if (added)
+            // the layer's own cell, not what the tool saw there (the composite)
+            out.changes.push_back({int(lx), int(ly), layer.cells.at(int(lx), int(ly)), c.after});
+        else
+            out.changes[it->second].after = c.after;
     }
+    std::erase_if(out.changes, [](const CellChange& c) { return c.after == c.before; });
     return out;
 }
 
