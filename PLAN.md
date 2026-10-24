@@ -56,7 +56,8 @@ These are what make it more than a Moebius clone.
 blockwright/
   core/      C++20 library, Qt-free except QtCore types where it helps
              cell model, palettes, CP437 tables, layers + compositor,
-             ANSI/SAUCE/XBIN/mIRC/UTF-8 codecs, shape rasterisers, lint, project I/O
+             ANSI/SAUCE/XBIN/mIRC/UTF-8 codecs, shape rasterisers, lint,
+             project I/O (libzip, zstd)
   render/    glyph atlas + canvas renderer interface (QPainter first)
   app/       Qt 6 Widgets GUI: tools, docks, undo stack, preferences
   cli/       headless: render PNG, convert, lint, export, run generators
@@ -110,22 +111,33 @@ Modelled on Icy Draw's layer record, trimmed to what we need. In the core: `laye
 
 ## 6. Project format
 
-Single file, zip container (like `.ora`/`.kra`), with an unpacked-directory form of the same layout for git and agents.
+Single file, zip container (like `.ora`/`.kra`), extension `.bwp`, with an unpacked-directory form of the same layout for git and other tools. `core/include/blockwright/project.h` is the reference.
 
 ```
-manifest.json      format version, canvas size, palette, font, letter spacing,
-                   iCE, IRC budget profile, SAUCE fields, layer order
-layers/<id>.json   layer properties
+manifest.json      "format": "blockwright", "version": "1.0", width, height,
+                   palette ("cga"), ice, ircBudget {profile, bytes},
+                   sauce (null or title, author, group, date, font, comments,
+                   letterSpacing 8/9/"reserved"/null, aspectRatio, tinfo3,
+                   tinfo4, reservedFlags), layers (ids, bottom first),
+                   nextLayerId
+layers/<id>.json   layer properties (LayerProperties) and size
 layers/<id>.cells  binary cell data (versioned, zstd)
 scripts/<id>/      generator source + params.json + cached output
 refs/              reference images
-notes.md           brief, plan, notes
-snapshots/         optional saved rounds (r1, r2…), each a flattened .ans
+notes.md           brief, plan, notes; absent when empty
+snapshots/r<N>.ans saved rounds, each the composite flattened to .ans
 thumbnail.png
 ```
 
-- Readers refuse unknown major versions instead of dropping data on re-save (Icy Draw's rule).
-- CLI `pack` / `unpack` converts between zip and directory.
+- `.cells`: `BWCL`, u16 version (1), u16 reserved (0), u32 width, u32 height, then one zstd frame of width × height 14-byte cells row by row: u32 code point; fg and bg as u8 kind (0 palette index, then index and two zeros; 1 RGB, then r, g, b); u8 attributes; u8 flags (bit 0 transparent). Little-endian. Anything else is refused.
+- Version is `major.minor`. Readers refuse unknown major versions instead of dropping data on re-save (Icy Draw's rule). Within a major a reader ignores keys and files it doesn't know; the files are kept byte for byte and saved back, the keys are not, so a minor version may only add what an older reader can drop without changing what the project shows. A repeated JSON key is refused.
+- Paths are relative and `/`-separated; an entry with an empty, `.`, `..` or backslash, colon or control-character part, a part over 255 bytes or a path over 1024, an encrypted or oversized entry or a repeated one is refused. So are two paths a case-insensitive or Unicode-normalising disk takes for one (compared as NFD of the full case fold of NFD, so `ß`, `ẞ` and `ss` are one), a directory spelled two ways and a path that is both a file and a directory. Any entry that is not a plain file or directory is refused, hidden or not: a symlink, FIFO, device or socket in a directory, and in a zip any entry whose UNIX mode says so. Hidden files and directories (leading `.`) are otherwise skipped on read and left alone on a directory save. A directory read opens each file without following a link or waiting on a FIFO, and reads it only if it is still a plain file of the size the walk saw. Every layer file must be listed in the manifest and every listed layer must have both files.
+- Limits, checked before anything is allocated or decoded: 10 000 entries, 256 MiB an entry, 1 GiB in all, 1024 layers, 2 000 000 cells a layer (the canvas limit) and 16 000 000 cells across the layers (about 256 MiB decoded), the last read from the `.cells` headers before any is decoded; 1 MiB for `manifest.json` and each `layers/<id>.json`, checked before it is parsed (a JSON parse takes about ten times the text).
+- Writers encode the whole project first and refuse what a reader would refuse (the limits and paths above, and SAUCE text longer than its field) before the destination is touched, so a save or `snapshot` that would cross a limit leaves the original as it was.
+- Zip saves are deterministic (fixed entry time; `.cells` and `.png` stored, the rest deflated) and replace the file whole. A directory save writes each file whole through a temporary file created exclusively (`O_EXCL`, `O_NOFOLLOW`, a random name) and renamed over it, the manifest last, then removes the files the project no longer has; it refuses a symlink at an entry or on a directory on the way to one, a non-empty directory with no manifest, and, before writing anything, a path (the directory's own included) longer than the system opens. A first save that fails part way removes what it wrote, so the retry isn't refused.
+- A flat file becomes a project as the editor opens it (a non-iCE file with bright backgrounds turns iCE on, its blink dropped and reported). Its SAUCE keeps every field an `.ans` save keeps; the type, size and iCE flag are the project's.
+- Snapshots and every export flatten the composite through the compositor and show each cell with the project's iCE, as the editor saves; the CLI refuses a lossy one unless asked.
+- CLI: `pack` / `unpack` converts between zip and directory (or from a flat file to a project); `snapshot` saves the next round; `info` describes a project; every command that reads art reads a project as its flattened composite.
 
 ## 7. Scripts and generator layers
 

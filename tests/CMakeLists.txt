@@ -32,13 +32,16 @@ add_executable(blockwright-tests
   test_outline.cpp
   test_outline_property.cpp
   test_pipeline.cpp
+  test_project.cpp
   test_shading_brushes.cpp
   test_soft_brush.cpp
   test_sauce.cpp
   test_selection.cpp
   util.h
 )
-target_link_libraries(blockwright-tests PRIVATE blockwright::core blockwright_cli_io Catch2::Catch2WithMain)
+# libzip and zstd to write the broken files test_project.cpp reads
+target_link_libraries(blockwright-tests PRIVATE blockwright::core blockwright_cli_io libzip::zip ${BW_ZSTD}
+                                                Qt6::Core Catch2::Catch2WithMain)
 target_compile_definitions(blockwright-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
                                                     BW_TEST_TMP="${CMAKE_CURRENT_BINARY_DIR}/catch-tmp"
                                                     BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
@@ -48,6 +51,10 @@ add_test(NAME cli
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_test.sh
           $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-tmp)
 set_tests_properties(cli PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+add_test(NAME casefold
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/casefold_test.sh
+          $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/casefold-tmp)
+set_tests_properties(casefold PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen SKIP_RETURN_CODE 77)
 
 # The bundled Library passes its own check, and installs where the installed
 # CLI finds it.

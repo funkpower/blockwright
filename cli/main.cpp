@@ -1,18 +1,24 @@
 // blockwright-cli: headless access to the core.
 //
 //   blockwright-cli --version
-//   blockwright-cli info <file.ans>
-//   blockwright-cli convert [--allow-lossy] <in.ans> <out.ans>
+//   blockwright-cli info <file.ans|project>
+//   blockwright-cli convert [--allow-lossy] <in.ans|project> <out.ans>
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli export --irc [--budget N] [--allow-over-budget] <in.ans> <out.txt>
 //   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N]
 //                         [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in.ans> <out.ans>
 //   blockwright-cli library list [dir]
 //   blockwright-cli library check <dir>
+//   blockwright-cli pack <in.ans|project> <out.bwp>
+//   blockwright-cli unpack <in.ans|project> <dir>
+//   blockwright-cli snapshot [--allow-lossy] <project>
+//
+// Every command that reads an .ans also reads a project (PLAN §6), a .bwp
+// zip or a project directory, as its flattened composite.
 //
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert or shade
 // without --allow-lossy (nothing is written), or a library check that found
-// a problem, 2 usage error, 3 an IRC line over the byte budget without
+// a problem, or a lossy snapshot without --allow-lossy, 2 usage error, 3 an IRC line over the byte budget without
 // --allow-over-budget (nothing is written).
 
 #include "blockwright/ansi.h"
@@ -23,6 +29,7 @@
 #include "blockwright/irc.h"
 #include "blockwright/library.h"
 #include "blockwright/lint.h"
+#include "blockwright/project.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
 #include "read_file.h"
@@ -61,7 +68,18 @@ struct Usage {
     std::string message;
 };
 
+bw::project::Project loadProject(const std::string& path) {
+    try {
+        return bw::project::read(path);
+    } catch (const bw::project::ProjectError& e) {
+        throw Failure{path + ": " + e.what()};
+    }
+}
+
+// An .ans, or a project as its flattened composite.
 bw::AnsiDocument load(const std::string& path) {
+    if (bw::project::isProject(path))
+        return bw::project::toAnsi(loadProject(path));
     const std::string data = readFile(path);
     if (data.empty())
         throw Failure{path + ": empty file"};
@@ -92,7 +110,54 @@ const char* aspectName(int v) {
     }
 }
 
+const char* yesNo(bool v) { return v ? "yes" : "no"; }
+
+int projectInfo(const std::string& path) {
+    const bw::project::Project p = loadProject(path);
+    const bw::LayerStack& s = p.layers;
+    std::cout << "file:        " << path << "\n"
+              << "project:     " << (std::filesystem::is_directory(path) ? "directory" : "zip") << "\n"
+              << "size:        " << s.width() << "x" << s.height() << "\n"
+              << "ice:         " << (p.ice ? "on" : "off") << "\n"
+              << "irc budget:  " << p.ircBudget.bytes << " bytes (" << p.ircBudget.profile << ")\n"
+              << "layers:      " << s.size() << " (next id " << s.nextId() << ")\n";
+    // top first, as the layer panel lists them
+    for (auto it = s.layers().rbegin(); it != s.layers().rend(); ++it) {
+        const bw::LayerProperties& l = it->props;
+        std::cout << "  " << l.id << "  " << bw::layerKindName(l.kind) << "  " << it->width() << "x" << it->height()
+                  << " at " << l.x << "," << l.y << "  " << bw::layerModeName(l.mode) << "  visible "
+                  << yesNo(l.visible) << ", locked " << yesNo(l.locked) << ", alpha locked " << yesNo(l.alphaLocked)
+                  << "  " << l.name << "\n";
+    }
+    std::cout << "notes:       " << p.notes.size() << " bytes\n"
+              << "snapshots:   " << p.snapshots.size();
+    if (!p.snapshots.empty())
+        std::cout << " (last r" << p.snapshots.back().round << ")";
+    std::cout << "\nfiles:       " << p.files.size() << "\n";
+    for (const auto& [name, bytes] : p.files)
+        std::cout << "  " << name << "  " << bytes.size() << " bytes\n";
+    if (!p.sauce) {
+        std::cout << "sauce:       none\n";
+        return kOk;
+    }
+    const bw::Sauce& a = *p.sauce;
+    std::cout << "sauce:       yes\n"
+              << "title:       " << text(a.title) << "\n"
+              << "author:      " << text(a.author) << "\n"
+              << "group:       " << text(a.group) << "\n"
+              << "date:        " << text(a.date) << "\n"
+              << "letter spacing: " << spacingName(a.letterSpacing()) << "\n"
+              << "aspect:      " << aspectName(a.aspectRatio()) << "\n"
+              << "font:        " << text(a.font) << "\n"
+              << "comments:    " << a.comments.size() << "\n";
+    for (const auto& c : a.comments)
+        std::cout << "  " << text(c) << "\n";
+    return kOk;
+}
+
 int info(const std::string& path) {
+    if (bw::project::isProject(path))
+        return projectInfo(path);
     const bw::AnsiDocument doc = load(path);
     const std::string data = readFile(path);
     const auto content = bw::splitSauce(data).content;
@@ -129,6 +194,9 @@ int info(const std::string& path) {
 
 // Writes `bytes` to `path` all or nothing.
 void save(const std::string& out, const std::string& bytes) {
+    // a flat file never replaces a project (shade a.bwp a.bwp, say)
+    if (bw::project::isProject(out))
+        throw Failure{out + ": not written: it is a project (pack and unpack write projects)"};
     // QSaveFile writes a temporary file beside the destination, syncs it and
     // renames it over the destination on commit, or removes it on failure, so
     // a failed write never leaves a partial file or damages the input.
@@ -151,11 +219,8 @@ void save(const std::string& out, const std::string& bytes) {
 // result is written only with allowLossy. `why` replaces the refusal's
 // reason when the caller knows it. `blinkDropped` is blink the document lost
 // before it got here (openAsEditor), counted with what writeAnsi drops.
-void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocument& doc, bool allowLossy,
-              const std::string& why = {}, int blinkDropped = 0) {
-    bw::AnsiOutput res = bw::writeAnsi(doc);
-    res.blinkDropped += blinkDropped;
-    // One warning per kind of loss, with a count.
+// Warns once per kind of loss in what writeAnsi wrote for `in`, with a count.
+void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
     if (const size_t n = res.unwritable.size()) {
         const bw::Unwritable& u = res.unwritable.front();
         std::string glyph;
@@ -170,6 +235,13 @@ void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocum
         std::cerr << "blockwright-cli: warning: " << in << ": " << n
                   << (n == 1 ? " blinking cell loses its blink" : " blinking cells lose their blink")
                   << ": bright backgrounds need iCE colours, where blink is a bright background\n";
+}
+
+void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocument& doc, bool allowLossy,
+              const std::string& why = {}, int blinkDropped = 0) {
+    bw::AnsiOutput res = bw::writeAnsi(doc);
+    res.blinkDropped += blinkDropped;
+    warnLoss(in, res);
     if (res.lossy() && !allowLossy)
         throw Failure{out + ": not written: " + (why.empty() ? "the conversion loses data" : why) +
                       " (--allow-lossy writes it anyway)"};
@@ -193,6 +265,52 @@ void refuseSameFile(const std::string& in, const std::string& out) {
     }
     if (same)
         throw Failure{out + ": not written: it is the input file"};
+}
+
+// An .ans as a one-layer project, opened as the editor opens it (a warning
+// for blink that loses), or a project as it is.
+bw::project::Project asProject(const std::string& in) {
+    if (bw::project::isProject(in))
+        return loadProject(in);
+    bw::Opened opened;
+    bw::project::Project p = bw::project::fromAnsi(load(in), &opened);
+    bw::AnsiOutput loss;
+    loss.blinkDropped = opened.blinkDropped;
+    warnLoss(in, loss);
+    return p;
+}
+
+void writeProject(const bw::project::Project& p, const std::string& out, bool directory) {
+    try {
+        if (directory)
+            bw::project::writeDirectory(p, out);
+        else
+            bw::project::writeZip(p, out);
+    } catch (const bw::project::ProjectError& e) {
+        throw Failure{out + ": " + e.what()};
+    }
+}
+
+int pack(const std::string& in, const std::string& out, bool directory) {
+    refuseSameFile(in, out);
+    writeProject(asProject(in), out, directory);
+    return kOk;
+}
+
+// Saves the project's composite as its next round, in the form it was read.
+int snapshot(const std::string& path, bool allowLossy) {
+    if (!bw::project::isProject(path))
+        throw Failure{path + ": not a project"};
+    bw::project::Project p = loadProject(path);
+    const bw::AnsiOutput res = bw::project::takeSnapshot(p);
+    warnLoss(path, res);
+    const int round = p.snapshots.back().round;
+    if (res.lossy() && !allowLossy)
+        throw Failure{path + ": r" + std::to_string(round) +
+                      " not saved: the snapshot loses data (--allow-lossy saves it anyway)"};
+    writeProject(p, path, std::filesystem::is_directory(path));
+    std::cout << "r" << round << "\n";
+    return kOk;
 }
 
 // Writes the piece as IRC text and reports every line's size in bytes, as
@@ -426,11 +544,18 @@ int main(int argc, char** argv) {
         "  library list [dir]   list the stamps in dir (default: the bundled and\n"
         "                       user libraries): category, name, size, widest\n"
         "                       IRC row in bytes, tags, path; tab-separated\n"
-        "  library check <dir>  check every stamp and sidecar in dir"));
+        "  library check <dir>  check every stamp and sidecar in dir\n"
+        "  pack <in> <out.bwp>  write an .ans or a project as a project zip\n"
+        "  unpack <in> <dir>    write an .ans or a project as a project directory;\n"
+        "                       <dir> must be empty or a project already\n"
+        "  snapshot <project>   save the flattened composite as the project's next\n"
+        "                       round (snapshots/rN.ans) and print rN\n\n"
+        "Every command that reads an .ans also reads a project (a .bwp zip or a\n"
+        "project directory) as its flattened composite."));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
-                                      QStringLiteral("convert, shade: write even if something can't be represented"));
+                                      QStringLiteral("convert, shade, snapshot: write even if something can't be represented"));
     parser.addOption(lossyOpt);
     const QCommandLineOption scaleOpt(QStringLiteral("scale"),
                                       QStringLiteral("render: integer zoom, nearest neighbour (1-8, default 1)"),
@@ -469,7 +594,7 @@ int main(int argc, char** argv) {
     const QCommandLineOption iceOpt(QStringLiteral("ice"),
                                     QStringLiteral("shade: turn iCE colours on (default: keep the piece's)"));
     parser.addOption(iceOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade or library"));
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, library, pack, unpack or snapshot"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -491,6 +616,7 @@ int main(int argc, char** argv) {
                   << "       | export --irc [--budget N] [--allow-over-budget] <in> <out>\n"
                   << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in> <out>\n"
                   << "       | library list [dir] | library check <dir>\n"
+                  << "       | pack <in> <out.bwp> | unpack <in> <dir> | snapshot [--allow-lossy] <project>\n"
                   << "       | --version\n";
         return kUsage;
     };
@@ -499,13 +625,14 @@ int main(int argc, char** argv) {
     const QString cmd = args.first();
     // Each option belongs to its commands; every other command refuses it.
     const std::pair<const QCommandLineOption*, std::vector<const char*>> owners[] = {
-        {&lossyOpt, {"convert", "shade"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
+        {&lossyOpt, {"convert", "shade", "snapshot"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
         {&ircOpt, {"export"}},             {&budgetOpt, {"export"}}, {&overOpt, {"export"}},
         {&rampOpt, {"shade"}},             {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
         {&boxOpt, {"shade"}},              {&iceOpt, {"shade"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
-        cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("library"))
+        cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("library") ||
+        cmd == QLatin1String("pack") || cmd == QLatin1String("unpack") || cmd == QLatin1String("snapshot"))
         for (const auto& [o, cmds] : owners) {
             if (!parser.isSet(*o) ||
                 std::any_of(cmds.begin(), cmds.end(), [&](const char* c) { return cmd == QLatin1String(c); }))
@@ -582,6 +709,17 @@ int main(int argc, char** argv) {
             }
             return usage(sub.isEmpty() ? "library needs a subcommand: list or check"
                                        : ("unknown library subcommand '" + sub.toStdString() + "'").c_str());
+        }
+        if (cmd == QLatin1String("pack") || cmd == QLatin1String("unpack")) {
+            if (args.size() != 3)
+                return usage(cmd == QLatin1String("pack") ? "pack takes an input and an output .bwp"
+                                                          : "unpack takes an input and an output directory");
+            return pack(args[1].toStdString(), args[2].toStdString(), cmd == QLatin1String("unpack"));
+        }
+        if (cmd == QLatin1String("snapshot")) {
+            if (args.size() != 2)
+                return usage("snapshot takes one project");
+            return snapshot(args[1].toStdString(), parser.isSet(lossyOpt));
         }
         return usage(("unknown command '"+ cmd.toStdString() + "'").c_str());
     } catch (const Usage& u) {

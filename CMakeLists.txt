@@ -12,6 +12,18 @@ include(GNUInstallDirs)
 include(CTest)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets)
+# Project files (PLAN §6): zip containers, zstd layer cells. zstd 1.5.6 and
+# later name the library zstd::libzstd; earlier configs only the shared and
+# static targets.
+find_package(libzip 1.7 CONFIG REQUIRED)
+find_package(zstd CONFIG REQUIRED)
+if(TARGET zstd::libzstd)
+  set(BW_ZSTD zstd::libzstd)
+elseif(TARGET zstd::libzstd_shared)
+  set(BW_ZSTD zstd::libzstd_shared)
+else()
+  set(BW_ZSTD zstd::libzstd_static)
+endif()
 
 # The short commit reported by --version. Empty means ask git on every build,
 # so the binary never reports a stale commit; scripts/install-dev sets it

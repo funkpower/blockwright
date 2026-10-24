@@ -239,22 +239,25 @@ if [[ -e $tmp/x.ans ]]; then bad "a refused shade wrote $tmp/x.ans"; else ok "re
 
 # Every command refuses every option it doesn't use: exit 2, a usage message
 # naming the option and the command, and nothing written.
-declare -A owner=([--allow-lossy]="convert shade" [--scale]=render [--font-width]=render
+declare -A owner=([--allow-lossy]="convert shade snapshot" [--scale]=render [--font-width]=render
                   [--irc]=export [--budget]=export [--allow-over-budget]=export
                   [--ramp]=shade [--darken]=shade [--steps]=shade [--box]=shade [--ice]=shade)
 declare -A value=([--scale]=2 [--font-width]=9 [--budget]=60 [--ramp]=steel [--steps]=2 [--box]=0,0,1,1)
 foreign=$tmp/foreign && mkdir -p "$foreign"
-for cmd in info convert render export shade; do
+for cmd in info convert render export shade pack unpack snapshot; do
   for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget --ramp --darken --steps --box --ice; do
     [[ " ${owner[$opt]} " == *" $cmd "* ]] && continue
     out=$foreign/$cmd${opt}.out
     case $cmd in
       info) argv=(info "$piece") ;;
+      snapshot) argv=(snapshot "$piece") ;;
       export) argv=(export --irc "$piece" "$out") ;;
       shade) argv=(shade --ramp steel "$piece" "$out") ;;
       *) argv=("$cmd" "$piece" "$out") ;;
     esac
-    a=${owner[$opt]// / or }; [[ $a == export ]] && a="an $a" || a="a $a"
+    read -ra o <<<"${owner[$opt]}"; a=${o[-1]}
+    (( ${#o[@]} > 1 )) && a="$(IFS=,; echo "${o[*]:0:${#o[@]}-1}" | sed 's/,/, /g') or $a"
+    [[ $a == export ]] && a="an $a" || a="a $a"
     expect "$cmd rejects $opt" 2 "^blockwright-cli: $opt is $a option, not a $cmd option$" -- \
       "$cli" "${argv[@]:0:1}" "$opt" ${value[$opt]:+"${value[$opt]}"} "${argv[@]:1}"
     if [[ -e $out ]]; then bad "$cmd with $opt wrote $out"; fi
@@ -263,7 +266,7 @@ done
 out=$("$cli" info --scale 2 "$piece" 2>/dev/null)
 if [[ -z $out ]]; then ok "info with a foreign option prints no info"; else bad "info with a foreign option printed: $out"; fi
 if [[ -z $(ls -A "$foreign") ]]; then ok "commands with a foreign option write nothing"; else bad "foreign options wrote: $(ls -A "$foreign")"; fi
-expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert or shade option, not a render option$' -- \
+expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert, shade or snapshot option, not a render option$' -- \
   "$cli" render "$piece" "$foreign/late.png" --allow-lossy
 
 expect "export bad input" 1 'nope\.ans: No such file' -- "$cli" export --irc "$tmp/nope.ans" "$tmp/x.txt"
@@ -336,6 +339,55 @@ if [[ $(id -u) -ne 0 ]]; then
 else
   echo "skip library check: an unreadable folder (running as root)"
 fi
+
+# projects (PLAN §6): pack, unpack, snapshot, and every reader taking one
+proj=$tmp/proj; mkdir -p "$proj"
+expect "pack an .ans" 0 '^$' -- "$cli" pack "$piece" "$proj/tux.bwp"
+expect "info: a project zip" 0 '^project: +zip$' -- "$cli" info "$proj/tux.bwp"
+expect "info: project size" 0 '^size: +30x17$' -- "$cli" info "$proj/tux.bwp"
+expect "info: project layers" 0 '^  1  cells  30x17 at 0,0  normal  visible yes, locked no, alpha locked no  Background$' -- "$cli" info "$proj/tux.bwp"
+expect "info: project SAUCE" 0 '^author: +funkpower$' -- "$cli" info "$proj/tux.bwp"
+expect "convert flattens a project" 0 '^$' -- "$cli" convert "$proj/tux.bwp" "$proj/flat.ans"
+if cmp -s "$piece" "$proj/flat.ans"; then ok "an .ans through a project is byte-identical"; else bad "an .ans through a project differs"; fi
+expect "unpack a zip" 0 '^$' -- "$cli" unpack "$proj/tux.bwp" "$proj/tux"
+if [[ -f $proj/tux/manifest.json && -f $proj/tux/layers/1.json && -f $proj/tux/layers/1.cells ]]; then
+  ok "unpack writes the layout"; else bad "unpack layout: $(cd "$proj/tux" && find . | sort | tr '\n' ' ')"; fi
+expect "info: a project directory" 0 '^project: +directory$' -- "$cli" info "$proj/tux"
+expect "pack a directory" 0 '^$' -- "$cli" pack "$proj/tux" "$proj/again.bwp"
+if cmp -s "$proj/tux.bwp" "$proj/again.bwp"; then ok "zip, directory, zip is byte-identical"; else bad "zip, directory, zip differs"; fi
+"$cli" export --irc "$piece" "$proj/ans.txt" > /dev/null
+expect "export reads a project" 0 ' 0 over$' -- "$cli" export --irc "$proj/tux" "$proj/proj.txt"
+if cmp -s "$proj/ans.txt" "$proj/proj.txt"; then ok "export of a project matches its .ans"; else bad "export of a project differs"; fi
+expect "render reads a project" 0 '^$' -- "$cli" render "$proj/tux.bwp" "$proj/tux.png"
+expect "snapshot a directory" 0 '^r1$' -- "$cli" snapshot "$proj/tux"
+expect "snapshot again" 0 '^r2$' -- "$cli" snapshot "$proj/tux"
+if cmp -s "$piece" "$proj/tux/snapshots/r2.ans"; then ok "a snapshot is the flattened .ans"; else bad "snapshot r2 differs from the piece"; fi
+expect "snapshot a zip" 0 '^r1$' -- "$cli" snapshot "$proj/tux.bwp"
+expect "info: snapshots" 0 '^snapshots: +1 \(last r1\)$' -- "$cli" info "$proj/tux.bwp"
+expect "snapshot takes a project" 1 'tux\.ans: not a project' -- "$cli" snapshot "$piece"
+expect "snapshot --allow-lossy is snapshot's" 2 '--allow-lossy is a convert, shade or snapshot option, not a pack option' -- "$cli" pack --allow-lossy "$piece" "$proj/x.bwp"
+cp "$proj/tux.bwp" "$proj/keep.bwp"
+expect "a flat file never replaces a project" 1 'keep\.bwp: not written: it is a project' -- "$cli" convert "$piece" "$proj/keep.bwp"
+if cmp -s "$proj/tux.bwp" "$proj/keep.bwp"; then ok "the project is untouched"; else bad "convert wrote over a project"; fi
+mkdir -p "$proj/photos"; echo precious > "$proj/photos/cat.jpg"
+expect "unpack refuses a directory that isn't a project" 1 'photos: .*not empty and holds no project' -- "$cli" unpack "$piece" "$proj/photos"
+if [[ $(ls "$proj/photos") == cat.jpg ]]; then ok "the directory is untouched"; else bad "unpack wrote into a non-project directory"; fi
+printf 'PK\x03\x04 not really' > "$proj/broken.bwp"
+expect "a damaged project is an error, not an .ans" 1 'broken\.bwp: .*not a project zip' -- "$cli" info "$proj/broken.bwp"
+# an .ans opens as the editor opens it: bright backgrounds turn iCE on, and blink is lost then
+expect "pack: blink lost on opening" 0 'warning: .*lossy\.ans: 1 blinking cell loses its blink' -- "$cli" pack "$tmp/lossy.ans" "$proj/lossy.bwp"
+"$cli" convert --allow-lossy "$tmp/lossy.ans" "$proj/lossy-direct.ans" 2> /dev/null
+"$cli" convert "$proj/lossy.bwp" "$proj/lossy-via.ans"
+if cmp -s "$proj/lossy-direct.ans" "$proj/lossy-via.ans"; then ok "a project writes the .ans convert writes"; else bad "pack then convert differs from convert"; fi
+expect "pack: a project with a glyph with no CP437 byte" 0 '^$' -- "$cli" pack "$data/projects/unwritable.bwp" "$proj/glyph.bwp"
+expect "lossy snapshot refused" 1 'glyph\.bwp: r1 not saved: the snapshot loses data' -- "$cli" snapshot "$proj/glyph.bwp"
+expect "lossy snapshot saved nothing" 0 '^snapshots: +0$' -- "$cli" info "$proj/glyph.bwp"
+expect "lossy snapshot with --allow-lossy" 0 '^r1$' -- "$cli" snapshot --allow-lossy "$proj/glyph.bwp"
+"$cli" unpack "$piece" "$proj/linked" > /dev/null
+echo precious > "$proj/victim"
+ln -s ../victim "$proj/linked/.manifest.json.bw-tmp"
+expect "snapshot refuses a project with a link in it" 1 'linked: .*\.manifest\.json\.bw-tmp is a symbolic link' -- "$cli" snapshot "$proj/linked"
+if [[ $(cat "$proj/victim") == precious && ! -e $proj/linked/snapshots ]]; then ok "the link's target is untouched"; else bad "snapshot wrote through a link"; fi
 
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]
