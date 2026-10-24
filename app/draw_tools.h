@@ -161,13 +161,13 @@ protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
 };
 
-// The name the form brush's shape goes by in the Brush dock and the status
+// The name the form brush's shape goes by in Tool Options and the status
 // bar.
 QString formShapeName(FormShape shape);
 
 // Form brush (PLAN §10): shades the selection's shape, or with nothing
 // selected the cells the stroke covers, as the view's form (a dome, a
-// cylinder or a plane) lit from the Brush dock's light direction, along the
+// cylinder or a plane) lit from Tool Options' light direction, along the
 // view's ramp. Strength (pressure, with pressure to strength) is how far a
 // cell moves towards its tone. Each symmetry image shades its own form.
 class FormTool : public BrushTool {
@@ -242,7 +242,7 @@ protected:
 
 // Half-block brush: a pencil of half-block pixels, each drag joined up
 // 4-connected, or 8-connected when the view's pencil connectivity says so
-// (the Brush dock).
+// (Tool Options).
 class HalfBlockTool : public DragTool {
     Q_OBJECT
 public:
@@ -337,7 +337,7 @@ protected:
 };
 
 // Rim-light brush (PLAN §10, "Detail"): the edge cells of the view's ramp
-// shape under it that face the Brush dock's light direction go one rung
+// shape under it that face Tool Options' light direction go one rung
 // lighter (RimLightBrush). Either button.
 class RimLightTool : public BrushTool {
     Q_OBJECT

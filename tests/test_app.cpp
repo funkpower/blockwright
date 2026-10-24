@@ -11,6 +11,7 @@
 #include "document.h"
 #include "main_window.h"
 #include "palette_widget.h"
+#include "scratch_settings.h"
 
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -30,6 +31,7 @@
 #include <QUndoStack>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSettings>
 #include <QTemporaryDir>
 
 #include <algorithm>
@@ -664,21 +666,40 @@ TEST_CASE("Save As adds .ans and asks before replacing a file the dialog never s
     p = resolveSavePath(tmp.filePath(QStringLiteral("piece.txt")));
     CHECK(p.path == tmp.filePath(QStringLiteral("piece.txt")));
     CHECK_FALSE(p.confirmOverwrite);
+}
 
-    // the dialog adds the suffix itself, so its own check sees the final name
-    QFileDialog d;
-    configureSaveDialog(d, existing);
-    CHECK(d.defaultSuffix() == QStringLiteral("ans"));
-    CHECK(d.acceptMode() == QFileDialog::AcceptSave);
-    CHECK_FALSE(d.testOption(QFileDialog::DontConfirmOverwrite));
-    CHECK(d.nameFilters().contains(QStringLiteral("All files (*)")));
-    // Qt's own dialog: "piece" under "All files (*)" comes back as piece.ans
-    QFileDialog own;
-    own.setOption(QFileDialog::DontUseNativeDialog);
-    configureSaveDialog(own, existing);
-    own.selectNameFilter(QStringLiteral("All files (*)"));
-    own.selectFile(QStringLiteral("piece"));
-    CHECK(own.selectedFiles() == QStringList{existing});
+TEST_CASE("the Save As dialog adds .ans itself, so its own check sees the final name") {
+    // A QFileDialog writes Qt's own settings when it is destroyed. Only where
+    // they are in the scratch directory may this test build one.
+    const QString scratch = QFileInfo(bwtest::scratchSettingsFile()).absolutePath();
+    if (!bwtest::qtSettingsInScratch(scratch))
+        SKIP("a QFileDialog would write Qt's native settings, which can't be moved off the user's on this platform");
+    QTemporaryDir tmp;
+    const QString existing = tmp.filePath(QStringLiteral("piece.ans"));
+    QFile f(existing);
+    REQUIRE(f.open(QIODevice::WriteOnly));
+    f.write("x");
+    f.close();
+
+    {
+        QFileDialog d;
+        configureSaveDialog(d, existing);
+        CHECK(d.defaultSuffix() == QStringLiteral("ans"));
+        CHECK(d.acceptMode() == QFileDialog::AcceptSave);
+        CHECK_FALSE(d.testOption(QFileDialog::DontConfirmOverwrite));
+        CHECK(d.nameFilters().contains(QStringLiteral("All files (*)")));
+        // Qt's own dialog: "piece" under "All files (*)" comes back as piece.ans
+        QFileDialog own;
+        own.setOption(QFileDialog::DontUseNativeDialog);
+        configureSaveDialog(own, existing);
+        own.selectNameFilter(QStringLiteral("All files (*)"));
+        own.selectFile(QStringLiteral("piece"));
+        CHECK(own.selectedFiles() == QStringList{existing});
+    }
+    // the dialogs kept their state in the scratch directory
+    const QSettings qt(QSettings::UserScope, QStringLiteral("QtProject"));
+    CHECK(qt.contains(QStringLiteral("FileDialog/lastVisited")));
+    CHECK(bwtest::inDir(qt.fileName(), scratch));
 }
 
 namespace {
@@ -1027,10 +1048,12 @@ TEST_CASE("Ctrl+arrows cycle the pen's colours and Ctrl+D resets them") {
 
 int main(int argc, char** argv) {
     // Every window here reads its Library from empty scratch directories,
-    // never the user's real one.
+    // never the user's real one, and keeps its settings, and Qt's own, in
+    // the same scratch directory.
     QTemporaryDir libraries;
     qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("bundled"))));
     qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("user"))));
+    bwtest::useScratchSettings(libraries);
     QApplication app(argc, argv);
     return Catch::Session().run(argc, argv);
 }

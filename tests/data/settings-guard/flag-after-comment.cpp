@@ -1,0 +1,1 @@
+/* QSettings* p; */ QSettings s;

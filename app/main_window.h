@@ -1,13 +1,17 @@
 #pragma once
-// The main window: the canvas view in a scroll area, the 1x preview and
-// palette docks, the F-key glyph set in the status bar, and the File, Edit,
-// View, Colours, Glyphs, Tools, Selection and Help menus. File > SAUCE... and
-// the View menu's iCE and letter-spacing toggles live in main_window_format.cpp.
+// The main window: the canvas view in a scroll area, the Toolbox and Tool
+// Options docks on the left, the 1x preview, palette and Library docks on
+// the right, the glyph bar at the bottom, the F-key glyph set in the status
+// bar, and the File, Edit, View, Colours, Glyphs, Tools, Selection, Window and
+// Help menus. File > SAUCE... and the View menu's iCE and letter-spacing
+// toggles live in main_window_format.cpp; the docks, the Window menu and the
+// saved layout in main_window_docks.cpp.
 
 #include "blockwright/canvas_renderer.h"
 
 #include "document.h"
 
+#include <QHash>
 #include <QMainWindow>
 
 #include <filesystem>
@@ -44,8 +48,10 @@ void configureSaveDialog(QFileDialog& dialog, const QString& path);
 QString saveWarning(const AnsiOutput& out);
 
 class SelectTool;
-class BrushDock;
+class GlyphBar;
 class LibraryDock;
+class ToolOptions;
+class Toolbox;
 class ToolRegistry;
 
 class MainWindow : public QMainWindow {
@@ -59,8 +65,14 @@ public:
     QDockWidget* previewDock() const { return previewDock_; }
     PaletteWidget* paletteWidget() const { return palette_; }
     QDockWidget* paletteDock() const { return paletteDock_; }
-    BrushDock* brushWidget() const { return brush_; }
-    QDockWidget* brushDock() const { return brushDock_; }
+    ToolOptions* toolOptions() const { return toolOptions_; }
+    QDockWidget* toolOptionsDock() const { return toolOptionsDock_; }
+    Toolbox* toolbox() const { return toolbox_; }
+    QDockWidget* toolboxDock() const { return toolboxDock_; }
+    GlyphBar* glyphBar() const { return glyphBar_; }
+    QDockWidget* glyphBarDock() const { return glyphBarDock_; }
+    // Every dock, in the Window menu's order.
+    QList<QDockWidget*> docks() const;
     QLabel* glyphSetLabel() const { return glyphSetLabel_; }
     const CanvasRenderer& renderer() const { return renderer_; }
     ToolRegistry* tools() const { return tools_; }
@@ -117,6 +129,8 @@ public slots:
     void setNinePx(bool on);
     // Selection > Save to Library...: asks for the name, category and tags.
     void saveToLibrary();
+    // Window > Reset Layout: every dock shown, docked where it starts.
+    void resetLayout();
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -140,6 +154,12 @@ private:
     void createEditingActions(QMenu* file, QMenu* edit, QMenu* view);
     // The Library dock and stamp drops on the canvas.
     void createLibrary();
+    // The Toolbox, Tool Options and glyph bar docks and the Window menu
+    // (main_window_docks.cpp), after the tools and the Library.
+    void createDocks();
+    // The window's size and dock layout, kept in the settings between runs.
+    void saveLayout() const;
+    void restoreLayout();
 
     Document doc_;
     AtlasRenderer renderer_;
@@ -149,8 +169,14 @@ private:
     QDockWidget* previewDock_ = nullptr;
     PaletteWidget* palette_ = nullptr;
     QDockWidget* paletteDock_ = nullptr;
-    BrushDock* brush_ = nullptr;
-    QDockWidget* brushDock_ = nullptr;
+    ToolOptions* toolOptions_ = nullptr;
+    QDockWidget* toolOptionsDock_ = nullptr;
+    Toolbox* toolbox_ = nullptr;
+    QDockWidget* toolboxDock_ = nullptr;
+    GlyphBar* glyphBar_ = nullptr;
+    QDockWidget* glyphBarDock_ = nullptr;
+    QMenu* windowMenu_ = nullptr;
+    QHash<QString, QAction*> toolActions_;  // the Tools menu's, by tool id
     LibraryDock* library_ = nullptr;
     QDockWidget* libraryDock_ = nullptr;
     QLabel* status_ = nullptr;

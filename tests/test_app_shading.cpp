@@ -1,8 +1,9 @@
 // The shading brushes in the main window (PLAN §4, phase 2b): the form,
 // soft and despeckle tools in the Tools menu and toolbar, their settings in
-// the Brush dock, and a stroke of each through the window system.
+// Tool Options, and a stroke of each through the window system.
 
-#include "brush_dock.h"
+#include "tool_options.h"
+#include "toolbox.h"
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
@@ -22,7 +23,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QSpinBox>
-#include <QToolBar>
+#include <QMenu>
+#include <QToolButton>
 #include <QUndoStack>
 
 #include <set>
@@ -73,29 +75,32 @@ std::set<std::pair<int, int>> changed(MainWindow& w) {
 
 } // namespace
 
-TEST_CASE("the shading brushes are in the Tools menu and on the toolbar, with their keys") {
+TEST_CASE("the shading brushes are in the Tools menu and the toolbox, with their keys") {
     MainWindow w;
-    auto* bar = w.findChild<QToolBar*>(QStringLiteral("toolsToolBar"));
-    REQUIRE(bar);
+    // On a toolbox button, or in its group's menu.
+    const auto inToolbox = [&w](QAction* a, const QString& id) {
+        QToolButton* b = w.toolbox()->buttonFor(id);
+        return b && (b->defaultAction() == a || (b->menu() && b->menu()->actions().contains(a)));
+    };
     for (const auto& [id, key] : {std::pair{"form", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T)},
                                   std::pair{"soft", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N)},
                                   std::pair{"despeckle", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D)}}) {
         INFO(id);
         QAction* a = act(w, QString::fromLatin1(id) + QStringLiteral("Tool"));
         CHECK(a->shortcut() == key);
-        CHECK(bar->actions().contains(a));
+        CHECK(inToolbox(a, QString::fromLatin1(id)));
         use(w, id);
         CHECK(a->isChecked());
     }
-    // every tool is on the toolbar
+    // every tool is in the toolbox
     for (Tool* t : w.tools()->tools())
-        CHECK(bar->actions().contains(act(w, t->id() + QStringLiteral("Tool"))));
+        CHECK(inToolbox(act(w, t->id() + QStringLiteral("Tool")), t->id()));
 }
 
-TEST_CASE("the Brush dock sets the form, the light, rim light, glint and hardness") {
+TEST_CASE("Tool Options sets the form, the light, rim light, glint and hardness") {
     MainWindow w;
     CanvasView* v = w.canvasView();
-    auto* dock = w.findChild<BrushDock*>();
+    auto* dock = w.findChild<ToolOptions*>();
     REQUIRE(dock);
     CHECK(v->formOptions() == FormOptions{});
     CHECK(dock->lightBox()->currentData().toInt() == int(Compass::NW));

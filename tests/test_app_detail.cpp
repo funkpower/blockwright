@@ -1,9 +1,9 @@
 // The detail tools in the main window (PLAN §10, "Detail"): the outline and
 // rim-light brushes, the pencil's 8-connected mode and the symmetry modes,
-// from the Tools and Edit menus and the Brush dock, with the mouse delivered
+// from the Tools and Edit menus and Tool Options, with the mouse delivered
 // as the platform delivers it.
 
-#include "brush_dock.h"
+#include "tool_options.h"
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
@@ -50,8 +50,8 @@ void use(MainWindow& w, const char* id) {
     REQUIRE(w.tools()->active()->id() == QString::fromLatin1(id));
 }
 
-BrushDock* dock(MainWindow& w) {
-    auto* d = w.findChild<BrushDock*>();
+ToolOptions* dock(MainWindow& w) {
+    auto* d = w.findChild<ToolOptions*>();
     REQUIRE(d);
     return d;
 }
@@ -280,7 +280,7 @@ TEST_CASE("each symmetry mode from the Edit menu repeats a brush stroke as its e
         CHECK(stroke(U'▌') == all);
     }
     SECTION("radial, two folds about a set cell") {
-        BrushDock* d = dock(w);
+        ToolOptions* d = dock(w);
         d->centreXBox()->setValue(10);
         d->centreYBox()->setValue(10);
         d->symmetryBox()->setCurrentIndex(d->symmetryBox()->findData(int(SymmetryMode::Radial)));
@@ -293,7 +293,7 @@ TEST_CASE("each symmetry mode from the Edit menu repeats a brush stroke as its e
         CHECK(stroke(U'▀') == L(U'▀', {{{17, 18}, U'▄'}, {{16, 18}, U'▄'}, {{16, 17}, U'▄'}}));
     }
     SECTION("radial, four folds: quarter turns on screen, glyphs turned with them") {
-        BrushDock* d = dock(w);
+        ToolOptions* d = dock(w);
         d->symmetryBox()->setCurrentIndex(d->symmetryBox()->findData(int(SymmetryMode::Radial)));
         d->foldsBox()->setValue(4);
         d->centreXBox()->setValue(6);
@@ -371,7 +371,7 @@ TEST_CASE("a shape dragged past the canvas edge keeps the radial images that lan
     CanvasView* v = w.canvasView();
     const Canvas blank = w.document()->canvas();
     v->setForeground(LightRed);
-    BrushDock* d = dock(w);
+    ToolOptions* d = dock(w);
     d->symmetryBox()->setCurrentIndex(d->symmetryBox()->findData(int(SymmetryMode::Radial)));
     d->foldsBox()->setValue(4);
     REQUIRE(v->symmetry() == Symmetry{SymmetryMode::Radial, 4});
@@ -400,7 +400,7 @@ TEST_CASE("a shape dragged past the canvas edge keeps the radial images that lan
 
 TEST_CASE("the dock's radial centre stays on the canvas") {
     MainWindow w;
-    BrushDock* d = dock(w);
+    ToolOptions* d = dock(w);
     const Canvas& c = w.document()->canvas();
     CHECK(d->centreXBox()->maximum() == c.width() - 1);
     CHECK(d->centreYBox()->maximum() == c.height() - 1);

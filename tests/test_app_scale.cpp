@@ -11,6 +11,7 @@
 #include "device_grid.h"
 #include "document.h"
 #include "main_window.h"
+#include "scratch_settings.h"
 
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -302,10 +303,12 @@ TEST_CASE("a stylus paints the cell under it at a fractional device pixel ratio"
 int main(int argc, char** argv) {
     qputenv("QT_SCALE_FACTOR", QByteArray::number(kScale));
     qputenv("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough");
-    // The Library reads empty scratch directories, never the user's.
+    // The Library reads empty scratch directories, never the user's, and
+    // the settings, the app's and Qt's own, are kept there too.
     QTemporaryDir libraries;
     qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("bundled"))));
     qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("user"))));
+    bwtest::useScratchSettings(libraries);
     QApplication app(argc, argv);
     return Catch::Session().run(argc, argv);
 }

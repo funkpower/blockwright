@@ -1,8 +1,6 @@
 # The GUI: Qt 6 Widgets. The window and its parts live in a library so the
 # tests can drive them without the executable.
 add_library(blockwright_app STATIC
-  brush_dock.cpp
-  brush_dock.h
   canvas_view.cpp
   canvas_view.h
   device_grid.cpp
@@ -10,11 +8,14 @@ add_library(blockwright_app STATIC
   document.cpp
   draw_tools.cpp
   draw_tools.h
+  glyph_bar.cpp
+  glyph_bar.h
   document.h
   library_dock.cpp
   library_dock.h
   main_window.cpp
   main_window.h
+  main_window_docks.cpp
   main_window_edit.cpp
   main_window_format.cpp
   main_window_library.cpp
@@ -26,8 +27,14 @@ add_library(blockwright_app STATIC
   sauce_dialog.h
   select_tool.cpp
   select_tool.h
+  settings.cpp
+  settings.h
   tool.cpp
   tool.h
+  tool_options.cpp
+  tool_options.h
+  toolbox.cpp
+  toolbox.h
 )
 set_target_properties(blockwright_app PROPERTIES AUTOMOC ON)
 add_dependencies(blockwright_app bw_version)

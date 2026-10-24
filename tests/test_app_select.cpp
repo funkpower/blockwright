@@ -553,7 +553,8 @@ TEST_CASE("the reference image item sits above Quit in the File menu") {
     for (QAction* m : w.menuBar()->actions())
         menus << m->text();
     CHECK(menus.indexOf(QStringLiteral("&Tools")) == menus.indexOf(QStringLiteral("&Selection")) - 1);
-    CHECK(menus.indexOf(QStringLiteral("&Selection")) == menus.indexOf(QStringLiteral("&Help")) - 1);
+    CHECK(menus.indexOf(QStringLiteral("&Selection")) == menus.indexOf(QStringLiteral("&Window")) - 1);
+    CHECK(menus.indexOf(QStringLiteral("&Window")) == menus.indexOf(QStringLiteral("&Help")) - 1);
 }
 
 TEST_CASE("a floating selection is drawn as it will stamp") {

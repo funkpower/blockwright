@@ -1,6 +1,5 @@
 #include "main_window.h"
 
-#include "brush_dock.h"
 #include "canvas_view.h"
 #include "select_tool.h"
 #include "palette_widget.h"
@@ -104,13 +103,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     paletteDock_->setWidget(palette_);
     addDockWidget(Qt::RightDockWidgetArea, paletteDock_);
 
-    brush_ = new BrushDock(view_);
-    brushDock_ = new QDockWidget(tr("Brush"), this);
-    brushDock_->setObjectName(QStringLiteral("brushDock"));
-    brushDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
-    brushDock_->setWidget(brush_);
-    addDockWidget(Qt::RightDockWidgetArea, brushDock_);
-
     glyphSetLabel_ = new QLabel;
     glyphSetLabel_->setObjectName(QStringLiteral("glyphSetLabel"));
     statusBar()->addPermanentWidget(glyphSetLabel_);
@@ -142,11 +134,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     createActions();
     createLibrary();
+    createDocks();
     updateTitle();
     updateStatus();
     updateGlyphSet();
-    view_->setFocus();
     resize(1400, 900);
+    restoreLayout();
+    view_->setFocus();
 }
 
 void MainWindow::createActions() {
@@ -207,6 +201,8 @@ void MainWindow::createActions() {
     colours->addSeparator();
     add(colours, tr("&Default Colours"), "defaultColours", QKeySequence(Qt::CTRL | Qt::Key_D),
         [this] { view_->setPen(Pen{}); });
+    add(colours, tr("&Swap Colours"), "swapColours", QKeySequence(),
+        [this] { view_->setPen(Pen{view_->pen().bg, view_->pen().fg}); });
 
     QMenu* glyphs = menuBar()->addMenu(tr("&Glyphs"));
     add(glyphs, tr("&Previous Set"), "previousGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Comma),
@@ -236,6 +232,8 @@ void MainWindow::createActions() {
     }
 
     createEditingActions(file, edit, view);
+    // Filled in by createDocks.
+    windowMenu_ = menuBar()->addMenu(tr("&Window"));
 
     QMenu* help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About Blockwright"), this, [this] {
@@ -388,10 +386,12 @@ bool MainWindow::maybeSave() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* e) {
-    if (maybeSave())
+    if (maybeSave()) {
+        saveLayout();
         e->accept();
-    else
+    } else {
         e->ignore();
+    }
 }
 
 void MainWindow::updateTitle() {

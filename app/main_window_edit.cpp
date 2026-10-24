@@ -7,6 +7,7 @@
 #include "draw_tools.h"
 #include "select_tool.h"
 #include "tool.h"
+#include "toolbox.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -18,7 +19,6 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QStatusBar>
-#include <QToolBar>
 
 namespace bw {
 
@@ -114,7 +114,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     connect(mirror, &QAction::toggled, view_, &CanvasView::setMirror);
     connect(view_, &CanvasView::mirrorChanged, mirror, &QAction::setChecked);
     // The mirror toggle's menu: what mirror mode repeats a stroke as (PLAN
-    // §10). Picking one turns mirror mode on; the Brush dock sets radial's
+    // §10). Picking one turns mirror mode on; Tool Options sets radial's
     // folds and centre.
     QMenu* symmetry = edit->addMenu(tr("S&ymmetry"));
     auto* symmetryGroup = new QActionGroup(this);
@@ -200,20 +200,20 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("rimLight"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)}};
     QHash<Tool*, QAction*> toolActions;
     for (Tool* t : tools_->tools()) {
-        QAction* a = add(toolsMenu, t->name(), "", toolKeys.value(t->id()), [this, t] { tools_->setActive(t); });
+        const QKeySequence key = toolKeys.value(t->id());
+        QAction* a = add(toolsMenu, t->name(), "", key, [this, t] { tools_->setActive(t); });
         a->setObjectName(t->id() + QStringLiteral("Tool"));
+        a->setIcon(toolIcon(t->id()));
+        const QString name = QString(t->name()).remove(QLatin1Char('&'));
+        a->setToolTip(key.isEmpty() ? name : tr("%1 (%2)").arg(name, key.toString(QKeySequence::NativeText)));
         check(a, toolGroup, t == tools_->active());
         toolActions.insert(t, a);
+        toolActions_.insert(t->id(), a);
     }
     connect(tools_, &ToolRegistry::activeChanged, this, [toolActions](Tool* t) {
         if (QAction* a = toolActions.value(t))
             a->setChecked(true);
     });
-    // The same tools on a toolbar.
-    QToolBar* toolBar = addToolBar(tr("Tools"));
-    toolBar->setObjectName(QStringLiteral("toolsToolBar"));
-    for (Tool* t : tools_->tools())
-        toolBar->addAction(toolActions.value(t));
     // Rectangles and ellipses: outlines, or filled.
     toolsMenu->addSeparator();
     QAction* filled = check(add(toolsMenu, tr("Filled Sha&pes"), "filledShapes",
@@ -223,7 +223,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         for (ShapeTool* t : fillable)
             t->setFilled(on);
     });
-    // The brushes' size, a cell at a time (the Brush dock has the rest).
+    // The brushes' size, a cell at a time (Tool Options has the rest).
     const auto stepSize = [this](int by) {
         BrushSettings s = view_->brushSettings();
         s.size += by;

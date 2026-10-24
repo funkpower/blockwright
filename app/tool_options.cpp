@@ -1,15 +1,21 @@
-#include "brush_dock.h"
+#include "tool_options.h"
 
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
+#include "select_tool.h"
+#include "tool.h"
 
 #include "blockwright/palette.h"
 
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QHash>
+#include <QKeySequence>
+#include <QLabel>
 #include <QPainter>
 #include <QPixmap>
 #include <QScopedValueRollback>
@@ -34,18 +40,70 @@ QIcon rampIcon(const Ramp& ramp) {
     return QIcon(pm);
 }
 
+QString keyText(const QKeySequence& key) { return key.toString(QKeySequence::NativeText); }
+
+using O = ToolOptions::Option;
+
 } // namespace
 
-BrushDock::BrushDock(CanvasView* view, QWidget* parent) : QWidget(parent), view_(view) {
+ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known) {
+    // Every drawing tool paints through the alpha lock and the symmetry; the
+    // brushes take the size, tip and pressure; strength is read by the
+    // brushes that step along the ramp by it.
+    const Options draw = O::AlphaLock | O::Symmetry;
+    const Options brush = draw | O::Size | O::Tip | O::Pressure;
+    static const QHash<QString, Options> table{
+        {QStringLiteral("keyboard"), {}},
+        {QStringLiteral("select"), O::PasteMode},
+        {QStringLiteral("halfBlock"), draw | O::Pencil},
+        {QStringLiteral("shade"), brush},
+        {QStringLiteral("rampShade"), brush | O::Strength | O::Ramp},
+        {QStringLiteral("form"), brush | O::Strength | O::Ramp | O::Light | O::Form},
+        {QStringLiteral("soft"), brush | O::Strength | O::Ramp | O::Hardness},
+        {QStringLiteral("despeckle"), brush | O::Ramp},
+        {QStringLiteral("glyph"), brush | O::Glyph},
+        {QStringLiteral("colorize"), brush},
+        {QStringLiteral("line"), draw},
+        {QStringLiteral("rectangle"), draw | O::Filled},
+        {QStringLiteral("ellipse"), draw | O::Filled},
+        {QStringLiteral("fill"), draw},
+        {QStringLiteral("eyedropper"), {}},
+        {QStringLiteral("outline"), brush | O::Ramp},
+        {QStringLiteral("rimLight"), brush | O::Ramp | O::Light},
+    };
+    const auto it = table.find(toolId);
+    if (known)
+        *known = it != table.end();
+    if (it != table.end())
+        return *it;
+    return brush | O::Strength | O::Ramp | O::Light | O::Form | O::Hardness;
+}
+
+ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* select, QAction* filledShapes,
+                         QWidget* parent)
+    : QWidget(parent), view_(view), select_(select),
+      glyphTool_(qobject_cast<GlyphTool*>(tools->find(QStringLiteral("glyph")))) {
+    title_ = new QLabel;
+    title_->setObjectName(QStringLiteral("toolOptionsTitle"));
+    QFont bold = title_->font();
+    bold.setBold(true);
+    title_->setFont(bold);
+
+    none_ = new QLabel(tr("This tool has no options."));
+    none_->setObjectName(QStringLiteral("toolOptionsNone"));
+
     size_ = new QSpinBox;
     size_->setObjectName(QStringLiteral("brushSize"));
     size_->setRange(1, kMaxBrushSize);
-    size_->setToolTip(tr("Brush width in cells (Ctrl+[ and Ctrl+] step it)"));
+    size_->setToolTip(tr("Brush width in cells (%1 and %2 step it)")
+                          .arg(keyText(QKeySequence(Qt::CTRL | Qt::Key_BracketLeft)),
+                               keyText(QKeySequence(Qt::CTRL | Qt::Key_BracketRight))));
 
     tip_ = new QComboBox;
     tip_->setObjectName(QStringLiteral("brushTip"));
     tip_->addItem(tr("Square"), int(Tip::Square));
     tip_->addItem(tr("Round"), int(Tip::Round));
+    tip_->setToolTip(tr("The brush's shape"));
 
     strength_ = new QSpinBox;
     strength_->setObjectName(QStringLiteral("brushStrength"));
@@ -66,6 +124,7 @@ BrushDock::BrushDock(CanvasView* view, QWidget* parent) : QWidget(parent), view_
     for (const Ramp& r : namedRamps())
         ramp_->addItem(rampIcon(r), QString::fromStdString(r.name), QString::fromStdString(r.name));
     ramp_->setIconSize(QSize(48, 12));
+    ramp_->setToolTip(tr("The colours the brush steps through, dark to light"));
 
     lock_ = new QCheckBox(tr("Alpha lock"));
     lock_->setObjectName(QStringLiteral("brushAlphaLock"));
@@ -106,7 +165,8 @@ BrushDock::BrushDock(CanvasView* view, QWidget* parent) : QWidget(parent), view_
     symmetry_->addItem(tr("Mirror Y"), int(SymmetryMode::MirrorY));
     symmetry_->addItem(tr("Mirror X and Y"), int(SymmetryMode::MirrorXY));
     symmetry_->addItem(tr("Radial"), int(SymmetryMode::Radial));
-    symmetry_->setToolTip(tr("What every brush repeats a stroke as (mirror mode, Ctrl+M)"));
+    symmetry_->setToolTip(tr("What every brush repeats a stroke as (mirror mode, %1)")
+                              .arg(keyText(QKeySequence(Qt::CTRL | Qt::Key_M))));
 
     folds_ = new QSpinBox;
     folds_->setObjectName(QStringLiteral("brushSymmetryFolds"));
@@ -118,8 +178,10 @@ BrushDock::BrushDock(CanvasView* view, QWidget* parent) : QWidget(parent), view_
     centre_->setToolTip(tr("Turn about this cell instead of the canvas centre"));
     centreX_ = new QSpinBox;
     centreX_->setObjectName(QStringLiteral("brushSymmetryCentreX"));
+    centreX_->setToolTip(tr("Radial centre: the column"));
     centreY_ = new QSpinBox;
     centreY_->setObjectName(QStringLiteral("brushSymmetryCentreY"));
+    centreY_->setToolTip(tr("Radial centre: the row"));
     auto* centreRow = new QHBoxLayout;
     centreRow->addWidget(centre_);
     centreRow->addWidget(centreX_);
@@ -129,48 +191,110 @@ BrushDock::BrushDock(CanvasView* view, QWidget* parent) : QWidget(parent), view_
     pencil4_->setObjectName(QStringLiteral("brushPencil4"));
     pencil4_->setToolTip(tr("Half-block pencil lines step only sideways and up or down; off steps diagonally too"));
 
-    auto* form = new QFormLayout(this);
+    glyph_ = new QLabel;
+    glyph_->setObjectName(QStringLiteral("brushGlyph"));
+    glyph_->setToolTip(tr("The glyph brush's glyph: F1-F10 or the glyph bar pick it from the current set"));
+
+    filled_ = new QCheckBox(tr("Filled"));
+    filled_->setObjectName(QStringLiteral("shapeFilled"));
+    filled_->setToolTip(tr("Rectangles and ellipses are filled, not outlines (Filled Shapes, %1)")
+                            .arg(keyText(filledShapes->shortcut())));
+
+    pasteMode_ = new QComboBox;
+    pasteMode_->setObjectName(QStringLiteral("selectPasteMode"));
+    pasteMode_->addItem(tr("Normal"), int(PasteMode::Normal));
+    pasteMode_->addItem(tr("Transparent"), int(PasteMode::Transparent));
+    pasteMode_->addItem(tr("Under"), int(PasteMode::Under));
+    pasteMode_->setItemData(0, tr("Every cell of the block is written"), Qt::ToolTipRole);
+    pasteMode_->setItemData(1, tr("Blank cells don't paste"), Qt::ToolTipRole);
+    pasteMode_->setItemData(2, tr("Only into blank cells"), Qt::ToolTipRole);
+    pasteMode_->setToolTip(tr("How a paste or a moved selection lands (Selection > Paste Mode)"));
+
+    auto* form = form_layout_ = new QFormLayout(this);
+    form->addRow(title_);
+    form->addRow(none_);
+    form->addRow(tr("Glyph"), glyph_);
     form->addRow(tr("Size"), size_);
     form->addRow(tr("Tip"), tip_);
     form->addRow(tr("Strength"), strength_);
     form->addRow(tr("Pressure"), pressure_);
     form->addRow(tr("Ramp"), ramp_);
-    form->addRow(lock_);
     form->addRow(tr("Light"), light_);
     form->addRow(tr("Form"), form_);
     form->addRow(rim_);
     form->addRow(specular_);
     form->addRow(tr("Hardness"), hardness_);
+    form->addRow(filled_);
+    form->addRow(pencil4_);
+    form->addRow(tr("Paste"), pasteMode_);
+    form->addRow(lock_);
     form->addRow(tr("Symmetry"), symmetry_);
     form->addRow(tr("Folds"), folds_);
     form->addRow(centreRow);
-    form->addRow(pencil4_);
 
     fitCentre();
     sync();
-    connect(view_->document(), &Document::reset, this, &BrushDock::fitCentre);
-    connect(view_, &CanvasView::brushChanged, this, &BrushDock::sync);
-    connect(size_, &QSpinBox::valueChanged, this, &BrushDock::apply);
-    connect(strength_, &QSpinBox::valueChanged, this, &BrushDock::apply);
-    connect(tip_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
-    connect(pressure_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
-    connect(ramp_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
-    connect(lock_, &QCheckBox::toggled, this, &BrushDock::apply);
-    connect(form_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
-    connect(rim_, &QCheckBox::toggled, this, &BrushDock::apply);
-    connect(specular_, &QCheckBox::toggled, this, &BrushDock::apply);
-    connect(hardness_, &QSpinBox::valueChanged, this, &BrushDock::apply);
-    connect(view_, &CanvasView::symmetryChanged, this, &BrushDock::sync);
-    connect(light_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
-    connect(symmetry_, &QComboBox::currentIndexChanged, this, &BrushDock::apply);
-    connect(folds_, &QSpinBox::valueChanged, this, &BrushDock::apply);
-    connect(centre_, &QCheckBox::toggled, this, &BrushDock::apply);
-    connect(centreX_, &QSpinBox::valueChanged, this, &BrushDock::apply);
-    connect(centreY_, &QSpinBox::valueChanged, this, &BrushDock::apply);
-    connect(pencil4_, &QCheckBox::toggled, this, &BrushDock::apply);
+    showFor(tools->active());
+    connect(tools, &ToolRegistry::activeChanged, this, &ToolOptions::showFor);
+    connect(view_->document(), &Document::reset, this, &ToolOptions::fitCentre);
+    connect(view_, &CanvasView::brushChanged, this, &ToolOptions::sync);
+    connect(view_, &CanvasView::symmetryChanged, this, &ToolOptions::sync);
+    if (glyphTool_)
+        connect(glyphTool_, &Tool::changed, this, &ToolOptions::sync);
+    connect(select_, &Tool::changed, this, &ToolOptions::sync);
+    connect(size_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
+    connect(strength_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
+    connect(tip_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
+    connect(pressure_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
+    connect(ramp_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
+    connect(lock_, &QCheckBox::toggled, this, &ToolOptions::apply);
+    connect(form_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
+    connect(rim_, &QCheckBox::toggled, this, &ToolOptions::apply);
+    connect(specular_, &QCheckBox::toggled, this, &ToolOptions::apply);
+    connect(hardness_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
+    connect(light_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
+    connect(symmetry_, &QComboBox::currentIndexChanged, this, &ToolOptions::apply);
+    connect(folds_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
+    connect(centre_, &QCheckBox::toggled, this, &ToolOptions::apply);
+    connect(centreX_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
+    connect(centreY_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
+    connect(pencil4_, &QCheckBox::toggled, this, &ToolOptions::apply);
+    // Filled Shapes is the menu toggle's; paste mode is the select tool's.
+    filled_->setChecked(filledShapes->isChecked());
+    connect(filled_, &QCheckBox::toggled, filledShapes, &QAction::setChecked);
+    connect(filledShapes, &QAction::toggled, filled_, &QCheckBox::setChecked);
+    connect(pasteMode_, &QComboBox::activated, this, [this] {
+        select_->setPasteMode(PasteMode(pasteMode_->currentData().toInt()));
+    });
 }
 
-void BrushDock::fitCentre() {
+void ToolOptions::showFor(Tool* tool) {
+    const Options o = tool ? optionsFor(tool->id()) : Options();
+    shown_ = o;
+    title_->setText(tool ? QString(tool->name()).remove(QLatin1Char('&')) : QString());
+    QFormLayout* f = form_layout_;
+    f->setRowVisible(none_, !o);
+    f->setRowVisible(glyph_, o.testFlag(O::Glyph));
+    f->setRowVisible(size_, o.testFlag(O::Size));
+    f->setRowVisible(tip_, o.testFlag(O::Tip));
+    f->setRowVisible(strength_, o.testFlag(O::Strength));
+    f->setRowVisible(pressure_, o.testFlag(O::Pressure));
+    f->setRowVisible(ramp_, o.testFlag(O::Ramp));
+    f->setRowVisible(light_, o.testFlag(O::Light));
+    f->setRowVisible(form_, o.testFlag(O::Form));
+    f->setRowVisible(rim_, o.testFlag(O::Form));
+    f->setRowVisible(specular_, o.testFlag(O::Form));
+    f->setRowVisible(hardness_, o.testFlag(O::Hardness));
+    f->setRowVisible(filled_, o.testFlag(O::Filled));
+    f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
+    f->setRowVisible(pasteMode_, o.testFlag(O::PasteMode));
+    f->setRowVisible(lock_, o.testFlag(O::AlphaLock));
+    f->setRowVisible(symmetry_, o.testFlag(O::Symmetry));
+    f->setRowVisible(folds_, o.testFlag(O::Symmetry));
+    f->setRowVisible(f->rowCount() - 1, o.testFlag(O::Symmetry));  // the radial centre
+}
+
+void ToolOptions::fitCentre() {
     // A centre on the canvas only. A smaller canvas pulls a set centre in
     // to its edge; the view pulls its saved centre in too, symmetry on or
     // off (CanvasView::fitSymmetryCentre).
@@ -179,7 +303,7 @@ void BrushDock::fitCentre() {
     centreY_->setRange(0, std::max(0, c.height() - 1));
 }
 
-void BrushDock::sync() {
+void ToolOptions::sync() {
     const QScopedValueRollback<bool> guard(syncing_, true);
     const BrushSettings& s = view_->brushSettings();
     size_->setValue(s.size);
@@ -208,9 +332,15 @@ void BrushDock::sync() {
     centreX_->setEnabled(radial && choice.centre);
     centreY_->setEnabled(radial && choice.centre);
     pencil4_->setChecked(view_->pencilConnectivity() == Connectivity::Four);
+    if (glyphTool_) {
+        const char32_t g = glyphTool_->glyph();
+        glyph_->setText(QString::fromUcs4(&g, 1));
+    }
+    // A Library stamp floats in a mode of its own; the dock shows it.
+    pasteMode_->setCurrentIndex(pasteMode_->findData(int(select_->effectivePasteMode())));
 }
 
-void BrushDock::apply() {
+void ToolOptions::apply() {
     if (syncing_)
         return;
     // Read every control first: each change below makes the view's signal

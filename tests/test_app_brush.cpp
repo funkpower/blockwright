@@ -1,8 +1,8 @@
 // The brushes' common behaviour in the main window (PLAN §4, phase 2b.1):
-// the Brush dock's size, tip, strength, pressure mapping, ramp and alpha
+// Tool Options' size, tip, strength, pressure mapping, ramp and alpha
 // lock, the ramp shade brush, and a stylus's pressure through QTabletEvent.
 
-#include "brush_dock.h"
+#include "tool_options.h"
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
@@ -166,14 +166,14 @@ Ramp ramp(const char* name) {
 
 } // namespace
 
-TEST_CASE("the Brush dock is in the window and shows the view's settings") {
+TEST_CASE("Tool Options is in the window and shows the view's settings") {
     MainWindow w;
     CanvasView* v = w.canvasView();
-    QDockWidget* dock = w.brushDock();
+    QDockWidget* dock = w.toolOptionsDock();
     REQUIRE(dock);
-    CHECK(dock->objectName() == QStringLiteral("brushDock"));
-    CHECK(dock->widget() == w.brushWidget());
-    BrushDock* d = w.brushWidget();
+    CHECK(dock->objectName() == QStringLiteral("toolOptionsDock"));
+    CHECK(dock->isAncestorOf(w.toolOptions()));
+    ToolOptions* d = w.toolOptions();
     // defaults: size 1, square, a quarter strength (a rung a pass), pressure
     // to size, steel, no lock
     CHECK(v->brushSettings().size == 1);
@@ -231,7 +231,7 @@ TEST_CASE("Ctrl+[ and Ctrl+] step the brush size, and the dock follows") {
     larger->trigger();
     larger->trigger();
     CHECK(w.canvasView()->brushSettings().size == 3);
-    CHECK(w.brushWidget()->sizeBox()->value() == 3);
+    CHECK(w.toolOptions()->sizeBox()->value() == 3);
     for (int i = 0; i < 5; ++i)
         smaller->trigger();
     CHECK(w.canvasView()->brushSettings().size == 1);
@@ -284,14 +284,14 @@ TEST_CASE("ramp shade brush: left lightens along the dock's ramp, right darkens,
     CHECK(rungOf(steel, at(w, 4, 0)) == 1);
 
     // full strength: a whole colour a pass
-    w.brushWidget()->strengthBox()->setValue(100);
+    w.toolOptions()->strengthBox()->setValue(100);
     drag(v, {{10, 0}});
     CHECK(rungOf(steel, at(w, 10, 0)) == 4);
     CHECK(at(w, 10, 0) == rungCell(steel, 4));
 
     // another ramp from the dock: off-ramp cells (steel's grey) are left
     // alone, the status says which
-    w.brushWidget()->rampBox()->setCurrentIndex(w.brushWidget()->rampBox()->findText(QStringLiteral("fire")));
+    w.toolOptions()->rampBox()->setCurrentIndex(w.toolOptions()->rampBox()->findText(QStringLiteral("fire")));
     CHECK(label->text() == QStringLiteral("Ramp fire"));
     const Cell grey = at(w, 10, 0);
     drag(v, {{10, 0}, {12, 0}});
@@ -306,9 +306,9 @@ TEST_CASE("changing the brush mid-drag redoes the preview, and release lands it"
     mouse(v, QEvent::MouseButtonPress, 10, 10);
     mouse(v, QEvent::MouseMove, 14, 10);
     CHECK(dragTool(w)->pending().changes.size() == 5);
-    w.brushWidget()->sizeBox()->setValue(3);
+    w.toolOptions()->sizeBox()->setValue(3);
     CHECK(cellsOf(dragTool(w)->pending()).size() == 3 * 7);
-    w.brushWidget()->rampBox()->setCurrentIndex(w.brushWidget()->rampBox()->findText(QStringLiteral("fire")));
+    w.toolOptions()->rampBox()->setCurrentIndex(w.toolOptions()->rampBox()->findText(QStringLiteral("fire")));
     for (const CellChange& c : dragTool(w)->pending().changes)
         CHECK(c.after == rungCell(ramp("fire"), 1));
     const CellEdit shown = dragTool(w)->pending();
@@ -329,12 +329,12 @@ TEST_CASE("the alpha lock leaves transparent cells alone") {
         REQUIRE(w.document()->edit(CellEdit{{{1, 0, Cell{}, clear}}}));
         use(w, id);
         v->setForeground(LightGreen);
-        w.brushWidget()->alphaLockBox()->setChecked(true);
+        w.toolOptions()->alphaLockBox()->setChecked(true);
         drag(v, {{0, 0}, {2, 0}});
         CHECK(at(w, 1, 0) == clear);
         CHECK_FALSE(at(w, 0, 0) == Cell{});
         CHECK_FALSE(at(w, 2, 0) == Cell{});
-        w.brushWidget()->alphaLockBox()->setChecked(false);
+        w.toolOptions()->alphaLockBox()->setChecked(false);
         drag(v, {{1, 0}});
         CHECK_FALSE(at(w, 1, 0) == clear);
     }

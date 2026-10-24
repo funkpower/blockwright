@@ -115,6 +115,18 @@ add_test(NAME cli_render
           $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-render-tmp)
 set_tests_properties(cli_render PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
+# The app tests run with HOME and the XDG directories in the build tree, so on
+# Linux nothing a test writes past its scratch directory reaches the user's
+# real profile (macOS and Windows keep native settings outside HOME). Catch's
+# PROPERTIES holds one environment variable and splits a list, so the profile
+# goes in through the command Catch runs each test (and its discovery) with.
+set(BW_APP_TEST_HOME ${CMAKE_CURRENT_BINARY_DIR}/app-test-home)
+file(MAKE_DIRECTORY ${BW_APP_TEST_HOME})
+set(BW_APP_TEST_ENV ${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen
+  HOME=${BW_APP_TEST_HOME}/home XDG_CONFIG_HOME=${BW_APP_TEST_HOME}/config
+  XDG_DATA_HOME=${BW_APP_TEST_HOME}/data XDG_CACHE_HOME=${BW_APP_TEST_HOME}/cache
+  XDG_STATE_HOME=${BW_APP_TEST_HOME}/state)
+
 add_executable(blockwright-app-tests
   test_app.cpp
   test_app_brush.cpp
@@ -126,6 +138,8 @@ add_executable(blockwright-app-tests
   test_app_shading.cpp
   test_app_perf.cpp
   test_app_detail.cpp
+  test_app_workspace.cpp
+  scratch_settings.h
   system_input.h
   util.h
 )
@@ -137,6 +151,7 @@ endif()
 target_link_libraries(blockwright-app-tests PRIVATE blockwright_app blockwright_cli_io Qt6::GuiPrivate Catch2::Catch2)
 target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
                                                         BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
+set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
 catch_discover_tests(blockwright-app-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
@@ -145,11 +160,31 @@ catch_discover_tests(blockwright-app-tests
 # QApplication exists.
 add_executable(blockwright-app-scale-tests
   test_app_scale.cpp
+  scratch_settings.h
 )
 target_link_libraries(blockwright-app-scale-tests PRIVATE blockwright_app Catch2::Catch2)
+set_target_properties(blockwright-app-scale-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
 catch_discover_tests(blockwright-app-scale-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
+
+# Every QSettings in the sources comes from the settings factory, so the
+# scratch settings the app tests inject cover all of them. The guard reads
+# tokens, not lines, and its fixtures hold it to each way of building one.
+add_executable(bw-settings-guard settings_guard.cpp)
+add_test(NAME app_settings_factory
+  COMMAND bw-settings-guard --allow ${PROJECT_SOURCE_DIR}/app/settings.cpp
+          ${PROJECT_SOURCE_DIR}/app ${PROJECT_SOURCE_DIR}/core ${PROJECT_SOURCE_DIR}/render ${PROJECT_SOURCE_DIR}/cli)
+add_test(NAME app_settings_guard_fixtures
+  COMMAND bw-settings-guard --fixtures ${CMAKE_CURRENT_SOURCE_DIR}/data/settings-guard)
+
+# Run whole under a fresh HOME and XDG profile, the app test binaries leave it
+# empty: Blockwright's settings go to the factory's scratch INI file and Qt's
+# own (the QtProject store QFileDialog keeps its history in) to the scratch
+# directory as well.
+add_test(NAME app_tests_leave_profile_alone
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_profile_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-profile-check
+          $<TARGET_FILE:blockwright-app-tests> $<TARGET_FILE:blockwright-app-scale-tests>)
 
 add_test(NAME gui_version
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh $<TARGET_FILE:blockwright>)

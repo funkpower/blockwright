@@ -1,13 +1,20 @@
 #include "palette_widget.h"
 
+#include <QHelpEvent>
+#include <QKeySequence>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
+#include <QToolTip>
 
 namespace bw {
 
 namespace {
 
 constexpr int kSwatch = 22, kGap = 2, kColumns = 8;
+// The pen's swatches overlap by a third; the corners left over hold the
+// swap arrow and the reset.
+constexpr int kPen = 2 * kSwatch + kGap, kPenSwatch = kPen * 2 / 3;
 
 QColor toQColor(const Color& c) {
     const Rgb rgb = c.isIndexed() ? kPalette[c.index] : c.rgb;
@@ -28,7 +35,25 @@ void PaletteWidget::setPen(const Pen& pen) {
     update();
 }
 
-QRect PaletteWidget::penRect() const { return QRect(kGap, kGap, 2 * kSwatch + kGap, 2 * kSwatch + kGap); }
+QRect PaletteWidget::penRect() const { return QRect(kGap, kGap, kPen, kPen); }
+
+QRect PaletteWidget::foregroundRect() const {
+    return QRect(penRect().topLeft(), QSize(kPenSwatch, kPenSwatch));
+}
+
+QRect PaletteWidget::backgroundRect() const {
+    return QRect(penRect().bottomRight() - QPoint(kPenSwatch - 1, kPenSwatch - 1), QSize(kPenSwatch, kPenSwatch));
+}
+
+QRect PaletteWidget::swapRect() const {
+    const QRect pr = penRect();
+    return QRect(QPoint(foregroundRect().right() + 1, pr.top()), QPoint(pr.right(), backgroundRect().top() - 1));
+}
+
+QRect PaletteWidget::resetRect() const {
+    const QRect pr = penRect();
+    return QRect(QPoint(pr.left(), foregroundRect().bottom() + 1), QPoint(backgroundRect().left() - 1, pr.bottom()));
+}
 
 QRect PaletteWidget::swatchRect(int index) const {
     if (index < 0 || index > 15)
@@ -49,12 +74,41 @@ QSize PaletteWidget::sizeHint() const { return QSize(swatchRect(15).right() + 1 
 
 void PaletteWidget::paintEvent(QPaintEvent*) {
     QPainter p(this);
-    // The pen: the background as a square, the foreground as one inset in it.
-    const QRect pr = penRect();
-    p.fillRect(pr, toQColor(pen_.bg));
-    p.fillRect(pr.adjusted(pr.width() / 4, pr.height() / 4, -pr.width() / 4, -pr.height() / 4), toQColor(pen_.fg));
-    p.setPen(palette().color(QPalette::WindowText));
-    p.drawRect(pr.adjusted(0, 0, -1, -1));
+    // The pen: the foreground over the background, each framed.
+    const QColor ink = palette().color(QPalette::WindowText);
+    for (const auto& [r, c] : {std::pair{backgroundRect(), pen_.bg}, std::pair{foregroundRect(), pen_.fg}}) {
+        p.fillRect(r, toQColor(c));
+        p.setPen(ink);
+        p.drawRect(r.adjusted(0, 0, -1, -1));
+        p.setPen(palette().color(QPalette::Window));
+        p.drawRect(r.adjusted(1, 1, -2, -2));
+    }
+    // The swap: an arrow bent round the corner, a head at each end.
+    {
+        const QRectF s = QRectF(swapRect()).adjusted(1.5, 1.5, -1.5, -1.5);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(QPen(ink, 1.2));
+        QPainterPath arc;
+        arc.moveTo(s.left() + 2, s.top() + 2);
+        arc.quadTo(s.right() - 2, s.top() + 2, s.right() - 2, s.bottom() - 2);
+        p.drawPath(arc);
+        p.drawLine(QPointF(s.left() + 2, s.top() + 2), QPointF(s.left() + 5, s.top()));
+        p.drawLine(QPointF(s.left() + 2, s.top() + 2), QPointF(s.left() + 5, s.top() + 5));
+        p.drawLine(QPointF(s.right() - 2, s.bottom() - 2), QPointF(s.right(), s.bottom() - 5));
+        p.drawLine(QPointF(s.right() - 2, s.bottom() - 2), QPointF(s.right() - 5, s.bottom() - 5));
+        p.setRenderHint(QPainter::Antialiasing, false);
+    }
+    // The reset: the default pen in small, light grey over black.
+    {
+        const QRect r = resetRect().adjusted(1, 1, -1, -1);
+        const int w = r.width() * 2 / 3, h = r.height() * 2 / 3;
+        const QRect back(r.right() - w + 1, r.bottom() - h + 1, w, h), front(r.left(), r.top(), w, h);
+        p.fillRect(back, toQColor(Color::indexed(0)));
+        p.setPen(ink);
+        p.drawRect(back.adjusted(0, 0, -1, -1));
+        p.fillRect(front, toQColor(Color::indexed(7)));
+        p.drawRect(front.adjusted(0, 0, -1, -1));
+    }
 
     const int fg = pen_.fg.paletteIndex(), bg = pen_.bg.paletteIndex();
     QFont f = font();
@@ -77,8 +131,37 @@ void PaletteWidget::paintEvent(QPaintEvent*) {
     }
 }
 
+bool PaletteWidget::event(QEvent* e) {
+    if (e->type() == QEvent::ToolTip) {
+        const QPoint at = static_cast<QHelpEvent*>(e)->pos();
+        QString tip;
+        if (swapRect().contains(at))
+            tip = tr("Swap the foreground and background");
+        else if (resetRect().contains(at))
+            tip = tr("Default colours (%1)").arg(QKeySequence(Qt::CTRL | Qt::Key_D).toString(QKeySequence::NativeText));
+        else if (foregroundRect().contains(at))
+            tip = tr("The foreground colour");
+        else if (backgroundRect().contains(at))
+            tip = tr("The background colour");
+        else
+            tip = toolTip();
+        QToolTip::showText(static_cast<QHelpEvent*>(e)->globalPos(), tip, this);
+        return true;
+    }
+    return QWidget::event(e);
+}
+
 void PaletteWidget::mousePressEvent(QMouseEvent* e) {
-    const int i = indexAt(e->position().toPoint());
+    const QPoint at = e->position().toPoint();
+    if (e->button() == Qt::LeftButton && swapRect().contains(at)) {
+        emit swapRequested();
+        return;
+    }
+    if (e->button() == Qt::LeftButton && resetRect().contains(at)) {
+        emit resetRequested();
+        return;
+    }
+    const int i = indexAt(at);
     if (i < 0)
         return;
     if (e->button() == Qt::LeftButton)

@@ -154,7 +154,7 @@ private:
 // more outside on the shape's far side, within three columns, than in the
 // gap). A neighbour off the canvas is neither. The rule checks only that
 // one pair of neighbours, along the light's own step, not whether the cell
-// has an open side towards the light. The direction is the Brush dock's
+// has an open side towards the light. The direction is Tool Options'
 // light direction (BrushSettings::lightDirection), the way the light comes
 // from (NW: from the top left). It is an accent, not held to the ladder
 // lint: a lit cell can make a rung skip or a speck, which the lint reports.

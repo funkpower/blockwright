@@ -1,0 +1,2 @@
+QSettings
+    s("Blockwright", "Blockwright");
