@@ -21,7 +21,20 @@ AnsiDocument blank() {
     return d;
 }
 
+std::filesystem::path fspath(const QString& s) {
+    return std::filesystem::path(QFile::encodeName(s).toStdString());
+}
+
 } // namespace
+
+FileForm fileFormFor(const QString& path) {
+    const QFileInfo fi(path);
+    if (fi.isDir())
+        return FileForm::ProjectDirectory;
+    if (fi.suffix().compare(QLatin1String("bwp"), Qt::CaseInsensitive) == 0)
+        return FileForm::ProjectZip;
+    return FileForm::Ansi;
+}
 
 // One edit on the stack: a layer's cell delta, in its own cells.
 // QUndoStack::push calls redo() at once, so pushing is what applies the
@@ -137,6 +150,26 @@ private:
     LayerProperties before_, after_;
 };
 
+// A snapshot added to the project's snapshots; undo takes it off.
+class SnapshotCommand : public QUndoCommand {
+public:
+    SnapshotCommand(Document* doc, project::Snapshot snapshot)
+        : QUndoCommand(Document::tr("Snapshot r%1").arg(snapshot.round)), doc_(doc), snapshot_(std::move(snapshot)) {}
+
+    void redo() override { doc_->extras_.snapshots.push_back(snapshot_); }
+    // Snapshots change only through these commands and open/new (which
+    // clear the stack), so the one to take off is the last.
+    void undo() override {
+        auto& v = doc_->extras_.snapshots;
+        if (!v.empty() && v.back() == snapshot_)
+            v.pop_back();
+    }
+
+private:
+    Document* doc_;
+    project::Snapshot snapshot_;
+};
+
 // One format change (SAUCE, iCE, letter spacing) on the stack.
 class FormatCommand : public QUndoCommand {
 public:
@@ -197,18 +230,77 @@ bool Document::read(const QString& path, AnsiDocument* out, QString* error) {
     return true;
 }
 
+bool Document::readProject(const QString& path, project::Project* out, QString* error) {
+    try {
+        *out = project::read(fspath(path));
+    } catch (const std::exception& e) {
+        *error = QString::fromStdString(e.what());
+        return false;
+    }
+    return true;
+}
+
+void Document::replace(project::Project p, const QString& path, FileForm form) {
+    undo_.clear();
+    doc_ = AnsiDocument{};
+    doc_.ice = p.ice;
+    doc_.sauce = std::move(p.sauce);
+    resetLayers(std::move(p.layers));
+    extras_ = {std::move(p.ircBudget), std::move(p.notes), std::move(p.snapshots), std::move(p.files)};
+    countLostBlink_ = false;
+    path_ = path;
+    form_ = form;
+    emit reset();
+    emit layersChanged();
+    emit activeLayerChanged(active_);
+    emit pathChanged(path_);
+    setModified(false);
+}
+
+project::Project Document::project() const {
+    project::Project p;
+    p.layers = stack_;
+    p.ice = doc_.ice;
+    p.sauce = doc_.sauce;
+    p.ircBudget = extras_.ircBudget;
+    p.notes = extras_.notes;
+    p.snapshots = extras_.snapshots;
+    p.files = extras_.files;
+    return p;
+}
+
 AnsiOutput Document::encode() const {
-    AnsiDocument d = doc_;
-    for (int y = 0; y < d.canvas.height(); ++y)
-        for (int x = 0; x < d.canvas.width(); ++x) {
-            Cell& c = d.canvas.at(x, y);
-            if (!c.transparent)
-                c = iceCell(c, d.ice);
-        }
-    AnsiOutput out = writeAnsi(d);
-    if (countLostBlink_)
-        out.blinkDropped += lostBlinkCount(doc_);
+    project::Project p;
+    p.layers = stack_;
+    p.ice = doc_.ice;
+    p.sauce = doc_.sauce;
+    AnsiOutput out = writeAnsi(project::toAnsi(p));
+    out.blinkDropped += lostBlinkOnOpen();
     return out;
+}
+
+int Document::lostBlinkOnOpen() const {
+    return countLostBlink_ ? lostBlinkCount(doc_) : 0;
+}
+
+bool Document::nextSnapshot(project::Snapshot* snapshot, AnsiOutput* out, QString* error) const {
+    project::Project p;
+    p.layers = stack_;
+    p.ice = doc_.ice;
+    p.sauce = doc_.sauce;
+    p.snapshots = extras_.snapshots;
+    try {
+        *out = project::takeSnapshot(p);
+    } catch (const std::exception& e) {
+        *error = QString::fromStdString(e.what());
+        return false;
+    }
+    *snapshot = std::move(p.snapshots.back());
+    return true;
+}
+
+void Document::addSnapshot(project::Snapshot snapshot) {
+    undo_.push(new SnapshotCommand(this, std::move(snapshot)));
 }
 
 bool Document::setFormat(const DocumentFormat& format, const QString& text) {
@@ -280,7 +372,9 @@ void Document::replace(AnsiDocument doc, const QString& path) {
     for (int y = 0; y < cv.height() && !countLostBlink_; ++y)
         for (int x = 0; x < cv.width() && !countLostBlink_; ++x)
             countLostBlink_ = cv.at(x, y).lostBlink;
+    extras_ = {};
     path_ = path;
+    form_ = FileForm::Ansi;
     emit reset();
     emit layersChanged();
     emit activeLayerChanged(active_);
@@ -292,8 +386,10 @@ void Document::clear() {
     undo_.clear();
     doc_ = blank();
     resetLayers(LayerStack::fromCanvas(doc_.canvas));
+    extras_ = {};
     countLostBlink_ = false;
     path_.clear();
+    form_ = FileForm::Ansi;
     emit reset();
     emit layersChanged();
     emit activeLayerChanged(active_);
@@ -302,6 +398,10 @@ void Document::clear() {
 }
 
 bool Document::save(const QString& path, const AnsiOutput& out, QString* error) {
+    if (project::isProject(fspath(path))) {
+        *error = tr("%1 is a project; save it as a project or choose another name").arg(path);
+        return false;
+    }
     // QSaveFile writes beside the destination and renames over it on commit,
     // so a failed save never leaves a half-written file.
     QSaveFile f(path);
@@ -320,11 +420,54 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         *error = f.errorString();
         return false;
     }
-    if (path_ != path) {
+    // An .ans holding less than the document doesn't save it: a project
+    // stays the document's file, and a flat document stays modified, so
+    // nothing discards the layers or snapshots on no disk without asking.
+    const bool whole = flatHoldsAll();
+    if (!whole && form_ != FileForm::Ansi)
+        return true;
+    if (path_ != path || form_ != FileForm::Ansi) {
         path_ = path;
+        form_ = FileForm::Ansi;
         emit pathChanged(path_);
     }
     countLostBlink_ = false;  // the file written has no blink left to lose
+    if (whole) {
+        undo_.setClean();
+        setModified(false);
+    } else {
+        // Undoing back to how the file was opened no longer matches it.
+        undo_.resetClean();
+        setModified(true);
+    }
+    return true;
+}
+
+bool Document::flatHoldsAll() const {
+    if (stack_.size() != 1 || !(extras_ == ProjectExtras{}))
+        return false;
+    const Layer& l = stack_[0];
+    return l.props.kind == LayerKind::Cells && l.props.visible && l.props.mode == LayerMode::Normal &&
+           l.props.x == 0 && l.props.y == 0 && l.width() == stack_.width() && l.height() == stack_.height();
+}
+
+bool Document::saveProject(const QString& path, FileForm form, QString* error) {
+    try {
+        const project::Project p = project();
+        if (form == FileForm::ProjectDirectory)
+            project::writeDirectory(p, fspath(path));
+        else
+            project::writeZip(p, fspath(path));
+    } catch (const std::exception& e) {
+        *error = QString::fromStdString(e.what());
+        return false;
+    }
+    if (path_ != path || form_ != form) {
+        path_ = path;
+        form_ = form;
+        emit pathChanged(path_);
+    }
+    countLostBlink_ = false;
     undo_.setClean();
     setModified(false);
     return true;

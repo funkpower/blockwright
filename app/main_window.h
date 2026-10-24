@@ -5,7 +5,8 @@
 // status bar, and the File, Edit, View, Colours, Glyphs, Tools, Selection,
 // Layer, Window and Help menus. File > SAUCE... and the View menu's iCE and
 // letter-spacing toggles live in main_window_format.cpp; the docks, the Layer
-// and Window menus and the saved layout in main_window_docks.cpp.
+// and Window menus and the saved layout in main_window_docks.cpp; projects
+// (opening and saving them, snapshots) in main_window_project.cpp.
 
 #include "blockwright/canvas_renderer.h"
 
@@ -30,22 +31,29 @@ class PaletteWidget;
 class PreviewWidget;
 
 // The file Save As writes for the name its dialog returned: that name, with
-// ".ans" added if it has no suffix. The dialog only confirmed replacing the
-// name it returned, so replacing a file under an added suffix needs asking.
+// "." + `suffix` added if it has no suffix. The dialog only confirmed
+// replacing the name it returned, so replacing a file under an added suffix
+// needs asking.
 struct SavePath {
     QString path;
     bool confirmOverwrite = false;
 };
-SavePath resolveSavePath(const QString& chosen);
+SavePath resolveSavePath(const QString& chosen, const QString& suffix = QStringLiteral("ans"));
 
-// Sets up `dialog` for Save As starting at `path`. It adds ".ans" itself, so
-// its own overwrite check sees the name that will be written.
-void configureSaveDialog(QFileDialog& dialog, const QString& path);
+// Sets up `dialog` for Save As starting at `path`, with filters for ANSI art
+// and Blockwright projects: the project filter, and ".bwp", selected when
+// `project`, else ANSI art and ".ans". It adds the selected filter's suffix
+// itself, so its own overwrite check sees the name that will be written.
+void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project = false);
 
-// The question Save asks before a lossy save (AnsiOutput::lossy). Blink lost
-// on open is stated as what happened on open, not as something this save
-// loses, as the cells may have been put back.
-QString saveWarning(const AnsiOutput& out);
+// What a lossy save or snapshot loses, one line per kind of loss.
+QString lossDescription(const AnsiOutput& out);
+// The question Save asks before a lossy save (AnsiOutput::lossy) as .ans,
+// or, with `project`, as a project (which keeps every glyph, so only blink
+// lost on open counts). Blink lost on open is stated as what happened on
+// open, not as something this save loses, as the cells may have been put
+// back.
+QString saveWarning(const AnsiOutput& out, bool project = false);
 
 class SelectTool;
 class GlyphBar;
@@ -107,11 +115,23 @@ public:
     bool loadReferenceImage(const QString& path, QString* error);
 
     // Opens `path` without asking anything; false and `error` on failure.
+    // A project (project::isProject, or a name ending in .bwp, or a
+    // directory) opens as one, with its layers (main_window_project.cpp).
     bool openFile(const QString& path, QString* error);
-    // Saves to `path` without asking anything. A save that would lose data
-    // (glyphs written as '?', or blink lost when the file was opened, see
-    // Document::encode) is refused unless `allowLossy`.
+    // Saves to `path` without asking anything, in the document's form if
+    // `path` is its file, else in the form the path asks for (fileFormFor):
+    // a flat .ans (the layers flattened, project::toAnsi), a .bwp zip or a
+    // project directory. A save that would lose data (glyphs written as '?'
+    // in an .ans, or blink lost when the file was opened, see
+    // Document::encode) is refused unless `allowLossy`. An .ans that can't
+    // hold the whole document (Document::flatHoldsAll) leaves it unsaved:
+    // from a project it is an export, and the project stays its file.
     bool saveFile(const QString& path, QString* error, bool allowLossy = false);
+    // Takes a snapshot of a project (Document::nextSnapshot) and adds it as
+    // an undo step, without asking anything: its round, or 0 and `error` for
+    // a flat file, no round left, or a lossy snapshot (glyphs written as
+    // '?') unless `allowLossy`.
+    int snapshot(QString* error, bool allowLossy = false);
 
 public slots:
     // The menu actions, with dialogs.
@@ -119,8 +139,17 @@ public slots:
     void open();
     // Opens `path`, reporting a failure in a message box.
     void openInteractive(const QString& path);
+    // File > Open Project Directory...: a directory picker.
+    void openDirectory();
     bool save();
+    // Save As in the document's form: a directory picker for a project
+    // directory, else the file dialog (.ans or .bwp, by its filter).
     bool saveAs();
+    // File > Save As Project Directory... (Save As File... for a project
+    // directory): Save As in the other kind of form.
+    bool saveAsOtherForm();
+    // File > Take Snapshot, asking before a lossy one.
+    void takeSnapshot();
     void zoomIn();
     void zoomOut();
     void zoomReset();
@@ -151,7 +180,19 @@ private:
     void updateGlyphSet();
     // Asks to save unsaved edits; false means cancel.
     bool maybeSave();
-    bool saveInteractive(const QString& path);
+    bool saveInteractive(const QString& path, FileForm form);
+    // Save As into the directory picked, or through the file dialog.
+    bool saveAsDirectory();
+    bool saveAsFile();
+    // openFile for a project, and saveFile's write in `form`.
+    bool openProject(const QString& path, QString* error);
+    bool writeFile(const QString& path, FileForm form, QString* error, bool allowLossy);
+    // What a save in `form` would lose, for the warning: encode() for .ans,
+    // blink lost on open for a project.
+    AnsiOutput saveLoss(FileForm form) const;
+    // File > Save As Project Directory... and Take Snapshot, after Save As.
+    void createProjectActions(QMenu* file);
+    void syncProjectActions();
     // The tools, selection, mirror, guides and reference image
     // (main_window_edit.cpp).
     void createEditingActions(QMenu* file, QMenu* edit, QMenu* view);
@@ -192,6 +233,8 @@ private:
     QList<QAction*> glyphSetActions_;
     QAction* iceAction_ = nullptr;
     QAction* ninePxAction_ = nullptr;
+    QAction* otherFormAction_ = nullptr;
+    QAction* snapshotAction_ = nullptr;
 };
 
 } // namespace bw

@@ -149,6 +149,7 @@ add_executable(blockwright-app-tests
   test_app_perf.cpp
   test_app_detail.cpp
   test_app_workspace.cpp
+  test_app_project.cpp
   scratch_settings.h
   system_input.h
   util.h

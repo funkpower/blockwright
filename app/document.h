@@ -10,11 +10,17 @@
 // commands too; which layer is active is not. The modified flag is the
 // stack's clean state: saving marks the stack clean, so undoing back to the
 // saved cells clears it.
+//
+// The file is a flat .ans or a project (PLAN §6), a .bwp zip or a project
+// directory; save() writes the first, saveProject() the others. A project
+// opens with its layers, iCE and SAUCE fields, and keeps the rest of what
+// it holds (ProjectExtras) to save back.
 
 #include "blockwright/ansi.h"
 #include "blockwright/composite.h"
 #include "blockwright/edit.h"
 #include "blockwright/layer.h"
+#include "blockwright/project.h"
 
 #include <QObject>
 #include <QRegion>
@@ -22,7 +28,10 @@
 #include <QUndoStack>
 
 #include <functional>
+#include <map>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace bw {
 
@@ -34,6 +43,29 @@ struct DocumentFormat {
     bool ice = true;
 
     bool operator==(const DocumentFormat&) const = default;
+};
+
+// The form of the file behind a document: a flat .ans, or a project as a
+// .bwp zip or a directory. Save writes the form it was opened or last saved
+// in.
+enum class FileForm { Ansi, ProjectZip, ProjectDirectory };
+
+// The form a save to `path` writes: a directory that is there is a project
+// directory, a name ending in .bwp (any case) a project zip, anything else a
+// flat .ans.
+FileForm fileFormFor(const QString& path);
+
+// What a project holds that the editor keeps without showing it: the IRC
+// budget, notes.md, the snapshots and the files kept byte for byte (refs/,
+// scripts/, thumbnail.png, what a newer minor version added). Opened with a
+// project and saved back with it; a flat file has the defaults.
+struct ProjectExtras {
+    project::IrcBudget ircBudget;
+    std::string notes;
+    std::vector<project::Snapshot> snapshots;
+    std::map<std::string, std::string> files;
+
+    bool operator==(const ProjectExtras&) const = default;
 };
 
 class Document : public QObject {
@@ -62,8 +94,22 @@ public:
     // layer) with no file and an empty undo stack.
     void clear();
 
+    // Reads the project (a .bwp zip or a project directory) at `path` into
+    // `out` without touching any document; false and `error` (what
+    // project::read refused) on failure.
+    static bool readProject(const QString& path, project::Project* out, QString* error);
+    // Replaces the document with `project`, read from `path` in `form`: its
+    // layer stack (next layer id included; the bottom layer active), iCE,
+    // SAUCE fields and extras, unmodified and with an empty undo stack. No
+    // cell counts as lost blink: a project holds none to lose.
+    void replace(project::Project project, const QString& path, FileForm form);
+    // The document as a project: the layer stack, iCE, SAUCE and extras.
+    project::Project project() const;
+
     // The bytes save() writes, and what they lose (see writeAnsi): the
-    // visible composite, flattened. The cells are written as they show with the document's iCE setting (iceCell):
+    // visible composite, flattened through project::toAnsi with the
+    // document's iCE and SAUCE fields, as an export or a snapshot writes
+    // it. The cells are written as they show with the document's iCE setting (iceCell):
     // with iCE off a bright background is saved as blink, with it on blink
     // is saved as a bright background. So writeAnsi itself drops no blink, and
     // `blinkDropped` is the cells that lost their blink on open (read) and
@@ -75,15 +121,46 @@ public:
     // so the count can run over what the file lost but never under what the
     // save loses. It gates the save (lossy()) until the next save.
     AnsiOutput encode() const;
-    // Writes `out` (from encode()) to `path` all or nothing, makes `path`
-    // the document's file and marks the undo stack clean.
+    // Writes `out` (from encode()) to `path` all or nothing. Refuses to
+    // write over a project (project::isProject), as the CLI does. When the
+    // .ans holds the whole document (flatHoldsAll), `path` becomes the
+    // document's file and the undo stack is marked clean. Otherwise a
+    // project stays the document's file, as unsaved as it was (an export);
+    // a flat document takes `path` as its file but stays modified, with no
+    // clean state left in its undo stack, until a project save.
     bool save(const QString& path, const AnsiOutput& out, QString* error);
+    // Whether a flat .ans holds all of the document: one visible cells
+    // layer, at (0, 0) and the canvas's size, compositing normally, and no
+    // IRC budget, notes, snapshots or kept files besides it. Its name, id
+    // and locks are not art and don't count.
+    bool flatHoldsAll() const;
+    // Writes project() to `path` as a zip (project::writeZip) or a directory
+    // (project::writeDirectory), as `form` says, makes `path` the document's
+    // file and `form` its form and marks the undo stack clean. On failure
+    // the document is unchanged, `error` says why and false is returned.
+    bool saveProject(const QString& path, FileForm form, QString* error);
+    // The cells that lost their blink when the file was opened and that a
+    // project save would keep without it, as encode() counts them; 0 after
+    // any save.
+    int lostBlinkOnOpen() const;
+
+    // The snapshot that would be taken now (project::takeSnapshot on
+    // project()): the next round and the .ans bytes, and in `out` what
+    // writing them lost. Changes nothing; false and `error` if there is no
+    // round left.
+    bool nextSnapshot(project::Snapshot* snapshot, AnsiOutput* out, QString* error) const;
+    // Adds `snapshot` to the project's snapshots as one undo command
+    // ("Snapshot rN"), so it sets the modified flag and the next project
+    // save writes it; undo takes it off again.
+    void addSnapshot(project::Snapshot snapshot);
 
     // The SAUCE record, iCE and the composite as one flat document.
     const AnsiDocument& ansi() const { return doc_; }
     // The visible composite of the layers.
     const Canvas& canvas() const { return doc_.canvas; }
     QString path() const { return path_; }
+    FileForm form() const { return form_; }
+    const ProjectExtras& extras() const { return extras_; }
     bool isModified() const { return modified_; }
     QUndoStack* undoStack() { return &undo_; }
 
@@ -183,6 +260,7 @@ signals:
     // An undo command was done or undone: the cursor goes back to where it
     // was when the edit was made (undo) or where the edit left it (redo).
     void cursorRequested(bw::Cursor cursor);
+    // The file behind the document or its form (form()) changed.
     void pathChanged(const QString& path);
     // The SAUCE record or the iCE setting changed (not on open or new; see
     // reset). The cell width may have changed with it.
@@ -199,6 +277,7 @@ private:
     friend class LayerEditCommand;
     friend class LayerStackCommand;
     friend class LayerPropsCommand;
+    friend class SnapshotCommand;
 
     void setModified(bool on);
     CompositeOptions compositeOptions() const { return {doc_.ice, Cell{}}; }
@@ -226,6 +305,8 @@ private:
     LayerId active_ = 0;
     Canvas layerCanvas_{0, 0};
     QString path_;
+    FileForm form_ = FileForm::Ansi;
+    ProjectExtras extras_;
     QUndoStack undo_;
     // The marked cells count as lost (encode): from an open that marked
     // some until the next save, which leaves no blink of that file to lose.

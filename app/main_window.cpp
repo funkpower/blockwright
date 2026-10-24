@@ -30,7 +30,10 @@ namespace bw {
 
 namespace {
 
-const QString kFilter = QObject::tr("ANSI art (*.ans);;All files (*)");
+const QString kFilter = QObject::tr(
+    "Blockwright projects and ANSI art (*.bwp *.ans);;Blockwright projects (*.bwp);;ANSI art (*.ans);;All files (*)");
+
+} // namespace
 
 QString lossDescription(const AnsiOutput& out) {
     QStringList parts;
@@ -48,24 +51,32 @@ QString lossDescription(const AnsiOutput& out) {
     return parts.join(QStringLiteral(";\n"));
 }
 
-} // namespace
-
-QString saveWarning(const AnsiOutput& out) {
-    return QObject::tr("Before saving as .ans:\n%1.\n\nSave anyway?").arg(lossDescription(out));
+QString saveWarning(const AnsiOutput& out, bool project) {
+    const QString before = project ? QObject::tr("Before saving the project:") : QObject::tr("Before saving as .ans:");
+    return QObject::tr("%1\n%2.\n\nSave anyway?").arg(before, lossDescription(out));
 }
 
-SavePath resolveSavePath(const QString& chosen) {
+SavePath resolveSavePath(const QString& chosen, const QString& suffix) {
     if (!QFileInfo(chosen).suffix().isEmpty())
         return {chosen, false};
-    const QString path = chosen + QStringLiteral(".ans");
+    const QString path = chosen + QLatin1Char('.') + suffix;
     return {path, QFileInfo::exists(path)};
 }
 
-void configureSaveDialog(QFileDialog& dialog, const QString& path) {
+void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project) {
+    const QString ansi = QObject::tr("ANSI art (*.ans)"), bwp = QObject::tr("Blockwright project (*.bwp)");
     dialog.setAcceptMode(QFileDialog::AcceptSave);
     dialog.setFileMode(QFileDialog::AnyFile);
-    dialog.setNameFilter(kFilter);
-    dialog.setDefaultSuffix(QStringLiteral("ans"));
+    dialog.setNameFilters({ansi, bwp, QObject::tr("All files (*)")});
+    dialog.selectNameFilter(project ? bwp : ansi);
+    dialog.setDefaultSuffix(project ? QStringLiteral("bwp") : QStringLiteral("ans"));
+    // The suffix follows the filter; "All files" keeps the last one.
+    QObject::connect(&dialog, &QFileDialog::filterSelected, &dialog, [&dialog, ansi, bwp](const QString& f) {
+        if (f == ansi)
+            dialog.setDefaultSuffix(QStringLiteral("ans"));
+        else if (f == bwp)
+            dialog.setDefaultSuffix(QStringLiteral("bwp"));
+    });
     if (!path.isEmpty()) {
         const QFileInfo fi(path);
         dialog.setDirectory(fi.absolutePath());
@@ -150,10 +161,13 @@ void MainWindow::createActions() {
     a->setShortcut(QKeySequence::New);
     a = file->addAction(tr("&Open..."), this, &MainWindow::open);
     a->setShortcut(QKeySequence::Open);
+    a = file->addAction(tr("Open Project Di&rectory..."), this, &MainWindow::openDirectory);
+    a->setObjectName(QStringLiteral("openDirectory"));
     a = file->addAction(tr("&Save"), this, &MainWindow::save);
     a->setShortcut(QKeySequence::Save);
     a = file->addAction(tr("Save &As..."), this, &MainWindow::saveAs);
     a->setShortcut(QKeySequence::SaveAs);
+    createProjectActions(file);
     file->addSeparator();
     a = file->addAction(tr("SA&UCE..."), this, &MainWindow::editSauce);
     a->setObjectName(QStringLiteral("sauce"));
@@ -286,6 +300,8 @@ void MainWindow::canvasReset() {
 }
 
 bool MainWindow::openFile(const QString& path, QString* error) {
+    if (project::isProject(QFile::encodeName(path).toStdString()) || fileFormFor(path) != FileForm::Ansi)
+        return openProject(path, error);
     AnsiDocument candidate;
     if (!Document::read(path, &candidate, error))
         return false;
@@ -304,14 +320,8 @@ bool MainWindow::openFile(const QString& path, QString* error) {
 }
 
 bool MainWindow::saveFile(const QString& path, QString* error, bool allowLossy) {
-    // A floating selection is saved where it floats.
-    view_->finishTool();
-    const AnsiOutput out = doc_.encode();
-    if (out.lossy() && !allowLossy) {
-        *error = lossDescription(out);
-        return false;
-    }
-    return doc_.save(path, out, error);
+    const FileForm form = path == doc_.path() ? doc_.form() : fileFormFor(path);
+    return writeFile(path, form, error, allowLossy);
 }
 
 void MainWindow::newFile() {
@@ -334,39 +344,48 @@ void MainWindow::openInteractive(const QString& path) {
         QMessageBox::warning(this, tr("Open"), tr("Could not open %1:\n%2").arg(path, error));
 }
 
-bool MainWindow::save() { return doc_.path().isEmpty() ? saveAs() : saveInteractive(doc_.path()); }
+bool MainWindow::save() { return doc_.path().isEmpty() ? saveAs() : saveInteractive(doc_.path(), doc_.form()); }
 
 bool MainWindow::saveAs() {
+    return doc_.form() == FileForm::ProjectDirectory ? saveAsDirectory() : saveAsFile();
+}
+
+bool MainWindow::saveAsFile() {
     QFileDialog dialog(this, tr("Save As"));
-    configureSaveDialog(dialog, doc_.path());
+    configureSaveDialog(dialog, doc_.path(), doc_.form() != FileForm::Ansi);
     if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty())
         return false;
     // A platform dialog may not apply the default suffix; then the name
     // written is one the dialog never checked.
-    const SavePath p = resolveSavePath(dialog.selectedFiles().constFirst());
+    const SavePath p = resolveSavePath(dialog.selectedFiles().constFirst(), dialog.defaultSuffix());
     if (p.confirmOverwrite &&
         QMessageBox::warning(this, tr("Save As"), tr("%1 already exists.\nDo you want to replace it?").arg(p.path),
                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return false;
-    return saveInteractive(p.path);
+    return saveInteractive(p.path, fileFormFor(p.path));
 }
 
-bool MainWindow::saveInteractive(const QString& path) {
+bool MainWindow::saveInteractive(const QString& path, FileForm form) {
     view_->finishTool();
-    const AnsiOutput out = doc_.encode();
+    const AnsiOutput out = saveLoss(form);
     if (out.lossy()) {
         const auto answer = QMessageBox::warning(
-            this, tr("Save"), saveWarning(out),
+            this, tr("Save"), saveWarning(out, form != FileForm::Ansi),
             QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);
         if (answer != QMessageBox::Save)
             return false;
     }
     QString error;
-    if (!doc_.save(path, out, &error)) {
+    if (!(form == FileForm::Ansi ? doc_.save(path, out, &error) : doc_.saveProject(path, form, &error))) {
         QMessageBox::warning(this, tr("Save"), tr("Could not save %1:\n%2").arg(path, error));
         return false;
     }
-    statusBar()->showMessage(tr("Saved %1").arg(path), 3000);
+    if (form == FileForm::Ansi && doc_.path() != path)
+        statusBar()->showMessage(tr("Exported %1 flattened; the document is still %2").arg(path, doc_.path()), 5000);
+    else if (doc_.isModified())
+        statusBar()->showMessage(tr("Saved %1 flattened; only a project keeps the layers").arg(path), 5000);
+    else
+        statusBar()->showMessage(tr("Saved %1").arg(path), 3000);
     return true;
 }
 
@@ -380,11 +399,18 @@ bool MainWindow::maybeSave() {
     view_->finishTool();
     if (!doc_.isModified())
         return true;
-    const auto answer = QMessageBox::warning(this, tr("Blockwright"), tr("The canvas has unsaved changes."),
+    QString text = tr("The canvas has unsaved changes.");
+    // Save writes the .ans, which can't hold the layers: they stay open.
+    const bool flatLoses = doc_.form() == FileForm::Ansi && !doc_.path().isEmpty() && !doc_.flatHoldsAll();
+    if (flatLoses)
+        text += tr("\nSave writes %1 flattened and keeps the layers open; only a project saves them.")
+                    .arg(QFileInfo(doc_.path()).fileName());
+    const auto answer = QMessageBox::warning(this, tr("Blockwright"), text,
                                              QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
                                              QMessageBox::Save);
+    // A save that leaves the document modified didn't keep all of it.
     if (answer == QMessageBox::Save)
-        return save();
+        return save() && !doc_.isModified();
     return answer == QMessageBox::Discard;
 }
 

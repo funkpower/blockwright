@@ -21,6 +21,7 @@ add_library(blockwright_app STATIC
   main_window_edit.cpp
   main_window_format.cpp
   main_window_library.cpp
+  main_window_project.cpp
   palette_widget.cpp
   palette_widget.h
   publish.cpp

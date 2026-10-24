@@ -1,6 +1,6 @@
 // blockwright: the GUI.
 //
-//   blockwright [file.ans]
+//   blockwright [file.ans | project.bwp | project-directory]
 //   blockwright --version | --help
 
 #include "main_window.h"
@@ -31,7 +31,7 @@ int main(int argc, char** argv) {
                       << bw::kFontCredit;
             return 0;
         } else if (!std::strcmp(a, "--help") || !std::strcmp(a, "-h")) {
-            std::cout << "Usage: blockwright [file.ans]\n\n"
+            std::cout << "Usage: blockwright [file.ans | project.bwp | project-directory]\n\n"
                          "ANSI and IRC art editor.\n\n"
                          "  -h, --help     show this help\n"
                          "  -v, --version  show the version and the font credit\n";
