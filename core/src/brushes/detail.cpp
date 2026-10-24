@@ -1061,14 +1061,33 @@ Canvas settleWith(Layer& layer, int ox, int oy, const Canvas& canvas, const Ramp
     }
 }
 
+// The cells an outline may read (detailCellsRead) before a careful pass
+// starts no more: about a third of a second on the dev machine.
+thread_local long long carefulReads = 50'000'000;
+// What the last outline read.
+thread_local long long outlineRead = 0;
+
+} // namespace
+
+long long setCarefulReads(long long reads) {
+    const long long was = carefulReads;
+    carefulReads = reads;
+    return was;
+}
+
+long long outlineCellsRead() { return outlineRead; }
+
+namespace {
+
 // settleWith, then, on an image's first settle (a click, a stroke's start)
-// where it writes nothing and `careful` allows, again with the careful skip
-// blame (a skip between two cells the line changed is first the one more
-// findings involve), keeping whichever writes more of the box.
+// where it writes nothing and the outline has read under carefulReads since
+// `start`, again with the careful skip blame (a skip between two cells the
+// line changed is first the one more findings involve), keeping whichever
+// writes more of the box.
 Canvas settle(Layer& layer, int ox, int oy, const Canvas& canvas, const Ramp& ramp, bool ice,
-              const std::vector<char>& cover, const std::vector<int>& inside, bool careful) {
+              const std::vector<char>& cover, const std::vector<int>& inside, long long start) {
     Canvas out = settleWith(layer, ox, oy, canvas, ramp, ice, cover, inside, false);
-    if (layer.settled || !careful)
+    if (layer.settled)
         return out;
     const int w = canvas.width(), h = canvas.height();
     const auto written = [&](const Canvas& c) {
@@ -1083,22 +1102,18 @@ Canvas settle(Layer& layer, int ox, int oy, const Canvas& canvas, const Ramp& ra
     int covered = 0;
     for (const char c : cover)
         covered += c;
-    if (written(out) > 0 || covered < 3)
+    if (written(out) > 0 || covered < 3 || detailCellsRead() - start >= carefulReads)
         return out;
     Canvas again = settleWith(layer, ox, oy, canvas, ramp, ice, cover, inside, true);
     return written(again) > written(out) ? again : out;
 }
-
-// The cells an outline may read (detailCellsRead) before a careful pass
-// starts no more: about a third of a second on the dev machine.
-constexpr long long kCarefulReads = 50'000'000;
 
 // The line over the cells `cover` allows in the box (ox, oy, cw x ch) of the
 // layer, settled again on its own result until that changes nothing, and laid
 // on the layer: the outline is its own fixed point, and each round adds no
 // finding. `was` gets each cell it changes as it was. A round whose plain
 // settle writes nothing settles carefully, so the line is careful's fixed
-// point too, while the outline has read under kCarefulReads: a careful pass
+// point too, while the outline has read under carefulReads: a careful pass
 // that writes starts more rounds, and each round's work is O(W + H) a
 // changed cell, so on a long canvas a click went on for seconds.
 void outline(Layer& layer, int ox, int oy, int cw, int ch, const Ramp& ramp, bool ice, const std::vector<char>& cover,
@@ -1110,7 +1125,7 @@ void outline(Layer& layer, int ox, int oy, int cw, int ch, const Ramp& ramp, boo
         for (int y = 0; y < ch; ++y)
             for (int x = 0; x < cw; ++x)
                 box.at(x, y) = layer.result.at(x + ox, y + oy);
-        const Canvas out = settle(layer, ox, oy, box, ramp, ice, cover, inside, detailCellsRead() - start < kCarefulReads);
+        const Canvas out = settle(layer, ox, oy, box, ramp, ice, cover, inside, start);
         std::vector<std::pair<int, int>> changed;
         for (int y = 0; y < ch; ++y)
             for (int x = 0; x < cw; ++x)
@@ -1125,6 +1140,7 @@ void outline(Layer& layer, int ox, int oy, int cw, int ch, const Ramp& ramp, boo
         for (const auto& [x, y] : changed)
             layer.result.at(x, y) = layer.work.at(x, y);
     }
+    outlineRead = detailCellsRead() - start;
 }
 
 // A dab's new cells are settled with the line within kReach of them open

@@ -1680,6 +1680,36 @@ TEST_CASE("the outline writes the line wherever one is under the brush", "[detai
             CHECK(rungOf(steel(), w.at(q)) == g);
         }
     }
+    // Codex re-check of #55 (#81): a careful pass starts only while the
+    // outline has read under its budget, counted when the pass would start,
+    // after its round's plain settle. At (12,5) one careful pass writes the
+    // line and a later one confirms it. With the budget at what the outline
+    // reads up to that confirming pass, the pass doesn't start; the budget
+    // was read before the round's plain settle, and that let it start.
+    {
+        const auto click = [&](long long reads) {
+            struct Budget {
+                long long was;
+                ~Budget() { setCarefulReads(was); }
+            } budget{setCarefulReads(reads)};
+            const auto w = written(paintStroke(moon, brush, square(3), {{12, 5}}));
+            return std::pair{w, outlineCellsRead()};
+        };
+        const auto line = written(paintStroke(moon, brush, square(3), {{12, 5}}));
+        const long long all = outlineCellsRead();
+        // no careful pass: the line is the careful pass's
+        const auto [plain, refused] = click(1);
+        CHECK(plain != line);
+        // the first careful pass and not the confirming one
+        const auto [first, confirming] = click(refused + 1);
+        CHECK(first == line);
+        CHECK(confirming < all);
+        const auto [again, read] = click(confirming);
+        INFO("reads: " << refused << " with no careful pass, " << confirming << " up to the confirming one, " << all
+                       << " with it, " << read << " with the budget at " << confirming);
+        CHECK(again == line);
+        CHECK(read == confirming);
+    }
     // Claude round 1 (P2-1): a finding the canvas has already, far off,
     // doesn't keep the line off the rest of the shape
     Canvas two(70, 100);

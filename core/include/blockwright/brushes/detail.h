@@ -33,6 +33,15 @@ bool inShape(const Ramp& ramp, const Cell& cell, bool ice = true);
 // counter, for tests of what a dab costs.
 long long detailCellsRead();
 
+// The cells an outline may read (detailCellsRead) before a careful pass
+// starts no more (OutlineBrush, below), on this thread: 5e7 unless a test
+// sets another. Returns the one it replaces.
+long long setCarefulReads(long long reads);
+
+// How many cells the outline read settling the last dab on this thread
+// (detailCellsRead), the count the careful-pass budget is on: for tests.
+long long outlineCellsRead();
+
 // Whether (x, y) is a shape cell on the shape's edge (above).
 bool onEdge(const Canvas& canvas, const Ramp& ramp, int x, int y, bool ice = true);
 
