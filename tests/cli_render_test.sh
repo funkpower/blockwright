@@ -82,6 +82,28 @@ if [[ $(wc -l <<<"$out") -eq 1 && $out != *"Unknown error"* && $out != *libpng* 
 if [[ -z $(ls -A "$fsz") ]]; then ok "short PNG write leaves no file"; else bad "short PNG write left: $(ls -A "$fsz")"; fi
 
 
+# render --irc: the IRC view, the mIRC palette and each line cut at the budget
+big=$data/golden/cocktober.ans  # 120x120
+expect "--help lists render --irc" 0 'render --irc <in> <out\.png>' -- "$cli" --help
+expect "render --irc: a 120-row piece fits 407 bytes" 0 '^IRC view: 0 rows cut at 407 bytes$' -- "$cli" render --irc "$big" "$tmp/irc.png"
+size_is "render --irc is the canvas's size" "$tmp/irc.png" 960x1920
+"$cli" render "$big" "$tmp/plain.png"
+if cmp -s "$tmp/irc.png" "$tmp/plain.png"; then bad "render --irc drew the plain render"; else ok "render --irc draws the IRC view, not the canvas"; fi
+expect "render --irc --budget cuts rows" 0 '^IRC view: 116 rows cut at 150 bytes$' -- "$cli" render --irc --budget 150 "$big" "$tmp/irc150.png"
+if cmp -s "$tmp/irc.png" "$tmp/irc150.png"; then bad "render --irc --budget 150 drew no cuts"; else ok "render --irc --budget draws the cuts"; fi
+# the widest line's size fits, and a byte less cuts each line that wide
+sizes=$("$cli" export --irc "$big" "$tmp/irc.txt" | awk 'NR > 1 { print $2 }' | sort -n)
+widest=$(tail -1 <<<"$sizes"); at=$(grep -cx "$widest" <<<"$sizes")
+expect "render --irc at the widest line's size" 0 "^IRC view: 0 rows cut at $widest bytes\$" -- "$cli" render --irc --budget "$widest" "$big" "$tmp/irc-w.png"
+expect "render --irc a byte under it" 0 "^IRC view: $at rows? cut at $((widest - 1)) bytes\$" -- "$cli" render --irc --budget $((widest - 1)) "$big" "$tmp/irc-w1.png"
+expect "render --irc --scale --font-width" 0 '^IRC view: 0 rows cut' -- "$cli" render --irc --scale 2 --font-width 9 "$piece" "$tmp/irc-tux.png"
+size_is "render --irc --scale 2 at 9 px" "$tmp/irc-tux.png" 540x544
+expect "render --budget needs --irc" 2 '^blockwright-cli: --budget is a render --irc option$' -- "$cli" render --budget 60 "$piece" "$tmp/x.png"
+expect "render --irc bad budget" 2 '--budget takes a positive number of bytes' -- "$cli" render --irc --budget 0 "$piece" "$tmp/x.png"
+expect "render --irc bad budget text" 2 '--budget takes a positive number of bytes' -- "$cli" render --irc --budget lots "$piece" "$tmp/x.png"
+expect "render --irc onto its input refused" 1 'not written: it is the input file' -- "$cli" render --irc "$piece" "$piece"
+if [[ -e $tmp/x.png ]]; then bad "a refused render --irc wrote $tmp/x.png"; else ok "refused renders --irc write nothing"; fi
+
 # render never writes over its input, under any name; nothing is written
 same=$tmp/same && mkdir -p "$same/sub"
 cp "$piece" "$same/in.ans"

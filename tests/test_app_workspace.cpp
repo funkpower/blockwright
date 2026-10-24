@@ -7,6 +7,7 @@
 #include "document.h"
 #include "draw_tools.h"
 #include "glyph_bar.h"
+#include "lint_dock.h"
 #include "main_window.h"
 #include "palette_widget.h"
 #include "scratch_settings.h"
@@ -375,7 +376,7 @@ TEST_CASE("the Window menu lists every dock and hides and shows it") {
     QMenu* menu = windowMenu(w);
     REQUIRE(menu);
     const QList<QDockWidget*> docks = w.docks();
-    CHECK(docks.size() == 7);
+    CHECK(docks.size() == 9);
     CHECK(w.findChildren<QDockWidget*>().size() == docks.size());
     for (QDockWidget* d : docks) {
         INFO(d->objectName().toStdString());
@@ -422,16 +423,26 @@ TEST_CASE("Reset Layout puts every dock back, shown and docked") {
         {w.toolboxDock(), Qt::LeftDockWidgetArea},  {w.toolOptionsDock(), Qt::LeftDockWidgetArea},
         {w.previewDock(), Qt::RightDockWidgetArea}, {w.paletteDock(), Qt::RightDockWidgetArea},
         {w.layersDock(), Qt::RightDockWidgetArea},  {w.libraryDock(), Qt::RightDockWidgetArea},
+        {w.lintDock(), Qt::RightDockWidgetArea},    {w.ircViewDock(), Qt::RightDockWidgetArea},
         {w.glyphBarDock(), Qt::BottomDockWidgetArea},
     };
     for (const auto& [d, area] : want) {
         INFO(d->objectName().toStdString());
         CHECK(w.dockWidgetArea(d) == area);
-        CHECK(d->isVisible());
+        CHECK_FALSE(d->isHidden());
         CHECK_FALSE(d->isFloating());
-        CHECK(w.tabifiedDockWidgets(d).isEmpty());
         CHECK(act(w, QStringLiteral("show_") + d->objectName())->isChecked());
+        // Lint and the IRC View share a place, as tabs, Lint in front
+        if (d == w.lintDock())
+            CHECK(w.tabifiedDockWidgets(d) == QList<QDockWidget*>{w.ircViewDock()});
+        else if (d == w.ircViewDock())
+            CHECK(w.tabifiedDockWidgets(d) == QList<QDockWidget*>{w.lintDock()});
+        else
+            CHECK(w.tabifiedDockWidgets(d).isEmpty());
     }
+    QApplication::processEvents();
+    CHECK(w.lintWidget()->shown());
+    CHECK_FALSE(w.ircViewWidget()->shown());
     // the toolbox is above its options
     CHECK(w.toolboxDock()->geometry().bottom() < w.toolOptionsDock()->geometry().top());
 }

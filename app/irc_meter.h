@@ -3,11 +3,11 @@
 // row's size as the IRC encoder writes it, against the byte budget, and
 // the scroll area that makes room for it. Rows over the budget show red;
 // rows fit to the budget by merging colours, amber. The budget is the
-// document's (Document::extras, saved with a project); the encoder options
-// are the window's (View > IRC). File > Export IRC Text...
-// writes the lines the meter measures. It measures what the canvas shows:
-// the tool's edit in progress (a floating selection, a drag) over the
-// document's cells, which Export lands before it writes.
+// document's (Document::extras, saved with a project), the one the IRC View
+// dock cuts at; the encoder options are the window's (View > IRC). File >
+// Export IRC Text... writes the lines the meter measures. It measures what
+// the canvas shows: the tool's edit in progress (a floating selection, a
+// drag) over the document's cells, which Export lands before it writes.
 
 #include "blockwright/edit.h"
 #include "blockwright/irc.h"

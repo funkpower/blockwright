@@ -257,17 +257,79 @@ expect "shade arity" 2 'shade takes an input and an output file' -- "$cli" shade
 expect "shade bad input" 1 'nope\.ans: No such file' -- "$cli" shade --ramp steel "$tmp/nope.ans" "$tmp/x.ans"
 if [[ -e $tmp/x.ans ]]; then bad "a refused shade wrote $tmp/x.ans"; else ok "refused shades write nothing"; fi
 
+# lint: the whole lint, one planted fault a piece (#106)
+expect "--help lists lint" 0 '^  lint <in> +the ladder check' -- "$cli" --help
+expect "usage lists lint" 2 'lint \[--ramp R\]\.\.\. \[--box x0,y0,x1,y1\] \[--json\] <in>' -- "$cli" lint
+k='\033[0;40m '; K='\033[0;1;30;40m\xdb'; w='\033[0;37;40m\xdb'
+s1='\033[0;1;30;40m\xb0'; s2='\033[0;1;30;40m\xb1'; s3='\033[0;1;30;40m\xb2'; Wk='\033[0;1;37;40m\xb1'
+cells() { local o=; for c in "$@"; do o+=$c; done; printf "$o"; }
+cells "$s1" "$s2" "$s3" "$K" "$w" > "$tmp/lint-skip.ans"
+for y in 0 1 2 3; do cells "$k" "$s1" "$s2" "$s2" "$s2" "$s2" "$s2" "$s2" "$s3" "$K"; printf '\r\n'; done > "$tmp/lint-wide.ans"
+{ cells "$K" "$K" "$K" "$K" "$K"; printf '\r\n'; cells "$K" "$K" "$w" "$K" "$K"; printf '\r\n'; cells "$K" "$K" "$K" "$K" "$K"; } > "$tmp/lint-speck.ans"
+cells "$k" "$Wk" "$k" > "$tmp/lint-shade.ans"
+cells "$K" "$K" "$K" "$K" > "$tmp/lint-clean.ans"
+expect "lint: a skip" 4 '^3,0 rung-skip steel cell 3,0: rung 4 next to rung 8 at cell 4,0 \(more than one rung apart\)$' -- "$cli" lint --ramp steel "$tmp/lint-skip.ans"
+expect "lint: a wide rung" 4 '^2,3 wide-rung steel cell 2,3: a rung 4 cells wide \(at most 3\)$' -- "$cli" lint --ramp steel "$tmp/lint-wide.ans"
+expect "lint: a speck" 4 '^2,1 speckle steel cell 2,1: a speck, lighter than every neighbour$' -- "$cli" lint --ramp steel "$tmp/lint-speck.ans"
+expect "lint: a non-neighbour shade" 4 "^1,0 non-neighbour-shade steel cell 1,0: ▒ of 15 on 0, colours no ramp linted has as neighbours$" -- "$cli" lint --ramp steel "$tmp/lint-shade.ans"
+expect "lint: the summary" 4 '^4 findings \(4 wide-rung\), noise 0\.0000, iCE on$' -- "$cli" lint --ramp steel "$tmp/lint-wide.ans"
+expect "lint: a skip as JSON" 4 '^\{"findings":\[\{"kind":"rung-skip","ramp":"steel","x":3,"y":0,"x2":4,"y2":0,"message":"cell 3,0: rung 4 next to rung 8 at cell 4,0 \(more than one rung apart\)"\}\],"noise":0\.0000,"ice":true\}$' -- \
+  "$cli" lint --json --ramp steel "$tmp/lint-skip.ans"
+expect "lint: a wide rung as JSON" 4 '"kind":"wide-rung","ramp":"steel","x":2,"y":3,"x2":7,"y2":3,' -- "$cli" lint --json --ramp steel "$tmp/lint-wide.ans"
+expect "lint: a speck as JSON" 4 '^\{"findings":\[\{"kind":"speckle","ramp":"steel","x":2,"y":1,"x2":2,"y2":1,' -- "$cli" lint --json --ramp steel "$tmp/lint-speck.ans"
+expect "lint: a non-neighbour shade as JSON" 4 '^\{"findings":\[\{"kind":"non-neighbour-shade","ramp":"steel","x":1,"y":0,"x2":1,"y2":0,' -- "$cli" lint --json --ramp steel "$tmp/lint-shade.ans"
+# a shade of neighbours on one named ramp is no fault under the others: LightRed over Red is fire's
+cells '\033[0;1;31;41m\xb0' '\033[0;1;31;41m\xb0' '\033[0;1;31;41m\xb1' '\033[0;1;31;41m\xb1' '\033[0;1;31;41m\xb2' '\033[0;1;31;41m\xb2' > "$tmp/lint-fire.ans"
+expect "lint: a fire pair under every ramp" 0 '^clean' -- "$cli" lint "$tmp/lint-fire.ans"
+expect "lint: a fire pair under fire and skin" 0 '^clean' -- "$cli" lint --ramp skin --ramp fire "$tmp/lint-fire.ans"
+expect "lint: a fire pair under skin alone" 4 '^0,0 non-neighbour-shade skin cell 0,0: ░ of 12 on 4, colours no ramp linted has as neighbours$' -- "$cli" lint --ramp skin "$tmp/lint-fire.ans"
+# hand-shading ladders: brown into black (warm skin), a hero colour into black (Y▓k)
+printf '\033[0;33;40m\260\260\261\261\262\262\033[0m\r\n' > "$tmp/lint-brown-k.ans"
+printf '\033[1;33;40m\260\260\261\261\262\262\033[0m\r\n' > "$tmp/lint-yellow-k.ans"
+expect "lint: brown into black by default" 0 '^clean' -- "$cli" lint "$tmp/lint-brown-k.ans"
+expect "lint: yellow into black by default" 0 '^clean' -- "$cli" lint "$tmp/lint-yellow-k.ans"
+expect "lint: brown into black under skin alone" 4 '^0,0 non-neighbour-shade skin cell 0,0: ░ of 6 on 0, ' -- "$cli" lint --ramp skin "$tmp/lint-brown-k.ans"
+expect "lint: clean" 0 '^clean, noise 0\.0000, iCE on$' -- "$cli" lint "$tmp/lint-clean.ans"
+expect "lint: clean as JSON" 0 '^\{"findings":\[\],"noise":0\.0000,"ice":true\}$' -- "$cli" lint --json "$tmp/lint-clean.ans"
+# every named ramp by default; a finding under two of them is reported once, under the first
+expect "lint: every ramp by default" 4 "^1,0 non-neighbour-shade fire " -- "$cli" lint "$tmp/lint-shade.ans"
+expect "lint: once under two ramps" 4 '^1 finding \(1 non-neighbour-shade\)' -- "$cli" lint "$tmp/lint-shade.ans"
+expect "lint: once under a repeated ramp" 4 '^1 finding \(1 speckle\)' -- "$cli" lint --ramp steel --ramp 0,8,7,15 "$tmp/lint-speck.ans"
+expect "lint: --ramp repeats" 4 '^1,0 non-neighbour-shade 0,8,15 ' -- "$cli" lint --ramp 0,8,15 --ramp steel "$tmp/lint-shade.ans"
+expect "lint: other rules have no ramp" 4 '^[0-9]+,[0-9]+ trailing-black - ' -- "$cli" lint --ramp steel "$piece"
+# --box: only findings with a cell in the box, the whole canvas still read
+expect "lint: --box keeps a finding in it" 4 '^2,1 speckle steel ' -- "$cli" lint --ramp steel --box 2,1,4,2 "$tmp/lint-speck.ans"
+expect "lint: --box drops one outside it" 0 '^clean' -- "$cli" lint --ramp steel --box 0,0,1,2 "$tmp/lint-speck.ans"
+expect "lint: --box corners either way" 4 '^2,1 speckle steel ' -- "$cli" lint --ramp steel --box 4,2,2,1 "$tmp/lint-speck.ans"
+expect "lint: --box past the edge is clipped" 4 '^2,1 speckle steel ' -- "$cli" lint --ramp steel --box 2,1,90,90 "$tmp/lint-speck.ans"
+expect "lint: a speck at the box's edge is read with what is outside" 4 '^2,1 speckle steel ' -- "$cli" lint --ramp steel --box 2,1,2,1 "$tmp/lint-speck.ans"
+expect "lint: --box off the canvas" 1 'the box 0,3,9,9 is off the 80x3 canvas' -- "$cli" lint --box 0,3,9,9 "$tmp/lint-speck.ans"
+# iCE comes from SAUCE
+cells "$k" "$Wk" "$k" > "$tmp/lint-noice.ans"; sauce "$tmp/lint-noice.ans" 0
+expect "lint: iCE off from SAUCE" 4 'iCE off$' -- "$cli" lint "$tmp/lint-noice.ans"
+expect "lint: iCE off as JSON" 4 '"ice":false\}$' -- "$cli" lint --json "$tmp/lint-noice.ans"
+# the errors are shade's
+expect "lint unknown ramp" 2 "--ramp takes a ramp name \(fire, .*\) or palette indices 0-15 dark to light, not 'blood'" -- "$cli" lint --ramp blood "$piece"
+expect "lint ramp out of the palette" 2 "not '0,16'" -- "$cli" lint --ramp 0,16 "$piece"
+expect "lint ramp of one colour" 2 '--ramp 7: a ramp needs at least two colours' -- "$cli" lint --ramp 7 "$piece"
+expect "lint ramp with a repeat" 2 '--ramp 0,8,0: colour 0 appears twice' -- "$cli" lint --ramp 0,8,0 "$piece"
+expect "lint bad box" 2 "--box takes x0,y0,x1,y1 .*not '1,2,3'" -- "$cli" lint --box 1,2,3 "$piece"
+expect "lint arity" 2 'lint takes one file' -- "$cli" lint "$piece" "$piece"
+expect "lint needs a file" 2 'lint takes one file' -- "$cli" lint
+expect "lint bad input" 1 'nope\.ans: No such file' -- "$cli" lint "$tmp/nope.ans"
+
 # Every command refuses every option it doesn't use: exit 2, a usage message
 # naming the option and the command, and nothing written.
 declare -A owner=([--allow-lossy]="convert shade snapshot" [--scale]=render [--font-width]=render
-                  [--irc]=export [--budget]=export [--allow-over-budget]=export
+                  [--irc]="export render" [--budget]="export render" [--allow-over-budget]=export
                   [--fit]=export [--pad]=export [--swap-shades]=export
-                  [--ramp]=shade [--darken]=shade [--steps]=shade [--box]=shade [--ice]=shade)
+                  [--ramp]="shade lint" [--darken]=shade [--steps]=shade [--box]="shade lint" [--ice]=shade
+                  [--json]=lint)
 declare -A value=([--scale]=2 [--font-width]=9 [--budget]=60 [--ramp]=steel [--steps]=2 [--box]=0,0,1,1)
 foreign=$tmp/foreign && mkdir -p "$foreign"
-for cmd in info convert render export shade pack unpack snapshot; do
+for cmd in info convert render export shade lint pack unpack snapshot; do
   for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget --fit --pad --swap-shades \
-             --ramp --darken --steps --box --ice; do
+             --ramp --darken --steps --box --ice --json; do
     [[ " ${owner[$opt]} " == *" $cmd "* ]] && continue
     out=$foreign/$cmd${opt}.out
     case $cmd in
@@ -275,11 +337,12 @@ for cmd in info convert render export shade pack unpack snapshot; do
       snapshot) argv=(snapshot "$piece") ;;
       export) argv=(export --irc "$piece" "$out") ;;
       shade) argv=(shade --ramp steel "$piece" "$out") ;;
+      lint) argv=(lint "$piece") ;;
       *) argv=("$cmd" "$piece" "$out") ;;
     esac
     read -ra o <<<"${owner[$opt]}"; a=${o[-1]}
     (( ${#o[@]} > 1 )) && a="$(IFS=,; echo "${o[*]:0:${#o[@]}-1}" | sed 's/,/, /g') or $a"
-    [[ $a == export ]] && a="an $a" || a="a $a"
+    [[ $a == export* ]] && a="an $a" || a="a $a"
     expect "$cmd rejects $opt" 2 "^blockwright-cli: $opt is $a option, not a $cmd option$" -- \
       "$cli" "${argv[@]:0:1}" "$opt" ${value[$opt]:+"${value[$opt]}"} "${argv[@]:1}"
     if [[ -e $out ]]; then bad "$cmd with $opt wrote $out"; fi

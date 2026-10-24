@@ -1,0 +1,244 @@
+// The IRC view (irc_view.h): lines read back as a client reads mIRC codes,
+// what IRC drops, and each line cut at the byte budget.
+
+#include "blockwright/ansi.h"
+#include "blockwright/halfblock.h"
+#include "blockwright/irc_view.h"
+#include "blockwright/ramp.h"
+#include "util.h"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
+
+using namespace bw;
+using namespace bw::irc;
+
+namespace {
+
+Cell cell(char32_t g, std::uint8_t fg, std::uint8_t bg) {
+    Cell c;
+    c.ch = g;
+    c.fg = Color::indexed(fg);
+    c.bg = Color::indexed(bg);
+    return c;
+}
+
+Canvas filled(int w, int h, const Cell& c) {
+    Canvas canvas(w, h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            canvas.at(x, y) = c;
+    return canvas;
+}
+
+// What a cell shows, whichever of the glyphs that draw it the encoder
+// picked: half blocks, full blocks and spaces as their top and bottom
+// colours, ▌ ▐ as their left and right ones, anything else as itself.
+std::tuple<char32_t, int, int> shown(char32_t ch, int fg, int bg) {
+    switch (ch) {
+    case U' ': return {U'▀', bg, bg};
+    case U'█': return {U'▀', fg, fg};
+    case U'▀': return {U'▀', fg, bg};
+    case U'▄': return {U'▀', bg, fg};
+    case U'▌': return {U'▌', fg, bg};
+    case U'▐': return {U'▌', bg, fg};
+    default: return {ch, fg, bg};
+    }
+}
+
+// The view's colours are all RGB.
+std::uint32_t rgb(const Color& c) {
+    REQUIRE_FALSE(c.isIndexed());
+    const Rgb v = c.rgb;
+    return std::uint32_t(v.r) << 16 | std::uint32_t(v.g) << 8 | v.b;
+}
+
+} // namespace
+
+TEST_CASE("a line is read as a client reads mIRC codes", "[irc][view]") {
+    auto line = decodeLine("\x03" "04,02A\x03" "B\x03" "5,X\x03" "123\x16R\x0fZ\x02\x1f!");
+    REQUIRE(line.size() == 8);
+    CHECK((line[0].cell.ch == U'A' && line[0].cell.fg == 4 && line[0].cell.bg == 2));
+    // ^C alone resets both colours
+    CHECK((line[1].cell.ch == U'B' && line[1].cell.fg == kClientColour && line[1].cell.bg == kClientColour));
+    // a comma with no digit after it is a glyph, and the background stays
+    CHECK((line[2].cell.ch == U',' && line[2].cell.fg == 5 && line[2].cell.bg == kClientColour));
+    CHECK(line[3].cell.ch == U'X');
+    // two digits at most: 12, then a '3'
+    CHECK((line[4].cell.ch == U'3' && line[4].cell.fg == 12));
+    // ^V swaps the colours
+    CHECK((line[5].cell.ch == U'R' && line[5].cell.fg == kClientColour && line[5].cell.bg == 12));
+    // ^O resets them; ^B and ^_ change no colour
+    CHECK((line[6].cell.ch == U'Z' && line[6].cell.fg == kClientColour && line[6].cell.bg == kClientColour));
+    CHECK(line[7].cell.ch == U'!');
+    // each glyph's end, in bytes
+    CHECK(line[0].end == 7);
+    CHECK(line[7].end == 24);
+
+    // UTF-8: a glyph ends after its last byte; a bad byte is one U+FFFD
+    line = decodeLine("é▀\xff" "a\xe2\x96");
+    REQUIRE(line.size() == 6);
+    CHECK((line[0].cell.ch == U'é' && line[0].end == 2));
+    CHECK((line[1].cell.ch == U'▀' && line[1].end == 5));
+    CHECK((line[2].cell.ch == U'�' && line[2].end == 6));
+    CHECK((line[3].cell.ch == U'a' && line[3].end == 7));
+    // a cut-off sequence: its lead byte, then the stray continuation byte
+    CHECK((line[4].cell.ch == U'�' && line[4].end == 8));
+    CHECK((line[5].cell.ch == U'�' && line[5].end == 9));
+    // an overlong form isn't a glyph
+    CHECK(decodeLine("\xc0\xaf").size() == 2);
+    // colour 99 is the client's own
+    CHECK(decodeLine("\x03" "99,99a").front().cell.fg == kClientColour);
+    CHECK(decodeLine("").empty());
+}
+
+TEST_CASE("an encoded row reads back as the cells it was made from", "[irc][view]") {
+    const Canvas c = parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden" / "cafe-mug.ans")).canvas;
+    const auto lines = encodeCanvas(c);
+    int rowsChecked = 0;
+    for (int y = 0; y < c.height(); ++y) {
+        const auto cells = decodeLine(lines[std::size_t(y)]);
+        INFO("row " << y);
+        REQUIRE(int(cells.size()) <= c.width());
+        for (int x = 0; x < int(cells.size()); ++x) {
+            const Cell& src = c.at(x, y);
+            const MircCell& got = cells[std::size_t(x)].cell;
+            const auto want = shown(src.ch == 0 ? U' ' : src.ch, mircColor(src.fg), mircColor(src.bg));
+            const auto have = shown(got.ch, got.fg, got.bg);
+            // a solid cell shows one colour, whatever its other one is
+            if (std::get<1>(want) == std::get<2>(want) && std::get<0>(want) == U'▀')
+                CHECK((std::get<1>(have) == std::get<1>(want) && std::get<2>(have) == std::get<2>(want)));
+            else
+                CHECK(have == want);
+        }
+        // the rest are the trailing black spaces the encoder drops
+        for (int x = int(cells.size()); x < c.width(); ++x)
+            CHECK(mircColor(c.at(x, y).bg) == 1);
+        rowsChecked += !cells.empty();
+    }
+    CHECK(rowsChecked > 30);
+}
+
+TEST_CASE("the view shows the mIRC palette and the client's background where IRC drops cells", "[irc][view]") {
+    Canvas c = filled(6, 4, cell(U' ', Grey, Black));
+    c.at(0, 1) = cell(kFullBlock, White, Black);
+    for (int x = 0; x < 6; ++x)
+        c.at(x, 2) = cell(kUpperHalf, LightRed, Blue);
+    const View v = ircView(c);
+    REQUIRE(v.canvas.width() == 6);
+    REQUIRE(v.canvas.height() == 4);
+    REQUIRE(v.rows.size() == 4);
+
+    CHECK(v.rows[0].trimmed);
+    CHECK(v.rows[0].kept == 0);
+    CHECK_FALSE(v.rows[1].trimmed);
+    CHECK(v.rows[1].kept == 1);
+    CHECK(v.rows[2].kept == 6);
+    CHECK(v.rows[3].trimmed);
+    CHECK(v.cutRows() == 0);
+
+    // White is mIRC 0
+    const Cell& w = v.canvas.at(0, 1);
+    CHECK(rgb(w.ch == kFullBlock ? w.fg : w.bg) == kMircRgb[0]);
+    // the dropped black spaces and the trimmed rows show the client's background
+    for (const auto& [x, y] : {std::pair{1, 1}, std::pair{5, 1}, std::pair{0, 0}, std::pair{3, 3}}) {
+        INFO(x << "," << y);
+        CHECK(v.canvas.at(x, y).ch == U' ');
+        CHECK(rgb(v.canvas.at(x, y).bg) == kClientBackground);
+    }
+    // ▀ light red on blue: mIRC 4 over 2
+    const auto px = halfBlocks(c.at(2, 2));
+    REQUIRE(px);
+    const Cell& h = v.canvas.at(2, 2);
+    const auto [ch, top, bottom] = shown(h.ch, int(rgb(h.fg)), int(rgb(h.bg)));
+    CHECK(ch == U'▀');
+    CHECK(std::uint32_t(top) == kMircRgb[4]);
+    CHECK(std::uint32_t(bottom) == kMircRgb[2]);
+    // nothing is in palette colours: the view is what a client shows
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 6; ++x)
+            CHECK_FALSE(v.canvas.at(x, y).bg.isIndexed());
+}
+
+TEST_CASE("a line over the budget loses the cells past it", "[irc][view]") {
+    // every cell a new colour pair: about 7 bytes a cell
+    Canvas c(40, 2);
+    for (int x = 0; x < 40; ++x) {
+        c.at(x, 0) = cell(kUpperHalf, std::uint8_t(x % 16), std::uint8_t((x + 5) % 16));
+        c.at(x, 1) = cell(kFullBlock, Grey, Black);
+    }
+    const auto lines = encodeCanvas(c);
+    const std::size_t budget = 60;
+    REQUIRE(lines[0].size() > budget);
+    REQUIRE(lines[1].size() <= budget);
+    const View v = ircView(c, budget);
+    CHECK(v.cutRows() == 1);
+    CHECK(v.rows[0].cut());
+    CHECK_FALSE(v.rows[1].cut());
+    CHECK(v.rows[0].bytes == lines[0].size());
+    CHECK(v.rows[0].kept == 40);
+    // the cells shown are those whose glyph ends within the budget, less the
+    // byte the cut line's reset takes
+    const auto cells = decodeLine(lines[0]);
+    int within = 0;
+    while (within < int(cells.size()) && cells[std::size_t(within)].end <= budget - 1)
+        ++within;
+    CHECK(v.rows[0].shown == within);
+    CHECK(within > 0);
+    for (int x = within; x < 40; ++x)
+        CHECK(rgb(v.canvas.at(x, 0).bg) == kClientBackground);
+    CHECK(rgb(v.canvas.at(within - 1, 0).bg) != kClientBackground);
+    // a budget the line fits shows it whole
+    CHECK(ircView(c, lines[0].size()).cutRows() == 0);
+    CHECK(ircView(c, lines[0].size() - 1).cutRows() == 1);
+}
+
+TEST_CASE("a cut line keeps a byte for the reset after it, as the sender's fit does", "[irc][view]") {
+    // ten Ç (two bytes each in UTF-8), then 382 X, on cyan: 392 cells in a
+    // 408-byte line, "\x0315,10" and the glyphs
+    Canvas c(392, 1);
+    for (int x = 0; x < 392; ++x)
+        c.at(x, 0) = cell(x < 10 ? U'Ç' : U'X', Grey, Cyan);
+    const auto lines = encodeCanvas(c);
+    REQUIRE(lines[0].size() == 408);
+    // ascii.fit(line, 407) keeps 406 bytes, the code and 390 cells, and
+    // leaves the last byte for the reset it adds after a space
+    const View v = ircView(c, 407);
+    CHECK(v.rows[0].cut());
+    CHECK(v.rows[0].shown == 390);
+    CHECK(rgb(v.canvas.at(390, 0).bg) == kClientBackground);
+    // a line that fits is sent whole, to its last byte
+    CHECK(ircView(c, 408).rows[0].shown == 392);
+    CHECK(ircView(c, 406).rows[0].shown == 389);
+}
+
+TEST_CASE("a 120-row piece fits the EFnet budget, and the view agrees with the line sizes", "[irc][view][golden]") {
+    const Canvas c = parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden" / "cocktober.ans")).canvas;
+    REQUIRE(c.height() == 120);
+    const auto exported = exportCanvas(c);
+    for (const auto& l : exported)
+        CHECK(l.size() <= kEfnetWeechatBudget);
+    CHECK(overBudget(exported, kEfnetWeechatBudget).empty());
+    const View v = ircView(c);
+    CHECK(v.cutRows() == 0);
+
+    // under a tighter budget the rows the view cuts are rows over it
+    const auto lines = encodeCanvas(c);
+    for (const std::size_t budget : {std::size_t(150), std::size_t(300)}) {
+        const View t = ircView(c, budget);
+        std::set<int> over;
+        for (const auto& o : overBudget(lines, budget))
+            over.insert(o.line - 1);
+        CHECK(t.cutRows() > 0);
+        for (int y = 0; y < c.height(); ++y) {
+            INFO("budget " << budget << ", row " << y);
+            CHECK(t.rows[std::size_t(y)].bytes == lines[std::size_t(y)].size());
+            if (t.rows[std::size_t(y)].cut())
+                CHECK(over.count(y) == 1);
+        }
+    }
+}

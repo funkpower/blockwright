@@ -8,6 +8,8 @@
 //                          [--allow-over-budget] <in.ans|project> <out.txt>
 //   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N]
 //                         [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in.ans> <out.ans>
+//   blockwright-cli lint [--ramp NAME|c,c,...]... [--box x0,y0,x1,y1] [--json] <in.ans>
+//   blockwright-cli render --irc [--budget N] [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli library list [dir]
 //   blockwright-cli library check <dir>
 //   blockwright-cli pack <in.ans|project> <out.bwp>
@@ -20,7 +22,7 @@
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert or shade
 // without --allow-lossy (nothing is written), or a library check that found
 // a problem, or a lossy snapshot without --allow-lossy, 2 usage error, 3 an IRC line over the byte budget without
-// --allow-over-budget (nothing is written).
+// --allow-over-budget (nothing is written), 4 lint reported findings.
 
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
@@ -28,11 +30,14 @@
 #include "blockwright/cp437.h"
 #include "blockwright/credits.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_render.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/library.h"
 #include "blockwright/lint.h"
 #include "blockwright/project.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
+#include "lint.h"
 #include "read_file.h"
 #include "shade.h"
 
@@ -60,7 +65,7 @@
 
 namespace {
 
-constexpr int kOk = 0, kBadInput = 1, kUsage = 2, kOverBudget = 3;
+constexpr int kOk = 0, kBadInput = 1, kUsage = 2, kOverBudget = 3, kFindings = 4;
 
 using bwcli::Failure;
 using bwcli::readFile;
@@ -403,6 +408,18 @@ bw::Ramp rampValue(const QString& s) {
     return r;
 }
 
+// --budget N for render --irc: a positive number of bytes; empty is the
+// EFnet / WeeChat budget.
+std::size_t budgetValue(const QString& s) {
+    if (s.isEmpty())
+        return bw::irc::kEfnetWeechatBudget;
+    bool ok = false;
+    const qulonglong v = s.toULongLong(&ok);
+    if (!ok || v == 0)
+        throw Usage{"--budget takes a positive number of bytes"};
+    return static_cast<std::size_t>(v);
+}
+
 // --box x0,y0,x1,y1: cells from 0, corners included.
 bw::lint::Box boxValue(const QString& s) {
     const QStringList parts = s.split(QLatin1Char(','));
@@ -452,7 +469,10 @@ int shade(const std::string& in, const std::string& out, const ShadeOptions& o) 
     return kOk;
 }
 
-int render(const std::string& in, const std::string& out, const bw::RenderOptions& opts) {
+// With `ircBudget`, the IRC view (irc_view.h) cut at that many bytes, and a
+// line on stdout saying how many rows the cut reaches.
+int render(const std::string& in, const std::string& out, const bw::RenderOptions& opts,
+           std::optional<std::size_t> ircBudget) {
     refuseSameFile(in, out);
     const bw::AnsiDocument doc = load(in);
     if (doc.sauce && doc.sauce->aspectRatio() == 1)
@@ -460,7 +480,15 @@ int render(const std::string& in, const std::string& out, const bw::RenderOption
                   << ": SAUCE asks for the legacy (stretched) aspect ratio; the PNG has square pixels\n";
     QImage img;
     try {
-        img = bw::renderDocument(doc, opts);
+        if (ircBudget) {
+            const bw::irc::View view = bw::irc::ircView(doc.canvas, *ircBudget);
+            img = bw::renderIrcView(view, bw::glyphWidth(doc, opts), opts.scale);
+            const int cut = view.cutRows();
+            std::cout << "IRC view: " << cut << (cut == 1 ? " row" : " rows") << " cut at " << *ircBudget
+                      << " bytes\n";
+        } else {
+            img = bw::renderDocument(doc, opts);
+        }
     } catch (const std::length_error&) {
         throw Failure{out + ": not written: the image would be too large"};
     } catch (const std::invalid_argument& e) {
@@ -476,6 +504,15 @@ int render(const std::string& in, const std::string& out, const bw::RenderOption
         throw Failure{out + ": not written: PNG encoding failed: " + w.errorString().toStdString()};
     save(out, std::string(png.constData(), static_cast<size_t>(png.size())));
     return kOk;
+}
+
+// The whole lint of the piece (lint_rules.h) with its own iCE colours: one
+// line per finding and a summary, or JSON. Findings exit kFindings.
+int lint(const std::string& in, const bwcli::LintCliOptions& o) {
+    const bw::AnsiDocument doc = load(in);
+    const bw::lint::LintReport r = bwcli::lintDocument(doc, o);
+    std::cout << (o.json ? bwcli::lintJson(r) : bwcli::lintText(r));
+    return r.findings.empty() ? kOk : kFindings;
 }
 
 std::string joined(const std::vector<std::string>& v, const char* sep) {
@@ -565,6 +602,14 @@ int main(int argc, char** argv) {
         "                       the ladder; <out> may be <in>. A piece without\n"
         "                       iCE colours keeps them off (no shade that needs\n"
         "                       a bright background) unless --ice turns them on\n"
+        "  lint <in>            the ladder check under each --ramp (default: every\n"
+        "                       named ramp and the craft pairs\n"
+        "                       between), pixel noise and the craft rules; one\n"
+        "                       line per finding (x,y kind ramp message) and a\n"
+        "                       summary, or --json. Exits 4 when there are findings\n"
+        "  render --irc <in> <out.png>\n"
+        "                       draw the IRC view: the mIRC palette, what IRC\n"
+        "                       drops, and each line cut at --budget bytes\n"
         "  library list [dir]   list the stamps in dir (default: the bundled and\n"
         "                       user libraries): category, name, size, widest\n"
         "                       IRC row in bytes, tags, path; tab-separated\n"
@@ -589,11 +634,13 @@ int main(int argc, char** argv) {
                                           QStringLiteral("render: glyph width 8 or 9 (default: SAUCE letter spacing, else 8)"),
                                           QStringLiteral("px"));
     parser.addOption(fontWidthOpt);
-    const QCommandLineOption ircOpt(QStringLiteral("irc"), QStringLiteral("export: IRC text with mIRC colour codes"));
+    const QCommandLineOption ircOpt(QStringLiteral("irc"),
+                                    QStringLiteral("export: IRC text with mIRC colour codes; render: the IRC view"));
     parser.addOption(ircOpt);
     const QCommandLineOption budgetOpt(
         QStringLiteral("budget"),
-        QStringLiteral("export --irc: bytes a line may take (default: a project's own, else %1, EFnet via WeeChat)")
+        QStringLiteral("export --irc, render --irc: bytes a line may take (default: a project's own for export, else "
+                       "%1, EFnet via WeeChat)")
             .arg(bw::irc::kEfnetWeechatBudget),
         QStringLiteral("bytes"));
     parser.addOption(budgetOpt);
@@ -614,7 +661,8 @@ int main(int argc, char** argv) {
     parser.addOption(overOpt);
     const QCommandLineOption rampOpt(
         QStringLiteral("ramp"),
-        QStringLiteral("shade: a ramp name (fire, steel, ...) or palette indices dark to light, e.g. 0,8,7,15"),
+        QStringLiteral("shade, lint: a ramp name (fire, steel, ...) or palette indices dark to light, e.g. 0,8,7,15; "
+                       "lint takes it more than once (default: every named ramp and the craft pairs)"),
         QStringLiteral("ramp"));
     parser.addOption(rampOpt);
     const QCommandLineOption darkenOpt(QStringLiteral("darken"), QStringLiteral("shade: darken (default: lighten)"));
@@ -624,13 +672,15 @@ int main(int argc, char** argv) {
                                       QStringLiteral("N"), QStringLiteral("1"));
     parser.addOption(stepsOpt);
     const QCommandLineOption boxOpt(QStringLiteral("box"),
-                                    QStringLiteral("shade: cells x0,y0,x1,y1 from 0, corners included (default: all)"),
+                                    QStringLiteral("shade, lint: cells x0,y0,x1,y1 from 0, corners included (default: all)"),
                                     QStringLiteral("x0,y0,x1,y1"));
     parser.addOption(boxOpt);
     const QCommandLineOption iceOpt(QStringLiteral("ice"),
                                     QStringLiteral("shade: turn iCE colours on (default: keep the piece's)"));
     parser.addOption(iceOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, library, pack, unpack or snapshot"));
+    const QCommandLineOption jsonOpt(QStringLiteral("json"), QStringLiteral("lint: the findings as JSON"));
+    parser.addOption(jsonOpt);
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack or snapshot"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -651,6 +701,8 @@ int main(int argc, char** argv) {
                   << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
                   << "       | export --irc [--budget N] [--fit] [--pad] [--swap-shades] [--allow-over-budget] <in> <out>\n"
                   << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in> <out>\n"
+                  << "       | lint [--ramp R]... [--box x0,y0,x1,y1] [--json] <in>\n"
+                  << "       | render --irc [--budget N] [--scale N] [--font-width 8|9] <in> <out.png>\n"
                   << "       | library list [dir] | library check <dir>\n"
                   << "       | pack <in> <out.bwp> | unpack <in> <dir> | snapshot [--allow-lossy] <project>\n"
                   << "       | --version\n";
@@ -662,13 +714,14 @@ int main(int argc, char** argv) {
     // Each option belongs to its commands; every other command refuses it.
     const std::pair<const QCommandLineOption*, std::vector<const char*>> owners[] = {
         {&lossyOpt, {"convert", "shade", "snapshot"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
-        {&ircOpt, {"export"}},             {&budgetOpt, {"export"}}, {&overOpt, {"export"}},
+        {&ircOpt, {"export", "render"}},   {&budgetOpt, {"export", "render"}}, {&overOpt, {"export"}},
         {&fitOpt, {"export"}},             {&padOpt, {"export"}},    {&swapShadesOpt, {"export"}},
-        {&rampOpt, {"shade"}},             {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
-        {&boxOpt, {"shade"}},              {&iceOpt, {"shade"}},
+        {&rampOpt, {"shade", "lint"}},     {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
+        {&boxOpt, {"shade", "lint"}},      {&iceOpt, {"shade"}},     {&jsonOpt, {"lint"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
-        cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("library") ||
+        cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
+        cmd == QLatin1String("library") ||
         cmd == QLatin1String("pack") || cmd == QLatin1String("unpack") || cmd == QLatin1String("snapshot"))
         for (const auto& [o, cmds] : owners) {
             if (!parser.isSet(*o) ||
@@ -699,7 +752,12 @@ int main(int argc, char** argv) {
             opts.scale = intValue(parser.value(scaleOpt), "scale", 1, bw::kMaxScale);
             if (parser.isSet(fontWidthOpt))
                 opts.fontWidth = intValue(parser.value(fontWidthOpt), "font-width", 8, 9);
-            return render(args[1].toStdString(), args[2].toStdString(), opts);
+            std::optional<std::size_t> ircBudget;
+            if (parser.isSet(budgetOpt) && !parser.isSet(ircOpt))
+                return usage("--budget is a render --irc option");
+            if (parser.isSet(ircOpt))
+                ircBudget = budgetValue(parser.value(budgetOpt));
+            return render(args[1].toStdString(), args[2].toStdString(), opts, ircBudget);
         }
         if (cmd == QLatin1String("export")) {
             if (!parser.isSet(ircOpt))
@@ -750,6 +808,17 @@ int main(int argc, char** argv) {
             }
             return usage(sub.isEmpty() ? "library needs a subcommand: list or check"
                                        : ("unknown library subcommand '" + sub.toStdString() + "'").c_str());
+        }
+        if (cmd == QLatin1String("lint")) {
+            if (args.size() != 2)
+                return usage("lint takes one file");
+            bwcli::LintCliOptions o;
+            for (const QString& r : parser.values(rampOpt))
+                o.ramps.push_back(rampValue(r));
+            if (parser.isSet(boxOpt))
+                o.box = boxValue(parser.value(boxOpt));
+            o.json = parser.isSet(jsonOpt);
+            return lint(args[1].toStdString(), o);
         }
         if (cmd == QLatin1String("pack") || cmd == QLatin1String("unpack")) {
             if (args.size() != 3)

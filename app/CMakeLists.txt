@@ -17,6 +17,8 @@ add_library(blockwright_app STATIC
   layers_dock.h
   library_dock.cpp
   library_dock.h
+  lint_dock.cpp
+  lint_dock.h
   main_window.cpp
   main_window.h
   main_window_docks.cpp
@@ -47,7 +49,7 @@ add_library(blockwright_app STATIC
 set_target_properties(blockwright_app PROPERTIES AUTOMOC ON)
 add_dependencies(blockwright_app bw_version)
 target_include_directories(blockwright_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
-target_link_libraries(blockwright_app PUBLIC blockwright::core blockwright::render Qt6::Widgets)
+target_link_libraries(blockwright_app PUBLIC blockwright::core blockwright::render Qt6::Widgets Qt6::Concurrent)
 target_compile_options(blockwright_app PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)
 

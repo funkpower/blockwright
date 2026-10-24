@@ -1,11 +1,14 @@
-// The workspace (PLAN §11): the Toolbox, Tool Options, glyph bar and Layers
-// docks, the Layer menu, the Window menu, and the dock layout saved between runs.
+// The workspace (PLAN §11): the Toolbox, Tool Options, glyph bar, Layers,
+// Lint and IRC View docks, the Layer menu, the Window menu, and the dock
+// layout saved between runs.
 
 #include "main_window.h"
 
 #include "canvas_view.h"
 #include "glyph_bar.h"
+#include "irc_meter.h"
 #include "layers_dock.h"
+#include "lint_dock.h"
 #include "palette_widget.h"
 #include "select_tool.h"
 #include "settings.h"
@@ -23,7 +26,7 @@ namespace bw {
 namespace {
 
 // Bumped when the docks change, so an older saved layout is dropped.
-constexpr int kLayoutVersion = 2;
+constexpr int kLayoutVersion = 3;
 
 } // namespace
 
@@ -57,6 +60,22 @@ void MainWindow::createDocks() {
     layerMenu_->addAction(layers_->raiseAction());
     layerMenu_->addAction(layers_->lowerAction());
 
+    lint_ = new LintDock(&doc_);
+    lintDock_ = dock(tr("Lint"), "lintDock", lint_);
+    ircView_ = new IrcViewDock(&doc_);
+    ircViewDock_ = dock(tr("IRC View"), "ircViewDock", ircView_);
+    // a tab behind another is still visible to Qt, off-screen
+    connect(lintDock_, &QDockWidget::visibilityChanged, lint_, &FollowsDocument::setShown);
+    connect(ircViewDock_, &QDockWidget::visibilityChanged, ircView_, &FollowsDocument::setShown);
+    // View > IRC: the dock's toggle under the row meter's
+    if (auto* irc = findChild<QMenu*>(QStringLiteral("ircMenu")))
+        irc->insertAction(findChild<QAction*>(QStringLiteral("ircBudget")), ircViewDock_->toggleViewAction());
+    // a finding's cell: the cursor goes there, and the view scrolls to it
+    connect(lint_, &LintDock::findingActivated, this, [this](QPoint cell) {
+        view_->setCellCursor(Cursor{cell.x(), cell.y()});
+        view_->setFocus();
+    });
+
     // The pen's swap arrow and reset corner.
     QAction* swap = findChild<QAction*>(QStringLiteral("swapColours"));
     connect(palette_, &PaletteWidget::swapRequested, swap, &QAction::trigger);
@@ -81,16 +100,19 @@ void MainWindow::createDocks() {
 }
 
 QList<QDockWidget*> MainWindow::docks() const {
-    return {toolboxDock_, toolOptionsDock_, previewDock_, paletteDock_, layersDock_, libraryDock_, glyphBarDock_};
+    return {toolboxDock_,  toolOptionsDock_, previewDock_,  paletteDock_, layersDock_,
+            libraryDock_, lintDock_,       ircViewDock_, glyphBarDock_};
 }
 
 void MainWindow::resetLayout() {
     // Left: the toolbox over its options. Right: the preview, the palette,
-    // the layers and the library. Bottom: the glyph bar.
+    // the layers, the library, and Lint tabbed with the IRC View. Bottom: the
+    // glyph bar.
     const std::pair<QDockWidget*, Qt::DockWidgetArea> places[] = {
         {toolboxDock_, Qt::LeftDockWidgetArea},  {toolOptionsDock_, Qt::LeftDockWidgetArea},
         {previewDock_, Qt::RightDockWidgetArea}, {paletteDock_, Qt::RightDockWidgetArea},
         {layersDock_, Qt::RightDockWidgetArea},  {libraryDock_, Qt::RightDockWidgetArea},
+        {lintDock_, Qt::RightDockWidgetArea},    {ircViewDock_, Qt::RightDockWidgetArea},
         {glyphBarDock_, Qt::BottomDockWidgetArea},
     };
     for (const auto& [d, area] : places) {
@@ -101,6 +123,8 @@ void MainWindow::resetLayout() {
         addDockWidget(area, d);
         d->show();
     }
+    // the second goes on top
+    tabifyDockWidget(ircViewDock_, lintDock_);
 }
 
 void MainWindow::saveLayout() const {

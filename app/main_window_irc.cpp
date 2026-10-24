@@ -39,6 +39,7 @@ void MainWindow::createIrcActions(QMenu* file, QMenu* view) {
     file->insertAction(findChild<QAction*>(QStringLiteral("publishToLibrary")), a);
 
     QMenu* m = view->addMenu(tr("I&RC"));
+    m->setObjectName(QStringLiteral("ircMenu"));
     const auto toggle = [&](const QString& text, const char* name, bool on, auto slot) {
         QAction* t = m->addAction(text);
         t->setObjectName(QString::fromLatin1(name));

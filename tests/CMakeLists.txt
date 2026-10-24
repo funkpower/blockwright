@@ -30,6 +30,8 @@ add_executable(blockwright-tests
   test_library.cpp
   test_library_bundled.cpp
   test_lint.cpp
+  test_lint_rules.cpp
+  test_irc_view.cpp
   test_mirc.cpp
   test_outline.cpp
   test_outline_property.cpp
@@ -115,6 +117,7 @@ add_executable(blockwright-render-tests
   test_canvas_renderer.cpp
   test_render.cpp
   test_render_golden.cpp
+  test_irc_render.cpp
   util.h
 )
 target_link_libraries(blockwright-render-tests PRIVATE blockwright::render Catch2::Catch2WithMain)
@@ -147,6 +150,7 @@ add_executable(blockwright-app-tests
   test_app_format.cpp
   test_app_irc.cpp
   test_app_library.cpp
+  test_app_lint.cpp
   test_app_select.cpp
   test_app_shading.cpp
   test_app_gradient.cpp

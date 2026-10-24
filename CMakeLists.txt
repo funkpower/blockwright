@@ -11,7 +11,7 @@ endif()
 include(GNUInstallDirs)
 include(CTest)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Concurrent)
 # Project files (PLAN §6): zip containers, zstd layer cells. zstd 1.5.6 and
 # later name the library zstd::libzstd; earlier configs only the shared and
 # static targets.

@@ -22,10 +22,12 @@ add_library(blockwright_core STATIC
   src/composite.cpp
   src/halfblock.cpp
   src/irc.cpp
+  src/irc_view.cpp
   src/layer.cpp
   src/library.cpp
   src/lint.cpp
   src/lint_fallback.cpp
+  src/lint_rules.cpp
   src/mirc.cpp
   src/palette.cpp
   src/pipeline.cpp

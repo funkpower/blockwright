@@ -2,6 +2,7 @@
 # it must never link QtWidgets.
 add_library(blockwright_render STATIC
   src/canvas_renderer.cpp
+  src/irc_render.cpp
   src/render.cpp
 )
 add_library(blockwright::render ALIAS blockwright_render)

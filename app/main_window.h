@@ -1,14 +1,14 @@
 #pragma once
 // The main window: the canvas view in a scroll area, the Toolbox and Tool
-// Options docks on the left, the 1x preview, palette, Layers and Library
-// docks on the right, the glyph bar at the bottom, the F-key glyph set in the
-// status bar, and the File, Edit, View, Colours, Glyphs, Tools, Selection,
-// Layer, Window and Help menus. File > SAUCE... and the View menu's iCE and
-// letter-spacing toggles live in main_window_format.cpp; the docks, the Layer
-// and Window menus and the saved layout in main_window_docks.cpp; projects
-// (opening and saving them, snapshots) in main_window_project.cpp; the IRC
-// row meter beside the canvas, View > IRC and File > Export IRC Text... in
-// main_window_irc.cpp.
+// Options docks on the left, the 1x preview, palette, Layers, Library, Lint
+// and IRC View docks on the right, the glyph bar at the bottom, the F-key
+// glyph set in the status bar, and the File, Edit, View, Colours, Glyphs,
+// Tools, Selection, Layer, Window and Help menus. File > SAUCE... and the
+// View menu's iCE and letter-spacing toggles live in main_window_format.cpp;
+// the docks, the Layer and Window menus and the saved layout in
+// main_window_docks.cpp; projects (opening and saving them, snapshots) in
+// main_window_project.cpp; the IRC row meter beside the canvas, View > IRC
+// and File > Export IRC Text... in main_window_irc.cpp.
 
 #include "blockwright/canvas_renderer.h"
 
@@ -60,8 +60,10 @@ QString saveWarning(const AnsiOutput& out, bool project = false);
 
 class SelectTool;
 class GlyphBar;
+class IrcViewDock;
 class LayersDock;
 class LibraryDock;
+class LintDock;
 class ToolOptions;
 class Toolbox;
 class ToolRegistry;
@@ -93,6 +95,10 @@ public:
     SelectTool* selectTool() const { return selectTool_; }
     LibraryDock* libraryWidget() const { return library_; }
     QDockWidget* libraryDock() const { return libraryDock_; }
+    LintDock* lintWidget() const { return lint_; }
+    QDockWidget* lintDock() const { return lintDock_; }
+    IrcViewDock* ircViewWidget() const { return ircView_; }
+    QDockWidget* ircViewDock() const { return ircViewDock_; }
     IrcMeter* ircMeter() const { return ircMeter_; }
 
     // The Library (main_window_library.cpp). Floats the stamp at `path` (a
@@ -212,7 +218,7 @@ private:
     void createEditingActions(QMenu* file, QMenu* edit, QMenu* view);
     // The Library dock and stamp drops on the canvas.
     void createLibrary();
-    // The Toolbox, Tool Options and glyph bar docks and the Window menu
+    // The Toolbox, Tool Options, glyph bar, Lint and IRC View docks and the Window menu
     // (main_window_docks.cpp), after the tools and the Library.
     void createDocks();
     // The window's size and dock layout, kept in the settings between runs.
@@ -241,6 +247,10 @@ private:
     QHash<QString, QAction*> toolActions_;  // the Tools menu's, by tool id
     LibraryDock* library_ = nullptr;
     QDockWidget* libraryDock_ = nullptr;
+    LintDock* lint_ = nullptr;
+    QDockWidget* lintDock_ = nullptr;
+    IrcViewDock* ircView_ = nullptr;
+    QDockWidget* ircViewDock_ = nullptr;
     QLabel* status_ = nullptr;
     ToolRegistry* tools_ = nullptr;
     SelectTool* selectTool_ = nullptr;
