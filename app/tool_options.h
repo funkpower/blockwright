@@ -6,8 +6,9 @@
 // brush's form, rim light and glint, the soft brush's hardness, what the
 // outline brush takes as the shape, the symmetry and the pencil's
 // connectivity, the glyph brush's glyph, Filled Shapes for
-// the rectangle and ellipse, the select tool's paste mode, and sample merged
-// for the eyedropper and fill. Each row is
+// the rectangle and ellipse, the ramp gradient's shape, rungs and banding,
+// the select tool's paste mode, and sample merged for the eyedropper and
+// fill. Each row is
 // shown while the active tool reads it (optionsFor). It edits the view's
 // settings and the tools' and follows them, so the menus and the dock stay
 // in step.
@@ -26,6 +27,7 @@ namespace bw {
 
 class CanvasView;
 class GlyphTool;
+class GradientTool;
 class SelectTool;
 class Tool;
 class ToolRegistry;
@@ -51,6 +53,7 @@ public:
         PasteMode = 1 << 13,
         OutlineSelection = 1 << 14,  // the outline brush's shape is the selection
         SampleMerged = 1 << 15,
+        Gradient = 1 << 16,  // the ramp gradient's shape, rungs and banding
     };
     Q_DECLARE_FLAGS(Options, Option)
 
@@ -89,6 +92,10 @@ public:
     QCheckBox* filledBox() const { return filled_; }
     QComboBox* pasteModeBox() const { return pasteMode_; }
     QCheckBox* sampleMergedBox() const { return merged_; }
+    QComboBox* gradientShapeBox() const { return gradientShape_; }
+    QSpinBox* gradientFromBox() const { return gradientFrom_; }
+    QSpinBox* gradientToBox() const { return gradientTo_; }
+    QComboBox* gradientBandingBox() const { return gradientBanding_; }
 
 private:
     // Shows the view's and the tools' settings.
@@ -97,12 +104,17 @@ private:
     void fitCentre();
     // Sets the view's from the controls.
     void apply();
+    // Sets the ramp gradient's shape, from rung or to rung from its control.
+    void applyGradientShape();
+    void applyGradientFrom(int from);
+    void applyGradientTo(int to);
     // Shows the rows the active tool reads.
     void showFor(Tool* tool);
 
     CanvasView* view_;
     SelectTool* select_;
     GlyphTool* glyphTool_;
+    GradientTool* gradientTool_;
     QFormLayout* form_layout_;
     QLabel* title_;
     QLabel* none_;
@@ -128,6 +140,10 @@ private:
     QLabel* glyph_;
     QCheckBox* filled_;
     QComboBox* pasteMode_;
+    QComboBox* gradientShape_;
+    QSpinBox* gradientFrom_;
+    QSpinBox* gradientTo_;
+    QComboBox* gradientBanding_;
     Options shown_;
     bool syncing_ = false;
 };

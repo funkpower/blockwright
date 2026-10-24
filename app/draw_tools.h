@@ -1,6 +1,7 @@
 #pragma once
 // The drawing tools (PLAN §4, phase 2.1): the half-block, shade, glyph and
-// colorize brushes, line, rectangle and ellipse, fill and the eyedropper.
+// colorize brushes, line, rectangle and ellipse, fill, the ramp gradient and
+// the eyedropper.
 //
 // The left button draws with the pen's foreground, the right with its
 // background (the shade brush builds up with the left button and takes
@@ -29,6 +30,8 @@
 
 #include "blockwright/brush.h"
 #include "blockwright/brushes/form.h"
+#include "blockwright/brushes/gradient.h"
+#include "blockwright/brushes/guard.h"
 #include "blockwright/halfblock.h"
 
 #include <memory>
@@ -314,6 +317,59 @@ private:
     QPoint at_;  // (x, half-block row)
     std::uint8_t colour_ = 0;
     std::vector<std::pair<int, int>> pixels_;
+};
+
+// Ramp gradient (PLAN §10): a linear or radial fill along the view's ramp,
+// cell-banded (rampGradient), from the press to the pointer; a radial one is
+// centred on the press. The left button runs from the from rung to the to
+// rung, the right the other way round. It fills every cell the selection and
+// the alpha lock let it paint, fitted to the cells round it, and so has
+// nothing for mirror mode to add: an image could land only on a cell the
+// fill may not paint, so the symmetry isn't read. Its shape and rungs are
+// kept between runs (appSettings, "gradient/..."); the ramp is the view's,
+// shared with the ramp brushes.
+class GradientTool : public DragTool {
+    Q_OBJECT
+public:
+    explicit GradientTool(QObject* parent = nullptr);
+
+    GradientShape shape() const { return shape_; }
+    void setShape(GradientShape shape);
+    // The rungs at the press and at the pointer, as set: rampGradient clamps
+    // them to the ramp, so a rung past a short ramp's top comes back on a
+    // longer one.
+    int fromRung() const { return from_; }
+    int toRung() const { return to_; }
+    void setRungs(int from, int to);
+    // What the drag's edit adds to the ladder lint's findings (rampGradient's
+    // `added`): the documented L-shaped wide rung where a slanted band meets
+    // the cells round the fill, or with iCE off a rung it can't reach. Empty
+    // when not dragging.
+    const std::vector<lint::LadderFinding>& added() const { return added_; }
+
+    QString status() const override;
+
+protected:
+    bool begin(const ToolEvent& e) override;
+    bool extend(const ToolEvent& e) override;
+    CellEdit edit() const override;
+    void rebuild() override;
+    void reset() override;
+
+private:
+    void save() const;
+    // Sets added_ to what `e` adds to the canvas at the drag's start.
+    void judge(const CellEdit& e) const;
+
+    GradientShape shape_ = GradientShape::Linear;
+    int from_ = 0, to_ = 0;
+    QPoint start_, end_;  // cells
+    bool reversed_ = false;  // the right button
+    mutable std::vector<lint::LadderFinding> added_;
+    // The drag's lint guard and a copy of the canvas it holds, taken at the
+    // first preview and kept until the drag or the settings change.
+    mutable std::unique_ptr<StrokeLint> lint_;
+    mutable Canvas after_{0, 0};
 };
 
 // Eyedropper: left picks the colour under the pointer into the pen's

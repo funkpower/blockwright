@@ -148,6 +148,7 @@ add_executable(blockwright-app-tests
   test_app_library.cpp
   test_app_select.cpp
   test_app_shading.cpp
+  test_app_gradient.cpp
   test_app_perf.cpp
   test_app_detail.cpp
   test_app_workspace.cpp

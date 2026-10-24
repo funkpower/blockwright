@@ -34,7 +34,8 @@ const QList<QStringList>& Toolbox::groups() {
         // The detail brushes, which find an edge.
         {QStringLiteral("outline"), QStringLiteral("rimLight")},
         {QStringLiteral("line"), QStringLiteral("rectangle"), QStringLiteral("ellipse")},
-        {QStringLiteral("fill")},
+        // The fills: the bucket and the ramp gradient.
+        {QStringLiteral("fill"), QStringLiteral("gradient")},
         {QStringLiteral("eyedropper")},
     };
     return g;
@@ -129,6 +130,10 @@ QIcon toolIcon(const QString& id) {
         p.drawPath(bucket);
         p.setBrush(ink);
         p.drawEllipse(QRectF(box.right() - 4, box.top() + 8, 4, 6));
+    } else if (id == QLatin1String("gradient")) {
+        cells({ink, ink, mid, mid, light, light});
+        p.drawLine(QPointF(box.left() + 2, box.bottom()), QPointF(box.right() - 2, box.bottom()));
+        p.drawLine(QPointF(box.right() - 5, box.bottom() - 2), QPointF(box.right() - 2, box.bottom()));
     } else if (id == QLatin1String("eyedropper")) {
         p.drawLine(QPointF(box.left() + 1, box.bottom() - 1), QPointF(box.right() - 4, box.top() + 4));
         p.setBrush(ink);

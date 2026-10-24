@@ -20,6 +20,7 @@
 #include <QPixmap>
 #include <QScopedValueRollback>
 #include <QSpinBox>
+#include <QStandardItemModel>
 
 #include <algorithm>
 #include <cmath>
@@ -67,6 +68,9 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("rectangle"), draw | O::Filled},
         {QStringLiteral("ellipse"), draw | O::Filled},
         {QStringLiteral("fill"), draw | O::SampleMerged},
+        // The gradient fills every cell it may paint, so mirror mode has
+        // nothing to add (GradientTool).
+        {QStringLiteral("gradient"), O::AlphaLock | O::Ramp | O::Gradient},
         {QStringLiteral("eyedropper"), O::SampleMerged},
         {QStringLiteral("outline"), brush | O::Ramp | O::OutlineSelection},
         {QStringLiteral("rimLight"), brush | O::Ramp | O::Light},
@@ -82,7 +86,8 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
 ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* select, QAction* filledShapes,
                          QWidget* parent)
     : QWidget(parent), view_(view), select_(select),
-      glyphTool_(qobject_cast<GlyphTool*>(tools->find(QStringLiteral("glyph")))) {
+      glyphTool_(qobject_cast<GlyphTool*>(tools->find(QStringLiteral("glyph")))),
+      gradientTool_(qobject_cast<GradientTool*>(tools->find(QStringLiteral("gradient")))) {
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("toolOptionsTitle"));
     QFont bold = title_->font();
@@ -219,6 +224,31 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     pasteMode_->setItemData(2, tr("Only into blank cells"), Qt::ToolTipRole);
     pasteMode_->setToolTip(tr("How a paste or a moved selection lands (Selection > Paste Mode)"));
 
+    gradientShape_ = new QComboBox;
+    gradientShape_->setObjectName(QStringLiteral("gradientShape"));
+    gradientShape_->addItem(tr("Linear"), int(GradientShape::Linear));
+    gradientShape_->addItem(tr("Radial"), int(GradientShape::Radial));
+    gradientShape_->setToolTip(tr("Ramp gradient: along the drag, or in rings round the press"));
+
+    gradientFrom_ = new QSpinBox;
+    gradientFrom_->setObjectName(QStringLiteral("gradientFrom"));
+    gradientFrom_->setToolTip(tr("Ramp gradient: the rung at the press, 0 the ramp's darkest (the right button "
+                                 "swaps the ends)"));
+    gradientTo_ = new QSpinBox;
+    gradientTo_->setObjectName(QStringLiteral("gradientTo"));
+    gradientTo_->setToolTip(tr("Ramp gradient: the rung at the pointer, four rungs a colour"));
+
+    gradientBanding_ = new QComboBox;
+    gradientBanding_->setObjectName(QStringLiteral("gradientBanding"));
+    gradientBanding_->addItem(tr("Cell-banded"));
+    gradientBanding_->addItem(tr("4×4 Bayer"));
+    // Bayer dither is speckle to the ladder lint; it waits on that (PLAN §10).
+    if (auto* model = qobject_cast<QStandardItemModel*>(gradientBanding_->model()))
+        model->item(1)->setEnabled(false);
+    gradientBanding_->setItemData(0, tr("Each ░▒▓ rung a band of whole cells"), Qt::ToolTipRole);
+    gradientBanding_->setItemData(1, tr("Not yet: a dither is speckle to the ladder lint"), Qt::ToolTipRole);
+    gradientBanding_->setToolTip(tr("Ramp gradient: how the rungs blend"));
+
     auto* form = form_layout_ = new QFormLayout(this);
     form->addRow(title_);
     form->addRow(none_);
@@ -228,6 +258,10 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(tr("Strength"), strength_);
     form->addRow(tr("Pressure"), pressure_);
     form->addRow(tr("Ramp"), ramp_);
+    form->addRow(tr("Gradient"), gradientShape_);
+    form->addRow(tr("From rung"), gradientFrom_);
+    form->addRow(tr("To rung"), gradientTo_);
+    form->addRow(tr("Banding"), gradientBanding_);
     form->addRow(tr("Light"), light_);
     form->addRow(tr("Form"), form_);
     form->addRow(rim_);
@@ -252,6 +286,11 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     connect(view_, &CanvasView::symmetryChanged, this, &ToolOptions::sync);
     if (glyphTool_)
         connect(glyphTool_, &Tool::changed, this, &ToolOptions::sync);
+    if (gradientTool_)
+        connect(gradientTool_, &Tool::changed, this, &ToolOptions::sync);
+    connect(gradientShape_, &QComboBox::currentIndexChanged, this, &ToolOptions::applyGradientShape);
+    connect(gradientFrom_, &QSpinBox::valueChanged, this, &ToolOptions::applyGradientFrom);
+    connect(gradientTo_, &QSpinBox::valueChanged, this, &ToolOptions::applyGradientTo);
     connect(select_, &Tool::changed, this, &ToolOptions::sync);
     connect(size_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
     connect(strength_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
@@ -293,6 +332,10 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(strength_, o.testFlag(O::Strength));
     f->setRowVisible(pressure_, o.testFlag(O::Pressure));
     f->setRowVisible(ramp_, o.testFlag(O::Ramp));
+    f->setRowVisible(gradientShape_, o.testFlag(O::Gradient));
+    f->setRowVisible(gradientFrom_, o.testFlag(O::Gradient));
+    f->setRowVisible(gradientTo_, o.testFlag(O::Gradient));
+    f->setRowVisible(gradientBanding_, o.testFlag(O::Gradient));
     f->setRowVisible(light_, o.testFlag(O::Light));
     f->setRowVisible(form_, o.testFlag(O::Form));
     f->setRowVisible(rim_, o.testFlag(O::Form));
@@ -353,6 +396,16 @@ void ToolOptions::sync() {
         const char32_t g = glyphTool_->glyph();
         glyph_->setText(QString::fromUcs4(&g, 1));
     }
+    if (gradientTool_) {
+        // A rung past the ramp's top shows as the top, which is what the
+        // gradient paints; the tool keeps it for a longer ramp.
+        const int top = view_->ramp().topRung();
+        gradientShape_->setCurrentIndex(gradientShape_->findData(int(gradientTool_->shape())));
+        gradientFrom_->setRange(0, top);
+        gradientTo_->setRange(0, top);
+        gradientFrom_->setValue(gradientTool_->fromRung());
+        gradientTo_->setValue(gradientTool_->toRung());
+    }
     // A Library stamp floats in a mode of its own; the dock shows it.
     pasteMode_->setCurrentIndex(pasteMode_->findData(int(select_->effectivePasteMode())));
 }
@@ -391,6 +444,23 @@ void ToolOptions::apply() {
     view_->setOutlineShape(outline);
     view_->setSymmetry(sym);
     view_->setPencilConnectivity(pencil);
+}
+
+// Each control writes its own setting only: a rung the spinboxes show
+// clamped to a short ramp's top stays as set on the tool.
+void ToolOptions::applyGradientShape() {
+    if (!syncing_ && gradientTool_)
+        gradientTool_->setShape(GradientShape(gradientShape_->currentData().toInt()));
+}
+
+void ToolOptions::applyGradientFrom(int from) {
+    if (!syncing_ && gradientTool_)
+        gradientTool_->setRungs(from, gradientTool_->toRung());
+}
+
+void ToolOptions::applyGradientTo(int to) {
+    if (!syncing_ && gradientTool_)
+        gradientTool_->setRungs(gradientTool_->fromRung(), to);
 }
 
 } // namespace bw

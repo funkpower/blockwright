@@ -2,6 +2,7 @@
 
 #include "canvas_view.h"
 #include "document.h"
+#include "settings.h"
 
 #include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/detail.h"
@@ -16,6 +17,7 @@
 
 #include <QKeyEvent>
 
+#include <algorithm>
 #include <set>
 
 namespace bw {
@@ -424,6 +426,134 @@ CellEdit FillTool::edit() const {
             if (base.at(x, y).transparent)
                 base.at(x, y) = doc->shownBelow(x, y);
     return plotPixels(base, pixels_, colour_, options(), mirror());
+}
+
+namespace {
+
+// The longest named ramp's top rung: a new gradient runs the whole of any.
+int longestTopRung() {
+    int top = 0;
+    for (const Ramp& r : namedRamps())
+        top = std::max(top, r.topRung());
+    return top;
+}
+
+const QString kGradientShapeKey = QStringLiteral("gradient/shape");
+const QString kGradientFromKey = QStringLiteral("gradient/from");
+const QString kGradientToKey = QStringLiteral("gradient/to");
+
+} // namespace
+
+GradientTool::GradientTool(QObject* parent)
+    : DragTool(QStringLiteral("gradient"), tr("Ramp Gradie&nt"), parent), to_(longestTopRung()) {
+    const auto s = appSettings();
+    if (s->value(kGradientShapeKey).toString() == QLatin1String("radial"))
+        shape_ = GradientShape::Radial;
+    from_ = std::max(0, s->value(kGradientFromKey, from_).toInt());
+    to_ = std::max(0, s->value(kGradientToKey, to_).toInt());
+}
+
+void GradientTool::save() const {
+    const auto s = appSettings();
+    s->setValue(kGradientShapeKey,
+                shape_ == GradientShape::Radial ? QStringLiteral("radial") : QStringLiteral("linear"));
+    s->setValue(kGradientFromKey, from_);
+    s->setValue(kGradientToKey, to_);
+}
+
+void GradientTool::setShape(GradientShape shape) {
+    if (shape == shape_)
+        return;
+    shape_ = shape;
+    save();
+    settingsChanged();
+    emit changed();
+}
+
+void GradientTool::setRungs(int from, int to) {
+    from = std::max(0, from);
+    to = std::max(0, to);
+    if (from == from_ && to == to_)
+        return;
+    from_ = from;
+    to_ = to;
+    save();
+    settingsChanged();
+    emit changed();
+}
+
+QString GradientTool::status() const {
+    if (!view())
+        return {};
+    const Ramp& ramp = view()->ramp();
+    const int top = ramp.topRung();
+    QString s = tr("Ramp %1, %2, rung %3 to %4")
+                    .arg(QString::fromStdString(ramp.name),
+                         shape_ == GradientShape::Radial ? tr("radial") : tr("linear"))
+                    .arg(std::min(from_, top))
+                    .arg(std::min(to_, top));
+    if (!added_.empty())
+        s += tr(", adds %n lint finding(s)", nullptr, int(added_.size()));
+    return s;
+}
+
+bool GradientTool::begin(const ToolEvent& e) {
+    start_ = end_ = e.cell;
+    reversed_ = e.button == Qt::RightButton;
+    return true;
+}
+
+bool GradientTool::extend(const ToolEvent& e) {
+    if (e.cell == end_)
+        return false;
+    end_ = e.cell;
+    return true;
+}
+
+CellEdit GradientTool::edit() const {
+    Gradient g;
+    g.shape = shape_;
+    g.x0 = start_.x();
+    g.y0 = start_.y();
+    g.x1 = end_.x();
+    g.y1 = end_.y();
+    g.fromRung = reversed_ ? to_ : from_;
+    g.toRung = reversed_ ? from_ : to_;
+    CellEdit e = rampGradient(canvas(), view()->ramp(), g, options());
+    judge(e);
+    return e;
+}
+
+void GradientTool::judge(const CellEdit& e) const {
+    added_.clear();
+    if (e.empty())
+        return;
+    // The stroke's guard reads the canvas at the first preview; each move
+    // after is judged against it a change at a time, as rampGradient's
+    // `added` judges it from a fresh one.
+    if (!lint_) {
+        lint_ = std::make_unique<StrokeLint>(canvas(), view()->ramp());
+        after_ = canvas();
+    }
+    std::vector<std::pair<int, int>> changed;
+    changed.reserve(e.changes.size());
+    for (const CellChange& c : e.changes)
+        changed.push_back({c.x, c.y});
+    e.apply(after_);
+    added_ = lint_->judge(after_, changed);
+    e.revert(after_);
+}
+
+void GradientTool::rebuild() {
+    // the ramp or the layer under the drag may have changed
+    lint_.reset();
+}
+
+void GradientTool::reset() {
+    reversed_ = false;
+    added_.clear();
+    lint_.reset();
+    after_ = Canvas(0, 0);
 }
 
 namespace {

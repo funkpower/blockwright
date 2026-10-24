@@ -108,7 +108,7 @@ TEST_CASE("the toolbox has a button for every tool, with the Tools menu's action
                                                        toolAction(w, QStringLiteral("ellipse"))});
     CHECK(shapes->popupMode() == QToolButton::DelayedPopup);
     CHECK(toolAction(w, QStringLiteral("ellipse"))->toolTip().contains(QStringLiteral("right-click")));
-    CHECK_FALSE(toolAction(w, QStringLiteral("fill"))->toolTip().contains(QStringLiteral("right-click")));
+    CHECK_FALSE(toolAction(w, QStringLiteral("eyedropper"))->toolTip().contains(QStringLiteral("right-click")));
 }
 
 TEST_CASE("a toolbox button picks its tool, and a group's button shows the last one picked") {
@@ -200,6 +200,10 @@ TEST_CASE("Tool Options shows only the active tool's settings") {
         CHECK(shows(o->filledBox()) == want.testFlag(ToolOptions::Option::Filled));
         CHECK(shows(o->pasteModeBox()) == want.testFlag(ToolOptions::Option::PasteMode));
         CHECK(shows(o->sampleMergedBox()) == want.testFlag(ToolOptions::Option::SampleMerged));
+        CHECK(shows(o->gradientShapeBox()) == want.testFlag(ToolOptions::Option::Gradient));
+        CHECK(shows(o->gradientFromBox()) == want.testFlag(ToolOptions::Option::Gradient));
+        CHECK(shows(o->gradientToBox()) == want.testFlag(ToolOptions::Option::Gradient));
+        CHECK(shows(o->gradientBandingBox()) == want.testFlag(ToolOptions::Option::Gradient));
     }
     // spot checks against the tools themselves
     using O = ToolOptions::Option;
@@ -215,6 +219,7 @@ TEST_CASE("Tool Options shows only the active tool's settings") {
     CHECK(ToolOptions::optionsFor(QStringLiteral("halfBlock")).testFlag(O::Pencil));
     CHECK(ToolOptions::optionsFor(QStringLiteral("outline")).testFlag(O::OutlineSelection));
     CHECK_FALSE(ToolOptions::optionsFor(QStringLiteral("rimLight")).testFlag(O::OutlineSelection));
+    CHECK(ToolOptions::optionsFor(QStringLiteral("gradient")) == (O::AlphaLock | O::Ramp | O::Gradient));
 }
 
 TEST_CASE("every Tool Options control has a tooltip, with its shortcut where it has one") {
@@ -227,7 +232,7 @@ TEST_CASE("every Tool Options control has a tooltip, with its shortcut where it 
         controls << c;
     for (QWidget* c : o->findChildren<QCheckBox*>())
         controls << c;
-    CHECK(controls.size() >= 19);
+    CHECK(controls.size() >= 23);
     for (QWidget* c : controls) {
         INFO(c->objectName().toStdString());
         CHECK_FALSE(c->toolTip().isEmpty());

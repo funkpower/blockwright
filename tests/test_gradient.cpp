@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -286,6 +287,45 @@ bool forgiven(const lint::LadderFinding& f, const std::set<int>& shown, const Ra
     return !std::includes(shown.begin(), shown.end(), whole.begin(), whole.end());
 }
 
+// How many cells in from the box's edge a wide rung's run comes, from the
+// x, y to nx, ny it reports, reading only its cells in the box (the ones the
+// fill paints): 0 when one of them is on the edge, none when it has none.
+// Only the sides with the field beyond them count; a side on the canvas's
+// edge has nothing to climb to.
+std::optional<int> runFromEdge(const lint::LadderFinding& f, const CellRect& box, int w, int h) {
+    std::optional<int> best;
+    const int sx = (f.nx > f.x) - (f.nx < f.x), sy = (f.ny > f.y) - (f.ny < f.y);
+    for (int x = f.x, y = f.y;; x += sx, y += sy) {
+        if (x >= box.x && x < box.x + box.width && y >= box.y && y < box.y + box.height) {
+            int in = std::numeric_limits<int>::max();
+            if (box.x > 0)
+                in = std::min(in, x - box.x);
+            if (box.x + box.width < w)
+                in = std::min(in, box.x + box.width - 1 - x);
+            if (box.y > 0)
+                in = std::min(in, y - box.y);
+            if (box.y + box.height < h)
+                in = std::min(in, box.y + box.height - 1 - y);
+            best = std::min(best.value_or(in), in);
+        }
+        if (x == f.nx && y == f.ny)
+            break;
+    }
+    return best;
+}
+
+// Whether a wide rung's run is the L: a band of the fill joining the climb's
+// run of the same rung. The climb from a field of rung `e` moves a rung a
+// cell in from the edge, so its cells of rung r sit fewer than |r - e| cells
+// in; a run that comes no nearer the edge than that is a wide rung of the
+// fill's own, not the L, and one with no cell in the box is the field's.
+bool onClimb(const lint::LadderFinding& f, const Canvas& out, const Ramp& ramp, const CellRect& box, int e, int w,
+             int h) {
+    const std::optional<int> r = rungOf(ramp, out.at(f.x, f.y));
+    const std::optional<int> in = runFromEdge(f, box, w, h);
+    return r && in && *in < std::abs(*r - e);
+}
+
 std::string named(const Ramp& ramp, const Gradient& g, bool ice) {
     std::ostringstream out;
     out << ramp.name << (ice ? " ice" : " no-ice") << (g.shape == GradientShape::Linear ? " linear " : " radial ")
@@ -401,15 +441,44 @@ TEST_CASE("gradient: a fill in a selection meets the field round it clean, but f
                                         const bool l = f.kind == lint::LadderFinding::Kind::WideRung && !square;
                                         wide = wide || l;
                                         CHECK((l || forgiven(f, shown, ramp, g, w, h, ice)));
+                                        if (l)
+                                            CHECK(onClimb(f, out, ramp, box, e, w, h));
                                     }
                                     joined += wide;
                                 }
                 }
         }
     }
-    CHECK(painted > 5000);
+    // Pinned as measured: a change to the fill that moves either is one to
+    // look at, and to measure again.
     INFO(joined << " of " << painted << " fills joined a band to the climb");
-    CHECK(joined * 50 < painted);
+    CHECK(painted == 25092);
+    CHECK(joined == 138);
+}
+
+// The L's check reads the painted cells only: a wide rung wholly in the field
+// round the box has no contact with the climb, whatever its rung.
+TEST_CASE("gradient: a wide rung outside the selection isn't on the climb", "[gradient]") {
+    const Ramp steel = *findRamp("steel");
+    const int w = 40, h = 20;
+    const CellRect box{6, 4, 24, 11};
+    Canvas out = filled(w, h, rungCell(steel, 2));
+    lint::LadderFinding f{.kind = lint::LadderFinding::Kind::WideRung, .x = 10, .y = 0, .nx = 14, .ny = 0};
+    CHECK_FALSE(onClimb(f, out, steel, box, 2, w, h));
+    f.y = f.ny = h - 1;
+    CHECK_FALSE(onClimb(f, out, steel, box, 2, w, h));
+    f.x = 0, f.nx = 4, f.y = f.ny = 8;
+    CHECK_FALSE(onClimb(f, out, steel, box, 2, w, h));
+    // the same run on the box's edge, a rung off the field's, is
+    for (int x = 10; x <= 14; ++x)
+        out.at(x, 4) = rungCell(steel, 3);
+    f.x = 10, f.nx = 14, f.y = f.ny = 4;
+    CHECK(onClimb(f, out, steel, box, 2, w, h));
+    // and a cell in, not
+    f.y = f.ny = 5;
+    for (int x = 10; x <= 14; ++x)
+        out.at(x, 5) = rungCell(steel, 3);
+    CHECK_FALSE(onClimb(f, out, steel, box, 2, w, h));
 }
 
 TEST_CASE("gradient: on a tall canvas a square fill in a selection is clean and a slanted one adds only the L", "[gradient]") {
@@ -452,10 +521,13 @@ TEST_CASE("gradient: on a tall canvas a square fill in a selection is clean and 
                     for (const auto& f : found) {
                         INFO(f.message);
                         CHECK(f.kind == lint::LadderFinding::Kind::WideRung);
+                        CHECK(onClimb(f, out, ramp, box, e, w, h));
                     }
                 }
         }
     }
+    // Pinned as measured, like the counts above.
     INFO(joined << " of " << slanted << " slanted fills joined a band to the climb");
-    CHECK(joined < slanted);
+    CHECK(slanted == 64);
+    CHECK(joined == 34);
 }

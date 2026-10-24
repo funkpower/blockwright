@@ -1,12 +1,15 @@
 // Timings for the drawing tools on a big canvas (PLAN §4): fill, a filled
-// rectangle dragged through five moves, and a small filled rectangle whose
-// end point moves back and forth 200 times, on 400x2000. Hidden ([.perf]);
+// rectangle dragged through five moves, a small filled rectangle whose end
+// point moves back and forth 200 times, and a ramp gradient in a 20x10
+// selection whose end moves the same way, on 400x2000. Hidden ([.perf]);
 // run in a Release tree with `blockwright-app-tests "[perf]"`.
 
 #include "canvas_view.h"
 #include "document.h"
 #include "main_window.h"
 #include "tool.h"
+
+#include "blockwright/selection.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -91,5 +94,25 @@ TEST_CASE("timing: fill and a filled rectangle on 400x2000", "[.perf]") {
         const double s = since(t0);
         CHECK(w.document()->undoStack()->count() == 1);
         std::printf("perf: small filled rect, 200 moves: %.3f s\n", s);
+    }
+    {
+        MainWindow w;
+        bigCanvas(w);
+        CanvasView* v = w.canvasView();
+        w.findChild<QAction*>(QStringLiteral("gradientTool"))->trigger();
+        v->setSelection(Selection(CellRect{10, 5, 20, 10}));
+        const auto t0 = std::chrono::steady_clock::now();
+        mouse(v, QEvent::MouseButtonPress, 12, 14);
+        mouse(v, QEvent::MouseMove, 27, 26);
+        const double first = since(t0);
+        for (int i = 0; i < 200; ++i)
+            mouse(v, QEvent::MouseMove, 26 + (i & 1), 24 + 2 * (i & 1));
+        const double moves = since(t0) - first;
+        mouse(v, QEvent::MouseButtonRelease, 27, 26);
+        const double s = since(t0);
+        CHECK(w.document()->undoStack()->count() == 1);
+        std::printf("perf: gradient in a 20x10 selection, press + first move %.3f s, 200 moves %.3f s (%.2f ms a "
+                    "move), with release %.3f s\n",
+                    first, moves, moves * 1000 / 200, s);
     }
 }
