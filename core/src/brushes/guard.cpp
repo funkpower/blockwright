@@ -13,7 +13,12 @@ bool across(const lint::LadderFinding& f) { return f.nx != f.x; }
 
 StrokeLint::StrokeLint(const Canvas& start, const Ramp& ramp)
     : ramp_(ramp), index_(start, ramp), kept_(start), rowWide_(size_t(start.height()), 0),
-      columnWide_(size_t(start.width()), 0) {
+      columnWide_(size_t(start.width()), 0), rowSkips_(size_t(start.height())),
+      columnSkips_(size_t(start.width())) {
+    for (int y = 0; y < start.height(); ++y)
+        rowSkips_[size_t(y)] = index_.skips(true, y);
+    for (int x = 0; x < start.width(); ++x)
+        columnSkips_[size_t(x)] = index_.skips(false, x);
     for (const auto& f : index_.findings()) {
         switch (f.kind) {
         case Kind::WideRung: {
@@ -27,6 +32,7 @@ StrokeLint::StrokeLint(const Canvas& start, const Ramp& ramp)
             oneGlyph_ = true;
             break;
         case Kind::Noise:
+        case Kind::RungSkip:
             break;
         default:
             places_.insert(f.place());
@@ -74,20 +80,24 @@ std::vector<lint::LadderFinding> StrokeLint::judge(const Canvas& after,
         return out;
     // What the change adds to the kept canvas, of which the start had none.
     // The kept canvas adds nothing to the start, so that is all it adds,
-    // but for a wide rung on a line the change crosses: one there that
-    // shares cells with a kept one isn't added to the kept canvas, and may
-    // still have moved off the start's (a run the stroke slid along its
-    // line a dab at a time). Those lines are read whole, where the start had
-    // a wide rung on them; elsewhere the kept canvas had none to slide.
+    // but for a skip or a wide rung on a line the change reaches: one there
+    // that matches or shares cells with a kept one isn't added to the kept
+    // canvas, and may still have moved off the start's (a level or a run the
+    // stroke slid along its line a dab at a time). Skips are read from the
+    // lines the index judged again (the rows and columns within two of a
+    // changed cell) against the start's; wide rungs from the lines through
+    // a changed cell, where the start had a wide rung on them. Elsewhere the
+    // kept canvas had none to slide.
     std::set<std::tuple<int, int, int, int>> seen;
+    std::vector<lint::LadderFinding> rest;
     for (const auto& f : index_.apply(after, changed)) {
-        if (atStart(f, after))
+        if (f.kind == Kind::RungSkip || atStart(f, after))
             continue;
         if (f.kind == Kind::WideRung)
             seen.insert({f.x, f.y, f.nx, f.ny});
-        out.push_back(f);
+        rest.push_back(f);
     }
-    std::vector<int> rows, columns;
+    std::vector<int> rows, columns, skipRows, skipColumns;
     for (const auto& [x, y] : changed) {
         if (x < 0 || y < 0 || x >= kept_.width() || y >= kept_.height())
             continue;
@@ -95,11 +105,22 @@ std::vector<lint::LadderFinding> StrokeLint::judge(const Canvas& after,
             rows.push_back(y);
         if (columnWide_[size_t(x)])
             columns.push_back(x);
+        for (int d = -2; d <= 2; ++d) {
+            if (y + d >= 0 && y + d < kept_.height())
+                skipRows.push_back(y + d);
+            if (x + d >= 0 && x + d < kept_.width())
+                skipColumns.push_back(x + d);
+        }
     }
-    for (auto* lines : {&rows, &columns}) {
+    for (auto* lines : {&rows, &columns, &skipRows, &skipColumns}) {
         std::sort(lines->begin(), lines->end());
         lines->erase(std::unique(lines->begin(), lines->end()), lines->end());
     }
+    for (const bool a : {true, false})
+        for (const int line : a ? skipRows : skipColumns)
+            for (auto& f : index_.skipsAdded(a, line, (a ? rowSkips_ : columnSkips_)[size_t(line)]))
+                out.push_back(std::move(f));
+    out.insert(out.end(), rest.begin(), rest.end());
     for (const bool a : {true, false})
         for (const int line : a ? rows : columns)
             for (const auto& f : index_.wideRungs(a, line))

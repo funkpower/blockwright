@@ -171,6 +171,13 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
 //    cell with its run. Narrowed or widened at either end (6 cells wide to
 //    5, or 5 to 6), two runs joined or one split, it is the step that was
 //    and isn't added; a band repainted to another rung is.
+//  - a skip, unless the held canvas had one the same way, on the same row
+//    or column, between the same two cells, or between the same two rungs
+//    (a to c) with its two levels each sharing a cell with its own
+//    (Skip::matches). A level grown or shrunk at the boundary moves the
+//    skip a cell or more along the line, and it is the skip that was; a
+//    skip between another pair of rungs a cell over is added, and so is
+//    one whose level moved past the old one's.
 //  - any other finding at a place (LadderFinding::Place) where the held
 //    canvas had none of that kind. A finding that only measures differently
 //    where it was (a skip of other rungs between the same two cells, a
@@ -183,6 +190,21 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
 // elsewhere, another tool, a layer switch), take a new one.
 class LadderIndex {
 public:
+    // A skip along a line, as positions along it: i the last cell of the
+    // level at rung a and j the first of the next, at rung c; the level at a
+    // starts at first and the one at c ends at last.
+    struct Skip {
+        int i = 0, j = 0, a = 0, c = 0, first = 0, last = 0;
+        bool operator==(const Skip&) const = default;
+        // Whether this is `was` (on the same line), as apply matches skips:
+        // between the same two cells, or moved along its levels (the same
+        // two rungs, each level sharing a cell with was's).
+        bool matches(const Skip& was) const {
+            return (i == was.i && j == was.j) ||
+                   (a == was.a && c == was.c && first <= was.i && was.first <= i && j <= was.last && was.j <= last);
+        }
+    };
+
     // Throws LintError for options.maxRung below 1.
     LadderIndex(const Canvas& canvas, const Ramp& ramp, const LadderOptions& options = {});
 
@@ -209,6 +231,14 @@ public:
     // column `line`, in order along it: O(W) or O(H). A guard that compares
     // with an earlier canvas than the held one reads the lines it changed.
     std::vector<LadderFinding> wideRungs(bool across, int line) const;
+    // The held canvas's skips along row `line` (across true) or down column
+    // `line`, in order along it.
+    const std::vector<Skip>& skips(bool across, int line) const;
+    // The held canvas's skips along the line that match none of `was` (an
+    // earlier canvas's skips along it, as skips() gave them; Skip::matches),
+    // as apply judges them: one pass over both lists. A guard that compares with an
+    // earlier canvas than the held one reads the lines its change reaches.
+    std::vector<LadderFinding> skipsAdded(bool across, int line, const std::vector<Skip>& was) const;
     // Whether the held canvas has this finding (every field equal).
     bool has(const LadderFinding& finding) const;
     // checkLadder's findings of the held canvas over the whole of it.
@@ -222,11 +252,6 @@ private:
     struct Wide {
         int width = 0, last = 0, rung = -1;
         bool operator==(const Wide&) const = default;
-    };
-    // A skip along a line: the last cell of the level at rung a and the
-    // first of the next, at rung c, as positions along it.
-    struct Skip {
-        int i = 0, j = 0, a = 0, c = 0;
     };
     // Positions 0..n-1, some set: the highest set one at or below a
     // position, in a few word reads (a 64-ary tree of bitsets).
@@ -248,7 +273,7 @@ private:
     Wide judgeRow(int start) const;
     Wide judgeColumn(int start) const;
     int speckAt(int x, int y) const;
-    std::vector<Skip> skips(bool row, int line) const;
+    std::vector<Skip> judgeSkips(bool row, int line) const;
     LadderFinding skipAt(bool row, int line, const Skip& s) const;
     std::vector<LadderFinding> globals() const;
 

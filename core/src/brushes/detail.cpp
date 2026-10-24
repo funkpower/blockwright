@@ -1337,21 +1337,48 @@ void OutlineBrush::composite(Stroke& stroke, Plan& plan) const {
         return out;
     };
     std::set<std::pair<int, int>> reverted;
+    // What the composite adds to the stroke's start, the index moved to
+    // `shown`: what the move adds, but for skips, read from the lines the
+    // index judged again (the rows and columns within two of a shown cell)
+    // against the start's, since a skip that matches one the canvas showed
+    // may have moved off the start's (a level slid a composite at a time).
+    std::vector<int> skipRows, skipColumns;
+    for (const auto& [x, y] : shows)
+        for (int d = -2; d <= 2; ++d) {
+            if (y + d >= 0 && y + d < h)
+                skipRows.push_back(y + d);
+            if (x + d >= 0 && x + d < w)
+                skipColumns.push_back(x + d);
+        }
+    for (auto* lines : {&skipRows, &skipColumns}) {
+        std::sort(lines->begin(), lines->end());
+        lines->erase(std::unique(lines->begin(), lines->end()), lines->end());
+    }
+    const auto adds = [&] {
+        Findings out, rest;
+        for (auto& f : plan.shownIndex->apply(shown, shows))
+            if (f.kind != lint::LadderFinding::Kind::RungSkip)
+                rest.push_back(std::move(f));
+        for (const bool across : {true, false})
+            for (const int line : across ? skipRows : skipColumns)
+                for (auto& f : plan.shownIndex->skipsAdded(across, line, plan.start->skips(across, line)))
+                    out.push_back(std::move(f));
+        out.insert(out.end(), rest.begin(), rest.end());
+        return out;
+    };
     // most composites add nothing: one apply; else the index goes back and
     // the composite settles against it
-    auto fresh = plan.shownIndex->apply(shown, shows);
+    auto fresh = adds();
     if (fresh.empty()) {
         plan.pending.clear();
         for (size_t k = 0; k < shows.size(); ++k)
             stroke.set(shows[k].first, shows[k].second, shown.at(shows[k].first, shows[k].second), strengths[k]);
         return;
     }
-    {
-        Canvas back = shown;
-        for (const auto& [p, cell] : before)
-            back.at(p.first, p.second) = cell;
-        plan.shownIndex->apply(back, shows);
-    }
+    Canvas back = shown;
+    for (const auto& [p, cell] : before)
+        back.at(p.first, p.second) = cell;
+    plan.shownIndex->apply(back, shows);
     for (size_t round = 0; !fresh.empty() && round < shows.size(); ++round) {
         using K = lint::LadderFinding::Kind;
         // the first finding's cells to blame, and the one that goes back:
@@ -1408,7 +1435,8 @@ void OutlineBrush::composite(Stroke& stroke, Plan& plan) const {
                 shown.at(p.first, p.second) = was.at(p);
                 reverted.insert(p);
             }
-        fresh = plan.shownIndex->added(shown, shows);
+        fresh = adds();
+        plan.shownIndex->apply(back, shows);
     }
     if (!fresh.empty()) {
         for (const auto& [p, cell] : before)

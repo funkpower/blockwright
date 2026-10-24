@@ -818,21 +818,54 @@ bool continues(const lint::LadderFinding& f, const Canvas& after, const lint::La
     return across ? f.x <= old.nx && old.x <= f.nx : f.y <= old.ny && old.y <= f.ny;
 }
 
+// The far end of the run of the rung at position i along a row (across) or
+// a column of c, going by step.
+int runEnd(const Canvas& c, const Ramp& r, bool across, int line, int i, int step) {
+    auto at = [&](int k) { return rungOf(r, across ? c.at(k, line) : c.at(line, k)); };
+    const int n = across ? c.width() : c.height();
+    const auto g = at(i);
+    while (i + step >= 0 && i + step < n && at(i + step) == g)
+        i += step;
+    return i;
+}
+
+// Whether a skip of `after` moved one of `before` along its levels: the
+// same way, on the same line, between the same two rungs, the runs of its
+// two levels each sharing a cell with the old one's.
+bool moves(const lint::LadderFinding& f, const Canvas& after, const lint::LadderFinding& old, const Canvas& before,
+           const Ramp& r) {
+    const bool across = f.ny == f.y, oldAcross = old.ny == old.y;
+    if (across != oldAcross || (across ? f.y != old.y : f.x != old.x))
+        return false;
+    const int line = across ? f.y : f.x;
+    const int i = across ? f.x : f.y, j = across ? f.nx : f.ny, oi = across ? old.x : old.y,
+              oj = across ? old.nx : old.ny;
+    auto rung = [&](const Canvas& c, int k) { return rungOf(r, across ? c.at(k, line) : c.at(line, k)); };
+    if (rung(after, i) != rung(before, oi) || rung(after, j) != rung(before, oj))
+        return false;
+    return runEnd(after, r, across, line, i, -1) <= oi && runEnd(before, r, across, line, oi, -1) <= i &&
+           oj <= runEnd(after, r, across, line, j, 1) && j <= runEnd(before, r, across, line, oj, 1);
+}
+
 // What a brush's guard counts as added, linting both whole, written out
 // apart from LadderFinding::place and the index: a wide rung that continues
-// none of `before`'s, any other finding of a kind at a cell (and its other
-// cell) where `before` had none, one glyph where `before` didn't have it,
-// and noise over the limit that went up.
+// none of `before`'s, a skip where `before` had none (at its cell and other
+// cell) and that moves none of `before`'s, any other finding of a kind at a
+// cell (and its other cell) where `before` had none,
+// one glyph where `before` didn't have it, and noise over the limit that
+// went up.
 std::set<FindingKey> wholeDiff(const Canvas& before, const Canvas& after, const Ramp& r, const lint::LadderOptions& o = {}) {
     using Where = std::tuple<Kind, int, int, int, int>;
     auto where = [](const lint::LadderFinding& f) { return Where{f.kind, f.x, f.y, f.nx, f.ny}; };
     const auto was = lint::checkLadder(before, r, {}, o), is = lint::checkLadder(after, r, {}, o);
     std::set<Where> had;
-    std::vector<lint::LadderFinding> wide;
+    std::vector<lint::LadderFinding> wide, skip;
     for (const auto& f : was.findings) {
         had.insert(where(f));
         if (f.kind == Kind::WideRung)
             wide.push_back(f);
+        if (f.kind == Kind::RungSkip)
+            skip.push_back(f);
     }
     std::set<FindingKey> out;
     for (const auto& f : is.findings) {
@@ -842,6 +875,9 @@ std::set<FindingKey> wholeDiff(const Canvas& before, const Canvas& after, const 
         else if (f.kind == Kind::WideRung)
             added = std::none_of(wide.begin(), wide.end(),
                                  [&](const auto& old) { return continues(f, after, old, before, r); });
+        else if (f.kind == Kind::RungSkip)
+            added = added &&
+                    std::none_of(skip.begin(), skip.end(), [&](const auto& old) { return moves(f, after, old, before, r); });
         if (added)
             out.insert(f);
     }
@@ -884,7 +920,7 @@ TEST_CASE("a change adds exactly the findings linting both whole canvases does",
     auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
     const Ramp r = steel();
     int cases = 0, swaps = 0, oneGlyph = 0, noisy = 0, lines = 0, longRuns = 0, reverts = 0, measured = 0,
-        continued = 0;
+        continued = 0, moved = 0;
     for (int k = 0; k < 2500; ++k) {
         const int source = pick(0, 5);
         // shade glyph fields small, so a change can reach every odd glyph
@@ -1005,8 +1041,8 @@ TEST_CASE("a change adds exactly the findings linting both whole canvases does",
                              key.y == old.y && (key.ny == key.y) != (old.ny == old.y) && !all.count(old);
             }
             // findings that only measure differently in place, which the
-            // guard doesn't count, and wide rungs that continue an old one
-            // from a new first cell
+            // guard doesn't count, wide rungs that continue an old one from a
+            // new first cell and skips moved from their old two cells
             for (const auto& key : fullDiff(canvas, after, r, o)) {
                 measured += !want.count(key);
                 if (key.kind == Kind::WideRung && !want.count(key)) {
@@ -1014,6 +1050,12 @@ TEST_CASE("a change adds exactly the findings linting both whole canvases does",
                     for (const auto& old : had)
                         samePlace = samePlace || (old.kind == Kind::WideRung && old.place() == key.place());
                     continued += !samePlace;
+                }
+                if (key.kind == Kind::RungSkip && !want.count(key)) {
+                    bool samePlace = false;
+                    for (const auto& old : had)
+                        samePlace = samePlace || (old.kind == Kind::RungSkip && old.place() == key.place());
+                    moved += !samePlace;
                 }
             }
             ++cases;
@@ -1024,12 +1066,13 @@ TEST_CASE("a change adds exactly the findings linting both whole canvases does",
     }
     UNSCOPED_INFO("cases " << cases << " swaps " << swaps << " one glyph " << oneGlyph << " noise " << noisy << " lines "
                            << lines << " long runs " << longRuns << " reverts " << reverts << " measured " << measured
-                           << " continued " << continued);
+                           << " continued " << continued << " moved " << moved);
     CHECK(cases > 30000);
     CHECK(longRuns == 100);
     CHECK(reverts > 4000);
     CHECK(measured > 500);
     CHECK(continued > 150);
+    CHECK(moved > 100);
     CHECK(swaps >= 5);
     CHECK(oneGlyph > 50);
     CHECK(noisy > 50);
@@ -1296,6 +1339,109 @@ TEST_CASE("a change adds findings by place, not by what they measure", "[lint][l
         CHECK(keysOf(got) == wholeDiff(before, after, r));
         REQUIRE(got.size() == 1);
         CHECK(got[0] == lint::LadderFinding{Kind::WideRung, 1, 5, "cell 1,5: a rung 6 cells wide (at most 3)", 6, 5});
+    }
+}
+
+// #66 (Claude round 3 on #59, R3-2): a skip whose boundary moved by a cell
+// was added, since skips matched their two cells exactly. A skip is the one
+// that was when it is the same way, on the same line, and between the same
+// two cells or between the same two rungs with each of its levels sharing a
+// cell with the old one's.
+TEST_CASE("a skip moved along its levels adds nothing; one between other rungs is added", "[lint][ladder]") {
+    const Ramp r = steel();
+    auto all = [](int x0, int x1) {
+        std::vector<std::pair<int, int>> out;
+        for (int y = 0; y < 6; ++y)
+            for (int x = x0; x <= x1; ++x)
+                out.push_back({x, y});
+        return out;
+    };
+    auto skips = [](const std::vector<lint::LadderFinding>& found) {
+        return std::count_if(found.begin(), found.end(), [](const auto& f) { return f.kind == Kind::RungSkip; });
+    };
+    // six rows of 4 4 4 6 6 6 8 8 8: skips at 2|3 (4 to 6) and 5|6 (6 to 8)
+    const Canvas before = rows(r, {4, 4, 4, 6, 6, 6, 8, 8, 8});
+    REQUIRE(count(lint::checkLadder(before, r), Kind::RungSkip) == 12);
+
+    SECTION("the 4 to 6 skip moved one cell on adds nothing") {
+        const Canvas after = rows(r, {4, 4, 4, 4, 6, 6, 8, 8, 8});
+        REQUIRE(count(lint::checkLadder(after, r), Kind::RungSkip) == 12);
+        REQUIRE(fullDiff(before, after, r).size() == 6);  // now at 3|4
+        CHECK(wholeDiff(before, after, r).empty());
+        lint::LadderIndex index(before, r);
+        CHECK(index.added(after, all(3, 3)).empty());
+        CHECK(index.apply(after, all(3, 3)).empty());
+        CHECK(keysOf(index.findings()) == keysOf(lint::checkLadder(after, r).findings));
+        CHECK(index.apply(before, all(3, 3)).empty());  // and back
+        CHECK(lint::addedFindingsOnce(before, after, r, all(3, 3)).empty());
+    }
+
+    SECTION("moved one cell back, only the widened 6 level is added") {
+        const Canvas after = rows(r, {4, 4, 6, 6, 6, 6, 8, 8, 8});
+        lint::LadderIndex index(before, r);
+        const auto got = index.apply(after, all(2, 2));
+        CHECK(keysOf(got) == wholeDiff(before, after, r));
+        CHECK(skips(got) == 0);
+        CHECK(got.size() == 6);  // the 6 level, 4 cells wide
+    }
+
+    SECTION("a skip down a column moved one cell adds nothing") {
+        auto columns = [&](const std::vector<int>& rungs) {
+            Canvas c(6, int(rungs.size()));
+            for (int y = 0; y < c.height(); ++y)
+                for (int x = 0; x < 6; ++x)
+                    c.at(x, y) = rungCell(r, rungs[size_t(y)]);
+            return c;
+        };
+        const Canvas down = columns({4, 4, 4, 6, 6, 6, 8, 8, 8}), moved = columns({4, 4, 4, 4, 6, 6, 8, 8, 8});
+        std::vector<std::pair<int, int>> row;
+        for (int x = 0; x < 6; ++x)
+            row.push_back({x, 3});
+        REQUIRE(!fullDiff(down, moved, r).empty());
+        CHECK(wholeDiff(down, moved, r).empty());
+        lint::LadderIndex index(down, r);
+        CHECK(index.apply(moved, row).empty());
+    }
+
+    SECTION("a skip between another pair of rungs a cell over is added") {
+        // 4 to 7 at 3|4, the levels sharing cells with 4 to 6 at 2|3
+        const Canvas after = rows(r, {4, 4, 4, 4, 7, 7, 8, 8, 8});
+        const auto want = wholeDiff(before, after, r);
+        CHECK(want.size() == 6);
+        lint::LadderIndex index(before, r);
+        const auto got = index.apply(after, all(3, 5));
+        CHECK(keysOf(got) == want);
+        REQUIRE(skips(got) == 6);
+        for (const auto& f : got) {
+            CHECK(f.x == 3);
+            CHECK(f.nx == 4);
+            CHECK(index.has(f));
+        }
+        // and with the lower level changed: 3 to 6 at 3|4
+        const Canvas lower = rows(r, {4, 4, 3, 3, 6, 6, 8, 8, 8});
+        lint::LadderIndex again(before, r);
+        const auto low = again.apply(lower, all(2, 3));
+        CHECK(keysOf(low) == wholeDiff(before, lower, r));
+        CHECK(skips(low) == 6);
+    }
+
+    SECTION("a skip between another pair of rungs at the same two cells is the one that was") {
+        // 4 to 7 at 2|3, where 4 to 6 was: it measures differently in place
+        const Canvas after = rows(r, {4, 4, 4, 7, 7, 7, 8, 8, 8});
+        REQUIRE(fullDiff(before, after, r).size() == 6);
+        CHECK(wholeDiff(before, after, r).empty());
+        lint::LadderIndex index(before, r);
+        CHECK(index.apply(after, all(3, 5)).empty());
+    }
+
+    SECTION("a skip moved past its old level is added") {
+        // 4 to 6 from 1|2 to 4|5 and 6 to 8 from 3|4 to 6|7: the 6 levels
+        // share no cell
+        const Canvas from = rows(r, {4, 4, 6, 6, 8, 8, 8, 8, 8}), to = rows(r, {4, 4, 4, 4, 4, 6, 6, 8, 8});
+        lint::LadderIndex index(from, r);
+        const auto got = index.apply(to, all(2, 6));
+        CHECK(keysOf(got) == wholeDiff(from, to, r));
+        CHECK(skips(got) == 12);
     }
 }
 

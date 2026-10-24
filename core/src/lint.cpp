@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <set>
 #include <tuple>
+#include <utility>
 
 namespace bw::lint {
 
@@ -170,8 +171,10 @@ public:
                 emit(y, end, width);
         }
     }
-    // emit(i, j, a, c) for each skip along row y (rowSkips) or column x: i
-    // the last cell of the level at rung a, j the first of the next, at c.
+    // emit(i, j, a, c, first, last) for each skip along row y (rowSkips) or
+    // column x: i the last cell of the level at rung a, j the first of the
+    // next, at c; the level at a starts at first and the one at c ends at
+    // last.
     template <class Emit>
     void rowSkips(int y, Emit&& emit) const {
         skips(g_.w, [y](int i) { return std::pair{i, y}; }, emit);
@@ -296,7 +299,7 @@ private:
                 const bool before = k > 0 && (a > levels[k - 1].g) == up;
                 const bool after = k + 2 < levels.size() && (levels[k + 2].g > c) == up;
                 if (before || after)
-                    emit(levels[k].last, levels[k + 1].first, a, c);
+                    emit(levels[k].last, levels[k + 1].first, a, c, levels[k].first, levels[k + 1].last);
             }
             levels.clear();
         };
@@ -566,11 +569,11 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
     // deep included, is a rung like the rest.
     // Reported once per pair of cells, at the left or top one.
     for (int y = 0; y < h; ++y)
-        rules.rowSkips(y, [&](int i, int j, int a, int c) {
+        rules.rowSkips(y, [&](int i, int j, int a, int c, int, int) {
             r.findings.push_back(skipFinding(b->x0 + i, b->y0 + y, a, c, b->x0 + j, b->y0 + y));
         });
     for (int x = 0; x < w; ++x)
-        rules.columnSkips(x, [&](int i, int j, int a, int c) {
+        rules.columnSkips(x, [&](int i, int j, int a, int c, int, int) {
             r.findings.push_back(skipFinding(b->x0 + x, b->y0 + i, a, c, b->x0 + x, b->y0 + j));
         });
 
@@ -835,15 +838,39 @@ int LadderIndex::speckAt(int x, int y) const {
     return lighter ? (*lighter ? 1 : 2) : 0;
 }
 
-std::vector<LadderIndex::Skip> LadderIndex::skips(bool row, int line) const {
+std::vector<LadderIndex::Skip> LadderIndex::judgeSkips(bool row, int line) const {
     std::vector<Skip> out;
-    auto emit = [&](int i, int j, int a, int c) { out.push_back({i, j, a, c}); };
+    auto emit = [&](int i, int j, int a, int c, int first, int last) { out.push_back({i, j, a, c, first, last}); };
     const IndexGrid grid{w_, h_, rung_, rowFirst_, rowEnd_, columnFirst_, columnEnd_};
     const Rules<IndexGrid> rules(ramp_, grid, options_.maxRung);
     if (row)
         rules.rowSkips(line, emit);
     else
         rules.columnSkips(line, emit);
+    return out;
+}
+
+const std::vector<LadderIndex::Skip>& LadderIndex::skips(bool across, int line) const {
+    return across ? rowSkips_.at(size_t(line)) : columnSkips_.at(size_t(line));
+}
+
+// A skip is one of `was` between the same two cells, or between the same two
+// rungs with each level sharing a cell with the other's: a level that grew
+// or shrank at the boundary moves the skip, and it is the skip that was. A
+// line's skips are in order along it and their first levels don't overlap,
+// so the old and new lists merge in one pass.
+std::vector<LadderFinding> LadderIndex::skipsAdded(bool across, int line, const std::vector<Skip>& was) const {
+    std::vector<LadderFinding> out;
+    std::size_t p = 0;
+    for (const Skip& s : skips(across, line)) {
+        while (p < was.size() && (++readCount, was[p].i < s.first))
+            ++p;
+        bool kept = false;
+        for (std::size_t q = p; !kept && q < was.size() && (++readCount, was[q].first <= s.i); ++q)
+            kept = s.matches(was[q]);
+        if (!kept)
+            out.push_back(skipAt(across, line, s));
+    }
     return out;
 }
 
@@ -1080,20 +1107,12 @@ std::vector<LadderFinding> LadderIndex::update(const std::vector<std::pair<int, 
         columnWide_[size_t(s)] = judgeColumn(s);
     }
 
-    // A line's skips are in order along it, so the old and new lists merge
-    // in one pass: a skip is added when no old one is between the same two
-    // cells.
+    // A skip is added unless it matches one the line had (skipsAdded).
     std::vector<LadderFinding> out;
-    auto added = [&](bool row, int line, std::vector<Skip>& was) {
-        std::vector<Skip> is = skips(row, line);
-        auto old = was.begin();
-        for (const Skip& s : is) {
-            while (old != was.end() && (++readCount, old->i < s.i || (old->i == s.i && old->j < s.j)))
-                ++old;
-            if (old == was.end() || old->i != s.i || old->j != s.j)
-                out.push_back(skipAt(row, line, s));
-        }
-        was = std::move(is);
+    auto added = [&](bool row, int line, std::vector<Skip>& held) {
+        std::vector<Skip> was = std::exchange(held, judgeSkips(row, line));
+        for (auto& f : skipsAdded(row, line, was))
+            out.push_back(std::move(f));
     };
     for (const int y : rows)
         added(true, y, rowSkips_[size_t(y)]);
