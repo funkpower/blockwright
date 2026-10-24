@@ -87,6 +87,8 @@ public:
     void paintCells(QPainter& p, const QRect& exposed) const override;
     void paint(QPainter& p) const override;
     bool drawsSelection() const override { return floating_; }
+    // What stamping the floating selection would write.
+    const CellEdit& pending() const override;
 
 private:
     enum class Drag { None, Select, Pending, Float };
@@ -118,6 +120,7 @@ private:
     bool dragMoved_ = false;
 
     mutable bool previewStale_ = true;
+    mutable CellEdit pending_;
     mutable EditPreview preview_;
 
     QList<QMetaObject::Connection> connections_;

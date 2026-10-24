@@ -16,6 +16,11 @@ namespace bw {
 
 Tool::Tool(const QString& id, const QString& name, QObject* parent) : QObject(parent), id_(id), name_(name) {}
 
+const CellEdit& Tool::pending() const {
+    static const CellEdit none;
+    return none;
+}
+
 void Tool::activate(CanvasView* view) { view_ = view; }
 
 void Tool::deactivate() { view_ = nullptr; }

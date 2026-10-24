@@ -46,9 +46,11 @@ struct MircCell {
 // The shortest IRC line that draws `cells`, without a line ending. With
 // `swapShades` the encoder may also draw ░ as ▓ with the colours reversed,
 // and ▒ as itself reversed; the patterns differ a little, so it is opt-in.
-// Throws IrcError for a code point that is not a Unicode scalar value or a
-// colour over 98.
-std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades = false);
+// With `solidEnd` a last cell of one colour (a blank, a full block, or a glyph
+// in its own background) is drawn as █ rather than as a space, so a client
+// that drops trailing blanks keeps it. Throws IrcError for a code point that
+// is not a Unicode scalar value or a colour over 98.
+std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades = false, bool solidEnd = false);
 
 namespace detail {
 
@@ -60,7 +62,7 @@ bool withinSlack(Cost cost, Cost best);
 
 // encodeMircRow with the search's byte count starting at `start` rather than
 // 0, so tests can reach the top of the cost range with a short row.
-std::string encodeMircRowFrom(std::span<const MircCell> cells, bool swapShades, Cost start);
+std::string encodeMircRowFrom(std::span<const MircCell> cells, bool swapShades, Cost start, bool solidEnd = false);
 
 } // namespace detail
 

@@ -197,13 +197,13 @@ std::uint8_t nearestMirc(std::uint32_t rgb) {
     return best;
 }
 
-std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades) {
-    return detail::encodeMircRowFrom(cells, swapShades, 0);
+std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades, bool solidEnd) {
+    return detail::encodeMircRowFrom(cells, swapShades, 0, solidEnd);
 }
 
 bool detail::withinSlack(Cost cost, Cost best) { return cost - best <= kSlack; }
 
-std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swapShades, Cost start) {
+std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swapShades, Cost start, bool solidEnd) {
     for (const MircCell& c : cells)
         if (!scalar(c.ch) || c.fg >= kMircRgb.size() || c.bg >= kMircRgb.size())
             throw IrcError("the IRC encoder was given an invalid cell");
@@ -220,7 +220,12 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
     std::vector<Move> mv;
     mv.reserve(3);
     for (const MircCell& cell : cells) {
-        const Ways options = ways(cell, swapShades);
+        Ways options = ways(cell, swapShades);
+        // solid() lists the space first
+        if (solidEnd && &cell == &cells.back() && options.n == 2 && options.way[0].glyph == U' ') {
+            options.way[0] = options.way[1];
+            options.n = 1;
+        }
         next.clear();
         for (size_t i = 0; i < cur.size(); ++i) {
             const Entry& e = cur[i];

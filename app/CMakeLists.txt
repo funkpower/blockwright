@@ -10,6 +10,8 @@ add_library(blockwright_app STATIC
   draw_tools.h
   glyph_bar.cpp
   glyph_bar.h
+  irc_meter.cpp
+  irc_meter.h
   document.h
   layers_dock.cpp
   layers_dock.h
@@ -20,6 +22,7 @@ add_library(blockwright_app STATIC
   main_window_docks.cpp
   main_window_edit.cpp
   main_window_format.cpp
+  main_window_irc.cpp
   main_window_library.cpp
   main_window_project.cpp
   palette_widget.cpp

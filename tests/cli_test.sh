@@ -111,6 +111,26 @@ if cmp -s "$data/golden-irc/tux.txt" "$tmp/over.txt"; then ok "--allow-over-budg
 for i in $(seq 0 79); do printf '\033[%d;%dmx' $((30 + i % 8)) $((40 + (i + 3) % 8)); done > "$tmp/rainbow.ans"
 expect "default budget is 407" 3 '^1 line, longest 4[0-9][0-9] bytes, budget 407: 1 over$' -- "$cli" export --irc "$tmp/rainbow.ans" "$tmp/rainbow.txt"
 expect "--budget raises it" 0 'budget 600: 0 over$' -- "$cli" export --irc --budget 600 "$tmp/rainbow.ans" "$tmp/rainbow.txt"
+# --fit: colours merged until every line is in the budget; text left alone
+for i in $(seq 0 79); do printf '\033[%d;%dm\xdf' $((30 + i % 8)) $((40 + (i + 3) % 8)); done > "$tmp/halves.ans"
+expect "half blocks over the budget" 3 '^1 line, longest 600 bytes, budget 407: 1 over$' -- "$cli" export --irc "$tmp/halves.ans" "$tmp/halves.txt"
+expect "--fit fits them" 0 '^1 line, longest [0-9]+ bytes, budget 407: 0 over$' -- "$cli" export --irc --fit "$tmp/halves.ans" "$tmp/halves.txt"
+expect "--fit marks the line it merged" 0 '^ +1 +[0-9]+  fit: [1-9][0-9]* cells merged$' -- "$cli" export --irc --fit "$tmp/halves.ans" "$tmp/halves.txt"
+expect "--fit counts what it merged" 0 '^fit: [1-9][0-9]* cells merged in 1 line$' -- "$cli" export --irc --fit "$tmp/halves.ans" "$tmp/halves.txt"
+if [[ $(wc -c < "$tmp/halves.txt") -le 408 ]]; then ok "--fit writes the fitted line"; else bad "--fit wrote $(wc -c < "$tmp/halves.txt") bytes"; fi
+expect "--fit takes the budget" 0 'budget 300: 0 over$' -- "$cli" export --irc --fit --budget 300 "$tmp/halves.ans" "$tmp/halves.txt"
+expect "--fit never changes text" 3 '^fit: 0 cells merged in 0 lines$' -- "$cli" export --irc --fit "$tmp/rainbow.ans" "$tmp/rainbow.txt"
+expect "--fit leaves a piece in budget alone" 0 '^fit: 0 cells merged in 0 lines$' -- "$cli" export --irc --fit "$piece" "$tmp/tux-fit.txt"
+if cmp -s "$data/golden-irc/tux.txt" "$tmp/tux-fit.txt"; then ok "--fit of a piece in budget is golden-irc's"; else bad "--fit changed a piece in budget"; fi
+# --pad: blank rows and trailing black kept, each line ended on a black block
+printf '\r\n\033[31mx\r\n' > "$tmp/edge.ans"
+expect "export drops a blank top row" 0 '^1 line, longest 5 bytes' -- "$cli" export --irc "$tmp/edge.ans" "$tmp/edge.txt"
+expect "--pad keeps it" 0 '^2 lines, longest 88 bytes' -- "$cli" export --irc --pad "$tmp/edge.ans" "$tmp/edge.txt"
+if [[ $(grep -c $'\xe2\x96\x88$' "$tmp/edge.txt") -eq 2 ]]; then ok "--pad ends every line on a block"; else bad "--pad lines: $(cat -A "$tmp/edge.txt")"; fi
+# --swap-shades: ▓ on red as ░ the other way round, one colour code for the row
+for i in $(seq 0 39); do printf '\033[34;41m\xb2\033[31;44m\xb0'; done > "$tmp/shade.ans"
+expect "shades over the budget" 3 '^1 line, longest 560 bytes' -- "$cli" export --irc "$tmp/shade.ans" "$tmp/shade.txt"
+expect "--swap-shades" 0 '^1 line, longest 244 bytes, budget 407: 0 over$' -- "$cli" export --irc --swap-shades "$tmp/shade.ans" "$tmp/shade.txt"
 expect "export needs --irc" 2 'export needs a format: --irc' -- "$cli" export "$piece" "$tmp/x.txt"
 expect "export arity" 2 'export takes' -- "$cli" export --irc "$piece"
 expect "--budget must be a number" 2 '--budget takes a positive number' -- "$cli" export --irc --budget lots "$piece" "$tmp/x.txt"
@@ -241,11 +261,13 @@ if [[ -e $tmp/x.ans ]]; then bad "a refused shade wrote $tmp/x.ans"; else ok "re
 # naming the option and the command, and nothing written.
 declare -A owner=([--allow-lossy]="convert shade snapshot" [--scale]=render [--font-width]=render
                   [--irc]=export [--budget]=export [--allow-over-budget]=export
+                  [--fit]=export [--pad]=export [--swap-shades]=export
                   [--ramp]=shade [--darken]=shade [--steps]=shade [--box]=shade [--ice]=shade)
 declare -A value=([--scale]=2 [--font-width]=9 [--budget]=60 [--ramp]=steel [--steps]=2 [--box]=0,0,1,1)
 foreign=$tmp/foreign && mkdir -p "$foreign"
 for cmd in info convert render export shade pack unpack snapshot; do
-  for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget --ramp --darken --steps --box --ice; do
+  for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget --fit --pad --swap-shades \
+             --ramp --darken --steps --box --ice; do
     [[ " ${owner[$opt]} " == *" $cmd "* ]] && continue
     out=$foreign/$cmd${opt}.out
     case $cmd in
@@ -358,6 +380,11 @@ if cmp -s "$proj/tux.bwp" "$proj/again.bwp"; then ok "zip, directory, zip is byt
 "$cli" export --irc "$piece" "$proj/ans.txt" > /dev/null
 expect "export reads a project" 0 ' 0 over$' -- "$cli" export --irc "$proj/tux" "$proj/proj.txt"
 if cmp -s "$proj/ans.txt" "$proj/proj.txt"; then ok "export of a project matches its .ans"; else bad "export of a project differs"; fi
+# a project's own byte budget is the default; --budget overrides it
+cp -r "$proj/tux" "$proj/tight"
+sed -i 's/"bytes": 407/"bytes": 60/' "$proj/tight/manifest.json"
+expect "export takes the project's budget" 3 '^17 lines, longest 80 bytes, budget 60: 6 over$' -- "$cli" export --irc "$proj/tight" "$proj/tight.txt"
+expect "--budget overrides the project's" 0 '^17 lines, longest 80 bytes, budget 407: 0 over$' -- "$cli" export --irc --budget 407 "$proj/tight" "$proj/tight.txt"
 expect "render reads a project" 0 '^$' -- "$cli" render "$proj/tux.bwp" "$proj/tux.png"
 expect "snapshot a directory" 0 '^r1$' -- "$cli" snapshot "$proj/tux"
 expect "snapshot again" 0 '^r2$' -- "$cli" snapshot "$proj/tux"

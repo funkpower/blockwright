@@ -202,6 +202,8 @@ signals:
     // (or tried again) until the zoom, the canvas or the image changes.
     void referenceFailed();
     void selectionChanged();
+    // setTool switched to another tool.
+    void toolChanged();
     // The brush settings, the ramp or the alpha lock changed.
     void brushChanged();
 

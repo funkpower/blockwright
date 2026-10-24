@@ -34,8 +34,11 @@ void SelectTool::activate(CanvasView* v) {
         if (floating_)
             emit changed();
     };
+    // The preview is the composite with the float on the active layer, so a
+    // layer change (the alpha lock, which keeps the float) redraws it too.
     connections_ << connect(v->document(), &Document::cellsChanged, this, stale)
                  << connect(v->document(), &Document::formatChanged, this, stale)
+                 << connect(v->document(), &Document::layersChanged, this, stale)
                  << connect(v, &CanvasView::mirrorChanged, this, stale)
                  << connect(v, &CanvasView::symmetryChanged, this, stale);
 }
@@ -319,12 +322,18 @@ void SelectTool::updatePreview() const {
         return;
     previewStale_ = false;
     preview_.clear();
+    pending_ = {};
     if (!view() || !floating_)
         return;
     const Document* doc = view()->document();
-    preview_.set(*view(), view()->mirrored(stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(),
-                                                       effectivePasteMode(), lifted_ ? &liftedFrom_ : nullptr,
-                                                       doc->blankCell(), doc->pastePixels())));
+    pending_ = view()->mirrored(stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), effectivePasteMode(),
+                                           lifted_ ? &liftedFrom_ : nullptr, doc->blankCell(), doc->pastePixels()));
+    preview_.set(*view(), pending_);
+}
+
+const CellEdit& SelectTool::pending() const {
+    updatePreview();
+    return pending_;
 }
 
 void SelectTool::paintCells(QPainter& p, const QRect& exposed) const {

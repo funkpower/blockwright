@@ -93,6 +93,10 @@ public:
     virtual void paint(QPainter&) const {}
     // Whether paint() draws the selection's outline, so the view doesn't.
     virtual bool drawsSelection() const { return false; }
+    // The edit finish() would write, as the document gets it (mirrored, on
+    // the active layer); Document::previewEdit makes it the composite cells
+    // paintCells draws. Empty when nothing is in progress.
+    virtual const CellEdit& pending() const;
     // A word on the tool's settings for the status bar (the glyph brush's
     // glyph); empty for none.
     virtual QString status() const { return {}; }

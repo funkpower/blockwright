@@ -49,7 +49,7 @@ public:
     void settingsChanged() override;
     // The edit the drag lands if released now, mirrored and clipped: what
     // the preview shows. Empty when not dragging.
-    const CellEdit& pending() const { return current_; }
+    const CellEdit& pending() const override { return current_; }
 
     void deactivate() override;
     void cancel() override { drop(); }

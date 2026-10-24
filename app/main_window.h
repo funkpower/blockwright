@@ -6,7 +6,9 @@
 // Layer, Window and Help menus. File > SAUCE... and the View menu's iCE and
 // letter-spacing toggles live in main_window_format.cpp; the docks, the Layer
 // and Window menus and the saved layout in main_window_docks.cpp; projects
-// (opening and saving them, snapshots) in main_window_project.cpp.
+// (opening and saving them, snapshots) in main_window_project.cpp; the IRC
+// row meter beside the canvas, View > IRC and File > Export IRC Text... in
+// main_window_irc.cpp.
 
 #include "blockwright/canvas_renderer.h"
 
@@ -27,6 +29,7 @@ class QScrollArea;
 namespace bw {
 
 class CanvasView;
+class IrcMeter;
 class PaletteWidget;
 class PreviewWidget;
 
@@ -90,6 +93,7 @@ public:
     SelectTool* selectTool() const { return selectTool_; }
     LibraryDock* libraryWidget() const { return library_; }
     QDockWidget* libraryDock() const { return libraryDock_; }
+    IrcMeter* ircMeter() const { return ircMeter_; }
 
     // The Library (main_window_library.cpp). Floats the stamp at `path` (a
     // .ans in the Library dock, or any stamp on disk) with its top-left at
@@ -127,6 +131,10 @@ public:
     // hold the whole document (Document::flatHoldsAll) leaves it unsaved:
     // from a project it is an export, and the project stays its file.
     bool saveFile(const QString& path, QString* error, bool allowLossy = false);
+    // Writes the IRC lines the row meter measures to `path`, a floating
+    // selection stamped first, as Save does. Refused, with `error`, if a
+    // line is over the budget, unless `allowOverBudget`.
+    bool exportIrcText(const QString& path, QString* error, bool allowOverBudget = false);
     // Takes a snapshot of a project (Document::nextSnapshot) and adds it as
     // an undo step, without asking anything: its round, or 0 and `error` for
     // a flat file, no round left, or a lossy snapshot (glyphs written as
@@ -163,6 +171,10 @@ public slots:
     void saveToLibrary();
     // Window > Reset Layout: every dock shown, docked where it starts.
     void resetLayout();
+    // File > Export IRC Text..., asking before writing lines over the
+    // budget, and View > IRC > Budget....
+    void exportIrc();
+    void editIrcBudget();
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -174,6 +186,8 @@ private:
     // The renderer and the toggles follow the document's format.
     void formatChanged();
     void syncFormatActions();
+    // File > Export IRC Text... and View > IRC (main_window_irc.cpp).
+    void createIrcActions(QMenu* file, QMenu* view);
     void canvasReset();
     void updateTitle();
     void updateStatus();
@@ -209,6 +223,7 @@ private:
     AtlasRenderer renderer_;
     QScrollArea* scroll_ = nullptr;
     CanvasView* view_ = nullptr;
+    IrcMeter* ircMeter_ = nullptr;
     PreviewWidget* preview_ = nullptr;
     QDockWidget* previewDock_ = nullptr;
     PaletteWidget* palette_ = nullptr;

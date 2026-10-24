@@ -318,6 +318,7 @@ void CanvasView::setTool(Tool* tool) {
         tool_->activate(this);
     }
     update();
+    emit toolChanged();
 }
 
 bool CanvasView::applyEdit(const CellEdit& edit, bool mirrored) {

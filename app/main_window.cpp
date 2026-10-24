@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "irc_meter.h"
 #include "select_tool.h"
 #include "palette_widget.h"
 #include "publish.h"
@@ -89,11 +90,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     view_ = new CanvasView(&doc_, &renderer_);
     view_->setObjectName(QStringLiteral("canvasView"));
-    scroll_ = new QScrollArea;
+    auto* scroll = new GutterScrollArea;
+    scroll_ = scroll;
     scroll_->setWidget(view_);
     scroll_->setAlignment(Qt::AlignCenter);
     scroll_->setBackgroundRole(QPalette::Dark);
     setCentralWidget(scroll_);
+    ircMeter_ = new IrcMeter(&doc_, view_, scroll);
 
     preview_ = new PreviewWidget(&renderer_);
     auto* previewScroll = new QScrollArea;
@@ -198,6 +201,7 @@ void MainWindow::createActions() {
     a->setObjectName(QStringLiteral("zoomReset"));
     a->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     createFormatActions(view);
+    createIrcActions(file, view);
 
     // Colours and glyph sets: Moebius's keys.
     const auto add = [this](QMenu* m, const QString& text, const char* name, QKeySequence key, auto slot) {

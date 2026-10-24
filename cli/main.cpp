@@ -4,7 +4,8 @@
 //   blockwright-cli info <file.ans|project>
 //   blockwright-cli convert [--allow-lossy] <in.ans|project> <out.ans>
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
-//   blockwright-cli export --irc [--budget N] [--allow-over-budget] <in.ans> <out.txt>
+//   blockwright-cli export --irc [--budget N] [--fit] [--pad] [--swap-shades]
+//                          [--allow-over-budget] <in.ans|project> <out.txt>
 //   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N]
 //                         [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in.ans> <out.ans>
 //   blockwright-cli library list [dir]
@@ -314,29 +315,51 @@ int snapshot(const std::string& path, bool allowLossy) {
 }
 
 // Writes the piece as IRC text and reports every line's size in bytes, as
-// the row encoder writes it. A line over the budget is listed and nothing
-// is written, unless allowOver.
-int exportIrc(const std::string& in, const std::string& out, std::size_t budget, bool allowOver) {
+// the row encoder writes it with `opts`. The budget is `budget` if given,
+// else a project's own (project::IrcBudget), else EFnet / WeeChat's; with
+// `fit` the lines over it are fitted to it. A line still over the budget is
+// listed and nothing is written, unless allowOver.
+int exportIrc(const std::string& in, const std::string& out, std::optional<std::size_t> budget, bool fit,
+              bw::irc::EncodeOptions opts, bool allowOver) {
     refuseSameFile(in, out);
-    const bw::AnsiDocument doc = load(in);
-    const std::vector<std::string> lines = bw::irc::exportCanvas(doc.canvas);
-    const auto over = bw::irc::overBudget(lines, budget);
-    std::size_t longest = 0;
-    std::cout << "line  bytes\n";
-    for (std::size_t i = 0; i < lines.size(); ++i) {
-        const std::size_t n = lines[i].size();
-        longest = std::max(longest, n);
-        std::cout << std::setw(4) << i + 1 << "  " << std::setw(5) << n;
-        if (n > budget)
-            std::cout << "  over by " << n - budget;
-        std::cout << "\n";
+    bw::AnsiDocument doc;
+    if (bw::project::isProject(in)) {
+        const bw::project::Project p = loadProject(in);
+        budget = budget.value_or(p.ircBudget.bytes);
+        doc = bw::project::toAnsi(p);
+    } else {
+        doc = load(in);
     }
+    const std::size_t limit = budget.value_or(bw::irc::kEfnetWeechatBudget);
+    opts.fit = fit ? limit : 0;
+    std::vector<std::string> lines;
+    std::size_t longest = 0, fitted = 0;
+    int merged = 0;
+    std::cout << "line  bytes\n";
+    for (bw::irc::Line& l : bw::irc::exportLines(doc.canvas, opts)) {
+        const std::size_t n = l.text.size();
+        longest = std::max(longest, n);
+        std::cout << std::setw(4) << lines.size() + 1 << "  " << std::setw(5) << n;
+        if (n > limit)
+            std::cout << "  over by " << n - limit;
+        if (l.merged > 0) {
+            std::cout << "  fit: " << l.merged << (l.merged == 1 ? " cell" : " cells") << " merged";
+            merged += l.merged;
+            ++fitted;
+        }
+        std::cout << "\n";
+        lines.push_back(std::move(l.text));
+    }
+    const auto over = bw::irc::overBudget(lines, limit);
     std::cout << lines.size() << (lines.size() == 1 ? " line" : " lines") << ", longest " << longest
-              << " bytes, budget " << budget << ": " << over.size() << " over\n";
+              << " bytes, budget " << limit << ": " << over.size() << " over\n";
+    if (fit)
+        std::cout << "fit: " << merged << (merged == 1 ? " cell" : " cells") << " merged in " << fitted
+                  << (fitted == 1 ? " line" : " lines") << "\n";
     if (!over.empty()) {
         for (const auto& o : over)
             std::cerr << "blockwright-cli: " << in << ": line " << o.line << " is " << o.bytes << " bytes, over the "
-                      << budget << "-byte budget by " << o.bytes - budget << "\n";
+                      << limit << "-byte budget by " << o.bytes - limit << "\n";
         if (!allowOver) {
             std::cerr << "blockwright-cli: " << out
                       << ": not written: lines over the budget (--allow-over-budget writes it anyway)\n";
@@ -534,7 +557,8 @@ int main(int argc, char** argv) {
         "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font\n"
         "  export --irc <in> <out>\n"
         "                       write IRC text (mIRC colour codes) and report each\n"
-        "                       line's size in bytes\n"
+        "                       line's size in bytes; a project's own budget is\n"
+        "                       the default\n"
         "  shade --ramp R <in> <out>\n"
         "                       lighten (or --darken) every cell in the box one\n"
         "                       rung along the ramp's shading ladder, then check\n"
@@ -569,10 +593,22 @@ int main(int argc, char** argv) {
     parser.addOption(ircOpt);
     const QCommandLineOption budgetOpt(
         QStringLiteral("budget"),
-        QStringLiteral("export --irc: bytes a line may take (default %1, EFnet via WeeChat)")
+        QStringLiteral("export --irc: bytes a line may take (default: a project's own, else %1, EFnet via WeeChat)")
             .arg(bw::irc::kEfnetWeechatBudget),
         QStringLiteral("bytes"));
     parser.addOption(budgetOpt);
+    const QCommandLineOption fitOpt(
+        QStringLiteral("fit"),
+        QStringLiteral("export --irc: fit lines over the budget by merging their least visible colours"));
+    parser.addOption(fitOpt);
+    const QCommandLineOption padOpt(
+        QStringLiteral("pad"),
+        QStringLiteral("export --irc: keep trailing black cells and blank edge rows, ending rows on a black block"));
+    parser.addOption(padOpt);
+    const QCommandLineOption swapShadesOpt(
+        QStringLiteral("swap-shades"),
+        QStringLiteral("export --irc: let the encoder draw a shade as its opposite with the colours reversed"));
+    parser.addOption(swapShadesOpt);
     const QCommandLineOption overOpt(QStringLiteral("allow-over-budget"),
                                      QStringLiteral("export --irc: write even if a line is over the budget"));
     parser.addOption(overOpt);
@@ -613,7 +649,7 @@ int main(int argc, char** argv) {
         std::cerr << "blockwright-cli: " << msg << "\n"
                   << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out>\n"
                   << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
-                  << "       | export --irc [--budget N] [--allow-over-budget] <in> <out>\n"
+                  << "       | export --irc [--budget N] [--fit] [--pad] [--swap-shades] [--allow-over-budget] <in> <out>\n"
                   << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in> <out>\n"
                   << "       | library list [dir] | library check <dir>\n"
                   << "       | pack <in> <out.bwp> | unpack <in> <dir> | snapshot [--allow-lossy] <project>\n"
@@ -627,6 +663,7 @@ int main(int argc, char** argv) {
     const std::pair<const QCommandLineOption*, std::vector<const char*>> owners[] = {
         {&lossyOpt, {"convert", "shade", "snapshot"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
         {&ircOpt, {"export"}},             {&budgetOpt, {"export"}}, {&overOpt, {"export"}},
+        {&fitOpt, {"export"}},             {&padOpt, {"export"}},    {&swapShadesOpt, {"export"}},
         {&rampOpt, {"shade"}},             {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
         {&boxOpt, {"shade"}},              {&iceOpt, {"shade"}},
     };
@@ -669,7 +706,7 @@ int main(int argc, char** argv) {
                 return usage("export needs a format: --irc");
             if (args.size() != 3)
                 return usage("export takes an input and an output file");
-            std::size_t budget = bw::irc::kEfnetWeechatBudget;
+            std::optional<std::size_t> budget;
             if (parser.isSet(budgetOpt)) {
                 bool ok = false;
                 const qulonglong v = parser.value(budgetOpt).toULongLong(&ok);
@@ -677,7 +714,11 @@ int main(int argc, char** argv) {
                     return usage("--budget takes a positive number of bytes");
                 budget = static_cast<std::size_t>(v);
             }
-            return exportIrc(args[1].toStdString(), args[2].toStdString(), budget, parser.isSet(overOpt));
+            bw::irc::EncodeOptions opts;
+            opts.pad = parser.isSet(padOpt);
+            opts.swapShades = parser.isSet(swapShadesOpt);
+            return exportIrc(args[1].toStdString(), args[2].toStdString(), budget, parser.isSet(fitOpt), opts,
+                             parser.isSet(overOpt));
         }
         if (cmd == QLatin1String("shade")) {
             if (!parser.isSet(rampOpt))
