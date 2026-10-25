@@ -30,6 +30,7 @@
 #include <filesystem>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 using namespace bw;
 namespace fs = std::filesystem;
@@ -585,6 +586,32 @@ TEST_CASE("a project saved and opened in the app keeps every layer property and 
     MainWindow w3;
     REQUIRE(w3.openFile(dir, &error));
     CHECK(w3.document()->project() == after);
+}
+
+TEST_CASE("a failed save over a project directory leaves it readable as it was (#114)") {
+    if (::geteuid() == 0)
+        SKIP("root writes into a read-only directory");
+    QTemporaryDir tmp;
+    const QString dir = tmp.filePath(QStringLiteral("piece"));
+    const project::Project before = writeSampleDirectory(dir);
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(dir, &error));
+    Document& d = *w.document();
+    drawAt(w, 0, 0, U'Z');         // a change to a layer the manifest on disk lists
+    d.addLayer(LayerKind::Cells);  // and a layer with an id it doesn't
+
+    const QByteArray refs = QFile::encodeName(dir + QStringLiteral("/refs"));
+    REQUIRE(::chmod(refs.constData(), 0555) == 0);
+    const bool saved = w.saveFile(dir, &error);
+    ::chmod(refs.constData(), 0755);
+    CHECK_FALSE(saved);
+    CHECK_FALSE(error.isEmpty());
+    CHECK(d.isModified());
+    CHECK(project::read(fpath(dir)) == before);
+
+    REQUIRE(w.save());
+    CHECK(project::read(fpath(dir)) == d.project());
 }
 
 TEST_CASE("a failed project save keeps the snapshot pending and the project unsaved") {

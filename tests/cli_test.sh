@@ -526,8 +526,9 @@ expect "lossy snapshot with --allow-lossy" 0 '^r1$' -- "$cli" snapshot --allow-l
 "$cli" unpack "$piece" "$proj/linked" > /dev/null
 echo precious > "$proj/victim"
 ln -s ../victim "$proj/linked/.manifest.json.bw-tmp"
-expect "snapshot refuses a project with a link in it" 1 'linked: .*\.manifest\.json\.bw-tmp is a symbolic link' -- "$cli" snapshot "$proj/linked"
-if [[ $(cat "$proj/victim") == precious && ! -e $proj/linked/snapshots ]]; then ok "the link's target is untouched"; else bad "snapshot wrote through a link"; fi
+# a hidden entry isn't the project's, whatever it is: skipped, never written through
+expect "snapshot skips a hidden link in a project" 0 '^r1$' -- "$cli" snapshot "$proj/linked"
+if [[ $(cat "$proj/victim") == precious && -L $proj/linked/.manifest.json.bw-tmp && -f $proj/linked/snapshots/r1.ans ]]; then ok "the link's target is untouched"; else bad "snapshot wrote through a link"; fi
 
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]

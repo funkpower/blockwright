@@ -37,16 +37,118 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdlib>
 #include <csignal>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iterator>
 #include <map>
 #include <new>
+#include <optional>
 #include <regex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
+
+// An allocation a test makes fail: set, the next one on this thread throws
+// std::bad_alloc (and clears it). The whole test binary allocates through
+// this, which otherwise is malloc.
+namespace bwtest {
+thread_local bool failNextAllocation = false;
+// While `allocations` is 0 or more, each allocation on this thread counts
+// in it, and the one it counts as `failAllocation` (from 0) throws
+// std::bad_alloc instead.
+thread_local long allocations = -1;
+thread_local long failAllocation = -1;
+// While set, every allocation on this thread throws std::bad_alloc.
+thread_local bool failAllocations = false;
+}
+
+void* operator new(std::size_t size) {
+    if (bwtest::failAllocations)
+        throw std::bad_alloc();
+    if (bwtest::failNextAllocation) {
+        bwtest::failNextAllocation = false;
+        throw std::bad_alloc();
+    }
+    if (bwtest::allocations >= 0 && bwtest::allocations++ == bwtest::failAllocation)
+        throw std::bad_alloc();
+    if (void* p = std::malloc(size ? size : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+
+#if defined(__linux__)
+#include <dlfcn.h>
+
+// The archives and open entries libzip hands the project code that aren't
+// freed yet: zip_open takes an archive, zip_discard and a zip_close that
+// succeeds give it back; zip_fopen_index takes an entry, zip_fclose gives it
+// back. Kept without allocating, so a test counting allocations counts none
+// here.
+namespace bwtest {
+struct Held {
+    const void* at[64] = {};
+    void take(const void* p) {
+        for (const void*& a : at)
+            if (!a) {
+                a = p;
+                return;
+            }
+    }
+    void give(const void* p) {
+        for (const void*& a : at)
+            if (a == p)
+                a = nullptr;
+    }
+    long count() const { return std::count_if(std::begin(at), std::end(at), [](const void* a) { return a; }); }
+};
+inline Held zips, zipFiles;
+template <typename F>
+F nextSymbol(const char* name) {
+    return reinterpret_cast<F>(::dlsym(RTLD_NEXT, name));
+}
+} // namespace bwtest
+
+extern "C" {
+zip_t* zip_open(const char* path, int flags, int* err) {
+    static const auto next = bwtest::nextSymbol<zip_t* (*)(const char*, int, int*)>("zip_open");
+    zip_t* z = next(path, flags, err);
+    if (z)
+        bwtest::zips.take(z);
+    return z;
+}
+int zip_close(zip_t* z) {
+    static const auto next = bwtest::nextSymbol<int (*)(zip_t*)>("zip_close");
+    const int r = next(z);
+    if (r == 0)
+        bwtest::zips.give(z);
+    return r;
+}
+zip_file_t* zip_fopen_index(zip_t* z, zip_uint64_t i, zip_flags_t flags) {
+    static const auto next = bwtest::nextSymbol<zip_file_t* (*)(zip_t*, zip_uint64_t, zip_flags_t)>("zip_fopen_index");
+    zip_file_t* f = next(z, i, flags);
+    if (f)
+        bwtest::zipFiles.take(f);
+    return f;
+}
+int zip_fclose(zip_file_t* f) {
+    static const auto next = bwtest::nextSymbol<int (*)(zip_file_t*)>("zip_fclose");
+    bwtest::zipFiles.give(f);
+    return next(f);
+}
+void zip_discard(zip_t* z) {
+    static const auto next = bwtest::nextSymbol<void (*)(zip_t*)>("zip_discard");
+    bwtest::zips.give(z);
+    next(z);
+}
+}
+#endif
 
 using namespace bw;
 using bw::project::Entries;
@@ -779,8 +881,8 @@ TEST_CASE("a directory save doesn't follow symbolic links", "[project][io][safet
 
     // a hidden link where a predictable temporary file would go
     fs::create_symlink("../victim", dir / ".manifest.json.bw-tmp");
-    CHECK_THROWS_AS(project::read(dir), ProjectError);  // the reader refuses any link
-    project::writeDirectory(p, dir);                     // the writer leaves it alone
+    CHECK(project::read(dir) == p);   // the reader skips it, as any hidden entry
+    project::writeDirectory(p, dir);  // the writer leaves it alone
     CHECK(bwtest::readFile(root / "victim") == "precious");
     CHECK(fs::is_symlink(dir / ".manifest.json.bw-tmp"));
     fs::remove(dir / ".manifest.json.bw-tmp");
@@ -1378,10 +1480,1424 @@ TEST_CASE("a directory save keeps the file it wrote when another takes its name"
     CHECK(bwtest::readFile(dir / "notes.md") == "someone else's");
 }
 
-TEST_CASE("a hidden FIFO in a project directory is refused", "[project][io][safety]") {
-    const fs::path dir = scratch("fifo") / "piece";
+namespace {
+
+// Every path under `dir`, relative to it, with each file's bytes.
+std::map<std::string, std::string> tree(const fs::path& dir) {
+    std::map<std::string, std::string> out;
+    for (const auto& e : fs::recursive_directory_iterator(dir))
+        out[e.path().lexically_relative(dir).generic_string()] =
+            e.is_regular_file() ? bwtest::readFile(e.path()) : std::string("<dir>");
+    return out;
+}
+
+// `p` with an existing layer's cells changed, a new layer, and new notes:
+// a save of it rewrites files the old manifest lists and adds two it doesn't.
+Project edited(Project p) {
+    p.layers[0].cells.at(0, 0) = cell(U'#', White, Red);
+    Layer added = makeLayer(LayerKind::Cells, 3, 2, "added", 1, 1);
+    added.cells.at(1, 1) = cell(U'@', Yellow, Blue);
+    p.layers.add(std::move(added));
+    p.notes = "saved again\n";
+    return p;
+}
+
+} // namespace
+
+TEST_CASE("a directory save over a project that fails before replacing a file leaves it as it was",
+          "[project][io]") {
+    if (::geteuid() == 0)
+        SKIP("root writes into a read-only directory");
+    const fs::path dir = scratch("overfail") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    const Project q = edited(p);
+
+    // refs/ comes after layers/, log.md and notes.md, and can't be written
+    REQUIRE(::chmod((dir / "refs").c_str(), 0555) == 0);
+    CHECK_THROWS_AS(project::writeDirectory(q, dir), ProjectError);
+    ::chmod((dir / "refs").c_str(), 0755);
+    CHECK(tree(dir) == before);  // no new layer, no temporary, no file rewritten
+    CHECK(project::read(dir) == p);
+
+    project::writeDirectory(q, dir);
+    CHECK(project::read(dir) == q);
+}
+
+TEST_CASE("a directory save over a project that fails while replacing files puts them back", "[project][io]") {
+    const fs::path dir = scratch("overfail-rename") / "piece";
+    Project p = everything();
+    p.files["refs/a/x"] = "in a folder";
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+
+    // refs/a is a file now, but the folder holding refs/a/x is still in the
+    // way when its temporary is renamed, after the layers and the notes
+    Project q = edited(p);
+    q.files.erase("refs/a/x");
+    q.files["refs/a"] = "a file";
+    CHECK_THROWS_AS(project::writeDirectory(q, dir), ProjectError);
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a directory save that fails at the manifest puts back every file and directory", "[project][io]") {
+    const fs::path dir = scratch("overfail-manifest") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+
+    // a reference replaced and one added in two new folders, both renamed
+    // into place before the manifest's rename fails
+    Project q = edited(p);
+    q.files["refs/sketch.png"] = "redrawn";
+    q.files["refs/new/sub/file"] = "added";
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    bool failed = false;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path&) {
+        if (step != "wrote" || failed)
+            return;
+        // the manifest's temporary is renamed last, so once it is the only
+        // one left, taking it away fails that rename
+        std::vector<fs::path> tmps;
+        for (const auto& e : fs::recursive_directory_iterator(dir))
+            if (e.path().filename().string().starts_with(".bw-tmp-"))
+                tmps.push_back(e.path());
+        if (tmps.size() == 1 && tmps[0].parent_path() == dir) {
+            fs::remove(tmps[0]);
+            failed = true;
+        }
+    };
+    std::string error;
+    try {
+        project::writeDirectory(q, dir);
+    } catch (const ProjectError& e) {
+        error = e.what();
+    }
+    project::testing::directoryStep = nullptr;
+    REQUIRE(failed);
+    CHECK(error.find("manifest.json") != std::string::npos);
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a directory save that can't remove a file the project dropped leaves the project as it was",
+          "[project][io]") {
+    if (::geteuid() == 0)
+        SKIP("root writes into a read-only directory");
+    const fs::path dir = scratch("stalefail") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+
+    // a layer and the only reference dropped: nothing is written into refs/,
+    // so only taking the reference away fails, after the layer's files are
+    // gone from layers/ and the manifest is replaced
+    Project q = edited(p);
+    REQUIRE(q.layers.remove(3));
+    q.files.erase("refs/sketch.png");
+    REQUIRE(::chmod((dir / "refs").c_str(), 0555) == 0);
+    CHECK_THROWS_AS(project::writeDirectory(q, dir), ProjectError);
+    ::chmod((dir / "refs").c_str(), 0755);
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+
+    // and once it can, nothing it set aside is left behind
+    project::writeDirectory(q, dir);
+    CHECK(project::read(dir) == q);
+    for (const auto& [name, bytes] : tree(dir))
+        CHECK(name.find(".bw-") == std::string::npos);
+    CHECK_FALSE(fs::exists(dir / "refs"));
+}
+
+TEST_CASE("a failed directory save never restores a file through a folder swapped for a link",
+          "[project][io][safety]") {
+    const fs::path root = scratch("swapped-parent");
+    const fs::path dir = root / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    fs::create_directory(root / "outside");
+    writeBytes(root / "outside" / "1.cells", "sentinel");
+
+    // straight after layers/1.cells is replaced, layers/ is moved aside and
+    // a link to another folder holding a 1.cells put in its place; the
+    // temporaries moved with it are taken away, so the next rename fails
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    bool swapped = false;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step != "wrote" || swapped || at != dir / "layers" / "1.cells")
+            return;
+        swapped = true;
+        fs::rename(dir / "layers", root / "moved");
+        for (const auto& e : fs::directory_iterator(root / "moved"))
+            if (e.path().filename().string().starts_with(".bw-tmp-"))
+                fs::remove(e.path());
+        fs::create_directory_symlink("../outside", dir / "layers");
+    };
+    Project q = edited(p);
+    q.layers.find(1)->cells.at(0, 0) = cell(U'%', Red, Black);  // so layers/1.cells is replaced by other bytes
+    CHECK_THROWS_AS(project::writeDirectory(q, dir), ProjectError);
+    project::testing::directoryStep = nullptr;
+    REQUIRE(swapped);
+    CHECK(tree(root / "outside") == std::map<std::string, std::string>{{"1.cells", "sentinel"}});
+    // the folder the save wrote into gets its old bytes back, wherever it is
+    std::map<std::string, std::string> layers;
+    for (const auto& [name, bytes] : before)
+        if (name.starts_with("layers/"))
+            layers[name.substr(7)] = bytes;
+    CHECK(tree(root / "moved") == layers);
+}
+
+TEST_CASE("a failed first directory save never removes through a parent swapped for a link",
+          "[project][io][safety]") {
+    const fs::path root = scratch("swapped-made");
+    writeBytes(root / "outside" / "child" / "piece", "sentinel");
+
+    // the save makes new/, new/child/ and new/child/piece/; once it has put
+    // the first file in place, new/ is moved aside, a link to outside/ put
+    // in its place, and the save fails
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    bool swapped = false;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path&) {
+        if (step != "wrote" || swapped)
+            return;
+        swapped = true;
+        fs::rename(root / "new", root / "moved");
+        fs::create_directory_symlink("outside", root / "new");
+        throw ProjectError("failed on purpose");
+    };
+    CHECK_THROWS_AS(project::writeDirectory(everything(), root / "new" / "child" / "piece"), ProjectError);
+    project::testing::directoryStep = nullptr;
+    REQUIRE(swapped);
+    CHECK(tree(root / "outside") ==
+          std::map<std::string, std::string>{{"child", "<dir>"}, {"child/piece", "sentinel"}});
+    // the directories the save made are gone from where they went, and the
+    // link, which isn't one, stays
+    CHECK(tree(root / "moved").empty());
+    CHECK(fs::is_symlink(root / "new"));
+}
+
+TEST_CASE("a directory save never removes a file it wrote through a project swapped for a link",
+          "[project][io][safety]") {
+    const fs::path root = scratch("swapped-scan");
+    const fs::path dir = root / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    // a link at a layer file's name, which a scan of outside/ would take
+    // for a stale file
+    fs::create_directories(root / "outside" / "layers");
+    fs::create_symlink("gone", root / "outside" / "layers" / "1.cells");
+
+    // between writing the manifest and looking for stale files, the project
+    // is moved and a link to outside/ put where it was
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    bool swapped = false;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path&) {
+        if (step != "scan")
+            return;
+        swapped = true;
+        fs::rename(dir, root / "moved");
+        fs::create_directory_symlink("outside", dir);
+    };
+    Project q = p;
+    q.notes = "saved again";
+    project::writeDirectory(q, dir);
+    project::testing::directoryStep = nullptr;
+    REQUIRE(swapped);
+    CHECK(fs::is_regular_file(fs::symlink_status(root / "moved" / "layers" / "1.cells")));
+    CHECK(project::read(root / "moved") == q);
+    CHECK(fs::is_symlink(root / "outside" / "layers" / "1.cells"));
+}
+
+TEST_CASE("a directory save that can't remove what it set aside leaves a project that reads",
+          "[project][io][safety]") {
+    // as in "a directory save removes a link put at an entry's own name",
+    // with a layer dropped too, but nothing set aside can be removed once
+    // the save is done
+    const fs::path dir = scratch("asidefail") / "piece";
     project::writeDirectory(everything(), dir);
-    for (const fs::path& at : {dir / ".pipe", dir / "refs" / ".pipe"}) {
+    Project p = everything();
+    p.notes = "saved again";
+    REQUIRE(p.layers.remove(3));
+    struct Reset {
+        ~Reset() {
+            project::testing::directoryStep = nullptr;
+            project::testing::systemCall = nullptr;
+        }
+    } reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step != "scan")
+            return;
+        fs::rename(at / "notes.md", at / "moved");
+        fs::create_symlink("moved", at / "notes.md");
+    };
+    std::vector<fs::path> refused;
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        if (call != "unlinkat" || !at.filename().string().starts_with(".bw-old-"))
+            return 0;
+        refused.push_back(at);
+        return EACCES;
+    };
+    project::writeDirectory(p, dir);
+    project::testing::directoryStep = nullptr;
+    project::testing::systemCall = nullptr;
+    // the link and the layer's two files stay under their hidden names
+    REQUIRE(refused.size() == 3);
+    std::size_t links = 0, inLayers = 0;
+    for (const fs::path& at : refused) {
+        CHECK(fs::exists(fs::symlink_status(at)));
+        links += fs::is_symlink(fs::symlink_status(at));
+        inLayers += at.parent_path() == dir / "layers";
+    }
+    CHECK(links == 1);
+    CHECK(inLayers == 2);
+    Project kept = p;
+    kept.notes.clear();
+    kept.files["moved"] = "saved again";
+    CHECK(project::read(dir) == kept);
+
+    // and the next save leaves them, as it leaves every hidden file it
+    // didn't make
+    project::writeDirectory(kept, dir);
+    for (const fs::path& at : refused)
+        CHECK(fs::exists(fs::symlink_status(at)));
+    CHECK(project::read(dir) == kept);
+}
+
+TEST_CASE("a directory save without a no-replace rename never replaces a file put at its hidden name",
+          "[project][io][safety]") {
+    // renameat2 can't refuse to replace (as on a disk without it), and just
+    // as the save is about to move a dropped file to a hidden name, someone
+    // puts a file there
+    const fs::path dir = scratch("noreplace") / "piece";
+    project::writeDirectory(everything(), dir);
+    Project p = everything();
+    p.notes.clear();
+    struct Reset {
+        ~Reset() { project::testing::systemCall = nullptr; }
+    } reset;
+    fs::path raced;
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        if (call == "renameat2")
+            return ENOSYS;
+        if (call == "noreplace" && raced.empty()) {
+            raced = at;
+            writeBytes(at, "sentinel");
+        }
+        return 0;
+    };
+    project::writeDirectory(p, dir);
+    project::testing::systemCall = nullptr;
+    REQUIRE_FALSE(raced.empty());
+    CHECK(raced.filename().string().starts_with(".bw-old-"));
+    REQUIRE(fs::is_regular_file(fs::symlink_status(raced)));
+    CHECK(bwtest::readFile(raced) == "sentinel");
+    CHECK_FALSE(fs::exists(dir / "notes.md"));
+    CHECK(project::read(dir) == p);
+
+    // and on a disk without hard links either, where no rename can refuse
+    // to replace, the save refuses the move and puts the directory back
+    fs::remove(raced);
+    project::writeDirectory(everything(), dir);
+    const auto before = tree(dir);
+    int links = 0;
+    project::testing::systemCall = [&](std::string_view call, const fs::path&) {
+        if (call == "renameat2")
+            return ENOSYS;
+        if (call == "linkat") {
+            ++links;
+            return EPERM;
+        }
+        return 0;
+    };
+    CHECK_THROWS_AS(project::writeDirectory(p, dir), ProjectError);
+    project::testing::systemCall = nullptr;
+    CHECK(links == 1);
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == everything());
+}
+
+TEST_CASE("a failed directory save without a no-replace rename names what it couldn't put back",
+          "[project][io][safety]") {
+    // notes.md and log.md are dropped: the first is set aside, the second
+    // can't be, and by the time the save puts notes.md back the disk can't
+    // refuse to replace (no renameat2, no hard links)
+    const fs::path dir = scratch("noreplace-back") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    Project q = p;
+    q.notes.clear();
+    q.files.erase("log.md");
+    struct Reset {
+        ~Reset() { project::testing::systemCall = nullptr; }
+    } reset;
+    int asides = 0;
+    fs::path aside;
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        if (call == "renameat2" && at.filename().string().starts_with(".bw-old-")) {
+            if (++asides == 1) {
+                aside = at;
+                return 0;
+            }
+            return EACCES;
+        }
+        if (call == "renameat2")
+            return ENOSYS;
+        if (call == "linkat")
+            return EPERM;
+        return 0;
+    };
+    std::string error;
+    try {
+        project::writeDirectory(q, dir);
+    } catch (const ProjectError& e) {
+        error = e.what();
+    }
+    project::testing::systemCall = nullptr;
+    REQUIRE(asides == 2);
+    INFO(error);
+    CHECK(error.find("couldn't be put back") != std::string::npos);
+    CHECK(error.find(aside.filename().string()) != std::string::npos);
+    // nothing is lost: what wasn't put back is under the name the error gives
+    const fs::path left = dir / aside.lexically_relative(dir).parent_path();
+    const std::string name = fs::exists(left / "notes.md") ? "log.md" : "notes.md";
+    CHECK_FALSE(fs::exists(left / name));
+    CHECK(bwtest::readFile(aside) == (name == "notes.md" ? p.notes : p.files.at("log.md")));
+}
+
+TEST_CASE("a directory save whose second name for a file can't be taken back says so", "[project][io][safety]") {
+    // the move to a hidden name goes by a hard link, then the old name can't
+    // be removed, and nor can the new one
+    const fs::path dir = scratch("twonames") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    Project q = p;
+    q.notes.clear();
+    struct Reset {
+        ~Reset() { project::testing::systemCall = nullptr; }
+    } reset;
+    std::vector<fs::path> refused;
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        if (call == "renameat2")
+            return ENOSYS;
+        if (call == "unlinkat" && (at.filename() == "notes.md" || at.filename().string().starts_with(".bw-old-"))) {
+            refused.push_back(at);
+            return EACCES;
+        }
+        return 0;
+    };
+    std::string error;
+    try {
+        project::writeDirectory(q, dir);
+    } catch (const ProjectError& e) {
+        error = e.what();
+    }
+    project::testing::systemCall = nullptr;
+    INFO(error);
+    // the rollback tries the second name again
+    REQUIRE(refused.size() == 3);
+    CHECK(refused[0] == dir / "notes.md");
+    CHECK(refused[2] == refused[1]);
+    CHECK(error.find("couldn't be put back") != std::string::npos);
+    CHECK(error.find(refused[1].string()) != std::string::npos);
+    // the file is still at its name, and the second name is the same file
+    CHECK(bwtest::readFile(dir / "notes.md") == p.notes);
+    CHECK(fs::equivalent(dir / "notes.md", refused[1]));
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a directory save whose second name for a file the rollback can remove leaves nothing",
+          "[project][io][safety]") {
+    // the old name can't be removed, nor the second one at first; the
+    // rollback removes the second
+    const fs::path dir = scratch("twonames-back") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    Project q = p;
+    q.notes.clear();
+    struct Reset {
+        ~Reset() { project::testing::systemCall = nullptr; }
+    } reset;
+    std::vector<fs::path> seconds;
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        if (call == "renameat2")
+            return ENOSYS;
+        if (call == "unlinkat" && at.filename() == "notes.md")
+            return EACCES;
+        if (call == "unlinkat" && at.filename().string().starts_with(".bw-old-")) {
+            seconds.push_back(at);
+            return seconds.size() == 1 ? EACCES : 0;
+        }
+        return 0;
+    };
+    std::string error;
+    try {
+        project::writeDirectory(q, dir);
+    } catch (const ProjectError& e) {
+        error = e.what();
+    }
+    project::testing::systemCall = nullptr;
+    INFO(error);
+    CHECK(error.find((dir / "notes.md").string()) != std::string::npos);
+    CHECK(error.find("couldn't be put back") == std::string::npos);
+    CHECK(seconds.size() == 2);
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a directory save leaves a hidden file it didn't make, whatever its name", "[project][io][safety]") {
+    const fs::path dir = scratch("old-named") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    writeBytes(dir / ".bw-old-backup", "sentinel");
+    writeBytes(dir / "layers" / ".bw-old-1", "sentinel");
+    project::writeDirectory(p, dir);
+    CHECK(bwtest::readFile(dir / ".bw-old-backup") == "sentinel");
+    CHECK(bwtest::readFile(dir / "layers" / ".bw-old-1") == "sentinel");
+
+    // nor a file it wrote, moved to such a name before the save is done
+    Project q = p;
+    q.notes = "saved again\n";
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step == "scan")
+            fs::rename(at / "notes.md", at / ".bw-old-kept");
+    };
+    project::writeDirectory(q, dir);
+    project::testing::directoryStep = nullptr;
+    REQUIRE(fs::exists(dir / ".bw-old-kept"));
+    CHECK(bwtest::readFile(dir / ".bw-old-kept") == q.notes);
+}
+
+TEST_CASE("a failed directory save never removes a directory put where one it made was",
+          "[project][io][safety]") {
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    // once it has put the first file in place, the directory `made` (one the
+    // save made) is moved aside, an empty one put in its place, and the save
+    // fails
+    bool swapped = false;
+    fs::path made, moved;
+    const auto arm = [&] {
+        project::testing::directoryStep = [&](std::string_view step, const fs::path&) {
+            if (step != "wrote" || swapped)
+                return;
+            swapped = true;
+            fs::rename(made, moved);
+            fs::create_directory(made);
+            throw ProjectError("failed on purpose");
+        };
+    };
+
+    SECTION("on the way to the project") {
+        const fs::path root = scratch("replaced-made");
+        made = root / "new";
+        moved = root / "moved";
+        arm();
+        CHECK_THROWS_AS(project::writeDirectory(everything(), root / "new" / "child" / "piece"), ProjectError);
+        REQUIRE(swapped);
+        CHECK(fs::is_directory(fs::symlink_status(root / "new")));
+        CHECK(fs::is_empty(root / "new"));
+        // what the save made in the one it moved is gone from there
+        CHECK(tree(root / "moved").empty());
+    }
+    SECTION("in the project") {
+        const fs::path dir = scratch("replaced-made-in") / "piece";
+        const Project p = everything();
+        project::writeDirectory(p, dir);
+        const auto before = tree(dir);
+        Project q = p;
+        q.files["refs/new/sub/file"] = "added";
+        made = dir / "refs" / "new";
+        moved = dir / "refs" / "moved";
+        arm();
+        CHECK_THROWS_AS(project::writeDirectory(q, dir), ProjectError);
+        REQUIRE(swapped);
+        auto expected = before;
+        expected["refs/new"] = "<dir>";
+        expected["refs/moved"] = "<dir>";
+        CHECK(tree(dir) == expected);
+    }
+}
+
+TEST_CASE("a directory save refuses to replace a file it can't read", "[project][io][safety]") {
+    // a failure after notes.md is replaced would have no old bytes to give
+    // it back, so the save never gets that far
+    const fs::path dir = scratch("unreadable-old") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    Project q = p;
+    q.notes = "saved again\n";
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    bool scanned = false;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path&) {
+        if (step != "scan")
+            return;
+        scanned = true;
+        throw ProjectError("failed on purpose");
+    };
+    std::string error;
+    const auto save = [&] {
+        try {
+            project::writeDirectory(q, dir);
+        } catch (const ProjectError& e) {
+            error = e.what();
+        }
+        project::testing::directoryStep = nullptr;
+    };
+
+    SECTION("a file it can't read") {
+        if (::geteuid() == 0)
+            SKIP("root reads any file");
+        const auto before = tree(dir);
+        REQUIRE(::chmod((dir / "notes.md").c_str(), 0) == 0);
+        save();
+        ::chmod((dir / "notes.md").c_str(), 0644);
+        INFO(error);
+        CHECK(error.find((dir / "notes.md").string()) != std::string::npos);
+        CHECK_FALSE(scanned);
+        CHECK(tree(dir) == before);
+        CHECK(project::read(dir) == p);
+    }
+    SECTION("something that isn't a file or a directory") {
+        fs::remove(dir / "notes.md");
+        REQUIRE(::mkfifo((dir / "notes.md").c_str(), 0600) == 0);
+        const auto before = tree(dir);
+        save();
+        INFO(error);
+        CHECK(error.find((dir / "notes.md").string()) != std::string::npos);
+        CHECK_FALSE(scanned);
+        CHECK(fs::is_fifo(fs::symlink_status(dir / "notes.md")));
+        CHECK(tree(dir) == before);
+    }
+}
+
+TEST_CASE("a failed directory save removes a directory it made but couldn't look at", "[project][io][safety]") {
+    // refs/new is made, and the look at it for its device and inode fails
+    const fs::path dir = scratch("made-unseen") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    Project q = p;
+    q.files["refs/new/file"] = "added";
+    struct Reset {
+        ~Reset() { project::testing::systemCall = nullptr; }
+    } reset;
+    int looks = 0;
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        return call == "fstatat" && at == dir / "refs" / "new" && looks++ == 0 ? EIO : 0;
+    };
+    CHECK_THROWS_AS(project::writeDirectory(q, dir), ProjectError);
+    project::testing::systemCall = nullptr;
+    REQUIRE(looks >= 1);
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a failed directory save names each thing of its own it couldn't remove", "[project][io][safety]") {
+    const fs::path dir = scratch("cleanup-fail") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    struct Reset {
+        ~Reset() {
+            project::testing::directoryStep = nullptr;
+            project::testing::systemCall = nullptr;
+        }
+    } reset;
+    std::string error;
+    const auto save = [&](const Project& q) {
+        try {
+            project::writeDirectory(q, dir);
+        } catch (const ProjectError& e) {
+            error = e.what();
+        }
+        project::testing::directoryStep = nullptr;
+        project::testing::systemCall = nullptr;
+    };
+    const fs::path made = dir / "refs" / "new";
+    Project q = p;
+    q.files["refs/new/file"] = "added";
+    const auto failAtScan = [] {
+        project::testing::directoryStep = [](std::string_view step, const fs::path&) {
+            if (step == "scan")
+                throw ProjectError("failed on purpose");
+        };
+    };
+
+    SECTION("a directory it made that can't be removed") {
+        failAtScan();
+        project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+            return call == "unlinkat" && at == made ? EIO : 0;
+        };
+        save(q);
+        INFO(error);
+        CHECK(error.find("failed on purpose") != std::string::npos);
+        CHECK(error.find("couldn't be put back") != std::string::npos);
+        CHECK(error.find(made.string()) != std::string::npos);
+        auto expected = before;
+        expected["refs/new"] = "<dir>";
+        CHECK(tree(dir) == expected);
+    }
+    SECTION("a directory it made that can't be looked at before it is removed") {
+        failAtScan();
+        int looks = 0;
+        project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+            return call == "fstatat" && at == made && ++looks == 2 ? EIO : 0;
+        };
+        save(q);
+        INFO(error);
+        REQUIRE(looks == 2);
+        CHECK(error.find("couldn't be put back") != std::string::npos);
+        CHECK(error.find(made.string()) != std::string::npos);
+    }
+    SECTION("temporaries that can't be removed") {
+        // files can't grow past 256 KiB, so refs/big.bin's temporary fails
+        // part way, after those of layers/, log.md and notes.md are written
+        Project big = p;
+        big.files["refs/big.bin"] = std::string(std::size_t{1} << 20, 'b');
+        project::testing::systemCall = [](std::string_view call, const fs::path& at) {
+            return call == "unlinkat" && at.filename().string().starts_with(".bw-tmp-") ? EIO : 0;
+        };
+        rlimit old{};
+        REQUIRE(::getrlimit(RLIMIT_FSIZE, &old) == 0);
+        rlimit low = old;
+        low.rlim_cur = 256 << 10;
+        const auto handler = std::signal(SIGXFSZ, SIG_IGN);
+        REQUIRE(::setrlimit(RLIMIT_FSIZE, &low) == 0);
+        save(big);
+        ::setrlimit(RLIMIT_FSIZE, &old);
+        std::signal(SIGXFSZ, handler);
+        INFO(error);
+        std::vector<fs::path> left;
+        for (const auto& e : fs::recursive_directory_iterator(dir))
+            if (e.path().filename().string().starts_with(".bw-tmp-"))
+                left.push_back(e.path());
+        // refs/big.bin's own, and at least one written before it
+        REQUIRE(left.size() >= 2);
+        for (const fs::path& at : left) {
+            CHECK(error.find(at.string()) != std::string::npos);
+            fs::remove(at);
+        }
+        CHECK(tree(dir) == before);
+    }
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("rollback cleanup failures are named after a non-ProjectError exception", "[project][io][safety]") {
+    // the save fails with something other than a ProjectError, and the
+    // rollback can't remove refs/new, which the save made
+    const fs::path dir = scratch("cleanup-fail-other") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    struct Reset {
+        ~Reset() {
+            project::testing::directoryStep = nullptr;
+            project::testing::systemCall = nullptr;
+        }
+    } reset;
+    const fs::path made = dir / "refs" / "new";
+    Project q = p;
+    q.files["refs/new/file"] = "added";
+    const auto save = [&](const std::function<void()>& thrower) {
+        project::testing::directoryStep = [thrower](std::string_view step, const fs::path&) {
+            if (step == "scan")
+                thrower();
+        };
+        project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+            return call == "unlinkat" && at == made ? EIO : 0;
+        };
+        std::string error;
+        try {
+            project::writeDirectory(q, dir);
+        } catch (const ProjectError& e) {
+            error = e.what();
+        } catch (...) {
+            error = "not a ProjectError";
+        }
+        project::testing::directoryStep = nullptr;
+        project::testing::systemCall = nullptr;
+        return error;
+    };
+
+    std::string error;
+    SECTION("std::bad_alloc") {
+        error = save([] { throw std::bad_alloc(); });
+        CHECK(error.find(std::bad_alloc().what()) != std::string::npos);
+    }
+    SECTION("an exception that isn't a std::exception") {
+        error = save([] { throw 7; });
+        CHECK(error.find("an unknown error") != std::string::npos);
+    }
+    INFO(error);
+    CHECK(error.find("can't write " + dir.string()) != std::string::npos);
+    CHECK(error.find("couldn't be put back") != std::string::npos);
+    CHECK(error.find(made.string() + ": " + std::strerror(EIO)) != std::string::npos);
+    auto expected = before;
+    expected["refs/new"] = "<dir>";
+    CHECK(tree(dir) == expected);
+    fs::remove(made);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a non-ProjectError a directory save rolls back cleanly is passed on as it is", "[project][io]") {
+    const fs::path dir = scratch("other-clean") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    project::testing::directoryStep = [](std::string_view step, const fs::path&) {
+        if (step == "scan")
+            throw std::bad_alloc();
+    };
+    CHECK_THROWS_AS(project::writeDirectory(edited(p), dir), std::bad_alloc);
+    project::testing::directoryStep = nullptr;
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("allocation failure while recording an aside restores the original project", "[project][io][safety]") {
+    // the first file the project dropped is renamed aside, and the next
+    // allocation fails: the rename is already recorded, so it goes back
+    const fs::path dir = scratch("alloc-aside") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    Project q = p;
+    REQUIRE(q.layers.remove(3));
+    struct Reset {
+        ~Reset() {
+            project::testing::systemCall = nullptr;
+            bwtest::failNextAllocation = false;
+        }
+    } reset;
+    bool armed = false;
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        if (call == "renameat2" && !armed && at.filename().string().starts_with(".bw-old-"))
+            armed = bwtest::failNextAllocation = true;
+        return 0;
+    };
+    CHECK_THROWS_AS(project::writeDirectory(q, dir), std::bad_alloc);
+    project::testing::systemCall = nullptr;
+    REQUIRE(armed);
+    CHECK_FALSE(bwtest::failNextAllocation);
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("allocation failure after any change a directory save makes leaves the directory as it was",
+          "[project][io][safety]") {
+    // A run for each change the save makes (a directory, a temporary, a
+    // rename into place or aside), in which the first allocation after it
+    // fails: the save either fails and leaves the directory as it found it,
+    // or (the failure falling after it is done) succeeds.
+    const auto sweep = [](const fs::path& root, const fs::path& dir, const std::optional<Project>& old,
+                          const Project& q) {
+        struct Reset {
+            ~Reset() {
+                project::testing::systemCall = nullptr;
+                bwtest::failNextAllocation = false;
+            }
+        } reset;
+        const std::set<std::string_view> changes = {"mkdirat", "openat", "renameat2", "linkat"};
+        int failed = 0;
+        for (int run = 0;; ++run) {
+            fs::remove_all(root);
+            fs::create_directories(root);
+            if (old)
+                project::writeDirectory(*old, dir);
+            const auto before = tree(root);
+            int seen = 0;
+            std::string at;
+            project::testing::systemCall = [&](std::string_view call, const fs::path& path) {
+                if (changes.count(call) && seen++ == run) {
+                    at = std::string(call) + " " + path.lexically_relative(root).generic_string();
+                    bwtest::failNextAllocation = true;
+                }
+                return 0;
+            };
+            bool threw = false;
+            try {
+                project::writeDirectory(q, dir);
+            } catch (const std::exception&) {
+                threw = true;
+            }
+            project::testing::systemCall = nullptr;
+            bwtest::failNextAllocation = false;
+            if (at.empty()) {  // past the save's last change
+                REQUIRE_FALSE(threw);
+                CHECK(project::read(dir) == q);
+                break;
+            }
+            INFO("run " << run << ", after " << at);
+            if (threw) {
+                ++failed;
+                CHECK(tree(root) == before);
+                if (old)
+                    CHECK(project::read(dir) == *old);
+            } else {
+                CHECK(project::read(dir) == q);
+            }
+        }
+        return failed;
+    };
+
+    SECTION("over a project") {
+        // files replaced and added, directories made in it, and a layer
+        // and a reference set aside
+        const fs::path root = scratch("alloc-sweep-over");
+        Project p = everything();
+        p.files["refs/old/gone"] = "dropped";
+        Project q = edited(p);
+        REQUIRE(q.layers.remove(3));
+        q.files.erase("refs/old/gone");
+        q.files["refs/new/sub/file"] = "added";
+        CHECK(sweep(root, root / "piece", p, q) > 10);
+    }
+    SECTION("a first save, its parents made") {
+        const fs::path root = scratch("alloc-sweep-first");
+        CHECK(sweep(root, root / "a" / "b" / "piece", std::nullopt, edited(everything())) > 10);
+    }
+}
+
+TEST_CASE("a directory save that runs out of descriptors puts back every file it replaced", "[project][io]") {
+    const fs::path dir = scratch("emfile") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    // more directories than the save can hold open at once: it has replaced
+    // every file by the time it runs out looking in them
+    for (int i = 0; i < 128; ++i)
+        fs::create_directory(dir / ("d" + std::to_string(i)));
+    const auto before = tree(dir);
+    Project q = edited(p);
+    REQUIRE(q.layers.remove(3));
+
+    std::string error;
+    {
+        struct Limit {
+            rlimit old{};
+            Limit() {
+                REQUIRE(::getrlimit(RLIMIT_NOFILE, &old) == 0);
+                rlimit low = old;
+                low.rlim_cur = 64;
+                REQUIRE(::setrlimit(RLIMIT_NOFILE, &low) == 0);
+            }
+            ~Limit() { ::setrlimit(RLIMIT_NOFILE, &old); }
+        } limit;
+        try {
+            project::writeDirectory(q, dir);
+        } catch (const ProjectError& e) {
+            error = e.what();
+        }
+    }
+    INFO(error);
+    REQUIRE_FALSE(error.empty());
+    CHECK(error.find("couldn't be put back") == std::string::npos);
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a directory read that fails part way leaves no descriptor open", "[project][io]") {
+    if (!fs::is_directory("/proc/self/fd"))
+        SKIP("no /proc/self/fd to count descriptors in");
+    const auto open = [] {
+        return std::distance(fs::directory_iterator("/proc/self/fd"), fs::directory_iterator());
+    };
+    const fs::path dir = scratch("readleak") / "piece";
+    project::writeDirectory(everything(), dir);
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    project::testing::directoryStep = [](std::string_view step, const fs::path&) {
+        if (step == "reading")
+            throw ProjectError("failed on purpose");
+    };
+    const auto before = open();
+    CHECK_THROWS_AS(project::read(dir), ProjectError);
+    project::testing::directoryStep = nullptr;
+    CHECK(open() == before);
+}
+
+namespace {
+
+// The descriptors this process holds open.
+long openDescriptors() {
+    return long(std::distance(fs::directory_iterator("/proc/self/fd"), fs::directory_iterator()));
+}
+
+// Stops counting allocations; how many were counted.
+long stopCounting() {
+    const long made = bwtest::allocations;
+    bwtest::allocations = bwtest::failAllocation = -1;
+    return made;
+}
+
+// Stops counting allocations, and clears the hooks, however a test leaves.
+struct AllocationReset {
+    ~AllocationReset() {
+        bwtest::allocations = bwtest::failAllocation = -1;
+        bwtest::failNextAllocation = bwtest::failAllocations = false;
+        project::testing::directoryStep = nullptr;
+        project::testing::systemCall = nullptr;
+    }
+};
+
+} // namespace
+
+TEST_CASE("a directory save that runs out of memory opening a directory it made closes it",
+          "[project][io][safety]") {
+    // refs/new is made and looked at; the next allocation, the opened
+    // directory's path, fails
+    if (!fs::is_directory("/proc/self/fd"))
+        SKIP("no /proc/self/fd to count descriptors in");
+    const fs::path dir = scratch("alloc-open") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    Project q = p;
+    q.files["refs/new/file"] = "added";
+    const fs::path made = dir / "refs" / "new";
+    AllocationReset reset;
+    bool armed = false;
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        if (call == "fstatat" && at == made && !armed)
+            armed = bwtest::failNextAllocation = true;
+        return 0;
+    };
+    const long fds = openDescriptors();
+    CHECK_THROWS_AS(project::writeDirectory(q, dir), std::bad_alloc);
+    project::testing::systemCall = nullptr;
+    REQUIRE(armed);
+    CHECK_FALSE(bwtest::failNextAllocation);
+    CHECK(tree(dir) == before);
+    CHECK(openDescriptors() == fds);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a directory save that runs out of memory over a file's second name still names it",
+          "[project][io][safety]") {
+    // the move to a hidden name goes by a hard link, then the old name
+    // can't be removed, nor the new one, and the next allocation fails
+    const fs::path dir = scratch("twonames-alloc") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    Project q = p;
+    q.notes.clear();
+    AllocationReset reset;
+    std::vector<fs::path> refused;
+    bool armed = false;
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        if (call == "renameat2")
+            return ENOSYS;
+        const bool second = at.filename().string().starts_with(".bw-old-");
+        if (call == "unlinkat" && (at.filename() == "notes.md" || second)) {
+            refused.push_back(at);
+            if (second && !armed)
+                armed = bwtest::failNextAllocation = true;
+            return EACCES;
+        }
+        return 0;
+    };
+    std::string error = "not a ProjectError";
+    try {
+        project::writeDirectory(q, dir);
+    } catch (const ProjectError& e) {
+        error = e.what();
+    } catch (...) {
+    }
+    project::testing::systemCall = nullptr;
+    INFO(error);
+    REQUIRE(armed);
+    CHECK_FALSE(bwtest::failNextAllocation);
+    REQUIRE(refused.size() >= 2);
+    CHECK(refused[0] == dir / "notes.md");
+    CHECK(error.find("couldn't be put back") != std::string::npos);
+    CHECK(error.find(refused[1].string()) != std::string::npos);
+    CHECK(bwtest::readFile(dir / "notes.md") == p.notes);
+    CHECK(fs::equivalent(dir / "notes.md", refused[1]));
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a rollback that runs out of memory naming a failure still takes every other step",
+          "[project][io][safety]") {
+    // the save fails at the scan; the rollback can't remove zz-added, and
+    // the first allocation naming that fails
+    const fs::path dir = scratch("alloc-name") / "piece";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    Project q = edited(p);
+    q.files["zz-added"] = "new";
+    const fs::path added = dir / "zz-added";
+    AllocationReset reset;
+    bool rollingBack = false, armed = false;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path&) {
+        if (step == "scan") {
+            rollingBack = true;
+            throw 7;
+        }
+    };
+    project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+        if (rollingBack && call == "unlinkat" && at == added) {
+            armed = bwtest::failNextAllocation = true;
+            return EIO;
+        }
+        return 0;
+    };
+    std::string error = "not a ProjectError";
+    try {
+        project::writeDirectory(q, dir);
+    } catch (const ProjectError& e) {
+        error = e.what();
+    } catch (...) {
+    }
+    project::testing::directoryStep = nullptr;
+    project::testing::systemCall = nullptr;
+    INFO(error);
+    REQUIRE(armed);
+    CHECK_FALSE(bwtest::failNextAllocation);
+    CHECK(error.find("couldn't be put back") != std::string::npos);
+    CHECK(error.find(added.string() + ": " + std::strerror(EIO)) != std::string::npos);
+    // everything but zz-added put back: the layers' old bytes, the added
+    // layer's files removed
+    auto expected = before;
+    expected["zz-added"] = "new";
+    CHECK(tree(dir) == expected);
+    fs::remove(added);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a rollback that can't allocate at all still takes every step and says some couldn't be named",
+          "[project][io][safety]") {
+    // the save fails at the scan, from where every allocation fails, and
+    // zz-added is a directory with a file in it by then, which the rollback
+    // can't remove as the file it added
+    if (!fs::is_directory("/proc/self/fd"))
+        SKIP("no /proc/self/fd to count descriptors in");
+    const fs::path dir = scratch("alloc-never") / "piece";
+    Project p = everything();
+    p.files["refs/old/gone"] = "dropped";
+    project::writeDirectory(p, dir);
+    auto expected = tree(dir);
+    Project q = edited(p);
+    q.files["zz-added"] = "new";
+    q.files["refs/new/sub/file"] = "added";
+    const fs::path added = dir / "zz-added";
+    const long fds = openDescriptors();
+    AllocationReset reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path&) {
+        if (step == "scan") {
+            fs::remove(added);
+            fs::create_directory(added);
+            writeBytes(added / "inside", "kept");
+            bwtest::failAllocations = true;
+            throw 7;
+        }
+    };
+    std::string error = "not a ProjectError";
+    try {
+        project::writeDirectory(q, dir);
+    } catch (const ProjectError& e) {
+        bwtest::failAllocations = false;
+        error = e.what();
+    } catch (...) {
+        bwtest::failAllocations = false;
+    }
+    project::testing::directoryStep = nullptr;
+    INFO(error);
+    CHECK(openDescriptors() == fds);
+    CHECK(error.find("couldn't be put back") != std::string::npos);
+    CHECK(error.find("couldn't be named") != std::string::npos);
+    // every other step taken: old bytes back, the added folders removed
+    expected["zz-added"] = "<dir>";
+    expected["zz-added/inside"] = "kept";
+    CHECK(tree(dir) == expected);
+    fs::remove_all(added);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a rollback with nothing failing allocates nothing", "[project][io][safety]") {
+    // so running out of memory can't stop it: from the failure at the scan
+    // to the save giving up, no allocation is made
+    const fs::path dir = scratch("alloc-none") / "piece";
+    Project p = everything();
+    p.files["refs/old/gone"] = "dropped";
+    project::writeDirectory(p, dir);
+    const auto before = tree(dir);
+    Project q = edited(p);
+    q.files["refs/new/sub/file"] = "added";
+    AllocationReset reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path&) {
+        if (step == "scan") {
+            bwtest::allocations = 0;
+            throw 7;
+        }
+    };
+    CHECK_THROWS_AS(project::writeDirectory(q, dir), int);
+    const long made = bwtest::allocations;
+    bwtest::allocations = -1;
+    project::testing::directoryStep = nullptr;
+    CHECK(made == 0);
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+}
+
+TEST_CASE("a directory save that runs out of memory at any allocation leaves the directory as it was",
+          "[project][io][safety]") {
+    // A run for each allocation the save makes, in which that one fails:
+    // the save fails with std::bad_alloc and leaves the directory as it
+    // found it, or (the failure falling after it is done, or caught where
+    // the save gives nothing up) succeeds; and either way it leaves no
+    // descriptor open.
+    if (!fs::is_directory("/proc/self/fd"))
+        SKIP("no /proc/self/fd to count descriptors in");
+    // `root` is made anew for each run, holding `old` saved at `dir`, or
+    // where `there` says an empty directory at `dir`, which a failed save
+    // leaves
+    const auto sweep = [](const fs::path& root, const fs::path& dir, const std::optional<Project>& old,
+                          const Project& q, bool there = false) {
+        AllocationReset reset;
+        long failed = 0;
+        for (long n = 0;; ++n) {
+            fs::remove_all(root);
+            fs::create_directories(root);
+            if (old)
+                project::writeDirectory(*old, dir);
+            else if (there)
+                fs::create_directory(dir);
+            REQUIRE(fs::is_directory(dir) == (old || there));
+            const auto before = tree(root);
+            const long fds = openDescriptors();
+            std::string error;
+            bool threw = false;
+            long made = 0;
+            bwtest::failAllocation = n;
+            bwtest::allocations = 0;
+            try {
+                project::writeDirectory(q, dir);
+            } catch (const std::bad_alloc&) {
+                threw = true;
+            } catch (const std::exception& e) {
+                made = stopCounting();  // before the test's own allocations
+                threw = true;
+                error = e.what();
+            }
+            if (bwtest::allocations >= 0)
+                made = stopCounting();
+            INFO("allocation " << n << " of " << made << ": " << error);
+            CHECK(openDescriptors() == fds);
+            if (made <= n) {  // none failed
+                REQUIRE_FALSE(threw);
+                CHECK(project::read(dir) == q);
+                break;
+            }
+            if (threw) {
+                ++failed;
+                CHECK(error.empty());
+                CHECK(tree(root) == before);
+                CHECK(fs::is_directory(dir) == (old || there));
+            } else {
+                CHECK(project::read(dir) == q);
+            }
+        }
+        return failed;
+    };
+
+    SECTION("over a project") {
+        const fs::path root = scratch("alloc-every-over");
+        Project p = everything();
+        p.files["refs/old/gone"] = "dropped";
+        Project q = edited(p);
+        REQUIRE(q.layers.remove(3));
+        q.files.erase("refs/old/gone");
+        q.files["refs/new/sub/file"] = "added";
+        CHECK(sweep(root, root / "piece", p, q) > 100);
+    }
+    SECTION("a first save, its parents made") {
+        const fs::path root = scratch("alloc-every-first");
+        CHECK(sweep(root, root / "a" / "b" / "piece", std::nullopt, edited(everything())) > 100);
+    }
+    SECTION("a first save into a directory that is there") {
+        const fs::path root = scratch("alloc-every-empty");
+        CHECK(sweep(root, root / "piece", std::nullopt, edited(everything()), true) > 100);
+    }
+}
+
+TEST_CASE("a rollback that runs out of memory at any allocation still takes every step it can",
+          "[project][io][safety]") {
+    // The save fails at the scan and the rollback can't remove zz-added; in
+    // a run for each allocation from there on, that one fails. The save
+    // fails with a ProjectError; every path left otherwise than the save
+    // found it is named in it, or it says some couldn't be; and no
+    // descriptor is left open.
+    if (!fs::is_directory("/proc/self/fd"))
+        SKIP("no /proc/self/fd to count descriptors in");
+    const fs::path dir = scratch("alloc-every-rollback") / "piece";
+    Project p = everything();
+    p.files["refs/old/gone"] = "dropped";
+    Project q = edited(p);
+    q.files["zz-added"] = "new";
+    q.files["refs/new/sub/file"] = "added";
+    AllocationReset reset;
+    long runs = 0;
+    for (long n = 0;; ++n) {
+        fs::remove_all(dir);
+        project::writeDirectory(p, dir);
+        const auto before = tree(dir);
+        const long fds = openDescriptors();
+        project::testing::directoryStep = [n](std::string_view step, const fs::path&) {
+            if (step == "scan") {
+                bwtest::failAllocation = n;
+                bwtest::allocations = 0;
+                throw 7;
+            }
+        };
+        project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+            return bwtest::allocations >= 0 && call == "unlinkat" && at == dir / "zz-added" ? EIO : 0;
+        };
+        std::string error = "not a ProjectError";
+        long made = 0;
+        try {
+            project::writeDirectory(q, dir);
+        } catch (const ProjectError& e) {
+            made = stopCounting();  // before the test's own allocations
+            error = e.what();
+        } catch (...) {
+        }
+        if (bwtest::allocations >= 0)
+            made = stopCounting();
+        project::testing::directoryStep = nullptr;
+        project::testing::systemCall = nullptr;
+        ++runs;
+        INFO("allocation " << n << " of " << made << ": " << error);
+        CHECK(openDescriptors() == fds);
+        REQUIRE(error.find("couldn't be put back") != std::string::npos);
+        const bool unnamed = error.find("couldn't be named") != std::string::npos;
+        const auto after = tree(dir);
+        std::set<std::string> differ;
+        for (const auto& [name, bytes] : before)
+            if (!after.count(name) || after.at(name) != bytes)
+                differ.insert(name);
+        for (const auto& [name, bytes] : after)
+            if (!before.count(name))
+                differ.insert(name);
+        CHECK(differ.count("zz-added"));
+        for (const std::string& name : differ) {
+            INFO(name);
+            CHECK((unnamed || error.find((dir / fs::path(name)).string()) != std::string::npos));
+        }
+        if (made <= n) {  // none failed: only zz-added is left
+            CHECK(differ == std::set<std::string>{"zz-added"});
+            break;
+        }
+    }
+    CHECK(runs > 10);
+}
+
+TEST_CASE("a zip save or read that runs out of memory at any allocation frees what libzip gave it",
+          "[project][io][safety]") {
+#if !defined(__linux__)
+    SKIP("libzip's calls are counted on Linux only");
+#else
+    if (::geteuid() == 0)
+        SKIP("root writes into a read-only directory");
+    // A run for each allocation, in which that one fails: whatever the save
+    // or read throws, every archive and entry libzip handed it in the run is
+    // freed.
+    const auto sweep = [](const std::function<void()>& run) {
+        AllocationReset reset;
+        long runs = 0;
+        for (long n = 0;; ++n) {
+            const long zips = bwtest::zips.count(), files = bwtest::zipFiles.count();
+            bwtest::failAllocation = n;
+            bwtest::allocations = 0;
+            try {
+                run();
+            } catch (const std::exception&) {
+            }
+            const long made = bwtest::allocations;
+            bwtest::allocations = bwtest::failAllocation = -1;
+            ++runs;
+            INFO("allocation " << n << " of " << made);
+            CHECK(bwtest::zips.count() == zips);
+            CHECK(bwtest::zipFiles.count() == files);
+            if (made <= n)
+                break;
+        }
+        return runs;
+    };
+    const fs::path root = scratch("alloc-zip");
+    const Project p = everything();
+    SECTION("a save the directory refuses") {
+        fs::create_directories(root / "locked");
+        project::writeZip(p, root / "locked" / "piece.bwp");
+        fs::permissions(root / "locked", fs::perms::owner_read | fs::perms::owner_exec);
+        struct Unlock {
+            fs::path at;
+            ~Unlock() { fs::permissions(at, fs::perms::owner_all); }
+        } unlock{root / "locked"};
+        CHECK_THROWS_AS(project::writeZip(p, root / "locked" / "piece.bwp"), ProjectError);
+        CHECK(sweep([&] { project::writeZip(p, root / "locked" / "piece.bwp"); }) > 10);
+    }
+    SECTION("a save where libzip can't open the path") {
+        writeBytes(root / "file", "not a directory");
+        CHECK_THROWS_AS(project::writeZip(p, root / "file" / "piece.bwp"), ProjectError);
+        CHECK(sweep([&] { project::writeZip(p, root / "file" / "piece.bwp"); }) > 10);
+    }
+    SECTION("a read of a file that isn't a zip") {
+        writeBytes(root / "junk.bwp", "not a zip at all");
+        CHECK_THROWS_AS(project::read(root / "junk.bwp"), ProjectError);
+        CHECK(sweep([&] { (void)project::read(root / "junk.bwp"); }) > 2);
+    }
+    SECTION("a save and a read that succeed") {
+        CHECK(sweep([&] {
+                  project::writeZip(p, root / "piece.bwp");
+                  (void)project::read(root / "piece.bwp");
+              }) > 100);
+    }
+#endif
+}
+
+TEST_CASE("a hidden entry in a project directory is skipped whatever it is", "[project][io][safety]") {
+    const fs::path root = scratch("hidden-special");
+    const fs::path dir = root / "piece";
+    project::writeDirectory(everything(), dir);
+    // a FIFO, links, a link loop, and folders no one can read, one of them
+    // through a link: none is opened, followed or listed
+    REQUIRE(::mkfifo((dir / ".pipe").c_str(), 0600) == 0);
+    REQUIRE(::mkfifo((dir / "refs" / ".pipe").c_str(), 0600) == 0);
+    fs::create_symlink("notes.md", dir / ".link");
+    fs::create_symlink(".loop", dir / ".loop");
+    fs::create_directory(root / "locked");
+    fs::create_directory_symlink("../../locked", dir / "refs" / ".locked");
+    fs::create_directory(dir / ".locked");
+    REQUIRE(::chmod((root / "locked").c_str(), 0) == 0);
+    REQUIRE(::chmod((dir / ".locked").c_str(), 0) == 0);
+    CHECK(project::read(dir) == everything());
+    ::chmod((root / "locked").c_str(), 0755);
+    ::chmod((dir / ".locked").c_str(), 0755);
+
+    // one that isn't hidden is refused
+    for (const fs::path& at : {dir / "pipe", dir / "refs" / "pipe"}) {
         INFO(at);
         REQUIRE(::mkfifo(at.c_str(), 0600) == 0);
         CHECK_THROWS_AS(project::read(dir), ProjectError);

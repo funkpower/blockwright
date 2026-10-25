@@ -165,11 +165,13 @@ bool samePath(std::string_view a, std::string_view b);
 // damaged one is reported as such rather than read as something else).
 bool isProject(const std::filesystem::path& path);
 
-// Reads a project from a zip file or a directory. Hidden files and
-// directories in either are skipped; anything else that isn't a safe path
-// (safeEntryPath), an entry repeated or over the limits is refused, as is
-// any symbolic link or other entry that isn't a file or directory (in a
-// zip, by its UNIX mode), hidden or not, and everything decode refuses.
+// Reads a project from a zip file or a directory. Hidden entries in either
+// are skipped; in a directory, whatever they are (a link, a pipe, a
+// directory it can't open), and nothing under a hidden directory is looked
+// at. Anything else that isn't a safe path (safeEntryPath), an entry
+// repeated or over the limits is refused, as is any symbolic link or other
+// entry that isn't a file or directory (in a zip, by its UNIX mode, hidden
+// or not), and everything decode refuses.
 Project read(const std::filesystem::path& path);
 
 // Both writers encode the project first, so one decode would refuse is
@@ -189,13 +191,62 @@ void writeZip(const Project& project, const std::filesystem::path& path);
 // directories that leaves empty. Refuses an empty path before writing
 // anything, a directory that holds anything but hidden files and has no
 // manifest.json, so a save never empties a directory that isn't a project,
-// and a symbolic link where an entry or a directory on its way goes, so a
-// save never writes outside the directory. A path longer than the system
-// opens, the directory's own included, is refused before anything is
-// written. A failure part way leaves each file whole but the set mixed; on a
-// first save (no manifest.json yet), it removes what the save wrote and the
-// directories it made, its parents included (never one that was there before
-// it), so the disk is as it was.
+// and a symbolic link where an entry or a directory on its way goes. A path
+// longer than the system opens, the directory's own included, is refused
+// before anything is written. Every entry is written to a temporary first
+// and renamed into place only once all are written, the manifest last;
+// files the project no longer holds are then renamed aside under hidden
+// names and removed only once all are aside.
+//
+// What a save promises, on POSIX systems:
+// - It never writes, follows a link or deletes outside the project
+//   directory, but for removing, on a failure, the directories it made on
+//   the way to it. `path` is followed as given, links and all, once, up to the
+//   first directory the save makes; past that every directory is opened
+//   once, as the save first reaches it (never through a link), and
+//   everything after, the rollback's included, goes through what it opened.
+//   So it all happens in the directories the save found or made, wherever
+//   they are moved and whatever is linked in their place meanwhile.
+// - It never deletes a file it didn't make or that isn't a stale project
+//   entry (a file under the directory, not hidden, that the project doesn't
+//   hold). A hidden name it didn't make is never touched, so a set-aside
+//   file it couldn't remove once it was done stays, hidden, where a read
+//   doesn't look. A rename never replaces a file unless it is the one the
+//   project's entry replaces: renameat2's RENAME_NOREPLACE, else a hard
+//   link then an unlink, and on a disk with neither the rename, and so the
+//   save, is refused. A directory the save made is removed only while it is
+//   empty and still the one it made (its device and inode as made, looked
+//   at just before; one put in its place in between, or before the save
+//   could look at the one it made, can be removed only if it is empty).
+// - A save that fails for any reason, I/O errors and running out of
+//   descriptors or memory included, leaves the directory as it found it:
+//   each change (a directory made, a temporary, a file set aside, a second
+//   name a file is left under when the move aside can't remove its first)
+//   is recorded before it is made, or with nothing that can fail between,
+//   so none can be missed, and what was set aside goes back, each file
+//   replaced gets its old bytes again, and what the save added is removed,
+//   the directories it made too, its parents included. A file is replaced only once its old bytes are read; one that
+//   can't be read, or that isn't a file, refuses the save before anything is
+//   replaced. A descriptor is held from before the first file is replaced
+//   and let go of first by a rollback, which needs one at a time. Only a
+//   step of the rollback itself failing (writing a file's old bytes back, a
+//   set-aside file that can't go back without replacing something, a
+//   second name, a temporary or a directory the save made that can't be
+//   looked at or removed) leaves anything otherwise, and the error then names each such
+//   file or directory and where a file's bytes are: a ProjectError, whatever
+//   the save failed with (std::bad_alloc, say, is named in it). A failure
+//   the rollback leaves nothing after is thrown as it was.
+// - Running out of memory, at any allocation, changes none of this. Every
+//   descriptor and libzip archive or entry the save (or a read) opens is
+//   owned from the call that returns it, so none is left open. The rollback
+//   allocates nothing unless a step fails, takes every step whatever the
+//   others did, and only then names what it left, each as far as memory
+//   lets: one it can't name is counted in the error instead.
+// Out of scope: anyone else writing in the project directory while the save
+// runs, another save included (saves aren't locked against each other), and
+// systems other than POSIX, where all of this is done by path, looking
+// before each step, and what changes between the look and the step isn't
+// seen.
 void writeDirectory(const Project& project, const std::filesystem::path& path);
 
 namespace testing {
@@ -212,6 +263,23 @@ namespace testing {
 //   is about to look in the directory `at` for files the project no longer
 //   holds.
 inline std::function<void(std::string_view step, const std::filesystem::path& at)> directoryStep;
+// Called before some system calls a directory save makes, POSIX systems
+// only, with the call and the path it acts on. Tests only. A result other
+// than 0 is an errno the call fails with, and the call isn't made.
+// - "renameat2", Linux: renaming a file to `at` unless something is there.
+// - "noreplace": renameat2 can't refuse to replace there (or the system
+//   has none), and the save is about to move a file to `at` without
+//   replacing what is there.
+// - "linkat": that move giving the file the second name `at`; if this
+//   fails, the move is refused.
+// - "unlinkat": removing the file or empty directory `at`, the old name of
+//   that move and, where that fails, its second name included.
+// - "fstatat": looking at the directory `at` the save made, for its device
+//   and inode: just after making it, and before removing it on a failure.
+// - "mkdirat": making the directory `at`, which may already be there.
+// - "openat": creating the temporary file `at`, the save's or, on a
+//   failure, the one holding a replaced file's old bytes.
+inline std::function<int(std::string_view call, const std::filesystem::path& at)> systemCall;
 } // namespace testing
 
 } // namespace bw::project

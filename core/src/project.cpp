@@ -19,15 +19,20 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <exception>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <random>
 #include <set>
 #include <system_error>
+#include <utility>
 
 #if defined(__unix__) || defined(__APPLE__)
 #define BW_PROJECT_POSIX 1
 #include <cerrno>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -54,7 +59,7 @@ constexpr std::size_t kMaxBudget = 512;  // an IRC line, CR LF included
 constexpr std::uint8_t kReservedFlags = 0xE0;  // SAUCE TFlags bits 5-7
 constexpr std::size_t kMaxNameBytes = 255;     // a name on most disks (NAME_MAX)
 constexpr std::size_t kMaxPathBytes = 1024;    // a path in a project, leaving room for where it goes
-constexpr std::size_t kTmpNameBytes = 64;      // writeFileWhole's temporary name, at most
+constexpr std::size_t kTmpNameBytes = 64;      // writeTemporary's temporary name, at most
 
 [[noreturn]] void fail(const std::string& what) { throw ProjectError(what); }
 
@@ -517,30 +522,40 @@ std::pair<int, int> parseVersion(const std::string& v) {
 
 // ---- files ----
 
-// Reads the `size` bytes of the file a directory walk found at `p`. What is
-// there now may not be what the walk saw, so it is opened without following
-// a link or waiting on a FIFO, and read only if it is a plain file of that
-// size.
-std::string readWhole(const fs::path& p, std::size_t size) {
-    std::string out(size, '\0');
 #if BW_PROJECT_POSIX
-    const int fd = ::open(p.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0)
-        fail(errno == ELOOP ? p.string() + " is a symbolic link" : "can't read " + p.string() + ": " + std::strerror(errno));
+// A descriptor, closed when this goes unless it is let go. Every one the
+// save and the read open is taken into one as the call returns it, before
+// anything that can throw, so none is left open whatever fails.
+class Descriptor {
+public:
+    explicit Descriptor(int fd) noexcept : fd_(fd) {}
+    Descriptor(Descriptor&& o) noexcept : fd_(std::exchange(o.fd_, -1)) {}
+    Descriptor& operator=(Descriptor&&) = delete;
+    ~Descriptor() {
+        if (fd_ >= 0)
+            ::close(fd_);
+    }
+    int get() const noexcept { return fd_; }
+    int release() noexcept { return std::exchange(fd_, -1); }
+
+private:
+    int fd_;
+};
+
+// Reads the `size` bytes of `p`, opened as `fd` without following a link or
+// waiting on a FIFO, if it is a plain file of that size.
+std::string readOpened(Descriptor fd, const fs::path& p, std::size_t size) {
     struct stat st {};
-    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        ::close(fd);
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode))
         fail(p.string() + " is not a file");
-    }
-    if (std::uint64_t(st.st_size) != size) {
-        ::close(fd);
+    if (std::uint64_t(st.st_size) != size)
         fail(p.string() + " changed while it was read");
-    }
+    std::string out(size, '\0');
     if (testing::directoryStep)
         testing::directoryStep("reading", p);
     std::size_t got = 0;
     while (got < size) {
-        const ssize_t n = ::read(fd, out.data() + got, size - got);
+        const ssize_t n = ::read(fd.get(), out.data() + got, size - got);
         if (n < 0 && errno == EINTR)
             continue;
         if (n <= 0)
@@ -550,20 +565,34 @@ std::string readWhole(const fs::path& p, std::size_t size) {
     char extra;
     ssize_t more;
     do
-        more = ::read(fd, &extra, 1);
+        more = ::read(fd.get(), &extra, 1);
     while (more < 0 && errno == EINTR);
-    ::close(fd);
     if (got != size || more != 0)
         fail(p.string() + " changed while it was read");
+    return out;
+}
+#endif
+
+// Reads the `size` bytes of the file a directory walk found at `p`. What is
+// there now may not be what the walk saw, so it is opened without following
+// a link or waiting on a FIFO, and read only if it is a plain file of that
+// size.
+std::string readWhole(const fs::path& p, std::size_t size) {
+#if BW_PROJECT_POSIX
+    Descriptor fd(::open(p.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+    if (fd.get() < 0)
+        fail(errno == ELOOP ? p.string() + " is a symbolic link" : "can't read " + p.string() + ": " + std::strerror(errno));
+    return readOpened(std::move(fd), p, size);
 #else
+    std::string out(size, '\0');
     std::ifstream in(p, std::ios::binary);
     if (!in)
         fail("can't read " + p.string());
     in.read(out.data(), std::streamsize(size));
     if (std::size_t(in.gcount()) != size || in.peek() != std::char_traits<char>::eof())
         fail(p.string() + " changed while it was read");
-#endif
     return out;
+#endif
 }
 
 void checkSize(const std::string& name, std::uint64_t size, std::uint64_t& total) {
@@ -617,16 +646,23 @@ void checkEntryType(zip_t* z, zip_uint64_t i, const std::string& name) {
          (type == 0120000 ? "a symbolic link" : directory ? "not a directory" : "not a file"));
 }
 
+// What libzip's error `code` says; the record it is read from (which can
+// hold text libzip allocated) freed whatever copying it out throws.
+std::string zipErrorText(int code) {
+    zip_error_t e;
+    zip_error_init_with_code(&e, code);
+    const struct Fini {
+        zip_error_t* e;
+        ~Fini() { zip_error_fini(e); }
+    } fini{&e};
+    return zip_error_strerror(&e);
+}
+
 Entries readZip(const fs::path& path) {
     int err = 0;
     zip_t* z = zip_open(path.c_str(), ZIP_RDONLY | ZIP_CHECKCONS, &err);
-    if (!z) {
-        zip_error_t e;
-        zip_error_init_with_code(&e, err);
-        const std::string msg = zip_error_strerror(&e);
-        zip_error_fini(&e);
-        fail(path.string() + " is not a project zip: " + msg);
-    }
+    if (!z)
+        fail(path.string() + " is not a project zip: " + zipErrorText(err));
     struct Closer {
         zip_t* z;
         ~Closer() { zip_discard(z); }
@@ -653,14 +689,17 @@ Entries readZip(const fs::path& path) {
         if ((st.valid & ZIP_STAT_ENCRYPTION_METHOD) && st.encryption_method != ZIP_EM_NONE)
             fail(path.string() + ": " + name + " is encrypted");
         checkSize(name, st.size, total);
+        std::string bytes(std::size_t(st.size), '\0');
         zip_file_t* f = zip_fopen_index(z, zip_uint64_t(i), 0);
         if (!f)
             fail(path.string() + ": can't open " + name + ": " + zip_strerror(z));
-        std::string bytes(std::size_t(st.size), '\0');
+        const struct FileCloser {
+            zip_file_t* f;
+            ~FileCloser() { zip_fclose(f); }
+        } fileCloser{f};
         const zip_int64_t got = st.size ? zip_fread(f, bytes.data(), st.size) : 0;
         char extra;
         const zip_int64_t more = zip_fread(f, &extra, 1);
-        zip_fclose(f);
         if (got != zip_int64_t(st.size) || more != 0)
             fail(path.string() + ": " + name + " is damaged");
         out.emplace(std::move(name), std::move(bytes));
@@ -680,18 +719,18 @@ Entries readDirectory(const fs::path& root) {
             fail("can't read " + root.string() + ": " + ec.message());
         const fs::directory_entry& e = *it;
         const std::string name = e.path().lexically_relative(root).generic_string();
-        if (e.is_symlink(ec))
-            fail(root.string() + ": " + name + " is a symbolic link");
-        const bool directory = e.is_directory(ec);
-        if (!directory && !e.is_regular_file(ec))  // hidden or not
-            fail(root.string() + ": " + name + " is not a file");
+        // never part of the project, whatever it is: not opened, followed or
+        // looked into
         if (hiddenPath(name)) {
-            if (directory)
-                it.disable_recursion_pending();
+            it.disable_recursion_pending();
             continue;
         }
-        if (directory)
+        if (e.is_symlink(ec))
+            fail(root.string() + ": " + name + " is a symbolic link");
+        if (e.is_directory(ec))
             continue;
+        if (!e.is_regular_file(ec))
+            fail(root.string() + ": " + name + " is not a file");
         takeEntry(out, name);
         const std::uint64_t size = e.file_size(ec);
         if (ec)
@@ -712,55 +751,352 @@ long processId() {
 #endif
 }
 
-// Refuses a symbolic link at `path`; whether something is there.
-bool notLink(const fs::path& path) {
-    std::error_code ec;
-    const fs::file_status st = fs::symlink_status(path, ec);
-    if (fs::is_symlink(st))
-        fail(path.string() + " is a symbolic link");
-    return fs::exists(st);
-}
-
 // A file's identity, the same under every name it has: device and inode,
 // or {0, 0} where the system has none.
 using FileId = std::pair<std::uint64_t, std::uint64_t>;
 
-// Writes `bytes` as `path` whole: a new hidden file beside it, created
-// exclusively under a name no one can have put there first (and never
-// through a link), then renamed over `path`, which must not be a link. The
-// temporary name doesn't hold `path`'s, so a name as long as the disk takes
-// is written as any other. Returns the identity of the file written, taken
-// from the descriptor it was written through before the rename, so it is
-// that file's whatever is put at `path` afterwards.
-FileId writeFileWhole(const fs::path& path, const std::string& bytes) {
+// A directory a save works in. On POSIX systems it is held open, and every
+// name in it is reached through that descriptor, so what the save does
+// there, and what a failed save puts back, stays in this directory even if
+// it is moved or a link is put where it was. Elsewhere it is reached by its
+// path each time.
+struct Folder {
+    fs::path path;  // as the save spells it
+#if BW_PROJECT_POSIX
+    int fd = -1;
+    Folder(fs::path p, Descriptor d) : path(std::move(p)), fd(d.release()) {}
+    Folder(Folder&& o) noexcept : path(std::move(o.path)), fd(std::exchange(o.fd, -1)) {}
+    Folder& operator=(Folder&&) = delete;
+    ~Folder() {
+        if (fd >= 0)
+            ::close(fd);
+    }
+#else
+    explicit Folder(fs::path p) : path(std::move(p)) {}
+#endif
+    fs::path operator/(const std::string& name) const { return path / fs::path(name); }
+};
+
+// The directory `path` itself, a link to one followed.
+Folder openRoot(const fs::path& path) {
+#if BW_PROJECT_POSIX
+    Descriptor fd(::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (fd.get() < 0)
+        fail("can't read " + path.string() + ": " + std::strerror(errno));
+    return Folder(path, std::move(fd));
+#else
+    return Folder(path);
+#endif
+}
+
+#if BW_PROJECT_POSIX
+// The errno a test has the system call `call` on `name` in `in` fail with,
+// or 0.
+int injected(std::string_view call, const Folder& in, const std::string& name) {
+    return testing::systemCall ? testing::systemCall(call, in / name) : 0;
+}
+#endif
+
+enum class Kind { None, File, Directory, Link, Other };
+
+// What is at `name` in `in`, a link not followed.
+Kind kindAt(const Folder& in, const std::string& name) {
+#if BW_PROJECT_POSIX
+    struct stat st {};
+    if (::fstatat(in.fd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno == ENOENT)
+            return Kind::None;
+        fail("can't read " + (in / name).string() + ": " + std::strerror(errno));
+    }
+    return S_ISLNK(st.st_mode)   ? Kind::Link
+           : S_ISDIR(st.st_mode) ? Kind::Directory
+           : S_ISREG(st.st_mode) ? Kind::File
+                                 : Kind::Other;
+#else
+    std::error_code ec;
+    const fs::file_status st = fs::symlink_status(in / name, ec);
+    return !fs::exists(st)           ? Kind::None
+           : fs::is_symlink(st)      ? Kind::Link
+           : fs::is_directory(st)    ? Kind::Directory
+           : fs::is_regular_file(st) ? Kind::File
+                                     : Kind::Other;
+#endif
+}
+
+// Makes the directory `name` in `in` if nothing is there; whether it did.
+bool makeFolder(const Folder& in, const std::string& name) {
+#if BW_PROJECT_POSIX
+    int err = injected("mkdirat", in, name);
+    if (!err && ::mkdirat(in.fd, name.c_str(), 0777) != 0)
+        err = errno;
+    if (err) {
+        if (err != EEXIST)
+            fail("can't create " + (in / name).string() + ": " + std::strerror(err));
+        return false;
+    }
+    return true;
+#else
+    if (kindAt(in, name) != Kind::None)
+        return false;
+    std::error_code ec;
+    const bool made = fs::create_directory(in / name, ec);
+    if (ec)
+        fail("can't create " + (in / name).string() + ": " + ec.message());
+    return made;
+#endif
+}
+
+// Sets `id` to the device and inode of the directory `name` in `in`, a
+// link not followed ({0, 0} for anything but a directory, and on other
+// systems than POSIX), so a directory the save made can be told from one
+// put in its place later. Gives the errno looking failed with, or 0.
+int folderId(const Folder& in, const std::string& name, FileId& id) {
+    id = {};
+#if BW_PROJECT_POSIX
+    if (const int err = injected("fstatat", in, name))
+        return err;
+    struct stat st {};
+    if (::fstatat(in.fd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0)
+        return errno;
+    if (S_ISDIR(st.st_mode))
+        id = {std::uint64_t(st.st_dev), std::uint64_t(st.st_ino)};
+#else
+    (void)in;
+    (void)name;
+#endif
+    return 0;
+}
+
+// The directory `name` in `in`; a link there, or anything but a directory,
+// is refused.
+Folder openFolder(const Folder& in, const std::string& name) {
+#if BW_PROJECT_POSIX
+    Descriptor fd(::openat(in.fd, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (fd.get() >= 0)
+        return Folder(in / name, std::move(fd));
+    const int err = errno;
+    const Kind kind = kindAt(in, name);
+    if (kind == Kind::Link)
+        fail((in / name).string() + " is a symbolic link");
+    if (kind != Kind::Directory)
+        fail((in / name).string() + " is not a directory");
+    fail("can't read " + (in / name).string() + ": " + std::strerror(err));
+#else
+    const Kind kind = kindAt(in, name);
+    if (kind == Kind::Link)
+        fail((in / name).string() + " is a symbolic link");
+    if (kind != Kind::Directory)
+        fail((in / name).string() + " is not a directory");
+    return Folder(in / name);
+#endif
+}
+
+// The directory `name` in `in`, a link to one followed: one on the way to a
+// project, which is its owner's to link.
+Folder enterFolder(const Folder& in, const std::string& name) {
+#if BW_PROJECT_POSIX
+    Descriptor fd(::openat(in.fd, name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (fd.get() < 0)
+        fail("can't read " + (in / name).string() + ": " + std::strerror(errno));
+    return Folder(in / name, std::move(fd));
+#else
+    if (kindAt(in, name) == Kind::None || !fs::is_directory(in / name))
+        fail((in / name).string() + " is not a directory");
+    return Folder(in / name);
+#endif
+}
+
+// The names in `in`, but `.` and `..`, listed through its descriptor
+// (POSIX).
+std::vector<std::string> namesIn(const Folder& in) {
+    std::vector<std::string> out;
+#if BW_PROJECT_POSIX
+    Descriptor fd(::dup(in.fd));  // closedir closes it, and `in` keeps its own
+    DIR* d = fd.get() < 0 ? nullptr : ::fdopendir(fd.get());
+    if (!d) {
+        const int err = errno;
+        fail("can't read " + in.path.string() + ": " + std::strerror(err));
+    }
+    fd.release();
+    const struct Closer {
+        DIR* d;
+        ~Closer() { ::closedir(d); }
+    } closer{d};
+    ::rewinddir(d);  // the offset is the one `in`'s descriptor has
+    int err = 0;
+    for (;;) {
+        errno = 0;
+        const dirent* e = ::readdir(d);
+        if (!e) {
+            err = errno;
+            break;
+        }
+        const std::string_view name = e->d_name;
+        if (name != "." && name != "..")
+            out.emplace_back(name);
+    }
+    if (err)
+        fail("can't read " + in.path.string() + ": " + std::strerror(err));
+#else
+    std::error_code ec;
+    for (fs::directory_iterator it(in.path, ec), end; !ec && it != end; it.increment(ec))
+        out.push_back(it->path().filename().string());
+    if (ec)
+        fail("can't read " + in.path.string() + ": " + ec.message());
+#endif
+    return out;
+}
+
+// The bytes of the plain file `name` in `in`, a link not followed and a
+// FIFO not waited on.
+std::string readIn(const Folder& in, const std::string& name) {
+#if BW_PROJECT_POSIX
+    Descriptor fd(::openat(in.fd, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+    if (fd.get() < 0)
+        fail("can't read " + (in / name).string() + ": " + std::strerror(errno));
+    struct stat st {};
+    if (::fstat(fd.get(), &st) != 0)
+        fail("can't read " + (in / name).string() + ": " + std::strerror(errno));
+    return readOpened(std::move(fd), in / name, std::size_t(st.st_size));
+#else
+    std::error_code ec;
+    const std::uintmax_t size = fs::file_size(in / name, ec);
+    if (ec)
+        fail("can't read " + (in / name).string() + ": " + ec.message());
+    return readWhole(in / name, std::size_t(size));
+#endif
+}
+
+// A hidden name no one is likely to have taken, `kind` saying what it holds
+// ("tmp" or "old"). It never holds the name of the file it stands beside, so
+// a name as long as the disk takes has one too.
+std::string hiddenName(const char* kind) {
     static unsigned counter = 0;
     static const unsigned long salt = std::random_device{}();
-    notLink(path);
-    fs::path tmp;
-    bool created = false;
-    FileId id{};
+    char name[kTmpNameBytes];
+    std::snprintf(name, sizeof name, ".bw-%s-%lx-%lx-%x", kind, salt, processId(), counter++);
+    return name;
+}
+
+// Renames `from` to `to` in `in`.
+std::error_code renameIn(const Folder& in, const std::string& from, const std::string& to) {
+#if BW_PROJECT_POSIX
+    if (::renameat(in.fd, from.c_str(), in.fd, to.c_str()) != 0)
+        return {errno, std::generic_category()};
+    return {};
+#else
+    std::error_code ec;
+    fs::rename(in / from, in / to, ec);
+    return ec;
+#endif
+}
+
+// Removes `name` from `in`: a file, or an empty directory if `folder`.
+std::error_code removeIn(const Folder& in, const std::string& name, bool folder) {
+#if BW_PROJECT_POSIX
+    if (const int err = injected("unlinkat", in, name))
+        return {err, std::generic_category()};
+    if (::unlinkat(in.fd, name.c_str(), folder ? AT_REMOVEDIR : 0) != 0)
+        return {errno, std::generic_category()};
+    return {};
+#else
+    if (folder && kindAt(in, name) != Kind::Directory)
+        return std::make_error_code(std::errc::not_a_directory);
+    std::error_code ec;
+    fs::remove(in / name, ec);
+    return ec;
+#endif
+}
+
+// How a rename that mustn't replace anything went: `error` if the file
+// isn't at its new name alone, and `twice` if it is left under both names.
+struct Renamed {
+    std::error_code error;
+    bool twice = false;
+};
+
+// Renames `from` to `to` in `in` unless something is at `to`
+// (`file_exists` if so), never replacing what is there however it got
+// there. On POSIX systems that takes renameat2's RENAME_NOREPLACE or a hard
+// link; a disk with neither refuses the rename. Elsewhere `to` is looked at
+// first. Not for a directory.
+Renamed renameFresh(const Folder& in, const std::string& from, const std::string& to) {
+#if BW_PROJECT_POSIX && defined(RENAME_NOREPLACE)
+    {
+        int err = injected("renameat2", in, to);
+        if (!err && ::renameat2(in.fd, from.c_str(), in.fd, to.c_str(), RENAME_NOREPLACE) != 0)
+            err = errno;
+        if (!err)
+            return {};
+        if (err != EINVAL && err != ENOSYS)
+            return {{err, std::generic_category()}};
+    }
+#endif
+#if BW_PROJECT_POSIX
+    // where renameat2 can't refuse (or there is none): a second name for the
+    // file, which link refuses where something is (and never follows a link
+    // there), then the first name removed, or the second if that can't be
+    if (const int e = injected("noreplace", in, to))
+        return {{e, std::generic_category()}};
+    int err = injected("linkat", in, to);
+    if (!err && ::linkat(in.fd, from.c_str(), in.fd, to.c_str(), 0) != 0)
+        err = errno;
+    if (err)
+        return {{err, std::generic_category()}};
+    if (const std::error_code e = removeIn(in, from, false))
+        return {e, bool(removeIn(in, to, false))};
+    return {};
+#else
+    if (kindAt(in, to) != Kind::None)
+        return {std::make_error_code(std::errc::file_exists)};
+    return {renameIn(in, from, to)};
+#endif
+}
+
+struct Temporary {
+    std::string name;      // in the folder it was written in
+    FileId id;             // taken from the descriptor it was written through
+    bool created = false;  // whether the file at `name` is this one
+};
+
+// Writes `bytes` to a new hidden file in `in`, for renaming over `name`
+// there, created exclusively under a name no one can have put there first
+// (and never through a link). Fills in `tmp` (the caller's record of it,
+// which nothing after the file is made can fail to fill): its name before
+// the file is made, and once it is that it was, and its identity, which is
+// that file's whatever is put at `name` afterwards. A name already in `tmp`
+// is tried first, so one chosen beforehand lets a write that finds it free
+// allocate nothing. On a failure nothing is left, or `tmp` still says it
+// was made.
+void writeTemporary(const Folder& in, const std::string& name, const std::string& bytes, Temporary& tmp) {
+    tmp.id = {};
+    tmp.created = false;
     const auto give_up = [&](const std::string& why) {
-        if (created) {
-            std::error_code ignored;
-            fs::remove(tmp, ignored);
+        std::string left;
+        if (tmp.created) {
+            if (const std::error_code e = removeIn(in, tmp.name, false))
+                left = "; and its temporary " + (in / tmp.name).string() + " couldn't be removed: " + e.message();
+            else
+                tmp.created = false;
         }
-        fail("can't write " + path.string() + ": " + why);
+        fail("can't write " + (in / name).string() + ": " + why + left);
     };
     for (int attempt = 0;; ++attempt) {
-        char name[kTmpNameBytes];
-        std::snprintf(name, sizeof name, ".bw-tmp-%lx-%lx-%x", salt, processId(), counter++);
-        tmp = path.parent_path() / name;
+        if (attempt > 0 || tmp.name.empty())
+            tmp.name = hiddenName("tmp");
 #if BW_PROJECT_POSIX
-        const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
+        int fd = -1;
+        int err = injected("openat", in, tmp.name);
+        if (!err && (fd = ::openat(in.fd, tmp.name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666)) < 0)
+            err = errno;
         if (fd < 0) {
-            if (errno == EEXIST && attempt < 100)
+            if (err == EEXIST && attempt < 100)
                 continue;
-            give_up(std::strerror(errno));
+            give_up(std::strerror(err));
         }
-        created = true;
+        tmp.created = true;
         const char* data = bytes.data();
         std::size_t left = bytes.size();
-        int err = 0;
         while (left && !err) {
             const ssize_t n = ::write(fd, data, left);
             if (n < 0 && errno == EINTR)
@@ -775,20 +1111,20 @@ FileId writeFileWhole(const fs::path& path, const std::string& bytes) {
         struct stat st {};
         if (!err && ::fstat(fd, &st) != 0)
             err = errno;
-        id = {std::uint64_t(st.st_dev), std::uint64_t(st.st_ino)};
+        tmp.id = {std::uint64_t(st.st_dev), std::uint64_t(st.st_ino)};
         if (::close(fd) != 0 && !err)
             err = errno;
         if (err)
             give_up(std::strerror(err));
 #else
-        std::error_code ec;
-        if (fs::exists(fs::symlink_status(tmp, ec))) {
+        if (kindAt(in, tmp.name) != Kind::None) {
             if (attempt < 100)
                 continue;
             give_up("no free temporary name");
         }
-        created = true;
-        std::ofstream out(tmp, std::ios::binary);
+        const fs::path at = in / tmp.name;
+        tmp.created = true;
+        std::ofstream out(at, std::ios::binary);
         out.write(bytes.data(), std::streamsize(bytes.size()));
         out.close();
         if (!out)
@@ -796,13 +1132,6 @@ FileId writeFileWhole(const fs::path& path, const std::string& bytes) {
 #endif
         break;
     }
-    std::error_code ec;
-    fs::rename(tmp, path, ec);
-    if (ec)
-        give_up(ec.message());
-    if (testing::directoryStep)
-        testing::directoryStep("wrote", path);
-    return id;
 }
 
 } // namespace
@@ -1142,17 +1471,18 @@ void writeZip(const Project& project, const fs::path& path) {
         fail(path.string() + " is a directory");
     int err = 0;
     zip_t* z = zip_open(path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
-    if (!z) {
-        zip_error_t e;
-        zip_error_init_with_code(&e, err);
-        const std::string msg = zip_error_strerror(&e);
-        zip_error_fini(&e);
-        fail("can't write " + path.string() + ": " + msg);
-    }
+    if (!z)
+        fail("can't write " + path.string() + ": " + zipErrorText(err));
+    // discarded however the save leaves, unless it is closed
+    struct Discard {
+        zip_t* z;
+        ~Discard() {
+            if (z)
+                zip_discard(z);
+        }
+    } discard{z};
     const auto abandon = [&](const std::string& what) {
-        const std::string msg = what + ": " + zip_strerror(z);
-        zip_discard(z);
-        fail("can't write " + path.string() + ": " + msg);
+        fail("can't write " + path.string() + ": " + what + ": " + zip_strerror(z));
     };
     for (const auto& [name, bytes] : entries) {
         zip_source_t* src = zip_source_buffer(z, bytes.data(), bytes.size(), 0);
@@ -1170,6 +1500,7 @@ void writeZip(const Project& project, const fs::path& path) {
     }
     if (zip_close(z) != 0)
         abandon("closing");
+    discard.z = nullptr;
 }
 
 void writeDirectory(const Project& project, const fs::path& path) {
@@ -1178,6 +1509,12 @@ void writeDirectory(const Project& project, const fs::path& path) {
     // working one, past the check that it holds a project
     if (path.empty())
         fail("can't write a project to an empty path");
+    // the failure a rollback that left something, and ran out of memory
+    // saying what, ends in: made before anything is changed, and thrown as a
+    // copy, which allocates nothing
+    const ProjectError unnameable("can't write " + path.string() +
+                                  ": the save failed, and some of what it changed couldn't be put back as it was "
+                                  "and couldn't be named (it ran out of memory)");
 #ifdef PATH_MAX
     // each file, and the temporary one beside it, as long a path as the
     // system opens
@@ -1187,149 +1524,457 @@ void writeDirectory(const Project& project, const fs::path& path) {
 #endif
     std::error_code ec;
     const bool existed = fs::exists(path, ec) || fs::is_symlink(path, ec);
-    bool first = true;  // no project there yet
+    // the directory there, opened once and looked at through that, so the
+    // one found to hold a project is the one the save works in
+    std::optional<Folder> found;
     if (existed) {
         if (!fs::is_directory(path, ec))
             fail(path.string() + " is not a directory");
-        first = !fs::is_regular_file(path / "manifest.json", ec);
-        if (first)
-            for (const fs::directory_entry& e : fs::directory_iterator(path, ec))
-                if (!hiddenPart(e.path().filename().string()))
+        found.emplace(openRoot(path));
+        if (kindAt(*found, "manifest.json") != Kind::File)
+            for (const std::string& name : namesIn(*found))
+                if (!hiddenPart(name))
                     fail(path.string() + " is not empty and holds no project");
-        if (ec)
-            fail("can't read " + path.string() + ": " + ec.message());
     }
-    // each directory on the way made or found, never a link; what a first
-    // save makes is kept so a failure can take it away again (in the order
-    // made, so a directory comes after its parent), and what any save writes
-    // so the stale scan never takes it for another file
-    std::vector<fs::path> madeFiles, madeDirs;
+    // Every entry is written to a temporary beside it first, each directory
+    // on the way made or found, never a link, and only once all of them are
+    // written are they renamed into place, the manifest last. Then each file
+    // the project no longer holds is renamed aside to a hidden name, and
+    // only once all of them are aside is the save done and are they removed.
+    // A failure at any point before that puts the directory back as it found
+    // it: the files set aside renamed back, each file a rename replaced given
+    // its old bytes again, each one it added removed, the temporaries
+    // removed, then every directory the save made, the project's own and its
+    // parents included (last made first, so each is empty once what the save
+    // put in it is gone; one that isn't, someone else's file in it, stays,
+    // and one that was there before, or was put where the save's was, is
+    // never the save's). So a failed save
+    // over a project leaves the project that was there, and a failed first
+    // save isn't refused next time as "not a project". Each directory in the
+    // project is held open as the save first reaches it (POSIX), so all of
+    // this happens in the directories the save found or made, wherever they
+    // are moved and whatever link is put in their place meanwhile.
+    std::map<std::string, Folder> folders;  // by path in the project; "" is the project's
+    // how a rollback's step on a record failed, kept in the record, so
+    // taking the step allocates nothing and every step is taken before any
+    // failure is named
+    struct Undo {
+        std::error_code error;
+        std::exception_ptr failure;  // what it threw, if it threw
+        bool twice = false;          // a file left under both names
+        explicit operator bool() const { return error || failure; }
+    };
+    struct Made {
+        const Folder* in;
+        std::string name;
+        // as made, so one put in its place later is never taken for it;
+        // nothing if looking at it failed, when it is removed only if empty
+        std::optional<FileId> id;
+        bool made = false;  // whether the save made it (else it is never removed)
+        Undo undo = {};
+    };
+    // makes the directory `name` in `in` if nothing is there, recorded in
+    // `into` before it is made, so it is the save's from the moment it is,
+    // with nothing that can fail between, then known by its identity;
+    // whether it made it
+    const auto make = [](std::vector<Made>& into, const Folder& in, const std::string& name) {
+        into.push_back({&in, name, std::nullopt});
+        Made& d = into.back();
+        if (!makeFolder(in, name)) {
+            into.pop_back();
+            return false;
+        }
+        d.made = true;
+        FileId id;
+        if (const int err = folderId(in, name, id))
+            fail("can't read " + (in / name).string() + ": " + std::strerror(err));
+        d.id = id;
+        return true;
+    };
+    std::deque<Folder> above;  // the directories on the way to the project's, as the save opened them
+    std::vector<Made> madeDirs;  // the project's own and its parents, each in the one above it
+    std::vector<Made> madeIn;    // inside the project
+    // the folder `rel` in the project, opened through the ones on its way
+    // (made where `create` says, and nothing is there)
+    const auto folder = [&](const std::string& rel, bool create) -> const Folder& {
+        const Folder* in = &folders.at("");
+        std::string at;
+        for (const std::string_view part : parts(rel)) {
+            at += (at.empty() ? "" : "/") + std::string(part);
+            auto it = folders.find(at);
+            if (it == folders.end()) {
+                const std::string name(part);
+                if (create)
+                    make(madeIn, *in, name);
+                it = folders.emplace(at, openFolder(*in, name)).first;
+            }
+            in = &it->second;
+        }
+        return *in;
+    };
+    // `name` in the project as the folder holding it and its name there
+    const auto split = [](const std::string& name) {
+        const std::size_t slash = name.rfind('/');
+        return slash == std::string::npos ? std::pair<std::string, std::string>{"", name}
+                                          : std::pair{name.substr(0, slash), name.substr(slash + 1)};
+    };
+
+    struct Staged {
+        const Folder* in = nullptr;
+        std::string name;                // in `in`
+        Temporary tmp;                   // in `in`
+        std::optional<std::string> old;  // the bytes of the file at `name`, if one was there
+        Temporary back;                  // the old bytes, written by a rollback; named beforehand
+        bool renamed = false;
+        Undo undo;
+    };
+    std::vector<Staged> staged;
+    struct Aside {
+        const Folder* in;
+        std::string name, aside;  // in `in`
+        // left under both names by a move aside that couldn't remove the
+        // first: only `aside` is the save's
+        bool both = false;
+        Undo undo = {};
+    };
+    std::vector<Aside> asides;
+    // what the save writes, so the stale scan never takes it for another file
 #if BW_PROJECT_POSIX
     std::set<FileId> written;
 #endif
-    const auto write = [&](const std::string& name, const std::string& bytes) {
-        fs::path at = path;
-        const std::vector<std::string_view> names = parts(name);
-        for (std::size_t i = 0; i + 1 < names.size(); ++i) {
-            at /= fs::path(std::string(names[i]));
-            std::error_code e;
-            if (!notLink(at)) {
-                if (fs::create_directory(at, e))
-                    madeDirs.push_back(at);
-                else if (e)
-                    fail("can't create " + at.string() + ": " + e.message());
-            }
-            if (!fs::is_directory(fs::symlink_status(at, e)))
-                fail(at.string() + " is not a directory");
+    const auto stage = [&](const std::string& name, const std::string& bytes) {
+        const auto [dir, file] = split(name);
+        Staged s;
+        s.in = &folder(dir, true);
+        s.name = file;
+        // a file is replaced only once its bytes are read, so a failure can
+        // give them back; one that can't be read refuses the save. A
+        // directory there makes the rename fail, so it is never replaced.
+        const Kind kind = kindAt(*s.in, file);
+        if (kind == Kind::Link)
+            fail((*s.in / file).string() + " is a symbolic link");
+        if (kind == Kind::Other)
+            fail((*s.in / file).string() + " is not a file");
+        if (kind == Kind::File) {
+            s.old = readIn(*s.in, file);
+            s.back.name = hiddenName("tmp");
         }
-        [[maybe_unused]] const FileId id = writeFileWhole(path / fs::path(name), bytes);
-        madeFiles.push_back(path / fs::path(name));
+        // recorded before its temporary is made, which then can't go
+        // unrecorded
+        staged.push_back(std::move(s));
+        Staged& t = staged.back();
+        writeTemporary(*t.in, file, bytes, t.tmp);
 #if BW_PROJECT_POSIX
-        written.insert(id);
+        written.insert(t.tmp.id);
 #endif
     };
+#if BW_PROJECT_POSIX
+    // a descriptor held from before the first file is replaced, which a
+    // rollback lets go of first: putting a file back takes one, one at a
+    // time, so a save that runs out of them (the scan holds open every
+    // directory it looks in) can still put back what it replaced
+    std::optional<Folder> spare;
+#endif
+    // the directory `d` the save made, removed if it is still that one
+    // (POSIX: by identity) and empty; why it couldn't be, if it is there
+    const auto unmake = [](const Made& d) -> std::error_code {
+        if (!d.made)
+            return {};
+        if (d.id) {
+            FileId id;
+            if (const int err = folderId(*d.in, d.name, id))
+                return err == ENOENT ? std::error_code{} : std::error_code{err, std::generic_category()};
+            if (id != *d.id)  // not the one it made
+                return {};
+        }
+        const std::error_code e = removeIn(*d.in, d.name, true);
+        return e == std::errc::no_such_file_or_directory ? std::error_code{} : e;
+    };
+    // what couldn't be put back: named, and how many more couldn't be
+    struct Unrestored {
+        std::string named;
+        std::size_t unnamed = 0;
+        bool any() const { return !named.empty() || unnamed; }
+    };
+    // Every step is taken, whatever the others did, and how one failed is
+    // kept in its record; a rollback with nothing failing allocates
+    // nothing. Only then is each failure named, a second time if the first
+    // runs out of memory, and one that still can't be is counted instead.
+    const auto rollBack = [&]() noexcept {
+#if BW_PROJECT_POSIX
+        spare.reset();
+#endif
+        const auto take = [](Undo& undo, const auto& step) {
+            try {
+                step();
+            } catch (...) {
+                undo.failure = std::current_exception();
+            }
+        };
+        const auto gone = [](std::error_code e) {
+            return e == std::errc::no_such_file_or_directory ? std::error_code{} : e;
+        };
+        for (auto a = asides.rbegin(); a != asides.rend(); ++a)
+            take(a->undo, [&] {
+                if (a->both) {
+                    a->undo.error = gone(removeIn(*a->in, a->aside, false));
+                    return;
+                }
+                const Renamed r = renameFresh(*a->in, a->aside, a->name);
+                a->undo.error = r.error;
+                a->undo.twice = r.twice;
+            });
+        for (auto s = staged.rbegin(); s != staged.rend(); ++s)
+            take(s->undo, [&] {
+                if (!s->renamed) {
+                    if (s->tmp.created)
+                        s->undo.error = gone(removeIn(*s->in, s->tmp.name, false));
+                } else if (s->old) {
+                    writeTemporary(*s->in, s->name, *s->old, s->back);
+                    s->undo.error = renameIn(*s->in, s->back.name, s->name);
+                } else {
+                    s->undo.error = gone(removeIn(*s->in, s->name, false));
+                }
+            });
+        for (std::vector<Made>* list : {&madeIn, &madeDirs})
+            for (auto d = list->rbegin(); d != list->rend(); ++d)
+                take(d->undo, [&] { d->undo.error = unmake(*d); });
+
+        Unrestored out;
+        const auto why = [](const Undo& undo) -> std::string {
+            if (undo.error)
+                return undo.error.message();
+            try {
+                std::rethrow_exception(undo.failure);
+            } catch (const std::exception& e) {
+                return e.what();
+            } catch (...) {
+                return "an unknown error";
+            }
+        };
+        const auto report = [&](const Undo& undo, const auto& line) {
+            if (!undo)
+                return;
+            for (int attempt = 0; attempt < 2; ++attempt)
+                try {
+                    out.named += (out.named.empty() ? "" : "; ") + line();
+                    return;
+                } catch (...) {
+                }
+            ++out.unnamed;
+        };
+        for (auto a = asides.rbegin(); a != asides.rend(); ++a)
+            report(a->undo, [&] {
+                if (a->both)
+                    return (*a->in / a->aside).string() + ": " + why(a->undo) + " (a second name for " + a->name +
+                           " beside it)";
+                return (*a->in / a->name).string() + ": " + why(a->undo) + " (it is " + a->aside + " beside it" +
+                       (a->undo.twice ? ", and under its own name" : "") + ")";
+            });
+        for (auto s = staged.rbegin(); s != staged.rend(); ++s)
+            report(s->undo, [&] {
+                if (!s->renamed)
+                    return (*s->in / s->tmp.name).string() + ": " + why(s->undo);
+                if (s->old && s->undo.error)  // written beside it, not renamed over it
+                    return (*s->in / s->name).string() + ": " + why(s->undo) + " (its old bytes are " + s->back.name +
+                           " beside it)";
+                if (s->old && s->back.created)  // the write failed, its temporary not removed
+                    return (*s->in / s->name).string() + ": " + why(s->undo) + " (some of its old bytes are " +
+                           s->back.name + " beside it)";
+                return (*s->in / s->name).string() + ": " + why(s->undo);
+            });
+        for (const std::vector<Made>* list : {&madeIn, &madeDirs})
+            for (auto d = list->rbegin(); d != list->rend(); ++d)
+                report(d->undo, [&] { return (*d->in / d->name).string() + ": " + why(d->undo) + " (a directory the save made)"; });
+        return out;
+    };
+
+    // what the project no longer holds, looked for in each directory
+    // through the descriptor the save holds on it (POSIX), as what is found
+    // is then set aside through it. On a case-insensitive disk an entry may
+    // be listed under another spelling, and is the file just written. A disk
+    // that folds some other way than foldedPath may list one under a name no
+    // entry folds to, so a file that is one the save wrote is kept too: a
+    // gap in the folding can only keep a file, never remove one. A link is
+    // never a file the save wrote, whatever it points at or its name is (an
+    // entry's own, or one that folds to it), so that is asked first.
+    std::map<QString, std::string> folded;
+    for (const auto& [name, bytes] : entries)
+        folded.emplace(foldedPath(name), name);
+    // whether `file` in `in`, `name` in the project, is a file the save wrote
+    const auto wrote = [&](const Folder& in, const std::string& file, const std::string& name) {
+        const auto it = folded.find(foldedPath(name));
+#if BW_PROJECT_POSIX
+        struct stat st {};
+        if (::fstatat(in.fd, file.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0 || S_ISLNK(st.st_mode))
+            return false;
+        if (written.count({std::uint64_t(st.st_dev), std::uint64_t(st.st_ino)}))
+            return true;
+        if (it == folded.end())
+            return false;
+        // the file at the entry it folds to, a link there followed
+        const auto [dir, entry] = split(it->second);
+        struct stat at {};
+        return ::fstatat(folder(dir, false).fd, entry.c_str(), &at, 0) == 0 && at.st_dev == st.st_dev &&
+               at.st_ino == st.st_ino;
+#else
+        std::error_code t;
+        if (kindAt(in, file) == Kind::Link)
+            return false;
+        if (it != folded.end() && fs::equivalent(in / file, path / fs::path(it->second), t))
+            return true;
+        return std::any_of(staged.begin(), staged.end(),
+                           [&](const Staged& s) { return fs::equivalent(in / file, *s.in / s.name, t); });
+#endif
+    };
+    struct Found {
+        const Folder* in;
+        std::string name;  // in `in`
+    };
+    std::vector<std::string> dirs;  // in the project
     try {
         // `path` and the directories on the way to it, one at a time as
         // spelled, so the save knows which it made: one already there (before
         // the save, or made by someone else meanwhile, or reached through a
-        // `..`) is not the save's, and a failure leaves it
-        if (!existed) {
-            fs::path at;
-            for (const fs::path& part : path) {
-                at /= part;
-                if (fs::create_directory(at, ec))
-                    madeDirs.push_back(at);
-                else if (ec)
-                    fail("can't create " + at.string() + ": " + ec.message());
+        // `..`) is not the save's, and a failure leaves it. Each is made in
+        // the one above it as the save holds that open, one the save made is
+        // opened without following a link, and the rollback removes each
+        // through the one above it, so it removes them from wherever they
+        // went and only ever an empty directory.
+        if (found) {
+            folders.emplace("", std::move(*found));
+        } else {
+            std::vector<std::string> names;
+            for (const fs::path& part : path.relative_path())
+                if (!part.empty())
+                    names.push_back(part.string());
+            above.push_back(openRoot(path.has_root_directory() ? path.root_path() : fs::path(".")));
+            above.back().path = path.root_path();
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                const Folder& in = above.back();
+                const bool fresh = make(madeDirs, in, names[i]);
+                Folder next = fresh ? openFolder(in, names[i]) : enterFolder(in, names[i]);
+                if (i + 1 < names.size())
+                    above.push_back(std::move(next));
+                else
+                    folders.emplace("", std::move(next));
             }
         }
         for (const auto& [name, bytes] : entries)
             if (name != "manifest.json")
-                write(name, bytes);
-        write("manifest.json", entries.at("manifest.json"));
+                stage(name, bytes);
+        stage("manifest.json", entries.at("manifest.json"));
+#if BW_PROJECT_POSIX
+        Descriptor fd(::dup(folders.at("").fd));
+        if (fd.get() < 0)
+            fail("can't write " + path.string() + ": " + std::strerror(errno));
+        spare.emplace(path, std::move(fd));
+#endif
+        for (Staged& s : staged) {
+            if (const std::error_code e = renameIn(*s.in, s.tmp.name, s.name))
+                fail("can't write " + (*s.in / s.name).string() + ": " + e.message());
+            s.renamed = true;
+            if (testing::directoryStep)
+                testing::directoryStep("wrote", *s.in / s.name);
+        }
+
+        if (testing::directoryStep)
+            testing::directoryStep("scan", path);
+        std::vector<Found> stale;
+        // `rel` in the project and every directory in it but hidden ones,
+        // each listed and looked at through the save's descriptor on it; a
+        // hidden name is never the project's, and is left alone
+        const std::function<void(const std::string&)> scan = [&](const std::string& rel) {
+            const Folder& in = folder(rel, false);
+            for (const std::string& file : namesIn(in)) {
+                if (hiddenPart(file))
+                    continue;
+                const std::string name = rel.empty() ? file : rel + "/" + file;
+                const Kind kind = kindAt(in, file);
+                if (kind == Kind::Directory) {
+                    dirs.push_back(name);
+                    scan(name);
+                } else if (kind == Kind::Link ||
+                           (kind != Kind::None && !entries.count(name) && !wrote(in, file, name))) {
+                    stale.push_back({&in, file});
+                }
+            }
+        };
+        scan("");
+        // aside under a hidden name, which a read skips, so that until the
+        // save is done each can go back, and once it is none is left under
+        // its own name (a layer file the manifest doesn't list would make
+        // the project unreadable). Each is recorded in full before it is
+        // renamed, the room for the record taken first, so once the rename
+        // is done nothing can fail before the rollback knows of it; one left
+        // under both names too, whose second name the rollback then removes
+        // (or names).
+        asides.reserve(stale.size());
+        for (const auto& [at, file] : stale) {
+            const Folder& in = *at;
+            for (int attempt = 0;; ++attempt) {
+                Aside next{&in, file, hiddenName("old")};
+                const Renamed r = renameFresh(in, file, next.aside);
+                if (!r.error || r.twice) {
+                    next.both = r.twice;
+                    asides.push_back(std::move(next));  // moved into the room reserved: nothing to fail
+                }
+                if (!r.error)
+                    break;
+                if (r.twice || r.error != std::errc::file_exists || attempt >= 100)
+                    fail("can't remove " + (in / file).string() + ": " + r.error.message());
+            }
+        }
     } catch (...) {
-        // a first save that fails leaves the directory as it found it (or
-        // none), so the next one isn't refused as "not a project"
-        if (first) {
-            std::error_code ignored;
-            for (const fs::path& f : madeFiles)
-                fs::remove(f, ignored);
-            // last made first, so each is empty once what the save put in it
-            // is gone; one that isn't (someone else's file in it) stays
-            for (auto d = madeDirs.rbegin(); d != madeDirs.rend(); ++d)
-                fs::remove(*d, ignored);
+        // whatever failed, the save is rolled back; a rollback that left
+        // anything turns the failure into a ProjectError that names what it
+        // was and everything left, and otherwise it goes on as it was
+        // (std::bad_alloc stays std::bad_alloc)
+        const Unrestored left = rollBack();
+        if (!left.any())
+            throw;
+        try {
+            std::string what;
+            try {
+                throw;
+            } catch (const ProjectError& e) {
+                what = e.what();
+            } catch (const std::exception& e) {
+                what = "can't write " + path.string() + ": " + e.what();
+            } catch (...) {
+                what = "can't write " + path.string() + ": an unknown error";
+            }
+            if (!left.named.empty())
+                what += "; and these couldn't be put back as they were: " + left.named;
+            if (left.unnamed)
+                what += "; and " + std::to_string(left.unnamed) + (left.named.empty() ? "" : " more") +
+                        (left.unnamed == 1 ? " change" : " changes") +
+                        " the save made couldn't be put back, and couldn't be named (it ran out of memory)";
+            fail(what);
+        } catch (const ProjectError&) {
+            throw;
+        } catch (...) {
+            throw unnameable;
         }
-        throw;
     }
 
-    if (testing::directoryStep)
-        testing::directoryStep("scan", path);
-
-    // what the project no longer holds, and the directories that leaves
-    // empty; on a case-insensitive disk an entry may be listed under another
-    // spelling, and is the file just written. A disk that folds some other
-    // way than foldedPath may list one under a name no entry folds to, so a
-    // file that is one the save wrote is kept too: a gap in the folding can
-    // only keep a file, never remove one. A link is never a file the save
-    // wrote, whatever it points at or its name is (an entry's own, or one
-    // that folds to it), so that is asked first (fs::equivalent follows
-    // links).
-    std::map<QString, std::string> folded;
-    for (const auto& [name, bytes] : entries)
-        folded.emplace(foldedPath(name), name);
-    const auto link = [](const fs::directory_entry& e) {
-        std::error_code t;
-        return fs::is_symlink(fs::symlink_status(e.path(), t));
-    };
-    const auto wrote = [&](const std::string& name, const fs::directory_entry& e) {
-        std::error_code t;
-#if BW_PROJECT_POSIX
-        struct stat st {};
-        if (::lstat(e.path().c_str(), &st) != 0 || S_ISLNK(st.st_mode))
-            return false;
-        if (written.count({std::uint64_t(st.st_dev), std::uint64_t(st.st_ino)}))
-            return true;
-#else
-        if (e.is_symlink(t))
-            return false;
-#endif
-        const auto it = folded.find(foldedPath(name));
-        if (it != folded.end() && fs::equivalent(e.path(), path / fs::path(it->second), t))
-            return true;
-#if BW_PROJECT_POSIX
-        return false;
-#else
-        return std::any_of(madeFiles.begin(), madeFiles.end(), [&](const fs::path& f) {
-            return fs::equivalent(e.path(), f, t);
-        });
-#endif
-    };
-    std::vector<fs::path> stale, dirs;
-    fs::recursive_directory_iterator it(path, ec), end;
-    for (; !ec && it != end; it.increment(ec)) {
-        const fs::directory_entry& e = *it;
-        const std::string name = e.path().lexically_relative(path).generic_string();
-        std::error_code t;
-        if (hiddenPath(name)) {
-            if (e.is_directory(t) && !e.is_symlink(t))
-                it.disable_recursion_pending();
-            continue;
+    // done: what was set aside goes, then the directories that leaves
+    // empty, deepest first so a parent is empty once its children are gone.
+    // One that can't go stays, hidden, where a read doesn't look; the save
+    // is done whatever fails here, running out of memory included.
+    try {
+        for (const Aside& a : asides)
+            removeIn(*a.in, a.aside, false);
+        std::sort(dirs.begin(), dirs.end(), std::greater<>());
+        for (const std::string& name : dirs) {
+            const auto [dir, file] = split(name);
+            try {
+                removeIn(folder(dir, false), file, true);
+            } catch (const ProjectError&) {
+            }
         }
-        if (e.is_directory(t) && !e.is_symlink(t))
-            dirs.push_back(e.path());
-        else if (link(e) || (!entries.count(name) && !wrote(name, e)))
-            stale.push_back(e.path());
+    } catch (...) {
     }
-    if (ec)
-        fail("can't read " + path.string() + ": " + ec.message());
-    for (const fs::path& f : stale)
-        if (!fs::remove(f, ec) && ec)
-            fail("can't remove " + f.string() + ": " + ec.message());
-    // deepest first, so a parent is empty once its children are gone
-    std::sort(dirs.begin(), dirs.end(), [](const fs::path& a, const fs::path& b) { return a.native() > b.native(); });
-    for (const fs::path& d : dirs)
-        if (fs::is_empty(d, ec))
-            fs::remove(d, ec);
 }
 
 } // namespace bw::project
