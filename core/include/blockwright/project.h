@@ -29,6 +29,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -181,17 +182,36 @@ Project read(const std::filesystem::path& path);
 void writeZip(const Project& project, const std::filesystem::path& path);
 
 // Writes the project as a directory: each entry written whole (a new
-// temporary file, created exclusively, renamed over it), manifest.json
-// last, then every other file under the directory that isn't hidden
-// removed, and the directories that leaves empty. Refuses a directory that
-// holds anything but hidden files and has no manifest.json, so a save never
-// empties a directory that isn't a project, and a symbolic link where an
-// entry or a directory on its way goes, so a save never writes outside the
-// directory. A path longer than the system opens, the directory's own
-// included, is refused before anything is written. A failure part way
-// leaves each file whole but the set mixed; on a first save (no
-// manifest.json yet), it removes what the save wrote and the directories it
-// made, so the directory is as it was.
+// temporary file, created exclusively, renamed over it), manifest.json last,
+// then every other file under the directory that isn't hidden removed (never
+// one the save wrote, whatever name the disk lists it under; a symbolic link
+// is never one, so one is removed even at an entry's own name), and the
+// directories that leaves empty. Refuses an empty path before writing
+// anything, a directory that holds anything but hidden files and has no
+// manifest.json, so a save never empties a directory that isn't a project,
+// and a symbolic link where an entry or a directory on its way goes, so a
+// save never writes outside the directory. A path longer than the system
+// opens, the directory's own included, is refused before anything is
+// written. A failure part way leaves each file whole but the set mixed; on a
+// first save (no manifest.json yet), it removes what the save wrote and the
+// directories it made, its parents included (never one that was there before
+// it), so the disk is as it was.
 void writeDirectory(const Project& project, const std::filesystem::path& path);
+
+namespace testing {
+// Called at each step below with the path it is about. Tests only.
+// - "read", every platform: a directory read has taken the size of the file
+//   `at` from its walk and is about to open it.
+// - "reading", POSIX systems only: the read has opened `at`, found it a
+//   plain file of the size the walk saw, and is about to read it. The other
+//   systems' reader checks the size only as it reads, and has no such step.
+// - "wrote", every platform: inside a directory save's write of the file
+//   `at`, straight after the rename that puts it in place, before the save
+//   looks at `at` again.
+// - "scan", every platform: a directory save has written the manifest and
+//   is about to look in the directory `at` for files the project no longer
+//   holds.
+inline std::function<void(std::string_view step, const std::filesystem::path& at)> directoryStep;
+} // namespace testing
 
 } // namespace bw::project

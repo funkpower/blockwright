@@ -25,6 +25,7 @@
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 #if defined(__linux__)
 #include <poll.h>
@@ -41,6 +42,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <new>
 #include <regex>
 #include <string>
 #include <string_view>
@@ -593,6 +595,20 @@ TEST_CASE("a directory save refuses a directory that isn't a project", "[project
     writeBytes(dir / "file", "keep");
     CHECK_THROWS_AS(project::writeDirectory(everything(), dir / "file"), ProjectError);
     CHECK(bwtest::readFile(dir / "file") == "keep");
+}
+
+TEST_CASE("a directory save refuses an empty path before writing anything", "[project][io][paths]") {
+    // an empty path is no directory, not the working one
+    const fs::path dir = scratch("emptypath");
+    writeBytes(dir / "notes.md", "precious");
+    struct Cwd {
+        fs::path was = fs::current_path();
+        ~Cwd() { fs::current_path(was); }
+    } cwd;
+    fs::current_path(dir);
+    CHECK_THROWS_AS(project::writeDirectory(everything(), fs::path{}), ProjectError);
+    CHECK(bwtest::readFile(dir / "notes.md") == "precious");
+    CHECK(std::distance(fs::directory_iterator(dir), fs::directory_iterator()) == 1);
 }
 
 TEST_CASE("a directory with a symbolic link is refused", "[project][io]") {
@@ -1220,6 +1236,146 @@ TEST_CASE("a first directory save that fails part way leaves nothing behind", "[
     CHECK(left == std::vector<std::string>{".git", ".git/HEAD"});
     project::writeDirectory(p, root / "old");
     CHECK(project::read(root / "old") == p);
+
+    // nor do the directories it made on the way to one
+    failingSave(root / "a" / "b" / "c");
+    CHECK_FALSE(fs::exists(root / "a"));
+    CHECK(fs::is_directory(root));
+    project::writeDirectory(p, root / "a" / "b" / "c");
+    CHECK(project::read(root / "a" / "b" / "c") == p);
+
+    // and never one that was there before it, however the path reaches it
+    fs::create_directory(root / "keep");
+    failingSave(root / "gone" / ".." / "keep" / "piece");
+    CHECK(fs::is_directory(root / "keep"));
+    CHECK_FALSE(fs::exists(root / "keep" / "piece"));
+    CHECK_FALSE(fs::exists(root / "gone"));
+}
+
+TEST_CASE("a first directory save that can't make a directory on the way leaves none behind", "[project][io]") {
+    if (::geteuid() == 0)
+        SKIP("root writes into any directory");
+    const fs::path root = scratch("mkdirfail");
+    // a directory made while `f` runs can't be written into; the mask is the
+    // process's, so it is put back however `f` ends
+    const auto masked = [](const auto& f) {
+        struct Restore {
+            mode_t mask;
+            ~Restore() { ::umask(mask); }
+        } restore{::umask(0222)};
+        f();
+    };
+    const auto currentMask = [] {
+        const mode_t m = ::umask(0);
+        ::umask(m);
+        return m;
+    };
+    const mode_t before = currentMask();
+    CHECK_THROWS_AS(masked([] { throw std::bad_alloc(); }), std::bad_alloc);
+    CHECK(currentMask() == before);
+
+    // so the save makes a/ and is refused a/b
+    bool threw = false;
+    masked([&] {
+        try {
+            project::writeDirectory(everything(), root / "a" / "b" / "c");
+        } catch (const ProjectError&) {
+            threw = true;
+        }
+    });
+    CHECK(threw);
+    CHECK_FALSE(fs::exists(root / "a"));
+    std::error_code ec;
+    fs::permissions(root / "a", fs::perms::owner_all, fs::perm_options::add, ec);
+}
+
+TEST_CASE("a directory save never removes a file it wrote, whatever name the disk lists it under",
+          "[project][io][safety]") {
+    // a disk that folds names some other way than samePath lists a file the
+    // save wrote under a name no entry folds to; a hard link made just
+    // before the save looks for stale files stands in for one here
+    const fs::path dir = scratch("samefile") / "piece";
+    project::writeDirectory(everything(), dir);
+    Project p = everything();
+    p.notes = "saved again";
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    bool foldedLink = false;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step != "scan")
+            return;
+        CHECK(at == dir);
+        fs::create_hard_link(dir / "notes.md", dir / "NOTES.alias");
+        writeBytes(dir / "stray", "x");  // not a file the save wrote
+        fs::create_symlink("notes.md", dir / "link");  // a link to one is not one
+        // nor under a name that folds to an entry's (a case-insensitive disk
+        // won't take it)
+        std::error_code ec;
+        fs::create_symlink("notes.md", dir / "NOTES.MD", ec);
+        foldedLink = !ec;
+    };
+    project::writeDirectory(p, dir);
+    project::testing::directoryStep = nullptr;
+    CHECK(fs::equivalent(dir / "NOTES.alias", dir / "notes.md"));
+    CHECK_FALSE(fs::exists(dir / "stray"));
+    CHECK_FALSE(fs::exists(fs::symlink_status(dir / "link")));
+    if (foldedLink)
+        CHECK_FALSE(fs::exists(fs::symlink_status(dir / "NOTES.MD")));
+    Project kept = p;
+    kept.files["NOTES.alias"] = "saved again";
+    CHECK(project::read(dir) == kept);
+}
+
+TEST_CASE("a directory save removes a link put at an entry's own name", "[project][io][safety]") {
+    // between the save writing notes.md and looking for stale files, someone
+    // moves it aside and puts a link to it at notes.md: the file moved aside
+    // is the one the save wrote, the link isn't, whatever its name
+    const fs::path dir = scratch("exactlink") / "piece";
+    project::writeDirectory(everything(), dir);
+    Project p = everything();
+    p.notes = "saved again";
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step != "scan")
+            return;
+        fs::rename(at / "notes.md", at / "moved");
+        fs::create_symlink("moved", at / "notes.md");
+    };
+    project::writeDirectory(p, dir);
+    project::testing::directoryStep = nullptr;
+    CHECK_FALSE(fs::exists(fs::symlink_status(dir / "notes.md")));
+    CHECK(bwtest::readFile(dir / "moved") == "saved again");
+    Project kept = p;
+    kept.notes.clear();
+    kept.files["moved"] = "saved again";
+    CHECK(project::read(dir) == kept);
+}
+
+TEST_CASE("a directory save keeps the file it wrote when another takes its name", "[project][io][safety]") {
+    // between the save writing notes.md and looking for stale files, someone
+    // moves it aside and puts another file at notes.md; the one moved aside
+    // is still the one the save wrote
+    const fs::path dir = scratch("renamed") / "piece";
+    project::writeDirectory(everything(), dir);
+    Project p = everything();
+    p.notes = "saved again";
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step == "wrote" && at == dir / "notes.md") {
+            fs::rename(at, dir / "moved");
+            writeBytes(at, "someone else's");
+        }
+    };
+    project::writeDirectory(p, dir);
+    project::testing::directoryStep = nullptr;
+    REQUIRE(fs::exists(dir / "moved"));
+    CHECK(bwtest::readFile(dir / "moved") == "saved again");
+    CHECK(bwtest::readFile(dir / "notes.md") == "someone else's");
 }
 
 TEST_CASE("a hidden FIFO in a project directory is refused", "[project][io][safety]") {
@@ -1252,6 +1408,53 @@ TEST_CASE("a directory save refuses a path the system can't open before writing"
 }
 #endif
 #endif
+
+TEST_CASE("a directory read refuses a file that changed size after the walk saw it", "[project][io][safety]") {
+    const fs::path dir = scratch("grown") / "piece";
+    Project p = everything();
+    p.files["refs/empty"] = "";
+    p.files["refs/short"] = "abc";
+    project::writeDirectory(p, dir);
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    // grown from empty, grown, shrunk, emptied
+    const std::vector<std::pair<std::string, std::string>> changes = {
+        {"refs/empty", "GROWN"}, {"refs/short", "abcd"}, {"refs/short", "ab"}, {"refs/short", ""}};
+    // refused before a byte of it is read
+    bool reading = false;
+    for (const auto& [victim, now] : changes) {
+        INFO(victim << " -> \"" << now << "\"");
+        reading = false;
+        project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+            if (step == "read" && at == dir / victim)
+                writeBytes(at, now);
+            if (step == "reading" && at == dir / victim)
+                reading = true;
+        };
+        std::string error;
+        try {
+            project::read(dir);
+        } catch (const ProjectError& e) {
+            error = e.what();
+        }
+        project::testing::directoryStep = nullptr;
+        CHECK(error.find("changed while it was read") != std::string::npos);
+        CHECK_FALSE(reading);
+        writeBytes(dir / victim, p.files.at(victim));
+    }
+    // and one that didn't change is read
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step == "reading" && at == dir / "refs/short")
+            reading = true;
+    };
+    CHECK(project::read(dir) == p);
+    // "reading" fires only where the read checks the opened file's size
+    // before reading it
+#if defined(__unix__) || defined(__APPLE__)
+    CHECK(reading);
+#endif
+}
 
 #if defined(__linux__)
 TEST_CASE("a directory read refuses a link swapped in after the walk saw a file", "[project][io][safety]") {

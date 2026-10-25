@@ -532,22 +532,26 @@ std::string readWhole(const fs::path& p, std::size_t size) {
         ::close(fd);
         fail(p.string() + " is not a file");
     }
-    std::size_t got = 0;
-    ssize_t more = 0;
-    if (std::uint64_t(st.st_size) == size) {
-        while (got < size) {
-            const ssize_t n = ::read(fd, out.data() + got, size - got);
-            if (n < 0 && errno == EINTR)
-                continue;
-            if (n <= 0)
-                break;
-            got += std::size_t(n);
-        }
-        char extra;
-        do
-            more = ::read(fd, &extra, 1);
-        while (more < 0 && errno == EINTR);
+    if (std::uint64_t(st.st_size) != size) {
+        ::close(fd);
+        fail(p.string() + " changed while it was read");
     }
+    if (testing::directoryStep)
+        testing::directoryStep("reading", p);
+    std::size_t got = 0;
+    while (got < size) {
+        const ssize_t n = ::read(fd, out.data() + got, size - got);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            break;
+        got += std::size_t(n);
+    }
+    char extra;
+    ssize_t more;
+    do
+        more = ::read(fd, &extra, 1);
+    while (more < 0 && errno == EINTR);
     ::close(fd);
     if (got != size || more != 0)
         fail(p.string() + " changed while it was read");
@@ -693,6 +697,8 @@ Entries readDirectory(const fs::path& root) {
         if (ec)
             fail("can't read " + e.path().string() + ": " + ec.message());
         checkSize(name, size, total);
+        if (testing::directoryStep)
+            testing::directoryStep("read", e.path());
         out.emplace(name, readWhole(e.path(), std::size_t(size)));
     }
     return out;
@@ -715,17 +721,24 @@ bool notLink(const fs::path& path) {
     return fs::exists(st);
 }
 
+// A file's identity, the same under every name it has: device and inode,
+// or {0, 0} where the system has none.
+using FileId = std::pair<std::uint64_t, std::uint64_t>;
+
 // Writes `bytes` as `path` whole: a new hidden file beside it, created
 // exclusively under a name no one can have put there first (and never
 // through a link), then renamed over `path`, which must not be a link. The
 // temporary name doesn't hold `path`'s, so a name as long as the disk takes
-// is written as any other.
-void writeFileWhole(const fs::path& path, const std::string& bytes) {
+// is written as any other. Returns the identity of the file written, taken
+// from the descriptor it was written through before the rename, so it is
+// that file's whatever is put at `path` afterwards.
+FileId writeFileWhole(const fs::path& path, const std::string& bytes) {
     static unsigned counter = 0;
     static const unsigned long salt = std::random_device{}();
     notLink(path);
     fs::path tmp;
     bool created = false;
+    FileId id{};
     const auto give_up = [&](const std::string& why) {
         if (created) {
             std::error_code ignored;
@@ -759,6 +772,10 @@ void writeFileWhole(const fs::path& path, const std::string& bytes) {
             data += n;
             left -= std::size_t(n);
         }
+        struct stat st {};
+        if (!err && ::fstat(fd, &st) != 0)
+            err = errno;
+        id = {std::uint64_t(st.st_dev), std::uint64_t(st.st_ino)};
         if (::close(fd) != 0 && !err)
             err = errno;
         if (err)
@@ -783,6 +800,9 @@ void writeFileWhole(const fs::path& path, const std::string& bytes) {
     fs::rename(tmp, path, ec);
     if (ec)
         give_up(ec.message());
+    if (testing::directoryStep)
+        testing::directoryStep("wrote", path);
+    return id;
 }
 
 } // namespace
@@ -1154,6 +1174,10 @@ void writeZip(const Project& project, const fs::path& path) {
 
 void writeDirectory(const Project& project, const fs::path& path) {
     const Entries entries = encode(project);
+    // an empty path is no directory; `path / name` would write into the
+    // working one, past the check that it holds a project
+    if (path.empty())
+        fail("can't write a project to an empty path");
 #ifdef PATH_MAX
     // each file, and the temporary one beside it, as long a path as the
     // system opens
@@ -1175,13 +1199,14 @@ void writeDirectory(const Project& project, const fs::path& path) {
         if (ec)
             fail("can't read " + path.string() + ": " + ec.message());
     }
-    fs::create_directories(path, ec);
-    if (ec)
-        fail("can't create " + path.string() + ": " + ec.message());
-
     // each directory on the way made or found, never a link; what a first
-    // save makes is kept so a failure can take it away again
+    // save makes is kept so a failure can take it away again (in the order
+    // made, so a directory comes after its parent), and what any save writes
+    // so the stale scan never takes it for another file
     std::vector<fs::path> madeFiles, madeDirs;
+#if BW_PROJECT_POSIX
+    std::set<FileId> written;
+#endif
     const auto write = [&](const std::string& name, const std::string& bytes) {
         fs::path at = path;
         const std::vector<std::string_view> names = parts(name);
@@ -1197,10 +1222,27 @@ void writeDirectory(const Project& project, const fs::path& path) {
             if (!fs::is_directory(fs::symlink_status(at, e)))
                 fail(at.string() + " is not a directory");
         }
-        writeFileWhole(path / fs::path(name), bytes);
+        [[maybe_unused]] const FileId id = writeFileWhole(path / fs::path(name), bytes);
         madeFiles.push_back(path / fs::path(name));
+#if BW_PROJECT_POSIX
+        written.insert(id);
+#endif
     };
     try {
+        // `path` and the directories on the way to it, one at a time as
+        // spelled, so the save knows which it made: one already there (before
+        // the save, or made by someone else meanwhile, or reached through a
+        // `..`) is not the save's, and a failure leaves it
+        if (!existed) {
+            fs::path at;
+            for (const fs::path& part : path) {
+                at /= part;
+                if (fs::create_directory(at, ec))
+                    madeDirs.push_back(at);
+                else if (ec)
+                    fail("can't create " + at.string() + ": " + ec.message());
+            }
+        }
         for (const auto& [name, bytes] : entries)
             if (name != "manifest.json")
                 write(name, bytes);
@@ -1212,24 +1254,55 @@ void writeDirectory(const Project& project, const fs::path& path) {
             std::error_code ignored;
             for (const fs::path& f : madeFiles)
                 fs::remove(f, ignored);
+            // last made first, so each is empty once what the save put in it
+            // is gone; one that isn't (someone else's file in it) stays
             for (auto d = madeDirs.rbegin(); d != madeDirs.rend(); ++d)
                 fs::remove(*d, ignored);
-            if (!existed)
-                fs::remove(path, ignored);
         }
         throw;
     }
 
+    if (testing::directoryStep)
+        testing::directoryStep("scan", path);
+
     // what the project no longer holds, and the directories that leaves
     // empty; on a case-insensitive disk an entry may be listed under another
-    // spelling, and is the file just written
+    // spelling, and is the file just written. A disk that folds some other
+    // way than foldedPath may list one under a name no entry folds to, so a
+    // file that is one the save wrote is kept too: a gap in the folding can
+    // only keep a file, never remove one. A link is never a file the save
+    // wrote, whatever it points at or its name is (an entry's own, or one
+    // that folds to it), so that is asked first (fs::equivalent follows
+    // links).
     std::map<QString, std::string> folded;
     for (const auto& [name, bytes] : entries)
         folded.emplace(foldedPath(name), name);
-    const auto wrote = [&](const std::string& name, const fs::path& file) {
-        const auto it = folded.find(foldedPath(name));
+    const auto link = [](const fs::directory_entry& e) {
         std::error_code t;
-        return it != folded.end() && fs::equivalent(file, path / fs::path(it->second), t);
+        return fs::is_symlink(fs::symlink_status(e.path(), t));
+    };
+    const auto wrote = [&](const std::string& name, const fs::directory_entry& e) {
+        std::error_code t;
+#if BW_PROJECT_POSIX
+        struct stat st {};
+        if (::lstat(e.path().c_str(), &st) != 0 || S_ISLNK(st.st_mode))
+            return false;
+        if (written.count({std::uint64_t(st.st_dev), std::uint64_t(st.st_ino)}))
+            return true;
+#else
+        if (e.is_symlink(t))
+            return false;
+#endif
+        const auto it = folded.find(foldedPath(name));
+        if (it != folded.end() && fs::equivalent(e.path(), path / fs::path(it->second), t))
+            return true;
+#if BW_PROJECT_POSIX
+        return false;
+#else
+        return std::any_of(madeFiles.begin(), madeFiles.end(), [&](const fs::path& f) {
+            return fs::equivalent(e.path(), f, t);
+        });
+#endif
     };
     std::vector<fs::path> stale, dirs;
     fs::recursive_directory_iterator it(path, ec), end;
@@ -1244,7 +1317,7 @@ void writeDirectory(const Project& project, const fs::path& path) {
         }
         if (e.is_directory(t) && !e.is_symlink(t))
             dirs.push_back(e.path());
-        else if (!entries.count(name) && !wrote(name, e.path()))
+        else if (link(e) || (!entries.count(name) && !wrote(name, e)))
             stale.push_back(e.path());
     }
     if (ec)
