@@ -12,7 +12,10 @@
 // only while they are shown: a hidden dock, or one in a tab behind another,
 // catches up when it is shown. The work runs off the GUI thread on a copy of
 // the canvas; the dock shows its last result until the next is in, and drops
-// a result the document has moved past.
+// a result the document has moved past. A dock behind the document for longer
+// than kStaleShowMs says so under its result ("Linting…", "Updating…"):
+// on a canvas whose work takes longer than the gap between edits no result
+// is ever current, and the last one stays up with that note on it.
 
 #include "blockwright/irc_view.h"
 #include "blockwright/lint_rules.h"
@@ -37,6 +40,9 @@ namespace bw {
 class Document;
 
 inline constexpr int kRefreshDelayMs = 250;
+// How long a dock is behind before it says so: an edit that is caught up
+// within it (a refresh a moment after it, and quick work) shows no note.
+inline constexpr int kStaleShowMs = 2 * kRefreshDelayMs;
 
 // Refreshes a moment after the document changes, or when the widget is next
 // shown if it wasn't shown then. Shown is the widget's show and hide events,
@@ -47,11 +53,13 @@ inline constexpr int kRefreshDelayMs = 250;
 // thread pool and shows the result back on the GUI thread. A refresh while
 // one runs waits for it, drops its result and starts again, and a change
 // while one runs drops its result (schedule), so only a result of the
-// document as it is is shown.
+// document as it is is shown. While what it shows has been stale for
+// kStaleShowMs, staleLabel() is shown; the subclass puts it in its layout.
 class FollowsDocument : public QWidget {
     Q_OBJECT
 public:
-    explicit FollowsDocument(Document* doc, QWidget* parent = nullptr);
+    // `staleText` is what staleLabel() says.
+    FollowsDocument(Document* doc, const QString& staleText, QWidget* parent = nullptr);
     ~FollowsDocument() override;
     // Starts bringing the dock up to date and returns; refreshed() says when
     // it is.
@@ -62,6 +70,9 @@ public:
     // Whether a refresh is running.
     bool busy() const { return running_; }
     bool shown() const { return shown_; }
+    // Says the result shown is behind the document; hidden while it isn't,
+    // or hasn't been for kStaleShowMs.
+    QLabel* staleLabel() const { return staleLabel_; }
     // Refreshes now if a change is waiting.
     void setShown(bool on);
     // Tests only: runs on the worker before each refresh's work, so a test
@@ -91,8 +102,13 @@ protected:
 private:
     void start();
     void finished();
+    // Shows staleLabel() once stale() has held for kStaleShowMs; hides it
+    // as soon as it doesn't.
+    void updateStale();
 
     QTimer* timer_;
+    QTimer* staleTimer_;
+    QLabel* staleLabel_;
     QFutureWatcher<Show>* watcher_;
     std::function<void()> beforeWork_;
     bool stale_ = true;

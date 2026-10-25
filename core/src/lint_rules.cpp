@@ -125,10 +125,12 @@ void gaps(const Canvas& canvas, bool ice, std::vector<Finding>& out) {
         const Look l = look(-1, 0), g = look(0, 0);
         if (l == kNoLook || g == l || look(-2, 0) != l || look(1, 0) != l || look(2, 0) != l)
             return false;
-        // one cell thick: across the line beside the gap is something else
+        // one cell thick: across the line beside the gap is something else.
+        // Off the canvas is not something else: there is no telling how
+        // thick the line is, and a texture along the edge would pass.
         for (const int i : {-1, 1})
             for (const int j : {-1, 1})
-                if (look(i, j) == l)
+                if (look(i, j) == l || look(i, j) == kNoLook)
                     return false;
         // a dashed line breaks again a few cells on, the line on both sides
         // of that break too: that is its pattern. (Past the line's end is

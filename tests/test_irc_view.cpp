@@ -181,14 +181,10 @@ TEST_CASE("a line over the budget loses the cells past it", "[irc][view]") {
     CHECK_FALSE(v.rows[1].cut());
     CHECK(v.rows[0].bytes == lines[0].size());
     CHECK(v.rows[0].kept == 40);
-    // the cells shown are those whose glyph ends within the budget, less the
-    // byte the cut line's reset takes
-    const auto cells = decodeLine(lines[0]);
-    int within = 0;
-    while (within < int(cells.size()) && cells[std::size_t(within)].end <= budget - 1)
-        ++within;
+    // ascii.fit(line, 60) re-encodes the 310-byte line and keeps 54 bytes
+    // that carry 6 cells
+    const int within = 6;
     CHECK(v.rows[0].shown == within);
-    CHECK(within > 0);
     for (int x = within; x < 40; ++x)
         CHECK(rgb(v.canvas.at(x, 0).bg) == kClientBackground);
     CHECK(rgb(v.canvas.at(within - 1, 0).bg) != kClientBackground);
@@ -214,6 +210,68 @@ TEST_CASE("a cut line keeps a byte for the reset after it, as the sender's fit d
     // a line that fits is sent whole, to its last byte
     CHECK(ircView(c, 408).rows[0].shown == 392);
     CHECK(ircView(c, 406).rows[0].shown == 389);
+}
+
+TEST_CASE("a line over the budget is cut as the sender cuts its own encoding of it", "[irc][view]") {
+    // twenty times four half blocks, each pair of colours new: the export
+    // writes one-digit codes ("\x03" "4,2"), the sender's encoding two
+    // ("\x03" "04,02"), so it carries fewer cells in the same bytes
+    const std::uint8_t pairs[4][2] = {{LightRed, Blue}, {Yellow, Green}, {White, Magenta}, {LightCyan, Red}};
+    Canvas c(80, 1);
+    for (int x = 0; x < 80; ++x)
+        c.at(x, 0) = cell(kUpperHalf, pairs[x % 4][0], pairs[x % 4][1]);
+    const auto lines = encodeCanvas(c);
+    REQUIRE(lines[0].size() == 580);
+    // the export's own glyphs: 56 end within 406 bytes
+    const auto cells = decodeLine(lines[0]);
+    REQUIRE(cells[55].end <= 406);
+    REQUIRE(cells[56].end > 406);
+    // ascii.fit(line, 407) sends 405 bytes that carry 45 cells
+    const View v = ircView(c, 407);
+    CHECK(v.rows[0].cut());
+    CHECK(v.rows[0].kept == 80);
+    CHECK(v.rows[0].bytes == 580);
+    CHECK(v.rows[0].shown == 45);
+    CHECK(rgb(v.canvas.at(44, 0).bg) != kClientBackground);
+    for (int x = 45; x < 80; ++x)
+        CHECK(rgb(v.canvas.at(x, 0).bg) == kClientBackground);
+    // the cells shown are the export's: ▀ in its own colours
+    CHECK(v.canvas.at(44, 0).ch == kUpperHalf);
+    CHECK(rgb(v.canvas.at(0, 0).fg) == kMircRgb[4]);
+    CHECK(rgb(v.canvas.at(0, 0).bg) == kMircRgb[2]);
+    // a budget the export fits sends it as it is
+    CHECK(ircView(c, 580).rows[0].shown == 80);
+    CHECK(ircView(c, 579).rows[0].cut());
+}
+
+TEST_CASE("a padded line over the budget whose sender encoding fits is sent whole", "[irc][view]") {
+    // '1' grey on black, then a black space: padded, the export ends the
+    // row on a black-on-black block, "\x03" "15,01" "1" "\x03" "1" "█", 12
+    // bytes; the sender draws that cell as a space, "\x03" "15,01" "1 " and
+    // the reset after it, 9 bytes
+    Canvas c(2, 1);
+    c.at(0, 0) = cell(U'1', Grey, Black);
+    c.at(1, 0) = cell(U' ', Grey, Black);
+    EncodeOptions pad;
+    pad.pad = true;
+    const auto lines = encodeCanvas(c, pad);
+    REQUIRE(lines[0] == "\x03" "15,01" "1" "\x03" "1" "█");
+    REQUIRE(lines[0].size() == 12);
+    // ascii.fit(line, 9) sends "\x03" "15,01" "1 " "\x0f", both cells, uncut
+    const View v = ircView(c, 9, pad);
+    CHECK(v.rows[0].bytes == 12);
+    CHECK(v.rows[0].kept == 2);
+    CHECK(v.rows[0].shown == 2);
+    CHECK_FALSE(v.rows[0].cut());
+    CHECK(v.cutRows() == 0);
+    // the cells as the export draws them: the block, not the sender's space
+    CHECK(v.canvas.at(1, 0).ch == kFullBlock);
+    CHECK(rgb(v.canvas.at(1, 0).bg) != kClientBackground);
+    // ascii.fit(line, 8) has to cut the sender's 8 bytes: the '1' alone
+    const View t = ircView(c, 8, pad);
+    CHECK(t.rows[0].cut());
+    CHECK(t.rows[0].shown == 1);
+    CHECK(rgb(t.canvas.at(1, 0).bg) == kClientBackground);
 }
 
 TEST_CASE("a 120-row piece fits the EFnet budget, and the view agrees with the line sizes", "[irc][view][golden]") {

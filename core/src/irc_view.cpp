@@ -1,7 +1,14 @@
 #include "blockwright/irc_view.h"
 
+#include "blockwright/cp437.h"
+#include "blockwright/ramp.h"
+
+#include <QChar>
+
 #include <algorithm>
+#include <cstdio>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace bw::irc {
@@ -58,6 +65,187 @@ Cell clientBlank() {
     c.bg = shownColour(kClientColour, kClientBackground);
     return c;
 }
+
+// The sender's re-encoding of a line over the budget, as ascii.py
+// (1.32.1) does it in fit(): parse_irc, then encode_irc_min.
+// (ascii.py falls back on a plainer encoding for a line of more than 2000
+// cells or one with attributes; the export's lines have at most kMaxColumns
+// cells, and their only attributes are the ^B pairs that cancel out.)
+// A colour is -1 where the line sets none (the client's own).
+namespace sender {
+
+constexpr int kNone = -1;
+constexpr int kAny = -2;  // encode_irc_min: whatever the colour is now
+
+struct SentCell {
+    char32_t ch;
+    int fg, bg;
+};
+
+// Python's str.isdigit(): a code point with a digit value (², not only 0-9).
+bool pyDigit(char32_t ch) { return QChar::digitValue(ch) >= 0; }
+
+std::string utf8(char32_t ch) {
+    std::string s;
+    appendUtf8(s, ch);
+    return s;
+}
+
+std::string colourCode(int fg, int bg = kNone) {
+    char buf[8];
+    if (bg == kNone)
+        std::snprintf(buf, sizeof buf, "\x03%02d", fg);
+    else
+        std::snprintf(buf, sizeof buf, "\x03%02d,%02d", fg == kNone ? 99 : fg, bg);
+    return buf;
+}
+
+// parse_irc, for the export's lines: no ^D colours, tabs or other control
+// bytes, and attributes that leave the cells as they are.
+std::vector<SentCell> parse(std::string_view line) {
+    std::vector<SentCell> cells;
+    int fg = kNone, bg = kNone;
+    auto mirc = [](std::uint8_t n) { return n < 99 ? int(n) : kNone; };
+    std::size_t i = 0;
+    while (i < line.size()) {
+        switch (line[i]) {
+        case '\x03': {
+            ++i;
+            const auto f = number(line, i);
+            if (!f) {
+                fg = bg = kNone;
+                break;
+            }
+            fg = mirc(*f);
+            if (i + 1 < line.size() && line[i] == ',' && digit(line[i + 1])) {
+                ++i;
+                bg = mirc(*number(line, i));
+            }
+            break;
+        }
+        case '\x0f':
+            ++i;
+            fg = bg = kNone;
+            break;
+        case '\x02':
+        case '\x11':
+        case '\x16':
+        case '\x1d':
+        case '\x1e':
+        case '\x1f':
+            ++i;
+            break;
+        default:
+            cells.push_back({glyph(line, i), fg, bg});
+        }
+    }
+    return cells;
+}
+
+struct Colours {
+    int fg, bg;
+    bool operator==(const Colours&) const = default;
+};
+
+// _code: the codes that take the colours `cur` to ones that show `ch` in
+// `fg` on `bg` (either may be kAny), and the colours after them.
+std::pair<std::string, Colours> code(Colours cur, int fg, int bg, char32_t ch) {
+    std::string codes;
+    if ((fg == kNone && cur.fg != kNone) || (bg == kNone && cur.bg != kNone)) {
+        codes = "\x03";
+        cur = {kNone, kNone};
+        if ((fg == kNone || fg == kAny) && (bg == kNone || bg == kAny)) {
+            if (pyDigit(ch) || ch == U',')
+                codes += "\x02\x02";
+            return {codes, cur};
+        }
+    }
+    if (bg != kNone && bg != kAny && bg != cur.bg) {
+        const int f = fg == kAny ? cur.fg : fg;
+        return {codes + colourCode(f, bg), {f, bg}};
+    }
+    if (fg != kNone && fg != kAny && fg != cur.fg)
+        return {codes + colourCode(fg) + (ch == U',' ? "\x02\x02" : ""), {fg, cur.bg}};
+    return {codes, cur};
+}
+
+// encode_irc_min: the shortest encoding over the ways each cell can be
+// drawn (a space or a full block of the same colour). Kept in ascii.py's
+// order throughout, so that of two encodings of one length it picks the one
+// it picks, which decides where a cut falls.
+std::string encodeMin(const std::vector<SentCell>& cells) {
+    struct Entry {
+        Colours state;
+        std::size_t cost;
+        std::size_t prev;  // its state's place in the step before
+        std::string text;
+    };
+    std::vector<std::vector<Entry>> steps;
+    std::vector<Entry> states{{{kNone, kNone}, 0, 0, {}}};
+    // trailing spaces in the client's colours aren't sent
+    std::size_t end = cells.size();
+    while (end && cells[end - 1].ch == U' ' && cells[end - 1].bg == kNone)
+        --end;
+    for (std::size_t i = 0; i < end; ++i) {
+        const SentCell& c = cells[i];
+        struct Option {
+            char32_t glyph;
+            int fg, bg;
+        };
+        std::vector<Option> options;
+        if (c.ch == U' ') {
+            options.push_back({U' ', kAny, c.bg});
+            options.push_back({U' ', c.fg, c.bg});
+            if (c.bg != kNone)
+                options.push_back({kFullBlock, c.bg, kAny});
+        } else if (c.ch == kFullBlock && c.fg != kNone) {
+            options.push_back({kFullBlock, c.fg, kAny});
+            options.push_back({kFullBlock, c.fg, c.bg});
+            options.push_back({U' ', kAny, c.fg});
+        } else {
+            options.push_back({c.ch, c.fg, c.bg});
+        }
+        std::vector<Entry> next;
+        for (std::size_t s = 0; s < states.size(); ++s)
+            for (const Option& o : options) {
+                auto [codes, after] = code(states[s].state, o.fg, o.bg, o.glyph);
+                const std::string glyphText = utf8(o.glyph);
+                const std::size_t total = states[s].cost + codes.size() + glyphText.size();
+                const auto at = std::find_if(next.begin(), next.end(), [&](const Entry& e) { return e.state == after; });
+                if (at == next.end())
+                    next.push_back({after, total, s, codes + glyphText});
+                else if (total < at->cost)
+                    *at = {after, total, s, codes + glyphText};
+            }
+        // a state more than a colour code (9 bytes) behind the best can't win
+        std::size_t best = next.front().cost;
+        for (const Entry& e : next)
+            best = std::min(best, e.cost);
+        std::erase_if(next, [&](const Entry& e) { return e.cost > best + 9; });
+        steps.push_back(next);
+        states = std::move(next);
+    }
+    if (steps.empty())
+        return {};
+    std::size_t at = 0;
+    for (std::size_t s = 1; s < states.size(); ++s)
+        if (states[s].cost < states[at].cost)
+            at = s;
+    std::vector<const std::string*> parts;
+    for (auto step = steps.rbegin(); step != steps.rend(); ++step) {
+        parts.push_back(&(*step)[at].text);
+        at = (*step)[at].prev;
+    }
+    std::string out;
+    for (auto p = parts.rbegin(); p != parts.rend(); ++p)
+        out += **p;
+    return out;
+}
+
+// fit()'s measure: a line ending in a space is sent with a reset after it.
+std::size_t sentSize(const std::string& line) { return line.size() + (!line.empty() && line.back() == ' '); }
+
+} // namespace sender
 
 } // namespace
 
@@ -138,10 +326,25 @@ View ircView(const Canvas& canvas, std::size_t budget, const EncodeOptions& opts
         row.trimmed = y < top || y >= bottom;
         const std::vector<ShownCell> cells = decodeLine(line);
         row.kept = static_cast<int>(cells.size());
-        // a cut line keeps a byte for the reset the sender ends it with
-        const std::size_t limit = line.size() <= budget || budget == 0 ? budget : budget - 1;
+        int sent = row.kept;
+        if (sender::sentSize(line) > budget) {
+            // over the budget, the sender encodes the line again in as few
+            // bytes as it can, and cuts that if it is still over, keeping a
+            // byte for the reset it ends the line with. The encoding again can
+            // be the shorter one and fit: a padded line ends on a
+            // black-on-black █ that the sender sends as a space.
+            const std::string again = sender::encodeMin(sender::parse(line));
+            if (sender::sentSize(again) > budget) {
+                const std::size_t limit = budget == 0 ? 0 : budget - 1;
+                const std::vector<ShownCell> carried = decodeLine(again);
+                sent = static_cast<int>(std::count_if(carried.begin(), carried.end(),
+                                                      [limit](const ShownCell& s) { return s.end <= limit; }));
+            }
+        }
+        // the cells are drawn as the export has them: the encoding again
+        // only trades a space for a full block of the same colour
         for (const ShownCell& s : cells) {
-            if (s.end > limit || row.shown >= canvas.width())
+            if (row.shown >= sent || row.shown >= canvas.width())
                 break;
             Cell& c = v.canvas.at(row.shown++, y);
             c.ch = s.cell.ch;

@@ -594,3 +594,148 @@ TEST_CASE("an edit drops the Lint dock's lint in flight") {
     CHECK(rowAt(dock->list(), QStringLiteral("3,2"), QStringLiteral("merge")));
     CHECK(current == QList<bool>{true});
 }
+
+TEST_CASE("a dock behind the document for a while says so; one caught up at once doesn't") {
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    doc->replace(piece(), QString());
+    FollowsDocument* dock = nullptr;
+    QString note;
+    SECTION("the Lint dock") {
+        dock = w.lintWidget();
+        note = QStringLiteral("Linting…");
+    }
+    SECTION("the IRC View dock") {
+        w.ircViewDock()->raise();
+        dock = w.ircViewWidget();
+        note = QStringLiteral("Updating…");
+    }
+    QLabel* label = dock->staleLabel();
+    REQUIRE(waitFor([&] { return dock->shown(); }));
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    CHECK(label->isHidden());
+    CHECK(label->text() == note);
+    CHECK(dock->isAncestorOf(label));
+
+    // an edit caught up within kStaleShowMs shows no note
+    bool noted = false;
+    QElapsedTimer t;
+    t.start();
+    REQUIRE(doc->edit(merge(*doc, 3, 2)));
+    REQUIRE(waitFor([&] {
+        noted = noted || !label->isHidden();
+        return !dock->stale();
+    }));
+    if (t.elapsed() < kStaleShowMs)
+        CHECK_FALSE(noted);
+    CHECK(label->isHidden());
+
+    // a refresh held on its worker while the document moves on
+    Hold hold(dock);
+    dock->refresh();
+    REQUIRE(hold.started());
+    REQUIRE(doc->edit(merge(*doc, 30, 20)));
+    CHECK(dock->stale());
+    // not at once: a moment behind is how every edit starts
+    CHECK(label->isHidden());
+    t.restart();
+    while (t.elapsed() < kStaleShowMs + 200)
+        QApplication::processEvents(QEventLoop::AllEvents, 20);
+    CHECK(dock->stale());
+    CHECK_FALSE(label->isHidden());
+    // caught up, the note goes
+    hold.release();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    CHECK(label->isHidden());
+}
+
+TEST_CASE("a Lint dock that can't keep up with the edits says its result is behind") {
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    doc->replace(piece(), QString());
+    LintDock* dock = w.lintWidget();
+    REQUIRE(waitFor([&] { return dock->shown(); }));
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    QLabel* label = dock->staleLabel();
+    CHECK(label->isHidden());
+    int results = 0;
+    QObject::connect(dock, &FollowsDocument::refreshed, [&] { ++results; });
+
+    // the review's repro, an edit every 2 * kRefreshDelayMs, with the lint
+    // held on its worker as long as the edits go on: each edit drops the
+    // lint in flight and its refresh waits behind it, so the result shown
+    // stays behind the document; what the dock shows has to say so, and
+    // keep saying so
+    Hold hold(dock);
+    REQUIRE(doc->edit(merge(*doc, 10, 2)));
+    dock->refresh();
+    REQUIRE(hold.started());
+    bool caughtUp = false, noted = false, unnoted = false;
+    auto edit = [&](int x) {
+        REQUIRE(doc->edit(merge(*doc, x, 2)));
+        QElapsedTimer gap;
+        gap.start();
+        while (gap.elapsed() < 2 * kRefreshDelayMs) {
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+            caughtUp = caughtUp || !dock->stale();
+            if (!label->isHidden())
+                noted = true;
+            else if (noted)
+                unnoted = true;
+        }
+    };
+    for (int i = 1; i <= 4; ++i)
+        edit(10 + i);
+    // behind for longer than kStaleShowMs, the note is up
+    REQUIRE(waitFor([&] { return !label->isHidden(); }));
+    noted = true;
+    for (int i = 5; i <= 8; ++i)
+        edit(10 + i);
+    CHECK_FALSE(caughtUp);
+    CHECK_FALSE(unnoted);
+    CHECK_FALSE(label->isHidden());
+    CHECK(results == 0);
+
+    // once the edits stop it catches up, and the note goes
+    hold.release();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    CHECK(label->isHidden());
+    CHECK(results == 1);
+    CHECK(dock->report().findings == lintAll(*doc).findings);
+}
+
+TEST_CASE("a refresh asked for while one runs takes the note down once its result is current") {
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    doc->replace(piece(), QString());
+    LintDock* dock = w.lintWidget();
+    REQUIRE(waitFor([&] { return dock->shown(); }));
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    QLabel* label = dock->staleLabel();
+    QList<bool> current;
+    QObject::connect(dock, &FollowsDocument::refreshed,
+                     [&] { current << (dock->report().findings == lintAll(*doc).findings); });
+
+    // the review's repro: an edit's refresh held until the note is up
+    Hold hold(dock);
+    REQUIRE(doc->edit(merge(*doc, 3, 2)));
+    dock->refresh();
+    REQUIRE(hold.started());
+    REQUIRE(waitFor([&] { return !label->isHidden(); }));
+    // another edit, and a refresh that waits for the held one
+    REQUIRE(doc->edit(merge(*doc, 30, 20)));
+    dock->refresh();
+    // and an edit after that refresh was asked for
+    REQUIRE(doc->edit(merge(*doc, 10, 2)));
+    // the held lint is dropped; the refresh waiting for it reads the
+    // document as it is now, so its result is current. No timer fires.
+    hold.release();
+    REQUIRE(postedUntil([&] { return !dock->busy(); }));
+    CHECK(current == QList<bool>{true});
+    CHECK(rowAt(dock->list(), QStringLiteral("30,20"), QStringLiteral("merge")));
+    CHECK_FALSE(dock->stale());
+    CHECK(label->isHidden());
+}

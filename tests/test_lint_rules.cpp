@@ -141,6 +141,39 @@ TEST_CASE("a one-cell break in a thin line is a gap; a dashed or thick line isn'
     }
 }
 
+TEST_CASE("a break along the canvas's edge isn't a gap: the line may be thicker past it", "[lint][rules]") {
+    // the review's repro: a column of grey dither down the edge with a cell
+    // of the field in it, which the lint called a break in a line
+    const Cell space = cell(U' ', Grey, Black), dither = cell(kShadeLight, Grey, Black);
+    for (const int x : {0, 4}) {
+        INFO("column " << x);
+        Canvas c = filled(5, 14, space);
+        for (int y = 0; y < 14; ++y)
+            c.at(x, y) = dither;
+        c.at(x, 7) = space;
+        CHECK(rules(c, Kind::Gap).empty());
+        // one column in from the edge, the same break is a gap
+        Canvas in = filled(5, 14, space);
+        const int x1 = x == 0 ? 1 : 3;
+        for (int y = 0; y < 14; ++y)
+            in.at(x1, y) = dither;
+        in.at(x1, 7) = space;
+        const auto found = rules(in, Kind::Gap);
+        REQUIRE(found.size() == 1);
+        CHECK(found[0].x == x1);
+        CHECK(found[0].y == 7);
+    }
+    // a line along the top or bottom row
+    for (const int y : {0, 4}) {
+        INFO("row " << y);
+        Canvas c = filled(14, 5, space);
+        for (int x = 0; x < 14; ++x)
+            c.at(x, y) = cell(U'─', White, Black);
+        c.at(6, y) = space;
+        CHECK(rules(c, Kind::Gap).empty());
+    }
+}
+
 TEST_CASE("a gap in a short line is found; a dash pattern of short dashes isn't one", "[lint][rules]") {
     const Cell space = cell(U' ', Grey, Black), red = cell(kFullBlock, Red, Black);
     for (const int arm : {2, 3, 4, 5, 6}) {

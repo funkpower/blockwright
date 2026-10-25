@@ -22,14 +22,24 @@
 
 namespace bw {
 
-FollowsDocument::FollowsDocument(Document* doc, QWidget* parent) :
-    QWidget(parent), doc_(doc), timer_(new QTimer(this)), watcher_(new QFutureWatcher<Show>(this)) {
+FollowsDocument::FollowsDocument(Document* doc, const QString& staleText, QWidget* parent) :
+    QWidget(parent), doc_(doc), timer_(new QTimer(this)), staleTimer_(new QTimer(this)),
+    staleLabel_(new QLabel(staleText, this)), watcher_(new QFutureWatcher<Show>(this)) {
     timer_->setSingleShot(true);
     timer_->setInterval(kRefreshDelayMs);
     connect(timer_, &QTimer::timeout, this, [this] {
         if (shown_)
             refresh();
     });
+    staleTimer_->setSingleShot(true);
+    staleTimer_->setInterval(kStaleShowMs);
+    connect(staleTimer_, &QTimer::timeout, this, [this] { staleLabel_->setVisible(stale()); });
+    // the result above it stays where it is when the note comes and goes
+    QSizePolicy keep = staleLabel_->sizePolicy();
+    keep.setRetainSizeWhenHidden(true);
+    staleLabel_->setSizePolicy(keep);
+    staleLabel_->hide();
+    updateStale();
     connect(doc_, &Document::cellsChanged, this, &FollowsDocument::schedule);
     connect(doc_, &Document::reset, this, &FollowsDocument::schedule);
     connect(doc_, &Document::formatChanged, this, &FollowsDocument::schedule);
@@ -47,9 +57,14 @@ void FollowsDocument::refresh() {
         again_ = true;
     else
         start();
+    updateStale();
 }
 
 void FollowsDocument::start() {
+    // the snapshot reads every change so far, a refresh asked for while the
+    // last one ran too, so none of them is waiting any more
+    timer_->stop();
+    stale_ = false;
     running_ = true;
     dropped_ = false;
     watcher_->setFuture(QtConcurrent::run([work = snapshot(), before = beforeWork_] {
@@ -66,6 +81,7 @@ void FollowsDocument::finished() {
         return;
     }
     running_ = false;
+    updateStale();
     if (dropped_)
         return;
     const Show result = watcher_->result();
@@ -80,6 +96,16 @@ void FollowsDocument::schedule() {
         dropped_ = true;
     if (shown_)
         timer_->start();
+    updateStale();
+}
+
+void FollowsDocument::updateStale() {
+    if (!stale()) {
+        staleTimer_->stop();
+        staleLabel_->hide();
+    } else if (staleLabel_->isHidden() && !staleTimer_->isActive()) {
+        staleTimer_->start();
+    }
 }
 
 void FollowsDocument::setShown(bool on) {
@@ -101,7 +127,7 @@ void FollowsDocument::hideEvent(QHideEvent* e) {
 }
 
 LintDock::LintDock(Document* doc, QWidget* parent) :
-    FollowsDocument(doc, parent), ramps_(new QComboBox(this)), list_(new QTreeWidget(this)), summary_(new QLabel(this)) {
+    FollowsDocument(doc, tr("Linting…"), parent), ramps_(new QComboBox(this)), list_(new QTreeWidget(this)), summary_(new QLabel(this)) {
     ramps_->addItem(tr("All named ramps"));
     for (const Ramp& r : namedRamps())
         ramps_->addItem(QString::fromStdString(r.name));
@@ -119,6 +145,7 @@ LintDock::LintDock(Document* doc, QWidget* parent) :
     lay->addWidget(ramps_);
     lay->addWidget(list_, 1);
     lay->addWidget(summary_);
+    lay->addWidget(staleLabel());
 
     connect(ramps_, &QComboBox::currentIndexChanged, this, &LintDock::refresh);
     connect(list_, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem* item) {
@@ -169,7 +196,7 @@ void LintDock::showReport(lint::LintReport report) {
 }
 
 IrcViewDock::IrcViewDock(Document* doc, QWidget* parent) :
-    FollowsDocument(doc, parent), picture_(new QLabel), status_(new QLabel(this)) {
+    FollowsDocument(doc, tr("Updating…"), parent), picture_(new QLabel), status_(new QLabel(this)) {
     picture_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     auto* scroll = new QScrollArea(this);
     scroll->setWidget(picture_);
@@ -181,6 +208,7 @@ IrcViewDock::IrcViewDock(Document* doc, QWidget* parent) :
     lay->setContentsMargins(4, 4, 4, 4);
     lay->addWidget(scroll, 1);
     lay->addWidget(status_);
+    lay->addWidget(staleLabel());
     // open, New and replace come as Document::reset, which FollowsDocument
     // follows; a new budget is redrawn at once, not after the edits' delay
     connect(doc_, &Document::ircBudgetChanged, this, [this] {

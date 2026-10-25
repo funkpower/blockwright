@@ -76,7 +76,9 @@ struct RuleOptions {
 //   where the gap shows what is across the line: the line is broken there.
 //   Not where the line breaks the same way again 3-6 cells on, with the line
 //   on both sides of that break too (a dashed line); past the line's end is
-//   no break. Across a row or down a column.
+//   no break. Not along the canvas's edge either, where a cell across the
+//   line is off the canvas: the line may be thicker past it (a column of
+//   dither down the edge). Across a row or down a column.
 // - Merge: a glyph other than a space or a block element in its own
 //   background's colour: it can't be seen. (Figures that touch and fuse
 //   need to know which cells are which figure, which a flat canvas doesn't.)

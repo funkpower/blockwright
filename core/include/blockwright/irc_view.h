@@ -55,9 +55,13 @@ struct View {
 
 // The view of `canvas` sent as IRC text with `opts`, each line cut to fit
 // `budget` bytes as the sender cuts it (ascii.fit): a line that fits is sent
-// whole; a longer one keeps the cells whose glyph ends within budget - 1
-// bytes, the last byte for the reset after them, and loses the rest. The
-// view is the canvas's size, the lost cells blank in the client's background.
+// whole; a longer one the sender encodes again in its own way (two-digit
+// colour codes, a space or a full block for a solid cell, whichever is
+// shorter), sends that whole if it fits, and otherwise keeps the cells
+// whose glyph ends within budget - 1 bytes of it, the last byte for the
+// reset after them, and loses the rest. The view is the canvas's size, the
+// cells shown as the export draws them, the lost ones blank in the client's
+// background.
 View ircView(const Canvas& canvas, std::size_t budget = kEfnetWeechatBudget, const EncodeOptions& opts = {});
 
 } // namespace bw::irc
