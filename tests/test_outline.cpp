@@ -1260,6 +1260,27 @@ Canvas randomShaded(std::mt19937& g, int w, int h, const Ramp& r) {
     }
     return c;
 }
+// Image k's stamps of a joined stroke, as dabs to stamp unjoined: the
+// stroke's own joining lines (from their lesser end, by row then column,
+// stamped from the earlier dab) reflected, as a mirror's image walks them.
+std::vector<Dab> imageStamps(const Symmetry& sym, const std::vector<Dab>& dabs, size_t k, int w, int h) {
+    std::vector<Dab> out;
+    for (size_t n = 0; n < dabs.size(); ++n) {
+        const Dab& b = dabs[n];
+        std::vector<std::pair<int, int>> centres{{b.x, b.y}};
+        if (n > 0 && (dabs[n - 1].x != b.x || dabs[n - 1].y != b.y)) {
+            const Dab& a = dabs[n - 1];
+            const bool fromA = std::pair{a.y, a.x} < std::pair{b.y, b.x};
+            auto l = fromA ? line4(a.x, a.y, b.x, b.y) : line4(b.x, b.y, a.x, a.y);
+            if (!fromA)
+                std::reverse(l.begin(), l.end());
+            centres.assign(l.begin() + 1, l.end());
+        }
+        for (const auto& [x, y] : centres)
+            out.push_back(symmetryDabs(sym, Dab{x, y}, w, h)[k]);
+    }
+    return out;
+}
 // The canvas with its left half copied mirrored onto its right half.
 Canvas mirroredX(Canvas c) {
     const int w = c.width();
@@ -1285,8 +1306,9 @@ TEST_CASE("an outline image writes what a stroke along it alone does", "[detail]
     CHECK(paintStroke(c, brush, square(1), {{4, 2}}, o).empty());
     // Random strokes whose images overlap. The composite is judged as a
     // whole (Claude round 2, N1), so it is the union of each image's own
-    // edit only where that union is itself lint clean and no two images
-    // write one cell; everywhere it adds no finding.
+    // edit (its stamps alone, the reflections of the stroke's own lines)
+    // only where that union is itself lint clean and no two images write
+    // one cell; everywhere it adds no finding.
     std::mt19937 g(5503);
     const auto uni = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(g); };
     int unions = 0, same = 0;
@@ -1311,10 +1333,10 @@ TEST_CASE("an outline image writes what a stroke along it alone does", "[detail]
         std::map<Point, Cell> each;
         bool overlap = false;
         for (size_t k = 0; k < images; ++k) {
-            std::vector<Dab> image;
-            for (const Dab& d : dabs)
-                image.push_back(symmetryDabs(sym, d, w, h)[k]);
-            for (const auto& [p, cell] : written(paintStroke(r, brush, s, image)))
+            Stroke alone(r, brush, s);
+            for (const Dab& d : imageStamps(sym, dabs, k, w, h))
+                alone.addDab(d, false);
+            for (const auto& [p, cell] : written(alone.edit()))
                 overlap = !each.emplace(p, cell).second || overlap;
         }
         Canvas u = r;

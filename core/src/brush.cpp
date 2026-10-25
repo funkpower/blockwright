@@ -392,10 +392,22 @@ void Stroke::addDab(const Dab& d, bool join) {
     // Each image's stamps for this dab (its joining line's, or the one),
     // stamped in turn: point k of every image, then point k + 1, so a brush
     // that judges a dab's images together sees each point's images at once.
+    // A joining line is walked from its lesser end (by row, then column).
+    // A mirror or the half turn walks its image from the image of the
+    // stroke's own lesser end instead of its own: Line takes the same steps
+    // whichever way its signs run, so the image's cells are the exact
+    // reflections of the stroke's (#125). A turn that is rounded walks its
+    // own line from its own lesser end.
+    const auto fromLast = [](const std::optional<std::pair<long long, long long>>& last, long long x, long long y) {
+        return last && std::pair{last->second, last->first} < std::pair{y, x};
+    };
+    const bool ownFromLast = fromLast(lasts_[0], ims[0].x, ims[0].y);
     std::vector<std::vector<Dab>> stamps(ims.size());
     size_t most = 0;
     for (size_t i = 0; i < ims.size(); ++i) {
-        addImage(ims[i].x, ims[i].y, imageDab(d, ims[i], int(i)), join, lasts_[i], stamps[i]);
+        const bool reflection = ims[i].flipX || ims[i].flipY;
+        addImage(ims[i].x, ims[i].y, imageDab(d, ims[i], int(i)), join,
+                 i == 0 || reflection ? ownFromLast : fromLast(lasts_[i], ims[i].x, ims[i].y), lasts_[i], stamps[i]);
         most = std::max(most, stamps[i].size());
     }
     for (size_t k = 0; k < most; ++k)
@@ -404,7 +416,7 @@ void Stroke::addDab(const Dab& d, bool join) {
                 stamp(image[k]);
 }
 
-void Stroke::addImage(long long x, long long y, const Dab& d, bool join,
+void Stroke::addImage(long long x, long long y, const Dab& d, bool join, bool fromLast,
                       std::optional<std::pair<long long, long long>>& last, std::vector<Dab>& out) {
     const auto at = [&](long long cx, long long cy) {
         Dab out = d;
@@ -423,12 +435,13 @@ void Stroke::addImage(long long x, long long y, const Dab& d, bool join,
         // dab of it were stamped. A dab further off than the brush's half
         // width (plus one) can't touch the canvas. The ends stay in 64 bits,
         // so an image beyond int keeps the line's slope.
-        // The line is walked from its lesser end (by row, then column) and
-        // stamped from the last point, so a line back over the same two
-        // points covers the same cells: a scrub stamps no new ones.
+        // The line is walked from the end addDab picks (the lesser one, by
+        // row then column, of the stroke's own line) and stamped from the
+        // last point, so a line back over the same two points covers the
+        // same cells: a scrub stamps no new ones.
         const long long m = settings_.size / 2 + 1;
         const auto [fx, fy] = *last;
-        if (std::pair{fy, fx} < std::pair{y, x}) {
+        if (fromLast) {
             walk4(fx, fy, x, y, -m, -m, canvas_.width() - 1LL + m, canvas_.height() - 1LL + m,
                   [&](long long cx, long long cy) {
                       if (cx != fx || cy != fy)

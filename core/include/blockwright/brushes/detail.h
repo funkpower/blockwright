@@ -227,10 +227,9 @@ private:
 // - keepLint on diagonal rims: a staircase rim lights one cell a row, each
 //   a speck, so it stays unlit; a flat █ shape with no ░▒▓ lights only the
 //   few cells the one-glyph rule allows;
-// - keepLint under a mirror lights every stamp's images, so it can light a
-//   cell the accent's stroke didn't reach (an image's joining line isn't
-//   always the exact mirror of the first); radial symmetry is judged a
-//   stamp at a time;
+// - keepLint under radial symmetry is judged a stamp at a time, not as
+//   orbits (under a mirror every stamp's images are the images' own
+//   stamps, so it lights only cells the accent's stroke reaches);
 // - keepLint under a mirror whose axis the light crosses (N under mirror
 //   Y) lights only cells whose images face the light too: a flat top row
 //   under mirror Y lights nothing from N;

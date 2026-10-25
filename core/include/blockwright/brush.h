@@ -273,9 +273,10 @@ private:
     BrushSettings settings_;
     StrokeOptions options_;
     // One image of a dab, at x, y (64-bit: an image of a dab near the ends
-    // of int can lie beyond them), joined to the image's last position: its
-    // stamps, in order, into out (addDab stamps the images' in turn).
-    void addImage(long long x, long long y, const Dab& d, bool join,
+    // of int can lie beyond them), joined to the image's last position by
+    // the line walked from that end (fromLast) or from x, y: its stamps, in
+    // order, into out (addDab stamps the images' in turn).
+    void addImage(long long x, long long y, const Dab& d, bool join, bool fromLast,
                   std::optional<std::pair<long long, long long>>& last, std::vector<Dab>& out);
 
     std::vector<std::optional<std::pair<long long, long long>>> lasts_;  // per symmetry image

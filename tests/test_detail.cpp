@@ -15,6 +15,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <climits>
 #include <cmath>
@@ -2518,14 +2519,14 @@ TEST_CASE("the lint-aware rim light adds nothing to the start and lights what ea
     // walks and new segments, sizes 1-12 on both tips), lit from all eight
     // points. After every dab the lint-aware stroke adds no finding to its
     // start by the lint's own rule, every cell it changed is one the accent
-    // lights, the same way (under a mirror it lights each stamp's images,
-    // which can lie beside another image's joining line, so not only the
-    // cells the accent's stroke lit), and after every stamp each cell the
-    // stamp tried and left unlit (its own, and earlier refusals beside them)
-    // would add a finding lit alone, with its images (StampChecked). A cell
-    // the stamp didn't try isn't checked: a change further off can make it
-    // safe to light, and it waits for a stamp beside it. Off, the brush
-    // paints what the accent painted before the option, cell for cell
+    // lights, the same way, and one the accent's stroke lit (under a mirror
+    // each stamp's images are the images' own stamps, #125), and after every
+    // stamp each cell the stamp tried and left unlit (its own, and earlier
+    // refusals beside them) would add a finding lit alone, with its images
+    // (StampChecked). A cell the stamp didn't try isn't checked: a change
+    // further off can make it safe to light, and it waits for a stamp beside
+    // it. Off, the brush paints what the accent painted before the option,
+    // cell for cell
     constexpr int W = 24, H = 12;
     std::mt19937 rng(2026102454);
     const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
@@ -2579,6 +2580,9 @@ TEST_CASE("the lint-aware rim light adds nothing to the start and lights what ea
                 failure = "dab " + std::to_string(i) + " changed a cell the accent doesn't light\n" + rungMap(kept);
             else if (!(so.preview() == was))
                 failure = "dab " + std::to_string(i) + ": off isn't the accent\n" + rungMap(so.preview());
+            else if (const auto lit = changedCells(start, was), mine = changedCells(start, kept);
+                     !std::includes(lit.begin(), lit.end(), mine.begin(), mine.end()))
+                failure = "dab " + std::to_string(i) + " changed a cell the accent's stroke didn't\n" + rungMap(kept);
             else if (!on.failure.empty())
                 failure = "dab " + std::to_string(i) + ": " + on.failure;
             x = std::clamp(x + pick(-4, 4), 0, W - 1);

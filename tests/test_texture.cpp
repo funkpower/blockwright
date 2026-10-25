@@ -334,7 +334,7 @@ TEST_CASE("a mirrored texture is symmetric where the images overlap", "[texture]
                 }
                 {
                     // a dab off the axes, over them: part of each image lies over
-                    // another's (one dab: a joining line's images aren't exact)
+                    // another's
                     const Canvas c(w, h);
                     const auto cells = written(stamp(c, b, w / 2 - 6, h / 2 - 4, 21, o));
                     REQUIRE_FALSE(cells.empty());
