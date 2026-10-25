@@ -19,7 +19,7 @@ int luma(std::uint8_t i) {
 }
 
 bool composites(const Layer& l) {
-    return l.props.visible && l.props.kind != LayerKind::Generator && l.props.kind != LayerKind::Reference;
+    return l.props.visible && l.props.kind != LayerKind::Reference;
 }
 
 // Lays one layer cell over the cell composited so far (`acc`, `text` whether

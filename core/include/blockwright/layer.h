@@ -24,9 +24,11 @@
 //   CellEdits and Canvas cells like the others. Its pixels are resolved to
 //   ▀ ▄ █ or a space against what is under them when the stack is
 //   composited, not when they are plotted.
-// - generator, reference: reserved (Phase 5 and the reference image); a
-//   stack holds them but the compositor skips them, and a reference layer is
-//   never exported.
+// - generator: the cells a program made (generator.h), its cached output,
+//   composited as a cells layer's are. Tools don't edit them; running the
+//   generator again replaces them. bake() turns it into a cells layer.
+// - reference: reserved (the reference image); a stack holds it but the
+//   compositor skips it, and it is never exported.
 //
 // Groups (pass-through only in PLAN §5) are not modelled yet: the stack is
 // flat.
@@ -125,9 +127,9 @@ Cell transparentCell();
 // 0 until a stack adds it.
 Layer makeLayer(LayerKind kind, int width, int height, std::string name = {}, int x = 0, int y = 0);
 
-// A text layer as a cells layer: the same cells and properties, kind cells.
-// Every other layer comes back as it is. (A generator layer will bake its
-// cached output the same way once it has one.)
+// A text or generator layer as a cells layer: the same cells (a generator's
+// cached output) and properties, kind cells. Every other layer comes back as
+// it is. The generator's files (scripts/<id>/ in a project) are left alone.
 Layer bake(Layer layer);
 
 // The stroke options a tool editing this layer uses: `base` with the

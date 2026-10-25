@@ -1,7 +1,8 @@
 # The core library: cell model, palette, CP437, ANSI and SAUCE codecs, IRC
 # text (mIRC colours and the row encoder), ramps, brushes and the lint.
-# Plain C++20 (QtCore for the Library, tag case folding and projects' JSON;
-# libzip and zstd for project files); it must never link QtWidgets.
+# Plain C++20 (QtCore for the Library, tag case folding, projects' JSON and
+# running generators; libzip and zstd for project files); it must never link
+# QtWidgets.
 add_library(blockwright_core STATIC
   src/ansi.cpp
   src/brush.cpp
@@ -21,6 +22,7 @@ add_library(blockwright_core STATIC
   src/canvas.cpp
   src/cp437.cpp
   src/edit.cpp
+  src/generator.cpp
   src/glyph_sets.cpp
   src/composite.cpp
   src/halfblock.cpp

@@ -18,13 +18,16 @@
 //   blockwright-cli pack <in.ans|project> <out.bwp>
 //   blockwright-cli unpack <in.ans|project> <dir>
 //   blockwright-cli snapshot [--allow-lossy] <project>
+//   blockwright-cli add-generator [--name NAME] [--timeout S] <project> <generator-dir>
+//   blockwright-cli run-generators [--layer ID]... [--timeout S] <project>
 //
 // Every command that reads an .ans also reads a project (PLAN §6), a .bwp
 // zip or a project directory, as its flattened composite.
 //
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert or shade
 // without --allow-lossy (nothing is written), or a library check that found
-// a problem, or a lossy snapshot without --allow-lossy, 2 usage error, 3 an IRC line over the byte budget without
+// a problem, or a lossy snapshot without --allow-lossy, or a generator that failed (nothing is written), 2 usage
+// error, 3 an IRC line over the byte budget without
 // --allow-over-budget (nothing is written), 4 lint reported findings.
 
 #include "blockwright/ansi.h"
@@ -32,6 +35,7 @@
 #include "blockwright/brushes/shading.h"
 #include "blockwright/cp437.h"
 #include "blockwright/credits.h"
+#include "blockwright/generator.h"
 #include "blockwright/irc.h"
 #include "blockwright/irc_render.h"
 #include "blockwright/irc_view.h"
@@ -40,6 +44,7 @@
 #include "blockwright/project.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
+#include "generators.h"
 #include "lint.h"
 #include "read_file.h"
 #include "shade.h"
@@ -54,15 +59,18 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -319,6 +327,59 @@ int snapshot(const std::string& path, bool allowLossy) {
                       " not saved: the snapshot loses data (--allow-lossy saves it anyway)"};
     writeProject(p, path, std::filesystem::is_directory(path));
     std::cout << "r" << round << "\n";
+    return kOk;
+}
+
+// Adds the generator in `dir` to the project as a new layer on top, runs it
+// for its first cells and saves the project in the form it was read. Prints
+// the new layer's id.
+int addGenerator(const std::string& path, const std::string& dir, std::optional<std::string> name,
+                 const bw::generator::RunOptions& opts) {
+    if (!bw::project::isProject(path))
+        throw Failure{path + ": not a project"};
+    bw::project::Project p = loadProject(path);
+    const auto files = bwcli::readGeneratorDir(dir);
+    bwcli::prepareToRunGenerators();
+    if (!name) {
+        std::filesystem::path d = std::filesystem::absolute(dir).lexically_normal();
+        if (d.filename().empty())
+            d = d.parent_path();
+        name = d.filename().string();
+    }
+    bw::LayerId id = 0;
+    try {
+        id = bw::generator::add(p, files, *name, opts);
+    } catch (const bw::generator::GeneratorError& e) {
+        throw Failure{path + ": " + e.what()};
+    }
+    writeProject(p, path, std::filesystem::is_directory(path));
+    const bw::Layer& l = *p.layers.find(id);
+    std::cout << "layer " << id << " (" << l.props.name << "): " << l.width() << "x" << l.height() << "\n";
+    return kOk;
+}
+
+// Runs the project's generator layers (those in `ids`, or every one), bottom
+// first, and saves the project in the form it was read with their new cells.
+// If any fails nothing is written.
+int runGenerators(const std::string& path, const std::vector<bw::LayerId>& ids,
+                  const bw::generator::RunOptions& opts) {
+    if (!bw::project::isProject(path))
+        throw Failure{path + ": not a project"};
+    bw::project::Project p = loadProject(path);
+    const std::vector<bw::LayerId> todo = bwcli::generatorsToRun(p.layers, ids);
+    bwcli::prepareToRunGenerators();
+    for (const bw::LayerId id : todo) {
+        try {
+            bw::generator::refresh(p, id, opts);
+        } catch (const bw::generator::GeneratorError& e) {
+            throw Failure{path + ": " + e.what() + "\n" + path + ": not written"};
+        }
+        const bw::Layer& l = *p.layers.find(id);
+        std::cout << "layer " << id << " (" << l.props.name << "): " << l.width() << "x" << l.height() << "\n";
+    }
+    if (!todo.empty())
+        writeProject(p, path, std::filesystem::is_directory(path));
+    std::cout << todo.size() << (todo.size() == 1 ? " generator" : " generators") << " run\n";
     return kOk;
 }
 
@@ -655,7 +716,15 @@ int main(int argc, char** argv) {
         "  unpack <in> <dir>    write an .ans or a project as a project directory;\n"
         "                       <dir> must be empty or a project already\n"
         "  snapshot <project>   save the flattened composite as the project's next\n"
-        "                       round (snapshots/rN.ans) and print rN\n\n"
+        "                       round (snapshots/rN.ans) and print rN\n"
+        "  add-generator <project> <dir>\n"
+        "                       add a generator layer on top, from a directory\n"
+        "                       with a generator.json (and params.json, scripts),\n"
+        "                       run it once and save the project\n"
+        "  run-generators <project>\n"
+        "                       run the project's generator layers (or each\n"
+        "                       --layer) again and save their output; this runs\n"
+        "                       the programs their generator.json names\n\n"
         "Every command that reads an .ans also reads a project (a .bwp zip or a\n"
         "project directory) as its flattened composite."));
     const QCommandLineOption helpOpt = parser.addHelpOption();
@@ -741,7 +810,23 @@ int main(int argc, char** argv) {
     parser.addOption(iceOpt);
     const QCommandLineOption jsonOpt(QStringLiteral("json"), QStringLiteral("lint: the findings as JSON"));
     parser.addOption(jsonOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack or snapshot"));
+    const QCommandLineOption nameOpt(QStringLiteral("name"),
+                                     QStringLiteral("add-generator: the layer's name (default: the directory's)"),
+                                     QStringLiteral("name"));
+    parser.addOption(nameOpt);
+    const QCommandLineOption layerOpt(
+        QStringLiteral("layer"),
+        QStringLiteral("run-generators: run this generator layer (an id, as info lists them); more than once for "
+                       "several (default: every one)"),
+        QStringLiteral("id"));
+    parser.addOption(layerOpt);
+    const QCommandLineOption timeoutOpt(
+        QStringLiteral("timeout"),
+        QStringLiteral("add-generator, run-generators: seconds a generator may run (1-3600, default %1)")
+            .arg(std::chrono::duration_cast<std::chrono::seconds>(bw::generator::kDefaultTimeout).count()),
+        QStringLiteral("S"));
+    parser.addOption(timeoutOpt);
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator or run-generators"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -768,6 +853,8 @@ int main(int argc, char** argv) {
                   << "       | render --irc [--budget N] [--scale N] [--font-width 8|9] <in> <out.png>\n"
                   << "       | library list [dir] | library check <dir>\n"
                   << "       | pack <in> <out.bwp> | unpack <in> <dir> | snapshot [--allow-lossy] <project>\n"
+                  << "       | add-generator [--name NAME] [--timeout S] <project> <dir>\n"
+                  << "       | run-generators [--layer ID]... [--timeout S] <project>\n"
                   << "       | --version\n";
         return kUsage;
     };
@@ -783,11 +870,14 @@ int main(int argc, char** argv) {
         {&boxOpt, {"shade", "lint"}},      {&iceOpt, {"shade"}},     {&jsonOpt, {"lint"}},
         {&formOpt, {"shade"}},             {&glintOpt, {"shade"}},   {&despeckleOpt, {"shade"}},
         {&rimOpt, {"shade"}},              {&lightOpt, {"shade"}},   {&maskOpt, {"shade"}},
+        {&nameOpt, {"add-generator"}},     {&layerOpt, {"run-generators"}},
+        {&timeoutOpt, {"add-generator", "run-generators"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
         cmd == QLatin1String("library") ||
-        cmd == QLatin1String("pack") || cmd == QLatin1String("unpack") || cmd == QLatin1String("snapshot"))
+        cmd == QLatin1String("pack") || cmd == QLatin1String("unpack") || cmd == QLatin1String("snapshot") ||
+        cmd == QLatin1String("add-generator") || cmd == QLatin1String("run-generators"))
         for (const auto& [o, cmds] : owners) {
             if (!parser.isSet(*o) ||
                 std::any_of(cmds.begin(), cmds.end(), [&](const char* c) { return cmd == QLatin1String(c); }))
@@ -795,8 +885,9 @@ int main(int argc, char** argv) {
             std::string owner;
             for (std::size_t i = 0; i < cmds.size(); ++i)
                 owner += std::string(i == 0 ? "" : i + 1 == cmds.size() ? " or " : ", ") + cmds[i];
-            return usage(("--" + o->names().first().toStdString() + " is " + (owner[0] == 'e' ? "an " : "a ") +
-                          owner + " option, not a " + cmd.toStdString() + " option")
+            const bool vowel = std::string_view("aeiou").find(owner[0]) != std::string_view::npos;
+            return usage(("--" + o->names().first().toStdString() + " is " + (vowel ? "an " : "a ") + owner +
+                          " option, not a " + cmd.toStdString() + " option")
                              .c_str());
         }
     try {
@@ -932,6 +1023,30 @@ int main(int argc, char** argv) {
             if (args.size() != 2)
                 return usage("snapshot takes one project");
             return snapshot(args[1].toStdString(), parser.isSet(lossyOpt));
+        }
+        bw::generator::RunOptions runOpts;
+        if (parser.isSet(timeoutOpt))
+            runOpts.timeout = std::chrono::seconds(intValue(parser.value(timeoutOpt), "timeout", 1, 3600));
+        if (cmd == QLatin1String("add-generator")) {
+            if (args.size() != 3)
+                return usage("add-generator takes a project and a generator directory");
+            std::optional<std::string> name;
+            if (parser.isSet(nameOpt))
+                name = parser.value(nameOpt).toStdString();
+            return addGenerator(args[1].toStdString(), args[2].toStdString(), name, runOpts);
+        }
+        if (cmd == QLatin1String("run-generators")) {
+            if (args.size() != 2)
+                return usage("run-generators takes one project");
+            std::vector<bw::LayerId> ids;
+            for (const QString& v : parser.values(layerOpt)) {
+                bool ok = false;
+                const qulonglong id = v.toULongLong(&ok);
+                if (!ok || id == 0 || id > std::numeric_limits<bw::LayerId>::max())
+                    return usage(("--layer takes a layer id, not '" + v.toStdString() + "'").c_str());
+                ids.push_back(static_cast<bw::LayerId>(id));
+            }
+            return runGenerators(args[1].toStdString(), ids, runOpts);
         }
         return usage(("unknown command '"+ cmd.toStdString() + "'").c_str());
     } catch (const Usage& u) {

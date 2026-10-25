@@ -26,6 +26,7 @@ add_executable(blockwright-tests
   test_edit.cpp
   test_form_brush.cpp
   test_golden.cpp
+  test_generator.cpp
   test_gradient.cpp
   test_irc.cpp
   test_irc_fit.cpp
@@ -60,6 +61,10 @@ add_test(NAME cli
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_test.sh
           $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-tmp)
 set_tests_properties(cli PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+add_test(NAME cli_generators
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_generators_test.sh
+          $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-generators-tmp)
+set_tests_properties(cli_generators PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 add_test(NAME casefold
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/casefold_test.sh
           $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/casefold-tmp)

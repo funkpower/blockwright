@@ -487,11 +487,26 @@ TEST_CASE("hidden layers add nothing; locked ones composite as any other", "[lay
     CHECK(composite(stackOf(2, 2, {base, l})) == shown);
     l.props.visible = false;
     CHECK(composite(stackOf(2, 2, {base, l})) == composite(stackOf(2, 2, {base})));
-    // generator and reference layers aren't composited (nor exported)
-    for (LayerKind k : {LayerKind::Generator, LayerKind::Reference}) {
-        Layer r = filledLayer(k, 2, 2, x);
-        CHECK(flatten(stackOf(2, 2, {base, r})) == composite(stackOf(2, 2, {base})));
-    }
+    // reference layers aren't composited (nor exported)
+    const Layer ref = filledLayer(LayerKind::Reference, 2, 2, x);
+    CHECK(flatten(stackOf(2, 2, {base, ref})) == composite(stackOf(2, 2, {base})));
+}
+
+TEST_CASE("a generator layer composites its cached cells as a cells layer's", "[layers][composite][generator]") {
+    const Cell under = cell(U'.', Grey, Black), x = cell(U'x', White, Red);
+    const Layer base = filledLayer(LayerKind::Cells, 3, 2, under);
+    Layer gen = filledLayer(LayerKind::Generator, 2, 1, x, 1, 1);
+    gen.cells.at(1, 0) = transparentCell();
+    Layer cells = gen;
+    cells.props.kind = LayerKind::Cells;
+    const Canvas shown = composite(stackOf(3, 2, {base, gen}));
+    CHECK(shown == composite(stackOf(3, 2, {base, cells})));
+    CHECK(shown.at(1, 1) == x);
+    CHECK(shown.at(2, 1) == under);
+    CHECK(flatten(stackOf(3, 2, {base, gen})) == flatten(stackOf(3, 2, {base, cells})));
+    gen.props.mode = LayerMode::ColoursOnly;
+    cells.props.mode = LayerMode::ColoursOnly;
+    CHECK(composite(stackOf(3, 2, {base, gen})) == composite(stackOf(3, 2, {base, cells})));
 }
 
 TEST_CASE("24-bit cells pass through unchanged", "[layers][composite][rgb]") {

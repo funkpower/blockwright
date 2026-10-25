@@ -6,11 +6,11 @@
 //
 // Each canvas cell starts as the ground (a blank cell, a space on black) and
 // takes each visible layer over it in turn, bottom first. Hidden layers,
-// generator and reference layers, and the parts of a layer off the canvas
-// add nothing; locked and alpha-locked layers composite like any other.
-// A transparent cell adds nothing either, so what is under it shows. An
-// opaque cell:
-// - of a cells or text layer, by the layer's mode: normal replaces the cell,
+// reference layers, and the parts of a layer off the canvas add nothing;
+// locked and alpha-locked layers composite like any other. A transparent
+// cell adds nothing either, so what is under it shows. An opaque cell:
+// - of a cells, text or generator layer (a generator's cached output,
+//   generator.h), by the layer's mode: normal replaces the cell,
 //   chars-only writes its glyph over the colours and attributes under it,
 //   colours-only its colours and attributes under the glyph. Nothing is
 //   re-picked or quantised, so 24-bit colours pass through as they are.

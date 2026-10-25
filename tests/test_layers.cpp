@@ -184,6 +184,19 @@ TEST_CASE("bake turns a text layer into cells, keeping everything else", "[layer
     CHECK(bake(p) == p);
 }
 
+TEST_CASE("bake turns a generator layer's cached cells into a cells layer", "[layers][generator]") {
+    Layer g = makeLayer(LayerKind::Generator, 2, 1, "stars", -1, 2);
+    g.cells.at(1, 0) = Cell{U'*', Color::indexed(Yellow), Color::indexed(Black), 0, false};
+    g.props.id = 4;
+    g.props.alphaLocked = true;
+    const Layer b = bake(g);
+    LayerProperties want = g.props;
+    want.kind = LayerKind::Cells;
+    CHECK(b.props == want);
+    CHECK(b.cells == g.cells);
+    CHECK(b.cells.at(0, 0).transparent);
+}
+
 TEST_CASE("a tool may paint a layer's cells unless it is locked, and opaque cells only under the alpha lock",
           "[layers]") {
     Layer l = makeLayer(LayerKind::Cells, 2, 1, "", 3, 0);

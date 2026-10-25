@@ -103,7 +103,7 @@ Layer makeLayer(LayerKind kind, int width, int height, std::string name, int x, 
 }
 
 Layer bake(Layer layer) {
-    if (layer.props.kind == LayerKind::Text)
+    if (layer.props.kind == LayerKind::Text || layer.props.kind == LayerKind::Generator)
         layer.props.kind = LayerKind::Cells;
     return layer;
 }
