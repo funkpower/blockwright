@@ -172,8 +172,11 @@ if(NOT TARGET Qt6::GuiPrivate)
   find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
 endif()
 target_link_libraries(blockwright-app-tests PRIVATE blockwright_app blockwright_cli_io Qt6::GuiPrivate Catch2::Catch2)
+# test_app_irc.cpp runs the CLI's export on the projects the app saves.
+add_dependencies(blockwright-app-tests blockwright-cli)
 target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
-                                                        BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
+                                                        BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library"
+                                                        BW_CLI="$<TARGET_FILE:blockwright-cli>")
 set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
 catch_discover_tests(blockwright-app-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen

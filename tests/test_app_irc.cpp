@@ -14,11 +14,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QDir>
 #include <QFile>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QProcess>
+#include <QRegularExpression>
 #include <QScrollBar>
 #include <QSpinBox>
 #include <QTemporaryDir>
@@ -26,6 +31,7 @@
 #include <QUndoStack>
 
 #include <filesystem>
+#include <optional>
 
 using namespace bw;
 
@@ -101,18 +107,76 @@ void writeBudgetProject(const QString& path, std::size_t bytes) {
     project::writeZip(p, fpath(path));
 }
 
-// What `blockwright-cli export --irc [--fit]` does with the project at
-// `path` (cli/main.cpp, exportIrc): the lines it writes and the budget it
-// holds them to, the project's own.
+struct CliRun {
+    int status = -1;
+    QString out;  // what it printed
+    std::optional<std::string> written;  // the file, if it wrote one
+};
+
+// Runs `blockwright-cli export --irc [--fit] [--allow-over-budget]` on the
+// project at `path`, writing beside it.
+CliRun runCliExport(const QString& path, bool fit, bool allowOver) {
+    const QString txt = path + QStringLiteral(".cli.txt");
+    QFile::remove(txt);
+    QStringList args{QStringLiteral("export"), QStringLiteral("--irc")};
+    if (fit)
+        args << QStringLiteral("--fit");
+    if (allowOver)
+        args << QStringLiteral("--allow-over-budget");
+    args << path << txt;
+    QProcess p;
+    p.start(QStringLiteral(BW_CLI), args);
+    REQUIRE(p.waitForFinished(60000));
+    REQUIRE(p.exitStatus() == QProcess::NormalExit);
+    CliRun r;
+    r.status = p.exitCode();
+    r.out = QString::fromUtf8(p.readAllStandardOutput());
+    if (QFile::exists(txt))
+        r.written = readAll(txt).toStdString();
+    return r;
+}
+
+// The lines `blockwright-cli export --irc [--fit]` writes for the project
+// at `path`, over the budget or not, and the budget it holds them to, which
+// it prints: the project's own.
 std::vector<std::string> cliExport(const QString& path, bool fit, std::size_t* budget) {
-    const project::Project p = project::read(fpath(path));
-    *budget = p.ircBudget.bytes;
-    irc::EncodeOptions o;
-    o.fit = fit ? p.ircBudget.bytes : 0;
+    const CliRun r = runCliExport(path, fit, true);
+    INFO(r.out.toStdString());
+    REQUIRE(r.status == 0);
+    REQUIRE(r.written);
+    const QRegularExpressionMatch m = QRegularExpression(QStringLiteral(" bytes, budget (\\d+): ")).match(r.out);
+    REQUIRE(m.hasMatch());
+    *budget = m.captured(1).toULongLong();
     std::vector<std::string> out;
-    for (irc::Line& l : irc::exportLines(project::toAnsi(p).canvas, o))
-        out.push_back(std::move(l.text));
+    std::size_t from = 0;
+    for (std::size_t nl; (nl = r.written->find('\n', from)) != std::string::npos; from = nl + 1)
+        out.push_back(r.written->substr(from, nl - from));
+    REQUIRE(from == r.written->size());
     return out;
+}
+
+// Answers the next message box with `button`; `asked` says one came and
+// `text`, when given, takes what it said.
+void answer(QWidget* context, QMessageBox::StandardButton button, bool* asked, QString* text = nullptr) {
+    *asked = false;
+    QTimer::singleShot(0, context, [=] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!box)
+            return;
+        *asked = true;
+        if (text)
+            *text = box->text();
+        box->button(button)->click();
+    });
+}
+
+// A copy of the golden tux.ans at `path`.
+QString tuxAt(const QString& path) {
+    QFile f(path);
+    REQUIRE(f.open(QIODevice::WriteOnly));
+    const std::string bytes = bwtest::readFile(bwtest::dataDir() / "golden" / "tux.ans");
+    REQUIRE(f.write(bytes.data(), qint64(bytes.size())) == qint64(bytes.size()));
+    return path;
 }
 
 // Picks `bytes` in View > IRC > Budget... and accepts it.
@@ -128,6 +192,22 @@ void pickBudget(MainWindow& w, int bytes) {
     auto* a = w.findChild<QAction*>(QStringLiteral("ircBudget"));
     REQUIRE(a);
     a->trigger();
+    REQUIRE(ran);
+}
+
+// Picks the default preset (EFnet / WeeChat, 407) in View > IRC >
+// Budget... and accepts it.
+void pickDefaultBudget(MainWindow& w) {
+    bool ran = false;
+    QTimer::singleShot(0, &w, [&] {
+        auto* dialog = qobject_cast<IrcBudgetDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialog);
+        dialog->presetBox()->setCurrentIndex(0);
+        emit dialog->presetBox()->activated(0);
+        dialog->accept();
+        ran = true;
+    });
+    act(w, "ircBudget")->trigger();
     REQUIRE(ran);
 }
 
@@ -566,6 +646,9 @@ TEST_CASE("an opened project's IRC budget is the one the meter, fit and Export h
     CHECK_FALSE(w.exportIrcText(txt, &error));
     CHECK(error.contains(QStringLiteral("over the 300-byte budget")));
     CHECK_FALSE(QFile::exists(txt));
+    const CliRun refused = runCliExport(bwp, false, false);
+    CHECK(refused.status == 3);
+    CHECK_FALSE(refused.written);
     REQUIRE(w.exportIrcText(txt, &error, true));
     CHECK(readAll(txt).toStdString() == irc::joinLines(plain));
 
@@ -667,4 +750,298 @@ TEST_CASE("a flat file or a new canvas after a project measures against the defa
     CHECK(w.document()->extras().ircBudget.bytes == 200);
     CHECK(w.document()->isModified());
     CHECK_FALSE(w.document()->flatHoldsAll());
+}
+
+TEST_CASE("Save As takes a project's IRC budget to the new file, and an .ans export leaves the project its file") {
+    QTemporaryDir dir;
+    const QString bwp = dir.filePath(QStringLiteral("budget.bwp"));
+    writeBudgetProject(bwp, 300);
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(bwp, &error));
+    Document* doc = w.document();
+    IrcMeter* m = w.ircMeter();
+
+    // an .ans can't hold the budget: it is an export, and the project stays
+    // the document's file, unmodified, with its budget
+    const QString flat = dir.filePath(QStringLiteral("budget.ans"));
+    REQUIRE(w.saveFile(flat, &error));
+    CHECK(doc->path() == bwp);
+    CHECK(doc->form() == FileForm::ProjectZip);
+    CHECK_FALSE(doc->isModified());
+    CHECK(m->budget().bytes == 300);
+    CHECK(m->state(4) == IrcMeter::RowState::Over);
+    {
+        MainWindow other;
+        REQUIRE(other.openFile(flat, &error));
+        CHECK(other.ircMeter()->budget() == project::IrcBudget{});
+    }
+
+    // Save As a project directory writes it there and makes that the file
+    const QString pdir = dir.filePath(QStringLiteral("budget-dir"));
+    REQUIRE(QDir().mkpath(pdir));
+    REQUIRE(w.saveFile(pdir, &error));
+    CHECK(doc->path() == pdir);
+    CHECK(doc->form() == FileForm::ProjectDirectory);
+    CHECK_FALSE(doc->isModified());
+    CHECK(project::read(fpath(pdir)).ircBudget == project::IrcBudget{std::string(irc::kCustomProfile), 300});
+    std::size_t cliBudget = 0;
+    CHECK(cliExport(pdir, false, &cliBudget).size() == 2);
+    CHECK(cliBudget == 300);
+
+    // a budget picked after that goes to the next Save As, not the old file
+    pickBudget(w, 400);
+    const QString again = dir.filePath(QStringLiteral("again.bwp"));
+    REQUIRE(w.saveFile(again, &error));
+    CHECK(doc->path() == again);
+    CHECK(doc->form() == FileForm::ProjectZip);
+    CHECK_FALSE(doc->isModified());
+    CHECK(project::read(fpath(again)).ircBudget == project::IrcBudget{std::string(irc::kCustomProfile), 400});
+    CHECK(project::read(fpath(pdir)).ircBudget.bytes == 300);
+    cliExport(again, false, &cliBudget);
+    CHECK(cliBudget == 400);
+    CHECK(m->budget().bytes == 400);
+    CHECK(m->state(4) == IrcMeter::RowState::Fits);
+}
+
+TEST_CASE("a flat file's IRC budget keeps it unsaved until Save As a project, and the default lets an .ans hold it again") {
+    QTemporaryDir dir;
+    const QString ans = tuxAt(dir.filePath(QStringLiteral("piece.ans")));
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(ans, &error));
+    Document* doc = w.document();
+    IrcMeter* m = w.ircMeter();
+    pickBudget(w, 300);
+
+    // Save writes the .ans, which has no room for the budget
+    REQUIRE(w.save());
+    CHECK(readAll(ans).toStdString() == writeAnsi(project::toAnsi(doc->project())).bytes);
+    CHECK(doc->path() == ans);
+    CHECK(doc->form() == FileForm::Ansi);
+    CHECK(doc->isModified());
+    CHECK(w.isWindowModified());
+    CHECK(m->budget().bytes == 300);
+
+    // Save As .bwp keeps it, and the project is the document's file now
+    const QString bwp = dir.filePath(QStringLiteral("piece.bwp"));
+    REQUIRE(w.saveFile(bwp, &error));
+    CHECK(doc->path() == bwp);
+    CHECK(doc->form() == FileForm::ProjectZip);
+    CHECK_FALSE(doc->isModified());
+    CHECK(project::read(fpath(bwp)).ircBudget == project::IrcBudget{std::string(irc::kCustomProfile), 300});
+    CHECK(m->budget().bytes == 300);
+
+    // the default picked again: the project holds nothing an .ans lacks,
+    // so Save As .ans makes the .ans the document's file, saved
+    pickDefaultBudget(w);
+    CHECK(doc->extras().ircBudget == project::IrcBudget{});
+    CHECK(doc->isModified());
+    CHECK(doc->flatHoldsAll());
+    const QString flat = dir.filePath(QStringLiteral("flat.ans"));
+    REQUIRE(w.saveFile(flat, &error));
+    CHECK(doc->path() == flat);
+    CHECK(doc->form() == FileForm::Ansi);
+    CHECK_FALSE(doc->isModified());
+    CHECK(readAll(flat).toStdString() == writeAnsi(project::toAnsi(doc->project())).bytes);
+    CHECK(m->budget() == project::IrcBudget{});
+}
+
+TEST_CASE("the unsaved-changes prompt keeps a flat file's IRC budget open when Save writes only the .ans") {
+    QTemporaryDir dir;
+    const QString ans = tuxAt(dir.filePath(QStringLiteral("piece.ans")));
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(ans, &error));
+    Document* doc = w.document();
+    IrcMeter* m = w.ircMeter();
+    pickBudget(w, 300);
+    bool asked = false;
+    QString text;
+
+    answer(&w, QMessageBox::Cancel, &asked, &text);
+    w.newFile();
+    REQUIRE(asked);
+    CHECK(text == QStringLiteral("The canvas has unsaved changes.\nSave writes piece.ans flattened and keeps the "
+                                 "document open; only a project saves its layers and IRC budget."));
+    CHECK(doc->path() == ans);
+    CHECK(m->budget().bytes == 300);
+
+    // a cell edited alongside the budget, which the file doesn't hold yet
+    CellEdit e;
+    e.changes.push_back({0, 0, doc->canvas().at(0, 0), cell(U'x', 15, 9)});
+    REQUIRE(doc->edit(e));
+    REQUIRE(parseAnsi(readAll(ans).toStdString()).canvas.at(0, 0).ch != U'x');
+    REQUIRE(readAll(ans).toStdString() != writeAnsi(project::toAnsi(doc->project())).bytes);
+    const int steps = doc->undoStack()->index();
+
+    // Save writes the .ans and keeps the document, budget and all, unsaved
+    answer(&w, QMessageBox::Save, &asked);
+    w.newFile();
+    REQUIRE(asked);
+    CHECK(readAll(ans).toStdString() == writeAnsi(project::toAnsi(doc->project())).bytes);
+    CHECK(parseAnsi(readAll(ans).toStdString()).canvas.at(0, 0).ch == U'x');
+    CHECK(doc->path() == ans);
+    CHECK(doc->form() == FileForm::Ansi);
+    CHECK(doc->isModified());
+    CHECK(w.isWindowModified());
+    CHECK(doc->canvas().at(0, 0).ch == U'x');
+    CHECK(doc->extras().ircBudget == project::IrcBudget{std::string(irc::kCustomProfile), 300});
+    CHECK(m->budget().bytes == 300);
+    CHECK(doc->undoStack()->index() == steps);
+    CHECK(doc->undoStack()->text(steps - 2) == QStringLiteral("IRC Budget"));
+    // closing too
+    answer(&w, QMessageBox::Save, &asked);
+    CHECK_FALSE(w.close());
+    CHECK(asked);
+    CHECK(m->budget().bytes == 300);
+
+    // Discard drops it: a new canvas has the default
+    answer(&w, QMessageBox::Discard, &asked);
+    w.newFile();
+    REQUIRE(asked);
+    CHECK(doc->path().isEmpty());
+    CHECK_FALSE(doc->isModified());
+    CHECK(m->budget() == project::IrcBudget{});
+
+    // a project holds its budget: the plain prompt, and its Save lets New go on
+    const QString bwp = dir.filePath(QStringLiteral("budget.bwp"));
+    writeBudgetProject(bwp, 300);
+    REQUIRE(w.openFile(bwp, &error));
+    pickBudget(w, 350);
+    answer(&w, QMessageBox::Save, &asked, &text);
+    w.newFile();
+    REQUIRE(asked);
+    CHECK(text == QStringLiteral("The canvas has unsaved changes."));
+    CHECK(project::read(fpath(bwp)).ircBudget == project::IrcBudget{std::string(irc::kCustomProfile), 350});
+    CHECK(doc->path().isEmpty());
+    CHECK(m->budget() == project::IrcBudget{});
+
+    // a budget undone on a flat file leaves nothing to ask about
+    REQUIRE(w.openFile(ans, &error));
+    pickBudget(w, 300);
+    doc->undoStack()->undo();
+    REQUIRE_FALSE(doc->isModified());
+    answer(&w, QMessageBox::Cancel, &asked);
+    w.newFile();
+    QApplication::processEvents();
+    CHECK_FALSE(asked);
+    CHECK(doc->path().isEmpty());
+}
+
+TEST_CASE("undo and redo after a save move the IRC budget off and back onto what the file holds") {
+    QTemporaryDir dir;
+    const QString bwp = dir.filePath(QStringLiteral("budget.bwp"));
+    writeBudgetProject(bwp, 300);
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(bwp, &error));
+    Document* doc = w.document();
+    IrcMeter* m = w.ircMeter();
+    pickBudget(w, 400);
+    REQUIRE(w.save());
+    REQUIRE_FALSE(doc->isModified());
+
+    // undo: the budget the file doesn't hold, so modified; the file is as saved
+    doc->undoStack()->undo();
+    CHECK(m->budget().bytes == 300);
+    CHECK(m->state(4) == IrcMeter::RowState::Over);
+    CHECK(doc->isModified());
+    CHECK(w.isWindowModified());
+    CHECK(project::read(fpath(bwp)).ircBudget.bytes == 400);
+    // redo: back to the saved budget, clean
+    doc->undoStack()->redo();
+    CHECK(m->budget().bytes == 400);
+    CHECK(m->state(4) == IrcMeter::RowState::Fits);
+    CHECK_FALSE(doc->isModified());
+    CHECK_FALSE(w.isWindowModified());
+
+    // saved after the undo, the file holds 300 and redo is the change
+    doc->undoStack()->undo();
+    REQUIRE(w.save());
+    CHECK_FALSE(doc->isModified());
+    CHECK(project::read(fpath(bwp)).ircBudget.bytes == 300);
+    std::size_t cliBudget = 0;
+    cliExport(bwp, false, &cliBudget);
+    CHECK(cliBudget == 300);
+    doc->undoStack()->redo();
+    CHECK(m->budget().bytes == 400);
+    CHECK(doc->isModified());
+    doc->undoStack()->undo();
+    CHECK_FALSE(doc->isModified());
+
+    // A flat save doesn't hold the budget, so no undo step matches the
+    // file afterwards: undone to the default it is still unsaved
+    const QString ans = tuxAt(dir.filePath(QStringLiteral("piece.ans")));
+    REQUIRE(w.openFile(ans, &error));
+    pickBudget(w, 300);
+    REQUIRE(w.save());
+    REQUIRE(doc->isModified());
+    doc->undoStack()->undo();
+    CHECK(m->budget() == project::IrcBudget{});
+    CHECK(doc->flatHoldsAll());
+    CHECK(doc->isModified());
+    REQUIRE(w.save());
+    CHECK_FALSE(doc->isModified());
+    doc->undoStack()->redo();
+    CHECK(m->budget().bytes == 300);
+    CHECK(doc->isModified());
+    CHECK_FALSE(doc->flatHoldsAll());
+}
+
+TEST_CASE("with Fit on, a budget change and its undo and redo fit the rows to the budget they have") {
+    QTemporaryDir dir;
+    const QString bwp = dir.filePath(QStringLiteral("budget.bwp"));
+    writeBudgetProject(bwp, 300);
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(bwp, &error));
+    Document* doc = w.document();
+    IrcMeter* m = w.ircMeter();
+    const Canvas saved = asSaved(*doc);
+    const std::size_t plain = irc::encodeCanvas(saved)[4].size();
+    REQUIRE(plain > 300);
+    REQUIRE(plain <= 400);
+    act(w, "ircFit")->trigger();
+    REQUIRE(m->fit());
+
+    // the line fitted to `budget`, as the meter must give it
+    const auto fittedTo = [&](std::size_t budget) {
+        irc::EncodeOptions o;
+        o.fit = budget;
+        return irc::encodeLine(saved, 4, o);
+    };
+    const irc::Line at300 = fittedTo(300);
+    REQUIRE(at300.merged > 0);
+    REQUIRE(at300.text.size() <= 300);
+    const auto fitsAt300 = [&] {
+        CHECK(m->options().fit == 300);
+        CHECK(m->state(4) == IrcMeter::RowState::Merged);
+        CHECK(m->bytes(4) == at300.text.size());
+        CHECK(m->merged(4) == at300.merged);
+    };
+    const auto fitsAt400 = [&] {
+        // 400 holds the row whole: nothing merged
+        CHECK(m->options().fit == 400);
+        CHECK(m->state(4) == IrcMeter::RowState::Fits);
+        CHECK(m->bytes(4) == plain);
+        CHECK(m->merged(4) == 0);
+    };
+    fitsAt300();
+    pickBudget(w, 400);
+    fitsAt400();
+    doc->undoStack()->undo();
+    fitsAt300();
+    doc->undoStack()->redo();
+    fitsAt400();
+    doc->undoStack()->undo();
+    fitsAt300();
+
+    // Export after the undo writes the rows fitted to 300, as --fit does
+    std::size_t cliBudget = 0;
+    const std::vector<std::string> cli = cliExport(bwp, true, &cliBudget);
+    REQUIRE(cliBudget == 300);
+    const QString txt = dir.filePath(QStringLiteral("budget.txt"));
+    REQUIRE(w.exportIrcText(txt, &error));
+    CHECK(readAll(txt).toStdString() == irc::joinLines(cli));
 }
