@@ -647,6 +647,49 @@ TEST_CASE("the ladder check finds fallback specks beside shading", "[lint][ladde
         CHECK(fallback(true) == 1);
         CHECK(fallback(false) == 0);
     }
+    SECTION("with iCE off a shade cell falls to its colours' dark counterparts") {
+        // #110: Y▓R (fire's rung 11) shows yellow on red with iCE off; a
+        // blue shape's lower edge cut into it leaves the free half red,
+        // light red's dark counterpart, which no fire rung there shows
+        const Ramp fire = *findRamp("fire");
+        Canvas f(7, 5);
+        for (int y = 0; y < 5; ++y)
+            for (int x = 0; x < 7; ++x)
+                f.at(x, y) = rungCell(fire, 11);
+        f.at(3, 1) = cell(kFullBlock, Blue, Black);
+        f.at(3, 2) = cell(kUpperHalf, Blue, Red);
+        auto specks = [&](bool ice) {
+            lint::LadderOptions o;
+            o.fallback = true;
+            o.ice = ice;
+            return count(lint::checkLadder(f, fire, {}, o), Kind::FallbackSpeck);
+        };
+        CHECK(specks(false) == 1);
+        // with iCE on light red shows, so red is no colour the cell has
+        CHECK(specks(true) == 0);
+        // brown, yellow's dark counterpart, falls the same way
+        f.at(3, 2) = cell(kUpperHalf, Blue, Brown);
+        CHECK(specks(false) == 1);
+        CHECK(specks(true) == 0);
+        // green is the dark counterpart of neither, so it was drawn
+        f.at(3, 2) = cell(kUpperHalf, Blue, Green);
+        CHECK(specks(false) == 0);
+    }
+    SECTION("a solid rung has nothing to fall back to") {
+        // #110: a grey half over a blue shape's upper edge, under solid dark
+        // grey and with solid dark grey at its run's end: the shade it faces
+        // is that solid rung, which shows dark grey and could only have
+        // fallen to it, so the grey was drawn
+        c.at(2, 2) = rungCell(r, 4);
+        c.at(3, 1) = rungCell(r, 4);
+        c.at(3, 2) = cell(kUpperHalf, Grey, Blue);
+        c.at(3, 3) = cell(kFullBlock, Blue, Black);
+        CHECK(fallback() == 0);
+        // the same half under K░w, which can fall to grey, is a speck
+        c.at(2, 2) = rungCell(r, 5);
+        c.at(3, 1) = rungCell(r, 5);
+        CHECK(fallback() == 1);
+    }
     SECTION("the index keeps them") {
         c.at(3, 1) = c.at(4, 1) = cell(kFullBlock, Yellow, Black);
         lint::LadderIndex index(c, r, on);
@@ -687,6 +730,9 @@ TEST_CASE("drawn half-block rims beside shading are not fallback specks", "[lint
     CHECK(specksOnRow("cocktober.ans", "steel", 67) == 0);
     CHECK(specksOnRow("battlestation.ans", "sunset", 3) == 0);
     CHECK(specksOnRow("outrun-sunset.ans", "sunset", 12) == 0);
+    // #110: a yellow stripe through light red, beside solid fire: a solid
+    // rung has nothing to fall back to
+    CHECK(specksOnRow("burning-of-losgar.ans", "fire", 24) == 0);
 }
 
 TEST_CASE("the ladder check reads short and odd lines safely", "[lint][ladder]") {
