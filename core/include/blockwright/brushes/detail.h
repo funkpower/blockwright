@@ -39,7 +39,8 @@ long long detailCellsRead();
 long long setCarefulReads(long long reads);
 
 // How many cells the outline read settling the last dab on this thread
-// (detailCellsRead), the count the careful-pass budget is on: for tests.
+// (detailCellsRead), the count the careful-pass budget is on: 0 where that
+// dab ran no outline, and with symmetry the last image's dab: for tests.
 long long outlineCellsRead();
 
 // Whether (x, y) is a shape cell on the shape's edge (above).
@@ -139,7 +140,7 @@ std::optional<std::pair<double, double>> rimNormal(const Canvas& canvas, const R
 // lighter before the line beside it was drawn stays for the stroke, so a
 // second stroke over the result can take it darker (it adds no finding);
 // where the careful budget ran out, so can a second click (baud-dudes-all,
-// 80 x 2312, skin, square 161 at (60,1541): 42 cells after 305). A larger
+// 80 x 2312, skin, square 161 at (60,1541): 14 cells after 799). A larger
 // click is not sure to write more of the line where the noise is over its
 // limit: psyop-radar's steel at (20,13) writes 127 cells at size 73 and 109
 // at 75, cells the noise fallback keeps apart being pruned as fragments. A

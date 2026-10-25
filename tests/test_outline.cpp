@@ -1732,6 +1732,21 @@ TEST_CASE("the outline writes the line wherever one is under the brush", "[detai
         CHECK(again == line);
         CHECK(read == confirming);
     }
+    // Claude round 1 of #96 (#102): outlineCellsRead is the last dab's, 0
+    // where that dab ran no outline, not the last outline's
+    {
+        paintStroke(moon, brush, square(3), {{12, 5}});
+        REQUIRE(outlineCellsRead() > 0);
+        // nothing of the ramp under the dab
+        CHECK(written(paintStroke(blank(10, 10), brush, square(3), {{5, 5}})).empty());
+        CHECK(outlineCellsRead() == 0);
+        // the pen pressed again where it is: no new cells
+        Stroke stroke(moon, brush, square(3));
+        stroke.addDab({12, 5}, false);
+        REQUIRE(outlineCellsRead() > 0);
+        stroke.addDab({12, 5}, false);
+        CHECK(outlineCellsRead() == 0);
+    }
     // Claude round 1 (P2-1): a finding the canvas has already, far off,
     // doesn't keep the line off the rest of the shape
     Canvas two(70, 100);
@@ -1870,7 +1885,7 @@ TEST_CASE("an outline dab's work is flat in the stroke and linear in the canvas'
     // (the fixture: 44 KB of the file's 277 KB) repeated down 2312 rows, each
     // row where the piece has it. The click read 1.0e9 cells, a careful pass
     // in every round that wrote nothing; with careful passes started only
-    // while the outline has read under 5e7 cells it reads 3.8e8.
+    // while the outline has read under 5e7 cells it reads 1.2e8.
     {
         const AnsiDocument doc = parseAnsi(bwtest::readFile(bwtest::dataDir() / "brushes" / "baud-dudes-1441.ans"));
         const Canvas& rows = doc.canvas;

@@ -1147,7 +1147,7 @@ Canvas settleWith(Layer& layer, int ox, int oy, const Canvas& canvas, const Ramp
 // The cells an outline may read (detailCellsRead) before a careful pass
 // starts no more: about a third of a second on the dev machine.
 thread_local long long carefulReads = 50'000'000;
-// What the last outline read.
+// What the last dab's outline read, 0 where it ran none.
 thread_local long long outlineRead = 0;
 
 } // namespace
@@ -1305,6 +1305,7 @@ void OutlineBrush::dab(Stroke& stroke, const Dab& d, int size, double strength) 
 }
 
 void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int size, double strength) const {
+    outlineRead = 0;
     const Canvas& canvas = stroke.canvas();
     const bool ice = stroke.options().ice;
     const int w = canvas.width(), h = canvas.height();
