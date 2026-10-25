@@ -67,6 +67,15 @@ std::string lowerTag(std::string_view s) {
     return QString::fromUtf8(s.data(), qsizetype(s.size())).toLower().toStdString();
 }
 
+// A tag as the ascii script's tag command stores it, w.lstrip("#").lower():
+// its leading '#'s dropped, so its "#tag" search finds it, then lowercased.
+// Empty for a tag that was only '#'s.
+std::string foldTag(std::string_view s) {
+    while (!s.empty() && s.front() == '#')
+        s.remove_prefix(1);
+    return lowerTag(s);
+}
+
 void appendUtf8(std::string& out, char32_t cp) {
     if (cp < 0x80) {
         out += char(cp);
@@ -487,8 +496,8 @@ std::vector<std::string> parseTags(std::string_view text) {
     std::set<std::string> tags;
     std::string cur;
     const auto flush = [&] {
-        if (!cur.empty())
-            tags.insert(lowerTag(std::exchange(cur, {})));
+        if (std::string t = foldTag(std::exchange(cur, {})); !t.empty())
+            tags.insert(std::move(t));
     };
     for (const char c : text) {
         if (c == ',' || c == ' ') {
@@ -607,7 +616,8 @@ PublishPlan planPublish(const PublishRequest& r) {
     std::set<std::string> mine(r.tags.begin(), r.tags.end());
     if (const auto it = tags.find(plan.key); it != tags.end())
         for (const std::string& t : it->second)
-            mine.insert(lowerTag(t));
+            if (std::string f = foldTag(t); !f.empty())
+                mine.insert(std::move(f));
     mine.insert(std::string(kArtist));
     plan.tags.assign(mine.begin(), mine.end());
     tags[plan.key] = plan.tags;
@@ -695,9 +705,11 @@ std::string remoteCommand(std::string_view dir, std::string_view name, std::size
     // the connection drops. cat stops at the end of its input whether the
     // upload finished or the connection dropped, so the length decides
     // whether the round is renamed into place. It gets the mode `cat >`
-    // would have given it.
+    // would have given it. PIPE is trapped because the client gone leaves
+    // the "only N bytes" message no reader, and dash, zsh and busybox ash
+    // run no EXIT trap for a signal that kills them.
     return "set -e; d=" + d + "; mkdir -p \"$d\"; t=; trap '[ -z \"$t\" ] || rm -f \"$t\"' EXIT; "
-           "trap 'exit 1' HUP INT TERM; t=$(mktemp \"$d/." + n + ".XXXXXX\"); cat > \"$t\"; "
+           "trap 'exit 1' HUP INT TERM PIPE; t=$(mktemp \"$d/." + n + ".XXXXXX\"); cat > \"$t\"; "
            "got=$(wc -c < \"$t\"); [ $got -eq " + z + " ] || { echo \"only $got of " + z + " bytes arrived, so $d/" + n +
            " was left as it was\" >&2; exit 1; }; "
            "chmod \"$(umask -S | tr -d x)\" \"$t\"; mv -f \"$t\" \"$d/" + n + "\"; t=; "

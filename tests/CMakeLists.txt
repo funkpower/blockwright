@@ -109,7 +109,14 @@ if(CMAKE_GENERATOR MATCHES "^Ninja")
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_notices_outside_test.sh
             ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/install-notices-multi-tmp
             "Ninja Multi-Config" ${Qt6_DIR})
+  # with CMAKE_CONFIGURATION_TYPES in the environment naming only another one
+  add_test(NAME install_notices_multi_config_debug_env
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_notices_outside_test.sh
+            ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/install-notices-multi-debug-tmp
+            "Ninja Multi-Config" ${Qt6_DIR})
   set_tests_properties(install_notices_multi_config PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+  set_tests_properties(install_notices_multi_config_debug_env PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CMAKE_CONFIGURATION_TYPES=Debug")
 endif()
 
 add_test(NAME forge_merge
@@ -191,6 +198,7 @@ add_executable(blockwright-publish-tests
 )
 target_link_libraries(blockwright-publish-tests PRIVATE blockwright_app Catch2::Catch2)
 target_compile_definitions(blockwright-publish-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+set_target_properties(blockwright-publish-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
 catch_discover_tests(blockwright-publish-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
@@ -235,9 +243,36 @@ add_test(NAME app_settings_guard_fixtures
 # empty: Blockwright's settings go to the factory's scratch INI file and Qt's
 # own (the QtProject store QFileDialog keeps its history in) to the scratch
 # directory as well.
+set(BW_APP_TEST_BINARIES blockwright-app-tests blockwright-publish-tests blockwright-app-scale-tests)
+set(bw_app_test_files ${BW_APP_TEST_BINARIES})
+list(TRANSFORM bw_app_test_files REPLACE "^(.+)$" "$<TARGET_FILE:\\1>")
 add_test(NAME app_tests_leave_profile_alone
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_profile_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-profile-check
-          $<TARGET_FILE:blockwright-app-tests> $<TARGET_FILE:blockwright-app-scale-tests>)
+          ${bw_app_test_files})
+
+# Every test binary built on the app is in that list and runs under the
+# scratch profile, so one added later can't be left out of both.
+include(${CMAKE_CURRENT_SOURCE_DIR}/app_guard.cmake)
+bw_add_app_guard_test()
+add_test(NAME app_guard_fixtures
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_guard_fixture_test.sh ${CMAKE_COMMAND} ${CMAKE_CTEST_COMMAND}
+          "${CMAKE_GENERATOR}" ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_BINARY_DIR}/app-guard-fixtures ${PROJECT_SOURCE_DIR})
+# And under a multi-config generator, where a nested ctest without -C finds the
+# guard NOT_AVAILABLE
+if(CMAKE_GENERATOR MATCHES "^Ninja")
+  add_test(NAME app_guard_fixtures_multi_config
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_guard_fixture_test.sh ${CMAKE_COMMAND} ${CMAKE_CTEST_COMMAND}
+            "Ninja Multi-Config" ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_BINARY_DIR}/app-guard-fixtures-multi
+            ${PROJECT_SOURCE_DIR})
+  # and with CMAKE_CONFIGURATION_TYPES in the environment naming only another
+  # configuration than the one the nested ctest asks for
+  add_test(NAME app_guard_fixtures_multi_config_debug_env
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_guard_fixture_test.sh ${CMAKE_COMMAND} ${CMAKE_CTEST_COMMAND}
+            "Ninja Multi-Config" ${CMAKE_CXX_COMPILER} ${CMAKE_CURRENT_BINARY_DIR}/app-guard-fixtures-multi-debug
+            ${PROJECT_SOURCE_DIR})
+  set_tests_properties(app_guard_fixtures_multi_config_debug_env PROPERTIES
+    ENVIRONMENT CMAKE_CONFIGURATION_TYPES=Debug)
+endif()
 
 add_test(NAME gui_version
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh $<TARGET_FILE:blockwright>)

@@ -7,7 +7,9 @@
 # `cmake --install --prefix` would not relocate), runs install_notices_test.sh
 # on it, and checks that neither path was created. Configure, build and install
 # all name one configuration, so a multi-config generator (which ignores
-# CMAKE_BUILD_TYPE) builds the configuration that gets installed.
+# CMAKE_BUILD_TYPE) builds the configuration that gets installed; it is also the
+# only one in CMAKE_CONFIGURATION_TYPES, which the environment may set to a list
+# without it.
 set -uo pipefail
 src=$1 tmp=$2 gen=$3 qt=$4
 rm -rf "$tmp" && mkdir -p "$tmp"
@@ -15,7 +17,7 @@ tmp=$(cd "$tmp" && pwd)
 build=$tmp/build prefix=$tmp/outside-prefix docs=$tmp/outside-docs config=Release
 
 cmake -S "$src" -B "$build" -G "$gen" -DQt6_DIR="$qt" -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE="$config" \
-  -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_DOCDIR="$docs" >/dev/null || exit 1
+  -DCMAKE_CONFIGURATION_TYPES="$config" -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_DOCDIR="$docs" >/dev/null || exit 1
 nice -n 10 cmake --build "$build" --config "$config" -j 8 --target blockwright-cli --target blockwright >/dev/null || exit 1
 
 bash "$src/tests/install_notices_test.sh" "$build" "$src" "$tmp/notices" "$prefix/bin" "$docs" "$config"; st=$?

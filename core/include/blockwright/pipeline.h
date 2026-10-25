@@ -36,10 +36,12 @@ bool validSlug(std::string_view slug);
 // empty.
 std::string slugFrom(std::string_view name);
 
-// Tags as typed: split on commas and spaces, lowercased by Unicode's case
-// mapping as the ascii script's str.lower() does when it reads them (all but
-// its word-final sigma rule: a final Σ becomes σ, not ς), repeats and empty
-// ones dropped, sorted. Throws PipelineError for a control character or text
+// Tags as typed: split on commas and spaces, leading '#'s dropped as the
+// ascii script's tag command drops them ("#neon" is stored as "neon", which
+// its "#neon" search finds), lowercased by Unicode's case mapping as the
+// script's str.lower() does when it reads them (all but its word-final
+// sigma rule: a final Σ becomes σ, not ς), repeats and empty ones (a lone
+// "#" too) dropped, sorted. Throws PipelineError for a control character or text
 // that isn't UTF-8.
 std::vector<std::string> parseTags(std::string_view text);
 
@@ -94,7 +96,7 @@ struct PublishPlan {
 };
 
 // Works out the publish without writing anything. The piece's tags are the
-// ones it has (lowercased as parseTags does), kArtist and the request's; a
+// ones it has (folded as parseTags folds them), kArtist and the request's; a
 // piece already in .dates.json keeps its date (when it joined the library).
 // Every other index entry is kept as it is, and each index keeps whether it
 // ended in a newline; one that isn't there yet is started. Throws

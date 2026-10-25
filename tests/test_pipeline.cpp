@@ -1,6 +1,7 @@
 // The pipeline helper (pipeline.h): slugs and tags, the ascii library's
 // index files, Publish to Library's plan and writes, and Send to WeeChat's
-// ssh command. The command is run for real by test_app_publish.cpp.
+// ssh command. The command is run for real by test_app_publish.cpp, and here
+// under each shell installed for a connection that drops.
 
 #include "util.h"
 
@@ -10,10 +11,19 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <csignal>
+#include <cstdlib>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
+
+extern char** environ;
 
 using namespace bw;
 using namespace bw::pipeline;
@@ -131,6 +141,31 @@ TEST_CASE("Tags are lowercased beyond ASCII, as the ascii script's str.lower() d
     CHECK(parseTags("\xce\x94\xce\x9f\xce\x9c") == std::vector<std::string>{"\xce\xb4\xce\xbf\xce\xbc"});
     CHECK_THROWS_AS(parseTags("caf\xc3"), PipelineError);
     CHECK_THROWS_AS(parseTags("\xed\xa0\x80"), PipelineError);
+}
+
+TEST_CASE("A tag typed with a leading '#' is stored without it, as the ascii script's tag command stores it",
+          "[pipeline]") {
+    // w.lstrip("#").lower(): the script's "#neon" search is for the exact
+    // tag "neon", so a stored "#neon" would never be found by it.
+    CHECK(parseTags("#Neon #skull") == std::vector<std::string>{"neon", "skull"});
+    CHECK(parseTags("##neon, neon,#NEON") == std::vector<std::string>{"neon"});
+    // Only leading ones go; a tag that was only '#'s is none.
+    CHECK(parseTags("c#, # ,##") == std::vector<std::string>{"c#"});
+    CHECK(parseTags("#\xc3\x89t\xc3\xa9") == std::vector<std::string>{"\xc3\xa9t\xc3\xa9"});
+    CHECK_THROWS_AS(parseTags("#caf\xc3"), PipelineError);
+}
+
+TEST_CASE("Republishing drops the leading '#' of the piece's tags already in the index", "[pipeline]") {
+    Library lib("hash");
+    writeFile(lib.root / ".tags.json", "{\n \"funkpower/old\": [\n  \"#\",\n  \"#Neon\",\n  \"funkpower\"\n"
+                                       " ],\n \"ircart/x\": [\n  \"#keep\"\n ]\n}\n");
+    writeFile(lib.root / "funkpower" / "old.ans", "stale");
+    PublishRequest r = request(lib, "old");
+    r.tags = parseTags("#neon #skull");
+    const PublishPlan plan = planPublish(r);
+    CHECK(plan.tags == std::vector<std::string>{"funkpower", "neon", "skull"});
+    // Another piece's entry is the script's own and is left as it is.
+    CHECK(parseTagIndex(plan.tagsJson).at("ircart/x") == std::vector<std::string>{"#keep"});
 }
 
 TEST_CASE("Republishing folds the piece's tags already in the index to lower case too", "[pipeline]") {
@@ -447,4 +482,101 @@ TEST_CASE("Send to WeeChat's ssh arguments never prompt and carry one command", 
     CHECK_THROWS_AS(sshArguments({"h", "w"}, "a", 1, 1), PipelineError);
     CHECK_THROWS_AS(sshArguments({"h", "~/w"}, "A", 1, 1), PipelineError);
     CHECK_THROWS_AS(sshArguments({"h", "~/w"}, "a", 0, 1), PipelineError);
+}
+
+namespace {
+
+// `name` as found on PATH, or empty.
+fs::path onPath(const std::string& name) {
+    const char* path = std::getenv("PATH");
+    std::string_view rest = path ? path : "";
+    while (!rest.empty()) {
+        const std::size_t colon = std::min(rest.find(':'), rest.size());
+        const fs::path p = fs::path(rest.substr(0, colon)) / name;
+        if (::access(p.c_str(), X_OK) == 0)
+            return p;
+        rest.remove_prefix(std::min(colon + 1, rest.size()));
+    }
+    return {};
+}
+
+// Runs `command` under `shell` (with `sh` first for busybox) as sshd runs a
+// login shell's -c, after the client has gone: stdin holds `sent` and ends,
+// and stdout and stderr are a pipe with no reader, as they are once the
+// connection drops. SIGPIPE is the default action in the shell, as sshd
+// leaves it, and HOME is `home`, so the command's '~' is under it. Returns
+// the wait status.
+int runDropped(const fs::path& shell, const std::string& command, const fs::path& sent, const fs::path& home) {
+    // The child's environment is built before the fork: this one's, with HOME
+    // replaced.
+    const std::string homeVar = "HOME=" + home.string();
+    std::vector<char*> env;
+    for (char** e = environ; *e; ++e)
+        if (std::string_view(*e).substr(0, 5) != "HOME=")
+            env.push_back(*e);
+    env.push_back(const_cast<char*>(homeVar.c_str()));
+    env.push_back(nullptr);
+    const std::string argv0 = shell.filename().string();
+    std::vector<char*> argv{const_cast<char*>(argv0.c_str())};
+    if (shell.filename() == "busybox")
+        argv.push_back(const_cast<char*>("sh"));
+    argv.push_back(const_cast<char*>("-c"));
+    argv.push_back(const_cast<char*>(command.c_str()));
+    argv.push_back(nullptr);
+    int out[2];
+    REQUIRE(::pipe(out) == 0);
+    ::close(out[0]);
+    const pid_t pid = ::fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0) {
+        std::signal(SIGPIPE, SIG_DFL);
+        const int in = ::open(sent.c_str(), O_RDONLY);
+        if (in < 0 || ::dup2(in, 0) < 0 || ::dup2(out[1], 1) < 0 || ::dup2(out[1], 2) < 0)
+            ::_exit(127);
+        ::execve(shell.c_str(), argv.data(), env.data());
+        ::_exit(127);
+    }
+    ::close(out[1]);
+    int status = 0;
+    REQUIRE(::waitpid(pid, &status, 0) == pid);
+    return status;
+}
+
+} // namespace
+
+TEST_CASE("Send to WeeChat's command removes its temporary file when the connection drops, in any sh",
+          "[pipeline]") {
+    // The "only N of M bytes" message has no reader, so the shell gets
+    // SIGPIPE. bash runs the EXIT trap for a signal that kills it; dash, zsh
+    // and busybox ash don't, and only the PIPE trap removes the file. The
+    // folder is a "~/..." one, as Send to WeeChat's is, with HOME at the
+    // scratch root: the command doesn't quote it, and sshArguments only lets
+    // through folders it needn't (the build tree's path may have spaces).
+    const fs::path root = fs::path(BW_TEST_TMP) / "pipeline-dropped";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const fs::path sent = root / "sent";
+    writeFile(sent, std::string(20, 'x'));
+    int ran = 0;
+    for (const std::string name : {"sh", "bash", "dash", "zsh", "ksh", "mksh", "busybox"}) {
+        const fs::path shell = onPath(name);
+        if (shell.empty())
+            continue;
+        ++ran;
+        INFO(shell.string());
+        const std::string dir = "~/wip-" + name;
+        REQUIRE(validRemoteDir(dir));
+        const fs::path wip = root / ("wip-" + name);
+        const int status = runDropped(shell, remoteCommand(dir, "neon-skull-r1.ans", 1234), sent, root);
+        // It exits 1, as it does for an upload cut short, not by the signal.
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == 1);
+        REQUIRE(fs::is_directory(wip));
+        std::vector<std::string> left;
+        for (const auto& e : fs::directory_iterator(wip))
+            left.push_back(e.path().filename().string());
+        CHECK(left == std::vector<std::string>{});
+    }
+    CHECK(ran > 0);
+    fs::remove_all(root);
 }
