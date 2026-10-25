@@ -77,7 +77,7 @@ public:
     virtual void cancel() {}
     // Ends a drag without an edit and undoes what the drag moved; what was
     // there before the drag (a floating selection) stays. The view calls it
-    // when it loses focus or the mouse grab during a drag the tool took.
+    // when it loses focus during a drag the tool took.
     virtual void cancelDrag() {}
     // Writes whatever is in progress onto the canvas as an edit. The view
     // calls it before an edit of its own (typing) and before the document is
@@ -104,7 +104,7 @@ public:
 signals:
     // The tool's state or overlay changed: the view repaints and the menus
     // update. A drag that ends emits it, after dragging() turns false, so
-    // the view lets go of the drag's mouse grab.
+    // the view stops filtering for the drag.
     void changed();
 
 private:

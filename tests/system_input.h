@@ -41,6 +41,25 @@ inline void systemMouse(QWidget* w, QEvent::Type type, QPointF at, Qt::MouseButt
             top->windowHandle(), local, top->mapToGlobal(local), held, button, type);
 }
 
+// Whether a click at `at` in w's coordinates, from `device` (the mouse by
+// default), reaches w: its press, or the double click Qt makes of a second
+// press at the same place.
+inline bool clickReaches(QWidget* w, QPointF at, const QPointingDevice* device = nullptr) {
+    struct Counter : QObject {
+        int n = 0;
+        bool eventFilter(QObject*, QEvent* e) override {
+            if (e->type() == QEvent::MouseButtonPress || e->type() == QEvent::MouseButtonDblClick)
+                ++n;
+            return false;
+        }
+    } counter;
+    w->installEventFilter(&counter);
+    systemMouse(w, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton, device);
+    systemMouse(w, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton, device);
+    w->removeEventFilter(&counter);
+    return counter.n > 0;
+}
+
 // A pen Qt knows about, so tablet events from it are delivered.
 inline const QPointingDevice* systemStylus() {
     static const QPointingDevice* dev = [] {

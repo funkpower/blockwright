@@ -18,6 +18,7 @@
 #include "blockwright/selection.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAction>
 #include <QApplication>
@@ -1259,13 +1260,21 @@ TEST_CASE("the undo key during a stylus stroke undoes nothing while the menu bar
 
 TEST_CASE("another device's click mid-drag leaves the owner's drag to finish (#45)") {
     // Through Qt's own delivery. A release from another device ends Qt's
-    // record of which widget the owner pressed, so without a grab Qt drops
-    // the owner's later moves and its release.
+    // record of which widget the owner pressed, after which Qt drops the
+    // owner's later moves and its release; the view keeps the other
+    // device's events from Qt for the drag, and takes no mouse grab.
     MainWindow w;
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
     use(w, "glyph");
     v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    // Whether a click of the pen's (or the mouse's) on the status bar
+    // reaches it.
+    QStatusBar* bar = w.statusBar();
+    REQUIRE(bar->isVisible());
+    const auto barTakes = [&](bool byPen) {
+        return bwtest::clickReaches(bar, QPointF(5, 5), byPen ? bwtest::systemStylus() : nullptr);
+    };
     const auto mouseAt = [&](QEvent::Type type, int x, Qt::MouseButton button, Qt::MouseButtons held) {
         bwtest::systemMouse(v, type, pixel(v, x, 4), button, held);
     };
@@ -1277,7 +1286,7 @@ TEST_CASE("another device's click mid-drag leaves the owner's drag to finish (#4
     SECTION("a pen's click during a mouse drag") {
         mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
         mouseAt(QEvent::MouseMove, 3, Qt::NoButton, Qt::LeftButton);
-        CHECK(QWidget::mouseGrabber() == v);
+        CHECK(QWidget::mouseGrabber() == nullptr);
         pen(QEvent::MouseButtonPress, 10, Qt::LeftButton, Qt::LeftButton);
         pen(QEvent::MouseButtonRelease, 10, Qt::LeftButton, Qt::NoButton);
         CHECK(dragTool(w)->dragging());
@@ -1297,24 +1306,9 @@ TEST_CASE("another device's click mid-drag leaves the owner's drag to finish (#4
     SECTION("the mouse's click on another widget during a pen's mouse stroke") {
         // The click is the canvas's to ignore: it doesn't reach the widget
         // under it, which would otherwise keep the pen's moves too.
-        QStatusBar* bar = w.statusBar();
-        REQUIRE(bar->isVisible());
-        int barPresses = 0;
-        struct Counter : QObject {
-            int* n;
-            explicit Counter(int* n) : n(n) {}
-            bool eventFilter(QObject*, QEvent* e) override {
-                if (e->type() == QEvent::MouseButtonPress)
-                    ++*n;
-                return false;
-            }
-        } counter(&barPresses);
-        bar->installEventFilter(&counter);
         pen(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
         pen(QEvent::MouseMove, 3, Qt::NoButton, Qt::LeftButton);
-        bwtest::systemMouse(bar, QEvent::MouseButtonPress, QPointF(5, 5), Qt::LeftButton, Qt::LeftButton);
-        bwtest::systemMouse(bar, QEvent::MouseButtonRelease, QPointF(5, 5), Qt::LeftButton, Qt::NoButton);
-        CHECK(barPresses == 0);
+        CHECK_FALSE(barTakes(false));
         CHECK(dragTool(w)->dragging());
         pen(QEvent::MouseMove, 4, Qt::NoButton, Qt::LeftButton);
         pen(QEvent::MouseButtonRelease, 4, Qt::LeftButton, Qt::NoButton);
@@ -1323,72 +1317,69 @@ TEST_CASE("another device's click mid-drag leaves the owner's drag to finish (#4
         CHECK(w.document()->undoStack()->count() == 1);
         CHECK(QWidget::mouseGrabber() == nullptr);
         // with the drag over, a click reaches the widget under it again
-        bwtest::systemMouse(bar, QEvent::MouseButtonPress, QPointF(5, 5), Qt::LeftButton, Qt::LeftButton);
-        bwtest::systemMouse(bar, QEvent::MouseButtonRelease, QPointF(5, 5), Qt::LeftButton, Qt::NoButton);
-        CHECK(barPresses == 1);
-        bar->removeEventFilter(&counter);
+        CHECK(barTakes(false));
     }
-    SECTION("the grab ends with the drag, however it ends") {
+    SECTION("the other device's clicks reach their widgets again once the drag ends, however it ends") {
         SECTION("Esc, the button still held") {
             mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
-            REQUIRE(QWidget::mouseGrabber() == v);
+            REQUIRE_FALSE(barTakes(true));
             QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
             QApplication::sendEvent(v, &esc);
             CHECK_FALSE(dragTool(w)->dragging());
-            CHECK(QWidget::mouseGrabber() == nullptr);
+            CHECK(barTakes(true));
             mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
         }
         SECTION("the undo key") {
             pen(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
-            REQUIRE(QWidget::mouseGrabber() == v);
+            REQUIRE_FALSE(barTakes(false));
             QKeyEvent undo(QEvent::KeyPress, Qt::Key_Z, Qt::ControlModifier);
             QApplication::sendEvent(v, &undo);
             CHECK_FALSE(dragTool(w)->dragging());
-            CHECK(QWidget::mouseGrabber() == nullptr);
+            CHECK(barTakes(false));
             pen(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
         }
         SECTION("a popup") {
             mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
-            REQUIRE(QWidget::mouseGrabber() == v);
+            REQUIRE_FALSE(barTakes(true));
             bwtest::popupOver(v, true);
             CHECK_FALSE(dragTool(w)->dragging());
-            CHECK(QWidget::mouseGrabber() == nullptr);
+            CHECK(barTakes(true));
         }
         SECTION("a tool switch") {
             pen(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
-            REQUIRE(QWidget::mouseGrabber() == v);
+            REQUIRE_FALSE(barTakes(false));
             use(w, "line");
-            CHECK(QWidget::mouseGrabber() == nullptr);
+            CHECK(barTakes(false));
             pen(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
         }
         SECTION("a new canvas") {
             mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
-            REQUIRE(QWidget::mouseGrabber() == v);
+            REQUIRE_FALSE(barTakes(true));
             w.document()->clear();
             CHECK_FALSE(dragTool(w)->dragging());
-            CHECK(QWidget::mouseGrabber() == nullptr);
+            CHECK(barTakes(true));
             mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
         }
         SECTION("Select All, which starts the selection tool") {
             mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
-            REQUIRE(QWidget::mouseGrabber() == v);
+            REQUIRE_FALSE(barTakes(true));
             act(w, QStringLiteral("selectAll"))->trigger();
-            CHECK(QWidget::mouseGrabber() == nullptr);
+            CHECK(barTakes(true));
             mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
         }
-        SECTION("Deselect leaves the brush's drag going, and the grab") {
+        SECTION("Deselect leaves the brush's drag going") {
             mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
             act(w, QStringLiteral("deselect"))->trigger();
             CHECK(dragTool(w)->dragging());
-            CHECK(QWidget::mouseGrabber() == v);
+            CHECK_FALSE(barTakes(true));
             mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
         }
         SECTION("the focus going elsewhere") {
             mouseAt(QEvent::MouseButtonPress, 2, Qt::LeftButton, Qt::LeftButton);
-            REQUIRE(QWidget::mouseGrabber() == v);
+            REQUIRE_FALSE(barTakes(true));
             v->clearFocus();
             CHECK_FALSE(dragTool(w)->dragging());
-            CHECK(QWidget::mouseGrabber() == nullptr);
+            CHECK(barTakes(true));
             mouseAt(QEvent::MouseButtonRelease, 2, Qt::LeftButton, Qt::NoButton);
         }
         CHECK(w.document()->undoStack()->count() <= 1);
@@ -1419,6 +1410,90 @@ TEST_CASE("a canvas that isn't shown takes no mouse grab") {
     CHECK_FALSE(dragTool(w)->dragging());
     CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}});
     CHECK(QWidget::mouseGrabber() == nullptr);
+}
+
+namespace {
+
+// Every warning and error Qt or the app logs while one is alive.
+class Warnings {
+public:
+    Warnings() : previous_(qInstallMessageHandler(&Warnings::handle)) { sink() = &messages_; }
+    ~Warnings() {
+        sink() = nullptr;
+        qInstallMessageHandler(previous_);
+    }
+    Warnings(const Warnings&) = delete;
+    Warnings& operator=(const Warnings&) = delete;
+    const QStringList& messages() const { return messages_; }
+    void clear() { messages_.clear(); }
+
+private:
+    static QStringList*& sink() {
+        static QStringList* s = nullptr;
+        return s;
+    }
+    static void handle(QtMsgType type, const QMessageLogContext&, const QString& msg) {
+        if (type != QtDebugMsg && type != QtInfoMsg && sink())
+            sink()->append(msg);
+    }
+    QtMessageHandler previous_;
+    QStringList messages_;
+};
+
+} // namespace
+
+TEST_CASE("a mouse stroke takes no mouse grab and logs nothing (#101)") {
+    // A mouse grab is the window system's too: Wayland grants one only to a
+    // popup and warns at every grab and release, and offscreen warns that it
+    // can't. Qt's own record of the press brings the stroke's moves and
+    // release to the canvas wherever they are, out of the view and out of
+    // the window.
+    Warnings warnings;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    use(w, "glyph");
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    // the mouse's events, then the pen's mouse events
+    const QPointingDevice* device = GENERATE(false, true) ? bwtest::systemStylus() : nullptr;
+    const auto at = [&](QWidget* target, QEvent::Type type, QPointF p, Qt::MouseButtons held) {
+        bwtest::systemMouse(target, type, p, type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held,
+                            device);
+    };
+    warnings.clear();
+
+    SECTION("on the canvas") {
+        at(v, QEvent::MouseButtonPress, pixel(v, 2, 4), Qt::LeftButton);
+        at(v, QEvent::MouseMove, pixel(v, 3, 4), Qt::LeftButton);
+        CHECK(dragTool(w)->dragging());
+        CHECK(QWidget::mouseGrabber() == nullptr);
+        at(v, QEvent::MouseButtonRelease, pixel(v, 3, 4), Qt::NoButton);
+        CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}});
+    }
+    SECTION("let go over another widget") {
+        QStatusBar* bar = w.statusBar();
+        REQUIRE(bar->isVisible());
+        at(v, QEvent::MouseButtonPress, pixel(v, 2, 4), Qt::LeftButton);
+        at(v, QEvent::MouseMove, pixel(v, 3, 4), Qt::LeftButton);
+        at(bar, QEvent::MouseMove, QPointF(5, 5), Qt::LeftButton);
+        CHECK(dragTool(w)->dragging());
+        at(bar, QEvent::MouseButtonRelease, QPointF(5, 5), Qt::NoButton);
+        CHECK(changed(w).count({2, 2}) == 1);
+    }
+    SECTION("let go out of the window") {
+        const QPointF out = v->mapFrom(&w, QPointF(-40, -40));
+        at(v, QEvent::MouseButtonPress, pixel(v, 2, 4), Qt::LeftButton);
+        at(v, QEvent::MouseMove, pixel(v, 3, 4), Qt::LeftButton);
+        at(v, QEvent::MouseMove, out, Qt::LeftButton);
+        CHECK(dragTool(w)->dragging());
+        at(v, QEvent::MouseButtonRelease, out, Qt::NoButton);
+        CHECK(changed(w).count({2, 2}) == 1);
+    }
+    CHECK_FALSE(dragTool(w)->dragging());
+    CHECK(w.document()->undoStack()->count() == 1);
+    CHECK(QWidget::mouseGrabber() == nullptr);
+    INFO(warnings.messages().join(QLatin1Char('\n')).toStdString());
+    CHECK(warnings.messages().isEmpty());
 }
 
 TEST_CASE("mirror mode with Pressure->Strength: a cell both strokes reach takes the stronger dab") {

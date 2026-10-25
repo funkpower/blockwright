@@ -1,4 +1,4 @@
-// The mouse grab on an X server (the xcb platform), where a grab is the
+// The pointer grab on an X server (the xcb platform), where a grab is the
 // server's and not only Qt's record: input comes through XTest, as a
 // device's would, and a second client asks the server whether the pointer
 // is grabbed. Its own binary, run on a virtual X server (xcb_test.sh); it
@@ -130,9 +130,10 @@ const QPoint outside(1500, 1100);
 
 TEST_CASE("a popup that opens during a mouse stroke keeps the pointer grab, so a click outside closes it") {
     // Qt grabs the pointer for a popup before it tells the focus widget
-    // the popup took the focus; the canvas ends the drag then and lets go
-    // of its own grab, which on X ungrabs the device whatever window holds
-    // it.
+    // the popup took the focus, and the canvas ends the drag then. A grab
+    // or release of the canvas's own would take the popup's away: on X a
+    // release ungrabs the device whatever window holds it. The canvas takes
+    // none.
     XClient x;
     REQUIRE(x.ok());
     MainWindow w;
@@ -147,7 +148,8 @@ TEST_CASE("a popup that opens during a mouse stroke keeps the pointer grab, so a
 
     x.moveTo(cell(2));
     x.press();
-    REQUIRE(waitFor([&] { return tool->dragging() && QWidget::mouseGrabber() == v; }));
+    REQUIRE(waitFor([&] { return tool->dragging(); }));
+    CHECK(QWidget::mouseGrabber() == nullptr);
     x.moveTo(cell(3));
     settle();
 
@@ -191,11 +193,40 @@ TEST_CASE("Paste during a mouse drag of a floating selection leaves no pointer g
     x.press();
     x.moveTo(cell(3, 2));
     REQUIRE(waitFor([&] { return w.selectTool()->floating() && w.selectTool()->dragging(); }));
-    REQUIRE(QWidget::mouseGrabber() == v);
     act(w, "paste")->trigger();
     CHECK_FALSE(w.selectTool()->dragging());
     CHECK(QWidget::mouseGrabber() == nullptr);
     x.release();
+    settle();
+    CHECK_FALSE(x.pointerGrabbed());
+}
+
+TEST_CASE("a mouse stroke let go out of the window lands, with no grab of the canvas's own") {
+    // The server's implicit grab on the press brings the stroke's moves and
+    // release to the window, and Qt's record of the press to the canvas.
+    XClient x;
+    REQUIRE(x.ok());
+    MainWindow w;
+    show(w);
+    CanvasView* v = w.canvasView();
+    act(w, "glyphTool")->trigger();
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
+    auto* tool = qobject_cast<DragTool*>(w.tools()->active());
+    REQUIRE(tool);
+    const auto cell = [&](int cx) { return v->mapToGlobal(v->cellRect(QPoint(cx, 2)).center()); };
+
+    x.moveTo(cell(2));
+    x.press();
+    REQUIRE(waitFor([&] { return tool->dragging(); }));
+    CHECK(QWidget::mouseGrabber() == nullptr);
+    x.moveTo(cell(3));
+    x.moveTo(outside);
+    settle();
+    CHECK(tool->dragging());
+    x.release();
+    CHECK(waitFor([&] { return !tool->dragging(); }));
+    CHECK(w.document()->undoStack()->count() == 1);
+    CHECK(w.document()->canvas().at(2, 2) != w.document()->blankCell());
     settle();
     CHECK_FALSE(x.pointerGrabbed());
 }

@@ -259,17 +259,18 @@ private:
     // The device whose press started the tool's drag: it owns the drag, and
     // the other device's events are ignored while the drag goes on. The
     // ownership ends with the drag, however it ends (a release, Esc, a lost
-    // focus or grab), whatever buttons are still held. A stylus's events
+    // focus), whatever buttons are still held. A stylus's events
     // reach the view as tablet events, or as the mouse events Qt makes of
     // the ones the view doesn't accept.
     enum class Pointer { None, Mouse, Stylus, StylusMouse };
     Pointer drag_ = Pointer::None;
     static Pointer pointerOf(const QMouseEvent* e);
-    // Sets the drag's owner; the view holds the mouse grab while the owner
-    // is one whose mouse events drive the drag and the view is shown. An
-    // open popup keeps its own grab.
+    // Sets the drag's owner; while the owner is one whose mouse events drive
+    // the drag and the view is shown, the view filters the application's
+    // events and drops another device's mouse events (filtering_).
     void setDrag(Pointer p);
-    // Clears the owner of a drag that has ended, and lets go of its grab;
+    bool filtering_ = false;
+    // Clears the owner of a drag that has ended, and stops its filter;
     // runs on every Tool::changed.
     void syncDrag();
     // Whether the tool's drag is going on and another device than `p` owns

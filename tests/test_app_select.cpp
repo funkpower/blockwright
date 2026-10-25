@@ -26,6 +26,7 @@
 #include <QPainter>
 #include <QPointingDevice>
 #include <QSet>
+#include <QStatusBar>
 #include <QTabletEvent>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -938,10 +939,11 @@ TEST_CASE("the undo key during a selection drag ends the drag and undoes nothing
     CHECK(undo->index() == typed);
 }
 
-TEST_CASE("an action that ends a selection drag lets go of the mouse grab (#45)") {
-    // A mouse drag holds the mouse grab until it ends, however it ends,
-    // the menus' actions included: they work on the tool directly, not
-    // through the view's handlers. A drag they leave going keeps it.
+TEST_CASE("an action that ends a selection drag lets the other device's clicks through again (#45)") {
+    // A mouse drag keeps the pen's clicks from every widget until it ends,
+    // however it ends, the menus' actions included: they work on the tool
+    // directly, not through the view's handlers. A drag they leave going
+    // keeps them. The view takes no mouse grab for it (#101).
     MainWindow w;
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
@@ -954,81 +956,86 @@ TEST_CASE("an action that ends a selection drag lets go of the mouse grab (#45)"
                             type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
                             type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton);
     };
-    const auto grabFollowsDrag = [&] {
-        CHECK(QWidget::mouseGrabber() == (w.selectTool()->dragging() ? v : nullptr));
+    // Whether a pen's click on the status bar reaches it.
+    const auto penReachesBar = [&] {
+        return bwtest::clickReaches(w.statusBar(), QPointF(5, 5), bwtest::systemStylus());
+    };
+    const auto filterFollowsDrag = [&] {
+        CHECK(QWidget::mouseGrabber() == nullptr);
+        CHECK(penReachesBar() == !w.selectTool()->dragging());
     };
     // the floating selection, dragged with the mouse
     sys(QEvent::MouseButtonPress, {0, 0});
     sys(QEvent::MouseMove, {2, 1});
     REQUIRE(w.selectTool()->floating());
     REQUIRE(w.selectTool()->dragging());
-    REQUIRE(QWidget::mouseGrabber() == v);
+    REQUIRE_FALSE(penReachesBar());
 
     SECTION("Paste") {
         act(w, "paste")->trigger();
         CHECK_FALSE(w.selectTool()->dragging());
-        CHECK(QWidget::mouseGrabber() == nullptr);
-        // and focus lost afterwards finds no grab to keep either
+        filterFollowsDrag();
+        // and focus lost afterwards finds no drag to keep either
         v->clearFocus();
-        CHECK(QWidget::mouseGrabber() == nullptr);
+        filterFollowsDrag();
     }
     SECTION("Cut") {
         act(w, "cut")->trigger();
         CHECK_FALSE(w.selectTool()->dragging());
-        CHECK(QWidget::mouseGrabber() == nullptr);
+        filterFollowsDrag();
     }
     SECTION("Delete") {
         act(w, "deleteSelection")->trigger();
         CHECK_FALSE(w.selectTool()->dragging());
-        CHECK(QWidget::mouseGrabber() == nullptr);
+        filterFollowsDrag();
     }
     SECTION("Select All") {
         act(w, "selectAll")->trigger();
         CHECK_FALSE(w.selectTool()->dragging());
-        CHECK(QWidget::mouseGrabber() == nullptr);
+        filterFollowsDrag();
     }
     SECTION("Deselect") {
         act(w, "deselect")->trigger();
         CHECK_FALSE(w.selectTool()->dragging());
-        CHECK(QWidget::mouseGrabber() == nullptr);
+        filterFollowsDrag();
     }
     SECTION("Undo and Redo from the menu") {
         act(w, "undo")->trigger();
         CHECK_FALSE(w.selectTool()->dragging());
-        CHECK(QWidget::mouseGrabber() == nullptr);
+        filterFollowsDrag();
         act(w, "redo")->trigger();
-        CHECK(QWidget::mouseGrabber() == nullptr);
+        filterFollowsDrag();
     }
     SECTION("a Library stamp placed") {
         QString error;
         REQUIRE(w.placeStamp(QString::fromStdString((bwtest::dataDir() / "library" / "sky" / "small-star.ans").string()),
                              {5, 5}, &error));
         CHECK_FALSE(w.selectTool()->dragging());
-        CHECK(QWidget::mouseGrabber() == nullptr);
+        filterFollowsDrag();
     }
     SECTION("a new canvas") {
         w.document()->clear();
         CHECK_FALSE(w.selectTool()->dragging());
-        CHECK(QWidget::mouseGrabber() == nullptr);
+        filterFollowsDrag();
     }
-    SECTION("a flip, a rotation or a paste mode leaves the drag going, and the grab") {
+    SECTION("a flip, a rotation or a paste mode leaves the drag going, and the pen's clicks kept") {
         act(w, "flipHorizontal")->trigger();
         act(w, "rotateClockwise")->trigger();
         act(w, "pasteUnder")->trigger();
         CHECK(w.selectTool()->dragging());
-        CHECK(QWidget::mouseGrabber() == v);
+        filterFollowsDrag();
     }
     SECTION("a modal dialog") {
         // The dialog takes focus from the canvas, which ends the drag: the
-        // grab doesn't outlast it into the dialog.
+        // drag's hold on the pen's clicks doesn't outlast it into the dialog.
         QMessageBox box(QMessageBox::Information, QStringLiteral("t"), QStringLiteral("t"), QMessageBox::Ok, &w);
-        QWidget* grabber = v;
+        bool reached = false;
         bool dragging = true;
         QTimer poll;
         QObject::connect(&poll, &QTimer::timeout, &box, [&] {
             if (QApplication::activeModalWidget() != &box || QApplication::focusWidget() == v)
                 return;
-            grabber = QWidget::mouseGrabber();
+            reached = bwtest::clickReaches(&box, QPointF(5, 5), bwtest::systemStylus());
             dragging = w.selectTool()->dragging();
             box.done(0);
         });
@@ -1036,9 +1043,9 @@ TEST_CASE("an action that ends a selection drag lets go of the mouse grab (#45)"
         QTimer::singleShot(3000, &box, [&] { box.done(1); });
         CHECK(box.exec() == 0);
         CHECK_FALSE(dragging);
-        CHECK(grabber == nullptr);
+        CHECK(reached);
     }
-    grabFollowsDrag();
+    filterFollowsDrag();
     sys(QEvent::MouseButtonRelease, {2, 1});
     CHECK_FALSE(w.selectTool()->dragging());
     CHECK(QWidget::mouseGrabber() == nullptr);

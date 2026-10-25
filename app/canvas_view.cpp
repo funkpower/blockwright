@@ -362,7 +362,7 @@ void CanvasView::setTool(Tool* tool) {
     if (tool_) {
         connect(tool_, &Tool::changed, this, qOverload<>(&QWidget::update));
         // A drag can end in the tool, from a menu action or the document:
-        // the grab ends with it.
+        // its filter ends with it.
         connect(tool_, &Tool::changed, this, &CanvasView::syncDrag);
         tool_->activate(this);
     }
@@ -719,6 +719,21 @@ bool CanvasView::event(QEvent* e) {
 }
 
 bool CanvasView::eventFilter(QObject* watched, QEvent* e) {
+    // The application, during a drag the mouse's events drive (setDrag):
+    // another device's mouse events reach no widget, so they leave Qt's
+    // record of the drag's press as it is.
+    if (filtering_ && watched->isWindowType()) {
+        switch (e->type()) {
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonRelease:
+        case QEvent::MouseButtonDblClick:
+        case QEvent::MouseMove:
+            if (pointerOf(static_cast<QMouseEvent*>(e)) != drag_)
+                return true;
+            break;
+        default: break;
+        }
+    }
     // The window, while a stylus stroke is kept through a menu opened from
     // the keyboard: the menu bar has the focus and passes the undo key on,
     // and it is still the view's (event()).
@@ -838,28 +853,25 @@ void CanvasView::setDrag(Pointer p) {
     drag_ = p;
     if (p != Pointer::Stylus)
         window()->removeEventFilter(this);
-    // A drag the mouse's events drive holds the mouse grab. Qt sends a
-    // press's moves and release to the widget it was pressed on only until
-    // a release with no buttons held, and another device's release is one
-    // (#45): without the grab the drag's own would then go nowhere.
-    // A view that isn't shown takes none: Qt would grab for a widget no
-    // input can reach.
-    const bool grab =
+    // A drag the mouse's events drive keeps the other device's mouse events
+    // from every window (eventFilter). Qt sends a press's moves and release
+    // to the widget it was pressed on only until a release with no buttons
+    // held, and another device's release is one (#45): the drag's own would
+    // then go nowhere. The view takes no mouse grab for that: the grab would
+    // be the window system's too, which Wayland grants only to a popup,
+    // warning at every grab and release (#101). Moves and the release out of
+    // the view or the window reach it without one, by Qt's record of the
+    // press and the window system's implicit grab on it.
+    // A view that isn't shown filters nothing: no window input reaches it.
+    const bool filter =
         (p == Pointer::Mouse || p == Pointer::StylusMouse) && tool_ && tool_->dragging() && isVisible();
-    if (grab == (QWidget::mouseGrabber() == this))
+    if (filter == filtering_)
         return;
-    if (grab)
-        grabMouse();
+    filtering_ = filter;
+    if (filter)
+        qApp->installEventFilter(this);
     else
-        releaseMouse();
-    // A popup that opened during the drag holds the pointer grab of the
-    // window system, and the view's grab or release can take it away: on
-    // xcb a release ungrabs the device whatever window holds it. Qt grabs
-    // for the popup before it tells the view the popup took the focus,
-    // which ends the drag, so the popup's grab is set again here.
-    if (QWidget* popup = QApplication::activePopupWidget())
-        if (QWindow* w = popup->windowHandle())
-            w->setMouseGrabEnabled(true);
+        qApp->removeEventFilter(this);
 }
 
 void CanvasView::syncDrag() {
