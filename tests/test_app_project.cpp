@@ -97,14 +97,17 @@ QString tuxAt(const QString& path) {
     return path;
 }
 
-// Answers the next message box with `button`; `asked` says one came.
-void answer(QWidget* context, QMessageBox::StandardButton button, bool* asked) {
+// Answers the next message box with `button`; `asked` says one came and
+// `text`, when given, takes what it said.
+void answer(QWidget* context, QMessageBox::StandardButton button, bool* asked, QString* text = nullptr) {
     *asked = false;
     QTimer::singleShot(0, context, [=] {
         auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
         if (!box)
             return;
         *asked = true;
+        if (text)
+            *text = box->text();
         box->button(button)->click();
     });
 }
@@ -397,6 +400,144 @@ TEST_CASE("New and closing ask before dropping what a flat save didn't keep") {
         CHECK(asked);
         CHECK(d.path().isEmpty());
         CHECK(d.layers().size() == 1);
+    }
+}
+
+TEST_CASE("an untitled document a flat file can't hold says Save writes it flattened") {
+    MainWindow w;
+    Document& d = *w.document();
+    bool asked = false;
+    QString text;
+    // one cells layer: an .ans holds it, so the prompt is the plain one
+    drawAt(w, 0, 0, U'#');
+    answer(&w, QMessageBox::Cancel, &asked, &text);
+    w.newFile();
+    REQUIRE(asked);
+    CHECK(text == QStringLiteral("The canvas has unsaved changes."));
+    // a second layer: Save to an .ans would write it flattened
+    d.addLayer(LayerKind::Cells);
+    drawAt(w, 1, 0, U'@');
+    REQUIRE(d.path().isEmpty());
+    answer(&w, QMessageBox::Cancel, &asked, &text);
+    w.newFile();
+    REQUIRE(asked);
+    CHECK(text == QStringLiteral("The canvas has unsaved changes.\nSaved as an .ans it is written flattened and the "
+                                 "document stays open; only a project saves its layers and IRC budget."));
+    CHECK(d.layers().size() == 2);
+    CHECK(d.isModified());
+}
+
+TEST_CASE("a snapshot redone after a flat save is dropped, not added to the .ans") {
+    QTemporaryDir tmp;
+    const QString zip = tmp.filePath(QStringLiteral("one.bwp"));
+    project::writeZip(project::fromAnsi(parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden" / "tux.ans"))),
+                      fpath(zip));
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(zip, &error));
+    Document& d = *w.document();
+    REQUIRE(w.snapshot(&error) == 1);
+    drawAt(w, 0, 0, U'Z');
+    d.undoStack()->undo();
+    d.undoStack()->undo();
+    REQUIRE(d.extras().snapshots.empty());
+    // the .ans holds all of it, so it becomes the document's file
+    const QString flat = tmp.filePath(QStringLiteral("one.ans"));
+    REQUIRE(w.saveFile(flat, &error));
+    REQUIRE(d.form() == FileForm::Ansi);
+    REQUIRE_FALSE(d.isModified());
+    // a flat file keeps no snapshots: the redo drops it and leaves the
+    // document saved, and Edit > Redo offers the edit after it
+    QAction* redo = action(w, "redo");
+    REQUIRE(redo->text() == QStringLiteral("&Redo Snapshot r1"));
+    redo->trigger();
+    CHECK(d.extras().snapshots.empty());
+    CHECK_FALSE(d.isModified());
+    CHECK(d.flatHoldsAll());
+    CHECK(redo->isEnabled());
+    CHECK(redo->text() == QStringLiteral("&Redo Edit"));
+    // the edit after it still redoes, and Save makes it clean again
+    REQUIRE(d.undoStack()->canRedo());
+    redo->trigger();
+    CHECK(d.canvas().at(0, 0).ch == U'Z');
+    CHECK(d.extras().snapshots.empty());
+    CHECK(d.isModified());
+    REQUIRE(w.save());
+    CHECK_FALSE(d.isModified());
+    CHECK(bwtest::readFile(fpath(flat)) == writeAnsi(project::toAnsi(d.project())).bytes);
+    CHECK_FALSE(d.undoStack()->canRedo());
+    // undo goes back past the edit to the save, not to a snapshot
+    d.undoStack()->undo();
+    CHECK_FALSE(d.undoStack()->canUndo());
+    CHECK(d.extras().snapshots.empty());
+}
+
+TEST_CASE("a snapshot that was the only redo leaves Redo disabled once dropped") {
+    QTemporaryDir tmp;
+    const QString zip = tmp.filePath(QStringLiteral("one.bwp"));
+    project::writeZip(project::fromAnsi(parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden" / "tux.ans"))),
+                      fpath(zip));
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(zip, &error));
+    Document& d = *w.document();
+    REQUIRE(w.snapshot(&error) == 1);
+    action(w, "undo")->trigger();
+    REQUIRE(w.saveFile(tmp.filePath(QStringLiteral("one.ans")), &error));
+    REQUIRE(d.form() == FileForm::Ansi);
+    QAction* redo = action(w, "redo");
+    REQUIRE(redo->isEnabled());
+    REQUIRE(redo->text() == QStringLiteral("&Redo Snapshot r1"));
+    redo->trigger();
+    CHECK(d.extras().snapshots.empty());
+    CHECK_FALSE(d.isModified());
+    CHECK_FALSE(d.undoStack()->canRedo());
+    CHECK_FALSE(redo->isEnabled());
+    CHECK(redo->text() == QStringLiteral("&Redo"));
+    // a second trigger has nothing to redo
+    redo->trigger();
+    CHECK_FALSE(d.isModified());
+    CHECK(d.extras().snapshots.empty());
+}
+
+TEST_CASE("the flattening warning follows what a flat file can't hold, and only for a flat document") {
+    QString error;
+    bool asked = false;
+    QString text;
+    const QString warning = QStringLiteral(
+        "The canvas has unsaved changes.\nSaved as an .ans it is written flattened and the document stays open; "
+        "only a project saves its layers and IRC budget.");
+    {
+        // one layer, but an IRC budget an .ans can't carry
+        MainWindow w;
+        Document& d = *w.document();
+        project::IrcBudget budget;
+        budget.bytes = 400;
+        REQUIRE(d.setIrcBudget(budget));
+        REQUIRE(d.layers().size() == 1);
+        REQUIRE(d.path().isEmpty());
+        REQUIRE_FALSE(d.flatHoldsAll());
+        answer(&w, QMessageBox::Cancel, &asked, &text);
+        w.newFile();
+        REQUIRE(asked);
+        CHECK(text == warning);
+    }
+    {
+        // a layered project: Save writes the .bwp, which keeps them
+        QTemporaryDir tmp;
+        const QString zip = tmp.filePath(QStringLiteral("piece.bwp"));
+        writeSampleZip(zip);
+        MainWindow w;
+        REQUIRE(w.openFile(zip, &error));
+        Document& d = *w.document();
+        REQUIRE(d.layers().size() > 1);
+        REQUIRE(d.form() != FileForm::Ansi);
+        drawAt(w, 0, 0, U'#');
+        REQUIRE(d.isModified());
+        answer(&w, QMessageBox::Cancel, &asked, &text);
+        w.newFile();
+        REQUIRE(asked);
+        CHECK(text == QStringLiteral("The canvas has unsaved changes."));
     }
 }
 

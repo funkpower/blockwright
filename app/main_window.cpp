@@ -188,6 +188,13 @@ void MainWindow::createActions() {
     a = doc_.undoStack()->createRedoAction(this, tr("&Redo"));
     a->setObjectName(QStringLiteral("redo"));
     a->setShortcuts(QKeySequence::Redo);
+    // A snapshot redone into an .ans drops itself from the stack (#115), and
+    // Qt before 6.9 drops it without updating this action. Connected after
+    // the stack's own redo, this runs once the redo is done.
+    connect(a, &QAction::triggered, doc_.undoStack(), [s = doc_.undoStack()] {
+        emit s->canRedoChanged(s->canRedo());
+        emit s->redoTextChanged(s->redoText());
+    });
     edit->addAction(a);
 
     QMenu* view = menuBar()->addMenu(tr("&View"));
@@ -405,12 +412,17 @@ bool MainWindow::maybeSave() {
         return true;
     QString text = tr("The canvas has unsaved changes.");
     // Save writes the .ans, which can't hold the layers or an IRC budget:
-    // they stay open.
-    const bool flatLoses = doc_.form() == FileForm::Ansi && !doc_.path().isEmpty() && !doc_.flatHoldsAll();
-    if (flatLoses)
-        text += tr("\nSave writes %1 flattened and keeps the document open; only a project saves its layers and "
-                   "IRC budget.")
-                    .arg(QFileInfo(doc_.path()).fileName());
+    // they stay open. An untitled document asks for a name first, and
+    // only an .ans name loses them.
+    if (doc_.form() == FileForm::Ansi && !doc_.flatHoldsAll()) {
+        if (doc_.path().isEmpty())
+            text += tr("\nSaved as an .ans it is written flattened and the document stays open; only a project "
+                       "saves its layers and IRC budget.");
+        else
+            text += tr("\nSave writes %1 flattened and keeps the document open; only a project saves its layers "
+                       "and IRC budget.")
+                        .arg(QFileInfo(doc_.path()).fileName());
+    }
     const auto answer = QMessageBox::warning(this, tr("Blockwright"), text,
                                              QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
                                              QMessageBox::Save);

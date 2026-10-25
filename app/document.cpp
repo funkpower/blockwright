@@ -156,7 +156,15 @@ public:
     SnapshotCommand(Document* doc, project::Snapshot snapshot)
         : QUndoCommand(Document::tr("Snapshot r%1").arg(snapshot.round)), doc_(doc), snapshot_(std::move(snapshot)) {}
 
-    void redo() override { doc_->extras_.snapshots.push_back(snapshot_); }
+    // A flat file keeps no snapshots: one redone after a save made the
+    // document an .ans (#115) is dropped from the stack instead.
+    void redo() override {
+        if (doc_->form_ == FileForm::Ansi) {
+            setObsolete(true);
+            return;
+        }
+        doc_->extras_.snapshots.push_back(snapshot_);
+    }
     // Snapshots change only through these commands and open/new (which
     // clear the stack), so the one to take off is the last.
     void undo() override {
