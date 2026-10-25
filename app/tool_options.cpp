@@ -79,13 +79,16 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("texture"), brush | O::Ramp | O::Light | O::Texture},
         // The clone stamp copies whole cells: no strength, no ramp.
         {QStringLiteral("clone"), brush | O::CloneAligned},
+        // Stars ignore the ramp; haze and smoke walk it.
+        {QStringLiteral("spray"), brush | O::Ramp | O::Spray},
     };
     const auto it = table.find(toolId);
     if (known)
         *known = it != table.end();
     if (it != table.end())
         return *it;
-    return brush | O::Strength | O::Ramp | O::Light | O::Form | O::Hardness | O::OutlineSelection | O::Texture;
+    return brush | O::Strength | O::Ramp | O::Light | O::Form | O::Hardness | O::OutlineSelection | O::Texture |
+           O::Spray;
 }
 
 ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* select, QAction* filledShapes,
@@ -94,6 +97,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
       glyphTool_(qobject_cast<GlyphTool*>(tools->find(QStringLiteral("glyph")))),
       gradientTool_(qobject_cast<GradientTool*>(tools->find(QStringLiteral("gradient")))),
       cloneTool_(qobject_cast<CloneTool*>(tools->find(QStringLiteral("clone")))),
+      sprayTool_(qobject_cast<SprayTool*>(tools->find(QStringLiteral("spray")))),
       rimTool_(qobject_cast<RimLightTool*>(tools->find(QStringLiteral("rimLight")))) {
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("toolOptionsTitle"));
@@ -281,6 +285,24 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     cloneAligned_->setToolTip(tr("Clone stamp: keep the distance to the source from stroke to stroke; off, "
                                  "each stroke copies from the source again (Ctrl+click sets it)"));
 
+    sprayKind_ = new QComboBox;
+    sprayKind_->setObjectName(QStringLiteral("sprayKind"));
+    for (const SprayKind k : {SprayKind::Stars, SprayKind::Haze, SprayKind::Smoke})
+        sprayKind_->addItem(sprayKindName(k), int(k));
+    sprayKind_->setItemData(0, tr("Small glyphs in the pen's colour, on open ground only"), Qt::ToolTipRole);
+    sprayKind_->setItemData(1, tr("A ░▒ lift along the ramp in long, low bands"), Qt::ToolTipRole);
+    sprayKind_->setItemData(2, tr("A ░▒ lift along the ramp in tall, curling wisps"), Qt::ToolTipRole);
+    sprayKind_->setToolTip(tr("Glyph spray: what it scatters (the right button takes stars off, or darkens)"));
+    sprayDensity_ = new QSpinBox;
+    sprayDensity_->setObjectName(QStringLiteral("sprayDensity"));
+    sprayDensity_->setRange(kMinSprayDensity, kMaxSprayDensity);
+    sprayDensity_->setSuffix(QStringLiteral("%"));
+    sprayDensity_->setToolTip(tr("Glyph spray: how many stars, or how much of the canvas the haze or smoke covers"));
+    spraySeed_ = new QSpinBox;
+    spraySeed_->setObjectName(QStringLiteral("spraySeed"));
+    spraySeed_->setRange(0, kMaxSpraySeed);
+    spraySeed_->setToolTip(tr("Glyph spray: the seed fixes the pattern to the canvas, so strokes over one another "
+                              "paint the same one"));
     rimLint_ = new QCheckBox(tr("Keep the lint clean"));
     rimLint_->setObjectName(QStringLiteral("rimLint"));
     rimLint_->setToolTip(tr("Rim light: leave a cell unlit where lighting it would add a ladder-lint finding "
@@ -310,6 +332,9 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(tr("Density"), textureDensity_);
     form->addRow(tr("Seed"), textureSeed_);
     form->addRow(cloneAligned_);
+    form->addRow(tr("Spray"), sprayKind_);
+    form->addRow(tr("Density"), sprayDensity_);
+    form->addRow(tr("Seed"), spraySeed_);
     form->addRow(filled_);
     form->addRow(pencil4_);
     form->addRow(tr("Paste"), pasteMode_);
@@ -335,6 +360,21 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
         connect(cloneAligned_, &QCheckBox::toggled, this, [this](bool on) {
             if (!syncing_)
                 cloneTool_->setAligned(on);
+        });
+    }
+    if (sprayTool_) {
+        connect(sprayTool_, &Tool::changed, this, &ToolOptions::sync);
+        connect(sprayKind_, &QComboBox::currentIndexChanged, this, [this] {
+            if (!syncing_)
+                sprayTool_->setKind(SprayKind(sprayKind_->currentData().toInt()));
+        });
+        connect(sprayDensity_, &QSpinBox::valueChanged, this, [this](int v) {
+            if (!syncing_)
+                sprayTool_->setDensity(v);
+        });
+        connect(spraySeed_, &QSpinBox::valueChanged, this, [this](int v) {
+            if (!syncing_)
+                sprayTool_->setSeed(v);
         });
     }
     if (rimTool_) {
@@ -405,6 +445,9 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(textureDensity_, o.testFlag(O::Texture));
     f->setRowVisible(textureSeed_, o.testFlag(O::Texture));
     f->setRowVisible(cloneAligned_, o.testFlag(O::CloneAligned));
+    f->setRowVisible(sprayKind_, o.testFlag(O::Spray));
+    f->setRowVisible(sprayDensity_, o.testFlag(O::Spray));
+    f->setRowVisible(spraySeed_, o.testFlag(O::Spray));
     f->setRowVisible(rimLint_, o.testFlag(O::RimLint));
     f->setRowVisible(filled_, o.testFlag(O::Filled));
     f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
@@ -476,6 +519,12 @@ void ToolOptions::sync() {
     }
     if (cloneTool_)
         cloneAligned_->setChecked(cloneTool_->aligned());
+    if (sprayTool_) {
+        const SprayOptions& o = sprayTool_->options();
+        sprayKind_->setCurrentIndex(sprayKind_->findData(int(o.kind)));
+        sprayDensity_->setValue(o.density);
+        spraySeed_->setValue(o.seed);
+    }
     if (rimTool_)
         rimLint_->setChecked(rimTool_->keepLint());
     // A Library stamp floats in a mode of its own; the dock shows it.

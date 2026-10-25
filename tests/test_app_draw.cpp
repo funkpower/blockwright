@@ -158,6 +158,7 @@ TEST_CASE("every drawing tool is in the Tools menu with its shortcut") {
         {"rimLight", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)},
         {"texture", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P)},
         {"clone", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_K)},
+        {"spray", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Y)},
     };
     for (const Entry& e : entries) {
         QAction* a = act(w, QString::fromLatin1(e.id) + QStringLiteral("Tool"));

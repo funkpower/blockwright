@@ -33,6 +33,7 @@
 #include "blockwright/brushes/form.h"
 #include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/guard.h"
+#include "blockwright/brushes/spray.h"
 #include "blockwright/brushes/texture.h"
 #include "blockwright/halfblock.h"
 
@@ -505,6 +506,38 @@ private:
     std::optional<CloneSource> next_;
     std::optional<CloneBrush> stamp_;
     QPoint last_;  // the drag's last dab
+};
+
+// The name a spray kind goes by in Tool Options and the status bar.
+QString sprayKindName(SprayKind kind);
+
+// Glyph spray (PLAN §10, "Detail"): stars, haze or smoke, at the tool's
+// density and seed, kept in the settings (SprayBrush). Stars are drawn in
+// the pen's foreground on open ground, and the right button takes them off;
+// haze and smoke lift ░▒ along the view's ramp, lighter with the left
+// button and darker with the right. Each kind is fixed to the canvas by its
+// seed, so strokes over one another paint one field.
+class SprayTool : public BrushTool {
+    Q_OBJECT
+public:
+    explicit SprayTool(QObject* parent = nullptr);
+
+    const SprayOptions& options() const { return options_; }
+    // Each takes its value within range, stores it in the settings, redoes a
+    // drag under way with it (settingsChanged) and emits changed().
+    void setKind(SprayKind kind);
+    void setDensity(int density);
+    void setSeed(int seed);
+
+    QString status() const override;
+
+protected:
+    std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+
+private:
+    void setOptions(const SprayOptions& options);
+
+    SprayOptions options_;
 };
 
 } // namespace bw

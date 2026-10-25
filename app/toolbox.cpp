@@ -32,10 +32,10 @@ const QList<QStringList>& Toolbox::groups() {
         // The brushes that walk a ramp.
         {QStringLiteral("rampShade"), QStringLiteral("form"), QStringLiteral("soft"), QStringLiteral("despeckle"),
          QStringLiteral("smudge")},
-        // The detail brushes: those that find an edge, the texture stamp and the
-        // clone stamp.
+        // The detail brushes: those that find an edge, the texture stamp, the
+        // clone stamp and the glyph spray.
         {QStringLiteral("outline"), QStringLiteral("rimLight"), QStringLiteral("texture"),
-         QStringLiteral("clone")},
+         QStringLiteral("clone"), QStringLiteral("spray")},
         {QStringLiteral("line"), QStringLiteral("rectangle"), QStringLiteral("ellipse")},
         // The fills: the bucket and the ramp gradient.
         {QStringLiteral("fill"), QStringLiteral("gradient")},
@@ -176,6 +176,17 @@ QIcon toolIcon(const QString& id) {
         p.fillRect(to, mid);
         p.drawRect(to);
         p.drawLine(from.center(), to.center());
+    } else if (id == QLatin1String("spray")) {
+        // a soft haze below, stars scattered above it
+        p.fillRect(QRectF(box.left(), box.bottom() - 5, box.width(), 5), mid);
+        p.setPen(Qt::NoPen);
+        p.setBrush(light);
+        for (const QPointF at : {QPointF(0.15, 0.15), QPointF(0.6, 0.1), QPointF(0.85, 0.45), QPointF(0.35, 0.5)})
+            p.drawEllipse(QPointF(box.left() + at.x() * box.width(), box.top() + at.y() * box.height()), 1.4, 1.4);
+        p.setPen(QPen(ink, 1.2));
+        const QPointF star(box.left() + 0.55 * box.width(), box.top() + 0.32 * box.height());
+        p.drawLine(star - QPointF(2.5, 0), star + QPointF(2.5, 0));
+        p.drawLine(star - QPointF(0, 2.5), star + QPointF(0, 2.5));
     } else {
         // A tool with no picture of its own: its name's first letter.
         p.drawText(QRectF(0, 0, kIcon, kIcon), Qt::AlignCenter, id.left(1).toUpper());

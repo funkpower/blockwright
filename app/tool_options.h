@@ -9,8 +9,9 @@
 // connectivity, the glyph brush's glyph, Filled Shapes for
 // the rectangle and ellipse, the ramp gradient's shape, rungs and banding,
 // the select tool's paste mode, sample merged for the eyedropper and
-// fill, the clone stamp's Aligned and the rim light's Keep the lint clean.
-// Each row is shown while the active tool reads it (optionsFor). It edits the view's
+// fill, the clone stamp's Aligned, the rim light's Keep the lint clean,
+// and the glyph spray's kind, density and seed. Each row is shown while
+// the active tool reads it (optionsFor). It edits the view's
 // settings and the tools' and follows them, so the menus and the dock stay
 // in step.
 
@@ -29,6 +30,7 @@ namespace bw {
 
 class CanvasView;
 class CloneTool;
+class SprayTool;
 class GlyphTool;
 class GradientTool;
 class RimLightTool;
@@ -61,6 +63,7 @@ public:
         Texture = 1 << 17,   // the texture stamp's kind, density and seed
         CloneAligned = 1 << 18,  // the clone stamp keeps its distance across strokes
         RimLint = 1 << 19,       // the rim light keeps the ladder lint clean
+        Spray = 1 << 20,         // the glyph spray's kind, density and seed
     };
     Q_DECLARE_FLAGS(Options, Option)
 
@@ -107,6 +110,9 @@ public:
     QSpinBox* gradientToBox() const { return gradientTo_; }
     QComboBox* gradientBandingBox() const { return gradientBanding_; }
     QCheckBox* cloneAlignedBox() const { return cloneAligned_; }
+    QComboBox* sprayKindBox() const { return sprayKind_; }
+    QSpinBox* sprayDensityBox() const { return sprayDensity_; }
+    QSpinBox* spraySeedBox() const { return spraySeed_; }
     QCheckBox* rimLintBox() const { return rimLint_; }
 
 private:
@@ -128,6 +134,7 @@ private:
     GlyphTool* glyphTool_;
     GradientTool* gradientTool_;
     CloneTool* cloneTool_;
+    SprayTool* sprayTool_;
     RimLightTool* rimTool_;
     QFormLayout* form_layout_;
     QLabel* title_;
@@ -162,6 +169,9 @@ private:
     QSpinBox* gradientTo_;
     QComboBox* gradientBanding_;
     QCheckBox* cloneAligned_;
+    QComboBox* sprayKind_;
+    QSpinBox* sprayDensity_;
+    QSpinBox* spraySeed_;
     QCheckBox* rimLint_;
     Options shown_;
     bool syncing_ = false;

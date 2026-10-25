@@ -12,6 +12,7 @@
 #include "blockwright/brushes/shading.h"
 #include "blockwright/brushes/smudge.h"
 #include "blockwright/brushes/soft.h"
+#include "blockwright/brushes/spray.h"
 #include "blockwright/brushes/texture.h"
 #include "blockwright/glyph_sets.h"
 #include "blockwright/ramp.h"
@@ -791,6 +792,102 @@ QString CloneTool::status() const {
         .arg(clone_.source->first)
         .arg(clone_.source->second)
         .arg(clone_.aligned ? tr(", aligned") : QString());
+}
+
+
+QString sprayKindName(SprayKind kind) {
+    switch (kind) {
+    case SprayKind::Haze:
+        return SprayTool::tr("Haze");
+    case SprayKind::Smoke:
+        return SprayTool::tr("Smoke");
+    case SprayKind::Stars:
+        break;
+    }
+    return SprayTool::tr("Stars");
+}
+
+namespace {
+
+const QString kSprayKindKey = QStringLiteral("spray/kind");
+const QString kSprayDensityKey = QStringLiteral("spray/density");
+const QString kSpraySeedKey = QStringLiteral("spray/seed");
+
+// The kinds as the settings store them
+QString sprayKindKey(SprayKind kind) {
+    switch (kind) {
+    case SprayKind::Haze:
+        return QStringLiteral("haze");
+    case SprayKind::Smoke:
+        return QStringLiteral("smoke");
+    case SprayKind::Stars:
+        break;
+    }
+    return QStringLiteral("stars");
+}
+
+} // namespace
+
+SprayTool::SprayTool(QObject* parent) : BrushTool(QStringLiteral("spray"), tr("Gl&yph Spray"), parent) {
+    const auto s = appSettings();
+    const QString kind = s->value(kSprayKindKey).toString();
+    for (const SprayKind k : {SprayKind::Stars, SprayKind::Haze, SprayKind::Smoke})
+        if (kind == sprayKindKey(k))
+            options_.kind = k;
+    options_.density = std::clamp(s->value(kSprayDensityKey, options_.density).toInt(), kMinSprayDensity, kMaxSprayDensity);
+    options_.seed = std::clamp(s->value(kSpraySeedKey, options_.seed).toInt(), 0, kMaxSpraySeed);
+}
+
+void SprayTool::setOptions(const SprayOptions& options) {
+    SprayOptions o = options;
+    o.density = std::clamp(o.density, kMinSprayDensity, kMaxSprayDensity);
+    o.seed = std::clamp(o.seed, 0, kMaxSpraySeed);
+    if (o == options_)
+        return;
+    options_ = o;
+    const auto s = appSettings();
+    s->setValue(kSprayKindKey, sprayKindKey(o.kind));
+    s->setValue(kSprayDensityKey, o.density);
+    s->setValue(kSpraySeedKey, o.seed);
+    // a drag under way is redone with them, as for the other tools' settings
+    settingsChanged();
+    emit changed();
+}
+
+void SprayTool::setKind(SprayKind kind) {
+    SprayOptions o = options_;
+    o.kind = kind;
+    setOptions(o);
+}
+
+void SprayTool::setDensity(int density) {
+    SprayOptions o = options_;
+    o.density = density;
+    setOptions(o);
+}
+
+void SprayTool::setSeed(int seed) {
+    SprayOptions o = options_;
+    o.seed = seed;
+    setOptions(o);
+}
+
+QString SprayTool::status() const {
+    if (!view())
+        return QString();
+    if (options_.kind == SprayKind::Stars)
+        return tr("Stars, density %1%, seed %2; right button takes stars off")
+            .arg(options_.density)
+            .arg(options_.seed);
+    return tr("Ramp %1, %2, density %3%, seed %4; right button darkens")
+        .arg(QString::fromStdString(view()->ramp().name), sprayKindName(options_.kind).toLower())
+        .arg(options_.density)
+        .arg(options_.seed);
+}
+
+std::unique_ptr<Brush> SprayTool::makeBrush(Qt::MouseButton button) const {
+    return std::make_unique<SprayBrush>(view()->ramp(), options_, pen().fg,
+                                        button == Qt::RightButton ? ShadeDirection::Darken : ShadeDirection::Lighten);
 }
 
 } // namespace bw

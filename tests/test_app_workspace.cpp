@@ -206,6 +206,9 @@ TEST_CASE("Tool Options shows only the active tool's settings") {
         CHECK(shows(o->gradientToBox()) == want.testFlag(ToolOptions::Option::Gradient));
         CHECK(shows(o->gradientBandingBox()) == want.testFlag(ToolOptions::Option::Gradient));
         CHECK(shows(o->cloneAlignedBox()) == want.testFlag(ToolOptions::Option::CloneAligned));
+        CHECK(shows(o->sprayKindBox()) == want.testFlag(ToolOptions::Option::Spray));
+        CHECK(shows(o->sprayDensityBox()) == want.testFlag(ToolOptions::Option::Spray));
+        CHECK(shows(o->spraySeedBox()) == want.testFlag(ToolOptions::Option::Spray));
         CHECK(shows(o->rimLintBox()) == want.testFlag(ToolOptions::Option::RimLint));
     }
     // spot checks against the tools themselves
@@ -229,6 +232,10 @@ TEST_CASE("Tool Options shows only the active tool's settings") {
     CHECK(ToolOptions::optionsFor(QStringLiteral("clone")).testFlag(O::CloneAligned));
     CHECK_FALSE(ToolOptions::optionsFor(QStringLiteral("clone")).testFlag(O::Ramp));
     CHECK_FALSE(ToolOptions::optionsFor(QStringLiteral("clone")).testFlag(O::Strength));
+    CHECK(ToolOptions::optionsFor(QStringLiteral("spray")) == (ToolOptions::optionsFor(QStringLiteral("clone")) &
+                                                               ~ToolOptions::Options(O::CloneAligned) | O::Ramp |
+                                                               O::Spray));
+    CHECK_FALSE(ToolOptions::optionsFor(QStringLiteral("texture")).testFlag(O::Spray));
 }
 
 TEST_CASE("every Tool Options control has a tooltip, with its shortcut where it has one") {

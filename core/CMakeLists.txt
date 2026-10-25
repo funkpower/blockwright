@@ -17,6 +17,7 @@ add_library(blockwright_core STATIC
   src/brushes/smudge.cpp
   src/brushes/soft.cpp
   src/brushes/texture.cpp
+  src/brushes/spray.cpp
   src/canvas.cpp
   src/cp437.cpp
   src/edit.cpp

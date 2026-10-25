@@ -1,5 +1,6 @@
 // The detail tools in the main window (PLAN §10, "Detail"): the outline,
-// rim-light and texture brushes, the clone stamp, the pencil's 8-connected mode and the symmetry modes,
+// rim-light and texture brushes, the clone stamp, the glyph spray, the pencil's 8-connected mode and the
+// symmetry modes,
 // from the Tools and Edit menus and Tool Options, with the mouse delivered
 // as the platform delivers it.
 
@@ -18,6 +19,7 @@
 #include "system_input.h"
 
 #include "blockwright/brush.h"
+#include "blockwright/brushes/spray.h"
 #include "blockwright/brushes/texture.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/lint.h"
@@ -1069,4 +1071,240 @@ TEST_CASE("a texture stamp drag paints the dock's texture, one undo step") {
         bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 12, 20), Qt::LeftButton, Qt::NoButton);
         CHECK(w.document()->undoStack()->index() == after);
     }
+}
+
+namespace {
+
+SprayTool* sprayTool(MainWindow& w) {
+    auto* t = qobject_cast<SprayTool*>(w.tools()->find(QStringLiteral("spray")));
+    REQUIRE(t);
+    return t;
+}
+
+// The glyph spray's settings, forgotten before and after a test, from the
+// scratch settings only.
+struct FreshSpraySettings {
+    static QString dir() { return QFileInfo(bwtest::scratchSettingsFile()).absolutePath(); }
+    FreshSpraySettings() {
+        REQUIRE(bwtest::settingsInScratch(dir()));
+        appSettings()->remove(QStringLiteral("spray"));
+    }
+    ~FreshSpraySettings() {
+        if (bwtest::settingsInScratch(dir()))
+            appSettings()->remove(QStringLiteral("spray"));
+    }
+};
+
+} // namespace
+
+TEST_CASE("the glyph spray is in the Tools menu and the toolbox, with its key and its rows") {
+    FreshSpraySettings fresh;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    QAction* a = act(w, QStringLiteral("sprayTool"));
+    CHECK(a->shortcut() == QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Y));
+    CHECK(QString(sprayTool(w)->name()).remove(QLatin1Char('&')) == QStringLiteral("Glyph Spray"));
+    bwtest::systemKey(w.canvasView(), Qt::Key_Y, Qt::ControlModifier | Qt::ShiftModifier);
+    CHECK(w.tools()->active()->id() == QStringLiteral("spray"));
+    CHECK(a->isChecked());
+    QToolButton* b = w.toolbox()->buttonFor(QStringLiteral("spray"));
+    REQUIRE(b);
+    // with the other detail brushes
+    CHECK(b == w.toolbox()->buttonFor(QStringLiteral("outline")));
+    CHECK((b->defaultAction() == a || (b->menu() && b->menu()->actions().contains(a))));
+
+    ToolOptions* d = dock(w);
+    QComboBox* kind = d->sprayKindBox();
+    QSpinBox* density = d->sprayDensityBox();
+    QSpinBox* seed = d->spraySeedBox();
+    // shown for the spray only, with the ramp and the brush settings
+    use(w, "texture");
+    CHECK_FALSE(kind->isVisibleTo(d));
+    use(w, "spray");
+    for (QWidget* row : {static_cast<QWidget*>(kind), static_cast<QWidget*>(density), static_cast<QWidget*>(seed),
+                         static_cast<QWidget*>(d->rampBox()), static_cast<QWidget*>(d->sizeBox())})
+        CHECK(row->isVisibleTo(d));
+    CHECK_FALSE(d->strengthBox()->isVisibleTo(d));
+    CHECK_FALSE(d->textureKindBox()->isVisibleTo(d));
+    const auto shown = d->shown();
+    CHECK(shown.testFlag(ToolOptions::Option::Symmetry));
+    CHECK(shown.testFlag(ToolOptions::Option::AlphaLock));
+
+    SprayTool* t = sprayTool(w);
+    CHECK(t->options() == SprayOptions{});
+    REQUIRE(kind->count() == 3);
+    CHECK(kind->currentData().toInt() == int(SprayKind::Stars));
+    CHECK(density->value() == SprayOptions{}.density);
+    kind->setCurrentIndex(kind->findData(int(SprayKind::Smoke)));
+    density->setValue(55);
+    seed->setValue(321);
+    CHECK(t->options() == SprayOptions{SprayKind::Smoke, 55, 321});
+    CHECK(density->minimum() == kMinSprayDensity);
+    CHECK(density->maximum() == kMaxSprayDensity);
+    CHECK(seed->maximum() == kMaxSpraySeed);
+    // and follows the tool
+    t->setKind(SprayKind::Haze);
+    t->setDensity(12);
+    t->setSeed(8);
+    CHECK(kind->currentData().toInt() == int(SprayKind::Haze));
+    CHECK(density->value() == 12);
+    CHECK(seed->value() == 8);
+    // the tool keeps its settings in range
+    t->setDensity(400);
+    t->setSeed(-3);
+    CHECK(t->options() == SprayOptions{SprayKind::Haze, kMaxSprayDensity, 0});
+    CHECK(sprayKindName(SprayKind::Stars) == QStringLiteral("Stars"));
+    CHECK(t->status().contains(QStringLiteral("haze")));
+}
+
+TEST_CASE("the glyph spray's kind, density and seed are kept between runs", "[settings]") {
+    FreshSpraySettings fresh;
+    {
+        MainWindow w;
+        CHECK(sprayTool(w)->options() == SprayOptions{});
+        ToolOptions* d = dock(w);
+        d->sprayKindBox()->setCurrentIndex(d->sprayKindBox()->findData(int(SprayKind::Haze)));
+        d->sprayDensityBox()->setValue(70);
+        d->spraySeedBox()->setValue(4242);
+        CHECK(sprayTool(w)->options() == SprayOptions{SprayKind::Haze, 70, 4242});
+    }
+    REQUIRE(bwtest::settingsInScratch(FreshSpraySettings::dir()));
+    CHECK(appSettings()->value(QStringLiteral("spray/kind")).toString() == QStringLiteral("haze"));
+    CHECK(appSettings()->value(QStringLiteral("spray/density")).toInt() == 70);
+    CHECK(appSettings()->value(QStringLiteral("spray/seed")).toInt() == 4242);
+    {
+        MainWindow w;
+        CHECK(sprayTool(w)->options() == SprayOptions{SprayKind::Haze, 70, 4242});
+        ToolOptions* d = dock(w);
+        CHECK(d->sprayKindBox()->currentData().toInt() == int(SprayKind::Haze));
+        CHECK(d->sprayDensityBox()->value() == 70);
+        CHECK(d->spraySeedBox()->value() == 4242);
+        sprayTool(w)->setKind(SprayKind::Smoke);
+    }
+    CHECK(appSettings()->value(QStringLiteral("spray/kind")).toString() == QStringLiteral("smoke"));
+    // a value out of range or unknown reads as in range, or the default
+    appSettings()->setValue(QStringLiteral("spray/kind"), QStringLiteral("fog"));
+    appSettings()->setValue(QStringLiteral("spray/density"), 1000);
+    appSettings()->setValue(QStringLiteral("spray/seed"), -1);
+    {
+        MainWindow w;
+        CHECK(sprayTool(w)->options() == SprayOptions{SprayKind::Stars, kMaxSprayDensity, 0});
+    }
+}
+
+TEST_CASE("a glyph spray drag lays the field's stars, one undo step; the right button takes them off") {
+    FreshSpraySettings fresh;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setBrushSettings(BrushSettings{9, Tip::Square, 1.0, PressureTo::Nothing});
+    use(w, "spray");
+    SprayTool* t = sprayTool(w);
+    t->setDensity(100);
+    t->setSeed(17);
+    const int steps = w.document()->undoStack()->index();
+    const CellEdit shown = drag(w, {{6, 20}, {30, 20}, {40, 30}});
+    landed(w, shown, steps);
+    const Canvas& c = w.document()->canvas();
+    for (const auto& [p, cell] : written(shown)) {
+        INFO(p.first << "," << p.second);
+        CHECK(sprayStar(t->options(), p.first, p.second, c.width(), c.height()) == cell.ch);
+        CHECK(cell.fg == v->pen().fg);
+    }
+    CHECK(written(shown).size() > 3);
+    // over its own stars a drag changes nothing
+    const int after = w.document()->undoStack()->index();
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 12, 20), Qt::LeftButton, Qt::LeftButton);
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 12, 20), Qt::LeftButton, Qt::NoButton);
+    CHECK(w.document()->undoStack()->index() == after);
+    // the right button wipes them
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 6, 20), Qt::RightButton, Qt::RightButton);
+    bwtest::systemMouse(v, QEvent::MouseMove, pixel(v, 30, 20), Qt::NoButton, Qt::RightButton);
+    bwtest::systemMouse(v, QEvent::MouseMove, pixel(v, 40, 30), Qt::NoButton, Qt::RightButton);
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 40, 30), Qt::RightButton, Qt::NoButton);
+    CHECK(w.document()->undoStack()->index() == after + 1);
+    for (const auto& [p, cell] : written(shown))
+        CHECK(at(w, p.first, p.second).ch == U' ');
+}
+
+TEST_CASE("a haze drag lifts the ramp by the field and adds no lint finding") {
+    FreshSpraySettings fresh;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setRamp(steel());
+    v->setBrushSettings(BrushSettings{11, Tip::Square, 1.0, PressureTo::Nothing});
+    CellEdit ground;
+    for (int y = 0; y < 20; ++y)
+        for (int x = 0; x < 40; ++x)
+            ground.changes.push_back({x, y, at(w, x, y), rungCell(steel(), 4)});
+    REQUIRE(v->applyEdit(ground));
+    const Canvas before = w.document()->canvas();
+    use(w, "spray");
+    SprayTool* t = sprayTool(w);
+    t->setKind(SprayKind::Haze);
+    t->setDensity(50);
+    t->setSeed(6);
+    const int steps = w.document()->undoStack()->index();
+    const CellEdit shown = drag(w, {{4, 10}, {30, 10}, {30, 24}});
+    landed(w, shown, steps);
+    const Canvas& c = w.document()->canvas();
+    for (const auto& [p, cell] : written(shown)) {
+        INFO(p.first << "," << p.second);
+        const auto r = rungOf(steel(), cell);
+        REQUIRE(r);
+        CHECK(*r > 4);
+        CHECK(*r <= 4 + sprayLift(t->options(), p.first, p.second, c.width(), c.height()));
+    }
+    std::vector<std::pair<int, int>> changed;
+    for (const auto& [p, cell] : written(shown))
+        changed.push_back(p);
+    CHECK(lint::addedFindingsOnce(before, c, steel(), changed).empty());
+}
+
+TEST_CASE("changing the glyph spray's kind, density or seed mid-drag redoes the stroke with them") {
+    // Codex round 1, finding 4: the drag kept the brush it was pressed with.
+    FreshSpraySettings fresh;
+    MainWindow w;
+    REQUIRE(bwtest::showExposed(&w));
+    CanvasView* v = w.canvasView();
+    v->setRamp(steel());
+    const BrushSettings settings{9, Tip::Square, 1.0, PressureTo::Nothing};
+    v->setBrushSettings(settings);
+    CellEdit ground;
+    for (int y = 0; y < 20; ++y)
+        for (int x = 0; x < 40; ++x)
+            ground.changes.push_back({x, y, at(w, x, y), rungCell(steel(), 4)});
+    REQUIRE(v->applyEdit(ground));
+    const Canvas before = w.document()->canvas();
+    use(w, "spray");
+    SprayTool* t = sprayTool(w);
+    t->setKind(SprayKind::Stars);
+    t->setDensity(100);
+    t->setSeed(17);
+    // what the same dabs paint with the options as they are now
+    const auto replay = [&](std::vector<Dab> dabs) {
+        return paintStroke(before, SprayBrush(steel(), t->options(), v->pen().fg), settings, dabs);
+    };
+    const int steps = w.document()->undoStack()->index();
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, pixel(v, 4, 20), Qt::LeftButton, Qt::LeftButton);
+    bwtest::systemMouse(v, QEvent::MouseMove, pixel(v, 30, 20), Qt::NoButton, Qt::LeftButton);
+    const std::vector<Dab> dabs{Dab{4, 10}, Dab{30, 10}};
+    REQUIRE_FALSE(dragTool(w)->pending().empty());
+    CHECK(dragTool(w)->pending().changes == replay(dabs).changes);
+    t->setKind(SprayKind::Haze);
+    CHECK(dragTool(w)->pending().changes == replay(dabs).changes);
+    for (const CellChange& c : dragTool(w)->pending().changes)
+        CHECK_FALSE(isSprayStar(c.after.ch));
+    t->setDensity(50);
+    CHECK(dragTool(w)->pending().changes == replay(dabs).changes);
+    const CellEdit seeded = dragTool(w)->pending();
+    t->setSeed(6);
+    CHECK_FALSE(dragTool(w)->pending().changes == seeded.changes);
+    CHECK(dragTool(w)->pending().changes == replay(dabs).changes);
+    bwtest::systemMouse(v, QEvent::MouseMove, pixel(v, 30, 32), Qt::NoButton, Qt::LeftButton);
+    const CellEdit shown = dragTool(w)->pending();
+    CHECK(shown.changes == replay({Dab{4, 10}, Dab{30, 10}, Dab{30, 16}}).changes);
+    bwtest::systemMouse(v, QEvent::MouseButtonRelease, pixel(v, 30, 32), Qt::LeftButton, Qt::NoButton);
+    landed(w, shown, steps);
 }
