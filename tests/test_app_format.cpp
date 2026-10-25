@@ -925,6 +925,163 @@ int marked(const Canvas& c) {
 
 } // namespace
 
+TEST_CASE("mirror mode keeps a symmetric pair of lost cells' claims through a paste, a move and undo") {
+    // #98: in mirror X an edit's image at width - 1 - x is part of the edit
+    // (mirrorEdit). A lost A at (0,0) and its image at (79,0), a plain
+    // look-alike A at (1,0).
+    QTemporaryDir tmp;
+    MainWindow w;
+    QString error;
+    const QString saved = tmp.filePath(QStringLiteral("saved.ans"));
+    const std::string lost = "\x1b[0;5;31;44mA";
+    Document* d = openIceOff(w, tmp, "pair.ans",
+                             lost + "\x1b[0;31;44mA\x1b[0;37;104mB\x1b[0m" + std::string(76, ' ') + lost);
+    QUndoStack* undo = d->undoStack();
+    REQUIRE(d->canvas().at(0, 0).lostBlink);
+    REQUIRE(d->canvas().at(79, 0).lostBlink);
+    REQUIRE(d->encode().blinkDropped == 2);
+    action(w, "mirrorMode")->trigger();
+    REQUIRE(w.canvasView()->mirror());
+
+    SECTION("the look-alike stamped onto the lost cell: both keep their claim") {
+        // bit 0x80, which the save doesn't write, makes the paste a change
+        // that still writes alike
+        put(d, 1, 0, drawn(U'A', Red, Blue, 0x80));
+        REQUIRE(d->encode().blinkDropped == 2);
+        copyTo(w, {1, 0, 1, 1}, {0, 0});
+        CHECK((d->canvas().at(0, 0).attrs & 0x80));
+        CHECK((d->canvas().at(79, 0).attrs & 0x80));
+        CHECK(d->canvas().at(0, 0).lostBlink);
+        CHECK(d->canvas().at(79, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 2);
+        undo->undo();
+        CHECK_FALSE((d->canvas().at(0, 0).attrs & 0x80));
+        CHECK_FALSE((d->canvas().at(79, 0).attrs & 0x80));
+        CHECK(d->canvas().at(0, 0).lostBlink);
+        CHECK(d->canvas().at(79, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 2);
+        undo->redo();
+        CHECK((d->canvas().at(0, 0).attrs & 0x80));
+        CHECK((d->canvas().at(79, 0).attrs & 0x80));
+        CHECK(d->canvas().at(0, 0).lostBlink);
+        CHECK(d->canvas().at(79, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 2);
+    }
+    SECTION("the look-alike stamped where only the image lands on a lost cell: that one keeps its claim") {
+        put(d, 0, 0, drawn(U'B', White, Blue));  // not through the view: not mirrored
+        REQUIRE(d->encode().blinkDropped == 1);
+        copyTo(w, {1, 0, 1, 1}, {0, 0});
+        CHECK(d->canvas().at(0, 0) == drawn(U'A', Red, Blue));
+        CHECK_FALSE(d->canvas().at(0, 0).lostBlink);
+        CHECK(d->canvas().at(79, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 1);
+    }
+    SECTION("the lost cell moved: its image moves with it") {
+        action(w, "selectTool")->trigger();
+        w.selectTool()->select({0, 0, 1, 1});
+        w.selectTool()->moveBy(3, 0);
+        w.selectTool()->stamp();
+        CHECK(d->canvas().at(3, 0).lostBlink);
+        CHECK(d->canvas().at(76, 0).lostBlink);
+        CHECK(identical(d->canvas().at(0, 0), Cell{}));
+        CHECK(identical(d->canvas().at(79, 0), Cell{}));
+        CHECK(d->encode().blinkDropped == 2);
+        undo->undo();
+        CHECK(d->canvas().at(0, 0).lostBlink);
+        CHECK(d->canvas().at(79, 0).lostBlink);
+        CHECK_FALSE(d->canvas().at(3, 0).lostBlink);
+        CHECK_FALSE(d->canvas().at(76, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 2);
+        undo->redo();
+        CHECK(d->encode().blinkDropped == 2);
+    }
+    SECTION("the lost cell drawn blinking: its image blinks too and the save loses nothing") {
+        REQUIRE(w.canvasView()->applyEdit(CellEdit{{{0, 0, d->canvas().at(0, 0), drawn(U'A', Red, Blue, attr::Blink)}}}));
+        CHECK_FALSE(d->canvas().at(0, 0).lostBlink);
+        CHECK_FALSE(d->canvas().at(79, 0).lostBlink);
+        CHECK(d->encode().blinkDropped == 0);
+        REQUIRE(w.saveFile(saved, &error));
+        const std::string bytes = bwtest::readFile(saved.toStdString());
+        CHECK(blinksIn(bytes, 0));
+        CHECK(blinksIn(bytes, 79));
+    }
+    SECTION("the lost cell drawn over as it is: nothing changes") {
+        CHECK_FALSE(w.canvasView()->applyEdit(CellEdit{{{0, 0, d->canvas().at(0, 0), drawn(U'A', Red, Blue)}}}));
+        CHECK(d->encode().blinkDropped == 2);
+    }
+}
+
+TEST_CASE("mirror mode flips a lost cell with its look-alike, and undo restores the marks") {
+    // #98: as without mirror mode, the claim moves with the lost A; undo puts
+    // back every cell the flip and its image changed, marks included. The
+    // image of the lost A at (78,0) is a copy with a mark of its own (PLAN
+    // §4, the test below), so the flip counts two.
+    QTemporaryDir tmp;
+    MainWindow w;
+    Document* d = openIceOff(w, tmp, "same.ans", "\x1b[0;5;31;44mA\x1b[0;31;44mA\x1b[0;37;104mB");
+    QUndoStack* undo = d->undoStack();
+    REQUIRE(d->encode().blinkDropped == 1);
+    const Canvas before = d->canvas();
+    action(w, "mirrorMode")->trigger();
+    action(w, "selectTool")->trigger();
+    w.selectTool()->select({0, 0, 2, 1});
+    action(w, "flipHorizontal")->trigger();
+    REQUIRE(d->canvas().at(1, 0).ch == U'A');
+    CHECK_FALSE(d->canvas().at(0, 0).lostBlink);
+    CHECK(d->canvas().at(1, 0).lostBlink);
+    CHECK(d->canvas().at(78, 0) == drawn(U'A', Red, Blue));
+    CHECK(d->canvas().at(78, 0).lostBlink);
+    CHECK(d->canvas().at(79, 0) == drawn(U'A', Red, Blue));
+    CHECK_FALSE(d->canvas().at(79, 0).lostBlink);
+    CHECK(d->encode().blinkDropped == 2);
+    const Canvas flipped = d->canvas();
+    undo->undo();
+    CHECK(d->canvas().at(0, 0).lostBlink);
+    CHECK(marked(d->canvas()) == 1);
+    for (int x = 0; x < before.width(); ++x)
+        CHECK(identical(d->canvas().at(x, 0), before.at(x, 0)));
+    CHECK(d->encode().blinkDropped == 1);
+    undo->redo();
+    for (int x = 0; x < flipped.width(); ++x)
+        CHECK(identical(d->canvas().at(x, 0), flipped.at(x, 0)));
+    CHECK(d->encode().blinkDropped == 2);
+}
+
+TEST_CASE("documented current behaviour: in mirror mode the image of a moved lost cell counts as a lost blink too") {
+    // #98 P3 2, kept as PLAN §4 documents it: the image of a move is pasted
+    // as a copy, mark and all, so the save warning over-counts. A fix that
+    // gives the image the mark of the cell it moves from on its own side
+    // changes the counts below; update this test with it.
+    QTemporaryDir tmp;
+    MainWindow w;
+    QString error;
+    const QString saved = tmp.filePath(QStringLiteral("saved.ans"));
+    Document* d = openIceOff(w, tmp, "same.ans", "\x1b[0;5;31;44mA\x1b[0;31;44mA\x1b[0;37;104mB");
+    REQUIRE(d->encode().blinkDropped == 1);
+    REQUIRE(marked(d->canvas()) == 1);
+    action(w, "mirrorMode")->trigger();
+    REQUIRE(w.canvasView()->mirror());
+    action(w, "selectTool")->trigger();
+    w.selectTool()->select({0, 0, 1, 1});
+    w.selectTool()->moveBy(4, 0);
+    w.selectTool()->stamp();
+    REQUIRE(d->canvas().at(4, 0).ch == U'A');
+    CHECK(d->canvas().at(4, 0).lostBlink);
+    // (75,0) was blank on open and lost nothing, yet it counts
+    CHECK(d->canvas().at(75, 0).lostBlink);
+    CHECK(marked(d->canvas()) == 2);
+    CHECK(d->encode().blinkDropped == 2);
+
+    // the moved A made to blink again: its image still counts, and the save
+    // still stops on it
+    put(d, 4, 0, drawn(U'A', Red, Blue, attr::Blink));
+    CHECK_FALSE(d->canvas().at(4, 0).lostBlink);
+    CHECK(d->canvas().at(75, 0).lostBlink);
+    CHECK(d->encode().blinkDropped == 1);
+    CHECK_FALSE(w.saveFile(saved, &error));
+    CHECK(error.contains(QStringLiteral("blink")));
+}
+
 TEST_CASE("despeckling next to lost cells doesn't copy their claim into the speck") {
     // #82 round 2: the despeckle brush copies the neighbour's look into the
     // speck; the speck never lost a blink

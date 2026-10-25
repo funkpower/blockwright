@@ -341,6 +341,44 @@ TEST_CASE("a layer edit names each cell once, its last change", "[layers]") {
     CHECK(l == original);
 }
 
+TEST_CASE("a layer edit keeps a change to the lost-blink mark alone and whether it moves cells", "[layers]") {
+    // #82, #98: Cell::operator== leaves the mark out, so the fold compares
+    // with identical(); a moved cell's mark is the edit's own (CellEdit::moves)
+    Layer l = makeLayer(LayerKind::Text, 2, 1, "", 0, 0);
+    const Cell a{U'A', Color::indexed(Red), Color::indexed(Blue), 0, false};
+    const Cell b{U'B', Color::indexed(Yellow), Color::indexed(Blue), 0, false};
+    Cell lost = a;
+    lost.lostBlink = true;
+    l.cells.at(0, 0) = a;
+    l.cells.at(1, 0) = a;
+    const Layer original = l;
+    CellEdit canvasEdit;
+    canvasEdit.changes = {
+        {0, 0, a, lost},  // only the mark changes
+        {1, 0, a, b},
+        {1, 0, b, a},  // (1, 0) back as it was: nothing to do there
+    };
+    canvasEdit.moves = true;
+    const CellEdit e = toLayerEdit(l, canvasEdit);
+    REQUIRE(e.changes.size() == 1);
+    CHECK(e.changes[0].x == 0);
+    CHECK_FALSE(e.changes[0].before.lostBlink);
+    CHECK(e.changes[0].after.lostBlink);
+    CHECK(e.moves);
+    CHECK(toCanvasEdit(l, e).moves);
+    e.apply(l.cells);
+    CHECK(l.cells.at(0, 0).lostBlink);
+    e.revert(l.cells);
+    CHECK_FALSE(l.cells.at(0, 0).lostBlink);
+    CHECK(l == original);
+
+    canvasEdit.moves = false;
+    const CellEdit drawn = toLayerEdit(l, canvasEdit);
+    CHECK(drawn.changes.size() == 1);
+    CHECK_FALSE(drawn.moves);
+    CHECK_FALSE(toCanvasEdit(l, drawn).moves);
+}
+
 TEST_CASE("rectangles intersect and unite", "[layers]") {
     CHECK(intersect({0, 0, 4, 4}, {2, 2, 4, 4}) == CellRect{2, 2, 2, 2});
     CHECK(intersect({0, 0, 4, 4}, {4, 0, 4, 4}).empty());
