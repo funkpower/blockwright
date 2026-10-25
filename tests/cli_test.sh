@@ -257,6 +257,56 @@ expect "shade arity" 2 'shade takes an input and an output file' -- "$cli" shade
 expect "shade bad input" 1 'nope\.ans: No such file' -- "$cli" shade --ramp steel "$tmp/nope.ans" "$tmp/x.ans"
 if [[ -e $tmp/x.ans ]]; then bad "a refused shade wrote $tmp/x.ans"; else ok "refused shades write nothing"; fi
 
+# shade modes (#107): the form, despeckle and rim-light brushes over a box or
+# a mask. black.ans is 80x12 of black; block.ans the same with a w block at
+# 10,2-29,9, which is also its mask.
+for y in $(seq 12); do printf '\033[0m%80s' ''; done > "$tmp/black.ans"
+for y in $(seq 0 11); do
+  if (( y >= 2 && y <= 9 )); then printf '\033[0m%10s\033[0;37m' ''; printf '\xdb%.0s' $(seq 20); printf '\033[0m%50s' ''
+  else printf '\033[0m%80s' ''; fi
+done > "$tmp/block.ans"
+expect "--help lists the shade modes" 0 'shade --form dome\|cylinder\|plane' -- "$cli" --help
+expect "shade --form dome" 0 '^shaded [1-9][0-9]* cells as a dome lit from NW along steel in 10,2-29,9$' -- \
+  "$cli" shade --form dome --ramp steel --mask "$tmp/block.ans" "$tmp/black.ans" "$tmp/dome.ans"
+expect "shade --form adds no finding" 0 '^ladder: [0-9]+ of 160 cells on the ramp, [0-9]+ shaded, noise [0-9.]+: clean$' -- \
+  "$cli" shade --form dome --ramp steel --mask "$tmp/block.ans" "$tmp/black.ans" "$tmp/dome.ans"
+expect "shade --form by box" 0 '^shaded [1-9][0-9]* cells as a cylinder lit from SE along steel in 10,2-29,9$' -- \
+  "$cli" shade --form cylinder --light se --ramp steel --box 10,2,29,9 "$tmp/black.ans" "$tmp/cyl.ans"
+expect "shade --form plane --glint" 0 '^shaded [1-9][0-9]* cells as a plane lit from N along steel in 12,2-29,5$' -- \
+  "$cli" shade --form plane --glint --light N --ramp steel --mask "$tmp/block.ans" --box 12,0,40,5 "$tmp/black.ans" "$tmp/plane.ans"
+expect "shade --despeckle" 0 '^despeckled [0-9]+ cells? along steel in 0,0-71,33$' -- \
+  "$cli" shade --despeckle --ramp steel --box 0,0,100,100 "$sphere" "$tmp/despeckled.ans"
+expect "shade --rim" 0 '^rim-lit [1-9][0-9]* cells from NW along steel in 10,2-29,9$' -- \
+  "$cli" shade --rim --ramp steel --mask "$tmp/block.ans" "$tmp/block.ans" "$tmp/rim.ans"
+expect "shade --rim from SE" 0 '^rim-lit [1-9][0-9]* cells from SE along steel in 10,2-29,9$' -- \
+  "$cli" shade --rim --light SE --ramp steel --mask "$tmp/block.ans" "$tmp/block.ans" "$tmp/rim-se.ans"
+if cmp -s "$tmp/rim.ans" "$tmp/rim-se.ans"; then bad "shade --rim from NW and SE wrote the same"; else ok "shade --rim follows --light"; fi
+expect "shade mask of the wrong size" 2 "--mask .*tux\.ans is 30x17, .*sphere-steel\.ans is 72x34" -- \
+  "$cli" shade --form dome --ramp steel --mask "$piece" "$sphere" "$tmp/x.ans"
+expect "shade two modes" 2 'shade takes one mode: the rung step, --form, --despeckle or --rim' -- \
+  "$cli" shade --form dome --rim --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --form with --darken" 2 'shade takes one mode: the rung step, --form, --despeckle or --rim' -- \
+  "$cli" shade --form dome --darken --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --despeckle with --steps" 2 'shade takes one mode' -- "$cli" shade --despeckle --steps 2 --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --despeckle with --rim" 2 'shade takes one mode' -- "$cli" shade --despeckle --rim --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --form needs a selection" 2 'shade --form needs a selection: --box, --mask or both' -- \
+  "$cli" shade --form dome --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --despeckle needs a selection" 2 'shade --despeckle needs a selection' -- "$cli" shade --despeckle --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --rim needs a selection" 2 'shade --rim needs a selection' -- "$cli" shade --rim --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --form needs a ramp" 2 'shade needs a ramp' -- "$cli" shade --form dome "$sphere" "$tmp/x.ans"
+expect "shade --despeckle needs a ramp" 2 'shade needs a ramp' -- "$cli" shade --despeckle "$sphere" "$tmp/x.ans"
+expect "shade --rim needs a ramp" 2 'shade needs a ramp' -- "$cli" shade --rim "$sphere" "$tmp/x.ans"
+expect "shade bad form" 2 "--form takes dome, cylinder or plane, not 'cone'" -- "$cli" shade --form cone --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade bad light" 2 "--light takes a compass point \(N, NE, E, SE, S, SW, W, NW\), not 'up'" -- \
+  "$cli" shade --form dome --light up --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --glint without --form" 2 '--glint is a shade --form option' -- "$cli" shade --rim --glint --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --light without --form or --rim" 2 '--light is a shade --form or --rim option' -- \
+  "$cli" shade --despeckle --light N --ramp steel "$sphere" "$tmp/x.ans"
+expect "shade --light on the rung step" 2 '--light is a shade --form or --rim option' -- "$cli" shade --light N --ramp steel "$sphere" "$tmp/x.ans"
+expect "--mask is a shade option" 2 '--mask is a shade option, not a lint option' -- "$cli" lint --mask "$sphere" "$sphere"
+expect "shade missing mask" 1 'nope\.ans: No such file' -- "$cli" shade --rim --ramp steel --mask "$tmp/nope.ans" "$sphere" "$tmp/x.ans"
+if [[ -e $tmp/x.ans ]]; then bad "a refused shade mode wrote $tmp/x.ans"; else ok "refused shade modes write nothing"; fi
+
 # lint: the whole lint, one planted fault a piece (#106)
 expect "--help lists lint" 0 '^  lint <in> +the ladder check' -- "$cli" --help
 expect "usage lists lint" 2 'lint \[--ramp R\]\.\.\. \[--box x0,y0,x1,y1\] \[--json\] <in>' -- "$cli" lint

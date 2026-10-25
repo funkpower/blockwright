@@ -6,8 +6,11 @@
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli export --irc [--budget N] [--fit] [--pad] [--swap-shades]
 //                          [--allow-over-budget] <in.ans|project> <out.txt>
-//   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N]
-//                         [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in.ans> <out.ans>
+//   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N] [--box x0,y0,x1,y1]
+//                         [--mask <mask.ans>] [--ice] [--allow-lossy] <in.ans> <out.ans>
+//   blockwright-cli shade --form dome|cylinder|plane [--glint] | --despeckle | --rim
+//                         --ramp NAME|c,c,... [--light N|NE|...|NW] --box x0,y0,x1,y1 and/or
+//                         --mask <mask.ans> [--ice] [--allow-lossy] <in.ans> <out.ans>
 //   blockwright-cli lint [--ramp NAME|c,c,...]... [--box x0,y0,x1,y1] [--json] <in.ans>
 //   blockwright-cli render --irc [--budget N] [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli library list [dir]
@@ -436,11 +439,24 @@ bw::lint::Box boxValue(const QString& s) {
 
 using bwcli::ShadeOptions;
 
-// One pass of the ramp shade brush over the box (the whole canvas without
-// one) with the piece's iCE colours, then the ladder check of the box. The
-// check only reports; the file is written either way.
-int shade(const std::string& in, const std::string& out, const ShadeOptions& o) {
+const char* const kCompass[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+const char* const kForms[] = {"dome", "cylinder", "plane"};
+
+// One pass of o.mode's brush over the selection (the box, the mask piece's
+// non-blank cells, both, or the whole canvas) with the piece's iCE colours,
+// then the ladder check of the selection's bounds. The check only reports;
+// the file is written either way.
+int shade(const std::string& in, const std::string& out, ShadeOptions o, const std::optional<std::string>& mask) {
     bw::AnsiDocument doc = load(in);
+    if (mask) {
+        const bw::AnsiDocument m = load(*mask);
+        const bw::Canvas& mc = m.canvas;
+        const bw::Canvas& c = doc.canvas;
+        if (mc.width() != c.width() || mc.height() != c.height())
+            throw Usage{"--mask " + *mask + " is " + std::to_string(mc.width()) + "x" + std::to_string(mc.height()) +
+                        ", " + in + " is " + std::to_string(c.width()) + "x" + std::to_string(c.height())};
+        o.mask = bwcli::maskOf(mc);
+    }
     bwcli::Shaded r;
     try {
         r = bwcli::shadeDocument(doc, o);
@@ -454,9 +470,25 @@ int shade(const std::string& in, const std::string& out, const ShadeOptions& o) 
 
     const bw::lint::Box& box = r.box;
     const std::size_t n = r.edit.changes.size();
-    std::cout << (o.direction == bw::ShadeDirection::Lighten ? "lightened " : "darkened ") << n
-              << (n == 1 ? " cell " : " cells ") << o.steps << (o.steps == 1 ? " rung" : " rungs") << " along "
-              << o.ramp.name << " in " << box.x0 << "," << box.y0 << "-" << box.x1 << "," << box.y1 << "\n";
+    const char* cells = n == 1 ? " cell" : " cells";
+    const char* light = kCompass[static_cast<int>(o.light)];
+    switch (o.mode) {
+    case bwcli::ShadeMode::Step:
+        std::cout << (o.direction == bw::ShadeDirection::Lighten ? "lightened " : "darkened ") << n << cells << " "
+                  << o.steps << (o.steps == 1 ? " rung" : " rungs");
+        break;
+    case bwcli::ShadeMode::Form:
+        std::cout << "shaded " << n << cells << " as a " << kForms[static_cast<int>(o.form)] << " lit from " << light;
+        break;
+    case bwcli::ShadeMode::Despeckle:
+        std::cout << "despeckled " << n << cells;
+        break;
+    case bwcli::ShadeMode::Rim:
+        std::cout << "rim-lit " << n << cells << " from " << light;
+        break;
+    }
+    std::cout << " along " << o.ramp.name << " in " << box.x0 << "," << box.y0 << "-" << box.x1 << "," << box.y1
+              << "\n";
     const bw::lint::LadderReport rep = bw::lint::checkLadder(doc.canvas, o.ramp, box);
     char noise[32];
     std::snprintf(noise, sizeof noise, "%.3f", rep.noise);
@@ -602,6 +634,11 @@ int main(int argc, char** argv) {
         "                       the ladder; <out> may be <in>. A piece without\n"
         "                       iCE colours keeps them off (no shade that needs\n"
         "                       a bright background) unless --ice turns them on\n"
+        "  shade --form dome|cylinder|plane, --despeckle or --rim\n"
+        "                       one pass of the form, despeckle or rim-light\n"
+        "                       brush over the box, the non-blank cells of a\n"
+        "                       --mask piece the size of <in>, or the mask's cells\n"
+        "                       in the box, lit from --light\n"
         "  lint <in>            the ladder check under each --ramp (default: every\n"
         "                       named ramp and the craft pairs\n"
         "                       between), pixel noise and the craft rules; one\n"
@@ -675,6 +712,30 @@ int main(int argc, char** argv) {
                                     QStringLiteral("shade, lint: cells x0,y0,x1,y1 from 0, corners included (default: all)"),
                                     QStringLiteral("x0,y0,x1,y1"));
     parser.addOption(boxOpt);
+    const QCommandLineOption formOpt(QStringLiteral("form"),
+                                     QStringLiteral("shade: shade the selection as a form: dome, cylinder or plane"),
+                                     QStringLiteral("shape"));
+    parser.addOption(formOpt);
+    const QCommandLineOption glintOpt(QStringLiteral("glint"),
+                                      QStringLiteral("shade --form: a glint of the ramp's top rung at the brightest point (default: none)"));
+    parser.addOption(glintOpt);
+    const QCommandLineOption despeckleOpt(QStringLiteral("despeckle"),
+                                          QStringLiteral("shade: clear the selection's specks"));
+    parser.addOption(despeckleOpt);
+    const QCommandLineOption rimOpt(QStringLiteral("rim"),
+                                    QStringLiteral("shade: light the selection's edge cells that face the light"));
+    parser.addOption(rimOpt);
+    const QCommandLineOption lightOpt(
+        QStringLiteral("light"),
+        QStringLiteral("shade --form, --rim: where the light comes from, N, NE, E, SE, S, SW, W or NW (default: NW)"),
+        QStringLiteral("point"));
+    parser.addOption(lightOpt);
+    const QCommandLineOption maskOpt(
+        QStringLiteral("mask"),
+        QStringLiteral("shade: a piece the size of the input whose non-blank cells are the selection (with --box, "
+                       "those in the box)"),
+        QStringLiteral("mask.ans"));
+    parser.addOption(maskOpt);
     const QCommandLineOption iceOpt(QStringLiteral("ice"),
                                     QStringLiteral("shade: turn iCE colours on (default: keep the piece's)"));
     parser.addOption(iceOpt);
@@ -700,7 +761,9 @@ int main(int argc, char** argv) {
                   << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out>\n"
                   << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
                   << "       | export --irc [--budget N] [--fit] [--pad] [--swap-shades] [--allow-over-budget] <in> <out>\n"
-                  << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--ice] [--allow-lossy] <in> <out>\n"
+                  << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--mask <mask>] [--ice] [--allow-lossy] <in> <out>\n"
+                  << "       | shade --form dome|cylinder|plane [--glint] | --despeckle | --rim --ramp R [--light N|NE|...|NW]\n"
+                  << "         --box x0,y0,x1,y1 and/or --mask <mask> [--ice] [--allow-lossy] <in> <out>\n"
                   << "       | lint [--ramp R]... [--box x0,y0,x1,y1] [--json] <in>\n"
                   << "       | render --irc [--budget N] [--scale N] [--font-width 8|9] <in> <out.png>\n"
                   << "       | library list [dir] | library check <dir>\n"
@@ -718,6 +781,8 @@ int main(int argc, char** argv) {
         {&fitOpt, {"export"}},             {&padOpt, {"export"}},    {&swapShadesOpt, {"export"}},
         {&rampOpt, {"shade", "lint"}},     {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
         {&boxOpt, {"shade", "lint"}},      {&iceOpt, {"shade"}},     {&jsonOpt, {"lint"}},
+        {&formOpt, {"shade"}},             {&glintOpt, {"shade"}},   {&despeckleOpt, {"shade"}},
+        {&rimOpt, {"shade"}},              {&lightOpt, {"shade"}},   {&maskOpt, {"shade"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
@@ -783,16 +848,53 @@ int main(int argc, char** argv) {
                 return usage("shade needs a ramp: --ramp NAME or --ramp c,c,...");
             if (args.size() != 3)
                 return usage("shade takes an input and an output file");
+            const bool step = parser.isSet(darkenOpt) || parser.isSet(stepsOpt);
+            const bool form = parser.isSet(formOpt), despeckle = parser.isSet(despeckleOpt), rim = parser.isSet(rimOpt);
+            if (int(step) + int(form) + int(despeckle) + int(rim) > 1)
+                return usage("shade takes one mode: the rung step, --form, --despeckle or --rim");
+            if (parser.isSet(glintOpt) && !form)
+                return usage("--glint is a shade --form option");
+            if (parser.isSet(lightOpt) && !form && !rim)
+                return usage("--light is a shade --form or --rim option");
             ShadeOptions o;
             o.ramp = rampValue(parser.value(rampOpt));
+            o.mode = form ? bwcli::ShadeMode::Form
+                     : despeckle ? bwcli::ShadeMode::Despeckle
+                     : rim ? bwcli::ShadeMode::Rim
+                           : bwcli::ShadeMode::Step;
             if (parser.isSet(darkenOpt))
                 o.direction = bw::ShadeDirection::Darken;
             o.steps = intValue(parser.value(stepsOpt), "steps", 1, 64);
+            if (form) {
+                const QString v = parser.value(formOpt);
+                const auto* f = std::find_if(std::begin(kForms), std::end(kForms),
+                                             [&](const char* n) { return v == QLatin1String(n); });
+                if (f == std::end(kForms))
+                    throw Usage{"--form takes dome, cylinder or plane, not '" + v.toStdString() + "'"};
+                o.form = static_cast<bw::FormShape>(f - std::begin(kForms));
+            }
+            o.glint = parser.isSet(glintOpt);
+            if (parser.isSet(lightOpt)) {
+                const QString v = parser.value(lightOpt).toUpper();
+                const auto* p = std::find_if(std::begin(kCompass), std::end(kCompass),
+                                             [&](const char* n) { return v == QLatin1String(n); });
+                if (p == std::end(kCompass))
+                    throw Usage{"--light takes a compass point (N, NE, E, SE, S, SW, W, NW), not '" +
+                                parser.value(lightOpt).toStdString() + "'"};
+                o.light = static_cast<bw::Compass>(p - std::begin(kCompass));
+            }
+            if ((form || despeckle || rim) && !parser.isSet(boxOpt) && !parser.isSet(maskOpt))
+                return usage(form ? "shade --form needs a selection: --box, --mask or both"
+                             : despeckle ? "shade --despeckle needs a selection: --box, --mask or both"
+                                         : "shade --rim needs a selection: --box, --mask or both");
             if (parser.isSet(boxOpt))
                 o.box = boxValue(parser.value(boxOpt));
             o.ice = parser.isSet(iceOpt);
             o.allowLossy = parser.isSet(lossyOpt);
-            return shade(args[1].toStdString(), args[2].toStdString(), o);
+            std::optional<std::string> mask;
+            if (parser.isSet(maskOpt))
+                mask = parser.value(maskOpt).toStdString();
+            return shade(args[1].toStdString(), args[2].toStdString(), o, mask);
         }
         if (cmd == QLatin1String("library")) {
             const QString sub = args.value(1);

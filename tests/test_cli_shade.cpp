@@ -1,18 +1,24 @@
 // `blockwright-cli shade` and the editor's ramp brush (issue #44): the CLI
 // shades with the document's iCE colours, as the editor does, and turns them
-// on only with --ice.
+// on only with --ice. Its form, despeckle and rim-light modes (issue #107)
+// against the core's form, the despeckle rule and the rim light.
 
 #include "read_file.h"
 #include "shade.h"
 
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
+#include "blockwright/brushes/detail.h"
+#include "blockwright/brushes/form.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/ramp.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
+#include <set>
 #include <string>
+#include <utility>
 
 using namespace bw;
 
@@ -250,4 +256,290 @@ TEST_CASE("cli shade counts no blink lost on a blank glyph, as the editor doesn'
     CHECK(r.blinkDropped == 0);
     CHECK(r.why.empty());
     CHECK_FALSE(writeAnsi(doc).lossy());
+}
+
+namespace {
+
+Ramp steel() { return *findRamp("steel"); }  // k K w W
+
+Cell blackCell() {
+    Cell k;
+    k.fg = Color::indexed(Black);
+    k.bg = Color::indexed(Black);
+    return k;
+}
+
+// A black w x h piece with iCE colours on.
+AnsiDocument blackDoc(int w, int h) {
+    AnsiDocument d;
+    d.ice = true;
+    d.canvas = Canvas(w, h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            d.canvas.at(x, y) = blackCell();
+    return d;
+}
+
+Mask ellipse(int w, int h, double cx, double cy, double rx, double ry) {
+    Mask m(w, h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            if (std::pow((x - cx) / rx, 2) + std::pow((y - cy) / ry, 2) <= 1)
+                m.set(x, y);
+    return m;
+}
+
+// A disc `across` columns, half as many rows, three cells in from the edge.
+Mask disc(int across) {
+    const int w = across + 6, h = across / 2 + 6;
+    return ellipse(w, h, (w - 1) / 2.0, (h - 1) / 2.0, across / 2.0, across / 4.0);
+}
+
+// A sw x sh rectangle three cells in from the edge of its canvas.
+Mask rectangle(int sw, int sh) { return Mask::rect(sw + 6, sh + 6, 3, 3, sw + 2, sh + 2); }
+
+// The mask as a piece: its cells white blocks, the rest black spaces.
+Canvas maskPiece(const Mask& m) {
+    Canvas c(m.width(), m.height());
+    for (int y = 0; y < m.height(); ++y)
+        for (int x = 0; x < m.width(); ++x)
+            c.at(x, y) = m.contains(x, y) ? rungCell(steel(), steel().topRung()) : blackCell();
+    return c;
+}
+
+bwcli::ShadeOptions formOptions(FormShape shape, const Mask& m, Compass light = Compass::NW, bool glint = false) {
+    bwcli::ShadeOptions o;
+    o.ramp = steel();
+    o.mode = bwcli::ShadeMode::Form;
+    o.form = shape;
+    o.light = light;
+    o.glint = glint;
+    o.mask = bwcli::maskOf(maskPiece(m));
+    return o;
+}
+
+using Place = std::pair<int, std::pair<int, int>>;  // kind, x, y
+std::set<Place> places(const lint::LadderReport& r) {
+    std::set<Place> s;
+    for (const auto& f : r.findings)
+        s.insert({int(f.kind), {f.x, f.y}});
+    return s;
+}
+
+// Checks the shaded piece against the core's form for the mask: every cell
+// of the mask at its tone, nothing else changed, and no ladder finding the
+// input didn't have. Returns how many cells the form laid.
+int checkForm(const AnsiDocument& before, const AnsiDocument& after, const Mask& m, const FormOptions& fo,
+              Compass light) {
+    const std::vector<int> tones = formRungs(steel(), m, fo, light);
+    int laid = 0;
+    for (int y = 0; y < m.height(); ++y)
+        for (int x = 0; x < m.width(); ++x) {
+            INFO(x << "," << y);
+            const int t = tones[size_t(y) * m.width() + x];
+            if (m.contains(x, y) && t >= 0) {
+                CHECK(rungOf(steel(), after.canvas.at(x, y)) == t);
+                laid += after.canvas.at(x, y) != before.canvas.at(x, y);
+            } else {
+                CHECK(after.canvas.at(x, y) == before.canvas.at(x, y));
+            }
+        }
+    const auto was = places(lint::checkLadder(before.canvas, steel()));
+    for (const Place& p : places(lint::checkLadder(after.canvas, steel()))) {
+        INFO("finding " << p.first << " at " << p.second.first << "," << p.second.second);
+        CHECK(was.count(p));
+    }
+    return laid;
+}
+
+} // namespace
+
+TEST_CASE("cli shade's mask is the piece's cells that aren't blank", "[cli][shade]") {
+    Canvas c(4, 1);
+    c.at(0, 0) = blackCell();                    // a black space: blank
+    c.at(1, 0) = rungCell(steel(), 4);           // K block
+    c.at(2, 0) = blackCell();
+    c.at(2, 0).ch = U'.';                        // a glyph on black
+    c.at(3, 0) = blackCell();
+    c.at(3, 0).attrs = attr::Blink;              // a blinking space: not blank
+    const Mask m = bwcli::maskOf(c);
+    CHECK_FALSE(m.contains(0, 0));
+    CHECK(m.contains(1, 0));
+    CHECK(m.contains(2, 0));
+    CHECK(m.contains(3, 0));
+}
+
+TEST_CASE("cli shade --form dome on a disc mask lays the core's form, adding no finding", "[cli][shade][form]") {
+    const Mask m = disc(30);
+    for (const Compass light : {Compass::NW, Compass::SE, Compass::N})
+        for (const bool glint : {false, true}) {
+            INFO("light " << int(light) << (glint ? " glint" : ""));
+            const AnsiDocument before = blackDoc(m.width(), m.height());
+            AnsiDocument doc = before;
+            const bwcli::Shaded r = bwcli::shadeDocument(doc, formOptions(FormShape::Dome, m, light, glint));
+            const int laid = checkForm(before, doc, m, FormOptions{FormShape::Dome, false, glint}, light);
+            CHECK(laid > 100);
+            CHECK(int(r.edit.changes.size()) == laid);
+            CHECK(r.box.x0 == 3);
+            CHECK(r.box.x1 == 32);
+        }
+    // lit from the north-west: the top left lighter than the bottom right
+    AnsiDocument doc = blackDoc(m.width(), m.height());
+    bwcli::shadeDocument(doc, formOptions(FormShape::Dome, m));
+    CHECK(*rungOf(steel(), doc.canvas.at(11, 6)) > *rungOf(steel(), doc.canvas.at(25, 14)));
+}
+
+TEST_CASE("cli shade --form cylinder and plane on a strip and a rectangle", "[cli][shade][form]") {
+    struct Case {
+        const char* name;
+        Mask mask;
+    };
+    const Case cases[] = {{"strip", rectangle(40, 4)}, {"rectangle", rectangle(24, 10)}};
+    for (const Case& k : cases) {
+        std::vector<Canvas> shaded;
+        for (const FormShape shape : {FormShape::Cylinder, FormShape::Plane, FormShape::Dome}) {
+            INFO(k.name << " shape " << int(shape));
+            const AnsiDocument before = blackDoc(k.mask.width(), k.mask.height());
+            AnsiDocument doc = before;
+            bwcli::shadeDocument(doc, formOptions(shape, k.mask));
+            CHECK(checkForm(before, doc, k.mask, FormOptions{shape, false, false}, Compass::NW) > 20);
+            shaded.push_back(doc.canvas);
+        }
+        INFO(k.name);
+        CHECK(shaded[0] != shaded[1]);
+        CHECK(shaded[0] != shaded[2]);
+        CHECK(shaded[1] != shaded[2]);
+    }
+}
+
+TEST_CASE("cli shade --form over a box is the box's form; a mask and a box intersect", "[cli][shade][form]") {
+    const Mask rect = rectangle(24, 10);
+    const AnsiDocument before = blackDoc(rect.width(), rect.height());
+    bwcli::ShadeOptions o = formOptions(FormShape::Plane, rect);
+    o.mask.reset();
+    o.box = lint::Box{3, 3, 26, 12};
+    AnsiDocument byBox = before;
+    bwcli::shadeDocument(byBox, o);
+    checkForm(before, byBox, rect, FormOptions{FormShape::Plane, false, false}, Compass::NW);
+
+    // the disc's left half
+    const Mask m = disc(30);
+    Mask half(m.width(), m.height());
+    for (int y = 0; y < m.height(); ++y)
+        for (int x = 0; x <= 18; ++x)
+            if (m.contains(x, y))
+                half.set(x, y);
+    const AnsiDocument black = blackDoc(m.width(), m.height());
+    bwcli::ShadeOptions h = formOptions(FormShape::Dome, m);
+    h.box = lint::Box{0, 0, 18, m.height() - 1};
+    AnsiDocument doc = black;
+    const bwcli::Shaded r = bwcli::shadeDocument(doc, h);
+    CHECK(checkForm(black, doc, half, FormOptions{}, Compass::NW) > 50);
+    CHECK(r.box.x0 == 3);
+    CHECK(r.box.x1 == 18);
+}
+
+TEST_CASE("cli shade refuses a mask that isn't the canvas's size", "[cli][shade]") {
+    AnsiDocument doc = blackDoc(10, 4);
+    bwcli::ShadeOptions o = formOptions(FormShape::Dome, rectangle(4, 1));
+    try {
+        bwcli::shadeDocument(doc, o);
+        FAIL("no Failure thrown");
+    } catch (const bwcli::Failure& f) {
+        CHECK(f.message == "the mask is 10x7, the canvas 10x4");
+    }
+}
+
+TEST_CASE("cli shade --despeckle clears a planted speck and leaves a clean gradient", "[cli][shade][despeckle]") {
+    // steel climbing a rung every two columns
+    const Ramp r = steel();
+    AnsiDocument clean;
+    clean.ice = true;
+    clean.canvas = Canvas(2 * (r.topRung() + 1), 6);
+    for (int y = 0; y < clean.canvas.height(); ++y)
+        for (int x = 0; x < clean.canvas.width(); ++x)
+            clean.canvas.at(x, y) = rungCell(r, x / 2);
+    REQUIRE(lint::checkLadder(clean.canvas, r).clean());
+    bwcli::ShadeOptions o;
+    o.ramp = r;
+    o.mode = bwcli::ShadeMode::Despeckle;
+
+    AnsiDocument doc = clean;
+    CHECK(bwcli::shadeDocument(doc, o).edit.empty());
+    CHECK(doc.canvas == clean.canvas);
+
+    AnsiDocument speck = clean;
+    speck.canvas.at(12, 3) = rungCell(r, 9);  // in the rung-6 band
+    REQUIRE_FALSE(lint::checkLadder(speck.canvas, r).clean());
+    const bwcli::Shaded s = bwcli::shadeDocument(speck, o);
+    CHECK(s.edit.changes.size() == 1);
+    CHECK(speck.canvas == clean.canvas);
+
+    // outside the box it stays
+    AnsiDocument boxed = clean;
+    boxed.canvas.at(12, 3) = rungCell(r, 9);
+    o.box = lint::Box{0, 0, 9, 5};
+    CHECK(bwcli::shadeDocument(boxed, o).edit.empty());
+    CHECK(rungOf(r, boxed.canvas.at(12, 3)) == 9);
+}
+
+TEST_CASE("cli shade --rim lights the edge facing the light and nothing on the far side", "[cli][shade][rim]") {
+    // a w block on black
+    const Ramp r = steel();
+    AnsiDocument block = blackDoc(24, 12);
+    for (int y = 3; y <= 8; ++y)
+        for (int x = 5; x <= 18; ++x)
+            block.canvas.at(x, y) = rungCell(r, 8);
+    bwcli::ShadeOptions o;
+    o.ramp = r;
+    o.mode = bwcli::ShadeMode::Rim;
+    for (const Compass light : {Compass::NW, Compass::SE}) {
+        INFO("light " << int(light));
+        const bool nw = light == Compass::NW;
+        o.light = light;
+        AnsiDocument doc = block;
+        const bwcli::Shaded s = bwcli::shadeDocument(doc, o);
+        CHECK(s.edit.changes.size() > 10);
+        for (const CellChange& ch : s.edit.changes) {
+            INFO(ch.x << "," << ch.y);
+            CHECK((nw ? (ch.y == 3 || ch.x == 5) : (ch.y == 8 || ch.x == 18)));
+            CHECK(rungOf(r, doc.canvas.at(ch.x, ch.y)) == 9);
+        }
+        // the middle of the near edges lit, the far edges not
+        CHECK(rungOf(r, doc.canvas.at(11, nw ? 3 : 8)) == 9);
+        CHECK(rungOf(r, doc.canvas.at(nw ? 5 : 18, 5)) == 9);
+        CHECK(rungOf(r, doc.canvas.at(11, nw ? 8 : 3)) == 8);
+        CHECK(rungOf(r, doc.canvas.at(nw ? 18 : 5, 5)) == 8);
+    }
+    // the same as the editor's rim light over the canvas
+    o.light = Compass::NW;
+    AnsiDocument doc = block;
+    bwcli::shadeDocument(doc, o);
+    Canvas want = block.canvas;
+    paintRegion(block.canvas, RimLightBrush(r, Compass::NW), {}).apply(want);
+    CHECK(doc.canvas == want);
+}
+
+TEST_CASE("cli shade --rim over a selection wider and taller than one dab reaches every cell", "[cli][shade][rim]") {
+    // a w block 596 by 300 on black: more than two 255-cell dabs across and
+    // more than one down
+    const Ramp r = steel();
+    AnsiDocument block = blackDoc(600, 304);
+    for (int y = 2; y <= 301; ++y)
+        for (int x = 2; x <= 597; ++x)
+            block.canvas.at(x, y) = rungCell(r, 8);
+    bwcli::ShadeOptions o;
+    o.ramp = r;
+    o.mode = bwcli::ShadeMode::Rim;
+    o.light = Compass::SE;
+    AnsiDocument doc = block;
+    const bwcli::Shaded s = bwcli::shadeDocument(doc, o);
+    CHECK(s.box.x0 == 0);
+    CHECK(s.box.x1 == 599);
+    // the far corner's edges, out of the first dab's reach, are lit
+    CHECK(rungOf(r, doc.canvas.at(500, 301)) == 9);
+    CHECK(rungOf(r, doc.canvas.at(597, 290)) == 9);
+    Canvas want = block.canvas;
+    paintRegion(block.canvas, RimLightBrush(r, Compass::SE), {}).apply(want);
+    CHECK(doc.canvas == want);
 }
