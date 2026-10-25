@@ -8,6 +8,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
+#include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/form.h"
 #include "blockwright/brushes/shading.h"
@@ -542,4 +543,130 @@ TEST_CASE("cli shade --rim over a selection wider and taller than one dab reache
     Canvas want = block.canvas;
     paintRegion(block.canvas, RimLightBrush(r, Compass::SE), {}).apply(want);
     CHECK(doc.canvas == want);
+}
+
+TEST_CASE("cli shade --form dome over a selection wider than one dab is one dome over the whole box",
+          "[cli][shade][form]") {
+    // a 300 by 20 box: the first dab covers columns 0 to 254, the second
+    // the rest
+    const Mask box = Mask::rect(300, 20, 0, 0, 299, 19);
+    const AnsiDocument before = blackDoc(300, 20);
+    bwcli::ShadeOptions o = formOptions(FormShape::Dome, box);
+    o.mask.reset();
+    AnsiDocument doc = before;
+    const bwcli::Shaded r = bwcli::shadeDocument(doc, o);
+    CHECK(r.box.x1 == 299);
+    // every cell, either side of column 255, at its tone of the whole box's dome
+    const FormOptions dome{FormShape::Dome, false, false};
+    const int laid = checkForm(before, doc, box, dome, Compass::NW);
+    CHECK(laid > 3000);
+    CHECK(int(r.edit.changes.size()) == laid);
+    // and that isn't the first dab's own dome: a form per dab would differ
+    const std::vector<int> whole = formRungs(steel(), box, dome, Compass::NW);
+    const std::vector<int> first = formRungs(steel(), Mask::rect(300, 20, 0, 0, 254, 19), dome, Compass::NW);
+    int differ = 0;
+    for (int y = 0; y < 20; ++y)
+        for (int x = 0; x <= 254; ++x)
+            differ += whole[size_t(y) * 300 + x] != first[size_t(y) * 300 + x];
+    CHECK(differ > 100);
+}
+
+TEST_CASE("cli shade --despeckle over a selection wider than one dab clears specks either side of the seam as "
+          "one pass does",
+          "[cli][shade][despeckle]") {
+    // steel up and down a rung every two columns, 320 by 20, shaded in a
+    // box 300 wide: the first dab covers columns 0 to 254, the second 150
+    // to 299 (its tip reaches to 404; the selection stops it)
+    const Ramp r = steel();
+    const int top = r.topRung();
+    auto band = [&](int x) {
+        const int p = (x / 2) % (2 * top);
+        return p <= top ? p : 2 * top - p;
+    };
+    AnsiDocument clean;
+    clean.ice = true;
+    clean.canvas = Canvas(320, 20);
+    for (int y = 0; y < 20; ++y)
+        for (int x = 0; x < 320; ++x)
+            clean.canvas.at(x, y) = rungCell(r, band(x));
+    REQUIRE(lint::checkLadder(clean.canvas, r).clean());
+
+    // a speck three rungs off its band, lighter in the dark half, darker in
+    // the light: in the first dab only, on each side of column 255, and in
+    // the second only
+    const std::pair<int, int> specks[] = {{110, 4}, {254, 7}, {255, 12}, {296, 15}};
+    AnsiDocument speck = clean;
+    for (const auto& [x, y] : specks) {
+        const int b = band(x);
+        REQUIRE(b >= 4);
+        REQUIRE(b <= top - 4);
+        speck.canvas.at(x, y) = rungCell(r, b <= top / 2 ? b + 3 : b - 3);
+    }
+    // and one past the box, under the second dab's tip
+    speck.canvas.at(305, 9) = rungCell(r, band(305) <= top / 2 ? band(305) + 3 : band(305) - 3);
+    REQUIRE(lint::checkLadder(speck.canvas, r).findings.size() >= 5);
+
+    bwcli::ShadeOptions o;
+    o.ramp = r;
+    o.mode = bwcli::ShadeMode::Despeckle;
+    o.box = lint::Box{0, 0, 299, 19};
+    AnsiDocument doc = speck;
+    const bwcli::Shaded s = bwcli::shadeDocument(doc, o);
+    CHECK(s.edit.changes.size() == 4);
+    for (const auto& [x, y] : specks) {
+        INFO(x << "," << y);
+        CHECK(doc.canvas.at(x, y) == clean.canvas.at(x, y));
+    }
+    CHECK(doc.canvas.at(305, 9) == speck.canvas.at(305, 9));
+
+    // the same as one pass of the despeckle brush over the selection
+    StrokeOptions so;
+    so.selection = std::make_shared<Mask>(Mask::rect(320, 20, 0, 0, 299, 19));
+    Canvas want = speck.canvas;
+    paintRegion(speck.canvas, DespeckleBrush(r), {}, so).apply(want);
+    CHECK(doc.canvas == want);
+}
+
+TEST_CASE("cli shade --despeckle reads a speck's neighbour across the seam between two dabs",
+          "[cli][shade][despeckle]") {
+    // the same bands, 510 by 20: the first dab covers columns 0 to 254, the
+    // second 255 to 509, with no overlap
+    const Ramp r = steel();
+    const int top = r.topRung();
+    auto band = [&](int x) {
+        const int p = (x / 2) % (2 * top);
+        return p <= top ? p : 2 * top - p;
+    };
+    AnsiDocument clean;
+    clean.ice = true;
+    clean.canvas = Canvas(510, 20);
+    for (int y = 0; y < 20; ++y)
+        for (int x = 0; x < 510; ++x)
+            clean.canvas.at(x, y) = rungCell(r, band(x));
+    REQUIRE(band(253) == 6);
+    REQUIRE(band(254) == 7);
+    REQUIRE(band(255) == 7);
+    REQUIRE(band(256) == 8);
+
+    // Specks on the edge rows, so each has one vertical neighbour: three
+    // neighbours are the fewest a fix needs, so neither is fixed unless its
+    // dab reads the cell across the seam (the left one for column 255, in
+    // the second dab; the right one for column 254, in the first).
+    const std::pair<int, int> specks[] = {{255, 0}, {254, 19}};
+    AnsiDocument speck = clean;
+    for (const auto& [x, y] : specks)
+        speck.canvas.at(x, y) = rungCell(r, 4);
+
+    bwcli::ShadeOptions o;
+    o.ramp = r;
+    o.mode = bwcli::ShadeMode::Despeckle;
+    o.box = lint::Box{0, 0, 509, 19};
+    AnsiDocument doc = speck;
+    const bwcli::Shaded s = bwcli::shadeDocument(doc, o);
+    CHECK(s.edit.changes.size() == 2);
+    for (const auto& [x, y] : specks) {
+        INFO(x << "," << y);
+        CHECK(doc.canvas.at(x, y) == clean.canvas.at(x, y));
+    }
+    CHECK(doc.canvas == clean.canvas);
 }
