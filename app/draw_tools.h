@@ -343,7 +343,8 @@ private:
 // nothing for mirror mode to add: an image could land only on a cell the
 // fill may not paint, so the symmetry isn't read. Its shape and rungs are
 // kept between runs (appSettings, "gradient/..."); the ramp is the view's,
-// shared with the ramp brushes.
+// shared with the ramp brushes. It declines a press on a Pixels layer, which
+// can't hold its shades, and says so in its status.
 class GradientTool : public DragTool {
     Q_OBJECT
 public:
@@ -374,6 +375,7 @@ protected:
 
 private:
     void save() const;
+    bool onPixelLayer() const;
     // Sets added_ to what `e` adds to the canvas at the drag's start.
     void judge(const CellEdit& e) const;
 

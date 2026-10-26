@@ -29,6 +29,7 @@
 #include <QComboBox>
 #include <QFileInfo>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QMenu>
 #include <QSpinBox>
 #include <QStandardItemModel>
@@ -375,6 +376,73 @@ TEST_CASE("the gradient leaves a locked layer's transparent cells alone", "[grad
             changed += box.contains(x, y) && !(c == opaque.at(x, y));
         }
     CHECK(changed > 0);
+}
+
+TEST_CASE("the gradient refuses a Pixels layer and says why in the status bar", "[gradient][layers]") {
+    FreshGradientSettings fresh;
+    MainWindow w;
+    blank(w);
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    GradientTool* t = useGradient(w);
+    auto* label = w.findChild<QLabel*>(QStringLiteral("toolStatusLabel"));
+    REQUIRE(label);
+    REQUIRE_FALSE(label->text().contains(QStringLiteral("Pixels layer")));
+    const LayerId cells = doc->activeLayer();
+    // made active with the gradient already chosen: the status follows
+    // (CanvasView::brushChanged on a change of active layer)
+    act(w, QStringLiteral("newPixelLayer"))->trigger();
+    REQUIRE(doc->active()->props.kind == LayerKind::Pixels);
+    CHECK(label->isVisibleTo(&w));
+    CHECK(label->text().contains(QStringLiteral("Pixels layer")));
+    CHECK(t->status() == label->text());
+    const Canvas layer = doc->active()->cells, shown = doc->canvas();
+    const int undo = doc->undoStack()->count();
+
+    // the whole ramp, shades and all, and a fill of whole colours only
+    // (every rung a full block, which a pixel layer could hold)
+    for (const auto& [from, to] : {std::pair{0, 99}, std::pair{kRungsPerStep, kRungsPerStep}}) {
+        INFO("rungs " << from << " to " << to);
+        t->setRungs(from, to);
+        drag(v, QPoint(2, 4), QPoint(37, 4), Qt::LeftButton, /*hold=*/true);
+        CHECK_FALSE(t->dragging());
+        CHECK(t->pending().empty());
+        release(v, QPoint(37, 4));
+        CHECK(sameCells(doc->active()->cells, layer));
+        CHECK(sameCells(doc->canvas(), shown));
+        CHECK(doc->undoStack()->count() == undo);
+        CHECK(label->text().contains(QStringLiteral("Pixels layer")));
+    }
+
+    // back on the cells layer the tool paints, and the status says so
+    REQUIRE(doc->setActiveLayer(cells));
+    CHECK_FALSE(label->text().contains(QStringLiteral("Pixels layer")));
+    drag(v, QPoint(2, 4), QPoint(37, 4));
+    CHECK(doc->undoStack()->count() == undo + 1);
+}
+
+TEST_CASE("the gradient paints a Text layer as it does a cells layer", "[gradient][layers]") {
+    FreshGradientSettings fresh;
+    MainWindow w;
+    blank(w);
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    GradientTool* t = useGradient(w);
+    doc->addLayer(LayerKind::Text);
+    REQUIRE(doc->active()->props.kind == LayerKind::Text);
+    CHECK_FALSE(t->status().contains(QStringLiteral("Pixels layer")));
+    const Canvas before = doc->active()->cells;
+    const int undo = doc->undoStack()->count();
+
+    const QPoint from(2, 4), to(37, 4);
+    drag(v, from, to);
+    Gradient g;
+    g.x0 = from.x(), g.y0 = from.y(), g.x1 = to.x(), g.y1 = to.y();
+    g.fromRung = t->fromRung(), g.toRung = t->toRung();
+    const CellEdit want = rampGradient(before, v->ramp(), g, layerStrokeOptions(*doc->active()));
+    REQUIRE_FALSE(want.empty());
+    CHECK(sameCells(doc->active()->cells, applied(before, want)));
+    CHECK(doc->undoStack()->count() == undo + 1);
 }
 
 TEST_CASE("a gradient drag is ladder-lint clean, and the tool says what a slanted fill adds", "[gradient][lint]") {

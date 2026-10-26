@@ -502,6 +502,8 @@ void GradientTool::setRungs(int from, int to) {
 QString GradientTool::status() const {
     if (!view())
         return {};
+    if (onPixelLayer())
+        return tr("The ramp gradient can't paint a Pixels layer: it holds no shades");
     const Ramp& ramp = view()->ramp();
     const int top = ramp.topRung();
     QString s = tr("Ramp %1, %2, rung %3 to %4")
@@ -514,7 +516,15 @@ QString GradientTool::status() const {
     return s;
 }
 
+bool GradientTool::onPixelLayer() const {
+    const Layer* layer = view()->document()->active();
+    return layer && layer->props.kind == LayerKind::Pixels;
+}
+
 bool GradientTool::begin(const ToolEvent& e) {
+    // Its rungs are ░▒▓ cells, which a pixel layer can't hold (PLAN §3).
+    if (onPixelLayer())
+        return false;
     start_ = end_ = e.cell;
     reversed_ = e.button == Qt::RightButton;
     return true;

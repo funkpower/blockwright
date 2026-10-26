@@ -196,10 +196,10 @@ As built (phase 4c, `core/pipeline.h`, `app/publish.h`):
 The core of what an editor adds: the shading and detail moves of hand-made block art, done at the cursor. Each brush is a core-library function with tests, wrapped by a GUI tool.
 
 **Shading**
-- **Ramp shade brush:** lighten/darken one step along the layer's ramp per pass, using the ladder A → B░A → B▒A → B▓A → B. Never mixes colours that aren't ramp neighbours.
+- **Ramp shade brush:** lighten/darken one step along the view's ramp per pass (the ramp picked in Tool Options, one for the view and shared by every ramp tool; a layer carries none), using the ladder A → B░A → B▒A → B▓A → B. Never mixes colours that aren't ramp neighbours.
 - **Form shading brush** (`brushes/form.h`): paint over a masked shape and it shades as a dome, cylinder or flat plane lit from the scene light vector, with rim light and specular as toggles.
 - **Soft brush / falloff** (`brushes/soft.h`): size and hardness; the falloff becomes banded rungs 1–3 cells wide, not noise.
-- **Ramp gradient tool:** linear and radial, cell-banded or 4×4 Bayer, along a ramp.
+- **Ramp gradient tool:** linear and radial, cell-banded or 4×4 Bayer, along a ramp. As built: the ramp is the view's, as for the brushes, not the layer's; a Pixels layer is refused (its rungs are shades, which a pixel layer can't hold), the press is declined and the status bar says why, and a text layer is painted as a cells layer.
 - **Blend/smudge** (`brushes/smudge.h`): pulls ramp values along the stroke and re-quantises to the ladder.
 - **Despeckle brush** (`brushes/despeckle.h`): majority filter that removes isolated cells and stray shade fallbacks (the lint's speckle).
 
