@@ -1169,10 +1169,11 @@ long long outlineCellsRead() { return outlineRead; }
 namespace {
 
 // settleWith, then, on an image's first settle (a click, a stroke's start)
-// where it writes nothing and the outline has read under carefulReads since
-// `start`, again with the careful skip blame (a skip between two cells the
-// line changed is first the one more findings involve), keeping whichever
-// writes more of the box.
+// or a dab's settle over cells the stroke has written (layer.settled is
+// false for both), where it writes nothing and the outline has read under
+// carefulReads since `start`, again with the careful skip blame (a skip
+// between two cells the line changed is first the one more findings
+// involve), keeping whichever writes more of the box.
 Canvas settle(Layer& layer, int ox, int oy, const Canvas& canvas, const Ramp& ramp, bool ice,
               const std::vector<char>& cover, const std::vector<int>& inside, long long start) {
     Canvas out = settleWith(layer, ox, oy, canvas, ramp, ice, cover, inside, false);
@@ -1382,10 +1383,15 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
         for (const auto& [x, y] : reset)
             layer.result.at(x, y) = origin.at(x, y);
     }
-    // The dab settles the line over its new cells and the covered cells
-    // within kReach of them the line has left as they were, against the
-    // line so far, which stays: a cell the stroke has written changes no
-    // more but for a stronger dab.
+    // The dab settles the line again from the stroke-start values over the
+    // covered cells within kReach of its new cells, against the line beyond
+    // them and kContext more of the canvas, so the line there is the covered
+    // cells' and not the order of the dabs. A window the stroke has drawn in
+    // settles as an image's first settle does, carefully where the plain
+    // settle writes nothing. Where that would take back a cell the stroke has
+    // written or leave a lone cell of line, the dab settles only the covered
+    // cells the stroke has left as they were, and the line so far stays: a
+    // dab never takes back the line an earlier one drew.
     {
         int x0 = w, y0 = h, x1 = -1, y1 = -1;
         for (const auto& [x, y] : fresh)
@@ -1395,16 +1401,70 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
         const int cx0 = std::max(0, x0 - kContext), cy0 = std::max(0, y0 - kContext);
         const int cx1 = std::min(w - 1, x1 + kContext), cy1 = std::min(h - 1, y1 + kContext);
         const int cw = cx1 - cx0 + 1, ch = cy1 - cy0 + 1;
-        std::vector<char> cover(static_cast<size_t>(cw) * static_cast<size_t>(ch), 0);
-        bool any = false;
-        for (int y = y0; y <= y1; ++y)
-            for (int x = x0; x <= x1; ++x)
-                if (layer.cover[at(x, y)] >= 0 && layer.result.at(x, y) == origin.at(x, y) &&
-                    relevantAt(origin, ramp_, x, y, ice, layer.shape))
+        const bool wasSettled = layer.settled;
+        // settles the window's covered cells, the ones the stroke has written
+        // too (from their stroke-start values) when `again`; the cells it
+        // opened again
+        const auto settleWindow = [&](bool again) {
+            std::vector<char> cover(static_cast<size_t>(cw) * static_cast<size_t>(ch), 0);
+            bool any = false;
+            std::vector<std::pair<int, int>> reopen;
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x) {
+                    if (layer.cover[at(x, y)] < 0 || !relevantAt(origin, ramp_, x, y, ice, layer.shape))
+                        continue;
+                    if (!(layer.result.at(x, y) == origin.at(x, y))) {
+                        if (!again)
+                            continue;
+                        reopen.push_back({x, y});
+                        was.emplace(std::pair{x, y}, layer.result.at(x, y));
+                        layer.work.at(x, y) = origin.at(x, y);
+                    }
                     cover[static_cast<size_t>(y - cy0) * static_cast<size_t>(cw) + (x - cx0)] = 1, any = true;
-        if (any) {
-            outline(layer, cx0, cy0, cw, ch, ramp_, ice, cover, layer.inside, was);
-            layer.settled = true;
+                }
+            if (!reopen.empty()) {
+                layer.index.apply(layer.work, reopen);
+                for (const auto& [x, y] : reopen)
+                    layer.result.at(x, y) = origin.at(x, y);
+                layer.settled = false;
+            }
+            if (any) {
+                outline(layer, cx0, cy0, cw, ch, ramp_, ice, cover, layer.inside, was);
+                layer.settled = true;
+            }
+            return reopen;
+        };
+        const auto reopened = settleWindow(true);
+        const auto written = [&](int x, int y) {
+            return x >= 0 && y >= 0 && x < w && y < h && !(layer.result.at(x, y) == origin.at(x, y));
+        };
+        bool takesBack = false;
+        for (const auto& [x, y] : reopened)
+            takesBack = takesBack || !written(x, y);
+        for (int y = y0 - 1; !takesBack && y <= y1 + 1; ++y)
+            for (int x = x0 - 1; !takesBack && x <= x1 + 1; ++x) {
+                bool beside = false;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx)
+                        beside = beside || ((dx || dy) && written(x + dx, y + dy));
+                takesBack = written(x, y) && !beside;
+            }
+        if (takesBack) {
+            // back to the line before the dab, with its stronger cells reset
+            const std::set<std::pair<int, int>> wasReset(reset.begin(), reset.end());
+            std::vector<std::pair<int, int>> undo;
+            for (const auto& [p, old] : was) {
+                const Cell to = wasReset.count(p) ? origin.at(p.first, p.second) : old;
+                if (!(layer.result.at(p.first, p.second) == to)) {
+                    layer.work.at(p.first, p.second) = to;
+                    undo.push_back(p);
+                }
+            }
+            layer.index.apply(layer.work, undo);
+            for (const auto& [x, y] : undo)
+                layer.result.at(x, y) = layer.work.at(x, y);
+            layer.settled = wasSettled;
+            settleWindow(false);
         }
     }
     // The cells the dab changed, and the image as it was before it (on the
@@ -1553,10 +1613,31 @@ void OutlineBrush::composite(Stroke& stroke, Plan& plan) const {
             stroke.set(shows[k].first, shows[k].second, shown.at(shows[k].first, shows[k].second), strengths[k]);
         return;
     }
-    Canvas back = shown;
-    for (const auto& [p, cell] : before)
-        back.at(p.first, p.second) = cell;
-    plan.shownIndex->apply(back, shows);
+    // the index goes back to what the stroke showed: `shown` with the
+    // composite's cells as they were before it, swapped in for the apply
+    // and out again (the index holds its own canvas), so going back reads
+    // the composite's cells and not the canvas; out again if the apply
+    // throws too
+    const auto indexBack = [&] {
+        std::vector<Cell> now;
+        now.reserve(before.size());
+        for (const auto& [p, cell] : before) {
+            now.push_back(shown.at(p.first, p.second));
+            shown.at(p.first, p.second) = cell;
+        }
+        struct Out {
+            Canvas& shown;
+            const std::vector<std::pair<std::pair<int, int>, Cell>>& at;
+            const std::vector<Cell>& now;
+            ~Out() {
+                for (size_t k = 0; k < at.size(); ++k)
+                    shown.at(at[k].first.first, at[k].first.second) = now[k];
+            }
+        } out{shown, before, now};
+        cellsRead += 2LL * static_cast<long long>(before.size());
+        plan.shownIndex->apply(shown, shows);
+    };
+    indexBack();
     for (size_t round = 0; !fresh.empty() && round < shows.size(); ++round) {
         using K = lint::LadderFinding::Kind;
         // the first finding's cells to blame, and the one that goes back:
@@ -1614,7 +1695,7 @@ void OutlineBrush::composite(Stroke& stroke, Plan& plan) const {
                 reverted.insert(p);
             }
         fresh = adds();
-        plan.shownIndex->apply(back, shows);
+        indexBack();
     }
     if (!fresh.empty()) {
         for (const auto& [p, cell] : before)

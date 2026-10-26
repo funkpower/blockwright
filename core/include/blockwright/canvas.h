@@ -14,6 +14,11 @@ public:
 
     Canvas() : Canvas(kDefaultWidth, kDefaultHeight) {}
     Canvas(int width, int height);
+    // A copy adds its cells to canvasCellsCopied (below); a move adds none.
+    Canvas(const Canvas& other);
+    Canvas& operator=(const Canvas& other);
+    Canvas(Canvas&&) noexcept = default;
+    Canvas& operator=(Canvas&&) noexcept = default;
 
     int width() const { return w_; }
     int height() const { return h_; }
@@ -31,5 +36,10 @@ private:
     int w_ = 0, h_ = 0;
     std::vector<Cell> cells_;
 };
+
+// How many cells canvases have copied on this thread so far (copy
+// construction and copy assignment): a work counter, for tests of what an
+// edit costs.
+long long canvasCellsCopied();
 
 } // namespace bw

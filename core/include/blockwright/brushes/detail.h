@@ -30,7 +30,8 @@ bool inShape(const Ramp& ramp, const Cell& cell, bool ice = true);
 
 // How many cells the detail brushes have read on this thread so far, the
 // cells they copied and the lint's reads (lint::cellsRead) included: a work
-// counter, for tests of what a dab costs.
+// counter, for tests of what a dab costs. A Canvas copy is not counted here
+// but in canvasCellsCopied (canvas.h).
 long long detailCellsRead();
 
 // The cells an outline may read (detailCellsRead) before a careful pass
@@ -108,8 +109,9 @@ std::optional<std::pair<double, double>> rimNormal(const Canvas& canvas, const R
 // noise least alone first, each kept where the noise stays as it was or
 // within its limit; where no step clears another finding, only the fewest
 // line cells nearest it are left as they were, not the rest of the line. An
-// image's first settle (a click, a stroke's start) that writes nothing from
-// three or more covered cells settles again carefully, while its outline
+// image's first settle (a click, a stroke's start), or a dab's settle over
+// cells the stroke has written, that writes nothing from three or more
+// covered cells settles again carefully, while its outline
 // has read under 5e7 cells (detailCellsRead): a skip between two
 // changed cells is first the cell more findings involve, and cells left as
 // they were are tried a step darker, alone or with a stepped neighbour. Repairs are on
@@ -123,11 +125,13 @@ std::optional<std::pair<double, double>> rimNormal(const Canvas& canvas, const R
 // limit and higher), so a dab adds no finding anywhere on the canvas, and a
 // dab that softens a finding or changes only its value is allowed. Each dab
 // settles only round its own new cells: the covered cells within three of
-// it that the stroke has left as they were, against the line the stroke has
-// drawn so far, settled again until it is its own fixed point. A cell the
-// stroke has written stays for the rest of the stroke, unless a strictly
-// stronger dab covers it; a dab that would add a finding adds nothing. A
-// dab's work is flat in the stroke's length and O(W + H) per changed cell.
+// it, the ones the stroke has written too, again from their stroke-start
+// values, against the line beyond them, settled again until it is its own
+// fixed point; the line there is the covered cells' and not the order of
+// the dabs (#159). Where that would take back a cell the stroke has written
+// or leave a lone cell of line, the dab settles only the covered cells the
+// stroke has left as they were, and the line so far stays; a dab that would
+// add a finding adds nothing. A dab's work is flat in the stroke's length and O(W + H) per changed cell.
 // Each symmetry image (Dab::image) is outlined on its own, a mirror image in
 // its own frame (the canvas mirrored back). The stroke stamps each point's
 // images in turn, and their composite is judged on the shown canvas as a
@@ -138,10 +142,12 @@ std::optional<std::pair<double, double>> rimNormal(const Canvas& canvas, const R
 // that changed it; on a tie the image whose frame has the cell in the
 // canvas's first half (across, then down) wins, then the lower image, so a
 // mirrored canvas gets a mirrored line. Its
-// dabs again in the same stroke change nothing. Limits: a cell written a step
-// lighter before the line beside it was drawn stays for the stroke, so a
-// second stroke over the result can take it darker (it adds no finding);
-// where the careful budget ran out, so can a second click (baud-dudes-all,
+// dabs again in the same stroke change nothing. Limits: a second stroke over
+// the result can still change cells (it adds no finding), and the line still
+// depends on the order of the dabs where a written cell is more than three
+// from a dab's new cells, where settling again would take back line, and
+// where a dab adds nothing for a finding (PLAN §10 has the counts); where
+// the careful budget ran out, so can a second click (baud-dudes-all,
 // 80 x 2312, skin, square 161 at (60,1541): 14 cells after 799). A larger
 // click is not sure to write more of the line where the noise is over its
 // limit: psyop-radar's steel at (20,13) writes 127 cells at size 73 and 109

@@ -5,6 +5,7 @@
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/drawing.h"
 #include "blockwright/brushes/shading.h"
+#include "blockwright/canvas.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/lint.h"
 #include "blockwright/ramp.h"
@@ -26,6 +27,7 @@
 #include <vector>
 #include <set>
 #include <tuple>
+#include <utility>
 
 using namespace bw;
 
@@ -1126,8 +1128,9 @@ BrushSettings square(int size) {
     return s;
 }
 
-// The cells written after each dab of a stroke: none of them may change
-// again or go back, dab to dab.
+// The cells written after each dab of a stroke: none of them may go back,
+// dab to dab. A later dab may settle one again from its stroke-start value
+// (#159), a step lighter or darker, but the line stays.
 void keepsItsLine(const Canvas& c, const Brush& brush, const BrushSettings& s, const std::vector<Dab>& dabs,
                   const StrokeOptions& o = {}) {
     Stroke stroke(c, brush, s, o);
@@ -1139,7 +1142,6 @@ void keepsItsLine(const Canvas& c, const Brush& brush, const BrushSettings& s, c
         for (const auto& [p, cell] : was) {
             INFO("cell " << p.first << "," << p.second);
             REQUIRE(now.count(p));
-            CHECK(now.at(p) == cell);
         }
         was = now;
     }
@@ -1178,8 +1180,8 @@ TEST_CASE("an outline dab keeps the line an earlier dab of the stroke drew", "[d
         const CellEdit e = paintStroke(c, brush, square(3), path);
         CHECK(added(c, applied(c, e), fire()).empty());
         // either way it draws a line, and the cell both dabs above line
-        // (which neighbours it takes with it depends on the order: a cell
-        // the stroke has written stays)
+        // (which neighbours it takes with it still depends on the order: a
+        // dab keeps the line where settling again would take some back)
         const auto w = written(e);
         REQUIRE(w.count({4, 4}));
         CHECK(w.at({4, 4}) == rungCell(fire(), 6));
@@ -1224,6 +1226,38 @@ TEST_CASE("an outline stroke's dabs again in the same stroke change nothing", "[
             stroke.addDab(dabs[j], j > 0);
         CHECK(written(stroke.edit()) == once);
         CHECK(added(c, applied(c, stroke.edit()), r).empty());
+    }
+}
+
+TEST_CASE("an outline stroke on a piece writes the same whichever way round", "[detail][lint]") {
+    // #159: each of these two-dab strokes wrote other cells stamped the other
+    // way round (sphere-steel's first, 2 cells one way and 8 the other):
+    // the first dab's line stayed, and the second settled only round it. A
+    // dab now settles the covered cells near it again from their
+    // stroke-start values.
+    struct Two {
+        int size;
+        Dab a, b;
+    };
+    const std::vector<std::pair<std::string, std::vector<Two>>> pieces{
+        {"sphere-steel", {{7, {47, 27}, {44, 30}}, {7, {28, 5}, {24, 8}}, {2, {41, 1}, {44, 2}}}},
+        {"downfall-of-numenor",
+         {{7, {57, 39}, {55, 37}}, {3, {39, 57}, {42, 56}}, {6, {48, 36}, {46, 38}}, {4, {99, 28}, {96, 26}},
+          {5, {79, 43}, {76, 40}}, {7, {98, 37}, {100, 40}}}}};
+    for (const auto& [name, strokes] : pieces) {
+        const AnsiDocument doc = parseAnsi(bwtest::readFile(bwtest::dataDir() / "brushes" / (name + ".ans")));
+        const Canvas& c = doc.canvas;
+        StrokeOptions o;
+        o.ice = doc.ice;
+        const OutlineBrush brush(steel());
+        for (const auto& [size, a, b] : strokes) {
+            INFO(name << " size " << size << " (" << a.x << "," << a.y << ") and (" << b.x << "," << b.y << ")");
+            const CellEdit there = paintStroke(c, brush, square(size), {a, b}, o);
+            const CellEdit back = paintStroke(c, brush, square(size), {b, a}, o);
+            CHECK_FALSE(written(there).empty());
+            CHECK(written(there) == written(back));
+            CHECK(added(c, applied(c, there), steel()).empty());
+        }
     }
 }
 
@@ -1904,6 +1938,91 @@ TEST_CASE("an outline dab's work is flat in the stroke and linear in the canvas'
         CHECK(!written(e).empty());
         CHECK(reads <= 500'000'000);
     }
+}
+
+TEST_CASE("a canvas copy counts the cells it copies, and a move none") {
+    // the counter the outline's settle is checked with below
+    Canvas a(7, 3);
+    long long start = canvasCellsCopied();
+    Canvas b = a;
+    CHECK(canvasCellsCopied() - start == 21);
+    Canvas c(2, 2);
+    start = canvasCellsCopied();
+    c = b;
+    CHECK(canvasCellsCopied() - start == 21);
+    CHECK(c == a);
+    start = canvasCellsCopied();
+    Canvas d = std::move(b);
+    c = std::move(d);
+    a.resize(9, 9);
+    CHECK(canvasCellsCopied() == start);
+    CHECK(c.width() == 7);
+    CHECK(c.height() == 3);
+}
+
+TEST_CASE("an outline mirror dab that settles its images reads the dab's reach and not the canvas", "[detail][lint]") {
+    // Codex round 1 of the order fix (#159): where the images' dabs met in a
+    // finding, the composite copied the whole canvas to put the index back
+    // on, after the stroke's first dab too. Codex's repro: round 2's canvas
+    // (#1 in "where its images meet", one glyph), Mirror X, square 5, an
+    // unjoined blank dab at (0,64), then (12,40) unjoined; here also on that
+    // canvas 32 times wider and taller, the blocks as far from each side.
+    // Codex round 2: a canvas copy is no read (detailCellsRead), so the
+    // reads alone missed it; the copies are counted on their own
+    // (canvasCellsCopied). With the copy the second dab read 78,264 cells at
+    // 70x65 and 1,741,259 at 2240x2080 and copied 14,378 and 4,669,028, the
+    // canvas and 9,828 more; going back on the composite's own cells it
+    // reads 78,336 and 1,741,331 and copies 9,828 at both sizes.
+    const auto canvasOf = [](int w, int h) {
+        Canvas c(w, h);
+        for (int y = 2; y <= 6; ++y)
+            for (int x = 2; x <= 6; ++x)
+                c.at(x, y) = rungCell(fire(), 5);
+        for (const int x0 : {10, w - 15})
+            for (int y = 40; y <= 44; ++y)
+                for (int x = x0; x <= x0 + 4; ++x)
+                    c.at(x, y) = rungCell(fire(), x > x0 && x < x0 + 4 && y == 40 ? 6 : 8);
+        return c;
+    };
+    std::map<int, double> reads;
+    std::map<int, long long> copied;
+    for (const int k : {1, 32}) {
+        const Canvas c = canvasOf(70 * k, 65 * k);
+        REQUIRE(lint::checkLadder(c, fire()).findings.empty());
+        StrokeOptions o;
+        o.symmetry = Symmetry{SymmetryMode::MirrorX};
+        const OutlineBrush brush(fire());
+        Stroke stroke(c, brush, square(5), o);
+        stroke.addDab({0, 64}, false);
+        const long long before = detailCellsRead(), copiedBefore = canvasCellsCopied();
+        stroke.addDab({12, 40}, false);
+        reads[k] = double(detailCellsRead() - before);
+        copied[k] = canvasCellsCopied() - copiedBefore;
+        // the settle puts (11,40) and its mirror back and keeps the rest of
+        // the line at rung 4, as it did with the copy
+        const CellEdit e = stroke.edit();
+        CHECK(lint::addedFindingsOnce(c, applied(c, e), fire(), cellsOf(e)).empty());
+        std::set<Point> want;
+        for (const Point& p : {Point{10, 40}, {10, 41}, {10, 42}, {12, 40}, {13, 40}, {14, 40}, {14, 41}, {14, 42}}) {
+            want.insert(p);
+            want.insert({c.width() - 1 - p.first, p.second});
+        }
+        std::set<Point> got;
+        for (const auto& [p, cell] : written(e)) {
+            INFO("k " << k << " cell " << p.first << "," << p.second);
+            CHECK(rungOf(fire(), cell) == 4);
+            got.insert(p);
+        }
+        INFO("k " << k);
+        CHECK(got == want);
+    }
+    INFO("cells read by the second dab: " << reads[1] << " at 70x65, " << reads[32] << " at 2240x2080");
+    INFO("canvas cells it copied: " << copied[1] << " at 70x65, " << copied[32] << " at 2240x2080");
+    // the sides grow 32 times, the area 1,024; the cells it copies are the
+    // dab's own and not the canvas's, the same at both sizes
+    CHECK(reads[32] <= 2 * 32.0 * reads[1]);
+    CHECK(copied[32] == copied[1]);
+    CHECK(copied[32] < 2240LL * 2080);
 }
 
 TEST_CASE("a larger outline click never writes less of the line on a piece", "[detail][lint]") {

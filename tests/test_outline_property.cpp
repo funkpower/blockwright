@@ -659,3 +659,69 @@ TEST_CASE("the outline is a fixed point on any generated input", "[detail][lint]
     CHECK(addedFindings == 0);
     CHECK(second == 0);
 }
+
+TEST_CASE("an outline stroke's line depends only on the cells it covers", "[detail][lint][property]") {
+    // #159: the same partial strokes as above, their dabs stamped in other
+    // orders. Reversed (each join kept between the same two dabs, so the
+    // joining lines cover the same cells) and, where no dab is joined, three
+    // shuffles: every order covers the same cells. While a written cell
+    // stayed for the stroke, 95 of the default seed's 715 strokes wrote
+    // other cells in another order (BW_PROPERTY_SEED 1-6: 69-106 of
+    // 655-720); settling again from the stroke-start values, 55 do (47-71).
+    // The rest are PLAN §10's limits: a dab settles again only within 3
+    // cells of its new cells, keeps the line where settling again would take
+    // back a cell the stroke wrote, and adds nothing where it would add a
+    // finding. No order adds a finding.
+    const char* seed = std::getenv("BW_PROPERTY_SEED");
+    Rng rng(seed ? unsigned(std::strtoul(seed, nullptr, 10)) + 2 : 20261025u);
+    const int want = 600;
+    int kept = 0, strokes = 0, orders = 0, differ = 0, added = 0;
+    for (int n = 0; kept < want && n < 40 * want; ++n) {
+        Case k = generate(rng, n);
+        if (!lint::checkLadder(k.canvas, k.ramp).clean())
+            continue;
+        ++kept;
+        for (int i = 0; i < 2; ++i) {
+            Partial p = partial(rng, k);
+            if (p.dabs.size() < 2)
+                continue;
+            ++strokes;
+            const CellEdit e = run(p.canvas, k.ramp, p);
+            std::vector<std::vector<std::pair<Dab, bool>>> others;
+            {
+                auto back = p.dabs;
+                std::reverse(back.begin(), back.end());
+                for (size_t j = 0; j < back.size(); ++j)
+                    back[j].second = j > 0 && p.dabs[back.size() - j].second;
+                others.push_back(back);
+            }
+            if (std::none_of(p.dabs.begin(), p.dabs.end(), [](const auto& d) { return d.second; }))
+                for (int s = 0; s < 3; ++s) {
+                    auto order = p.dabs;
+                    std::shuffle(order.begin(), order.end(), rng.g);
+                    others.push_back(order);
+                }
+            bool same = true;
+            for (const auto& order : others) {
+                Partial q = p;
+                q.dabs = order;
+                ++orders;
+                const CellEdit o = run(p.canvas, k.ramp, q);
+                same = same && o.changes == e.changes;
+                added += adds(p.canvas, applied(p.canvas, o), k.ramp);
+            }
+            differ += !same;
+        }
+    }
+    if (std::getenv("BW_PROPERTY_REPORT"))
+        std::printf("outline order: %d shapes, %d strokes of two dabs or more, %d other orders; %d strokes differ, "
+                    "%d orders add a finding\n",
+                    kept, strokes, orders, differ, added);
+    REQUIRE(kept == want);
+    CHECK(strokes >= 600);
+    CHECK(added == 0);
+    // 7-10% of the strokes on the seeds tried, 10-15% before
+    CHECK(differ * 8 <= strokes);
+    if (!seed)
+        CHECK(differ <= 60);
+}
