@@ -10,11 +10,13 @@
 // The cells mean different things by kind:
 // - cells: glyph, colours and attributes, as a Canvas holds them.
 // - text: the same cells, read as text: they composite above shading and a
-//   pixel layer never covers them (composite.height). TDF live text (Phase 5)
-//   will add a source to the layer's properties that renders into these
-//   cells; the compositor and the project format's .cells file only ever
-//   see the cells, so neither changes when it lands. bake() turns a text
-//   layer into a cells layer.
+//   pixel layer never covers them (composite.height). A live text layer has
+//   a source in its properties (LayerProperties::text: the text, the Text
+//   tool's settings and the face) that its cells are drawn from (text.h);
+//   tools don't edit those cells, a change of the source redraws them. The
+//   compositor and the project format's .cells file only ever see the
+//   cells. A text layer without a source is cells read as text, as before
+//   live text. bake() turns a text layer into a cells layer.
 // - pixels: half-block pixels, two to a cell, each a palette colour or
 //   transparent, stored in one cell (layerPixels, pixelLayerCell): an opaque
 //   cell is a pixel cell as halfblock.height writes it with iCE on (space, █, ▀,
@@ -37,6 +39,7 @@
 #include "blockwright/canvas.h"
 #include "blockwright/edit.h"
 #include "blockwright/selection.h"
+#include "blockwright/text_source.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -100,6 +103,8 @@ struct LayerProperties {
     bool locked = false;
     bool alphaLocked = false;
     LayerMode mode = LayerMode::Normal;
+    // A live text layer's source (text.h): only a text layer has one.
+    std::optional<TextSource> text;
 
     bool operator==(const LayerProperties&) const = default;
 };
@@ -127,9 +132,10 @@ Cell transparentCell();
 // 0 until a stack adds it.
 Layer makeLayer(LayerKind kind, int width, int height, std::string name = {}, int x = 0, int y = 0);
 
-// A text or generator layer as a cells layer: the same cells (a generator's
-// cached output) and properties, kind cells. Every other layer comes back as
-// it is. The generator's files (scripts/<id>/ in a project) are left alone.
+// A text or generator layer as a cells layer: the same cells (a live text
+// layer's drawn text, a generator's cached output) and properties, kind
+// cells, without a text source. Every other layer comes back as it is. The
+// generator's files (scripts/<id>/ in a project) are left alone.
 Layer bake(Layer layer);
 
 // The stroke options a tool editing this layer uses: `base` with the
@@ -139,8 +145,9 @@ Layer bake(Layer layer);
 // with one pixel set is a transparent cell whose set half is paintable.
 StrokeOptions layerStrokeOptions(const Layer& layer, StrokeOptions base = {});
 // Whether a tool may write the layer's cell at canvas cell (cx, cy): in the
-// layer, the layer not locked, and under the alpha lock an opaque cell (a
-// pixel layer: a cell with a pixel set).
+// layer, the layer not locked nor a live text layer (its cells are drawn
+// from its source), and under the alpha lock an opaque cell (a pixel layer:
+// a cell with a pixel set).
 bool layerPaintable(const Layer& layer, int cx, int cy);
 // Whether a tool may write the pixel at canvas pixel (cx, py) of a pixel
 // layer (cell row py / 2, the bottom half when py is odd): in the layer,

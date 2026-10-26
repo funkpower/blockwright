@@ -103,8 +103,10 @@ Layer makeLayer(LayerKind kind, int width, int height, std::string name, int x, 
 }
 
 Layer bake(Layer layer) {
-    if (layer.props.kind == LayerKind::Text || layer.props.kind == LayerKind::Generator)
+    if (layer.props.kind == LayerKind::Text || layer.props.kind == LayerKind::Generator) {
         layer.props.kind = LayerKind::Cells;
+        layer.props.text.reset();
+    }
     return layer;
 }
 
@@ -116,7 +118,7 @@ StrokeOptions layerStrokeOptions(const Layer& layer, StrokeOptions base) {
 
 bool layerPaintable(const Layer& layer, int cx, int cy) {
     const Cell* c = layer.cellAt(cx, cy);
-    if (!c || layer.props.locked)
+    if (!c || layer.props.locked || layer.props.text)
         return false;
     if (!layer.props.alphaLocked)
         return true;

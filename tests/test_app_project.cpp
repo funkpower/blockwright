@@ -655,7 +655,7 @@ TEST_CASE("the app refuses a newer major project and keeps a newer minor's files
     writeSampleDirectory(dir);
     const QString manifest = dir + QStringLiteral("/manifest.json");
     const std::string m = bwtest::readFile(fpath(manifest));
-    const auto at = m.find("\"1.0\"");
+    const auto at = m.find("\"1.1\"");
     REQUIRE(at != std::string::npos);
     const auto withVersion = [&](const char* v) { return std::string(m).replace(at, 5, v); };
 

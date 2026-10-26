@@ -3,11 +3,12 @@
 // files kept with it, saved as one zip file or as a directory of the same
 // layout (for git and other tools):
 //
-//   manifest.json      "format": "blockwright", "version": "1.0", the canvas
+//   manifest.json      "format": "blockwright", "version": "1.1", the canvas
 //                      size, palette, iCE, IRC budget, SAUCE fields (font and
 //                      letter spacing among them), the layer order (ids,
 //                      bottom first) and the next layer id
-//   layers/<id>.json   the layer's properties (LayerProperties, its size)
+//   layers/<id>.json   the layer's properties (LayerProperties, its size;
+//                      a live text layer's source, text.h)
 //   layers/<id>.cells  its cells (encodeCells: a versioned header, zstd)
 //   notes.md           brief, plan, notes; absent when empty
 //   snapshots/r<N>.ans saved rounds, each the composite flattened to .ans
@@ -21,7 +22,11 @@
 //
 // Every layer kind round-trips: cells, pixels and text layers by their
 // cells; generator and reference layers keep their cells (a generator's
-// cached output) and their files under scripts/<id>/ and refs/.
+// cached output) and their files under scripts/<id>/ and refs/. A live text
+// layer keeps its source (1.1) beside its cells, its drawn text as saved: a
+// 1.0 reader drops the source and shows the same cells. A source this build
+// can't draw (a face it doesn't have, a setting out of range) or one on a
+// layer that isn't a text layer is refused, by the reader and the writer.
 
 #include "blockwright/ansi.h"
 #include "blockwright/irc.h"
@@ -40,7 +45,7 @@
 namespace bw::project {
 
 inline constexpr int kFormatMajor = 1;
-inline constexpr int kFormatMinor = 0;
+inline constexpr int kFormatMinor = 1;
 
 // Limits a reader holds a file to, and a writer checks before it writes
 // anything: no more than kMaxEntries entries, none over kMaxEntryBytes, all

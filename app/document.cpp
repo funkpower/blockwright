@@ -1,5 +1,7 @@
 #include "document.h"
 
+#include "blockwright/text.h"
+
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
@@ -139,15 +141,15 @@ private:
 // A layer's properties (name, visibility, alpha lock), before and after.
 class LayerPropsCommand : public QUndoCommand {
 public:
-    LayerPropsCommand(Document* doc, LayerProperties before, LayerProperties after, const QString& text)
-        : QUndoCommand(text), doc_(doc), before_(std::move(before)), after_(std::move(after)) {}
+    LayerPropsCommand(Document* doc, LayerPropsEdit edit, const QString& text)
+        : QUndoCommand(text), doc_(doc), edit_(std::move(edit)) {}
 
-    void redo() override { doc_->putProperties(after_.id, after_); }
-    void undo() override { doc_->putProperties(before_.id, before_); }
+    void redo() override { doc_->putProperties(edit_, false); }
+    void undo() override { doc_->putProperties(edit_, true); }
 
 private:
     Document* doc_;
-    LayerProperties before_, after_;
+    LayerPropsEdit edit_;
 };
 
 // A snapshot added to the project's snapshots; undo takes it off.
@@ -606,8 +608,9 @@ bool Document::editable() const {
         return false;
     switch (l->props.kind) {
     case LayerKind::Cells:
-    case LayerKind::Text:
     case LayerKind::Pixels: return true;
+    // a live text layer's cells are drawn from its source
+    case LayerKind::Text: return !l->props.text;
     case LayerKind::Generator:
     case LayerKind::Reference: return false;
     }
@@ -663,6 +666,9 @@ bool Document::setLayerProperties(LayerId id, LayerProperties props, const QStri
     props.id = id;
     if (props == before)
         return false;
+    // a text source only on a text layer, and one this build can draw
+    if (props.text && (props.kind != LayerKind::Text || textSourceProblem(*props.text)))
+        return false;
     // A name or the alpha lock changes no cell: a tool keeps what it holds
     // (a drag redoes itself with the new lock).
     LayerProperties same = props;
@@ -670,7 +676,7 @@ bool Document::setLayerProperties(LayerId id, LayerProperties props, const QStri
     same.alphaLocked = before.alphaLocked;
     if (same != before)
         emit layersAboutToChange();
-    undo_.push(new LayerPropsCommand(this, before, props, text));
+    undo_.push(new LayerPropsCommand(this, propsEdit(*l, std::move(props)), text));
     return true;
 }
 
@@ -785,20 +791,21 @@ void Document::placeLayer(LayerId id, std::size_t index) {
         emit cellsChanged(cells);
 }
 
-void Document::putProperties(LayerId id, const LayerProperties& props) {
+void Document::putProperties(const LayerPropsEdit& edit, bool revert) {
+    const LayerId id = edit.id;
     Layer* layer = stack_.find(id);
     if (!layer)
         return;
     const LayerProperties was = layer->props;
     const CellRect before = layer->bounds();
-    layer->props = props;
-    layer->props.id = id;
+    // a step changing a live text layer's source replaces its cells
+    const bool redrawn = applyEdit(*layer, edit, revert);
     const LayerProperties& now = layer->props;
     // Only these change the composite (locks and the name are the tools').
-    const bool shows = was.visible != now.visible || was.kind != now.kind || was.mode != now.mode ||
+    const bool shows = was.visible != now.visible || was.kind != now.kind || was.mode != now.mode || redrawn ||
                        before != layer->bounds();
     const QRegion cells = shows ? recomposite(unite(before, layer->bounds(), stack_.canvasRect())) : QRegion();
-    if (id == active_ && before != layer->bounds())
+    if (id == active_ && (before != layer->bounds() || redrawn))
         refreshLayerCanvas();
     emit layersChanged();
     if (!cells.isEmpty())

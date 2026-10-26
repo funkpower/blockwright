@@ -2,6 +2,7 @@
 
 #include "blockwright/composite.h"
 #include "blockwright/cp437.h"
+#include "blockwright/text.h"
 
 #include <QByteArray>
 #include <QJsonArray>
@@ -329,6 +330,7 @@ public:
             fail(what_ + ": \"" + key + "\" is not an object");
         return v.toObject();
     }
+    bool has(const char* key) const { return o_.contains(QLatin1String(key)); }
     const std::string& what() const { return what_; }
 
 private:
@@ -455,9 +457,60 @@ Sauce normalSauce(const Sauce& from, int width, int height, bool ice) {
 
 // ---- layers ----
 
+// A live text layer's source (text.h): the text, the Text tool's settings
+// and the face, named by its kind and the fields that kind has.
+QJsonObject textSourceJson(const TextSource& t) {
+    QJsonObject face{{"kind", qstr(faceKindName(t.face.kind))}};
+    switch (t.face.kind) {
+    case FaceRef::Kind::Pixel: face["name"] = qstr(t.face.name); break;
+    }
+    return QJsonObject{
+        {"text", QString::fromStdU32String(t.text)},
+        {"face", face},
+        {"case", qstr(textCaseName(t.textCase))},
+        {"letterSpacing", t.letterSpacing},
+        {"lineSpacing", t.lineSpacing},
+        {"align", qstr(textAlignName(t.align))},
+        {"wrapWidth", t.wrapWidth},
+        {"colour", int(t.colour)},
+    };
+}
+
+TextSource textSourceFromJson(const QJsonObject& o, const std::string& what) {
+    const Reader r(o, what + " source");
+    TextSource t;
+    const QJsonValue text = r.value("text");
+    if (!text.isString())
+        fail(r.what() + ": \"text\" is not a string");
+    t.text = text.toString().toStdU32String();
+    const Reader f(r.object("face"), r.what() + " face");
+    const auto kind = faceKindFromName(f.string("kind"));
+    if (!kind)
+        fail(f.what() + ": unknown face kind \"" + f.string("kind") + "\"");
+    t.face.kind = *kind;
+    switch (*kind) {
+    case FaceRef::Kind::Pixel: t.face.name = f.string("name"); break;
+    }
+    const auto textCase = textCaseFromName(r.string("case"));
+    if (!textCase)
+        fail(r.what() + ": unknown case \"" + r.string("case") + "\"");
+    t.textCase = *textCase;
+    t.letterSpacing = int(r.integer("letterSpacing", 0, TextSource::kMaxSpacing));
+    t.lineSpacing = int(r.integer("lineSpacing", 0, TextSource::kMaxSpacing));
+    const auto align = textAlignFromName(r.string("align"));
+    if (!align)
+        fail(r.what() + ": unknown alignment \"" + r.string("align") + "\"");
+    t.align = *align;
+    t.wrapWidth = int(r.integer("wrapWidth", 0, TextSource::kMaxWrapWidth));
+    t.colour = std::uint8_t(r.integer("colour", 0, 15));
+    if (const auto problem = textSourceProblem(t))
+        fail(r.what() + ": " + *problem);
+    return t;
+}
+
 QJsonObject layerJson(const Layer& l) {
     const LayerProperties& p = l.props;
-    return QJsonObject{
+    QJsonObject o{
         {"id", qint64(p.id)},
         {"name", qstr(p.name)},
         {"kind", qstr(layerKindName(p.kind))},
@@ -470,6 +523,9 @@ QJsonObject layerJson(const Layer& l) {
         {"alphaLocked", p.alphaLocked},
         {"mode", qstr(layerModeName(p.mode))},
     };
+    if (p.text)
+        o["source"] = textSourceJson(*p.text);
+    return o;
 }
 
 Layer layerFromEntries(LayerId id, const std::string& json, const std::string& cells) {
@@ -494,6 +550,12 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     p.visible = r.boolean("visible");
     p.locked = r.boolean("locked");
     p.alphaLocked = r.boolean("alphaLocked");
+    // a live text layer's source; the cells are its drawn text as saved
+    if (r.has("source")) {
+        if (p.kind != LayerKind::Text)
+            fail(what + ": a " + std::string(layerKindName(p.kind)) + " layer has a text source");
+        p.text = textSourceFromJson(r.object("source"), what);
+    }
     const auto w = r.integer("width", 0, kMaxSide);
     const auto h = r.integer("height", 0, kMaxSide);
     try {
@@ -1327,6 +1389,13 @@ Entries encode(const Project& project) {
     QJsonArray order;
     for (const Layer& l : stack.layers()) {
         order.append(qint64(l.props.id));
+        if (l.props.text) {
+            const std::string what = layerPath(l.props.id, false);
+            if (l.props.kind != LayerKind::Text)
+                fail(what + ": a " + std::string(layerKindName(l.props.kind)) + " layer has a text source");
+            if (const auto problem = textSourceProblem(*l.props.text))
+                fail(what + " source: " + *problem);
+        }
         const std::string json = toJson(layerJson(l));
         checkJsonSize(layerPath(l.props.id, false), json.size());
         out[layerPath(l.props.id, false)] = json;

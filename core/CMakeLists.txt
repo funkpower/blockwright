@@ -43,6 +43,7 @@ add_library(blockwright_core STATIC
   src/sauce.cpp
   src/selection.cpp
   src/shapes.cpp
+  src/text.cpp
 )
 add_library(blockwright::core ALIAS blockwright_core)
 target_include_directories(blockwright_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

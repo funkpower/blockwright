@@ -48,6 +48,7 @@ add_executable(blockwright-tests
   test_sauce.cpp
   test_selection.cpp
   test_symmetry_stroke.cpp
+  test_text.cpp
   util.h
 )
 # libzip and zstd to write the broken files test_project.cpp reads

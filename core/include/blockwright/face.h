@@ -121,6 +121,15 @@ struct TextLayout {
 
 TextLayout layoutText(const Face& face, std::u32string_view text, const LayoutOptions& opts = {});
 
+// The size layoutText gives the text, without drawing it: the widest line in
+// columns (the mask's width), the mask's height in pixel rows and the number
+// of lines. Counted in 64 bits and allocating nothing the size of the mask,
+// so a text too large to draw can be measured and refused first.
+struct TextExtent {
+    std::int64_t width = 0, height = 0, lines = 0;
+};
+TextExtent measureText(const Face& face, std::u32string_view text, const LayoutOptions& opts = {});
+
 // The bundled pixel faces.
 const Face& blockFace();
 const Face& vgaFace();

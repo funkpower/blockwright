@@ -77,14 +77,30 @@ std::vector<ConfusablePair> confusablesIn(const Face& face, std::u32string_view 
     return out;
 }
 
-TextLayout layoutText(const Face& face, std::u32string_view text, const LayoutOptions& opts) {
-    const int spacing = face.letterSpacing(), height = face.height();
+namespace {
+
+// The text broken into layoutText's lines, without drawing it: each
+// character's glyph and the columns it takes, the lines (their widths in
+// columns) and the characters the face can't draw. Widths are counted in
+// 64 bits, so a text far too wide to draw is measured, not wrapped round.
+struct Broken {
+    std::vector<std::optional<Glyph>> glyphs;
+    std::vector<int> widths;
+    std::vector<TextLayout::Line> lines;
+    std::int64_t widest = 0;  // the widest line's columns
+    std::vector<size_t> missing;
+};
+
+Broken breakLines(const Face& face, std::u32string_view text, const LayoutOptions& opts) {
+    const int spacing = face.letterSpacing();
     const auto space = face.glyph(U' ');
     const int spaceWidth = space ? space->mask.width : 1;
 
-    TextLayout out;
-    std::vector<std::optional<Glyph>> glyphs(text.size());
-    std::vector<int> widths(text.size(), 0);
+    Broken out;
+    out.glyphs.resize(text.size());
+    out.widths.assign(text.size(), 0);
+    auto& glyphs = out.glyphs;
+    auto& widths = out.widths;
     for (size_t i = 0; i < text.size(); ++i) {
         if (text[i] == U'\n')
             continue;
@@ -94,7 +110,7 @@ TextLayout layoutText(const Face& face, std::u32string_view text, const LayoutOp
         widths[i] = glyphs[i] ? glyphs[i]->mask.width : spaceWidth;
     }
     const auto lineWidth = [&](size_t first, size_t count) {
-        int w = 0;
+        std::int64_t w = 0;
         for (size_t k = first; k < first + count; ++k)
             w += widths[k] + (k > first ? spacing : 0);
         return w;
@@ -115,7 +131,7 @@ TextLayout layoutText(const Face& face, std::u32string_view text, const LayoutOp
         size_t pos = start;
         do {
             size_t cut = end, next = end, lastSpace = text.npos;
-            int x = 0;
+            std::int64_t x = 0;
             for (size_t j = pos; j < end; ++j) {
                 if (wrap > 0 && j > pos && x + widths[j] > wrap) {
                     cut = next = text[j] != U' ' && lastSpace != text.npos ? lastSpace : j;
@@ -129,13 +145,34 @@ TextLayout layoutText(const Face& face, std::u32string_view text, const LayoutOp
                     lastSpace = j;
                 x += widths[j] + spacing;
             }
-            out.lines.push_back({pos, cut - pos, lineWidth(pos, cut - pos)});
+            const std::int64_t w = lineWidth(pos, cut - pos);
+            out.widest = std::max(out.widest, w);
+            out.lines.push_back({pos, cut - pos, static_cast<int>(w)});
             pos = next;
         } while (pos < end);
         if (end == text.size())
             break;
         start = end + 1;
     }
+    return out;
+}
+
+} // namespace
+
+TextExtent measureText(const Face& face, std::u32string_view text, const LayoutOptions& opts) {
+    const Broken b = breakLines(face, text, opts);
+    const auto lines = static_cast<std::int64_t>(b.lines.size());
+    return {b.widest, lines * face.height(), lines};
+}
+
+TextLayout layoutText(const Face& face, std::u32string_view text, const LayoutOptions& opts) {
+    const int spacing = face.letterSpacing(), height = face.height();
+    Broken b = breakLines(face, text, opts);
+    const auto& glyphs = b.glyphs;
+    const auto& widths = b.widths;
+    TextLayout out;
+    out.lines = std::move(b.lines);
+    out.missing = std::move(b.missing);
 
     int width = 0;
     for (const auto& line : out.lines)

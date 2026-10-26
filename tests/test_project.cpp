@@ -65,10 +65,13 @@ thread_local long allocations = -1;
 thread_local long failAllocation = -1;
 // While set, every allocation on this thread throws std::bad_alloc.
 thread_local bool failAllocations = false;
+// While not 0, an allocation on this thread of more bytes than this throws
+// std::bad_alloc.
+thread_local std::size_t largestAllocation = 0;
 }
 
 void* operator new(std::size_t size) {
-    if (bwtest::failAllocations)
+    if (bwtest::failAllocations || (bwtest::largestAllocation && size > bwtest::largestAllocation))
         throw std::bad_alloc();
     if (bwtest::failNextAllocation) {
         bwtest::failNextAllocation = false;
@@ -408,7 +411,7 @@ TEST_CASE("every layer kind and field survives encode and decode", "[project]") 
     // the manifest is readable JSON with the layout PLAN §6 gives
     const QJsonObject m = object(e.at("manifest.json"));
     CHECK(m.value("format").toString() == "blockwright");
-    CHECK(m.value("version").toString() == "1.0");
+    CHECK(m.value("version").toString() == "1.1");
     CHECK(m.value("width").toInt() == 20);
     CHECK(m.value("height").toInt() == 8);
     CHECK(m.value("palette").toString() == "cga");

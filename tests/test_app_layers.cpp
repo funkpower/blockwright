@@ -16,7 +16,9 @@
 #include "blockwright/composite.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
+#include "blockwright/project.h"
 #include "blockwright/ramp.h"
+#include "blockwright/text.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -25,6 +27,8 @@
 #include <QCheckBox>
 #include <QDockWidget>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMenuBar>
@@ -370,6 +374,148 @@ TEST_CASE("a hidden or locked layer takes no edits", "[layers]") {
     typeAt(w, 0, 0, QLatin1Char('X'));
     CHECK(doc->layerCanvas().at(0, 0) == transparentCell());
     CHECK(doc->canvas().at(0, 0) == Cell{});
+}
+
+TEST_CASE("a live text layer is redrawn from its source, not edited, and its source undoes", "[layers][text]") {
+    MainWindow w;
+    Document* doc = w.document();
+    const LayerId id = doc->addLayer(LayerKind::Text);
+    REQUIRE(doc->editable());  // no source: cells read as text
+    const Layer plain = *doc->active();
+
+    TextSource source;
+    source.text = U"Hi";
+    source.colour = Yellow;
+    LayerProperties p = plain.props;
+    p.text = source;
+    const int steps = doc->undoStack()->count();
+    REQUIRE(doc->setLayerProperties(id, p, QStringLiteral("Text")));
+    CHECK(doc->undoStack()->count() == steps + 1);
+    CHECK_FALSE(doc->editable());
+    const Layer live = *doc->active();
+    CHECK(live.cells == renderText(source, blockFace()).cells);
+    // the composite shows the drawn text
+    bool inked = false;
+    for (int y = 0; y < live.height(); ++y)
+        for (int x = 0; x < live.width(); ++x)
+            if (!live.cells.at(x, y).transparent) {
+                CHECK(doc->canvas().at(x, y) == live.cells.at(x, y));
+                inked = true;
+            }
+    CHECK(inked);
+
+    // typing on it changes nothing
+    typeAt(w, 0, 0, QLatin1Char('X'));
+    CHECK(*doc->active() == live);
+    CHECK(doc->undoStack()->count() == steps + 1);
+
+    // a source this build can't draw, or on a cells layer, is refused
+    LayerProperties bad = live.props;
+    bad.text->face.name = "nope";
+    CHECK_FALSE(doc->setLayerProperties(id, bad, QStringLiteral("Text")));
+    bad = live.props;
+    bad.kind = LayerKind::Cells;
+    CHECK_FALSE(doc->setLayerProperties(id, bad, QStringLiteral("Text")));
+    CHECK(doc->undoStack()->count() == steps + 1);
+
+    // a new text redraws; undo gives each source and its cells back
+    LayerProperties next = live.props;
+    next.text->text = U"Hi there";
+    REQUIRE(doc->setLayerProperties(id, next, QStringLiteral("Text")));
+    CHECK(doc->active()->width() > live.width());
+    doc->undoStack()->undo();
+    CHECK(*doc->active() == live);
+    doc->undoStack()->undo();
+    CHECK(*doc->active() == plain);
+    CHECK(doc->canvas().at(0, 0) == Cell{});
+    doc->undoStack()->redo();
+    CHECK(*doc->active() == live);
+}
+
+// Codex round 1: a live text layer saved with "A", its source then edited to
+// "B" in the project directory. It opens with the cells it saved, and a
+// change that leaves the source as it is keeps them, as does the undo of any
+// step.
+TEST_CASE("an opened text layer keeps its saved cells until its source changes", "[layers][text]") {
+    TextSource a;
+    a.text = U"A";
+    project::Project p;
+    p.layers = LayerStack(20, 6);
+    const LayerId id = p.layers.add(makeTextLayer(a, "Title", 2, 1));
+    const Canvas cachedA = p.layers[0].cells;
+    QTemporaryDir tmp;
+    const QString dir = tmp.filePath(QStringLiteral("piece"));
+    project::writeDirectory(p, dir.toStdString());
+    {
+        QFile f(dir + QStringLiteral("/layers/%1.json").arg(id));
+        REQUIRE(f.open(QIODevice::ReadOnly));
+        QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+        f.close();
+        QJsonObject src = o.value("source").toObject();
+        src["text"] = "B";
+        o["source"] = src;
+        REQUIRE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(QJsonDocument(o).toJson());
+    }
+
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(dir, &error));
+    Document* doc = w.document();
+    const auto shows = [&](const Canvas& cells) {
+        CHECK(doc->layers().find(id)->cells == cells);
+        CHECK(doc->canvas() == composite(doc->layers(), {doc->project().ice, Cell{}}));
+        bool inked = false;
+        for (int y = 0; y < cells.height(); ++y)
+            for (int x = 0; x < cells.width(); ++x)
+                if (!cells.at(x, y).transparent) {
+                    CHECK(doc->canvas().at(2 + x, 1 + y) == cells.at(x, y));
+                    inked = true;
+                }
+        CHECK(inked);
+    };
+    const Layer opened = *doc->layers().find(id);
+    REQUIRE(opened.props.text);
+    CHECK(opened.props.text->text == U"B");
+    shows(cachedA);
+
+    // a rename, and its undo and redo, keep the saved cells
+    REQUIRE(doc->renameLayer(id, QStringLiteral("Renamed")));
+    shows(cachedA);
+    doc->undoStack()->undo();
+    CHECK(*doc->layers().find(id) == opened);
+    shows(cachedA);
+    doc->undoStack()->redo();
+    shows(cachedA);
+    doc->undoStack()->undo();
+
+    // a new source redraws, in the same box; its undo puts the saved cells back
+    TextSource c = *opened.props.text;
+    c.text = U"C";
+    LayerProperties next = opened.props;
+    next.text = c;
+    REQUIRE(doc->setLayerProperties(id, next, QStringLiteral("Text")));
+    const Canvas drawnC = renderText(c, blockFace()).cells;
+    REQUIRE(drawnC.width() == cachedA.width());
+    REQUIRE(drawnC.height() == cachedA.height());
+    REQUIRE(drawnC != cachedA);
+    shows(drawnC);
+    doc->undoStack()->undo();
+    CHECK(*doc->layers().find(id) == opened);
+    shows(cachedA);
+
+    // a source too large to draw is refused before it is drawn
+    TextSource big = c;
+    big.text = std::u32string(2048, U'W') + std::u32string(2048, U'\n');
+    big.face.name = "vga";
+    big.letterSpacing = 64;
+    next.text = big;
+    CHECK_FALSE(doc->setLayerProperties(id, next, QStringLiteral("Text")));
+
+    // and saved, the file has the cells it opened with
+    REQUIRE(doc->saveProject(dir, FileForm::ProjectDirectory, &error));
+    const project::Project back = project::read(dir.toStdString());
+    CHECK(back.layers.find(id)->cells == cachedA);
 }
 
 TEST_CASE("sample merged: the eyedropper and fill read the active layer or the composite", "[layers]") {

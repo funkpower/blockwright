@@ -21,6 +21,7 @@
 #include "blockwright/edit.h"
 #include "blockwright/layer.h"
 #include "blockwright/project.h"
+#include "blockwright/text.h"
 
 #include <QObject>
 #include <QRegion>
@@ -212,7 +213,8 @@ public:
     // shows through to, without the layers above it.
     Cell shownBelow(int x, int y) const;
     // Whether edit() takes edits now: an active cells, text or pixel layer
-    // that is visible and not locked.
+    // that is visible and not locked, and not a live text layer (one with a
+    // source: its cells are drawn from it).
     bool editable() const;
 
     // The layer panel's changes, each one undo command (QUndoStack) that
@@ -227,8 +229,12 @@ public:
     // Moves the layer to `index` (bottom first, clamped to the top).
     bool moveLayer(LayerId id, std::size_t index);
     // Replaces the layer's properties but its id, as one command named
-    // `text`; false if it changes nothing. A change of visibility (or mode,
-    // kind, offset) recomposites the cells the layer covers.
+    // `text`; false if it changes nothing, or gives a text source to a layer
+    // that isn't a text layer or one this build can't draw
+    // (textSourceProblem). A change of visibility (or mode, kind, offset)
+    // recomposites the cells the layer covers; a change of a live text
+    // layer's source redraws its cells from it, and its undo puts back the
+    // cells it replaced (bw::applyEdit). Any other change keeps the cells.
     bool setLayerProperties(LayerId id, LayerProperties props, const QString& text);
     bool renameLayer(LayerId id, const QString& name);
     bool setLayerVisible(LayerId id, bool visible);
@@ -309,7 +315,8 @@ private:
     LayerId insertLayer(Layer layer, std::size_t index);
     Layer takeLayer(LayerId id);
     void placeLayer(LayerId id, std::size_t index);
-    void putProperties(LayerId id, const LayerProperties& props);
+    // Applies the edit (`revert`: undoes it, bw::applyEdit) to its layer.
+    void putProperties(const LayerPropsEdit& edit, bool revert);
     void makeActive(LayerId id);
     void refreshLayerCanvas();
 
