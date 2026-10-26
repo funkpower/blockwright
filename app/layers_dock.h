@@ -42,7 +42,8 @@ public:
 
 private:
     // Brings the rows up to the document: in place when the same layers are
-    // in the same order (so a row being edited stays put), rebuilt when not.
+    // in the same order (so a row being edited stays put), rebuilt when not,
+    // later when that would be inside one of the tree's signals.
     void sync();
     void fill(QTreeWidgetItem* item, const Layer& layer);
     void updateActions();
@@ -55,6 +56,8 @@ private:
     QAction* delete_;
     QAction* raise_;
     QAction* lower_;
+    int handling_ = 0;  // in a handler of the tree's signals
+    bool syncQueued_ = false;
     GeneratorForm* form_;
 };
 

@@ -40,6 +40,7 @@ const QList<QStringList>& Toolbox::groups() {
         // The fills: the bucket and the ramp gradient.
         {QStringLiteral("fill"), QStringLiteral("gradient")},
         {QStringLiteral("eyedropper")},
+        {QStringLiteral("text")},
     };
     return g;
 }
@@ -187,6 +188,14 @@ QIcon toolIcon(const QString& id) {
         const QPointF star(box.left() + 0.55 * box.width(), box.top() + 0.32 * box.height());
         p.drawLine(star - QPointF(2.5, 0), star + QPointF(2.5, 0));
         p.drawLine(star - QPointF(0, 2.5), star + QPointF(0, 2.5));
+    } else if (id == QLatin1String("text")) {
+        // a capital T and a text cursor beside it
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawRect(QRectF(box.left(), box.top(), box.width() * 0.7, 2.5));
+        p.drawRect(QRectF(box.left() + box.width() * 0.35 - 1.25, box.top(), 2.5, box.height()));
+        p.setPen(QPen(mid, 1.5));
+        p.drawLine(QPointF(box.right() - 1, box.top() + 4), QPointF(box.right() - 1, box.bottom()));
     } else {
         // A tool with no picture of its own: its name's first letter.
         p.drawText(QRectF(0, 0, kIcon, kIcon), Qt::AlignCenter, id.left(1).toUpper());

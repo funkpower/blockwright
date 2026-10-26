@@ -59,6 +59,20 @@ void MainWindow::createDocks() {
     layerMenu_->addSeparator();
     layerMenu_->addAction(layers_->raiseAction());
     layerMenu_->addAction(layers_->lowerAction());
+    // Bake Text: a live text layer's cells kept, its source dropped (PLAN
+    // §15), one undo step.
+    layerMenu_->addSeparator();
+    QAction* bake = layerMenu_->addAction(tr("&Bake Text"), this, [this] { doc_.bakeTextLayer(doc_.activeLayer()); });
+    bake->setObjectName(QStringLiteral("bakeText"));
+    bake->setToolTip(tr("Make the text layer a cells layer of what it shows; its text can't be edited after"));
+    const auto canBake = [this, bake] {
+        const Layer* l = doc_.active();
+        bake->setEnabled(l && l->props.text);
+    };
+    connect(&doc_, &Document::layersChanged, bake, canBake);
+    connect(&doc_, &Document::activeLayerChanged, bake, canBake);
+    connect(&doc_, &Document::reset, bake, canBake);
+    canBake();
 
     lint_ = new LintDock(&doc_);
     lintDock_ = dock(tr("Lint"), "lintDock", lint_);

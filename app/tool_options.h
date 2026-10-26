@@ -10,10 +10,11 @@
 // the rectangle and ellipse, the ramp gradient's shape, rungs and banding,
 // the select tool's paste mode, sample merged for the eyedropper and
 // fill, the clone stamp's Aligned, the rim light's Keep the lint clean,
-// and the glyph spray's kind, density and seed. Each row is shown while
-// the active tool reads it (optionsFor). It edits the view's
-// settings and the tools' and follows them, so the menus and the dock stay
-// in step.
+// the glyph spray's kind, density and seed, and the Text tool's face,
+// case, spacing, alignment, wrap width and colour (text_options.h). Each
+// row is shown while the active tool reads it (optionsFor). It edits the
+// view's settings and the tools' and follows them, so the menus and the
+// dock stay in step.
 
 #include <QFlags>
 #include <QWidget>
@@ -37,6 +38,7 @@ QIcon rampIcon(const Ramp& ramp);
 class CanvasView;
 class CloneTool;
 class SprayTool;
+class TextOptions;
 class GlyphTool;
 class GradientTool;
 class RimLightTool;
@@ -70,6 +72,7 @@ public:
         CloneAligned = 1 << 18,  // the clone stamp keeps its distance across strokes
         RimLint = 1 << 19,       // the rim light keeps the ladder lint clean
         Spray = 1 << 20,         // the glyph spray's kind, density and seed
+        Text = 1 << 21,          // the text tool's face, case, spacing, alignment, wrap and colour
     };
     Q_DECLARE_FLAGS(Options, Option)
 
@@ -120,6 +123,7 @@ public:
     QSpinBox* sprayDensityBox() const { return sprayDensity_; }
     QSpinBox* spraySeedBox() const { return spraySeed_; }
     QCheckBox* rimLintBox() const { return rimLint_; }
+    TextOptions* textOptions() const { return text_; }
 
 private:
     // Shows the view's and the tools' settings.
@@ -144,6 +148,7 @@ private:
     RimLightTool* rimTool_;
     QFormLayout* form_layout_;
     QLabel* title_;
+    TextOptions* text_ = nullptr;
     QLabel* none_;
     QSpinBox* size_;
     QComboBox* tip_;

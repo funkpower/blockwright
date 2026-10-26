@@ -4,6 +4,8 @@
 #include "document.h"
 #include "draw_tools.h"
 #include "select_tool.h"
+#include "text_options.h"
+#include "text_tool.h"
 #include "tool.h"
 
 #include "blockwright/palette.h"
@@ -80,6 +82,7 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("clone"), brush | O::CloneAligned},
         // Stars ignore the ramp; haze and smoke walk it.
         {QStringLiteral("spray"), brush | O::Ramp | O::Spray},
+        {QStringLiteral("text"), O::Text},
     };
     const auto it = table.find(toolId);
     if (known)
@@ -307,6 +310,11 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     rimLint_->setToolTip(tr("Rim light: leave a cell unlit where lighting it would add a ladder-lint finding "
                             "(a rung skip, a speck); off, the rim is an accent the lint checks"));
 
+    if (auto* textTool = qobject_cast<TextTool*>(tools->find(QStringLiteral("text")))) {
+        text_ = new TextOptions(view, textTool);
+        text_->setObjectName(QStringLiteral("textOptions"));
+    }
+
     auto* form = form_layout_ = new QFormLayout(this);
     form->addRow(title_);
     form->addRow(none_);
@@ -334,6 +342,8 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(tr("Spray"), sprayKind_);
     form->addRow(tr("Density"), sprayDensity_);
     form->addRow(tr("Seed"), spraySeed_);
+    if (text_)
+        form->addRow(text_);
     form->addRow(filled_);
     form->addRow(pencil4_);
     form->addRow(tr("Paste"), pasteMode_);
@@ -448,6 +458,8 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(sprayDensity_, o.testFlag(O::Spray));
     f->setRowVisible(spraySeed_, o.testFlag(O::Spray));
     f->setRowVisible(rimLint_, o.testFlag(O::RimLint));
+    if (text_)
+        f->setRowVisible(text_, o.testFlag(O::Text));
     f->setRowVisible(filled_, o.testFlag(O::Filled));
     f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
     f->setRowVisible(pasteMode_, o.testFlag(O::PasteMode));

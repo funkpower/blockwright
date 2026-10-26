@@ -85,10 +85,12 @@ private:
 };
 
 // Where a TheDraw face is looked up: the project's copies first, then the
-// fonts folder. Either may be missing.
+// fonts folder, then files a caller holds on to (the Text tool keeps the
+// file of the face new text starts in). Any may be missing.
 struct FontSources {
     const FontStore* project = nullptr;
     const FontStore* folder = nullptr;
+    const FontStore* held = nullptr;
 
     // The face from the first that has it, or null.
     const Face* face(const FaceRef& ref) const;

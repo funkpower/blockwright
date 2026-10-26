@@ -120,7 +120,8 @@ TEST_CASE("a font file is keyed by the sha256 of its bytes and has a face per fo
     CHECK_THROWS_AS(loadFontFile("not a font"), TdfError);
 }
 
-TEST_CASE("a TheDraw face is found by file, index and name, the project's copy first", "[tdf][fonts]") {
+TEST_CASE("a TheDraw face is found by file, index and name, the project's copy first, a held file last",
+          "[tdf][fonts]") {
     const FontFilePtr all = fontFile("bw-all.tdf");
     FontStore store;
     CHECK(store.add(all) == all);
@@ -149,6 +150,12 @@ TEST_CASE("a TheDraw face is found by file, index and name, the project's copy f
     CHECK(findFace(colour, {nullptr, &folder}) == folder.file(all->sha256)->face(2));
     CHECK(findFace(colour, {&store, &folder}) == all->face(2));
     CHECK(findFace(colour, {&store, nullptr}) == all->face(2));
+    // a held file comes last
+    FontStore held;
+    held.add(fontFile("bw-all.tdf"));
+    CHECK(findFace(colour, {nullptr, nullptr, &held}) == held.file(all->sha256)->face(2));
+    CHECK(findFace(colour, {nullptr, &folder, &held}) == folder.file(all->sha256)->face(2));
+    CHECK(findFace(colour, {&store, &folder, &held}) == all->face(2));
     // a pixel face never comes from a store
     FaceRef pixel;
     CHECK(findFace(pixel, {&store, &folder}) == &blockFace());

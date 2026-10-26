@@ -317,8 +317,7 @@ void CanvasView::setCellCursor(Cursor c) {
     update(toWidget(cellRect(cursor_)));
     cursor_ = c;
     update(toWidget(cellRect(cursor_)));
-    if (hasFocus())
-        QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle);
+    tellInputMethod();
     emit cursorMoved(cursor_);
 }
 
@@ -364,15 +363,23 @@ void CanvasView::setTool(Tool* tool) {
         // A drag can end in the tool, from a menu action or the document:
         // its filter ends with it.
         connect(tool_, &Tool::changed, this, &CanvasView::syncDrag);
+        // its text cursor may have moved
+        connect(tool_, &Tool::changed, this, &CanvasView::tellInputMethod);
         tool_->activate(this);
     }
     update();
+    tellInputMethod();
     emit toolChanged();
 }
 
 bool CanvasView::applyEdit(const CellEdit& edit, bool mirrored) {
     const QScopedValueRollback<bool> own(ownEdit_, true);
     return doc_->edit(mirrored ? edit : this->mirrored(edit), cursor_, cursor_);
+}
+
+void CanvasView::ownChange(const std::function<void()>& change) {
+    const QScopedValueRollback<bool> own(ownEdit_, true);
+    change();
 }
 
 CellEdit CanvasView::mirrored(const CellEdit& edit) const {
@@ -501,9 +508,17 @@ void CanvasView::setReferenceOpacity(qreal opacity) {
 QSize CanvasView::sizeHint() const { return DeviceGrid::of(this).widgetSize(viewSize()); }
 
 QVariant CanvasView::inputMethodQuery(Qt::InputMethodQuery query) const {
-    if (query == Qt::ImCursorRectangle)
-        return toWidget(cellRect(cursor_));
+    // where the text goes: the tool's text cursor, else the cell cursor
+    if (query == Qt::ImCursorRectangle) {
+        const std::optional<QRect> caret = tool_ ? tool_->caretRect() : std::nullopt;
+        return toWidget(caret ? *caret : cellRect(cursor_));
+    }
     return QWidget::inputMethodQuery(query);
+}
+
+void CanvasView::tellInputMethod() {
+    if (hasFocus())
+        QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle);
 }
 
 void CanvasView::canvasReset() {
@@ -784,6 +799,11 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
 }
 
 void CanvasView::inputMethodEvent(QInputMethodEvent* e) {
+    if (tool_ && (!e->commitString().isEmpty() || e->replacementLength() > 0) &&
+        tool_->inputText(e->commitString(), e->replacementStart(), e->replacementLength())) {
+        e->accept();
+        return;
+    }
     typeText(e->commitString(), e->replacementStart(), e->replacementLength());
     e->accept();
 }

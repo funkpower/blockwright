@@ -96,6 +96,7 @@ public:
     }
 
     LayerId layerId() const { return layer_.props.id; }
+    bool adds(LayerId id) const { return op_ == Op::Add && layer_.props.id == id; }
 
     void redo() override {
         switch (op_) {
@@ -139,7 +140,9 @@ private:
     LayerId activeBefore_ = 0, activeAfter_ = 0;
 };
 
-// A layer's properties (name, visibility, alpha lock), before and after.
+// A layer's properties (name, visibility, alpha lock, a text source),
+// before and after. The keystrokes of one run of typing fold into one step
+// (mergeEdits).
 //
 // On a generator layer the step can also carry its generator's params.json
 // and cells, before and after (Document::setGeneratorParam): a run landing
@@ -168,13 +171,27 @@ public:
     }
 
     LayerId layerId() const { return edit_.id; }
+    int id() const override { return edit_.typingRun ? kTypingId : -1; }
+    bool mergeWith(const QUndoCommand* other) override {
+        return mergeEdits(edit_, static_cast<const LayerPropsCommand*>(other)->edit_);
+    }
     const std::optional<GeneratorStep>& generator() const { return generator_; }
     void setCellsAfter(Canvas cells) { generator_->cellsAfter = std::move(cells); }
 
 private:
+    static constexpr int kTypingId = 0x5459;  // "TY"
     Document* doc_;
     LayerPropsEdit edit_;
     std::optional<GeneratorStep> generator_;
+};
+
+// A step that does nothing and leaves the stack when undone: pushed where
+// the undo stack stands, it drops every step after it, and its undo then
+// takes it away too, so nothing is left to redo (Document::dropNewTextLayer).
+class DropRedoCommand : public QUndoCommand {
+public:
+    void redo() override {}
+    void undo() override { setObsolete(true); }
 };
 
 // A snapshot added to the project's snapshots; undo takes it off.
@@ -352,10 +369,12 @@ bool Document::nextSnapshot(project::Snapshot* snapshot, AnsiOutput* out, QStrin
 }
 
 void Document::addSnapshot(project::Snapshot snapshot) {
+    emit commandAboutToPush();
     undo_.push(new SnapshotCommand(this, std::move(snapshot)));
 }
 
 bool Document::setIrcBudget(const project::IrcBudget& budget) {
+    emit commandAboutToPush();
     if (budget == extras_.ircBudget)
         return false;
     undo_.push(new IrcBudgetCommand(this, extras_.ircBudget, budget));
@@ -368,6 +387,7 @@ void Document::applyIrcBudget(const project::IrcBudget& budget) {
 }
 
 bool Document::setFormat(const DocumentFormat& format, const QString& text) {
+    emit commandAboutToPush();
     const DocumentFormat before = this->format();
     if (format == before)
         return false;
@@ -623,6 +643,7 @@ bool Document::setActiveLayer(LayerId id) {
     if (id == active_)
         return true;
     emit layersAboutToChange();
+    emit activeLayerAboutToChange(id);
     makeActive(id);
     return true;
 }
@@ -662,24 +683,94 @@ bool Document::editable() const {
     return false;
 }
 
-LayerId Document::addLayer(LayerKind kind) {
+std::string Document::freeLayerName(const QString& pattern) const {
     int n = 1;
     const auto taken = [this](const std::string& name) {
         return std::any_of(stack_.layers().begin(), stack_.layers().end(),
                            [&](const Layer& l) { return l.props.name == name; });
     };
-    while (taken(tr("Layer %1").arg(n).toStdString()))
+    while (taken(pattern.arg(n).toStdString()))
         ++n;
+    return pattern.arg(n).toStdString();
+}
+
+LayerId Document::addLayer(LayerKind kind) {
+    emit commandAboutToPush();
+    std::string name = freeLayerName(tr("Layer %1"));
     emit layersAboutToChange();
     const std::optional<std::size_t> at = stack_.indexOf(active_);
-    Layer layer = makeLayer(kind, stack_.width(), stack_.height(), tr("Layer %1").arg(n).toStdString());
+    Layer layer = makeLayer(kind, stack_.width(), stack_.height(), std::move(name));
     auto* c = LayerStackCommand::add(this, std::move(layer), at ? *at + 1 : stack_.size(),
                                      kind == LayerKind::Pixels ? tr("New Pixel Layer") : tr("New Cells Layer"));
     undo_.push(c);
     return c->layerId();
 }
 
+LayerId Document::addTextLayer(const TextSource& source, int x, int y, const FontStore* held) {
+    emit commandAboutToPush();
+    FontSources from = fontSources();
+    from.held = held;
+    if (textSourceProblem(source, from))
+        return 0;
+    keepFont(source.face, held);
+    Layer layer = makeTextLayer(source, freeLayerName(tr("Text %1")), x, y, fontSources());
+    emit layersAboutToChange();
+    const std::optional<std::size_t> at = stack_.indexOf(active_);
+    auto* c = LayerStackCommand::add(this, std::move(layer), at ? *at + 1 : stack_.size(), tr("New Text Layer"));
+    undo_.push(c);
+    return c->layerId();
+}
+
+bool Document::dropNewTextLayer(LayerId id) {
+    const Layer* l = stack_.find(id);
+    if (!l || !l->props.text || !l->props.text->text.empty())
+        return false;
+    // the step that added the layer, with nothing after it, done or undone,
+    // but changes to the layer's own properties (its typing)
+    int added = -1;
+    for (int i = undo_.count() - 1; i >= 0 && added < 0; --i) {
+        const QUndoCommand* c = undo_.command(i);
+        if (const auto* s = dynamic_cast<const LayerStackCommand*>(c); s && s->adds(id))
+            added = i;
+        else if (const auto* p = dynamic_cast<const LayerPropsCommand*>(c); !p || p->layerId() != id)
+            return false;
+    }
+    if (added < 0 || undo_.index() <= added)
+        return false;
+    emit layersAboutToChange();
+    undo_.setIndex(added);
+    undo_.push(new DropRedoCommand);
+    undo_.undo();
+    return true;
+}
+
+bool Document::setTextSource(LayerId id, TextSource source, const QString& text, std::uint64_t typingRun,
+                             const FontStore* held) {
+    emit commandAboutToPush();
+    FontSources from = fontSources();
+    from.held = held;
+    const Layer* l = stack_.find(id);
+    if (!l || l->props.kind != LayerKind::Text || !l->props.text || *l->props.text == source ||
+        textSourceProblem(source, from))
+        return false;
+    keepFont(source.face, held);
+    emit layersAboutToChange();
+    undo_.push(new LayerPropsCommand(this, textEdit(*l, std::move(source), typingRun), text));
+    return true;
+}
+
+bool Document::bakeTextLayer(LayerId id) {
+    emit commandAboutToPush();
+    const Layer* l = stack_.find(id);
+    if (!l || l->props.kind != LayerKind::Text || !l->props.text)
+        return false;
+    emit layersAboutToChange();
+    undo_.push(new LayerPropsCommand(this, bakeEdit(*l), tr("Bake Text")));
+    return true;
+}
+
 bool Document::removeLayer(LayerId id) {
+    emit commandAboutToPush();
     const std::optional<std::size_t> at = stack_.indexOf(id);
     if (!at || stack_.size() < 2)
         return false;
@@ -692,6 +783,7 @@ bool Document::removeLayer(LayerId id) {
 }
 
 bool Document::moveLayer(LayerId id, std::size_t index) {
+    emit commandAboutToPush();
     const std::optional<std::size_t> at = stack_.indexOf(id);
     if (!at || stack_.empty())
         return false;
@@ -704,6 +796,7 @@ bool Document::moveLayer(LayerId id, std::size_t index) {
 }
 
 bool Document::setLayerProperties(LayerId id, LayerProperties props, const QString& text) {
+    emit commandAboutToPush();
     const Layer* l = stack_.find(id);
     if (!l)
         return false;
@@ -717,9 +810,8 @@ bool Document::setLayerProperties(LayerId id, LayerProperties props, const QStri
     // a style the layer can hold and can draw, the box it grows included
     if (layerStyleProblem(props, fontSources()))
         return false;
-    // a TheDraw font from the folder becomes the project's copy
-    if (props.text && props.text->face.kind == FaceRef::Kind::Tdf)
-        extras_.fonts.add(fontSources().file(props.text->face.file));
+    if (props.text)
+        keepFont(props.text->face);
     // A name or the alpha lock changes no cell: a tool keeps what it holds
     // (a drag redoes itself with the new lock).
     LayerProperties same = props;
@@ -974,6 +1066,16 @@ void Document::placeLayer(LayerId id, std::size_t index) {
 
 void Document::setFontsFolder(std::shared_ptr<const FontCatalogue> catalogue) {
     fontsFolder_ = std::move(catalogue);
+    emit fontsFolderChanged();
+}
+
+void Document::keepFont(const FaceRef& face, const FontStore* held) {
+    // a TheDraw font from the folder (or held) becomes the project's copy
+    FontSources from = fontSources();
+    from.held = held;
+    if (face.kind == FaceRef::Kind::Tdf)
+        if (FontFilePtr file = from.file(face.file))
+            extras_.fonts.add(std::move(file));
 }
 
 FontSources Document::fontSources() const {

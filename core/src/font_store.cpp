@@ -105,6 +105,9 @@ FontFilePtr FontSources::file(std::string_view sha256) const {
     if (folder)
         if (FontFilePtr f = folder->file(sha256))
             return f;
+    if (held)
+        if (FontFilePtr f = held->file(sha256))
+            return f;
     return nullptr;
 }
 

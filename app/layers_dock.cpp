@@ -6,6 +6,7 @@
 #include <QAction>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -95,6 +96,7 @@ LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(d
     layout->addWidget(form_);
 
     connect(tree_, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
+        const QScopedValueRollback<int> guard(handling_, handling_ + 1);
         if (const LayerId id = layerOf(item); id && id != doc_->activeLayer())
             doc_->setActiveLayer(id);
     });
@@ -115,6 +117,23 @@ void LayersDock::sync() {
     bool same = tree_->topLevelItemCount() == int(n);
     for (std::size_t row = 0; same && row < n; ++row)
         same = layerOf(tree_->topLevelItem(int(row))) == stack[n - 1 - row].props.id;
+    if (!same && handling_) {
+        // a change from one of the tree's own signals took a layer away or
+        // added one (the Text tool's empty layer, taken back before the
+        // change): the rows are rebuilt once the signal's handler is done
+        // with its row
+        if (!syncQueued_) {
+            syncQueued_ = true;
+            QMetaObject::invokeMethod(
+                this,
+                [this] {
+                    syncQueued_ = false;
+                    sync();
+                },
+                Qt::QueuedConnection);
+        }
+        return;
+    }
     if (!same) {
         tree_->clear();
         for (std::size_t row = 0; row < n; ++row) {
@@ -153,6 +172,7 @@ void LayersDock::updateActions() {
 }
 
 void LayersDock::itemChanged(QTreeWidgetItem* item, int column) {
+    const QScopedValueRollback<int> guard(handling_, handling_ + 1);
     const LayerId id = layerOf(item);
     const Layer* layer = doc_->layers().find(id);
     if (!layer)

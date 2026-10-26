@@ -20,6 +20,7 @@
 #include <QRect>
 #include <QString>
 
+#include <optional>
 #include <vector>
 
 class QKeyEvent;
@@ -61,6 +62,11 @@ public:
     virtual bool mouseMove(const ToolEvent&) { return false; }
     virtual bool mouseRelease(const ToolEvent&) { return false; }
     virtual bool keyPress(QKeyEvent*) { return false; }
+    // Text an input method commits (a dead key, a compose sequence), in
+    // place of `replaceLength` UTF-16 units from `replaceStart` units after
+    // the text cursor (QInputMethodEvent), and empty for a commit that only
+    // deletes; whether the tool took it. Untaken, keyboard mode types it.
+    virtual bool inputText(const QString&, int /*replaceStart*/ = 0, int /*replaceLength*/ = 0) { return false; }
 
     // Whether a drag the tool took is in progress. The undo key during one
     // cancels the drag and undoes nothing; undo, redo or a format change
@@ -97,6 +103,10 @@ public:
     // the active layer); Document::previewEdit makes it the composite cells
     // paintCells draws. Empty when nothing is in progress.
     virtual const CellEdit& pending() const;
+    // Where the tool's text cursor is, in view pixels, for an input method
+    // (QWidget::inputMethodQuery); unset for the view's cell cursor. The
+    // tool emits changed() when it moves.
+    virtual std::optional<QRect> caretRect() const { return {}; }
     // A word on the tool's settings for the status bar (the glyph brush's
     // glyph); empty for none.
     virtual QString status() const { return {}; }

@@ -6,6 +6,7 @@
 #include "canvas_view.h"
 #include "draw_tools.h"
 #include "select_tool.h"
+#include "text_tool.h"
 #include "tool.h"
 #include "toolbox.h"
 
@@ -65,6 +66,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     // new one forgets them, the tool active or not.
     connect(&doc_, &Document::reset, clone, &CloneTool::forgetSource);
     tools_->add(new SprayTool);
+    tools_->add(new TextTool);
     view_->setTool(tools_->active());
     connect(tools_, &ToolRegistry::activeChanged, view_, &CanvasView::setTool);
 
@@ -211,7 +213,8 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("rimLight"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)},
         {QStringLiteral("texture"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P)},
         {QStringLiteral("clone"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_K)},
-        {QStringLiteral("spray"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Y)}};
+        {QStringLiteral("spray"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Y)},
+        {QStringLiteral("text"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_X)}};
     QHash<Tool*, QAction*> toolActions;
     for (Tool* t : tools_->tools()) {
         const QKeySequence key = toolKeys.value(t->id());

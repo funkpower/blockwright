@@ -8,6 +8,8 @@ add_library(blockwright_app STATIC
   document.cpp
   draw_tools.cpp
   draw_tools.h
+  face_picker.cpp
+  face_picker.h
   generator_form.cpp
   generator_form.h
   generator_runner.cpp
@@ -46,6 +48,10 @@ add_library(blockwright_app STATIC
   select_tool.h
   settings.cpp
   settings.h
+  text_options.cpp
+  text_options.h
+  text_tool.cpp
+  text_tool.h
   tool.cpp
   tool.h
   tool_options.cpp

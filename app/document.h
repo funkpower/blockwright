@@ -202,7 +202,8 @@ public:
     const Layer* active() const { return stack_.find(active_); }
     // Makes the layer active (not an undo step). Emits layersAboutToChange
     // first, so a floating selection lands on the layer it was lifted from,
-    // then activeLayerChanged. False if the stack doesn't hold it.
+    // then activeLayerAboutToChange and activeLayerChanged. False if the
+    // stack doesn't hold it.
     bool setActiveLayer(LayerId id);
     // The active layer's cells as a canvas the document's size
     // (bw::layerCanvas): what the tools read and build their edits on.
@@ -224,11 +225,38 @@ public:
     bool editable() const;
 
     // The layer panel's changes, each one undo command (QUndoStack) that
-    // applies it now; each emits layersAboutToChange before it is pushed.
+    // applies it now; each emits commandAboutToPush, and then
+    // layersAboutToChange before it is pushed.
     // A new layer is the canvas's size, all transparent, named "Layer N",
     // goes just above the active layer and becomes active; undo removes it
     // and makes the layer that was active active again. Returns its id.
     LayerId addLayer(LayerKind kind);
+    // A live text layer of `source` (text.h) with its top-left cell at
+    // (x, y), named "Text N", the same way: one undo step, just above the
+    // active layer and made active. 0 when the source can't be drawn with
+    // fontSources() and `held`, files the caller holds on to (the Text
+    // tool's font, picked from a folder or project since gone). A TheDraw
+    // font from either is copied into the project's fonts, as
+    // setLayerProperties copies one from the folder.
+    LayerId addTextLayer(const TextSource& source, int x, int y, const FontStore* held = nullptr);
+    // Takes back a text layer addTextLayer made that holds no text, when the
+    // steps after its own, done or undone, only change its properties (its
+    // typing): the layer goes and so do those steps, with nothing left to
+    // redo. False otherwise.
+    bool dropNewTextLayer(LayerId id);
+    // Gives a live text layer the source `source` (a new text, setting or
+    // face) as one command named `text`; its undo puts back the source and
+    // the cells it replaced. Keystrokes of one run of typing (the same
+    // non-zero `typingRun`) fold into one step. False if the layer isn't a
+    // live text layer, the source is its own or it can't be drawn with
+    // fontSources() and `held`; a TheDraw font from the folder or `held` is
+    // copied as above.
+    bool setTextSource(LayerId id, TextSource source, const QString& text, std::uint64_t typingRun = 0,
+                       const FontStore* held = nullptr);
+    // Bakes a live text layer into a cells layer of the cells it shows
+    // (bakeEdit), one undo step "Bake Text"; undo gives back the live
+    // layer. False if the layer isn't a live text layer.
+    bool bakeTextLayer(LayerId id);
     // Deletes the layer; the one below it (or, for the bottom one, the new
     // bottom) becomes active if it was. The last layer can't be deleted.
     bool removeLayer(LayerId id);
@@ -253,6 +281,8 @@ public:
     // opening and closing documents.
     void setFontsFolder(std::shared_ptr<const FontCatalogue> catalogue);
     const FontCatalogue* fontsFolder() const { return fontsFolder_.get(); }
+    // The same, shared: its faces last as long as it is held.
+    std::shared_ptr<const FontCatalogue> sharedFontsFolder() const { return fontsFolder_; }
     // Where a text source's TheDraw face is looked up: the project's copies,
     // then the fonts folder.
     FontSources fontSources() const;
@@ -345,6 +375,9 @@ signals:
     // A layer panel change or a change of active layer is about to be made:
     // a tool lands what it holds on the layer it was editing.
     void layersAboutToChange();
+    // setActiveLayer is about to make `id` active, after layersAboutToChange
+    // and outside any undo command, so a handler may push or undo steps.
+    void activeLayerAboutToChange(bw::LayerId id);
     // The stack's layers or their properties changed (also on open, new,
     // and their undo and redo).
     void layersChanged();
@@ -352,6 +385,16 @@ signals:
     // extras().ircBudget changed (setIrcBudget, its undo and redo; not on
     // open or new, see reset).
     void ircBudgetChanged();
+    // A command (a layer panel change, a text source, a format, the IRC
+    // budget, a snapshot) is about to be pushed: emitted first, before the
+    // command reads the document and outside any undo command, so a handler
+    // may push or undo steps; the Text tool takes back an empty layer its
+    // edit made here (dropNewTextLayer), which the command's steps would
+    // otherwise come after. The command then works on the document as the
+    // handler left it, and does nothing when its layer has gone.
+    void commandAboutToPush();
+    // setFontsFolder set another catalogue.
+    void fontsFolderChanged();
     // A generator layer's params.json or cells changed through a generator
     // step (setGeneratorParam, a run landing, their undo and redo).
     void generatorChanged(bw::LayerId id);
@@ -369,6 +412,12 @@ private:
     friend class IrcBudgetCommand;
 
     void setModified(bool on);
+    // Copies the TheDraw font file `face` names from the fonts folder (or
+    // `held`) into the project's fonts, if it isn't there; a pixel face
+    // needs none.
+    void keepFont(const FaceRef& face, const FontStore* held = nullptr);
+    // `pattern` ("Layer %1") with the first number no layer's name takes.
+    std::string freeLayerName(const QString& pattern) const;
     void applyIrcBudget(const project::IrcBudget& budget);
     CompositeOptions compositeOptions() const { return {doc_.ice, Cell{}}; }
     // shownBelow, for fitLayerEdit

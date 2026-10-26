@@ -30,6 +30,8 @@
 #include <QWidget>
 #include <QtGlobal>
 
+#include <functional>
+
 // Qt 6.6 added QEvent::DevicePixelRatioChange. Before it a scale change is
 // seen on the next paint (Qt repaints the window at the new ratio), which
 // queues the same resize the event does.
@@ -127,6 +129,11 @@ public:
     // (undo, redo, an edit made elsewhere, a new canvas) cancels the tool,
     // and undo, redo or a format change ends a drag the tool has going.
     bool applyEdit(const CellEdit& edit, bool mirrored = false);
+    // Runs `change`, a change the tool makes to the document other than a
+    // cell edit (a text layer's source), as the view's own: like an edit
+    // through applyEdit, it doesn't cancel the tool. A change of active
+    // layer still does.
+    void ownChange(const std::function<void()>& change);
     // `edit` as mirror mode would push it: mirrored when it is on.
     CellEdit mirrored(const CellEdit& edit) const;
     // The tool writes what it has in progress (a floating selection) as an
@@ -273,6 +280,9 @@ private:
     // Clears the owner of a drag that has ended, and stops its filter;
     // runs on every Tool::changed.
     void syncDrag();
+    // Has the input method ask again where the text goes
+    // (inputMethodQuery), if the view has the focus.
+    void tellInputMethod();
     // Whether the tool's drag is going on and another device than `p` owns
     // it; clears the owner of a drag that has ended.
     bool othersDrag(Pointer p);
