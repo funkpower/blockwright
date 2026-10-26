@@ -23,6 +23,7 @@ add_library(blockwright_core STATIC
   src/cp437.cpp
   src/edit.cpp
   src/face.cpp
+  src/tdf.cpp
   src/generator.cpp
   src/glyph_sets.cpp
   src/composite.cpp
