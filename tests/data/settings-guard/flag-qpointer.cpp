@@ -1,0 +1,1 @@
+QPointer<QSettings> watched;

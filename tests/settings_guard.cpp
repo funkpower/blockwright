@@ -1,4 +1,4 @@
-// Finds every place C++ sources could build a QSettings outside the settings
+// Checks C++ sources for possible QSettings construction outside the settings
 // factory (app/settings.cpp), so the tests' scratch INI file covers all of the
 // app's settings. It reads tokens, not lines: comments and string literals are
 // dropped and a declaration split across lines is still one declaration.
@@ -7,7 +7,7 @@
 //       prints each construction as path:line and exits 1 if there is one
 //   bw-settings-guard --fixtures <dir>
 //       checks the guard itself: every flag-* file there must be reported and
-//       no pass-* file may be
+//       no ok-* or pass-* file may be
 
 #include <algorithm>
 #include <cctype>
@@ -32,17 +32,22 @@ struct Token {
 bool identStart(char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; }
 bool identChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
-// Skips a quoted literal starting at s[i] (the quote), counting newlines.
+// Skips a quoted literal starting at s[i] (the quote). An unescaped newline
+// ends an unterminated literal; diagnostic text and disabled code can contain
+// apostrophes that aren't character literals at all.
 size_t skipQuoted(const std::string& s, size_t i, int& line) {
     const char q = s[i++];
     while (i < s.size() && s[i] != q) {
-        if (s[i] == '\\' && i + 1 < s.size())
-            ++i;
         if (s[i] == '\n')
-            ++line;
+            return i; // let tokenize handle the line and directive boundary
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            ++i;
+            if (s[i] == '\n')
+                ++line;
+        }
         ++i;
     }
-    return i + 1;
+    return i < s.size() ? i + 1 : i;
 }
 
 std::vector<Token> tokenize(const std::string& s) {
@@ -85,6 +90,23 @@ std::vector<Token> tokenize(const std::string& s) {
                 ++i;
             }
             i += 2;
+        } else if (c == '<' && directive && !out.empty() &&
+                   (out.back().text == "include" ||
+                    (out.back().text == "(" && out.size() >= 2 &&
+                     out[out.size() - 2].text == "__has_include"))) {
+            // Header names are preprocessor operands, not C++ type names.
+            const int at = line;
+            ++i;
+            while (i < s.size() && s[i] != '>' && s[i] != '\n') {
+                if (s[i] == '\\' && i + 1 < s.size() && s[i + 1] == '\n') {
+                    ++line;
+                    ++i;
+                }
+                ++i;
+            }
+            if (i < s.size() && s[i] == '>')
+                ++i;
+            out.push_back({Token::Literal, "<>", at});
         } else if (identStart(c)) {
             size_t j = i;
             while (j < s.size() && identChar(s[j]))
@@ -165,9 +187,95 @@ bool declaresParameters(const std::vector<Token>& t, size_t open) {
     return false;
 }
 
+// A template return type in a function declaration doesn't build an object:
+// std::unique_ptr<QSettings> appSettings(); is the factory's public interface.
+bool templateFunctionDeclaration(const std::vector<Token>& t, size_t open) {
+    int depth = 0;
+    for (size_t i = open; i < t.size(); ++i) {
+        if (is(t, i, "<"))
+            ++depth;
+        else if (is(t, i, ">") && --depth == 0) {
+            if (!ident(t, i + 1) || !is(t, i + 2, "(") || !declaresParameters(t, i + 2))
+                return false;
+            int parens = 0;
+            for (size_t j = i + 2; j < t.size(); ++j) {
+                if (is(t, j, "("))
+                    ++parens;
+                else if (is(t, j, ")") && --parens == 0)
+                    return is(t, j + 1, ";");
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
+// Find the enclosing template or macro argument list, crossing earlier
+// arguments (including nested lists) without crossing a statement boundary.
+size_t argumentOpen(const std::vector<Token>& t, size_t start) {
+    std::vector<std::string> closes;
+    while (start > 0) {
+        const std::string& word = t[--start].text;
+        if (word == ">" || word == ")" || word == "]" || word == "}") {
+            closes.push_back(word);
+        } else if (word == "<" || word == "(" || word == "[" || word == "{") {
+            // A '>' that isn't closing a template list ('->', a comparison).
+            while (word != "<" && !closes.empty() && closes.back() == ">")
+                closes.pop_back();
+            if (closes.empty())
+                return word == "<" || word == "(" ? start : t.size();
+            const std::string close = word == "<" ? ">" : word == "(" ? ")" : word == "[" ? "]" : "}";
+            if (closes.back() != close)
+                return t.size();
+            closes.pop_back();
+        } else if (word == ";" && closes.empty()) {
+            break;
+        }
+    }
+    return t.size();
+}
+
+bool classBase(const std::vector<Token>& t, size_t start) {
+    if (start == 0 || (!is(t, start - 1, ":") && !is(t, start - 1, ",")))
+        return false;
+    bool colon = false;
+    int angles = 0, parens = 0;
+    while (start > 0) {
+        const std::string& word = t[--start].text;
+        // Parenthesised template arguments (sizeof(int), (a > b)) are skipped.
+        if (word == ")") {
+            ++parens;
+            continue;
+        }
+        if (word == "(" && parens-- == 0)
+            break;
+        if (parens > 0 || word == "(")
+            continue;
+        if (word == ";" || word == "{" || word == "}" || word == "=")
+            break;
+        if (word == ">")
+            ++angles;
+        if (word == "<" && angles-- == 0)
+            return false; // a template argument, not a base
+        if (angles > 0)
+            continue;
+        if (word == ":")
+            colon = true;
+        if (word == "class" || word == "struct")
+            return colon;
+    }
+    return false;
+}
+
 // The lines in t where a QSettings is (or could be) constructed.
 std::vector<int> constructions(const std::vector<Token>& t) {
     std::vector<int> lines;
+    // Locally defined macros may build an object from a type argument. The
+    // token guard doesn't expand macros, so conservatively report that use.
+    std::set<std::string> macros = {"Q_GLOBAL_STATIC", "Q_GLOBAL_STATIC_WITH_ARGS"};
+    for (size_t i = 0; i + 3 < t.size(); ++i)
+        if (is(t, i, "#") && is(t, i + 1, "define") && ident(t, i + 2) && is(t, i + 3, "("))
+            macros.insert(t[i + 2].text);
     for (size_t i = 0; i < t.size(); ++i) {
         if (t[i].kind != Token::Ident || t[i].text != "QSettings")
             continue;
@@ -197,27 +305,45 @@ std::vector<int> constructions(const std::vector<Token>& t) {
             if (k > 0 && t[k - 1].text == "new")
                 hit = true;
         }
-        // std::make_unique<QSettings>(...), make_shared, allocate_shared, Q_GLOBAL_STATIC(QSettings, ...)
-        if (prev == "<" && i >= 2 &&
-            (t[i - 2].text == "make_unique" || t[i - 2].text == "make_shared" || t[i - 2].text == "allocate_shared" ||
-             t[i - 2].text == "make_unique_for_overwrite" || t[i - 2].text == "make_shared_for_overwrite"))
+        // Leading qualifiers don't change a type argument or alias.
+        size_t start = i;
+        while (start > 0 && (is(t, start - 1, "::") || is(t, start - 1, "const") ||
+                             is(t, start - 1, "volatile") || is(t, start - 1, "typename") ||
+                             is(t, start - 1, "class") || is(t, start - 1, "struct")))
+            --start;
+        const std::string before = start > 0 ? t[start - 1].text : std::string();
+        size_t n = i + 1;
+        while (is(t, n, "const") || is(t, n, "volatile"))
+            ++n;
+        const bool valueType = !is(t, n, "*") && !is(t, n, "&");
+        // Any template or local macro may construct a value type argument,
+        // even a later argument. Keep the narrow plain-return declaration
+        // exemption used by appSettings(); explicitly named holders elsewhere
+        // are deliberately reported, including declarations with qualifiers.
+        if (valueType && (before == "<" || before == "(" || before == ",")) {
+            const size_t open = argumentOpen(t, start);
+            if (is(t, open, "<") && !templateFunctionDeclaration(t, open))
+                hit = true;
+            if (is(t, open, "(") && open > 0 && macros.count(t[open - 1].text))
+                hit = true;
+        }
+        // Aliases and template defaults can hide later construction. Pointer
+        // and reference aliases don't construct a settings object.
+        if (valueType && (before == "=" || before == "typedef"))
             hit = true;
-        if (prev == "(" && i >= 2 &&
-            (t[i - 2].text == "Q_GLOBAL_STATIC" || t[i - 2].text == "Q_GLOBAL_STATIC_WITH_ARGS"))
-            hit = true;
-        // another name for it, or a class built on it
-        if ((prev == "=" && i >= 3 && t[i - 3].text == "using") || prev == "typedef" ||
-            ((prev == "public" || prev == "protected" || prev == "private") && i >= 2 &&
-             (t[i - 2].text == ":" || t[i - 2].text == ",")))
+        // Base classes, with or without access/virtual specifiers.
+        size_t base = start;
+        while (base > 0 && (is(t, base - 1, "public") || is(t, base - 1, "protected") ||
+                            is(t, base - 1, "private") || is(t, base - 1, "virtual")))
+            --base;
+        if ((base < start && base > 0 && (is(t, base - 1, ":") || is(t, base - 1, ","))) ||
+            classBase(t, base))
             hit = true;
         // QSettings(...) or QSettings{...}: a temporary
         if (is(t, i + 1, "(") || is(t, i + 1, "{"))
             hit = true;
         // QSettings name; QSettings name = ...; QSettings name{...}; QSettings a, b;
         // QSettings name(args) — but not QSettings name() or QSettings name(Type param)
-        size_t n = i + 1;
-        while (is(t, n, "const") || is(t, n, "volatile"))
-            ++n;
         if (ident(t, n)) {
             const size_t after = n + 1;
             if (is(t, after, ";") || is(t, after, ",") || is(t, after, "=") || is(t, after, "{") || is(t, after, "["))
@@ -260,7 +386,7 @@ int fixtures(const fs::path& dir) {
     for (const fs::path& p : sources(dir)) {
         const std::string name = p.filename().string();
         const bool flag = name.rfind("flag-", 0) == 0;
-        if (!flag && name.rfind("pass-", 0) != 0)
+        if (!flag && name.rfind("ok-", 0) != 0 && name.rfind("pass-", 0) != 0)
             continue;
         ++checked;
         const auto hits = scanFile(p);
@@ -271,7 +397,7 @@ int fixtures(const fs::path& dir) {
         }
     }
     if (checked == 0) {
-        std::fprintf(stderr, "no flag-* or pass-* fixtures in %s\n", dir.string().c_str());
+        std::fprintf(stderr, "no flag-*, ok-* or pass-* fixtures in %s\n", dir.string().c_str());
         return 1;
     }
     std::printf("%d fixture(s), %d wrong\n", checked, bad);

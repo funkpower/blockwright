@@ -256,9 +256,17 @@ catch_discover_tests(blockwright-app-scale-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
 
-# Every QSettings in the sources comes from the settings factory, so the
-# scratch settings the app tests inject cover all of them. The guard reads
-# tokens, not lines, and its fixtures hold it to each way of building one.
+# QSettings construction belongs in the settings factory. This secondary
+# token guard checks direct construction, value template arguments/defaults
+# and local macro arguments in any position (including cv-qualified and
+# elaborated class types, and after earlier arguments holding -> or a
+# comparison >), aliases, Qt global-static macros and bases in any position
+# with or without access/virtual. Only * and & exempt type arguments/aliases,
+# including in a base's template arguments; explicit smart-pointer types are
+# reported. Plain template-return declarations ending directly in ); remain
+# exempt, as do includes and __has_include operands. It doesn't resolve types
+# or expand macros; the scratch settings runtime check and profile test remain
+# the binding guards.
 add_executable(bw-settings-guard settings_guard.cpp)
 add_test(NAME app_settings_factory
   COMMAND bw-settings-guard --allow ${PROJECT_SOURCE_DIR}/app/settings.cpp
