@@ -667,11 +667,12 @@ TEST_CASE("an outline stroke's line depends only on the cells it covers", "[deta
     // shuffles: every order covers the same cells. While a written cell
     // stayed for the stroke, 95 of the default seed's 715 strokes wrote
     // other cells in another order (BW_PROPERTY_SEED 1-6: 69-106 of
-    // 655-720); settling again from the stroke-start values, 55 do (47-71).
-    // The rest are PLAN §10's limits: a dab settles again only within 3
-    // cells of its new cells, keeps the line where settling again would take
-    // back a cell the stroke wrote, and adds nothing where it would add a
-    // finding. No order adds a finding.
+    // 655-720); settling again from the stroke-start values within 3 cells
+    // of the new ones, 55 do (47-71); with the window widening where the
+    // settle changes the line at its side, 40 do (38-59). The rest are PLAN
+    // §10's limits: a dab settles again only within its window, keeps the
+    // line where settling again would take back a cell the stroke wrote, and
+    // adds nothing where it would add a finding. No order adds a finding.
     const char* seed = std::getenv("BW_PROPERTY_SEED");
     Rng rng(seed ? unsigned(std::strtoul(seed, nullptr, 10)) + 2 : 20261025u);
     const int want = 600;
@@ -720,8 +721,9 @@ TEST_CASE("an outline stroke's line depends only on the cells it covers", "[deta
     REQUIRE(kept == want);
     CHECK(strokes >= 600);
     CHECK(added == 0);
-    // 7-10% of the strokes on the seeds tried, 10-15% before
+    // 5-8% of the strokes on the seeds tried, 7-10% with the window fixed
+    // at 3 and 10-15% before that
     CHECK(differ * 8 <= strokes);
     if (!seed)
-        CHECK(differ <= 60);
+        CHECK(differ <= 45);
 }

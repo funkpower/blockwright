@@ -1234,7 +1234,11 @@ TEST_CASE("an outline stroke on a piece writes the same whichever way round", "[
     // way round (sphere-steel's first, 2 cells one way and 8 the other):
     // the first dab's line stayed, and the second settled only round it. A
     // dab now settles the covered cells near it again from their
-    // stroke-start values.
+    // stroke-start values. The lrh-show and psyop-radar strokes and
+    // downfall-of-numenor's last still wrote other cells either way round
+    // while that window stayed within 3 of the new cells: the settle
+    // changed the line at the window's side, and the line beyond it kept
+    // what the other dab had settled. The window now widens there.
     struct Two {
         int size;
         Dab a, b;
@@ -1243,7 +1247,9 @@ TEST_CASE("an outline stroke on a piece writes the same whichever way round", "[
         {"sphere-steel", {{7, {47, 27}, {44, 30}}, {7, {28, 5}, {24, 8}}, {2, {41, 1}, {44, 2}}}},
         {"downfall-of-numenor",
          {{7, {57, 39}, {55, 37}}, {3, {39, 57}, {42, 56}}, {6, {48, 36}, {46, 38}}, {4, {99, 28}, {96, 26}},
-          {5, {79, 43}, {76, 40}}, {7, {98, 37}, {100, 40}}}}};
+          {5, {79, 43}, {76, 40}}, {7, {98, 37}, {100, 40}}, {2, {8, 41}, {11, 40}}}},
+        {"lrh-show", {{5, {76, 51}, {74, 51}}, {6, {77, 39}, {80, 37}}, {7, {51, 6}, {53, 4}}, {7, {68, 41}, {71, 42}}}},
+        {"psyop-radar", {{4, {62, 25}, {65, 23}}, {6, {24, 3}, {27, 2}}, {7, {25, 1}, {28, 1}}, {7, {72, 37}, {69, 34}}}}};
     for (const auto& [name, strokes] : pieces) {
         const AnsiDocument doc = parseAnsi(bwtest::readFile(bwtest::dataDir() / "brushes" / (name + ".ans")));
         const Canvas& c = doc.canvas;

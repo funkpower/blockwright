@@ -1234,8 +1234,12 @@ void outline(Layer& layer, int ox, int oy, int cw, int ch, const Ramp& ramp, boo
 }
 
 // A dab's new cells are settled with the line within kReach of them open
-// to change and kContext more of the canvas read round that.
+// to change and kContext more of the canvas read round that. Where the
+// settle changes a cell within kEdge of that window's side, with a covered
+// cell past the side within kReach of it, the window widens to kWideReach.
 constexpr int kReach = 3;
+constexpr int kWideReach = 6;
+constexpr int kEdge = 2;
 constexpr int kContext = 8;
 
 // Whether covering (x, y) can change the line: a shape cell on the edge,
@@ -1386,21 +1390,27 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
     // The dab settles the line again from the stroke-start values over the
     // covered cells within kReach of its new cells, against the line beyond
     // them and kContext more of the canvas, so the line there is the covered
-    // cells' and not the order of the dabs. A window the stroke has drawn in
-    // settles as an image's first settle does, carefully where the plain
-    // settle writes nothing. Where that would take back a cell the stroke has
+    // cells' and not the order of the dabs; where the settle changes the
+    // line near the window's side, the window widens. A window the stroke has
+    // drawn in settles as an image's first settle does, carefully where the
+    // plain settle writes nothing. Where that would take back a cell the stroke has
     // written or leave a lone cell of line, the dab settles only the covered
     // cells the stroke has left as they were, and the line so far stays: a
     // dab never takes back the line an earlier one drew.
     {
-        int x0 = w, y0 = h, x1 = -1, y1 = -1;
+        int fx0 = w, fy0 = h, fx1 = -1, fy1 = -1;
         for (const auto& [x, y] : fresh)
-            x0 = std::min(x0, x), y0 = std::min(y0, y), x1 = std::max(x1, x), y1 = std::max(y1, y);
-        x0 = std::max(0, x0 - kReach), y0 = std::max(0, y0 - kReach);
-        x1 = std::min(w - 1, x1 + kReach), y1 = std::min(h - 1, y1 + kReach);
-        const int cx0 = std::max(0, x0 - kContext), cy0 = std::max(0, y0 - kContext);
-        const int cx1 = std::min(w - 1, x1 + kContext), cy1 = std::min(h - 1, y1 + kContext);
-        const int cw = cx1 - cx0 + 1, ch = cy1 - cy0 + 1;
+            fx0 = std::min(fx0, x), fy0 = std::min(fy0, y), fx1 = std::max(fx1, x), fy1 = std::max(fy1, y);
+        // the window: the cells within `r` of the new ones, and kContext
+        // more of the canvas
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0, cx0 = 0, cy0 = 0, cw = 0, ch = 0;
+        const auto window = [&](int r) {
+            x0 = std::max(0, fx0 - r), y0 = std::max(0, fy0 - r);
+            x1 = std::min(w - 1, fx1 + r), y1 = std::min(h - 1, fy1 + r);
+            cx0 = std::max(0, x0 - kContext), cy0 = std::max(0, y0 - kContext);
+            cw = std::min(w - 1, x1 + kContext) - cx0 + 1, ch = std::min(h - 1, y1 + kContext) - cy0 + 1;
+        };
+        window(kReach);
         const bool wasSettled = layer.settled;
         // settles the window's covered cells, the ones the stroke has written
         // too (from their stroke-start values) when `again`; the cells it
@@ -1434,7 +1444,58 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
             }
             return reopen;
         };
-        const auto reopened = settleWindow(true);
+        auto reopened = settleWindow(true);
+        // back to the line before the dab, with its stronger cells reset
+        const auto back = [&] {
+            const std::set<std::pair<int, int>> wasReset(reset.begin(), reset.end());
+            std::vector<std::pair<int, int>> undo;
+            for (const auto& [p, old] : was) {
+                const Cell to = wasReset.count(p) ? origin.at(p.first, p.second) : old;
+                if (!(layer.result.at(p.first, p.second) == to)) {
+                    layer.work.at(p.first, p.second) = to;
+                    undo.push_back(p);
+                }
+            }
+            layer.index.apply(layer.work, undo);
+            for (const auto& [x, y] : undo)
+                layer.result.at(x, y) = layer.work.at(x, y);
+            layer.settled = wasSettled;
+        };
+        // The cells the stroke has written in the window.
+        const auto lined = [&] {
+            int n = 0;
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x)
+                    n += !(layer.result.at(x, y) == origin.at(x, y));
+            cellsRead += 2LL * (x1 - x0 + 1) * (y1 - y0 + 1);
+            return n;
+        };
+        // Where the settle changed a cell within kEdge of the window's side
+        // and the stroke covers cells past that side near it, the line there
+        // may settle otherwise too: the window widens, where the wider one
+        // writes no less of the line than the narrower one.
+        bool beyond = false;
+        for (const auto& [p, old] : was) {
+            const auto [x, y] = p;
+            if (beyond || layer.result.at(x, y) == old ||
+                !(x - x0 < kEdge || y - y0 < kEdge || x1 - x < kEdge || y1 - y < kEdge))
+                continue;
+            for (int ny = std::max(0, y - kReach); !beyond && ny <= std::min(h - 1, y + kReach); ++ny)
+                for (int nx = std::max(0, x - kReach); !beyond && nx <= std::min(w - 1, x + kReach); ++nx)
+                    beyond = (nx < x0 || nx > x1 || ny < y0 || ny > y1) && layer.cover[at(nx, ny)] >= 0;
+            cellsRead += (2 * kReach + 1) * (2 * kReach + 1);
+        }
+        if (beyond) {
+            window(kWideReach);
+            const int narrow = lined();
+            back();
+            reopened = settleWindow(true);
+            if (lined() < narrow) {
+                back();
+                window(kReach);
+                reopened = settleWindow(true);
+            }
+        }
         const auto written = [&](int x, int y) {
             return x >= 0 && y >= 0 && x < w && y < h && !(layer.result.at(x, y) == origin.at(x, y));
         };
@@ -1450,20 +1511,7 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
                 takesBack = written(x, y) && !beside;
             }
         if (takesBack) {
-            // back to the line before the dab, with its stronger cells reset
-            const std::set<std::pair<int, int>> wasReset(reset.begin(), reset.end());
-            std::vector<std::pair<int, int>> undo;
-            for (const auto& [p, old] : was) {
-                const Cell to = wasReset.count(p) ? origin.at(p.first, p.second) : old;
-                if (!(layer.result.at(p.first, p.second) == to)) {
-                    layer.work.at(p.first, p.second) = to;
-                    undo.push_back(p);
-                }
-            }
-            layer.index.apply(layer.work, undo);
-            for (const auto& [x, y] : undo)
-                layer.result.at(x, y) = layer.work.at(x, y);
-            layer.settled = wasSettled;
+            back();
             settleWindow(false);
         }
     }
