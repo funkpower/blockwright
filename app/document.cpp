@@ -1,5 +1,6 @@
 #include "document.h"
 
+#include "blockwright/style_draw.h"
 #include "blockwright/text.h"
 
 #include <QFile>
@@ -417,9 +418,11 @@ void Document::applyFormat(const DocumentFormat& format) {
     doc_.sauce = format.sauce;
     const bool ice = doc_.ice != format.ice;
     doc_.ice = format.ice;
-    // iCE changes how pixel layers fit over what is under them.
-    const bool pixels = std::any_of(stack_.layers().begin(), stack_.layers().end(),
-                                    [](const Layer& l) { return l.props.kind == LayerKind::Pixels; });
+    // iCE changes how pixel layers fit over what is under them, and the
+    // rungs a style the compositor draws writes.
+    const bool pixels = std::any_of(stack_.layers().begin(), stack_.layers().end(), [](const Layer& l) {
+        return l.props.kind == LayerKind::Pixels || styledAtComposite(l.props);
+    });
     const QRegion cells = ice && pixels ? recomposite(stack_.canvasRect()) : QRegion();
     emit formatChanged();
     if (!cells.isEmpty())
@@ -513,8 +516,9 @@ bool Document::flatHoldsAll() const {
     if (stack_.size() != 1 || !(extras_.ircBudget == none.ircBudget && extras_.notes == none.notes &&
                                 extras_.snapshots == none.snapshots && extras_.files == none.files))
         return false;
+    // an .ans holds a styled layer's look, not its cells and style
     const Layer& l = stack_[0];
-    return l.props.kind == LayerKind::Cells && l.props.visible && l.props.mode == LayerMode::Normal &&
+    return l.props.kind == LayerKind::Cells && !l.props.style && l.props.visible && l.props.mode == LayerMode::Normal &&
            l.props.x == 0 && l.props.y == 0 && l.width() == stack_.width() && l.height() == stack_.height();
 }
 
@@ -590,12 +594,22 @@ CellEdit Document::previewEdit(const CellEdit& edit) {
     // Applied for the moment, to read the composite, and taken off again.
     e->apply(layer.cells);
     CellEdit out;
-    out.changes.reserve(e->changes.size());
     const CompositeOptions opts = compositeOptions();
-    for (const CellChange& c : e->changes) {
-        const int x = c.x + layer.props.x, y = c.y + layer.props.y;
-        if (doc_.canvas.contains(x, y))
-            out.changes.push_back({x, y, doc_.canvas.at(x, y), compositeCell(stack_, x, y, opts)});
+    if (styledAtComposite(layer.props)) {
+        // the style redrawn over the whole layer: each cell it changes
+        const CellRect rect = intersect(dirtyRect(layer, *e), stack_.canvasRect());
+        const Canvas fresh = compositeRect(stack_, rect, opts);
+        for (int y = rect.y; y < rect.y + rect.height; ++y)
+            for (int x = rect.x; x < rect.x + rect.width; ++x)
+                if (const Cell& now = fresh.at(x - rect.x, y - rect.y); !identical(now, doc_.canvas.at(x, y)))
+                    out.changes.push_back({x, y, doc_.canvas.at(x, y), now});
+    } else {
+        out.changes.reserve(e->changes.size());
+        for (const CellChange& c : e->changes) {
+            const int x = c.x + layer.props.x, y = c.y + layer.props.y;
+            if (doc_.canvas.contains(x, y))
+                out.changes.push_back({x, y, doc_.canvas.at(x, y), compositeCell(stack_, x, y, opts)});
+        }
     }
     e->revert(layer.cells);
     return out;
@@ -700,6 +714,9 @@ bool Document::setLayerProperties(LayerId id, LayerProperties props, const QStri
     // a text source only on a text layer, and one that can be drawn
     if (props.text && (props.kind != LayerKind::Text || textSourceProblem(*props.text, fontSources())))
         return false;
+    // a style the layer can hold and can draw, the box it grows included
+    if (layerStyleProblem(props, fontSources()))
+        return false;
     // a TheDraw font from the folder becomes the project's copy
     if (props.text && props.text->face.kind == FaceRef::Kind::Tdf)
         extras_.fonts.add(fontSources().file(props.text->face.file));
@@ -710,7 +727,7 @@ bool Document::setLayerProperties(LayerId id, LayerProperties props, const QStri
     same.alphaLocked = before.alphaLocked;
     if (same != before)
         emit layersAboutToChange();
-    undo_.push(new LayerPropsCommand(this, propsEdit(*l, std::move(props)), text));
+    undo_.push(new LayerPropsCommand(this, propsEdit(*l, std::move(props), 0, doc_.ice), text));
     return true;
 }
 
@@ -875,12 +892,12 @@ void Document::refreshLayerCanvas() {
 
 QRegion Document::recomposite(CellRect rect) {
     rect = intersect(rect, stack_.canvasRect());
-    const CompositeOptions opts = compositeOptions();
+    const Canvas fresh = compositeRect(stack_, rect, compositeOptions());
     CellEdit diff;
     for (int y = rect.y; y < rect.y + rect.height; ++y)
         for (int x = rect.x; x < rect.x + rect.width; ++x) {
             Cell& cell = doc_.canvas.at(x, y);
-            const Cell now = compositeCell(stack_, x, y, opts);
+            const Cell& now = fresh.at(x - rect.x, y - rect.y);
             if (!identical(now, cell)) {
                 diff.changes.push_back({x, y, cell, now});
                 cell = now;
@@ -897,6 +914,17 @@ void Document::applyLayerEdit(LayerId id, const CellEdit& layerEdit, bool revert
         layerEdit.revert(layer->cells);
     else
         layerEdit.apply(layer->cells);
+    if (styledAtComposite(layer->props)) {
+        // any cell can restyle the whole layer
+        if (id == active_)
+            for (const CellChange& c : layerEdit.changes)
+                if (doc_.canvas.contains(c.x + layer->props.x, c.y + layer->props.y))
+                    layerCanvas_.at(c.x + layer->props.x, c.y + layer->props.y) = layer->cells.at(c.x, c.y);
+        const QRegion cells = recomposite(dirtyRect(*layer, layerEdit));
+        if (!cells.isEmpty())
+            emit cellsChanged(cells);
+        return;
+    }
     const CompositeOptions opts = compositeOptions();
     CellEdit diff;
     for (const CellChange& c : layerEdit.changes) {
@@ -963,8 +991,8 @@ void Document::putProperties(const LayerPropsEdit& edit, bool revert) {
     const bool redrawn = applyEdit(*layer, edit, revert, fontSources());
     const LayerProperties& now = layer->props;
     // Only these change the composite (locks and the name are the tools').
-    const bool shows = was.visible != now.visible || was.kind != now.kind || was.mode != now.mode || redrawn ||
-                       before != layer->bounds();
+    const bool shows = was.visible != now.visible || was.kind != now.kind || was.mode != now.mode ||
+                       was.style != now.style || redrawn || before != layer->bounds();
     const QRegion cells = shows ? recomposite(unite(before, layer->bounds(), stack_.canvasRect())) : QRegion();
     if (id == active_ && (before != layer->bounds() || redrawn))
         refreshLayerCanvas();

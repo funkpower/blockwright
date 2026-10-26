@@ -2,6 +2,7 @@
 
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
+#include "blockwright/style_draw.h"
 
 #include <algorithm>
 #include <array>
@@ -80,6 +81,16 @@ Box measure(const TextSource& source, const Face& face) {
             e.lines * (face.height() / 2) + std::max<std::int64_t>(0, e.lines - 1) * source.lineSpacing};
 }
 
+// The box grown by a style's margins.
+Box grown(Box box, const TextStyle* style) {
+    if (style) {
+        const StyleMargins m = styleMargins(*style);
+        box.width += m.left + m.right;
+        box.height += m.top + m.bottom;
+    }
+    return box;
+}
+
 // Why a box is larger than a layer the project file holds (project.h's
 // limits), or nothing.
 std::optional<std::string> boxProblem(const Box& box) {
@@ -107,50 +118,102 @@ const Face* findFace(const FaceRef& ref, const FontSources& fonts) {
     return nullptr;
 }
 
-TextRender renderText(const TextSource& source, const Face& face) {
-    // measured first, so nothing the size of a box too large is allocated
+namespace {
+
+// The source laid out in its box, as a style reads it (style_draw.h): the
+// letter mask, the ink pixels in the source's colour, the face's source
+// cells and the lines. The box is checked first (with `style`'s margins),
+// so nothing the size of a box too large is allocated.
+struct Laid {
+    StyleInput in;
+    std::vector<std::size_t> missing;
+};
+
+Laid laidOut(const TextSource& source, const Face& face, const TextStyle* style) {
     const Box box = measure(source, face);
-    if (const auto problem = boxProblem(box))
+    if (const auto problem = boxProblem(grown(box, style)))
         throw TextError(*problem);
     const SpacedFace spaced(face, source.letterSpacing);
     const TextLayout layout = layoutText(spaced, casedText(source), {source.wrapWidth});
     const int lineRows = face.height() / 2;
     const int lines = static_cast<int>(layout.lines.size());
     const int width = static_cast<int>(box.width), height = static_cast<int>(box.height);
-    TextRender out;
+    Laid out;
     out.missing = layout.missing;
-    out.cells = Canvas(width, height);
-    const Cell clear = transparentCell();
-    for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x)
-            out.cells.at(x, y) = clear;
-
+    out.in.mask = InkMask(width, 2 * height);
+    out.in.pixels = makeLayer(LayerKind::Pixels, width, height).cells;
+    out.in.source = out.in.pixels;
+    out.in.box = CellRect{0, 0, width, height};
+    const std::uint8_t colour = source.colour;
     for (int l = 0; l < lines; ++l) {
         const int lineWidth = layout.lines[l].width;
         const int shift = source.align == TextAlign::Left    ? 0
                           : source.align == TextAlign::Right ? width - lineWidth
                                                              : (width - lineWidth) / 2;
         const int top = l * (lineRows + source.lineSpacing);
+        out.in.bands.emplace_back(2 * top, 2 * (top + lineRows));
         for (int r = 0; r < lineRows; ++r)
             for (int x = 0; x < lineWidth; ++x) {
                 const int py = l * face.height() + 2 * r;
-                Cell& c = out.cells.at(x + shift, top + r);
+                const int cx = x + shift, cy = top + r;
+                const bool upper = layout.mask.at(x, py), lower = layout.mask.at(x, py + 1);
+                if (upper)
+                    out.in.mask.set(cx, 2 * cy);
+                if (lower)
+                    out.in.mask.set(cx, 2 * cy + 1);
                 if (layout.cells) {
                     const Cell& sc = layout.cells->at(x, py / 2);
                     if (!sc.transparent) {
-                        c = sc;
+                        out.in.source.at(cx, cy) = sc;
                         continue;
                     }
                 }
-                const bool upper = layout.mask.at(x, py), lower = layout.mask.at(x, py + 1);
-                if (!upper && !lower)
-                    continue;
-                c = Cell{};
-                c.ch = upper && lower ? kFullBlock : upper ? kUpperHalf : kLowerHalf;
-                c.fg = Color::indexed(source.colour);
-                c.bg = Color::indexed(Black);
+                Cell& pc = out.in.pixels.at(cx, cy);
+                if (upper)
+                    pc = setLayerPixel(pc, false, colour);
+                if (lower)
+                    pc = setLayerPixel(pc, true, colour);
             }
     }
+    return out;
+}
+
+} // namespace
+
+TextRender renderText(const TextSource& source, const Face& face) {
+    Laid laid = laidOut(source, face, nullptr);
+    const StyleInput& in = laid.in;
+    const int width = in.mask.width, height = in.mask.height / 2;
+    TextRender out;
+    out.missing = std::move(laid.missing);
+    out.cells = Canvas(width, height);
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            Cell& c = out.cells.at(x, y);
+            if (!in.source.at(x, y).transparent) {
+                c = in.source.at(x, y);
+                continue;
+            }
+            const LayerPixels p = layerPixels(in.pixels.at(x, y));
+            if (!p.top && !p.bottom) {
+                c = transparentCell();
+                continue;
+            }
+            c = Cell{};
+            c.ch = p.top && p.bottom ? kFullBlock : p.top ? kUpperHalf : kLowerHalf;
+            c.fg = Color::indexed(source.colour);
+            c.bg = Color::indexed(Black);
+        }
+    return out;
+}
+
+TextRender renderStyledText(const TextSource& source, const TextStyle& style, const Face& face, bool ice) {
+    if (const auto problem = textStyleProblem(style))
+        throw TextError(*problem);
+    Laid laid = laidOut(source, face, &style);
+    TextRender out;
+    out.missing = std::move(laid.missing);
+    out.cells = drawStyle(laid.in, style, ice, styleMargins(style));
     return out;
 }
 
@@ -184,19 +247,41 @@ std::optional<std::string> textSourceProblem(const TextSource& source, const Fon
     return boxProblem(measure(source, *face));
 }
 
+std::optional<std::string> styledTextProblem(const TextSource& source, const TextStyle& style,
+                                             const FontSources& fonts) {
+    if (auto problem = textSourceProblem(source, fonts))
+        return problem;
+    if (auto problem = textStyleProblem(style))
+        return problem;
+    return boxProblem(grown(measure(source, *findFace(source.face, fonts)), &style));
+}
+
+std::optional<std::string> layerStyleProblem(const LayerProperties& props, const FontSources& fonts) {
+    if (!props.style)
+        return std::nullopt;
+    if (props.kind == LayerKind::Text ? !props.text
+                                      : props.kind != LayerKind::Cells && props.kind != LayerKind::Pixels)
+        return "a " + std::string(layerKindName(props.kind)) + " layer" +
+               (props.kind == LayerKind::Text ? " without a text source" : "") + " has no style";
+    if (props.text)
+        return styledTextProblem(*props.text, *props.style, fonts);
+    return textStyleProblem(*props.style);
+}
+
 namespace {
 
-Canvas drawSource(const TextSource& source, const FontSources& fonts) {
-    if (const auto problem = textSourceProblem(source, fonts))
+Canvas drawSource(const TextSource& source, const TextStyle* style, bool ice, const FontSources& fonts) {
+    if (const auto problem = style ? styledTextProblem(source, *style, fonts) : textSourceProblem(source, fonts))
         throw TextError(*problem);
-    return renderText(source, *findFace(source.face, fonts)).cells;
+    const Face& face = *findFace(source.face, fonts);
+    return style ? renderStyledText(source, *style, face, ice).cells : renderText(source, face).cells;
 }
 
 } // namespace
 
 Layer makeTextLayer(TextSource source, std::string name, int x, int y, const FontSources& fonts) {
     Layer l = makeLayer(LayerKind::Text, 0, 0, std::move(name), x, y);
-    l.cells = drawSource(source, fonts);
+    l.cells = drawSource(source, nullptr, true, fonts);
     l.props.text = std::move(source);
     return l;
 }
@@ -205,54 +290,87 @@ namespace {
 
 // Gives the layer `props` (its id kept), drawing its cells from their source
 // when `redraw`; refused before the layer is touched.
-void put(Layer& layer, LayerProperties props, bool redraw, const FontSources& fonts) {
+void put(Layer& layer, LayerProperties props, bool redraw, bool ice, const FontSources& fonts) {
     props.id = layer.props.id;
     if (props.text && props.kind != LayerKind::Text)
         throw TextError("a " + std::string(layerKindName(props.kind)) + " layer has no text source");
+    if (const auto problem = layerStyleProblem(props, fonts))
+        throw TextError(*problem);
     if (redraw && props.text)
-        layer.cells = drawSource(*props.text, fonts);
+        layer.cells = drawSource(*props.text, props.style ? &*props.style : nullptr, ice, fonts);
     layer.props = std::move(props);
+}
+
+// Whether a step from `before` to `after` draws the cells again: a live
+// text layer's source or style changes.
+bool redraws(const LayerProperties& before, const LayerProperties& after) {
+    return after.text && (after.text != before.text || after.style != before.style);
 }
 
 } // namespace
 
-bool applyLayerProperties(Layer& layer, LayerProperties props, const FontSources& fonts) {
-    const bool redraw = props.text && props.text != layer.props.text;
-    put(layer, std::move(props), redraw, fonts);
+bool applyLayerProperties(Layer& layer, LayerProperties props, const FontSources& fonts, bool ice) {
+    const bool redraw = redraws(layer.props, props);
+    put(layer, std::move(props), redraw, ice, fonts);
     return redraw;
 }
 
-LayerPropsEdit propsEdit(const Layer& layer, LayerProperties after, std::uint64_t typingRun) {
+LayerPropsEdit propsEdit(const Layer& layer, LayerProperties after, std::uint64_t typingRun, bool ice) {
     after.id = layer.props.id;
-    LayerPropsEdit e{layer.props.id, layer.props, std::move(after), typingRun, std::nullopt};
-    if (e.before.text != e.after.text)
+    LayerPropsEdit e{layer.props.id, layer.props, std::move(after), typingRun, std::nullopt, std::nullopt, ice};
+    if (e.before.text != e.after.text || redraws(e.before, e.after))
         e.cellsBefore = layer.cells;
     return e;
 }
 
-LayerPropsEdit textEdit(const Layer& layer, TextSource source, std::uint64_t typingRun) {
+LayerPropsEdit textEdit(const Layer& layer, TextSource source, std::uint64_t typingRun, bool ice) {
     LayerProperties after = layer.props;
     after.text = std::move(source);
-    return propsEdit(layer, std::move(after), typingRun);
+    return propsEdit(layer, std::move(after), typingRun, ice);
 }
 
-LayerPropsEdit bakeEdit(const Layer& layer) {
-    return propsEdit(layer, bake(Layer{layer.props, Canvas{0, 0}}).props);
+LayerPropsEdit styleEdit(const Layer& layer, std::optional<TextStyle> style, bool ice) {
+    LayerProperties after = layer.props;
+    after.style = std::move(style);
+    return propsEdit(layer, std::move(after), 0, ice);
+}
+
+LayerPropsEdit bakeEdit(const Layer& layer, bool ice) {
+    if (!styledAtComposite(layer.props))
+        return propsEdit(layer, bake(Layer{layer.props, Canvas{0, 0}}).props, 0, ice);
+    // the cells change to the styled ones, which the compositor drew from
+    // the cells and the style: kept both ways
+    LayerProperties after = layer.props;
+    if (after.kind == LayerKind::Pixels)
+        after.mode = LayerMode::Normal;  // what a styled pixel layer composites in
+    after.kind = LayerKind::Cells;
+    after.style.reset();
+    LayerPropsEdit e = propsEdit(layer, std::move(after), 0, ice);
+    e.cellsBefore = layer.cells;
+    e.cellsAfter = styledCells(layer, ice);
+    return e;
 }
 
 bool applyEdit(Layer& layer, const LayerPropsEdit& edit, bool revert, const FontSources& fonts) {
-    // a step that changes the source: redone, it draws its after (a run of
-    // typing may end on the source it began with); undone, it puts back the
-    // cells it replaced as they were
+    // a step that gives the cells after it (Bake of a style the compositor
+    // draws) puts them, or those before it, in place as they were
+    if (edit.cellsAfter && edit.cellsBefore) {
+        put(layer, revert ? edit.before : edit.after, false, edit.ice, fonts);
+        layer.cells = revert ? *edit.cellsBefore : *edit.cellsAfter;
+        return true;
+    }
+    // a step that changes the source or a live text layer's style: redone,
+    // it draws its after (a run of typing may end on the source it began
+    // with); undone, it puts back the cells it replaced as they were
     if (!edit.cellsBefore) {
-        put(layer, revert ? edit.before : edit.after, false, fonts);
+        put(layer, revert ? edit.before : edit.after, false, edit.ice, fonts);
         return false;
     }
     if (!revert) {
-        put(layer, edit.after, true, fonts);
+        put(layer, edit.after, true, edit.ice, fonts);
         return true;
     }
-    put(layer, edit.before, false, fonts);
+    put(layer, edit.before, false, edit.ice, fonts);
     layer.cells = *edit.cellsBefore;
     return true;
 }
@@ -268,7 +386,7 @@ CellRect applyEdit(LayerStack& stack, const LayerPropsEdit& edit, bool revert, c
 
 bool mergeEdits(LayerPropsEdit& into, const LayerPropsEdit& next) {
     if (into.typingRun == 0 || next.typingRun != into.typingRun || next.id != into.id || next.before != into.after ||
-        !into.after.text || !next.after.text)
+        !into.after.text || !next.after.text || into.cellsAfter || next.cellsAfter || into.ice != next.ice)
         return false;
     // into's cells before, if it kept any, are still the merged step's; if
     // it kept none it changed no cell, so next's are into's

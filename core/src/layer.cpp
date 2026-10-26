@@ -2,6 +2,7 @@
 
 #include "blockwright/halfblock.h"
 #include "blockwright/ramp.h"
+#include "blockwright/style_draw.h"
 
 #include <algorithm>
 #include <array>
@@ -102,10 +103,21 @@ Layer makeLayer(LayerKind kind, int width, int height, std::string name, int x, 
     return l;
 }
 
-Layer bake(Layer layer) {
-    if (layer.props.kind == LayerKind::Text || layer.props.kind == LayerKind::Generator) {
+Layer bake(Layer layer, bool ice) {
+    if (styledAtComposite(layer.props)) {
+        layer.cells = styledCells(layer, ice);
+        // a styled pixel layer composites in the normal mode whatever its own
+        if (layer.props.kind == LayerKind::Pixels)
+            layer.props.mode = LayerMode::Normal;
+        layer.props.kind = LayerKind::Cells;
+        layer.props.style.reset();
+    } else if (layer.props.kind == LayerKind::Text || layer.props.kind == LayerKind::Generator) {
         layer.props.kind = LayerKind::Cells;
         layer.props.text.reset();
+        layer.props.style.reset();
+    } else {
+        // a style with nothing switched on draws nothing
+        layer.props.style.reset();
     }
     return layer;
 }
@@ -285,6 +297,8 @@ CellRect dirtyRect(const Layer& layer, const CellEdit& layerEdit) {
     CellRect r;
     for (const CellChange& c : toCanvasEdit(layer, layerEdit).changes)
         r = unite(r, CellRect{c.x, c.y, 1, 1});
+    if (!r.empty() && styledAtComposite(layer.props))
+        r = unite(r, layer.bounds());
     return r;
 }
 

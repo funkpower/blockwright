@@ -29,6 +29,11 @@
 //   cell's background, as halfblock.h reads it. Under-colours are palette
 //   colours, so a 24-bit cell a pixel half covers is quantised, as the
 //   half-block tools do.
+// A cells or pixels layer with a text style (one with an effect switched
+// on, styledAtComposite) composites its styled cells instead (styledCells,
+// style_draw.h, with the options' iCE): a cells layer's as a cells layer by
+// its mode; a pixel layer's in the normal mode, as it ignores its own, and
+// never over a text cell, as its pixels never are.
 //
 // iCE (CompositeOptions::ice, iceCell in ansi.h): cells under pixels are read
 // by the colours they show, so with iCE off a bright background is its dark
@@ -77,6 +82,11 @@ Canvas composite(const LayerStack& stack, const CompositeOptions& options = {});
 // canvas (unite(before, after, stack.canvasRect())) so a far offset loses
 // no cells.
 void recomposite(const LayerStack& stack, Canvas& out, CellRect rect, const CompositeOptions& options = {});
+// The cells of `rect` (clipped to the canvas) composited, a canvas the
+// clipped rect's size: what composite() gives there. Each styled layer is
+// styled once, so this, not a cell at a time, is the way to recomposite
+// many cells.
+Canvas compositeRect(const LayerStack& stack, CellRect rect, const CompositeOptions& options = {});
 
 // One composited cell; the ground off the canvas.
 Cell compositeCell(const LayerStack& stack, int x, int y, const CompositeOptions& options = {});

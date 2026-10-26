@@ -258,7 +258,7 @@ TEST_CASE("a TheDraw text layer's font is copied into the project and reads back
     const Project p = blockProject(&file);
     const Layer& l = p.layers[0];
     const Entries e = project::encode(p);
-    CHECK(object(e.at("manifest.json")).value("version").toString() == "1.2");
+    CHECK(object(e.at("manifest.json")).value("version").toString() == "1.3");
     CHECK(e.at(fontPath(*file)) == file->bytes);
     const QJsonObject layer = object(e.at(layerPath(l)));
     CHECK_FALSE(layer.contains("source"));

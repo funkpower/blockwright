@@ -2,6 +2,7 @@
 
 #include "blockwright/composite.h"
 #include "blockwright/cp437.h"
+#include "blockwright/style_draw.h"
 #include "blockwright/text.h"
 
 #include <QByteArray>
@@ -28,7 +29,9 @@
 #include <random>
 #include <set>
 #include <system_error>
+#include <type_traits>
 #include <utility>
+#include <variant>
 
 #if defined(__unix__) || defined(__APPLE__)
 #define BW_PROJECT_POSIX 1
@@ -541,6 +544,100 @@ TextSource textSourceFromJson(const QJsonObject& o, const std::string& what, con
     return t;
 }
 
+// A layer's text style (text_style.h): its effects in the stack's order,
+// each its kind, its switch and its settings.
+QJsonObject textStyleJson(const TextStyle& style) {
+    QJsonArray effects;
+    for (const Effect& e : style.effects) {
+        QJsonObject o{{"kind", qstr(effectKindName(e.kind()))}, {"enabled", e.enabled}};
+        std::visit(
+            [&](const auto& s) {
+                using T = std::decay_t<decltype(s)>;
+                if constexpr (std::is_same_v<T, PlateEffect>) {
+                    o["colour"] = int(s.colour);
+                    o["padding"] = s.padding;
+                } else if constexpr (std::is_same_v<T, GlowEffect>) {
+                    o["ramp"] = qstr(s.ramp);
+                    o["width"] = s.width;
+                } else if constexpr (std::is_same_v<T, ShadowEffect>) {
+                    o["form"] = qstr(shadowFormName(s.form));
+                    o["direction"] = qstr(compassPointName(s.direction));
+                    o["distance"] = s.distance;
+                    o["colour"] = int(s.colour);
+                } else if constexpr (std::is_same_v<T, OutlineEffect>) {
+                    o["form"] = qstr(outlineFormName(s.form));
+                    o["colour"] = int(s.colour);
+                } else if constexpr (std::is_same_v<T, FillEffect>) {
+                    o["mode"] = qstr(fillModeName(s.mode));
+                    o["colour"] = int(s.colour);
+                    o["ramp"] = qstr(s.ramp);
+                } else {  // ShadeEffect, BevelEffect
+                    o["ramp"] = qstr(s.ramp);
+                    o["light"] = qstr(compassPointName(s.light));
+                }
+            },
+            e.settings);
+        effects.append(o);
+    }
+    return QJsonObject{{"effects", effects}};
+}
+
+// A name `from` knows, or a failure naming the key.
+template <typename F>
+auto named(const Reader& r, const char* key, F from) {
+    const std::string name = r.string(key);
+    const auto v = from(name);
+    if (!v)
+        fail(r.what() + ": unknown " + key + " \"" + name + "\"");
+    return *v;
+}
+
+TextStyle textStyleFromJson(const QJsonObject& o, const std::string& what) {
+    const Reader r(o, what + " style");
+    const QJsonArray effects = r.array("effects");
+    if (std::size_t(effects.size()) > TextStyle::kMaxEffects)
+        fail(r.what() + " has over " + std::to_string(TextStyle::kMaxEffects) + " effects");
+    TextStyle style;
+    for (qsizetype i = 0; i < effects.size(); ++i) {
+        const std::string ewhat = r.what() + " effect " + std::to_string(i + 1);
+        if (!effects[i].isObject())
+            fail(ewhat + " is not an object");
+        const Reader e(effects[i].toObject(), ewhat);
+        Effect effect;
+        effect.enabled = e.boolean("enabled");
+        const auto colour = [&] { return std::uint8_t(e.integer("colour", 0, 15)); };
+        switch (named(e, "kind", effectKindFromName)) {
+        case EffectKind::Plate:
+            effect.settings = PlateEffect{colour(), int(e.integer("padding", 0, TextStyle::kMaxPadding))};
+            break;
+        case EffectKind::Glow:
+            effect.settings = GlowEffect{e.string("ramp"), int(e.integer("width", 1, TextStyle::kMaxGlow))};
+            break;
+        case EffectKind::Shadow:
+            effect.settings = ShadowEffect{named(e, "form", shadowFormFromName),
+                                           named(e, "direction", compassPointFromName),
+                                           int(e.integer("distance", 1, TextStyle::kMaxDistance)), colour()};
+            break;
+        case EffectKind::Outline:
+            effect.settings = OutlineEffect{named(e, "form", outlineFormFromName), colour()};
+            break;
+        case EffectKind::Fill:
+            effect.settings = FillEffect{named(e, "mode", fillModeFromName), colour(), e.string("ramp")};
+            break;
+        case EffectKind::Shade:
+            effect.settings = ShadeEffect{e.string("ramp"), named(e, "light", compassPointFromName)};
+            break;
+        case EffectKind::Bevel:
+            effect.settings = BevelEffect{e.string("ramp"), named(e, "light", compassPointFromName)};
+            break;
+        }
+        style.effects.push_back(std::move(effect));
+    }
+    if (const auto problem = textStyleProblem(style))
+        fail(r.what() + ": " + *problem);
+    return style;
+}
+
 QJsonObject layerJson(const Layer& l) {
     const LayerProperties& p = l.props;
     QJsonObject o{
@@ -558,10 +655,13 @@ QJsonObject layerJson(const Layer& l) {
     };
     if (p.text)
         o[QLatin1String(sourceKey(*p.text))] = textSourceJson(*p.text);
+    if (p.style)
+        o["style"] = textStyleJson(*p.style);
     return o;
 }
 
-Layer layerFromEntries(LayerId id, const std::string& json, const std::string& cells, const FontStore& fonts) {
+Layer layerFromEntries(LayerId id, const std::string& json, const std::string& cells, int major,
+                       const FontStore& fonts) {
     const std::string what = layerPath(id, false);
     const Reader r(parseObject(json, what), what);
     Layer l;
@@ -592,6 +692,18 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
                 fail(what + ": a " + std::string(layerKindName(p.kind)) + " layer has a text source");
             p.text = textSourceFromJson(r.object(key), what, key, fonts);
         }
+    // a style: a live text layer's is drawn into its cells; a cells or
+    // pixels layer's is drawn at composite time, which a 1.x reader would
+    // drop, so only a 2.x project has one
+    if (r.has("style")) {
+        p.style = textStyleFromJson(r.object("style"), what);
+        if (const auto problem = layerStyleProblem(p, {&fonts, nullptr}))
+            fail(what + ": " + *problem);
+        // any style there, even one with nothing switched on
+        if (!p.text && major < kStyledFormatMajor)
+            fail(what + ": a styled " + std::string(layerKindName(p.kind)) + " layer in a " +
+                 std::to_string(major) + ".x project");
+    }
     const auto w = r.integer("width", 0, kMaxSide);
     const auto h = r.integer("height", 0, kMaxSide);
     try {
@@ -1440,6 +1552,7 @@ Entries encode(const Project& project) {
     }
 
     QJsonArray order;
+    bool styled = false;  // a layer whose style a 1.x reader would drop
     for (const Layer& l : stack.layers()) {
         order.append(qint64(l.props.id));
         if (l.props.text) {
@@ -1457,6 +1570,9 @@ Entries encode(const Project& project) {
                     fail("the project's text layers use over " + std::to_string(kMaxFontFiles) + " font files");
             }
         }
+        if (const auto problem = layerStyleProblem(l.props, {&project.fonts, nullptr}))
+            fail(layerPath(l.props.id, false) + ": " + *problem);
+        styled = styled || (l.props.style && !l.props.text);
         const std::string json = toJson(layerJson(l));
         checkJsonSize(layerPath(l.props.id, false), json.size());
         out[layerPath(l.props.id, false)] = json;
@@ -1464,7 +1580,8 @@ Entries encode(const Project& project) {
     }
     const QJsonObject manifest{
         {"format", "blockwright"},
-        {"version", qstr(std::to_string(kFormatMajor) + "." + std::to_string(kFormatMinor))},
+        {"version", qstr(styled ? std::to_string(kStyledFormatMajor) + "." + std::to_string(kStyledFormatMinor)
+                                  : std::to_string(kFormatMajor) + "." + std::to_string(kFormatMinor))},
         {"width", stack.width()},
         {"height", stack.height()},
         {"palette", "cga"},
@@ -1501,10 +1618,10 @@ Project decode(const Entries& entries) {
     if (m.string("format") != "blockwright")
         fail("manifest.json: not a blockwright project");
     const std::string version = m.string("version");
-    if (const auto [major, minor] = parseVersion(version); major != kFormatMajor) {
-        (void)minor;
-        fail("a project in format " + version + ": this build reads " + std::to_string(kFormatMajor) + ".x");
-    }
+    const int major = parseVersion(version).first;
+    if (major != kFormatMajor && major != kStyledFormatMajor)
+        fail("a project in format " + version + ": this build reads " + std::to_string(kFormatMajor) + ".x and " +
+             std::to_string(kStyledFormatMajor) + ".x");
 
     Project p;
     const int w = int(m.integer("width", 1, kMaxColumns));
@@ -1567,7 +1684,7 @@ Project decode(const Entries& entries) {
         const auto cells = entries.find(layerPath(id, true));
         if (json == entries.end() || cells == entries.end())
             fail("layer " + std::to_string(id) + " has no " + layerPath(id, json != entries.end()));
-        p.layers.add(layerFromEntries(id, json->second, cells->second, p.fonts));
+        p.layers.add(layerFromEntries(id, json->second, cells->second, major, p.fonts));
     }
     const LayerId next = LayerId(m.integer("nextLayerId", 0, UINT32_MAX));
     if (next != 0 && !listed.empty() && next <= *listed.rbegin())

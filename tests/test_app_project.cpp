@@ -9,6 +9,7 @@
 #include "blockwright/composite.h"
 #include "blockwright/project.h"
 #include "blockwright/sauce.h"
+#include "blockwright/text_style.h"
 
 #include "scratch_settings.h"
 #include "util.h"
@@ -316,6 +317,31 @@ TEST_CASE("Save As .ans makes a project the flat file when the .ans holds all of
     project::writeZip(p, fpath(zip));
     REQUIRE(w.openFile(zip, &error));
     REQUIRE(w.saveFile(flat, &error));
+    CHECK(d.path() == zip);
+    CHECK(d.form() == FileForm::ProjectZip);
+}
+
+// Codex round 1: an .ans keeps a styled layer's look but not its cells or
+// its style, so saving one is an export.
+TEST_CASE("Save As .ans keeps a project with a styled layer its file") {
+    QTemporaryDir tmp;
+    const QString zip = tmp.filePath(QStringLiteral("styled.bwp"));
+    project::Project p = project::fromAnsi(parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden" / "tux.ans")));
+    REQUIRE(p.layers.size() == 1);
+    Layer& l = *p.layers.find(p.layers[0].props.id);
+    REQUIRE(l.bounds() == p.layers.canvasRect());
+    TextStyle style;
+    style.effects.push_back(Effect{true, FillEffect{FillMode::Flat, Yellow, "fire"}});
+    l.props.style = style;
+    project::writeZip(p, fpath(zip));
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(zip, &error));
+    Document& d = *w.document();
+    REQUIRE(d.layers()[0].props.style);
+    const QString flat = tmp.filePath(QStringLiteral("styled.ans"));
+    REQUIRE(w.saveFile(flat, &error));
+    CHECK(bwtest::readFile(fpath(flat)) == writeAnsi(project::toAnsi(d.project())).bytes);
     CHECK(d.path() == zip);
     CHECK(d.form() == FileForm::ProjectZip);
 }
@@ -655,7 +681,7 @@ TEST_CASE("the app refuses a newer major project and keeps a newer minor's files
     writeSampleDirectory(dir);
     const QString manifest = dir + QStringLiteral("/manifest.json");
     const std::string m = bwtest::readFile(fpath(manifest));
-    const auto at = m.find("\"1.2\"");
+    const auto at = m.find("\"1.3\"");
     REQUIRE(at != std::string::npos);
     const auto withVersion = [&](const char* v) { return std::string(m).replace(at, 5, v); };
 
@@ -663,7 +689,7 @@ TEST_CASE("the app refuses a newer major project and keeps a newer minor's files
     QString error;
     const QString ans = tuxAt(tmp.filePath(QStringLiteral("tux.ans")));
     REQUIRE(w.openFile(ans, &error));
-    writeBytes(manifest, withVersion("\"2.0\""));
+    writeBytes(manifest, withVersion("\"3.0\""));
     CHECK_FALSE(w.openFile(dir, &error));
     CHECK_FALSE(error.isEmpty());
     CHECK(w.document()->path() == ans);

@@ -411,7 +411,7 @@ TEST_CASE("every layer kind and field survives encode and decode", "[project]") 
     // the manifest is readable JSON with the layout PLAN §6 gives
     const QJsonObject m = object(e.at("manifest.json"));
     CHECK(m.value("format").toString() == "blockwright");
-    CHECK(m.value("version").toString() == "1.2");
+    CHECK(m.value("version").toString() == "1.3");
     CHECK(m.value("width").toInt() == 20);
     CHECK(m.value("height").toInt() == 8);
     CHECK(m.value("palette").toString() == "cga");
@@ -471,7 +471,7 @@ TEST_CASE("a reader refuses another major version and reads a newer minor", "[pr
     Entries e = project::encode(p);
     QJsonObject m = object(e.at("manifest.json"));
 
-    m["version"] = "2.0";
+    m["version"] = "3.0";
     e["manifest.json"] = json(m);
     CHECK_THROWS_AS(project::decode(e), ProjectError);
 

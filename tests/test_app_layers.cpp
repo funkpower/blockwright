@@ -19,6 +19,7 @@
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/text.h"
+#include "blockwright/text_style.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1218,4 +1219,161 @@ TEST_CASE("with iCE off a pixel block flipped or turned and pasted onto a cells 
     w.selectTool()->transform(Transform::RotateClockwise);
     w.selectTool()->stamp();
     blinkFree(8, "turned");
+}
+
+// Codex round 1: a style drawn at composite time depends on the whole layer,
+// so painting, the preview, a style change, undo and redo, and an iCE
+// toggle each leave canvas() what a fresh composite of the stack gives.
+TEST_CASE("a styled layer's composite stays fresh through painting and preview and style changes and undo",
+          "[layers][style]") {
+    MainWindow w;
+    Document* doc = w.document();
+    const LayerId id = doc->addLayer(LayerKind::Cells);
+    auto fresh = [&] {
+        const Canvas want = composite(doc->layers(), CompositeOptions{doc->format().ice, Cell{}});
+        int stale = 0;
+        for (int y = 0; y < want.height(); ++y)
+            for (int x = 0; x < want.width(); ++x)
+                stale += !(doc->canvas().at(x, y) == want.at(x, y));
+        return stale;
+    };
+    const Cell block{kFullBlock, Color::indexed(Grey), Color::indexed(Black), 0, false};
+    auto put = [&](int x, int y, const Cell& c) {
+        CellEdit e;
+        e.changes.push_back({x, y, doc->layerCanvas().at(x, y), c});
+        return e;
+    };
+    REQUIRE(doc->edit(put(2, 2, block)));
+    CHECK(fresh() == 0);
+
+    // the style set: the cell goes yellow, and a blue outline round it
+    LayerProperties p = layerById(doc, id).props;
+    p.style = TextStyle{};
+    p.style->effects = {Effect{true, OutlineEffect{OutlineForm::Cells, Blue}},
+                        Effect{true, FillEffect{FillMode::Flat, Yellow, "fire"}},
+                        Effect{true, GlowEffect{"fire", 3}}};
+    REQUIRE(doc->setLayerProperties(id, p, QStringLiteral("Style")));
+    CHECK(doc->canvas().at(1, 2).bg.paletteIndex() == Blue);
+    CHECK(fresh() == 0);
+
+    // painting another block outlines it too
+    REQUIRE(doc->edit(put(8, 2, block)));
+    CHECK(doc->canvas().at(9, 2).bg.paletteIndex() == Blue);
+    CHECK(fresh() == 0);
+
+    // the preview of an erase shows the outline gone with the block
+    const CellEdit erase = put(2, 2, doc->blankCell());
+    Canvas shown = doc->canvas();
+    for (const CellChange& c : doc->previewEdit(erase).changes)
+        shown.at(c.x, c.y) = c.after;
+    LayerStack erased = doc->layers();
+    erased.find(id)->cells.at(2, 2) = transparentCell();
+    CHECK(shown == composite(erased, CompositeOptions{doc->format().ice, Cell{}}));
+    CHECK(fresh() == 0);
+
+    REQUIRE(doc->edit(erase));
+    CHECK(doc->canvas().at(1, 2) == Cell{});
+    CHECK(fresh() == 0);
+
+    // iCE off redraws the glow without a bright background
+    DocumentFormat f = doc->format();
+    f.ice = false;
+    REQUIRE(doc->setFormat(f, QStringLiteral("iCE")));
+    CHECK(fresh() == 0);
+
+    // every step undone and redone
+    const int steps = doc->undoStack()->count();
+    for (int i = 0; i < steps; ++i) {
+        INFO("undo " << i);
+        doc->undoStack()->undo();
+        CHECK(fresh() == 0);
+    }
+    for (int i = 0; i < steps; ++i) {
+        INFO("redo " << i);
+        doc->undoStack()->redo();
+        CHECK(fresh() == 0);
+    }
+}
+
+// Codex round 2: a style set on a live text layer through the document is
+// drawn with the document's iCE setting, and so is its redo.
+TEST_CASE("live style edits use the document's iCE setting", "[layers][style][text]") {
+    TextSource source;
+    source.text = U"funk";
+    project::Project p;
+    p.ice = false;
+    p.layers = LayerStack(80, 40);
+    const LayerId id = p.layers.add(makeTextLayer(source));
+
+    MainWindow w;
+    Document* doc = w.document();
+    doc->replace(p, QStringLiteral("style.bwp"), FileForm::ProjectZip);
+    REQUIRE_FALSE(doc->format().ice);
+    LayerProperties props = doc->layers().find(id)->props;
+    props.style = TextStyle{{Effect{true, GlowEffect{"fire", 12}}}};
+    REQUIRE(doc->setLayerProperties(id, props, QStringLiteral("Style")));
+
+    const Canvas expected = renderStyledText(source, *props.style, *findFace(source.face), false).cells;
+    REQUIRE_FALSE(expected == renderStyledText(source, *props.style, *findFace(source.face), true).cells);
+    CHECK(doc->layers().find(id)->cells == expected);
+    doc->undoStack()->undo();
+    doc->undoStack()->redo();
+    CHECK(doc->layers().find(id)->cells == expected);
+}
+
+// Codex round 3: the document checks a style before it pushes the step
+// (layerStyleProblem), so a style that can't be drawn on the layer is
+// refused, the layer and the undo history as they were, instead of the
+// step's redo throwing.
+TEST_CASE("the document refuses a style it can't draw on the layer and leaves the layer and undo as they were",
+          "[layers][style][text]") {
+    TextSource source;
+    source.text = U"x";
+    source.wrapWidth = TextSource::kMaxWrapWidth;
+    REQUIRE_FALSE(textSourceProblem(source));
+
+    project::Project p;
+    p.layers = LayerStack(80, 40);
+    const LayerId text = p.layers.add(makeTextLayer(source));
+    const LayerId cells = p.layers.add(makeLayer(LayerKind::Cells, 80, 40));
+    const LayerId generator = p.layers.add(makeLayer(LayerKind::Generator, 80, 40));
+
+    MainWindow w;
+    Document* doc = w.document();
+    doc->replace(p, QStringLiteral("style.bwp"), FileForm::ProjectZip);
+
+    LayerId id = 0;
+    LayerProperties props;
+    SECTION("an outline grows a valid text box past a layer's size") {
+        id = text;
+        props = doc->layers().find(id)->props;
+        props.style = TextStyle{{Effect{true, OutlineEffect{OutlineForm::Cells, Blue}}}};
+        REQUIRE_FALSE(textStyleProblem(*props.style));
+    }
+    SECTION("a style that can't be drawn on a cells layer") {
+        id = cells;
+        props = doc->layers().find(id)->props;
+        props.style = TextStyle{{Effect{true, OutlineEffect{OutlineForm::Cells, 16}}}};
+        REQUIRE(textStyleProblem(*props.style));
+    }
+    SECTION("a style on a layer kind that holds none") {
+        id = generator;
+        props = doc->layers().find(id)->props;
+        props.style = TextStyle{{Effect{true, OutlineEffect{OutlineForm::Cells, Blue}}}};
+        REQUIRE_FALSE(textStyleProblem(*props.style));
+    }
+    REQUIRE(layerStyleProblem(props, doc->fontSources()));
+
+    const Layer before = *doc->layers().find(id);
+    const Canvas canvas = doc->canvas();
+    const int steps = doc->undoStack()->count();
+    const int index = doc->undoStack()->index();
+    bool pushed = true;
+    CHECK_NOTHROW(pushed = doc->setLayerProperties(id, props, QStringLiteral("Style")));
+    CHECK_FALSE(pushed);
+    CHECK(doc->layers().find(id)->props == before.props);
+    CHECK(doc->layers().find(id)->cells == before.cells);
+    CHECK(doc->canvas() == canvas);
+    CHECK(doc->undoStack()->count() == steps);
+    CHECK(doc->undoStack()->index() == index);
 }

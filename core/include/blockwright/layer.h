@@ -40,6 +40,7 @@
 #include "blockwright/edit.h"
 #include "blockwright/selection.h"
 #include "blockwright/text_source.h"
+#include "blockwright/text_style.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -105,6 +106,11 @@ struct LayerProperties {
     LayerMode mode = LayerMode::Normal;
     // A live text layer's source (text.h): only a text layer has one.
     std::optional<TextSource> text;
+    // A text style (text_style.h, PLAN §15), on a cells, pixels or text
+    // layer only. A live text layer's is drawn into its cells with its text
+    // (text.h); any other's is drawn by the compositor over its cells
+    // (style_draw.h), which stay as they were painted.
+    std::optional<TextStyle> style;
 
     bool operator==(const LayerProperties&) const = default;
 };
@@ -133,10 +139,15 @@ Cell transparentCell();
 Layer makeLayer(LayerKind kind, int width, int height, std::string name = {}, int x = 0, int y = 0);
 
 // A text or generator layer as a cells layer: the same cells (a live text
-// layer's drawn text, a generator's cached output) and properties, kind
-// cells, without a text source. Every other layer comes back as it is. The
-// generator's files (scripts/<id>/ in a project) are left alone.
-Layer bake(Layer layer);
+// layer's drawn text and style, a generator's cached output) and
+// properties, kind cells, without a text source or style. A cells or pixels
+// layer with a style becomes a cells layer of its styled cells (styledCells,
+// with iCE colours `ice`), without the style (a pixel layer's in the normal
+// mode, which it composited in whatever its own; it then covers text cells
+// under it, as its pixels didn't); one whose style has no effect
+// switched on only loses the style. Every other layer comes back as it is. The generator's files (scripts/<id>/ in a project) are left
+// alone.
+Layer bake(Layer layer, bool ice = true);
 
 // The stroke options a tool editing this layer uses: `base` with the
 // layer's alpha lock as the transparent lock, and for a pixel layer
@@ -231,7 +242,9 @@ Canvas layerCanvas(const Layer& layer, int width, int height);
 // region to recomposite.
 CellEdit toCanvasEdit(const Layer& layer, const CellEdit& layerEdit);
 // The canvas cells a layer edit changes, as one rectangle (not clipped to
-// the canvas); empty for an empty edit.
+// the canvas); empty for an empty edit. On a layer whose style the
+// compositor draws (styledAtComposite) any change can restyle the whole
+// layer, so a non-empty edit gives the layer's bounds.
 CellRect dirtyRect(const Layer& layer, const CellEdit& layerEdit);
 
 // ---- the stack -------------------------------------------------------------

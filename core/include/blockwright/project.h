@@ -3,12 +3,13 @@
 // files kept with it, saved as one zip file or as a directory of the same
 // layout (for git and other tools):
 //
-//   manifest.json      "format": "blockwright", "version": "1.2", the canvas
+//   manifest.json      "format": "blockwright", "version": "1.3", the canvas
 //                      size, palette, iCE, IRC budget, SAUCE fields (font and
 //                      letter spacing among them), the layer order (ids,
 //                      bottom first) and the next layer id
 //   layers/<id>.json   the layer's properties (LayerProperties, its size;
-//                      a live text layer's source, text.h)
+//                      a live text layer's source, text.h; a text style,
+//                      text_style.h)
 //   layers/<id>.cells  its cells (encodeCells: a versioned header, zstd)
 //   fonts/<sha256>.tdf a TheDraw font file a text layer is set in, named by
 //                      the sha256 of its bytes (lowercase hex)
@@ -38,6 +39,17 @@
 // the saved cells, and keeps the copies as files it doesn't know. A copy
 // whose bytes don't hash to its name, that doesn't read as a TheDraw file,
 // or that a layer names and the project lacks is refused by the reader.
+//
+// A text style (1.3) is kept as its effects in the stack's order. A live
+// text layer's style is drawn into its cells, so a 1.2 reader drops it and
+// shows the same cells. A cells or pixels layer's style is drawn when the
+// stack is composited, so a reader that dropped it would show the layer
+// unstyled: a project with one is written as 2.0, which a 1.x reader
+// refuses, and a 1.x project holding one is refused. A style this build
+// can't draw (more than one effect of a kind, a ramp it doesn't have, a
+// setting out of range, over TextStyle::kMaxEffects effects, checked before
+// any is read) or one on a layer that can't have one is refused, by the
+// reader and the writer.
 
 #include "blockwright/ansi.h"
 #include "blockwright/font_store.h"
@@ -57,7 +69,10 @@
 namespace bw::project {
 
 inline constexpr int kFormatMajor = 1;
-inline constexpr int kFormatMinor = 2;
+inline constexpr int kFormatMinor = 3;
+// The version of a project with a cells or pixels layer that has a style.
+inline constexpr int kStyledFormatMajor = 2;
+inline constexpr int kStyledFormatMinor = 0;
 
 // Limits a reader holds a file to, and a writer checks before it writes
 // anything: no more than kMaxEntries entries, none over kMaxEntryBytes, all

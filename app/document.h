@@ -237,9 +237,12 @@ public:
     // Replaces the layer's properties but its id, as one command named
     // `text`; false if it changes nothing, or gives a text source to a layer
     // that isn't a text layer or one that can't be drawn with fontSources()
-    // (textSourceProblem). A TheDraw font taken from the fonts folder is
-    // copied into the project's fonts (extras().fonts), so the step's redo
-    // and the project's save have it whatever the folder holds later. A change of visibility (or mode, kind, offset)
+    // (textSourceProblem), or a style the layer can't hold or draw
+    // (layerStyleProblem: a styled text box too large among them); a refused
+    // request changes nothing and pushes no step. A TheDraw font taken from
+    // the fonts folder is copied into the project's fonts (extras().fonts),
+    // so the step's redo and the project's save have it whatever the folder
+    // holds later. A change of visibility (or mode, kind, offset, style)
     // recomposites the cells the layer covers; a change of a live text
     // layer's source redraws its cells from it, and its undo puts back the
     // cells it replaced (bw::applyEdit). Any other change keeps the cells.

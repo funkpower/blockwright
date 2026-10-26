@@ -2,8 +2,10 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/ramp.h"
+#include "blockwright/style_draw.h"
 
 #include <algorithm>
+#include <deque>
 
 #include <utility>
 #include <vector>
@@ -96,6 +98,87 @@ void over(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, b
     }
 }
 
+// How a layer whose style the compositor draws composites: its styled cells
+// as a cells layer's, a pixel layer's in the normal mode, which it reads
+// whatever its own (§5).
+LayerProperties styledProps(const LayerProperties& props) {
+    LayerProperties p = props;
+    if (p.kind == LayerKind::Pixels)
+        p.mode = LayerMode::Normal;
+    p.kind = LayerKind::Cells;
+    return p;
+}
+
+// One styled cell over the cell composited so far: a pixel layer's styled
+// cells, like its pixels, never cover a text cell.
+void overStyled(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, bool ice) {
+    if (props.kind == LayerKind::Pixels && text)
+        return;
+    over(acc, text, styledProps(props), lc, ice);
+}
+
+// A styled layer's cells for compositeCellBelow, which composites a cell at
+// a time: the layers last styled on this thread, one entry a layer id and
+// iCE setting, each kept with the properties and cell revision it was drawn
+// from, so a cell at a time over several overlapping styled layers styles
+// each of them once and checks each entry in constant time.
+const Canvas& cachedStyledCells(const Layer& layer, bool ice) {
+    struct Entry {
+        LayerProperties props;
+        std::uint64_t revision = 0;
+        bool ice = true;
+        Canvas cells{0, 0};
+    };
+    constexpr std::size_t kEntries = 8;
+    // deque: a push or a pop at either end leaves the other entries in place
+    thread_local std::deque<Entry> cache;
+    const auto it = std::find_if(cache.begin(), cache.end(),
+                                 [&](const Entry& e) { return e.props.id == layer.props.id && e.ice == ice; });
+    const std::uint64_t revision = layer.cells.revision();
+    if (it != cache.end()) {
+        if (it->revision == revision && it->props == layer.props)
+            return it->cells;
+        cache.erase(it);
+    }
+    if (cache.size() == kEntries)
+        cache.pop_back();
+    cache.push_front(Entry{layer.props, revision, ice, styledCells(layer, ice)});
+    return cache.front().cells;
+}
+
+// Composites the cells of `rect` (on the canvas, not empty) into `out`,
+// canvas cell (x, y) at (x - ox, y - oy).
+void compositeInto(const LayerStack& stack, CellRect rect, Canvas& out, int ox, int oy,
+                   const CompositeOptions& options) {
+    for (int y = rect.y; y < rect.y + rect.height; ++y)
+        for (int x = rect.x; x < rect.x + rect.width; ++x)
+            out.at(x - ox, y - oy) = options.ground;
+    std::vector<char> text(static_cast<std::size_t>(rect.width) * rect.height, 0);
+    for (const Layer& l : stack.layers()) {
+        if (!composites(l))
+            continue;
+        const CellRect r = intersect(rect, l.bounds());
+        if (r.empty())
+            continue;
+        // a style the compositor draws is drawn once for the whole layer
+        const bool styled = styledAtComposite(l.props);
+        const Canvas styledLayer = styled ? styledCells(l, options.ice) : Canvas{0, 0};
+        const Canvas& cells = styled ? styledLayer : l.cells;
+        for (int y = r.y; y < r.y + r.height; ++y) {
+            const int ly = y - l.props.y;
+            for (int x = r.x; x < r.x + r.width; ++x) {
+                char& t = text[static_cast<std::size_t>(y - rect.y) * rect.width + (x - rect.x)];
+                bool isText = t;
+                if (styled)
+                    overStyled(out.at(x - ox, y - oy), isText, l.props, cells.at(x - l.props.x, ly), options.ice);
+                else
+                    over(out.at(x - ox, y - oy), isText, l.props, cells.at(x - l.props.x, ly), options.ice);
+                t = isText;
+            }
+        }
+    }
+}
+
 } // namespace
 
 HalfPair halvesUnder(const Cell& below, bool ice) {
@@ -116,25 +199,16 @@ void recomposite(const LayerStack& stack, Canvas& out, CellRect rect, const Comp
     if (out.width() != stack.width() || out.height() != stack.height())
         throw LayerError("recomposite: the canvas is not the stack's size");
     rect = intersect(rect, stack.canvasRect());
-    if (rect.empty())
-        return;
-    for (int y = rect.y; y < rect.y + rect.height; ++y)
-        for (int x = rect.x; x < rect.x + rect.width; ++x)
-            out.at(x, y) = options.ground;
-    std::vector<char> text(static_cast<std::size_t>(rect.width) * rect.height, 0);
-    for (const Layer& l : stack.layers()) {
-        if (!composites(l))
-            continue;
-        const CellRect r = intersect(rect, l.bounds());
-        for (int y = r.y; y < r.y + r.height; ++y) {
-            const int ly = y - l.props.y;
-            for (int x = r.x; x < r.x + r.width; ++x) {
-                bool t = text[static_cast<std::size_t>(y - rect.y) * rect.width + (x - rect.x)];
-                over(out.at(x, y), t, l.props, l.cells.at(x - l.props.x, ly), options.ice);
-                text[static_cast<std::size_t>(y - rect.y) * rect.width + (x - rect.x)] = t;
-            }
-        }
-    }
+    if (!rect.empty())
+        compositeInto(stack, rect, out, 0, 0, options);
+}
+
+Canvas compositeRect(const LayerStack& stack, CellRect rect, const CompositeOptions& options) {
+    rect = intersect(rect, stack.canvasRect());
+    Canvas out(rect.width, rect.height);
+    if (!rect.empty())
+        compositeInto(stack, rect, out, rect.x, rect.y, options);
+    return out;
 }
 
 Canvas composite(const LayerStack& stack, const CompositeOptions& options) {
@@ -155,8 +229,15 @@ Cell compositeCellBelow(const LayerStack& stack, std::size_t index, int x, int y
     const auto& layers = stack.layers();
     for (std::size_t i = 0; i < std::min(index, layers.size()); ++i)
         if (composites(layers[i]))
-            if (const Cell* c = layers[i].cellAt(x, y))
-                over(acc, text, layers[i].props, *c, options.ice);
+            if (const Cell* c = layers[i].cellAt(x, y)) {
+                if (styledAtComposite(layers[i].props)) {
+                    const Canvas& cells = cachedStyledCells(layers[i], options.ice);
+                    overStyled(acc, text, layers[i].props, cells.at(x - layers[i].props.x, y - layers[i].props.y),
+                               options.ice);
+                } else {
+                    over(acc, text, layers[i].props, *c, options.ice);
+                }
+            }
     return acc;
 }
 

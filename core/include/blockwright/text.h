@@ -31,6 +31,18 @@
 // the run it belongs to, and mergeEdits folds an edit into the one before it
 // in the same run. Bake (bakeEdit) is one step the same way, and undoing it
 // gives back the live layer.
+//
+// Styles (text_style.h, PLAN §15): a live text layer's style is drawn with
+// its text (renderStyledText): the layer is the text's box grown by the
+// style's margins (styleMargins), the text at (left, top) in it, so giving a
+// layer a style grows it right and down from its offset. Its cells are
+// redrawn when the source or the style changes, and a step changing either
+// keeps the cells it replaced. A style is drawn with the iCE colours the
+// step is made with (`ice`, the document's setting); the cells don't follow
+// a later change of the setting until the next redraw. A cells or pixels
+// layer's style is drawn by the compositor (style_draw.h): a step changing
+// it touches no cell, and Bake of such a layer keeps the cells before and
+// after it (LayerPropsEdit::cellsAfter).
 
 #include "blockwright/face.h"
 #include "blockwright/font_store.h"
@@ -65,6 +77,12 @@ struct TextRender {
 // measuring the text (measureText) before anything its size is allocated.
 TextRender renderText(const TextSource& source, const Face& face);
 
+// The source drawn in `face` with `style` (see above), with iCE colours
+// `ice`. Throws TextError for a style that can't be drawn
+// (textStyleProblem) or a box with the style's margins larger than a layer
+// the project file holds, measured first as renderText does.
+TextRender renderStyledText(const TextSource& source, const TextStyle& style, const Face& face, bool ice = true);
+
 // Thrown for a source that can't be drawn (textSourceProblem).
 class TextError : public std::runtime_error {
 public:
@@ -77,6 +95,15 @@ public:
 // is named with its file's hash. The box is measured, not drawn,
 // so a source far too large is refused without allocating its size.
 std::optional<std::string> textSourceProblem(const TextSource& source, const FontSources& fonts = {});
+// The same for a source with a style: the source's problem, the style's
+// (textStyleProblem), or a box with the style's margins too large.
+std::optional<std::string> styledTextProblem(const TextSource& source, const TextStyle& style,
+                                             const FontSources& fonts = {});
+// Why a layer can't have its properties' style: a style on a layer that
+// isn't a cells or pixels layer or a live text layer (a text layer without
+// a source, a generator, a reference), or the style's or the styled text's
+// problem; nothing when it has no style.
+std::optional<std::string> layerStyleProblem(const LayerProperties& props, const FontSources& fonts = {});
 
 // A live text layer of `source` at (x, y), its cells drawn. Throws
 // TextError when the source can't be drawn.
@@ -84,11 +111,13 @@ Layer makeTextLayer(TextSource source, std::string name = {}, int x = 0, int y =
                     const FontSources& fonts = {});
 
 // Gives the layer `props` (its id kept) and, when they hold a text source
-// other than the layer's, redraws its cells from it, the layer taking the
+// other than the layer's, or a style other than its with a source, redraws
+// its cells from them (a style with iCE colours `ice`), the layer taking the
 // drawn size; otherwise the cells are kept. True when it redrew them.
-// Throws TextError for a source that can't be drawn, before the layer is
-// touched, and for a source on a layer that isn't a text layer.
-bool applyLayerProperties(Layer& layer, LayerProperties props, const FontSources& fonts = {});
+// Throws TextError for a source or style that can't be drawn, before the
+// layer is touched, for a source on a layer that isn't a text layer and for
+// a style layerStyleProblem refuses.
+bool applyLayerProperties(Layer& layer, LayerProperties props, const FontSources& fonts = {}, bool ice = true);
 
 // One undo step on a layer's properties: the layer's properties before and
 // after. A text edit with a non-zero `typingRun` is a keystroke of that
@@ -100,21 +129,33 @@ struct LayerPropsEdit {
     LayerProperties before, after;
     std::uint64_t typingRun = 0;
     // The layer's cells before, kept when the step changes the source
-    // (`before.text` isn't `after.text`): undo puts them back as they were.
+    // (`before.text` isn't `after.text`) or a live text layer's style: undo
+    // puts them back as they were.
     std::optional<Canvas> cellsBefore;
+    // The layer's cells after, kept by Bake of a layer whose style the
+    // compositor draws: redo puts them in place (and undo cellsBefore).
+    std::optional<Canvas> cellsAfter;
+    // The iCE colours a redraw draws the style with.
+    bool ice = true;
 
     bool operator==(const LayerPropsEdit&) const = default;
 };
 
 // The edit giving the layer the properties `after` (its id kept);
-// `typingRun` as above.
-LayerPropsEdit propsEdit(const Layer& layer, LayerProperties after, std::uint64_t typingRun = 0);
+// `typingRun` as above. `ice` is the document's setting: a live text
+// layer's style is drawn with it, and redrawn with it on redo.
+LayerPropsEdit propsEdit(const Layer& layer, LayerProperties after, std::uint64_t typingRun = 0, bool ice = true);
 // The edit setting the layer's text source to `source` (the text, a setting
 // or the face); `typingRun` as above.
-LayerPropsEdit textEdit(const Layer& layer, TextSource source, std::uint64_t typingRun = 0);
-// The edit baking the layer (bake()): its properties as a cells layer, its
-// cells as they are.
-LayerPropsEdit bakeEdit(const Layer& layer);
+LayerPropsEdit textEdit(const Layer& layer, TextSource source, std::uint64_t typingRun = 0, bool ice = true);
+// The edit setting the layer's style (none: dropping it), one step.
+LayerPropsEdit styleEdit(const Layer& layer, std::optional<TextStyle> style, bool ice = true);
+// The edit baking the layer (bake()): its properties as a cells layer
+// without a source or style; its cells as they are, or, for a layer whose
+// style the compositor draws, its styled cells (with iCE colours `ice`) and,
+// for a pixel layer, the normal mode it composited in. Undo gives back the
+// properties as they were, the mode with them.
+LayerPropsEdit bakeEdit(const Layer& layer, bool ice = true);
 
 // Applies the edit's `after` (`revert`: its `before`) to the layer. A step
 // that kept cells redraws the source after it, and its revert puts the kept
