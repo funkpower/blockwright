@@ -154,7 +154,11 @@ std::optional<std::pair<double, double>> rimNormal(const Canvas& canvas, const R
 // With OutlineShape::Selection the shape is only the ramp's cells in the
 // stroke's selection: the cells outside it are outside the shape, so where
 // the selected shape touches another on the same ramp its edge runs along
-// the seam and takes the line on its own side, as against black (#51). With
+// the seam and takes the line on its own side, as against black (#51).
+// Until the selection can take a lasso or wand mask it is a rectangle, so it
+// lines only a seam that runs along the selection's sides: where the seam
+// curves, the other shape's cells inside the rectangle are part of the
+// selected shape and are lined at the rectangle's border (#100). With
 // no selection, or one over the whole canvas, it is the outline as ever. The
 // seam is settled against the lint like the rest of the line: beside a shape
 // that climbs away from it the darkest line can be a skip (w between W and

@@ -2088,11 +2088,14 @@ TEST_CASE("the outline with the selection as the shape and no selection is the o
 }
 
 TEST_CASE("a mirrored stroke lines the seam of the selection in both images", "[detail][lint]") {
-    // A | B | A', A and A' selected; a Mirror X click on A lines both seams
+    // A | B | A', A and A' selected; a Mirror X click on A lines both seams.
+    // A' is selected only in rows 1-3, so the selection is not its own mirror
+    // image: A' is lined along its row 3 only where its image reads the
+    // selection mirrored into its frame (#100)
     const Canvas c = sideBySide({4, 4, 4}, {{12}, {12}, {12}});
     REQUIRE(c.width() == 14);
     auto sel = std::make_shared<Mask>(Mask::rect(c.width(), c.height(), 1, 1, 4, 6));
-    for (int y = 1; y <= 6; ++y)
+    for (int y = 1; y <= 3; ++y)
         for (int x = 9; x <= 12; ++x)
             sel->set(x, y);
     StrokeOptions o;
@@ -2104,12 +2107,22 @@ TEST_CASE("a mirrored stroke lines the seam of the selection in both images", "[
     for (int y = 2; y <= 4; ++y) {
         INFO("row " << y);
         REQUIRE(w.count({4, y}));
-        REQUIRE(w.count({9, y}));
         CHECK(w.at({4, y}) == rungCell(steel(), 8));
-        CHECK(w.at({9, y}) == w.at({4, y}));
     }
-    for (const auto& [p, cell] : w)
+    for (int y = 2; y <= 3; ++y) {
+        INFO("row " << y);
+        REQUIRE(w.count({9, y}));
+        CHECK(w.at({9, y}) == rungCell(steel(), 8));
+    }
+    for (int x = 10; x <= 11; ++x) {
+        INFO("column " << x);
+        REQUIRE(w.count({x, 3}));
+        CHECK(w.at({x, 3}) == rungCell(steel(), 8));
+    }
+    for (const auto& [p, cell] : w) {
         CHECK((p.first <= 4 || p.first >= 9));
+        CHECK((p.first <= 4 || p.second <= 3));
+    }
 }
 
 TEST_CASE("the outline closes a fringe's shape half at its ends", "[detail]") {
