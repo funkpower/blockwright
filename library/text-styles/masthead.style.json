@@ -1,0 +1,11 @@
+{
+  "kind": "text-style",
+  "name": "Masthead",
+  "category": "signs",
+  "tags": ["masthead", "banner", "header", "plate"],
+  "effects": [
+    {"kind": "plate", "enabled": true, "colour": 1, "padding": 0},
+    {"kind": "shadow", "enabled": true, "colour": 0, "direction": "se", "distance": 1, "form": "drop"},
+    {"kind": "fill", "enabled": true, "colour": 7, "mode": "flat", "ramp": "steel"}
+  ]
+}

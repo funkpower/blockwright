@@ -27,20 +27,21 @@ fi
 
 cli=$stage$bindir/blockwright-cli
 out=$(env -u BLOCKWRIGHT_BUNDLED_LIBRARY BLOCKWRIGHT_USER_LIBRARY="$tmp/user" "$cli" library list 2>&1); st=$?
-if [[ $st -eq 0 && $out == *$'sky\tSmall star\t3x3\t13\tstar,night\t'"$lib"/sky/small-star.ans* ]]; then
+if [[ $st -eq 0 && $out == *$'stamp\tsky\tSmall star\t3x3\t13\t-\tstar,night\t'"$lib"/sky/small-star.ans* ]]; then
   ok "the installed CLI lists the installed bundled library"
 else
   bad "library list (exit $st): $out"
 fi
-n=1
+n=1 m=0
 if [[ -n $src ]]; then
   n=$(cd "$src" && find . -name '*.ans' | wc -l)
-  n=$((n))  # BSD wc pads the count with spaces
+  m=$(cd "$src" && find . -name '*.style.json' | wc -l)
+  n=$((n)) m=$((m))  # BSD wc pads the counts with spaces
   missing=$(cd "$src" && find . -type f \( -name '*.ans' -o -name '*.json' \) | while read -r f; do cmp -s "$f" "$lib/$f" || echo "$f"; done)
   if [[ $n -gt 1 && -z $missing ]]; then ok "all $n bundled stamps install"; else bad "not installed as in the source: $missing"; fi
 fi
 out=$("$cli" library check "$lib" 2>&1); st=$?
-if [[ $st -eq 0 && $out == "$n stamp(s), 0 problem(s)" ]]; then ok "the installed library checks clean"; else bad "library check (exit $st): $out"; fi
+if [[ $st -eq 0 && $out == "$n stamp(s), $m text style(s), 0 problem(s)" ]]; then ok "the installed library checks clean"; else bad "library check (exit $st): $out"; fi
 
 # Run through a symlink, as the dev install's ~/.local/bin/blockwright-cli-dev
 # is: the bundled library is found beside the real binary, not the link.

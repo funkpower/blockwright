@@ -207,6 +207,10 @@ TextRender renderText(const TextSource& source, const Face& face) {
     return out;
 }
 
+StyleInput textStyleInput(const TextSource& source, const Face& face) {
+    return laidOut(source, face, nullptr).in;
+}
+
 TextRender renderStyledText(const TextSource& source, const TextStyle& style, const Face& face, bool ice) {
     if (const auto problem = textStyleProblem(style))
         throw TextError(*problem);

@@ -1,4 +1,5 @@
 #include "blockwright/project.h"
+#include "style_json.h"
 
 #include "blockwright/composite.h"
 #include "blockwright/cp437.h"
@@ -249,9 +250,9 @@ std::string toJson(const QJsonObject& o) {
     return std::string(b.constData(), std::size_t(b.size()));
 }
 
-// A key some object in `json` holds twice, or nothing. `json` is valid JSON
-// (Qt has parsed it); QJsonDocument keeps only the last of a repeated key,
-// so repeats are found here, in every object at any depth.
+} // namespace
+
+// style_json.h
 std::optional<QString> repeatedKey(std::string_view json) {
     std::vector<std::optional<std::set<QString>>> open;  // nullopt: an array
     for (std::size_t i = 0; i < json.size(); ++i) {
@@ -282,6 +283,8 @@ std::optional<QString> repeatedKey(std::string_view json) {
     }
     return std::nullopt;
 }
+
+namespace {
 
 // A JSON entry as an object; one over kMaxJsonBytes is refused before it is
 // parsed (Qt's parse takes about ten times the text).
@@ -544,6 +547,18 @@ TextSource textSourceFromJson(const QJsonObject& o, const std::string& what, con
     return t;
 }
 
+// A name `from` knows, or a failure naming the key.
+template <typename F>
+auto named(const Reader& r, const char* key, F from) {
+    const std::string name = r.string(key);
+    const auto v = from(name);
+    if (!v)
+        fail(r.what() + ": unknown " + key + " \"" + name + "\"");
+    return *v;
+}
+
+} // namespace
+
 // A layer's text style (text_style.h): its effects in the stack's order,
 // each its kind, its switch and its settings.
 QJsonObject textStyleJson(const TextStyle& style) {
@@ -580,16 +595,6 @@ QJsonObject textStyleJson(const TextStyle& style) {
         effects.append(o);
     }
     return QJsonObject{{"effects", effects}};
-}
-
-// A name `from` knows, or a failure naming the key.
-template <typename F>
-auto named(const Reader& r, const char* key, F from) {
-    const std::string name = r.string(key);
-    const auto v = from(name);
-    if (!v)
-        fail(r.what() + ": unknown " + key + " \"" + name + "\"");
-    return *v;
 }
 
 TextStyle textStyleFromJson(const QJsonObject& o, const std::string& what) {
@@ -637,6 +642,8 @@ TextStyle textStyleFromJson(const QJsonObject& o, const std::string& what) {
         fail(r.what() + ": " + *problem);
     return style;
 }
+
+namespace {
 
 QJsonObject layerJson(const Layer& l) {
     const LayerProperties& p = l.props;

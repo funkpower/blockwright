@@ -1,0 +1,10 @@
+{
+  "kind": "text-style",
+  "name": "Outline",
+  "category": "classic",
+  "tags": ["outline", "border"],
+  "effects": [
+    {"kind": "outline", "enabled": true, "colour": 15, "form": "pixels"},
+    {"kind": "fill", "enabled": true, "colour": 3, "mode": "flat", "ramp": "sea"}
+  ]
+}

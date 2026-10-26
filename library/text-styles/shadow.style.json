@@ -1,0 +1,11 @@
+{
+  "kind": "text-style",
+  "name": "Shadow",
+  "category": "classic",
+  "tags": ["shadow", "drop"],
+  "effects": [
+    {"kind": "shadow", "enabled": true, "colour": 8, "direction": "sw", "distance": 1, "form": "drop"},
+    {"kind": "outline", "enabled": true, "colour": 8, "form": "pixels"},
+    {"kind": "fill", "enabled": true, "colour": 3, "mode": "flat", "ramp": "sea"}
+  ]
+}

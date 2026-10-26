@@ -2,6 +2,11 @@
 
 #include "blockwright/cp437.h"
 #include "blockwright/irc.h"
+#include "blockwright/project.h"
+#include "blockwright/ramp.h"
+#include "blockwright/text.h"
+
+#include "style_json.h"
 
 #include <QByteArray>
 #include <QFile>
@@ -19,9 +24,11 @@
 #include <optional>
 #include <cstdlib>
 #include <fstream>
+#include <initializer_list>
 #include <map>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -176,37 +183,6 @@ void checkWritable(const fs::path& p) {
         throw LibraryError(p.string() + " is a symbolic link; a stamp is never written through one");
     if (fs::exists(st) && !fs::is_regular_file(st))
         throw LibraryError(p.string() + " is not a regular file");
-}
-
-// The keys of the top-level object of `json`, which is valid JSON (Qt has
-// parsed it), decoded. QJsonDocument keeps only the last of a repeated key,
-// so repeats are found here.
-std::vector<QString> topLevelKeys(std::string_view json) {
-    std::vector<QString> keys;
-    int depth = 0;
-    for (std::size_t i = 0; i < json.size(); ++i) {
-        const char c = json[i];
-        if (c == '{' || c == '[') {
-            ++depth;
-        } else if (c == '}' || c == ']') {
-            --depth;
-        } else if (c == '"') {
-            const std::size_t start = i;
-            for (++i; i < json.size() && json[i] != '"'; ++i)
-                if (json[i] == '\\')
-                    ++i;
-            if (depth != 1)
-                continue;
-            std::size_t j = i + 1;
-            while (j < json.size() && (json[j] == ' ' || json[j] == '\t' || json[j] == '\n' || json[j] == '\r'))
-                ++j;
-            if (j < json.size() && json[j] == ':') {
-                const std::string raw = "[" + std::string(json.substr(start, i - start + 1)) + "]";
-                keys.push_back(QJsonDocument::fromJson(QByteArray::fromStdString(raw)).array().at(0).toString());
-            }
-        }
-    }
-    return keys;
 }
 
 // `bytes` written to a new temporary file beside `target`, renamed over
@@ -364,40 +340,54 @@ std::size_t widestRowBytes(const Canvas& canvas) {
     return widest;
 }
 
-std::string sidecarJson(const StampMeta& meta) {
-    // Written by hand so the key order is fixed and diffs stay small.
-    const auto quoted = [](const std::string& s) {
-        // QJsonDocument does the escaping.
-        const QByteArray a = QJsonDocument(QJsonArray{QString::fromStdString(s)}).toJson(QJsonDocument::Compact);
-        return a.mid(1, a.size() - 2).toStdString();
-    };
-    std::string out = "{\n  \"category\": " + quoted(meta.category) + ",\n  \"tags\": [";
-    for (std::size_t i = 0; i < meta.tags.size(); ++i)
-        out += (i ? ", " : "") + quoted(meta.tags[i]);
-    out += "],\n  \"ircBytes\": " + std::to_string(meta.ircBytes) + "\n}\n";
-    return out;
+namespace {
+
+// A JSON value as compact text; QJsonDocument does the escaping.
+std::string jsonText(const QJsonValue& v) {
+    const QByteArray a = QJsonDocument(QJsonArray{v}).toJson(QJsonDocument::Compact);
+    return a.mid(1, a.size() - 2).toStdString();
 }
 
-StampMeta parseSidecar(std::string_view json) {
+std::string quoted(const std::string& s) { return jsonText(QString::fromStdString(s)); }
+
+std::string tagsJson(const std::vector<std::string>& tags) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < tags.size(); ++i)
+        out += (i ? ", " : "") + quoted(tags[i]);
+    return out + "]";
+}
+
+// The top-level object of `json`, refused (as `what`) unless it is one
+// whose keys are all `known` and no object in it, at any depth, holds a key
+// twice, as a project file's are refused (project::repeatedKey).
+QJsonObject knownObject(std::string_view json, const std::string& what, std::initializer_list<const char*> known) {
     QJsonParseError err{};
     const QJsonDocument doc =
         QJsonDocument::fromJson(QByteArray(json.data(), static_cast<qsizetype>(json.size())), &err);
     if (err.error != QJsonParseError::NoError)
-        throw LibraryError("sidecar is not JSON: " + err.errorString().toStdString() + " at offset " +
+        throw LibraryError(what + " is not JSON: " + err.errorString().toStdString() + " at offset " +
                            std::to_string(err.offset));
     if (!doc.isObject())
-        throw LibraryError("sidecar is not a JSON object");
-    {
-        std::vector<QString> keys = topLevelKeys(json);
-        std::sort(keys.begin(), keys.end());
-        if (const auto d = std::adjacent_find(keys.begin(), keys.end()); d != keys.end())
-            throw LibraryError("sidecar has the key \"" + d->toStdString() + "\" more than once");
-    }
+        throw LibraryError(what + " is not a JSON object");
+    if (const auto key = project::repeatedKey(json))
+        throw LibraryError(what + " has the key \"" + key->toStdString() + "\" more than once");
     const QJsonObject o = doc.object();
     for (auto it = o.begin(); it != o.end(); ++it)
-        if (it.key() != QLatin1String(kCategory) && it.key() != QLatin1String(kTags) &&
-            it.key() != QLatin1String(kIrcBytes))
-            throw LibraryError("sidecar has an unknown key \"" + it.key().toStdString() + "\"");
+        if (std::none_of(known.begin(), known.end(), [&](const char* k) { return it.key() == QLatin1String(k); }))
+            throw LibraryError(what + " has an unknown key \"" + it.key().toStdString() + "\"");
+    return o;
+}
+
+} // namespace
+
+std::string sidecarJson(const StampMeta& meta) {
+    // Written by hand so the key order is fixed and diffs stay small.
+    return "{\n  \"category\": " + quoted(meta.category) + ",\n  \"tags\": " + tagsJson(meta.tags) +
+           ",\n  \"ircBytes\": " + std::to_string(meta.ircBytes) + "\n}\n";
+}
+
+StampMeta parseSidecar(std::string_view json) {
+    const QJsonObject o = knownObject(json, "sidecar", {kCategory, kTags, kIrcBytes});
     StampMeta m;
     const QJsonValue cat = o.value(QLatin1String(kCategory));
     if (!cat.isString())
@@ -448,6 +438,141 @@ fs::path pairedSidecar(const fs::path& ans) {
         return exact;
     std::sort(found.begin(), found.end());
     return found.front();
+}
+
+// ---- Text styles ----
+
+namespace {
+
+constexpr const char* kKind = "kind";
+constexpr const char* kName = "name";
+constexpr const char* kIce = "ice";
+constexpr const char* kEffects = "effects";
+constexpr const char* kTextStyleKind = "text-style";
+constexpr const char* kIceRequired = "required";
+
+std::string textField(const QJsonObject& o, const char* key) {
+    const QJsonValue v = o.value(QLatin1String(key));
+    if (!v.isString())
+        throw LibraryError(std::string("text style \"") + key + "\" is missing or not a string");
+    std::string s = v.toString().toStdString();
+    checkText(s, (std::string("text style \"") + key + "\"").c_str());
+    return s;
+}
+
+} // namespace
+
+bool isTextStyleName(const fs::path& p) {
+    const std::string name = lowered(p.filename().string());
+    constexpr std::string_view suffix = ".style.json";
+    return name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::string textStyleEntryJson(const TextStyleEntry& entry) {
+    // By hand, as the sidecar is: the entry's keys in a fixed order, each
+    // effect on a line of its own with its kind and switch first.
+    std::string out = "{\n  \"kind\": " + quoted(kTextStyleKind) + ",\n  \"name\": " + quoted(entry.name) +
+                      ",\n  \"category\": " + quoted(entry.category) + ",\n  \"tags\": " + tagsJson(entry.tags);
+    if (entry.iceRequired)
+        out += ",\n  \"ice\": " + quoted(kIceRequired);
+    out += ",\n  \"effects\": [";
+    const QJsonArray effects = project::textStyleJson(entry.style).value(QLatin1String(kEffects)).toArray();
+    for (qsizetype i = 0; i < effects.size(); ++i) {
+        const QJsonObject e = effects[i].toObject();
+        out += std::string(i ? "," : "") + "\n    {\"kind\": " + jsonText(e.value(QLatin1String(kKind))) +
+               ", \"enabled\": " + jsonText(e.value(QLatin1String("enabled")));
+        for (auto it = e.begin(); it != e.end(); ++it)
+            if (it.key() != QLatin1String(kKind) && it.key() != QLatin1String("enabled"))
+                out += ", " + quoted(it.key().toStdString()) + ": " + jsonText(it.value());
+        out += "}";
+    }
+    out += effects.isEmpty() ? "]\n}\n" : "\n  ]\n}\n";
+    return out;
+}
+
+TextStyleEntry parseTextStyleEntry(std::string_view json) {
+    // The kind first: a file without one (a stamp's sidecar given the
+    // suffix, say) is told what a .style.json holds, not about its keys.
+    const QJsonDocument peek = QJsonDocument::fromJson(QByteArray(json.data(), static_cast<qsizetype>(json.size())));
+    if (peek.isObject() && !peek.object().contains(QLatin1String(kKind)))
+        throw LibraryError("text style has no \"kind\" (a .style.json holds \"kind\": \"text-style\")");
+    const QJsonObject o =
+        knownObject(json, "text style", {kKind, kName, kCategory, kTags, kIce, kEffects});
+    const QJsonValue kind = o.value(QLatin1String(kKind));
+    if (kind != QJsonValue(QLatin1String(kTextStyleKind)))
+        throw LibraryError("text style \"kind\" is " + jsonText(kind) + ", not \"text-style\"");
+    TextStyleEntry entry;
+    entry.name = textField(o, kName);
+    entry.category = textField(o, kCategory);
+    const QJsonValue tags = o.value(QLatin1String(kTags));
+    if (!tags.isArray())
+        throw LibraryError("text style \"tags\" is missing or not an array");
+    for (const QJsonValue& t : tags.toArray()) {
+        if (!t.isString())
+            throw LibraryError("text style \"tags\" holds something other than a string");
+        entry.tags.push_back(t.toString().toStdString());
+        checkTag(entry.tags.back(), "a text style tag");
+    }
+    if (o.contains(QLatin1String(kIce))) {
+        const QJsonValue ice = o.value(QLatin1String(kIce));
+        if (ice != QJsonValue(QLatin1String(kIceRequired)))
+            throw LibraryError("text style \"ice\" is " + jsonText(ice) + "; the only value it takes is \"required\"");
+        entry.iceRequired = true;
+    }
+    const QJsonValue effects = o.value(QLatin1String(kEffects));
+    if (!effects.isArray())
+        throw LibraryError("text style \"effects\" is missing or not a list");
+    if (effects.toArray().isEmpty())
+        throw LibraryError("text style has no effects, so it draws nothing a plain layer doesn't");
+    try {
+        // "text" + " style …" in the reader's messages
+        entry.style = project::textStyleFromJson(QJsonObject{{QLatin1String(kEffects), effects}}, "text");
+    } catch (const project::ProjectError& e) {
+        throw LibraryError(e.what());
+    }
+    // A flat Fill's ramp draws nothing, so the project reader lets it be;
+    // a preset keeps it for when the Fill is switched to a gradient, so it
+    // must be one this build has, switched on or off.
+    for (const Effect& e : entry.style.effects)
+        if (const auto* fill = std::get_if<FillEffect>(&e.settings); fill && !findRamp(fill->ramp))
+            throw LibraryError("text style: fill ramp \"" + fill->ramp + "\" is not a named ramp");
+    // The project reader skips keys it doesn't know (a newer minor
+    // version's); an entry, like a sidecar, refuses them, so a typo is
+    // caught: every key must be one the effect is written with.
+    const QJsonArray in = effects.toArray();
+    const QJsonArray out = project::textStyleJson(entry.style).value(QLatin1String(kEffects)).toArray();
+    for (qsizetype i = 0; i < in.size(); ++i) {
+        const QJsonObject e = in[i].toObject(), known = out[i].toObject();
+        for (auto it = e.begin(); it != e.end(); ++it)
+            if (!known.contains(it.key()))
+                throw LibraryError("text style effect " + std::to_string(i + 1) + " (" +
+                                   known.value(QLatin1String(kKind)).toString().toStdString() +
+                                   ") has an unknown key \"" + it.key().toStdString() + "\"");
+    }
+    return entry;
+}
+
+TextStyleEntry readTextStyleEntry(const fs::path& p) {
+    std::error_code ec;
+    if (!fs::exists(fs::status(p, ec)))
+        throw LibraryError(".style.json can't be read");
+    if (!regular(p))
+        throw LibraryError(".style.json is not a regular file");
+    std::string json;
+    try {
+        json = readAll(p);
+    } catch (const LibraryError& e) {
+        throw LibraryError(std::string(".style.json ") + e.what());
+    }
+    TextStyleEntry entry = parseTextStyleEntry(json);
+    entry.path = p;
+    return entry;
+}
+
+Canvas textStyleSample(const TextStyle& style, bool ice) {
+    TextSource source;
+    source.text = U"Aa";
+    return renderStyledText(source, style, blockFace(), ice).cells;
 }
 
 Stamp readStamp(const fs::path& ans) {
@@ -785,6 +910,12 @@ ScanResult scan(const fs::path& dir) {
 
     std::sort(ans.begin(), ans.end());
     for (const fs::path& p : ans) {
+        // Its sidecar's name would be a text style's, which is read as one.
+        if (isTextStyleName(sidecarPath(p))) {
+            r.problems.push_back({p, "a stamp can't be named " + p.filename().string() + ": its sidecar " +
+                                         sidecarPath(p).filename().string() + " would be a text style's file"});
+            continue;
+        }
         jsons.erase(pairedSidecar(p));
         try {
             r.stamps.push_back(readStamp(p));
@@ -793,6 +924,14 @@ ScanResult scan(const fs::path& dir) {
         }
     }
     for (const fs::path& j : jsons) {
+        if (isTextStyleName(j)) {
+            try {
+                r.styles.push_back(readTextStyleEntry(j));
+            } catch (const LibraryError& e) {
+                r.problems.push_back({j, e.what()});
+            }
+            continue;
+        }
         fs::path a = j;
         a.replace_extension(".ans");
         r.problems.push_back({j, "sidecar with no " + a.filename().string()});

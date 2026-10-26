@@ -16,12 +16,28 @@
 // sidecar that repeats a key, and a stamp whose cells are all blank (it
 // would draw nothing).
 //
+// A text style (PLAN §15) is one file, <slug>.style.json:
+//   {"kind": "text-style", "name": "...", "category": "...",
+//    "tags": ["...", ...], "ice": "required", "effects": [...]}
+// "kind" says what the file is and is always "text-style"; the effects are
+// in the form a project's layer style holds them (project.h, PLAN §6) and
+// checked as a project's are (textStyleProblem: effects and settings it
+// knows, at most one of each kind, ramps that exist). "ice" is optional
+// and, when there, "required": the look needs a bright background, which
+// only iCE colours give (with them off the Fill and Glow ladders stop short
+// of the rung that needs one). The name and category are as a stamp's
+// category is, the tags as a stamp's. Nothing else is allowed, at the top
+// or in an effect, and no top-level key twice. A file is a text style by
+// its name (isTextStyleName) and by its kind, so a scan never takes one for
+// a stamp's sidecar: no stamp is named <x>.style.ans.
+//
 // Libraries are directories scanned recursively: the bundled read-only one
 // at <prefix>/share/blockwright/library/ and the user's in the app data
 // directory.
 
 #include "blockwright/ansi.h"
 #include "blockwright/selection.h"
+#include "blockwright/text_style.h"
 
 #include <cstddef>
 #include <filesystem>
@@ -152,14 +168,44 @@ struct StampTarget {
 };
 StampTarget stampPathFor(const std::filesystem::path& dir, const std::string& name);
 
+// A text style entry (see the top).
+struct TextStyleEntry {
+    std::filesystem::path path;     // the .style.json; empty when parsed from text
+    std::string name;               // UTF-8, not empty
+    std::string category;           // UTF-8, not empty
+    std::vector<std::string> tags;  // as a stamp's
+    bool iceRequired = false;       // "ice": "required"
+    TextStyle style;
+
+    bool operator==(const TextStyleEntry&) const = default;
+};
+
+// Whether `p` is named as a text style: it ends in ".style.json", ASCII
+// case folded.
+bool isTextStyleName(const std::filesystem::path& p);
+
+// The entry as JSON text (keys in a fixed order, two-space indent, a
+// trailing newline; the path isn't written), and back. parseTextStyleEntry
+// throws LibraryError saying what is wrong.
+std::string textStyleEntryJson(const TextStyleEntry& entry);
+TextStyleEntry parseTextStyleEntry(std::string_view json);
+// The entry in the regular file at `p` (through a link), its path `p`.
+TextStyleEntry readTextStyleEntry(const std::filesystem::path& p);
+
+// The text a style's thumbnail shows, "Aa" in the block face, drawn with
+// `style` and iCE colours `ice` (renderStyledText).
+Canvas textStyleSample(const TextStyle& style, bool ice);
+
 struct Problem {
     std::filesystem::path path;
     std::string message;
 };
 
 struct ScanResult {
-    std::vector<Stamp> stamps;  // sorted by path
-    // Sorted by path: stamps that failed readStamp, sidecars with no .ans,
+    std::vector<Stamp> stamps;            // sorted by path
+    std::vector<TextStyleEntry> styles;  // sorted by path
+    // Sorted by path: stamps that failed readStamp, text styles that failed
+    // readTextStyleEntry, stamps named <x>.style.ans, sidecars with no .ans,
     // broken symbolic links, links to folders (not followed), folders that
     // can't be read, and .ans or .json entries that aren't regular files
     // (a FIFO is never opened), or that can't be read at all.
@@ -167,7 +213,8 @@ struct ScanResult {
 };
 
 // Every stamp under `dir`, recursively: each art file (isArtName) with its
-// pairedSidecar. A symbolic link to a file is read
+// pairedSidecar; and every text style, each .style.json no stamp pairs
+// with (a stamp named <x>.style.ans is a problem). A symbolic link to a file is read
 // through; one to a folder is not followed, so that a link isn't followed by
 // accident (not as a security boundary: a folder swapped for a link while
 // the scan runs is followed, and whoever can do that can already write

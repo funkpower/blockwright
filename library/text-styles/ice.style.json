@@ -1,0 +1,10 @@
+{
+  "kind": "text-style",
+  "name": "Ice",
+  "category": "elements",
+  "tags": ["ice", "frost", "cold"],
+  "effects": [
+    {"kind": "outline", "enabled": true, "colour": 3, "form": "pixels"},
+    {"kind": "fill", "enabled": true, "colour": 9, "mode": "flat", "ramp": "ice"}
+  ]
+}

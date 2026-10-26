@@ -423,10 +423,10 @@ expect "unknown option" 2 'Unknown option' -- "$cli" --bogus
 
 # library list / check
 lib=$data/library
-expect "library check: a good library" 0 '^2 stamp\(s\), 0 problem\(s\)$' -- "$cli" library check "$lib"
-expect "library list: tab-separated" 0 $'^sky\tSmall star\t5x3\t16\tstar,night\t.*/sky/small-star\\.ans$' -- "$cli" library list "$lib"
-expect "library list: sorted by path" 0 $'^figures\tTux\t30x17\t80\tpenguin,linux\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$lib"
-expect "library list: no dir lists the bundled and user libraries" 0 $'^sky\tSmall star\t' -- env BLOCKWRIGHT_BUNDLED_LIBRARY="$lib" BLOCKWRIGHT_USER_LIBRARY="$tmp/no-user-lib" "$cli" library list
+expect "library check: a good library" 0 '^2 stamp\(s\), 0 text style\(s\), 0 problem\(s\)$' -- "$cli" library check "$lib"
+expect "library list: tab-separated" 0 $'^stamp\tsky\tSmall star\t5x3\t16\t-\tstar,night\t.*/sky/small-star\\.ans$' -- "$cli" library list "$lib"
+expect "library list: sorted by path" 0 $'^stamp\tfigures\tTux\t30x17\t80\t-\tpenguin,linux\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$lib"
+expect "library list: no dir lists the bundled and user libraries" 0 $'^stamp\tsky\tSmall star\t' -- env BLOCKWRIGHT_BUNDLED_LIBRARY="$lib" BLOCKWRIGHT_USER_LIBRARY="$tmp/no-user-lib" "$cli" library list
 expect "library check: missing dir" 1 'nope: not a directory' -- "$cli" library check "$tmp/nope"
 expect "library check: needs a dir" 2 'library check takes one directory' -- "$cli" library check
 expect "library: needs a subcommand" 2 'library needs a subcommand' -- "$cli" library
@@ -457,7 +457,7 @@ expect "library check: an all-blank stamp" 1 'blank\.ans: \.ans has no drawn cel
 expect "library check: a linked folder" 1 'linked: symbolic link to a folder, not followed' -- "$cli" library check "$bl"
 expect "library check: a broken link" 1 'dangling\.ans: broken symbolic link, skipped' -- "$cli" library check "$bl"
 expect "library list: a linked folder is a warning" 0 'warning: .*linked: symbolic link to a folder' -- "$cli" library list "$bl"
-expect "library check: counts" 1 '^0 stamp\(s\), 9 problem\(s\)$' -- "$cli" library check "$bl"
+expect "library check: counts" 1 '^0 stamp\(s\), 0 text style\(s\), 9 problem\(s\)$' -- "$cli" library check "$bl"
 expect "library list: problems are warnings" 0 'warning: .*orphan\.json: sidecar with no orphan\.ans' -- "$cli" library list "$bl"
 b2=$tmp/badlib2; mkdir -p "$b2"
 cp "$lib/sky/small-star.ans" "$b2/dup.ans"
@@ -465,6 +465,54 @@ printf '{"category":7,"category":"sky","tags":[],"ircBytes":9999,"ircBytes":16}\
 mkfifo "$b2/pipe.ans"
 expect "library check: a repeated key" 1 'dup\.ans: sidecar has the key "category" more than once' -- timeout 10 "$cli" library check "$b2"
 expect "library check: a FIFO is never opened" 1 'pipe\.ans: not a regular file, skipped' -- timeout 10 "$cli" library check "$b2"
+# text styles: <slug>.style.json, by its name and its kind
+sl=$tmp/stylelib; mkdir -p "$sl/text"
+cp "$lib/sky/small-star."* "$sl/"
+cat > "$sl/text/gold.style.json" <<'JSON'
+{
+  "kind": "text-style",
+  "name": "Gold",
+  "category": "classic",
+  "tags": ["gold", "3d"],
+  "effects": [
+    {"kind": "shadow", "enabled": true, "colour": 4, "direction": "se", "distance": 1, "form": "extrude"},
+    {"kind": "fill", "enabled": true, "colour": 14, "mode": "flat", "ramp": "fire"}
+  ]
+}
+JSON
+cat > "$sl/text/hot.style.json" <<'JSON'
+{"kind": "text-style", "name": "Hot", "category": "classic", "tags": ["fire"], "ice": "required",
+ "effects": [{"kind": "fill", "enabled": true, "colour": 7, "mode": "rows", "ramp": "fire"}]}
+JSON
+expect "library check: text styles" 0 '^1 stamp\(s\), 2 text style\(s\), 0 problem\(s\)$' -- "$cli" library check "$sl"
+expect "library list: a text style's kind and sample" 0 $'^text-style\tclassic\tGold\t[0-9]+x[0-9]+\t[0-9]+\t-\tgold,3d\t.*/text/gold\\.style\\.json$' -- "$cli" library list "$sl"
+expect "library list: a text style that needs iCE colours" 0 $'^text-style\tclassic\tHot\t[0-9]+x[0-9]+\t[0-9]+\tice\tfire\t' -- "$cli" library list "$sl"
+expect "library list: stamps first" 0 $'^stamp\tsky\tSmall star\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$sl"
+s2=$tmp/stylelib2; mkdir -p "$s2"
+sed 's/"enabled": true, "colour": 4/"enabled": true, "blur": 2, "colour": 4/' "$sl/text/gold.style.json" > "$s2/typo.style.json"
+sed 's/"ramp": "fire"/"ramp": "lava"/' "$sl/text/hot.style.json" > "$s2/ramp.style.json"
+sed 's/"kind": "text-style",//' "$sl/text/gold.style.json" > "$s2/nokind.style.json"
+sed 's/"flat"/"tiled"/' "$sl/text/gold.style.json" > "$s2/mode.style.json"
+cp "$lib/sky/small-star.json" "$s2/star.style.json"; cp "$lib/sky/small-star.ans" "$s2/star.style.ans"
+cat > "$s2/dupeffect.style.json" <<'JSON'
+{"kind":"text-style","name":"Duplicate","category":"test","tags":[],"effects":[{"kind":"fill","enabled":true,"mode":"flat","colour":4,"colour":7,"ramp":"steel"}]}
+JSON
+cat > "$s2/escdup.style.json" <<'JSON'
+{"kind":"text-style","name":"Escaped","category":"test","tags":[],"effects":[{"kind":"fill","enabled":true,"mode":"flat","colour":4,"\u0063olour":7,"ramp":"steel"}]}
+JSON
+cat > "$s2/flatramp.style.json" <<'JSON'
+{"kind":"text-style","name":"Bad ramp","category":"test","tags":[],"effects":[{"kind":"fill","enabled":true,"mode":"flat","colour":7,"ramp":"does-not-exist"}]}
+JSON
+expect "library check: an unknown key in an effect" 1 'typo\.style\.json: text style effect 1 \(shadow\) has an unknown key "blur"' -- "$cli" library check "$s2"
+expect "library check: a ramp that doesn't exist" 1 'ramp\.style\.json: text style: fill ramp "lava" is not a named ramp' -- "$cli" library check "$s2"
+expect "library check: a text style without its kind" 1 'nokind\.style\.json: text style has no "kind"' -- "$cli" library check "$s2"
+expect "library check: an unknown setting" 1 'mode\.style\.json: text style effect 2: unknown mode "tiled"' -- "$cli" library check "$s2"
+expect "library check: a stamp named as a text style" 1 'star\.style\.ans: a stamp can.t be named star\.style\.ans' -- "$cli" library check "$s2"
+expect "library check: a sidecar named as a text style is no sidecar" 1 'star\.style\.json: text style has no "kind"' -- "$cli" library check "$s2"
+expect "library check: a key repeated in an effect" 1 'dupeffect\.style\.json: text style has the key "colour" more than once' -- "$cli" library check "$s2"
+expect "library check: a key repeated in an effect, escaped" 1 'escdup\.style\.json: text style has the key "colour" more than once' -- "$cli" library check "$s2"
+expect "library check: a flat fill's ramp that doesn't exist" 1 'flatramp\.style\.json: text style: fill ramp "does-not-exist" is not a named ramp' -- "$cli" library check "$s2"
+expect "library check: text style counts" 1 '^0 stamp\(s\), 0 text style\(s\), 9 problem\(s\)$' -- "$cli" library check "$s2"
 if [[ $(id -u) -ne 0 ]]; then
   b3=$tmp/badlib3; mkdir -p "$b3/locked"; cp "$lib/sky/small-star."* "$b3/"
   chmod 000 "$b3/locked"

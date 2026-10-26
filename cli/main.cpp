@@ -622,12 +622,15 @@ std::filesystem::path libraryDir(const std::string& dir) {
     return dir;
 }
 
-// library list [dir]: one stamp a line, tab-separated: category, name,
-// width x height, the widest row's IRC bytes, tags (comma-separated: a tag
-// never holds a comma or a tab, and a category or name never holds a tab or
-// newline), path.
-// Without a dir, the bundled library and then the user library. Stamps that
-// can't be read are warnings on stderr; the exit status is still 0.
+// library list [dir]: one entry a line, tab-separated: its kind (stamp or
+// text-style), category, name, width x height, the widest row's IRC bytes,
+// "ice" for a text style that needs iCE colours ("-" otherwise), tags
+// (comma-separated: a tag never holds a comma or a tab, and a category or
+// name never holds a tab or newline), path. A text style's size and bytes
+// are its thumbnail sample's, drawn with iCE colours.
+// Without a dir, the bundled library and then the user library: in each,
+// the stamps and then the text styles. Entries that can't be read are
+// warnings on stderr; the exit status is still 0.
 int libraryList(const std::optional<std::string>& dir) {
     std::vector<std::filesystem::path> dirs;
     if (dir) {
@@ -642,30 +645,56 @@ int libraryList(const std::optional<std::string>& dir) {
     for (const auto& d : dirs) {
         const bw::library::ScanResult r = bw::library::scan(d);
         for (const bw::library::Stamp& s : r.stamps)
-            std::cout << s.meta.category << "\t" << s.displayName() << "\t" << s.art.canvas.width() << "x"
-                      << s.art.canvas.height() << "\t" << s.meta.ircBytes << "\t" << joined(s.meta.tags, ",")
-                      << "\t" << s.path.string() << "\n";
+            std::cout << "stamp\t" << s.meta.category << "\t" << s.displayName() << "\t" << s.art.canvas.width()
+                      << "x" << s.art.canvas.height() << "\t" << s.meta.ircBytes << "\t-\t"
+                      << joined(s.meta.tags, ",") << "\t" << s.path.string() << "\n";
+        for (const bw::library::TextStyleEntry& t : r.styles) {
+            const bw::Canvas sample = bw::library::textStyleSample(t.style, true);
+            std::cout << "text-style\t" << t.category << "\t" << t.name << "\t" << sample.width() << "x"
+                      << sample.height() << "\t" << bw::library::widestRowBytes(sample) << "\t"
+                      << (t.iceRequired ? "ice" : "-") << "\t" << joined(t.tags, ",") << "\t" << t.path.string()
+                      << "\n";
+        }
         for (const bw::library::Problem& p : r.problems)
             std::cerr << "warning: " << p.path.string() << ": " << p.message << "\n";
     }
     return kOk;
 }
 
-// library check <dir>: reads every stamp and sidecar under dir and reports
-// each problem on stderr, plus any stamp whose widest row alone is over the
-// IRC byte budget. Exit 1 if there was any.
+// library check <dir>: reads every stamp, sidecar and text style under dir
+// and reports each problem on stderr, plus any stamp whose widest row alone
+// is over the IRC byte budget, and any text style whose thumbnail sample
+// can't be drawn or has a row over it: the sample is drawn with iCE colours
+// and, unless the style needs them, without. Exit 1 if there was any.
 int libraryCheck(const std::string& dir) {
     const bw::library::ScanResult r = bw::library::scan(libraryDir(dir));
     std::size_t problems = r.problems.size();
     for (const bw::library::Problem& p : r.problems)
         std::cerr << p.path.string() << ": " << p.message << "\n";
+    const auto overBudget = [&](const std::filesystem::path& path, const std::string& what, std::size_t bytes) {
+        if (bytes <= bw::irc::kEfnetWeechatBudget)
+            return;
+        std::cerr << path.string() << ": " << what << " is " << bytes << " IRC bytes, over the "
+                  << bw::irc::kEfnetWeechatBudget << "-byte budget\n";
+        ++problems;
+    };
     for (const bw::library::Stamp& s : r.stamps)
-        if (s.meta.ircBytes > bw::irc::kEfnetWeechatBudget) {
-            std::cerr << s.path.string() << ": the widest row is " << s.meta.ircBytes << " IRC bytes, over the "
-                      << bw::irc::kEfnetWeechatBudget << "-byte budget\n";
-            ++problems;
+        overBudget(s.path, "the widest row", s.meta.ircBytes);
+    for (const bw::library::TextStyleEntry& t : r.styles)
+        for (const bool ice : {true, false}) {
+            if (!ice && t.iceRequired)
+                continue;
+            const std::string what = std::string("the sample's widest row with iCE colours ") + (ice ? "on" : "off");
+            try {
+                overBudget(t.path, what, bw::library::widestRowBytes(bw::library::textStyleSample(t.style, ice)));
+            } catch (const std::exception& e) {
+                std::cerr << t.path.string() << ": the sample can't be drawn with iCE colours " << (ice ? "on" : "off")
+                          << ": " << e.what() << "\n";
+                ++problems;
+            }
         }
-    std::cout << r.stamps.size() << " stamp(s), " << problems << " problem(s)\n";
+    std::cout << r.stamps.size() << " stamp(s), " << r.styles.size() << " text style(s), " << problems
+              << " problem(s)\n";
     return problems ? kBadInput : kOk;
 }
 
@@ -708,10 +737,14 @@ int main(int argc, char** argv) {
         "  render --irc <in> <out.png>\n"
         "                       draw the IRC view: the mIRC palette, what IRC\n"
         "                       drops, and each line cut at --budget bytes\n"
-        "  library list [dir]   list the stamps in dir (default: the bundled and\n"
-        "                       user libraries): category, name, size, widest\n"
-        "                       IRC row in bytes, tags, path; tab-separated\n"
-        "  library check <dir>  check every stamp and sidecar in dir\n"
+        "  library list [dir]   list the stamps and text styles in dir (default:\n"
+        "                       the bundled and user libraries): kind, category,\n"
+        "                       name, size, widest IRC row in bytes, ice when a\n"
+        "                       text style needs iCE colours, tags, path;\n"
+        "                       tab-separated (a text style's size and bytes are\n"
+        "                       its thumbnail sample's)\n"
+        "  library check <dir>  check every stamp, sidecar and text style in dir,\n"
+        "                       drawing each text style's sample\n"
         "  pack <in> <out.bwp>  write an .ans or a project as a project zip\n"
         "  unpack <in> <dir>    write an .ans or a project as a project directory;\n"
         "                       <dir> must be empty or a project already\n"

@@ -1,0 +1,10 @@
+{
+  "kind": "text-style",
+  "name": "Chrome",
+  "category": "metal",
+  "tags": ["chrome", "steel", "metal"],
+  "effects": [
+    {"kind": "outline", "enabled": true, "colour": 11, "form": "pixels"},
+    {"kind": "fill", "enabled": true, "colour": 7, "mode": "flat", "ramp": "steel"}
+  ]
+}

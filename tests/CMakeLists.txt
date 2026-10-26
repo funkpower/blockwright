@@ -51,6 +51,7 @@ add_executable(blockwright-tests
   test_selection.cpp
   test_symmetry_stroke.cpp
   test_text.cpp
+  test_text_presets.cpp
   test_text_style.cpp
   util.h
 )

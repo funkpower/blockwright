@@ -47,6 +47,7 @@
 #include "blockwright/face.h"
 #include "blockwright/font_store.h"
 #include "blockwright/layer.h"
+#include "blockwright/style_draw.h"
 #include "blockwright/text_source.h"
 
 #include <cstdint>
@@ -82,6 +83,11 @@ TextRender renderText(const TextSource& source, const Face& face);
 // (textStyleProblem) or a box with the style's margins larger than a layer
 // the project file holds, measured first as renderText does.
 TextRender renderStyledText(const TextSource& source, const TextStyle& style, const Face& face, bool ice = true);
+
+// The source laid out as its style reads it (style_draw.h), the box at
+// (0, 0): what renderStyledText draws the style on, with the style's
+// margins. Throws TextError as renderText does.
+StyleInput textStyleInput(const TextSource& source, const Face& face);
 
 // Thrown for a source that can't be drawn (textSourceProblem).
 class TextError : public std::runtime_error {
