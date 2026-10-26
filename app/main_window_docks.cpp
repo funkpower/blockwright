@@ -21,6 +21,7 @@
 #include <QMenu>
 #include <QLayout>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QResizeEvent>
 #include <QShowEvent>
 
@@ -36,6 +37,29 @@ constexpr int kLeftColumnWidth = 256;
 constexpr int kRightColumnWidth = 360;
 // An 80-column piece at 1x, excluding the frame, scrollbar and IRC gutter.
 constexpr int kCanvasViewportFloor = 640;
+
+// A panel that scrolls up and down only: at least as wide as its content
+// and the vertical scrollbar, so the column's minimum width shows it all.
+class PanelScroll : public QScrollArea {
+public:
+    QSize minimumSizeHint() const override {
+        QSize hint = QScrollArea::minimumSizeHint();
+        if (const QWidget* content = widget()) {
+            const int contentWidth = std::max(content->minimumWidth(), content->minimumSizeHint().width());
+            hint.setWidth(std::max(hint.width(), contentWidth + verticalScrollBar()->sizeHint().width() + 2 * frameWidth()));
+        }
+        return hint;
+    }
+
+protected:
+    // The content's minimum can change after it is set (a generator's form
+    // shown or rebuilt): let the dock column ask again.
+    bool eventFilter(QObject* watched, QEvent* e) override {
+        if (watched == widget() && e->type() == QEvent::LayoutRequest)
+            updateGeometry();
+        return QScrollArea::eventFilter(watched, e);
+    }
+};
 
 } // namespace
 
@@ -89,6 +113,17 @@ void MainWindow::createDocks() {
     lintDock_ = dock(tr("Lint"), "lintDock", lint_);
     ircView_ = new IrcViewDock(&doc_);
     ircViewDock_ = dock(tr("IRC View"), "ircViewDock", ircView_);
+    // These panels' forms, lists and buttons otherwise add their minimum
+    // heights across the right column. Keep the content's own minimums,
+    // scrolling the whole panel when the column has less height to share.
+    for (QDockWidget* d : {layersDock_, libraryDock_, lintDock_, ircViewDock_}) {
+        QWidget* content = d->widget();
+        auto* scroll = new PanelScroll;
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidget(content);
+        d->setWidget(scroll);
+    }
     // a tab behind another is still visible to Qt, off-screen
     connect(lintDock_, &QDockWidget::visibilityChanged, lint_, &FollowsDocument::setShown);
     connect(ircViewDock_, &QDockWidget::visibilityChanged, ircView_, &FollowsDocument::setShown);
@@ -132,6 +167,9 @@ QList<QDockWidget*> MainWindow::docks() const {
 }
 
 void MainWindow::resetLayout() {
+    // Don't enforce the taller intermediate layout while the IRC View and
+    // Lint are separate docks: only the finished, tabbed layout must fit.
+    layout()->setEnabled(false);
     // Left: the toolbox over its options. Right: the preview, the palette,
     // the layers, the library, and Lint tabbed with the IRC View. Bottom: the
     // glyph bar.
@@ -152,6 +190,8 @@ void MainWindow::resetLayout() {
     }
     // the second goes on top
     tabifyDockWidget(ircViewDock_, lintDock_);
+    layout()->setEnabled(true);
+    layout()->activate();
     defaultDockWidthsPending_ = true;
     if (isVisible())
         applyDefaultDockWidths();

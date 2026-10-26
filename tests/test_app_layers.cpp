@@ -27,6 +27,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDockWidget>
+#include <QScrollArea>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -282,7 +283,9 @@ TEST_CASE("the Layers dock lists the layers top first, the active one current", 
     Document* doc = w.document();
     LayersDock* d = w.layersWidget();
     REQUIRE(d);
-    CHECK(w.layersDock()->widget() == d);
+    auto* scroll = qobject_cast<QScrollArea*>(w.layersDock()->widget());
+    REQUIRE(scroll);
+    CHECK(scroll->widget() == d);
     CHECK(rowNames(d) == QStringList{QStringLiteral("Background")});
     CHECK(LayersDock::layerOf(d->tree()->currentItem()) == doc->activeLayer());
     // one layer: it can't be deleted or moved

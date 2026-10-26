@@ -42,6 +42,8 @@
 #include <QToolButton>
 #include <QToolTip>
 
+#include <algorithm>
+
 using namespace bw;
 
 namespace {
@@ -76,6 +78,16 @@ QMenu* windowMenu(MainWindow& w) {
         if (a->menu() && a->text().remove(QLatin1Char('&')) == QStringLiteral("Window"))
             return a->menu();
     return nullptr;
+}
+
+// The right column's native minimum width: its widest dock's minimum,
+// the palette's or a scrolling panel's with its vertical scrollbar.
+int rightColumnMinimum(MainWindow& w) {
+    int minimum = 0;
+    for (QDockWidget* d : w.docks())
+        if (w.dockWidgetArea(d) == Qt::RightDockWidgetArea)
+            minimum = std::max({minimum, d->minimumWidth(), d->minimumSizeHint().width()});
+    return minimum;
 }
 
 // The scratch directory the run's settings file is in.
@@ -584,6 +596,95 @@ TEST_CASE("Reset Layout puts every dock back, shown and docked") {
     CHECK(w.toolboxDock()->geometry().bottom() < w.toolOptionsDock()->geometry().top());
 }
 
+TEST_CASE("the default window fits a 720-high screen including its frame", "[window-height]") {
+    ClearLayout clear;
+    bw::appSettings()->clear();
+    const QSize screen = GENERATE(QSize(1280, 720), QSize(1366, 768));
+    const bool reset = GENERATE(false, true);
+    // Reserve 60 logical pixels for the title bar, borders and desktop panel.
+    constexpr int frameAllowance = 60;
+    const QSize client(screen.width(), screen.height() - frameAllowance);
+    CAPTURE(screen.width(), screen.height(), reset);
+    // The offscreen screen's size is fixed, so the startup rule is given
+    // the screen's work area through the seam the constructor uses.
+    const QSize start = MainWindow::initialSize(screen);
+    CHECK(start == client);
+    MainWindow w;
+    w.show();
+    QApplication::processEvents();
+    CHECK(w.size() == MainWindow::initialSize(w.screen()->availableGeometry().size()));
+    CHECK(w.height() <= w.screen()->availableGeometry().height() - frameAllowance);
+    w.resize(start);
+    QApplication::processEvents();
+    if (reset) {
+        act(w, QStringLiteral("resetLayout"))->trigger();
+        QApplication::processEvents();
+    }
+    const int minimumHeight = w.minimumSizeHint().height();
+    CAPTURE(minimumHeight, w.height());
+    CHECK(minimumHeight <= 720 - frameAllowance);
+    CHECK(w.height() <= client.height());
+    CHECK(w.width() <= client.width());
+    for (QDockWidget* d : w.docks()) {
+        INFO(d->objectName().toStdString());
+        CAPTURE(d->minimumSizeHint().height(), d->height());
+        CHECK_FALSE(d->isHidden());
+        CHECK_FALSE(d->isFloating());
+        // The inactive IRC tab is deliberately placed offscreen by Qt.
+        if (d != w.ircViewDock())
+            CHECK(w.rect().contains(d->geometry()));
+    }
+}
+
+TEST_CASE("short right docks scroll their whole contents into reach", "[window-height]") {
+    ClearLayout clear;
+    bw::appSettings()->clear();
+    MainWindow w;
+    w.resize(1280, 660);
+    w.show();
+    QApplication::processEvents();
+    for (QDockWidget* d : {w.layersDock(), w.libraryDock(), w.lintDock(), w.ircViewDock()}) {
+        INFO(d->objectName().toStdString());
+        d->raise();
+        w.resizeDocks({d}, {90}, Qt::Vertical);
+        QApplication::processEvents();
+        auto* scroll = qobject_cast<QScrollArea*>(d->widget());
+        REQUIRE(scroll);
+        REQUIRE(scroll->widget());
+        QWidget* content = scroll->widget();
+        CHECK(content->height() >= content->minimumSizeHint().height());
+        CHECK(content->width() >= content->minimumSizeHint().width());
+        QScrollBar* bar = scroll->verticalScrollBar();
+        REQUIRE(bar->maximum() > 0);
+        CHECK(bar->isVisible());
+        bar->setValue(bar->maximum());
+        QApplication::processEvents();
+        const int bottom = content->mapTo(scroll->viewport(), content->rect().bottomLeft()).y();
+        CHECK(bottom == scroll->viewport()->height() - 1);
+        bar->setValue(bar->minimum());
+        QApplication::processEvents();
+        CHECK(content->mapTo(scroll->viewport(), QPoint()).y() == 0);
+        CHECK(w.height() == 660);
+    }
+}
+
+TEST_CASE("wrapped right panels need no horizontal scroll at the column's minimum width", "[window-height]") {
+    ClearLayout clear;
+    bw::appSettings()->clear();
+    MainWindow w;
+    w.resize(1024, 708); // a 1024x768 screen: the right column falls to its native minimum
+    w.show();
+    QApplication::processEvents();
+    for (QDockWidget* d : {w.layersDock(), w.libraryDock(), w.lintDock()}) {
+        INFO(d->objectName().toStdString());
+        auto* scroll = qobject_cast<QScrollArea*>(d->widget());
+        REQUIRE(scroll);
+        CAPTURE(d->width(), scroll->viewport()->width(), scroll->widget()->minimumSizeHint().width());
+        CHECK_FALSE(scroll->horizontalScrollBar()->isVisible());
+        CHECK(scroll->widget()->width() <= scroll->viewport()->width());
+    }
+}
+
 TEST_CASE("the right dock column can grow and shrink", "[dock-width]") {
     ClearLayout clear;
     MainWindow w;
@@ -666,7 +767,7 @@ TEST_CASE("default dock widths preserve room for the canvas", "[dock-width][dock
     if (viewport < 640) {
         // At 700px there isn't room even at the native dock minimums.
         CHECK(w.toolboxDock()->width() == w.toolboxDock()->minimumSizeHint().width());
-        CHECK(w.libraryDock()->width() == w.paletteDock()->minimumSizeHint().width());
+        CHECK(w.libraryDock()->width() == rightColumnMinimum(w));
     } else {
         CHECK(viewport >= 640);
     }
@@ -694,7 +795,7 @@ TEST_CASE("the first-run window width fits the available screen", "[dock-width][
     REQUIRE(scroll);
     if (scroll->viewport()->width() < 640) {
         CHECK(w.toolboxDock()->width() == w.toolboxDock()->minimumSizeHint().width());
-        CHECK(w.libraryDock()->width() == w.paletteDock()->minimumSizeHint().width());
+        CHECK(w.libraryDock()->width() == rightColumnMinimum(w));
     }
 }
 
@@ -832,11 +933,12 @@ TEST_CASE("a legacy narrow dock layout gives way to the default widths", "[dock-
         w.resize(760, 740);
         w.show();
         QApplication::processEvents();
-        w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {160, 246}, Qt::Horizontal);
+        const int narrowRight = rightColumnMinimum(w);
+        w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {160, narrowRight}, Qt::Horizontal);
         w.glyphBarDock()->hide();
         QApplication::processEvents();
         REQUIRE(w.toolboxDock()->width() == 160);
-        REQUIRE(w.libraryDock()->width() == 246);
+        REQUIRE(w.libraryDock()->width() == narrowRight);
         // Version 3 is the layout before the column-width defaults. Its
         // narrow widths must not override the new first-run layout.
         const QByteArray legacy = w.saveState(3);

@@ -25,6 +25,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDockWidget>
+#include <QScrollArea>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
@@ -133,7 +134,9 @@ TEST_CASE("the Library dock shows the stamps as 1x thumbnails with categories an
     REQUIRE(dock);
     CHECK(dock->objectName() == QStringLiteral("libraryDock"));
     CHECK(f.w.dockWidgetArea(dock) == Qt::RightDockWidgetArea);
-    CHECK(dock->widget() == f.dock);
+    auto* scroll = qobject_cast<QScrollArea*>(dock->widget());
+    REQUIRE(scroll);
+    CHECK(scroll->widget() == f.dock);
 
     CHECK(f.dock->shownNames() == QStringList{QStringLiteral("Tux"), QStringLiteral("Small star")});
     CHECK(f.dock->categories() == QStringList{QStringLiteral("figures"), QStringLiteral("sky")});

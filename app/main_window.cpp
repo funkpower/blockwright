@@ -26,6 +26,7 @@
 #include <QScreen>
 #include <QStatusBar>
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -85,6 +86,13 @@ void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project)
         dialog.setDirectory(fi.absolutePath());
         dialog.selectFile(fi.fileName());
     }
+}
+
+QSize MainWindow::initialSize(QSize available) {
+    // Leave room for the title bar, borders and a desktop panel even before
+    // the window manager has supplied the frame's actual dimensions.
+    available.rheight() = std::max(1, available.height() - 60);
+    return QSize(1400, 900).boundedTo(available);
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -160,7 +168,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     updateTitle();
     updateStatus();
     updateGlyphSet();
-    resize(QSize(1400, 900).boundedTo(screen()->availableGeometry().size()));
+    resize(initialSize(screen()->availableGeometry().size()));
     restoreLayout();
     view_->setFocus();
 }

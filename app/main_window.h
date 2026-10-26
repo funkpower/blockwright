@@ -75,6 +75,9 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+    // The size a new window opens at on a screen whose work area is
+    // `available`, before any saved geometry is restored.
+    static QSize initialSize(QSize available);
 
     Document* document() { return &doc_; }
     CanvasView* canvasView() const { return view_; }

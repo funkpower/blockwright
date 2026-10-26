@@ -10,6 +10,8 @@
 #include "generator_runner.h"
 #include "layers_dock.h"
 #include "main_window.h"
+#include "scratch_settings.h"
+#include "settings.h"
 
 #include "blockwright/generator.h"
 #include "blockwright/project.h"
@@ -17,18 +19,23 @@
 #include "util.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -754,4 +761,46 @@ TEST_CASE("quitting the app kills a running generator rather than waiting for it
     CHECK_FALSE(failure.isEmpty());
     CHECK(row(*o.w.document(), o.id) == "###");
     generator::testing::allowRuns();
+}
+
+TEST_CASE("a generator layer's form fits the right column at its minimum width", "[window-height]") {
+    const QString scratch = QFileInfo(bwtest::scratchSettingsFile()).absolutePath();
+    REQUIRE(bwtest::settingsInScratch(scratch));
+    appSettings()->clear();
+    const bool shownFirst = GENERATE(false, true);
+    // the bars generator's own form, and one whose long label makes it wider
+    // than the column's other panels
+    const bool wide = GENERATE(false, true);
+    CAPTURE(shownFirst, wide);
+    const std::string spec = wide ? R"({"command": ["sh", "gen.sh"], "params": [
+        {"name": "count", "type": "integer", "label": "How many bars to draw across the canvas", "min": 1, "max": 8}]})"
+                                  : std::string();
+    QTemporaryDir tmp;
+    LayerId id = 0;
+    {
+        MainWindow w;
+        const auto open = [&] {
+            w.document()->replace(barsProject(&id, spec), tmp.filePath(QStringLiteral("bars.bwp")), FileForm::ProjectZip);
+            QApplication::processEvents();
+        };
+        if (!shownFirst)
+            open();
+        w.resize(1024, 708); // a 1024x768 screen: the right column falls to its native minimum
+        w.show();
+        QApplication::processEvents();
+        if (shownFirst)
+            open();
+        GeneratorForm* form = w.layersWidget()->generatorForm();
+        REQUIRE(form->layer() == id);
+        REQUIRE(form->isVisibleTo(w.layersWidget()));
+        auto* scroll = qobject_cast<QScrollArea*>(w.layersDock()->widget());
+        REQUIRE(scroll);
+        // a form shown later widens the column through a few layout requests
+        waitFor([&] { return scroll->widget()->width() <= scroll->viewport()->width(); }, 2000);
+        CAPTURE(w.layersDock()->width(), scroll->viewport()->width(), scroll->widget()->minimumSizeHint().width());
+        CHECK_FALSE(scroll->horizontalScrollBar()->isVisible());
+        CHECK(scroll->widget()->width() <= scroll->viewport()->width());
+        CHECK(form->width() >= form->minimumSizeHint().width());
+    }
+    appSettings()->clear();
 }
