@@ -211,19 +211,30 @@ catch_discover_tests(blockwright-publish-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
 
-# On an X server of their own (xcb_test.sh), with input through XTest:
-# skipped where Xvfb or the xcb libraries aren't installed.
+# On an X server of their own, with input through XTest: skipped where Xvfb or
+# the xcb libraries aren't installed. They can't run offscreen, so the
+# offscreen profile check can't run them; xcb_test.sh gives each run an empty
+# HOME and XDG profile of its own and fails if the run leaves anything in it.
+# It is written into the test's command: CMake drops a CROSSCOMPILING_EMULATOR
+# from add_test() in a native build under CMP0158, and from a $<TARGET_FILE>
+# command under either setting.
+set(BW_APP_XCB_TEST_ENV bash ${CMAKE_CURRENT_SOURCE_DIR}/xcb_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-xcb-profile)
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(XCB_TEST IMPORTED_TARGET xcb xcb-xtest)
 endif()
 if(XCB_TEST_FOUND)
-  add_executable(blockwright-app-xcb-tests test_app_xcb.cpp)
+  add_executable(blockwright-app-xcb-tests test_app_xcb.cpp scratch_settings.h)
   target_link_libraries(blockwright-app-xcb-tests PRIVATE blockwright_app Catch2::Catch2 PkgConfig::XCB_TEST)
-  add_test(NAME app_xcb
-    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/xcb_test.sh $<TARGET_FILE:blockwright-app-xcb-tests>)
+  add_test(NAME app_xcb COMMAND ${BW_APP_XCB_TEST_ENV} $<TARGET_FILE:blockwright-app-xcb-tests>)
   set_tests_properties(app_xcb PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+# xcb_test.sh keeps a run out of the caller's profile and fails one that
+# writes into its own.
+add_test(NAME xcb_runner
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/xcb_runner_test.sh ${CMAKE_CURRENT_SOURCE_DIR}/xcb_test.sh
+          ${CMAKE_CURRENT_BINARY_DIR}/xcb-runner-check)
+set_tests_properties(xcb_runner PROPERTIES SKIP_RETURN_CODE 77)
 
 # At a fractional device pixel ratio: its main sets QT_SCALE_FACTOR before the
 # QApplication exists.
@@ -259,7 +270,8 @@ add_test(NAME app_tests_leave_profile_alone
           ${bw_app_test_files})
 
 # Every test binary built on the app is in that list and runs under the
-# scratch profile, so one added later can't be left out of both.
+# scratch profile, or every test that runs it runs it on an X server through
+# xcb_test.sh, so one added later can't be left out of both.
 include(${CMAKE_CURRENT_SOURCE_DIR}/app_guard.cmake)
 bw_add_app_guard_test()
 add_test(NAME app_guard_fixtures

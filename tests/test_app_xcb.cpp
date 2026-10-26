@@ -8,6 +8,7 @@
 #include "document.h"
 #include "draw_tools.h"
 #include "main_window.h"
+#include "scratch_settings.h"
 #include "select_tool.h"
 #include "tool.h"
 
@@ -18,6 +19,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QGuiApplication>
@@ -126,7 +128,22 @@ void show(MainWindow& w) {
 // A point on the screen outside the window and anything it opens.
 const QPoint outside(1500, 1100);
 
+// The scratch directory main() keeps the settings and the Library in.
+QString& scratchDir() {
+    static QString dir;
+    return dir;
+}
+
 } // namespace
+
+TEST_CASE("the xcb tests keep the app's settings, Qt's and the XDG config in their scratch directory") {
+    REQUIRE_FALSE(scratchDir().isEmpty());
+    CHECK(bwtest::settingsInScratch(scratchDir()));
+    if (bwtest::kQtSettingsRedirectable)
+        CHECK(bwtest::qtSettingsInScratch(scratchDir()));
+    CHECK(bwtest::inDir(QDir(QFile::decodeName(qgetenv("XDG_CONFIG_HOME"))).filePath(QStringLiteral("x")),
+                        scratchDir()));
+}
 
 TEST_CASE("a popup that opens during a mouse stroke keeps the pointer grab, so a click outside closes it") {
     // Qt grabs the pointer for a popup before it tells the focus widget
@@ -232,13 +249,18 @@ TEST_CASE("a mouse stroke let go out of the window lands, with no grab of the ca
 }
 
 int main(int argc, char** argv) {
-    QTemporaryDir libraries;
-    qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("bundled"))));
-    qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("user"))));
     if (qgetenv("QT_QPA_PLATFORM") != "xcb" || qEnvironmentVariableIsEmpty("DISPLAY")) {
         std::puts("no X server (QT_QPA_PLATFORM=xcb and DISPLAY): skipped");
         return 77;
     }
+    // The settings, Qt's own and the Library go to scratch folders, never
+    // the user's, as in the offscreen app tests.
+    QTemporaryDir scratch;
+    scratchDir() = scratch.path();
+    qputenv("XDG_CONFIG_HOME", QFile::encodeName(scratch.filePath(QStringLiteral("config"))));
+    qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QFile::encodeName(scratch.filePath(QStringLiteral("bundled"))));
+    qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(scratch.filePath(QStringLiteral("user"))));
+    bwtest::useScratchSettings(scratch);
     QApplication app(argc, argv);
     return Catch::Session().run(argc, argv);
 }
