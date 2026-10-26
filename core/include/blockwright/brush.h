@@ -39,12 +39,16 @@ public:
         return x >= 0 && y >= 0 && x < w_ && y < h_ && bits_[static_cast<size_t>(y) * w_ + x];
     }
     void set(int x, int y, bool on = true);
+    // A rectangle holding every set cell: the smallest one, unless a cell
+    // has been cleared since (it doesn't shrink). Empty when none was set.
+    CellRect bounds() const { return bounds_; }
 
-    bool operator==(const Mask&) const = default;
+    bool operator==(const Mask& o) const { return w_ == o.w_ && h_ == o.h_ && bits_ == o.bits_; }
 
 private:
     int w_ = 0, h_ = 0;
     std::vector<bool> bits_;
+    CellRect bounds_;
 };
 
 enum class Tip { Square, Round };

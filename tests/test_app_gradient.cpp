@@ -18,6 +18,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/guard.h"
+#include "blockwright/layer.h"
 #include "blockwright/lint.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
@@ -759,4 +760,451 @@ TEST_CASE("a gradient drag reads the whole canvas for the lint once, at its firs
     // a thousand rows more add to a move only the fill's columns' length
     CHECK(most - mostShorter < 16 * (lines(2000) - lines(1000)));
     CHECK(most - mostShorter < 1000LL * 400);
+}
+
+// The gradient drag's caches (issue #121): the options and the lint guard
+// it takes at the press or the first preview, and the right button's
+// reversal. Each case below changes what one of them was taken from while a
+// drag is held, and checks the drag against a fresh rampGradient on the
+// layer and settings as they are now.
+namespace {
+
+const CellRect kBox{3, 1, 34, 8};
+const QPoint kFrom(4, 2);
+
+// What a fresh rampGradient makes of a drag from `from` to `to` on the
+// active layer, with the view's ramp and selection and the layer's lock as
+// they are now, and what it adds to the lint.
+struct Fresh {
+    CellEdit edit;
+    std::vector<lint::LadderFinding> added;
+};
+
+Fresh fresh(MainWindow& w, QPoint from, QPoint to, int fromRung, int toRung,
+            GradientShape shape = GradientShape::Linear) {
+    const Document* doc = w.document();
+    const Canvas& c = doc->layerCanvas();
+    StrokeOptions o = layerStrokeOptions(*doc->active());
+    o.selection = selectionMask(w.canvasView()->selection(), c.width(), c.height());
+    o.ice = doc->ansi().ice;
+    Gradient g;
+    g.shape = shape;
+    g.x0 = from.x(), g.y0 = from.y(), g.x1 = to.x(), g.y1 = to.y();
+    g.fromRung = fromRung, g.toRung = toRung;
+    Fresh f;
+    f.edit = rampGradient(c, w.canvasView()->ramp(), g, o, &f.added);
+    return f;
+}
+
+Canvas field(const Ramp& ramp, int w = kW, int h = kH) {
+    Canvas c(w, h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            c.at(x, y) = rungCell(ramp, kRungsPerStep);
+    return c;
+}
+
+// The edit that makes the active layer a field of the ramp's second solid
+// rung.
+CellEdit fieldEdit(const Document& doc, const Ramp& ramp) {
+    CellEdit e;
+    const Canvas& c = doc.layerCanvas();
+    const Canvas f = field(ramp, c.width(), c.height());
+    for (int y = 0; y < c.height(); ++y)
+        for (int x = 0; x < c.width(); ++x)
+            e.changes.push_back({x, y, c.at(x, y), f.at(x, y)});
+    return e;
+}
+
+// An end for a drag from kFrom in kBox on a field of the ramp's second
+// solid rung whose slanted fill adds lint findings (rampGradient's
+// documented L).
+QPoint slantedEnd(const Ramp& ramp, int fromRung, int toRung) {
+    const Canvas c = field(ramp);
+    StrokeOptions o;
+    o.selection = selectionMask(Selection(kBox), kW, kH);
+    for (int dy = 1; dy < 6; ++dy)
+        for (int x1 = 20; x1 < 36; ++x1) {
+            Gradient g;
+            g.x0 = kFrom.x(), g.y0 = kFrom.y(), g.x1 = x1, g.y1 = kFrom.y() + dy;
+            g.fromRung = fromRung, g.toRung = toRung;
+            std::vector<lint::LadderFinding> added;
+            rampGradient(c, ramp, g, o, &added);
+            if (!added.empty())
+                return QPoint(x1, kFrom.y() + dy);
+        }
+    FAIL("no slanted drag adds a finding on " << ramp.name);
+    return {};
+}
+
+// A press at `from` and one move to `to`, held.
+void hold(CanvasView* v, QPoint from, QPoint to, Qt::MouseButton button = Qt::LeftButton) {
+    bwtest::systemMouse(v, QEvent::MouseButtonPress, centre(v, from), button, button);
+    bwtest::systemMouse(v, QEvent::MouseMove, centre(v, to), Qt::NoButton, button);
+}
+
+} // namespace
+
+TEST_CASE("a selection change mid-drag redoes the gradient in the new selection and judges it there",
+          "[gradient][lint]") {
+    FreshGradientSettings fresh_;
+    MainWindow w;
+    blank(w);
+    CanvasView* v = w.canvasView();
+    GradientTool* t = useGradient(w);
+    const Ramp steel = *findRamp("steel");
+    v->setRamp(steel);
+    const QPoint to = slantedEnd(steel, t->fromRung(), t->toRung());
+    REQUIRE(w.document()->edit(fieldEdit(*w.document(), steel)));
+    const Canvas start = w.document()->canvas();
+
+    // no selection: the fill covers the field and adds nothing
+    hold(v, kFrom, to);
+    REQUIRE(t->dragging());
+    Fresh want = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == want.edit.changes);
+    CHECK(want.added.empty());
+    CHECK(t->added().empty());
+
+    // a box: only its cells, and the L the fill makes against the field
+    v->setSelection(Selection(kBox));
+    REQUIRE(t->dragging());
+    want = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == want.edit.changes);
+    for (const CellChange& c : t->pending().changes)
+        CHECK(kBox.contains(c.x, c.y));
+    CHECK_FALSE(want.added.empty());
+    CHECK(t->added() == want.added);
+    CHECK(t->status().contains(QStringLiteral("adds %1 lint finding").arg(want.added.size())));
+
+    // and back to the whole canvas
+    v->setSelection(Selection());
+    want = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == want.edit.changes);
+    CHECK(t->added().empty());
+    release(v, to);
+    CHECK(sameCells(w.document()->canvas(), applied(start, want.edit)));
+}
+
+TEST_CASE("a ramp, rung or shape change mid-drag redoes the gradient and judges it on the new ramp",
+          "[gradient][lint]") {
+    FreshGradientSettings fresh_;
+    MainWindow w;
+    blank(w);
+    CanvasView* v = w.canvasView();
+    GradientTool* t = useGradient(w);
+    const Ramp fire = *findRamp("fire"), steel = *findRamp("steel");
+    const QPoint to = slantedEnd(fire, t->fromRung(), t->toRung());
+    v->setRamp(fire);
+    REQUIRE(w.document()->edit(fieldEdit(*w.document(), fire)));
+    v->setSelection(Selection(kBox));
+
+    // A steel fill on the fire field: the guard taken at the first preview
+    // reads it on steel's ladder.
+    v->setRamp(steel);
+    hold(v, kFrom, to);
+    REQUIRE(t->dragging());
+    Fresh want = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == want.edit.changes);
+    CHECK(t->added() == want.added);
+
+    // on fire the fill makes an L with the field, and the guard reads it
+    v->setRamp(fire);
+    REQUIRE(t->dragging());
+    want = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == want.edit.changes);
+    for (const CellChange& c : t->pending().changes)
+        CHECK(rungOf(fire, c.after));
+    CHECK_FALSE(want.added.empty());
+    CHECK(t->added() == want.added);
+
+    // new rungs
+    t->setRungs(1, 7);
+    REQUIRE(t->dragging());
+    want = fresh(w, kFrom, to, 1, 7);
+    CHECK(t->pending().changes == want.edit.changes);
+    CHECK(t->added() == want.added);
+
+    // a new shape
+    t->setShape(GradientShape::Radial);
+    REQUIRE(t->dragging());
+    want = fresh(w, kFrom, to, 1, 7, GradientShape::Radial);
+    CHECK(t->pending().changes == want.edit.changes);
+    CHECK(t->added() == want.added);
+
+    const Canvas start = w.document()->canvas();
+    release(v, to);
+    CHECK(sameCells(w.document()->canvas(), applied(start, want.edit)));
+}
+
+TEST_CASE("a layer switch mid-drag lands the gradient on the layer it was on, and the next drag reads the new one",
+          "[gradient][layers][lint]") {
+    FreshGradientSettings fresh_;
+    MainWindow w;
+    blank(w);
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    GradientTool* t = useGradient(w);
+    const Ramp steel = *findRamp("steel");
+    v->setRamp(steel);
+    const QPoint to = slantedEnd(steel, t->fromRung(), t->toRung());
+    const LayerId bottom = doc->activeLayer();
+    const LayerId top = doc->addLayer(LayerKind::Cells);
+    REQUIRE(top);
+    REQUIRE(doc->edit(fieldEdit(*doc, steel)));
+    const Canvas topCells = doc->layerCanvas();
+    REQUIRE(doc->setActiveLayer(bottom));
+    v->setSelection(Selection(kBox));
+    const int steps = doc->undoStack()->count();
+
+    // a drag on the blank bottom layer, then the top layer made active
+    hold(v, kFrom, to);
+    REQUIRE(t->dragging());
+    const Fresh onBottom = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == onBottom.edit.changes);
+    CHECK(onBottom.added.empty());
+    const Canvas bottomStart = doc->layerCanvas();
+    REQUIRE(doc->setActiveLayer(top));
+    CHECK_FALSE(t->dragging());
+    CHECK(t->pending().empty());
+    CHECK(t->added().empty());
+    CHECK(doc->undoStack()->count() == steps + 1);
+    CHECK(sameCells(doc->layers().find(bottom)->cells, applied(bottomStart, onBottom.edit)));
+    CHECK(sameCells(doc->layers().find(top)->cells, topCells));
+    release(v, to);
+    CHECK(doc->undoStack()->count() == steps + 1);
+
+    // the same drag on the top layer's field is judged on that field
+    hold(v, kFrom, to);
+    REQUIRE(t->dragging());
+    const Fresh onTop = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == onTop.edit.changes);
+    CHECK_FALSE(onTop.added.empty());
+    CHECK(t->added() == onTop.added);
+    release(v, to);
+    CHECK(sameCells(doc->layers().find(top)->cells, applied(topCells, onTop.edit)));
+}
+
+TEST_CASE("undo mid-drag ends the gradient drag, and the next drag reads the canvas undo left", "[gradient][lint]") {
+    FreshGradientSettings fresh_;
+    MainWindow w;
+    blank(w);
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    GradientTool* t = useGradient(w);
+    const Ramp steel = *findRamp("steel");
+    v->setRamp(steel);
+    const QPoint to = slantedEnd(steel, t->fromRung(), t->toRung());
+    REQUIRE(doc->edit(fieldEdit(*doc, steel)));
+    v->setSelection(Selection(kBox));
+
+    hold(v, kFrom, to);
+    REQUIRE(t->dragging());
+    const Fresh onField = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    REQUIRE_FALSE(onField.added.empty());
+    CHECK(t->added() == onField.added);
+
+    // Edit > Undo takes the field away and ends the drag; nothing lands
+    act(w, QStringLiteral("undo"))->trigger();
+    CHECK(doc->undoStack()->index() == 0);
+    CHECK(sameCells(doc->canvas(), Canvas(kW, kH)));
+    CHECK_FALSE(t->dragging());
+    CHECK(t->pending().empty());
+    CHECK(t->added().empty());
+    release(v, to);
+    CHECK(sameCells(doc->canvas(), Canvas(kW, kH)));
+    CHECK(doc->undoStack()->index() == 0);
+
+    // the same drag on the blank canvas adds nothing
+    hold(v, kFrom, to);
+    REQUIRE(t->dragging());
+    const Fresh onBlank = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == onBlank.edit.changes);
+    CHECK(onBlank.added.empty());
+    CHECK(t->added() == onBlank.added);
+    release(v, to);
+    CHECK(sameCells(doc->canvas(), applied(Canvas(kW, kH), onBlank.edit)));
+}
+
+TEST_CASE("a document replaced mid-drag ends the gradient drag, and the next drag reads the new document",
+          "[gradient][lint]") {
+    FreshGradientSettings fresh_;
+    MainWindow w;
+    blank(w);
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    GradientTool* t = useGradient(w);
+    const Ramp steel = *findRamp("steel");
+    v->setRamp(steel);
+    const QPoint to = slantedEnd(steel, t->fromRung(), t->toRung());
+    AnsiDocument withField;
+    withField.canvas = field(steel);
+    doc->replace(std::move(withField), QString());
+    v->setSelection(Selection(kBox));
+
+    hold(v, kFrom, to);
+    REQUIRE(t->dragging());
+    const Fresh onField = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    REQUIRE_FALSE(onField.added.empty());
+    CHECK(t->added() == onField.added);
+
+    // a blank document the same size, as File > New makes one
+    AnsiDocument same;
+    same.canvas = Canvas(kW, kH);
+    doc->replace(std::move(same), QString());
+    CHECK_FALSE(t->dragging());
+    CHECK(t->pending().empty());
+    CHECK(t->added().empty());
+    release(v, to);
+    CHECK(sameCells(doc->canvas(), Canvas(kW, kH)));
+    CHECK(doc->undoStack()->count() == 0);
+
+    v->setSelection(Selection(kBox));
+    hold(v, kFrom, to);
+    REQUIRE(t->dragging());
+    const Fresh onBlank = fresh(w, kFrom, to, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == onBlank.edit.changes);
+    CHECK(onBlank.added.empty());
+    CHECK(t->added() == onBlank.added);
+
+    // and one of another size, mid-drag again
+    AnsiDocument smaller;
+    smaller.canvas = field(steel, 30, 8);
+    doc->replace(std::move(smaller), QString());
+    CHECK_FALSE(t->dragging());
+    release(v, to);
+    REQUIRE(doc->canvas().width() == 30);
+    const QPoint end(20, 6);
+    hold(v, QPoint(2, 1), end);
+    REQUIRE(t->dragging());
+    const Fresh onSmaller = fresh(w, QPoint(2, 1), end, t->fromRung(), t->toRung());
+    CHECK(t->pending().changes == onSmaller.edit.changes);
+    CHECK(t->added() == onSmaller.added);
+    release(v, end);
+    CHECK(doc->undoStack()->count() == 1);
+}
+
+TEST_CASE("the right button's reversal outlives a settings change mid-drag and ends with the drag", "[gradient]") {
+    FreshGradientSettings fresh_;
+    MainWindow w;
+    blank(w);
+    CanvasView* v = w.canvasView();
+    GradientTool* t = useGradient(w);
+    t->setRungs(2, 9);
+    const QPoint from(2, 4), to(37, 6);
+
+    hold(v, from, to, Qt::RightButton);
+    REQUIRE(t->dragging());
+    CHECK(t->pending().changes == fresh(w, from, to, 9, 2).edit.changes);
+    // new rungs, a new ramp and a new selection keep it reversed
+    t->setRungs(1, 7);
+    CHECK(t->pending().changes == fresh(w, from, to, 7, 1).edit.changes);
+    v->setRamp(*findRamp("fire"));
+    CHECK(t->pending().changes == fresh(w, from, to, 7, 1).edit.changes);
+    v->setSelection(Selection(CellRect{1, 1, 38, 8}));
+    const Fresh reversed = fresh(w, from, to, 7, 1);
+    CHECK(t->pending().changes == reversed.edit.changes);
+    const Canvas start = w.document()->canvas();
+    release(v, to, Qt::RightButton);
+    CHECK(sameCells(w.document()->canvas(), applied(start, reversed.edit)));
+
+    // the next left drag runs the rungs as set
+    hold(v, from, to);
+    REQUIRE(t->dragging());
+    CHECK(t->pending().changes == fresh(w, from, to, 1, 7).edit.changes);
+    release(v, to);
+
+    // and so does one after a right drag dropped with Esc
+    hold(v, from, to, Qt::RightButton);
+    CHECK(t->pending().changes == fresh(w, from, to, 7, 1).edit.changes);
+    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    CHECK(t->keyPress(&esc));
+    CHECK_FALSE(t->dragging());
+    release(v, to, Qt::RightButton);
+    hold(v, from, to);
+    REQUIRE(t->dragging());
+    CHECK(t->pending().changes == fresh(w, from, to, 1, 7).edit.changes);
+    release(v, to);
+}
+
+namespace {
+
+// What each move of a gradient drag costs on a blank w × h canvas, with or
+// without a selection: a press at (12, 7), a first move, then `moves` moves
+// of the end back and forth between (26, 12) and (27, 13), the tool's
+// added() read each time as the status line reads it. The lint's reads
+// (lint::cellsRead) and the fill's cell visits (gradientCellsVisited), the
+// most of any move after the first preview.
+struct MoveCost {
+    long long lint = 0, fill = 0;
+};
+
+MoveCost moveCost(int w, int h, bool selection, int moves = 10) {
+    MainWindow win;
+    if (!win.isVisible())
+        REQUIRE(bwtest::showExposed(&win));
+    AnsiDocument doc;
+    doc.canvas = Canvas(w, h);
+    win.document()->replace(std::move(doc), QString());
+    CanvasView* v = win.canvasView();
+    GradientTool* t = useGradient(win);
+    if (selection)
+        v->setSelection(Selection(CellRect{10, 5, 20, 10}));
+    const QPoint from(12, 7), ends[] = {QPoint(26, 12), QPoint(27, 13)};
+    hold(v, from, ends[1]);
+    REQUIRE(t->dragging());
+    REQUIRE_FALSE(t->pending().empty());
+    MoveCost most;
+    for (int i = 0; i < moves; ++i) {
+        const long long lint = lint::cellsRead(), fill = gradientCellsVisited();
+        bwtest::systemMouse(v, QEvent::MouseMove, centre(v, ends[i & 1]), Qt::NoButton, Qt::LeftButton);
+        (void)t->added();
+        most.lint = std::max(most.lint, lint::cellsRead() - lint);
+        most.fill = std::max(most.fill, gradientCellsVisited() - fill);
+    }
+    release(v, ends[(moves - 1) & 1]);
+    CHECK(win.document()->undoStack()->count() == 1);
+    return most;
+}
+
+} // namespace
+
+TEST_CASE("on a blank canvas a gradient drag's move costs what its selection holds, and the lint only what its lines cross",
+          "[gradient][lint]") {
+    FreshGradientSettings fresh_;
+    // In a 20 x 10 selection the fill lays out and settles only the box the
+    // selection's cells take, so on a blank canvas a move costs the same on
+    // 40 rows as on 120 (on a field the clamp's walks reach past the box:
+    // test_gradient.cpp).
+    // The lint guard rereads each changed row and column end to end
+    // (LadderIndex), so its reads grow by the 20 columns' length, some 250 a
+    // row; held here so that cost can't grow unseen.
+    const MoveCost shortSel = moveCost(80, 40, true), tallSel = moveCost(80, 120, true);
+    INFO("20x10 selection: 80x40 lint " << shortSel.lint << " fill " << shortSel.fill << "; 80x120 lint "
+                                        << tallSel.lint << " fill " << tallSel.fill);
+    CHECK(shortSel.fill > 0);
+    CHECK(tallSel.fill == shortSel.fill);
+    CHECK(tallSel.fill < 10 * 200);
+    CHECK(shortSel.lint < 30000);
+    CHECK(tallSel.lint < 50000);
+    CHECK(tallSel.lint - shortSel.lint < 300 * 80);
+    // With no selection every cell is painted and every row and column
+    // changes, so a move is a whole-canvas pass for both.
+    const MoveCost shortAll = moveCost(80, 40, false), tallAll = moveCost(80, 120, false);
+    INFO("no selection: 80x40 lint " << shortAll.lint << " fill " << shortAll.fill << "; 80x120 lint "
+                                     << tallAll.lint << " fill " << tallAll.fill);
+    CHECK(shortAll.fill <= 6 * 80 * 40);
+    CHECK(tallAll.fill <= 6 * 80 * 120);
+    CHECK(shortAll.lint < 50 * 80 * 40);
+    CHECK(tallAll.lint < 50 * 80 * 120);
+}
+
+TEST_CASE("measure: gradient move cost", "[gradient][.measure]") {
+    FreshGradientSettings fresh_;
+    for (const bool sel : {true, false})
+        for (const auto& [w, h] : {std::pair{80, 40}, std::pair{80, 120}, std::pair{160, 120}, std::pair{400, 1000}}) {
+            const MoveCost c = moveCost(w, h, sel);
+            WARN((sel ? "20x10 selection " : "no selection ") << w << "x" << h << ": lint " << c.lint << " fill "
+                                                              << c.fill);
+        }
 }

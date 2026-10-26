@@ -836,6 +836,27 @@ TEST_CASE("selection masks and the transparent lock", "[brush]") {
     CHECK(paintRegion(c, up, {}, small).changes.size() == 12);
 }
 
+TEST_CASE("a mask's bounds hold every cell it selects", "[brush]") {
+    CHECK(Mask(8, 3).bounds().empty());
+    CHECK(Mask(8, 3, true).bounds() == CellRect{0, 0, 8, 3});
+    CHECK(Mask::rect(8, 3, 5, 0, 3, 2).bounds() == CellRect{3, 0, 3, 3});
+    CHECK(Mask::rect(8, 3, -5, -5, 1, 0).bounds() == CellRect{0, 0, 2, 1});  // clipped to the canvas
+    Mask m(10, 6);
+    m.set(4, 2);
+    CHECK(m.bounds() == CellRect{4, 2, 1, 1});
+    m.set(7, 5);
+    m.set(2, 3);
+    m.set(20, 1);  // off the mask: nothing set
+    CHECK(m.bounds() == CellRect{2, 2, 6, 4});
+    // A cleared cell leaves the bounds as they were, and two masks of the
+    // same cells are equal whatever their bounds.
+    Mask same = m;
+    same.set(0, 0);
+    same.set(0, 0, false);
+    CHECK(same.bounds() == CellRect{0, 0, 8, 6});
+    CHECK(same == m);
+}
+
 TEST_CASE("pressure maps to size or strength", "[brush]") {
     const Canvas c = filled(20, 9, solid(Black));
     const RampShadeBrush up(steel(), ShadeDirection::Lighten, 4);

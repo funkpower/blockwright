@@ -77,4 +77,9 @@ std::vector<int> gradientRungs(const Ramp& ramp, const Gradient& g, int width, i
 CellEdit rampGradient(const Canvas& canvas, const Ramp& ramp, const Gradient& g, const StrokeOptions& options = {},
                       std::vector<lint::LadderFinding>* added = nullptr);
 
+// How many cells the gradient's passes have visited on this thread so far
+// (each cell of each pass over the cells it lays out, and each step of a
+// walk along a line): a work counter, for tests of what a fill costs.
+long long gradientCellsVisited();
+
 } // namespace bw

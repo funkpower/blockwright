@@ -456,6 +456,96 @@ TEST_CASE("gradient: a fill in a selection meets the field round it clean, but f
     CHECK(joined == 138);
 }
 
+// A fill in a selection lays out only the box its cells take. A mask of the
+// same cells whose bounds were stretched to the whole canvas (a corner cell
+// set and cleared again) makes it lay out every cell, as it did before it was
+// windowed: each edit must be the same, on a field round the box of one rung
+// and on one striped with all of them.
+TEST_CASE("gradient: a fill in a selection is the same as one laid out over the whole canvas", "[gradient]") {
+    const int w = 40, h = 20;
+    int compared = 0;
+    for (const Ramp& ramp : namedRamps()) {
+        const int top = ramp.topRung();
+        Canvas striped(w, h);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                striped.at(x, y) = rungCell(ramp, (x / 3 + y / 2) % (top + 1));
+        striped.at(8, 6).transparent = true;
+        for (const Canvas& field : {filled(w, h, rungCell(ramp, top - 1)), striped})
+            for (bool ice : {true, false})
+                for (bool lock : {false, true})
+                    for (const CellRect& box : {CellRect{6, 4, 24, 11}, CellRect{0, 0, 26, h}, CellRect{30, 15, 10, 5}}) {
+                        Mask stretched = Mask::rect(w, h, box.x, box.y, box.x + box.width - 1, box.y + box.height - 1);
+                        stretched.set(0, 0);
+                        stretched.set(w - 1, h - 1);
+                        if (!box.contains(0, 0))
+                            stretched.set(0, 0, false);
+                        if (!box.contains(w - 1, h - 1))
+                            stretched.set(w - 1, h - 1, false);
+                        REQUIRE(stretched.bounds() == CellRect{0, 0, w, h});
+                        StrokeOptions windowed, whole;
+                        windowed.ice = whole.ice = ice;
+                        windowed.lockTransparent = whole.lockTransparent = lock;
+                        windowed.selection = selectionMask(Selection(box), w, h);
+                        whole.selection = std::make_shared<const Mask>(stretched);
+                        REQUIRE(*windowed.selection == *whole.selection);
+                        REQUIRE(windowed.selection->bounds() == box);
+                        const int cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+                        for (GradientShape shape : {GradientShape::Linear, GradientShape::Radial})
+                            for (int deg = 0; deg < 360; deg += 45)
+                                for (auto [from, to] : {std::pair{0, top}, std::pair{top, 0}, std::pair{1, 3}}) {
+                                    const Gradient g = aimed(shape, cx, cy, deg, 20.0, from, to);
+                                    INFO(named(ramp, g, ice) << " in " << box.x << "," << box.y << " " << box.width
+                                                             << "x" << box.height << (lock ? " locked" : ""));
+                                    const CellEdit a = rampGradient(field, ramp, g, windowed);
+                                    const CellEdit b = rampGradient(field, ramp, g, whole);
+                                    CHECK(a.changes == b.changes);
+                                    compared += !a.empty();
+                                }
+                    }
+    }
+    CHECK(compared > 1000);
+}
+
+// The window holds the layout and settling passes to the selection's box, but
+// the clamp's walks along a line go on past it through a field of one rung,
+// to another rung or the canvas's edge: on a field of steel's 4 a fill in a
+// 20 x 10 box still costs more on a taller canvas (20 visits a row, the
+// bottom edge's walks down), against 1,200 a move on a blank canvas. Pinned
+// so the cost is known, not hidden; the edit is still the whole-canvas one.
+TEST_CASE("gradient: the clamp's walks in a selection reach through the field round it to the canvas's edge",
+          "[gradient]") {
+    const Ramp ramp = steel();
+    const int w = 80;
+    const CellRect box{10, 5, 20, 10};
+    Gradient g;
+    g.x0 = 12, g.y0 = 7, g.x1 = 26, g.y1 = 12, g.fromRung = 0, g.toRung = 0;
+    const auto visits = [&](int h) {
+        const Canvas field = filled(w, h, rungCell(ramp, 4));
+        StrokeOptions windowed, whole;
+        windowed.selection = selectionMask(Selection(box), w, h);
+        Mask stretched = Mask::rect(w, h, box.x, box.y, box.x + box.width - 1, box.y + box.height - 1);
+        stretched.set(0, 0);
+        stretched.set(w - 1, h - 1);
+        stretched.set(0, 0, false);
+        stretched.set(w - 1, h - 1, false);
+        whole.selection = std::make_shared<const Mask>(stretched);
+        REQUIRE(windowed.selection->bounds() == box);
+        REQUIRE(whole.selection->bounds() == CellRect{0, 0, w, h});
+        const long long before = gradientCellsVisited();
+        const CellEdit edit = rampGradient(field, ramp, g, windowed);
+        const long long cost = gradientCellsVisited() - before;
+        INFO(w << "x" << h << ": " << cost << " visits");
+        CHECK_FALSE(edit.empty());
+        CHECK(edit.changes == rampGradient(field, ramp, g, whole).changes);
+        return cost;
+    };
+    const long long shortField = visits(40), tallField = visits(120);
+    CHECK(shortField == 2320);
+    CHECK(tallField == 3920);
+    CHECK(tallField - shortField == 20 * (120 - 40));
+}
+
 // The L's check reads the painted cells only: a wide rung wholly in the field
 // round the box has no contact with the climb, whatever its rung.
 TEST_CASE("gradient: a wide rung outside the selection isn't on the climb", "[gradient]") {

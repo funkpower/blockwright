@@ -24,6 +24,8 @@ bool blackRung(const Ramp& ramp, int rung) {
 
 constexpr int kSteps[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 
+thread_local long long visitCount = 0;
+
 // A gradient's ladder and where along it each rung ends: rung i covers
 // [ends[i - 1], ends[i]), the first rung everything before and the last
 // everything after.
@@ -58,11 +60,15 @@ struct Bands {
 
 // The gradient over a width × height canvas. `paints(x, y)` is whether the
 // fill writes a cell and `outside(x, y)` the rung of one it doesn't (-1 off
-// the ladder); off the canvas is -1.
+// the ladder); off the canvas is -1. Only the cells of `window` are laid out
+// and settled, so it must hold every cell the fill paints: the rest are
+// read through `outside`. The clamp's walks along a line still go on past
+// the window through a field of one rung, to another rung or the edge.
 class Fill {
 public:
-    Fill(const Ramp& ramp, const Gradient& g, int width, int height, bool ice)
-        : ramp_(ramp), g_(g), w_(width), h_(height), ice_(ice) {
+    Fill(const Ramp& ramp, const Gradient& g, int width, int height, bool ice, const CellRect& window)
+        : ramp_(ramp), g_(g), w_(width), h_(height), ice_(ice),
+          win_(window.intersected(CellRect{0, 0, std::max(0, width), std::max(0, height)})) {
         // Screen units: a column is one, a row two. In double before any
         // subtraction, so ends at the limits of int don't overflow.
         dx_ = double(g.x1) - double(g.x0);
@@ -85,7 +91,9 @@ public:
         layOut();
     }
 
-    bool empty() const { return b_.ladder.empty(); }
+    bool empty() const { return b_.ladder.empty() || win_.empty(); }
+    // The cells rungs() holds, row by row.
+    const CellRect& window() const { return win_; }
 
     template <class Paints, class Outside>
     std::vector<int> rungs(Paints&& paints, Outside&& outside) {
@@ -103,7 +111,8 @@ private:
         return r >= 0 && r <= ramp_.topRung() && (ice_ || writableWithoutIce(ramp_, r));
     }
     bool on(int x, int y) const { return x >= 0 && y >= 0 && x < w_ && y < h_; }
-    size_t at(int x, int y) const { return static_cast<size_t>(y) * w_ + x; }
+    size_t at(int x, int y) const { return static_cast<size_t>(y - win_.y) * win_.width + (x - win_.x); }
+    long long cells() const { return static_cast<long long>(win_.width) * win_.height; }
 
     // Each rung's width along the gradient: the shades kGradientBand, the
     // solids that and an equal share of what the span has left. With no solid
@@ -157,10 +166,11 @@ private:
     }
 
     void lay() {
-        rungs_.assign(static_cast<size_t>(w_) * h_, 0);
+        rungs_.assign(static_cast<size_t>(cells()), 0);
+        visitCount += cells();
         const double ux = dx_ / span_, uy = dy_ / span_;
-        for (int y = 0; y < h_; ++y)
-            for (int x = 0; x < w_; ++x) {
+        for (int y = win_.y; y < win_.y + win_.height; ++y)
+            for (int x = win_.x; x < win_.x + win_.width; ++x) {
                 const double px = double(x) - double(g_.x0), py = 2.0 * (double(y) - double(g_.y0));
                 const double t = g_.shape == GradientShape::Linear ? px * ux + py * uy : std::hypot(px, py);
                 rungs_[at(x, y)] = b_.rungAt(t);
@@ -183,8 +193,9 @@ private:
             if (best < 0 || std::abs(e - end) < std::abs(best - end))
                 best = e;
         };
-        for (int y = 0; y < h_; ++y)
-            for (int x = 0; x < w_; ++x) {
+        visitCount += cells();
+        for (int y = win_.y; y < win_.y + win_.height; ++y)
+            for (int x = win_.x; x < win_.x + win_.width; ++x) {
                 const int r = rungs_[at(x, y)];
                 if ((r != first && r != last) || !paints(x, y))
                     continue;
@@ -249,6 +260,7 @@ private:
         // canvas's edge, black, off the ladder).
         const auto next = [&](int x, int y, int sx, int sy, int r) {
             for (;; x += sx, y += sy) {
+                ++visitCount;
                 if (!on(x, y))
                     return -1;
                 const int o = paints(x, y) ? rungs_[at(x, y)] : outside(x, y);
@@ -276,6 +288,7 @@ private:
             for (const int d : {-1, 1})
                 for (int mx = x + s[1] * d, my = y + s[0] * d; on(mx, my) && paints(mx, my);
                      mx += s[1] * d, my += s[0] * d) {
+                    ++visitCount;
                     const int qx = mx - s[0], qy = my - s[1];
                     if (!on(qx, qy) || paints(qx, qy) || outside(qx, qy) != e ||
                         std::abs(e - rungs_[at(mx, my)]) < 2)
@@ -285,8 +298,9 @@ private:
         };
         for (int round = 0; round <= w_ + h_; ++round) {
             bool more = false;
-            for (int y = 0; y < h_; ++y)
-                for (int x = 0; x < w_; ++x) {
+            visitCount += cells();
+            for (int y = win_.y; y < win_.y + win_.height; ++y)
+                for (int x = win_.x; x < win_.x + win_.width; ++x) {
                     if (!paints(x, y))
                         continue;
                     const int b = rungs_[at(x, y)];
@@ -314,15 +328,17 @@ private:
                 for (int& p : v)
                     p = sign > 0 ? p : top - p;  // spread down from the highest
                 std::vector<std::vector<size_t>> level(static_cast<size_t>(top) + 2);
+                visitCount += static_cast<long long>(n);
                 for (size_t i = 0; i < n; ++i)
                     if (v[i] > 0)
                         level[static_cast<size_t>(v[i])].push_back(i);
                 for (int l = top + 1; l > 0; --l)
                     for (size_t k = 0; k < level[static_cast<size_t>(l)].size(); ++k) {
                         const size_t i = level[static_cast<size_t>(l)][k];
+                        ++visitCount;
                         if (v[i] != l)
                             continue;
-                        const int x = int(i % size_t(w_)), y = int(i / size_t(w_));
+                        const int x = win_.x + int(i % size_t(win_.width)), y = win_.y + int(i / size_t(win_.width));
                         for (const auto& s : kSteps) {
                             const int nx = x + s[0], ny = y + s[1];
                             if (on(nx, ny) && paints(nx, ny) && v[at(nx, ny)] < l - 1) {
@@ -336,8 +352,9 @@ private:
                 return v;
             };
             const std::vector<int> lo = spread(lo0, 1), hi = spread(hi0, -1);
-            for (int y = 0; y < h_; ++y)
-                for (int x = 0; x < w_; ++x) {
+            visitCount += cells();
+            for (int y = win_.y; y < win_.y + win_.height; ++y)
+                for (int x = win_.x; x < win_.x + win_.width; ++x) {
                     if (!paints(x, y))
                         continue;
                     const size_t i = at(x, y);
@@ -359,8 +376,9 @@ private:
         for (int pass = 0; pass < 8; ++pass) {
             const std::vector<int> was = rungs_;
             bool changed = false;
-            for (int y = 0; y < h_; ++y)
-                for (int x = 0; x < w_; ++x) {
+            visitCount += cells();
+            for (int y = win_.y; y < win_.y + win_.height; ++y)
+                for (int x = win_.x; x < win_.x + win_.width; ++x) {
                     const int g = was[at(x, y)];
                     if (!paints(x, y) || blackRung(ramp_, g) || g == ramp_.topRung())
                         continue;
@@ -391,6 +409,7 @@ private:
     const Gradient& g_;
     int w_, h_;
     bool ice_;
+    CellRect win_;
     double dx_ = 0, dy_ = 0, span_ = 0;
     int from_ = 0, dir_ = 1;
     Bands b_;
@@ -400,7 +419,7 @@ private:
 } // namespace
 
 std::vector<int> gradientRungs(const Ramp& ramp, const Gradient& g, int width, int height, bool ice) {
-    Fill fill(ramp, g, width, height, ice);
+    Fill fill(ramp, g, width, height, ice, CellRect{0, 0, width, height});
     if (fill.empty())
         return {};
     return fill.rungs([](int, int) { return true; }, [](int, int) { return -1; });
@@ -411,11 +430,15 @@ CellEdit rampGradient(const Canvas& canvas, const Ramp& ramp, const Gradient& g,
     CellEdit edit;
     if (added)
         added->clear();
-    Fill fill(ramp, g, canvas.width(), canvas.height(), options.ice);
+    // A selection's cells are all within its bounds.
+    const CellRect window = options.selection ? options.selection->bounds()
+                                              : CellRect{0, 0, canvas.width(), canvas.height()};
+    Fill fill(ramp, g, canvas.width(), canvas.height(), options.ice, window);
     if (fill.empty())
         return edit;
+    const CellRect& win = fill.window();
     const auto paints = [&](int x, int y) {
-        return (!options.selection || options.selection->contains(x, y)) &&
+        return win.contains(x, y) && (!options.selection || options.selection->contains(x, y)) &&
                !(options.lockTransparent && canvas.at(x, y).transparent);
     };
     const auto outside = [&](int x, int y) {
@@ -424,12 +447,13 @@ CellEdit rampGradient(const Canvas& canvas, const Ramp& ramp, const Gradient& g,
     };
     const std::vector<int> rungs = fill.rungs(paints, outside);
     std::vector<std::pair<int, int>> changed;
-    for (int y = 0; y < canvas.height(); ++y) {
-        for (int x = 0; x < canvas.width(); ++x) {
+    visitCount += static_cast<long long>(win.width) * win.height;
+    for (int y = win.y; y < win.y + win.height; ++y) {
+        for (int x = win.x; x < win.x + win.width; ++x) {
             if (!paints(x, y))
                 continue;
             const Cell& before = canvas.at(x, y);
-            const Cell after = rungCell(ramp, rungs[static_cast<size_t>(y) * canvas.width() + x]);
+            const Cell after = rungCell(ramp, rungs[static_cast<size_t>(y - win.y) * win.width + (x - win.x)]);
             if (after != before) {
                 edit.changes.push_back({x, y, before, after});
                 changed.push_back({x, y});
@@ -443,5 +467,7 @@ CellEdit rampGradient(const Canvas& canvas, const Ramp& ramp, const Gradient& g,
     }
     return edit;
 }
+
+long long gradientCellsVisited() { return visitCount; }
 
 } // namespace bw

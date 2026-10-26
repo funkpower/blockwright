@@ -10,7 +10,10 @@
 namespace bw {
 
 Mask::Mask(int width, int height, bool all)
-    : w_(std::max(0, width)), h_(std::max(0, height)), bits_(static_cast<size_t>(w_) * h_, all) {}
+    : w_(std::max(0, width)), h_(std::max(0, height)), bits_(static_cast<size_t>(w_) * h_, all) {
+    if (all)
+        bounds_ = {0, 0, w_, h_};
+}
 
 Mask Mask::rect(int width, int height, int x0, int y0, int x1, int y1) {
     Mask m(width, height);
@@ -25,8 +28,18 @@ Mask Mask::rect(int width, int height, int x0, int y0, int x1, int y1) {
 }
 
 void Mask::set(int x, int y, bool on) {
-    if (x >= 0 && y >= 0 && x < w_ && y < h_)
-        bits_[static_cast<size_t>(y) * w_ + x] = on;
+    if (x < 0 || y < 0 || x >= w_ || y >= h_)
+        return;
+    bits_[static_cast<size_t>(y) * w_ + x] = on;
+    if (!on || bounds_.contains(x, y))
+        return;
+    if (bounds_.empty()) {
+        bounds_ = {x, y, 1, 1};
+        return;
+    }
+    const int x0 = std::min(bounds_.x, x), y0 = std::min(bounds_.y, y);
+    const int x1 = std::max(bounds_.x + bounds_.width - 1, x), y1 = std::max(bounds_.y + bounds_.height - 1, y);
+    bounds_ = {x0, y0, x1 - x0 + 1, y1 - y0 + 1};
 }
 
 std::shared_ptr<const Mask> selectionMask(const Selection& sel, int width, int height) {
