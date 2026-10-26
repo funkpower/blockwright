@@ -96,10 +96,12 @@ std::optional<std::pair<double, double>> rimNormal(const Canvas& canvas, const R
 // which takes the line. The line over the cells the stroke has covered is
 // settled against checkLadder: where it would add a finding the cells to
 // blame take the next lighter candidate, down to the cell as it was, so the
-// line is the darkest the lint accepts. Each finding is blamed on its own:
-// on the line cells along its own row or column (a wide run's width, where
-// nothing along it is, on the runs across it; a speck on the speck, or what
-// is round it); noise on the changed cells whose own change raises it; one
+// line is the darkest the lint accepts. On a pixel layer
+// (StrokeOptions::pixelLayer), which holds pixel cells only, the shade rungs
+// aren't candidates: a cell takes a whole colour or stays as it was. Each
+// finding is blamed on its own: on the line cells along its own row or
+// column (a wide run's width, where nothing along it is, on the runs
+// across it; a speck on the speck, or what is round it); noise on the changed cells whose own change raises it; one
 // glyph on the cells that change a shade glyph. A blamed cell beside a
 // darker one waits for it. Where no step clears noise, the one finding, the
 // line goes back on the index a cell at a time, the cells that raise the

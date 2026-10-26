@@ -3,6 +3,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/brushes/guard.h"
 #include "blockwright/brushes/shading.h"
+#include "blockwright/halfblock.h"
 #include "blockwright/lint.h"
 #include "blockwright/selection.h"
 
@@ -540,6 +541,7 @@ struct OutlineBrush::Plan {
         std::vector<int> inside;            // the level inside each edge cell of origin (Outliner)
         bool settled = false;               // a dab of the image has settled a line
         std::vector<char> shape;            // the cells that may be the shape (OutlineShape::Selection), or empty
+        bool pixels = false;                // on a pixel layer (StrokeOptions::pixelLayer), which holds no shade
     };
     // The lint of the stroke-start canvas and its levels inside, which the
     // unmirrored images start from.
@@ -606,6 +608,10 @@ Canvas settleWith(Layer& layer, int ox, int oy, const Canvas& canvas, const Ramp
                 opened.push_back(i);
             already[i] = outliner.lineAlready(x, y);
             auto c = outliner.candidates(x, y);
+            // a pixel layer holds pixel cells only: the line's shade rungs
+            // are left out, so a step lighter is the next whole colour
+            if (layer.pixels)
+                std::erase_if(c, [](const Cell& k) { return !halfBlocks(k, true); });
             if (c.empty())
                 continue;
             open[i] = 1;
@@ -1343,6 +1349,7 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
                     .first;
     }
     Layer& layer = image->second;
+    layer.pixels = stroke.options().pixelLayer;
     const Canvas& origin = layer.origin;
     // a cell of the image's frame on the canvas, and back (the same mirror)
     const auto real = [&](const Layer& l, int x, int y) {

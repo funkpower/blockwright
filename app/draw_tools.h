@@ -94,6 +94,15 @@ protected:
     const BrushSettings& brushSettings() const { return brushSettings_; }
     // The pen colour for a button, as a palette index.
     std::uint8_t colourFor(Qt::MouseButton button) const;
+    // True for a tool whose cells are ramp shades (░▒▓), which a Pixels
+    // layer can't hold (PLAN §3): on one it declines a press, and its
+    // status() says why (pixelRefusal). A text layer is painted as a cells
+    // layer.
+    virtual bool paintsShades() const { return false; }
+    // Whether the tool declines the active layer, as above.
+    bool refusesLayer() const;
+    // The status-bar text saying why.
+    QString pixelRefusal() const;
 
 private:
     void drop();
@@ -158,7 +167,8 @@ protected:
 // view's ramp, right darkens them, a rung a pass at a quarter strength and
 // up to a whole colour (four rungs) at full strength; pressure to strength
 // scales that. Cells off the ramp are left alone. Its glyphs are symmetric,
-// so mirror mode steps the mirror cells' own rungs.
+// so mirror mode steps the mirror cells' own rungs. It declines a press on
+// a Pixels layer, which can't hold its shades, and says so in its status.
 class RampShadeTool : public BrushTool {
     Q_OBJECT
 public:
@@ -168,6 +178,7 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    bool paintsShades() const override { return true; }
 };
 
 // The name the form brush's shape goes by in Tool Options and the status
@@ -188,6 +199,7 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    bool paintsShades() const override { return true; }
 };
 
 // Soft brush (PLAN §10): the ramp shade brush with a banded falloff, left
@@ -202,6 +214,7 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    bool paintsShades() const override { return true; }
 };
 
 // Despeckle brush (PLAN §10): clears the specks under it, lone cells
@@ -228,6 +241,7 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    bool paintsShades() const override { return true; }
 };
 
 // Glyph brush: left writes the brush's glyph in the pen's colours, right
@@ -372,10 +386,10 @@ protected:
     CellEdit edit() const override;
     void rebuild() override;
     void reset() override;
+    bool paintsShades() const override { return true; }
 
 private:
     void save() const;
-    bool onPixelLayer() const;
     // Sets added_ to what `e` adds to the canvas at the drag's start.
     void judge(const CellEdit& e) const;
 
@@ -439,6 +453,7 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    bool paintsShades() const override { return true; }
 
 private:
     bool keepLint_ = false;
@@ -460,6 +475,7 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    bool paintsShades() const override { return true; }
 };
 
 // Clone stamp (PLAN §10, "Detail"): Ctrl+click (Cmd+click on macOS) sets
@@ -535,6 +551,8 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    // haze and smoke; stars are glyphs
+    bool paintsShades() const override { return options_.kind != SprayKind::Stars; }
 
 private:
     void setOptions(const SprayOptions& options);

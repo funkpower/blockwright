@@ -55,6 +55,8 @@ bool DragTool::mousePress(const ToolEvent& e) {
         return true;  // a second button during a drag does nothing
     if (!view() || (e.button != Qt::LeftButton && e.button != Qt::RightButton))
         return false;
+    if (refusesLayer())
+        return false;
     takeSettings();
     if (!begin(e))
         return false;
@@ -101,6 +103,18 @@ const Canvas& DragTool::canvas() const { return view()->document()->layerCanvas(
 std::uint8_t DragTool::colourFor(Qt::MouseButton button) const {
     const Pen& pen = view()->pen();
     return (button == Qt::RightButton ? pen.bg : pen.fg).paletteIndex();
+}
+
+bool DragTool::refusesLayer() const {
+    if (!view() || !paintsShades())
+        return false;
+    const Layer* layer = view()->document()->active();
+    return layer && layer->props.kind == LayerKind::Pixels;
+}
+
+QString DragTool::pixelRefusal() const {
+    return tr("The %1 can't paint a Pixels layer: it holds no shades")
+        .arg(QString(name()).remove(QLatin1Char('&')).toLower());
 }
 
 void DragTool::takeSettings() {
@@ -187,6 +201,8 @@ RampShadeTool::RampShadeTool(QObject* parent)
     : BrushTool(QStringLiteral("rampShade"), tr("&Ramp Shade Brush"), parent) {}
 
 QString RampShadeTool::status() const {
+    if (refusesLayer())
+        return pixelRefusal();
     return view() ? tr("Ramp %1").arg(QString::fromStdString(view()->ramp().name)) : QString();
 }
 
@@ -225,6 +241,8 @@ FormTool::FormTool(QObject* parent) : BrushTool(QStringLiteral("form"), tr("F&or
 QString FormTool::status() const {
     if (!view())
         return {};
+    if (refusesLayer())
+        return pixelRefusal();
     return tr("Ramp %1, %2, light from %3")
         .arg(QString::fromStdString(view()->ramp().name), formShapeName(view()->formOptions().shape).toLower(),
              compassName(view()->brushSettings().lightDirection));
@@ -237,6 +255,8 @@ std::unique_ptr<Brush> FormTool::makeBrush(Qt::MouseButton) const {
 SoftTool::SoftTool(QObject* parent) : BrushTool(QStringLiteral("soft"), tr("Sof&t Brush"), parent) {}
 
 QString SoftTool::status() const {
+    if (refusesLayer())
+        return pixelRefusal();
     return view() ? tr("Ramp %1, hardness %2%")
                         .arg(QString::fromStdString(view()->ramp().name))
                         .arg(qRound(view()->hardness() * 100))
@@ -264,6 +284,8 @@ SmudgeTool::SmudgeTool(QObject* parent)
     : BrushTool(QStringLiteral("smudge"), tr("S&mudge Brush"), parent) {}
 
 QString SmudgeTool::status() const {
+    if (refusesLayer())
+        return pixelRefusal();
     return view() ? tr("Ramp %1").arg(QString::fromStdString(view()->ramp().name)) : QString();
 }
 
@@ -502,8 +524,8 @@ void GradientTool::setRungs(int from, int to) {
 QString GradientTool::status() const {
     if (!view())
         return {};
-    if (onPixelLayer())
-        return tr("The ramp gradient can't paint a Pixels layer: it holds no shades");
+    if (refusesLayer())
+        return pixelRefusal();
     const Ramp& ramp = view()->ramp();
     const int top = ramp.topRung();
     QString s = tr("Ramp %1, %2, rung %3 to %4")
@@ -516,15 +538,7 @@ QString GradientTool::status() const {
     return s;
 }
 
-bool GradientTool::onPixelLayer() const {
-    const Layer* layer = view()->document()->active();
-    return layer && layer->props.kind == LayerKind::Pixels;
-}
-
 bool GradientTool::begin(const ToolEvent& e) {
-    // Its rungs are ░▒▓ cells, which a pixel layer can't hold (PLAN §3).
-    if (onPixelLayer())
-        return false;
     start_ = end_ = e.cell;
     reversed_ = e.button == Qt::RightButton;
     return true;
@@ -658,6 +672,8 @@ void RimLightTool::setKeepLint(bool keep) {
 QString RimLightTool::status() const {
     if (!view())
         return QString();
+    if (refusesLayer())
+        return pixelRefusal();
     const QString s = tr("Ramp %1, light from %2")
                           .arg(QString::fromStdString(view()->ramp().name),
                                compassName(view()->brushSettings().lightDirection));
@@ -689,6 +705,8 @@ TextureTool::TextureTool(QObject* parent) : BrushTool(QStringLiteral("texture"),
 QString TextureTool::status() const {
     if (!view())
         return QString();
+    if (refusesLayer())
+        return pixelRefusal();
     const TextureOptions& t = view()->textureOptions();
     return tr("Ramp %1, %2, density %3, seed %4, light from %5")
         .arg(QString::fromStdString(view()->ramp().name), textureKindName(t.kind).toLower())
@@ -885,6 +903,8 @@ void SprayTool::setSeed(int seed) {
 QString SprayTool::status() const {
     if (!view())
         return QString();
+    if (refusesLayer())
+        return pixelRefusal();
     if (options_.kind == SprayKind::Stars)
         return tr("Stars, density %1%, seed %2; right button takes stars off")
             .arg(options_.density)

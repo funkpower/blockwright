@@ -1,18 +1,22 @@
 // The brushes' common behaviour in the main window (PLAN §4, phase 2b.1):
 // Tool Options' size, tip, strength, pressure mapping, ramp and alpha
-// lock, the ramp shade brush, and a stylus's pressure through QTabletEvent.
+// lock, the ramp shade brush, the ramp tools on a Pixels layer, and a
+// stylus's pressure through QTabletEvent.
 
 #include "tool_options.h"
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
 #include "main_window.h"
+#include "settings.h"
 #include "tool.h"
 
+#include "scratch_settings.h"
 #include "system_input.h"
 
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
+#include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
@@ -25,6 +29,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QFileInfo>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
@@ -37,6 +42,7 @@
 #include <QUndoStack>
 
 #include <algorithm>
+#include <map>
 #include <random>
 #include <set>
 #include <string>
@@ -167,6 +173,37 @@ Ramp ramp(const char* name) {
     REQUIRE(r);
     return *r;
 }
+
+// Fills the active layer's top 40 x 12 cells with whole cells (█, which a
+// Pixels layer holds as two pixels), three columns of each of `colours` in
+// turn, as one undo step.
+void fillWhole(MainWindow& w, std::initializer_list<std::uint8_t> colours) {
+    Document* doc = w.document();
+    const std::vector<std::uint8_t> cs(colours);
+    CellEdit e;
+    for (int y = 0; y < 12; ++y)
+        for (int x = 0; x < 40; ++x) {
+            Cell c;
+            c.ch = kFullBlock;
+            c.fg = c.bg = Color::indexed(cs[(x / 3) % cs.size()]);
+            e.changes.push_back({x, y, doc->layerCanvas().at(x, y), c});
+        }
+    REQUIRE(doc->edit(e));
+}
+
+// The glyph spray's settings, forgotten before and after a test, from the
+// scratch settings only.
+struct FreshSpraySettings {
+    static QString dir() { return QFileInfo(bwtest::scratchSettingsFile()).absolutePath(); }
+    FreshSpraySettings() {
+        REQUIRE(bwtest::settingsInScratch(dir()));
+        appSettings()->remove(QStringLiteral("spray"));
+    }
+    ~FreshSpraySettings() {
+        if (bwtest::settingsInScratch(dir()))
+            appSettings()->remove(QStringLiteral("spray"));
+    }
+};
 
 } // namespace
 
@@ -321,6 +358,202 @@ TEST_CASE("changing the brush mid-drag redoes the preview, and release lands it"
         CHECK(at(w, c.x, c.y) == c.after);
     CHECK(changed(w) == cellsOf(shown));
     CHECK(w.document()->undoStack()->count() == 1);
+}
+
+TEST_CASE("the ramp shade brush refuses a Pixels layer and says why in the status bar", "[layers]") {
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    QUndoStack* undo = doc->undoStack();
+    auto* label = w.findChild<QLabel*>(QStringLiteral("toolStatusLabel"));
+    REQUIRE(label);
+    use(w, "rampShade");
+    CHECK(label->text() == QStringLiteral("Ramp steel"));
+    const LayerId cells = doc->activeLayer();
+    // made active with the brush already chosen: the status follows
+    act(w, QStringLiteral("newPixelLayer"))->trigger();
+    REQUIRE(doc->active()->props.kind == LayerKind::Pixels);
+    // opaque black pixels: steel's rung 0
+    fillWhole(w, {Black});
+    REQUIRE(rungOf(ramp("steel"), doc->active()->cells.at(2, 4)) == 0);
+    CHECK(label->isVisibleTo(&w));
+    CHECK(label->text() == QStringLiteral("The ramp shade brush can't paint a Pixels layer: it holds no shades"));
+    CHECK(dragTool(w)->status() == label->text());
+    const Canvas layer = doc->active()->cells, shown = doc->canvas();
+    const int steps = undo->count();
+
+    // a quarter strength steps a rung, a shade the layer can't hold (it was
+    // dropped without a word); full strength steps a whole colour, which it
+    // can (it landed, a solid grey fill)
+    for (const int strength : {25, 100}) {
+        INFO("strength " << strength);
+        w.toolOptions()->strengthBox()->setValue(strength);
+        mouse(v, QEvent::MouseButtonPress, 2, 8);
+        mouse(v, QEvent::MouseMove, 30, 8);
+        CHECK_FALSE(dragTool(w)->dragging());
+        CHECK(dragTool(w)->pending().empty());
+        mouse(v, QEvent::MouseButtonRelease, 30, 8);
+        CHECK(doc->active()->cells == layer);
+        CHECK(doc->canvas() == shown);
+        CHECK(undo->count() == steps);
+        CHECK(label->text().contains(QStringLiteral("Pixels layer")));
+    }
+
+    // back on the cells layer the brush paints, and the status says so
+    w.toolOptions()->strengthBox()->setValue(25);
+    REQUIRE(doc->setActiveLayer(cells));
+    CHECK(label->text() == QStringLiteral("Ramp steel"));
+    drag(v, {{2, 8}, {30, 8}});
+    CHECK(rungOf(ramp("steel"), doc->active()->cells.at(2, 4)) == 1);
+    CHECK(undo->count() == steps + 1);
+}
+
+TEST_CASE("the ramp shade brush shades a Text layer as it does a cells layer", "[layers]") {
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    QUndoStack* undo = doc->undoStack();
+    use(w, "rampShade");
+    doc->addLayer(LayerKind::Text);
+    REQUIRE(doc->active()->props.kind == LayerKind::Text);
+    fillWhole(w, {Black});
+    CHECK(dragTool(w)->status() == QStringLiteral("Ramp steel"));
+    const Ramp steel = ramp("steel");
+    const int steps = undo->count();
+
+    // a rung a pass at a quarter strength, a whole colour at full
+    drag(v, {{2, 8}, {30, 8}});
+    for (int x = 2; x <= 30; ++x) {
+        INFO(x);
+        CHECK(rungOf(steel, doc->active()->cells.at(x, 4)) == 1);
+    }
+    CHECK(undo->count() == steps + 1);
+    w.toolOptions()->strengthBox()->setValue(100);
+    drag(v, {{2, 12}, {30, 12}});
+    for (int x = 2; x <= 30; ++x) {
+        INFO(x);
+        CHECK(doc->active()->cells.at(x, 6) == rungCell(steel, 4));
+    }
+    CHECK(undo->count() == steps + 2);
+}
+
+TEST_CASE("the ramp tools that write shades refuse a Pixels layer; outline, despeckle and stars paint it", "[layers]") {
+    FreshSpraySettings fresh;
+    struct Case {
+        const char* id;
+        SprayKind spray;
+        bool refuses;
+    };
+    const Case cases[] = {
+        {"rampShade", SprayKind::Stars, true}, {"form", SprayKind::Stars, true},
+        {"soft", SprayKind::Stars, true},      {"smudge", SprayKind::Stars, true},
+        {"rimLight", SprayKind::Stars, true},  {"texture", SprayKind::Stars, true},
+        {"spray", SprayKind::Haze, true},      {"spray", SprayKind::Smoke, true},
+        // whole cells and half blocks, which a pixel layer holds (the outline
+        // leaves its shade rungs out there), and glyphs, which it doesn't,
+        // but not shades
+        {"outline", SprayKind::Stars, false},  {"despeckle", SprayKind::Stars, false},
+        {"spray", SprayKind::Stars, false},
+    };
+    for (const Case& c : cases) {
+        INFO(c.id << " " << sprayKindName(c.spray).toStdString());
+        MainWindow w;
+        Document* doc = w.document();
+        CanvasView* v = w.canvasView();
+        act(w, QStringLiteral("newPixelLayer"))->trigger();
+        // steel's colours in stripes, each tool something to work on
+        fillWhole(w, {Black, DarkGrey, Grey, White});
+        w.toolOptions()->sizeBox()->setValue(3);
+        use(w, c.id);
+        if (auto* spray = qobject_cast<SprayTool*>(w.tools()->active()))
+            spray->setKind(c.spray);
+        DragTool* t = dragTool(w);
+        CHECK(t->status().contains(QStringLiteral("can't paint a Pixels layer")) == c.refuses);
+        const Canvas layer = doc->active()->cells;
+        const int steps = doc->undoStack()->count();
+        mouse(v, QEvent::MouseButtonPress, 2, 8);
+        mouse(v, QEvent::MouseMove, 30, 8);
+        CHECK(t->dragging() == !c.refuses);
+        mouse(v, QEvent::MouseButtonRelease, 30, 8);
+        if (c.refuses) {
+            CHECK(doc->active()->cells == layer);
+            CHECK(doc->undoStack()->count() == steps);
+        }
+
+        // a text layer is painted as a cells layer
+        doc->addLayer(LayerKind::Text);
+        CHECK_FALSE(t->status().contains(QStringLiteral("Pixels layer")));
+        mouse(v, QEvent::MouseButtonPress, 2, 8);
+        CHECK(t->dragging());
+        mouse(v, QEvent::MouseButtonRelease, 2, 8);
+    }
+}
+
+// Codex round 1 on PR #161: an outline click where the darkest line would
+// add a lint finding at some cells, so they take the next rung lighter, a
+// shade on a cells layer (K▓k, steel's rung 5). A Pixels layer can't hold
+// that shade, and the whole stroke was dropped on release without a word,
+// its whole-colour cells too. There the outline leaves the shade rungs out:
+// a cell takes a whole colour or stays as it was, and what the stroke shows
+// is what lands.
+TEST_CASE("the outline writes no shade on a Pixels layer and its stroke lands as shown", "[layers]") {
+    const Ramp steel = ramp("steel");
+    // pixel cells only (top, bottom), so a Pixels layer holds them as they are
+    const auto build = [](MainWindow& w, bool pixels) {
+        if (pixels)
+            act(w, QStringLiteral("newPixelLayer"))->trigger();
+        Document* doc = w.document();
+        CellEdit e;
+        const auto px = [&](int x, int y, std::uint8_t top, std::uint8_t bottom) {
+            e.changes.push_back({x, y, doc->layerCanvas().at(x, y), halfBlockCell(HalfPair{top, bottom}, true)});
+        };
+        px(3, 0, DarkGrey, Grey);
+        for (int y = 1; y <= 2; ++y)
+            for (int x = 2; x <= 4; ++x)
+                px(x, y, Grey, Grey);
+        px(2, 3, Grey, Grey);
+        px(3, 3, Black, Grey);
+        px(4, 3, Grey, White);
+        px(7, 4, Grey, Grey);
+        REQUIRE(doc->edit(e));
+        w.canvasView()->setBrushSettings(BrushSettings{3, Tip::Square, 1.0, PressureTo::Nothing});
+        use(w, "outline");
+    };
+    const auto press = [](MainWindow& w) {
+        mouse(w.canvasView(), QEvent::MouseButtonPress, 3, 4);
+        return dragTool(w)->pending();
+    };
+    const auto rungs = [&](const CellEdit& e) {
+        std::map<std::pair<int, int>, int> out;
+        for (const CellChange& c : e.changes)
+            out[{c.x, c.y}] = rungOf(steel, c.after).value_or(-1);
+        return out;
+    };
+
+    // on a cells layer the click lines the top in K and the left side in K▓k
+    {
+        MainWindow w;
+        build(w, false);
+        CHECK(rungs(press(w)) == std::map<std::pair<int, int>, int>{{{2, 1}, 4}, {{3, 1}, 4}, {{4, 1}, 4},
+                                                                     {{2, 2}, 5}, {{2, 3}, 5}});
+    }
+
+    MainWindow w;
+    Document* doc = w.document();
+    QUndoStack* undo = doc->undoStack();
+    build(w, true);
+    const int steps = undo->count();
+    const CellEdit shown = press(w);
+    // the K the lint allows there, and no shade
+    CHECK(rungs(shown) == std::map<std::pair<int, int>, int>{{{3, 1}, 4}, {{4, 1}, 4}, {{4, 2}, 4}});
+    for (const CellChange& c : shown.changes) {
+        INFO(c.x << "," << c.y);
+        CHECK(halfBlocks(c.after, true));
+    }
+    mouse(w.canvasView(), QEvent::MouseButtonRelease, 3, 4);
+    CHECK(undo->count() == steps + 1);
+    for (const CellChange& c : shown.changes)
+        CHECK(doc->active()->cells.at(c.x, c.y) == c.after);
 }
 
 TEST_CASE("the alpha lock leaves transparent cells alone") {

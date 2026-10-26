@@ -2199,3 +2199,63 @@ TEST_CASE("the outline closes a fringe's shape half at its ends", "[detail]") {
         CHECK(outlineAll(applied(c, e), steel(), o).empty());
     }
 }
+
+// A pixel layer holds pixel cells only (layer.h), so on one the outline
+// leaves its shade rungs out: where a cells layer's line steps to a shade
+// (K▓k) to clear a lint finding, the cell takes a whole colour or stays as
+// it was. On random canvases of pixel cells, a blob and stray pixels, a
+// click or a short stroke, plain or mirrored, writes pixel cells only; the
+// same dabs on a cells layer write shades, so the canvases reach the case.
+TEST_CASE("the outline writes pixel cells only on a pixel layer", "[detail][layers]") {
+    const Ramp r = steel();
+    const std::uint8_t colours[] = {Black, DarkGrey, Grey, White};
+    std::mt19937 rng(157);
+    int shaded = 0, written = 0;
+    for (int trial = 0; trial < 300; ++trial) {
+        const int w = 8 + int(rng() % 5), h = 5 + int(rng() % 3);
+        Canvas c(w, h);
+        const auto px = [&](int x, int y, std::uint8_t top, std::uint8_t bottom) {
+            if (c.contains(x, y))
+                c.at(x, y) = halfBlockCell(HalfPair{top, bottom}, true);
+        };
+        const std::uint8_t body = colours[1 + rng() % 3];
+        const int bx = 1 + int(rng() % 3), by = 1 + int(rng() % 2), bw = 3 + int(rng() % 3);
+        for (int y = by; y < by + 3; ++y)
+            for (int x = bx; x < bx + bw; ++x)
+                px(x, y, body, body);
+        for (int k = int(rng() % 8); k > 0; --k) {
+            const int x = int(rng() % w), y = int(rng() % h);
+            px(x, y, colours[rng() % 4], colours[rng() % 4]);
+        }
+        BrushSettings s;
+        s.size = 1 + int(rng() % 3);
+        s.tip = Tip::Square;
+        Symmetry sym;
+        if (trial % 3 == 2)
+            sym = Symmetry{SymmetryMode::MirrorX, 4, Point{w / 2, h / 2}};
+        std::vector<Dab> dabs{{bx + int(rng() % bw), by + int(rng() % 3)}};
+        if (trial % 2)
+            dabs.push_back({dabs[0].x + 1, dabs[0].y});
+        const OutlineBrush brush(r);
+        for (const bool pixels : {false, true}) {
+            StrokeOptions o;
+            o.pixelLayer = pixels;
+            o.symmetry = sym;
+            Stroke stroke(c, brush, s, o);
+            for (const Dab& d : dabs)
+                stroke.addDab(d);
+            const CellEdit e = stroke.edit();
+            for (const CellChange& ch : e.changes) {
+                INFO("trial " << trial << " cell " << ch.x << "," << ch.y);
+                if (!pixels)
+                    shaded += !halfBlocks(ch.after, true);
+                else
+                    CHECK(halfBlocks(ch.after, true));
+            }
+            if (pixels)
+                written += !e.empty();
+        }
+    }
+    CHECK(shaded > 0);
+    CHECK(written > 0);
+}
