@@ -1,4 +1,5 @@
 #include "document.h"
+#include "font_scanner.h"
 
 #include "blockwright/style_draw.h"
 #include "blockwright/text.h"
@@ -1077,7 +1078,22 @@ void Document::placeLayer(LayerId id, std::size_t index) {
         emit cellsChanged(cells);
 }
 
+void Document::scanFontsFolder(const QString& folder) {
+    if (!fontScanner_) {
+        fontScanner_ = new FontScanner(this);
+        connect(fontScanner_, &FontScanner::changed, this, [this] {
+            fontsFolder_ = fontScanner_->catalogue();
+            emit fontsFolderChanged();
+        });
+    }
+    fontScanner_->start(folder);
+}
+
+bool Document::fontsScanning() const { return fontScanner_ && fontScanner_->scanning(); }
+
 void Document::setFontsFolder(std::shared_ptr<const FontCatalogue> catalogue) {
+    if (fontScanner_)
+        fontScanner_->cancel();
     fontsFolder_ = std::move(catalogue);
     emit fontsFolderChanged();
 }

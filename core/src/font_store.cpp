@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <string>
 #include <system_error>
 #include <utility>
+#include <unordered_map>
 
 namespace bw {
 
@@ -23,8 +25,8 @@ bool isSha256Hex(std::string_view s) {
            std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
 }
 
-FontFile::FontFile(std::string b, std::vector<std::string> n)
-    : sha256(sha256Hex(b)), bytes(std::move(b)), names(std::move(n)) {}
+FontFile::FontFile(std::string b, std::vector<std::string> n, std::vector<TdfType> t)
+    : sha256(sha256Hex(b)), bytes(std::move(b)), names(std::move(n)), types(std::move(t)) {}
 
 const Face* FontFile::face(std::size_t i) const {
     std::call_once(made_, [this] {
@@ -51,11 +53,14 @@ FontFilePtr loadFontFile(std::string bytes) {
     if (bytes.size() > kMaxTdfBytes)
         throw TdfError("the file is over " + std::to_string(kMaxTdfBytes >> 20) + " MiB");
     std::vector<std::string> names;
-    for (const TdfFont& font : readTdf(bytes))
+    std::vector<TdfType> types;
+    for (const TdfFont& font : readTdf(bytes)) {
         names.push_back(font.name);
+        types.push_back(font.type);
+    }
     if (names.empty())
         throw TdfError("the file holds no font");
-    return std::make_shared<const FontFile>(std::move(bytes), std::move(names));
+    return std::make_shared<const FontFile>(std::move(bytes), std::move(names), std::move(types));
 }
 
 FontFilePtr FontStore::add(FontFilePtr file) {
@@ -115,7 +120,8 @@ std::vector<FaceEntry> FontCatalogue::entries() const {
     std::vector<FaceEntry> out;
     out.reserve(fonts.size());
     for (const Font& f : fonts)
-        out.push_back({f.ref, f.displayName, f.face});
+        out.push_back({f.ref, f.displayName, nullptr, store.file(f.ref.file),
+                       f.type == TdfType::Outline ? "outline" : f.type == TdfType::Block ? "block" : "colour"});
     return out;
 }
 
@@ -129,7 +135,7 @@ bool isTdfName(const std::filesystem::path& p) {
 
 } // namespace
 
-FontCatalogue scanFontsFolder(const std::filesystem::path& folder) {
+FontCatalogue scanFontsFolder(const std::filesystem::path& folder, const std::function<bool()>& cancelled) {
     namespace fs = std::filesystem;
     FontCatalogue cat;
     cat.folder = folder;
@@ -143,6 +149,8 @@ FontCatalogue scanFontsFolder(const std::filesystem::path& folder) {
         return cat;
     }
     for (; it != end; it.increment(ec)) {
+        if (cancelled && cancelled())
+            return cat;
         if (ec) {
             cat.rejected.push_back({folder, "can't read the folder: " + ec.message()});
             break;
@@ -153,6 +161,8 @@ FontCatalogue scanFontsFolder(const std::filesystem::path& folder) {
     }
     std::sort(files.begin(), files.end());
     for (const fs::path& path : files) {
+        if (cancelled && cancelled())
+            return cat;
         FontFilePtr file;
         try {
             std::string bytes = readTdfBytes(path);
@@ -172,10 +182,25 @@ FontCatalogue scanFontsFolder(const std::filesystem::path& folder) {
             ref.file = file->sha256;
             ref.index = static_cast<int>(i);
             ref.name = file->names[i];
-            // the picker shows each of them: made now
-            cat.fonts.push_back({ref, file->names[i] + " (" + fileName + ")", path, file->face(i)});
+            cat.fonts.push_back({ref, file->names[i] + " (" + fileName + ")", path, file->types[i], file});
         }
     }
+    // Keep short labels unless two listed variants would look identical.
+    std::unordered_map<std::string, std::size_t> labels;
+    for (const auto& font : cat.fonts)
+        ++labels[font.displayName];
+    for (auto& font : cat.fonts)
+        if (labels[font.displayName] > 1)
+            font.displayName = font.ref.name + " (" + font.file.lexically_relative(folder).generic_string() + ")";
+    // Two fonts with one name in one file still collide; number them by
+    // their place in the file, counting from 1.
+    labels.clear();
+    for (const auto& font : cat.fonts)
+        ++labels[font.displayName];
+    for (auto& font : cat.fonts)
+        if (labels[font.displayName] > 1)
+            font.displayName = font.ref.name + " (" + font.file.lexically_relative(folder).generic_string() + " #"
+                + std::to_string(font.ref.index + 1) + ")";
     return cat;
 }
 

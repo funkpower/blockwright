@@ -284,6 +284,8 @@ public:
     // in the project are found; null when no folder is set. Kept across
     // opening and closing documents.
     void setFontsFolder(std::shared_ptr<const FontCatalogue> catalogue);
+    void scanFontsFolder(const QString& folder);
+    bool fontsScanning() const;
     const FontCatalogue* fontsFolder() const { return fontsFolder_.get(); }
     // The same, shared: its faces last as long as it is held.
     std::shared_ptr<const FontCatalogue> sharedFontsFolder() const { return fontsFolder_; }
@@ -455,6 +457,7 @@ private:
     FileForm form_ = FileForm::Ansi;
     ProjectExtras extras_;
     std::shared_ptr<const FontCatalogue> fontsFolder_;
+    class FontScanner* fontScanner_ = nullptr;
     QUndoStack undo_;
     // The marked cells count as lost (encode): from an open that marked
     // some until the next save, which leaves no blink of that file to lose.

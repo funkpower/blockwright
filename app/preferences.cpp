@@ -1,9 +1,11 @@
 #include "preferences.h"
 
 #include "settings.h"
+#include "font_scanner.h"
 
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QDir>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -31,14 +33,20 @@ QString shown(const FontCatalogue& c, const std::filesystem::path& p) {
 
 } // namespace
 
-QString fontsFolderSetting() { return appSettings()->value(QLatin1String(kFontsFolderKey)).toString(); }
+QString fontsFolderSetting(const QString& home) {
+    const auto s = appSettings();
+    if (s->contains(QLatin1String(kFontsFolderKey)))
+        return s->value(QLatin1String(kFontsFolderKey)).toString();
+    const QString path = QDir(home.isNull() ? QDir::homePath() : home).filePath(QStringLiteral("tdfiglet/fonts"));
+    return QDir(path).exists() ? path : QString();
+}
+
+bool fontsFolderIsDefault() {
+    return !appSettings()->contains(QLatin1String(kFontsFolderKey)) && !fontsFolderSetting().isEmpty();
+}
 
 void setFontsFolderSetting(const QString& folder) {
-    const auto s = appSettings();
-    if (folder.isEmpty())
-        s->remove(QLatin1String(kFontsFolderKey));
-    else
-        s->setValue(QLatin1String(kFontsFolderKey), folder);
+    appSettings()->setValue(QLatin1String(kFontsFolderKey), folder);
 }
 
 std::shared_ptr<const FontCatalogue> loadFontsFolder(const QString& folder) {
@@ -52,6 +60,7 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
     : QDialog(parent) {
     setWindowTitle(tr("Preferences"));
     folder_ = new QLineEdit(folder.trimmed(), this);
+    initialFolder_ = fontsFolder();
     folder_->setPlaceholderText(tr("None"));
     browse_ = new QPushButton(tr("&Browse..."), this);
     clear_ = new QPushButton(tr("C&lear"), this);
@@ -59,6 +68,9 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
     row->addWidget(folder_, 1);
     row->addWidget(browse_);
     row->addWidget(clear_);
+    default_ = new QLabel(tr("Default: ~/tdfiglet/fonts"), this);
+    default_->setObjectName(QStringLiteral("fontsDefault"));
+    default_->setVisible(fontsFolderIsDefault() && folder == fontsFolderSetting());
     summary_ = new QLabel(this);
     summary_->setWordWrap(true);
     list_ = new QPlainTextEdit(this);
@@ -70,6 +82,7 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
     form->addRow(tr("&Fonts folder:"), row);
     auto* layout = new QVBoxLayout(this);
     layout->addLayout(form);
+    layout->addWidget(default_);
     layout->addWidget(summary_);
     layout->addWidget(list_, 1);
     layout->addWidget(buttons_);
@@ -79,11 +92,13 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
     connect(browse_, &QPushButton::clicked, this, [this] {
         const QString dir = QFileDialog::getExistingDirectory(this, tr("Fonts Folder"), fontsFolder());
         if (!dir.isEmpty()) {
+            folderChosen_ = true;
             folder_->setText(dir);
             rescan();
         }
     });
     connect(clear_, &QPushButton::clicked, this, [this] {
+        folderChosen_ = true;
         folder_->clear();
         rescan();
     });
@@ -93,22 +108,42 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
     });
     connect(buttons_, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
+    scanner_ = new FontScanner(this);
+    connect(scanner_, &FontScanner::changed, this, [this] {
+        catalogue_ = scanner_->catalogue();
+        showCatalogue();
+    });
     scanned_ = fontsFolder();
-    catalogue_ = catalogue ? std::move(catalogue) : loadFontsFolder(scanned_);
-    showCatalogue();
+    if (catalogue) {
+        catalogue_ = std::move(catalogue);
+        showCatalogue();
+    } else {
+        rescan(true);
+    }
 }
 
 QString PreferencesDialog::fontsFolder() const { return folder_->text().trimmed(); }
+
+bool PreferencesDialog::fontsFolderChanged() const {
+    return folderChosen_ || fontsFolder() != initialFolder_;
+}
 
 void PreferencesDialog::rescan(bool always) {
     if (!always && fontsFolder() == scanned_)
         return;
     scanned_ = fontsFolder();
-    catalogue_ = loadFontsFolder(scanned_);
-    showCatalogue();
+    default_->setVisible(fontsFolderIsDefault() && scanned_ == fontsFolderSetting());
+    scanner_->start(scanned_);
 }
 
+bool PreferencesDialog::scanning() const { return scanner_->scanning(); }
+
 void PreferencesDialog::showCatalogue() {
+    if (scanning()) {
+        summary_->setText(tr("Scanning fonts…"));
+        list_->clear();
+        return;
+    }
     if (!catalogue_) {
         summary_->setText(tr("No fonts folder: text layers can use the bundled faces and the fonts a project holds."));
         list_->clear();

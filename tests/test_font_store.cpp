@@ -223,8 +223,7 @@ TEST_CASE("the fonts folder's catalogue lists every font and every file it can't
     std::vector<std::string> shown;
     for (const auto& f : c.fonts) {
         shown.push_back(f.displayName);
-        CHECK(f.face == c.store.face(f.ref));
-        CHECK(f.face->name() == f.ref.name);
+        CHECK(c.store.face(f.ref)->name() == f.ref.name);
     }
     // by path, then file order; the second copy of bw-block adds nothing
     CHECK(shown == std::vector<std::string>{"BW Outline (bw-all.tdf)", "BW Block (bw-all.tdf)",
@@ -247,7 +246,7 @@ TEST_CASE("the fonts folder's catalogue lists every font and every file it can't
     for (std::size_t i = 0; i < entries.size(); ++i) {
         CHECK(entries[i].ref == c.fonts[i].ref);
         CHECK(entries[i].displayName == c.fonts[i].displayName);
-        CHECK(entries[i].face == c.fonts[i].face);
+        CHECK(entries[i].resolvedFace() == c.store.face(c.fonts[i].ref));
     }
 
     // no folder, an empty one or one that isn't there: nothing, no throw
@@ -406,7 +405,7 @@ TEST_CASE("a font file over kMaxTdfBytes is refused when it's loaded and when it
     // a file made some other way is refused by the writer before it
     // touches what is at the destination
     bytes.resize(kMaxTdfBytes + 1, '\0');
-    const auto big = std::make_shared<const FontFile>(bytes, std::vector<std::string>{"BW Block"});
+    const auto big = std::make_shared<const FontFile>(bytes, std::vector<std::string>{"BW Block"}, std::vector<TdfType>{TdfType::Block});
     Project p;
     p.layers = LayerStack(80, 25);
     p.fonts.add(big);
@@ -554,4 +553,80 @@ TEST_CASE("a project holds at most kMaxFontFiles font copies, read or written", 
     Entries more = e;
     more["fonts/" + sha256Hex("x") + ".tdf"] = "x";
     CHECK(refusal(more).find("over 16 font files") != std::string::npos);
+}
+
+TEST_CASE("a large folder scan honours cancellation during discovery and reading", "[fonts][round1]") {
+    const auto dir = scratch("cancelled");
+    constexpr int files = 1000;
+    const auto source = tdfData("bw-all.tdf");
+    for (int i = 0; i < files; ++i) {
+        auto bytes = source;
+        const auto name = "Font" + std::to_string(i);
+        bytes.replace(bytes.find("BW Outline"), name.size(), name);
+        writeFile(dir / (std::to_string(i) + ".tdf"), bytes);
+    }
+    int stop = 8;
+    SECTION("stop while discovering paths") {}
+    SECTION("stop between file reads") { stop += files; }
+    int calls = 0;
+    const auto c = scanFontsFolder(dir, [&] { return ++calls >= stop; });
+    CHECK(calls == stop);
+    CHECK(c.store.files().size() <= 7);
+    CHECK(c.fonts.size() <= 21);
+    CHECK(c.rejected.empty());
+    if (stop > files) {
+        CHECK(c.store.files().size() == 7);
+        CHECK(c.fonts.size() == 21);
+    } else {
+        CHECK(c.store.files().empty());
+    }
+    fs::remove_all(dir);
+}
+
+TEST_CASE("colliding face labels use relative paths only where needed", "[fonts][round1]") {
+    const auto dir = scratch("colliding-names");
+    writeFile(dir / "a" / "x.tdf", tdfData("bw-block.tdf"));
+    writeFile(dir / "b" / "x.tdf", tdfData("bw-all.tdf"));
+    writeFile(dir / "unique.tdf", tdfData("bw-colour.tdf"));
+    const auto c = scanFontsFolder(dir);
+    REQUIRE(c.fonts.size() == 5);
+    std::vector<std::string> labels;
+    for (const auto& e : c.entries())
+        labels.push_back(e.displayName);
+    CHECK(labels == std::vector<std::string>{"BW Block (a/x.tdf)", "BW Outline (x.tdf)",
+        "BW Block (b/x.tdf)", "BW Colour (x.tdf)", "BW Colour (unique.tdf)"});
+    fs::remove_all(dir);
+}
+
+TEST_CASE("same-named fonts in one file are numbered by their place in it", "[fonts][round2]") {
+    // bw-all.tdf with its first font renamed to match its second
+    auto twin = tdfData("bw-all.tdf");
+    twin.replace(twin.find("BW Outline"), 10, std::string("BW Block\0\0", 10));
+    const auto dir = scratch("same-name-in-file");
+    SECTION("one file") {
+        writeFile(dir / "x.tdf", twin);
+        const auto c = scanFontsFolder(dir);
+        REQUIRE(c.fonts.size() == 3);
+        CHECK(c.fonts[0].ref.name == "BW Block");
+        CHECK(c.fonts[1].ref.name == "BW Block");
+        std::vector<std::string> labels;
+        for (const auto& e : c.entries())
+            labels.push_back(e.displayName);
+        CHECK(labels == std::vector<std::string>{"BW Block (x.tdf #1)", "BW Block (x.tdf #2)", "BW Colour (x.tdf)"});
+    }
+    SECTION("and the same file name in another folder") {
+        writeFile(dir / "a" / "x.tdf", twin);
+        writeFile(dir / "b" / "x.tdf", tdfData("bw-block.tdf"));
+        const auto c = scanFontsFolder(dir);
+        REQUIRE(c.fonts.size() == 4);
+        std::vector<std::string> labels;
+        for (const auto& e : c.entries())
+            labels.push_back(e.displayName);
+        CHECK(labels == std::vector<std::string>{"BW Block (a/x.tdf #1)", "BW Block (a/x.tdf #2)",
+            "BW Colour (x.tdf)", "BW Block (b/x.tdf)"});
+        // identity stays the file's hash, the index and the name
+        CHECK(c.fonts[1].ref.index == 1);
+        CHECK(c.fonts[1].ref.name == "BW Block");
+    }
+    fs::remove_all(dir);
 }

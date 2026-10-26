@@ -13,6 +13,8 @@
 #include "blockwright/text_source.h"
 
 #include <QHash>
+#include <QCache>
+#include <QSet>
 #include <QIcon>
 #include <QString>
 #include <QWidget>
@@ -21,8 +23,9 @@
 #include <vector>
 
 class QLineEdit;
-class QListWidget;
-class QListWidgetItem;
+class QListView;
+class QComboBox;
+class QLabel;
 class QToolButton;
 
 namespace bw {
@@ -33,9 +36,7 @@ std::vector<FaceEntry> bundledFaceEntries();
 class FacePicker : public QWidget {
     Q_OBJECT
 public:
-    // Lists `entries` (the bundled faces when empty). The first screenful
-    // or so of previews is drawn at once, the rest when the event loop is
-    // idle.
+    // Lists metadata only; the delegate resolves faces and previews on paint.
     explicit FacePicker(std::vector<FaceEntry> entries = {}, QWidget* parent = nullptr);
 
     const std::vector<FaceEntry>& entries() const { return entries_; }
@@ -59,7 +60,11 @@ public:
     QStringList listed() const;
 
     QLineEdit* searchField() const { return search_; }
-    QListWidget* list() const { return list_; }
+    QListView* list() const { return list_; }
+    QComboBox* typeFilter() const { return type_; }
+    void setScanning(bool scanning);
+    bool scanning() const;
+    int previewsBuilt() const { return previewsBuilt_; }
     // Toggles the current face's favourite.
     QToolButton* favouriteButton() const { return favourite_; }
 
@@ -73,18 +78,25 @@ private:
     static QString keyOf(const FaceRef& ref);
     const FaceEntry* find(const FaceRef& ref) const;
     void rebuild();
-    // Draws the previews the list still lacks, a batch at a time.
-    void drawPreviews();
+    QVariant rowData(int row, int role) const;
+    void selectCurrent();
     void updateFavouriteButton();
 
     std::vector<FaceEntry> entries_;
     FaceRef current_;
     std::u32string text_;
-    QStringList favourites_;
-    QHash<QString, QIcon> previews_;  // by keyOf
-    bool previewsQueued_ = false;
+    QSet<QString> favourites_;
+    mutable QCache<QString, QIcon> previews_{256};
+    mutable QHash<int, QString> labels_;
+    mutable int previewsBuilt_ = 0;
+    std::vector<int> rows_;
+    QStringList searchText_;
+    QStringList keys_;
+    class FaceListModel* model_;
+    QComboBox* type_;
+    QLabel* scanning_;
     QLineEdit* search_;
-    QListWidget* list_;
+    QListView* list_;
     QToolButton* favourite_;
 };
 

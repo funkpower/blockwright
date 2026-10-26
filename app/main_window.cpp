@@ -89,7 +89,7 @@ void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project)
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     renderer_.setCanvas(&doc_.canvas(), glyphWidth(doc_.ansi()));
-    doc_.setFontsFolder(loadFontsFolder(fontsFolderSetting()));
+    doc_.scanFontsFolder(fontsFolderSetting());
 
     view_ = new CanvasView(&doc_, &renderer_);
     view_->setObjectName(QStringLiteral("canvasView"));

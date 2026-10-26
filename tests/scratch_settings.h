@@ -62,6 +62,8 @@ inline bool qtSettingsInScratch(const QString& dir) {
 inline void useScratchSettings(const QTemporaryDir& dir) {
     scratchSettingsFile() = dir.filePath(QStringLiteral("settings.ini"));
     bw::setSettingsFile(scratchSettingsFile());
+    // A test window must never discover the caller's local font collection.
+    bw::appSettings()->setValue(QStringLiteral("fonts/folder"), QString());
     if (kQtSettingsRedirectable) {
         for (const auto format : {QSettings::NativeFormat, QSettings::IniFormat}) {
             QSettings::setPath(format, QSettings::UserScope, dir.filePath(QStringLiteral("qt/user")));

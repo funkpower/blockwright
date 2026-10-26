@@ -122,6 +122,7 @@ TextOptions::TextOptions(CanvasView* view, TextTool* tool, QWidget* parent)
 void TextOptions::syncFaces() {
     const Document* d = view_->document();
     std::shared_ptr<const FontCatalogue> folder = d->sharedFontsFolder();
+    picker_->setScanning(d->fontsScanning());
     // the face new text starts in, picked from a folder or project since gone
     const FaceRef& face = tool_->defaults().face;
     const FontStore& keptFonts = tool_->keptFonts();
@@ -149,12 +150,15 @@ void TextOptions::syncFaces() {
             ref.file = sha;
             ref.index = int(i);
             entries.push_back({ref, tr("%1 (in the project)").arg(QString::fromStdString(ref.name)).toStdString(),
-                               file->face(i)});
+                               nullptr, file, file->types[i] == TdfType::Outline ? "outline" :
+                                              file->types[i] == TdfType::Block ? "block" : "colour"});
         }
     }
     if (kept_)
         entries.push_back({*kept_, tr("%1 (kept for new text)").arg(QString::fromStdString(kept_->name)).toStdString(),
-                           keptFonts.face(*kept_)});
+                           nullptr, keptFonts.file(kept_->file),
+                           keptFonts.file(kept_->file)->types[size_t(kept_->index)] == TdfType::Outline ? "outline" :
+                           keptFonts.file(kept_->file)->types[size_t(kept_->index)] == TdfType::Block ? "block" : "colour"});
     picker_->setEntries(std::move(entries));
 }
 

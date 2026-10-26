@@ -29,6 +29,8 @@
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <QThread>
 #include <QUndoStack>
 
 #include <filesystem>
@@ -37,6 +39,16 @@ using namespace bw;
 namespace fs = std::filesystem;
 
 namespace {
+
+void awaitFonts(const std::function<bool()>& done) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!done() && timer.elapsed() < 10000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    REQUIRE(done());
+}
 
 fs::path fpath(const QString& p) { return fs::path(QFile::encodeName(p).toStdString()); }
 
@@ -87,24 +99,25 @@ CliRun runCli(const QStringList& args) {
 
 } // namespace
 
-TEST_CASE("the fonts folder is kept in the settings, with none by default", "[fonts][preferences]") {
+TEST_CASE("the fonts folder setting keeps an explicitly cleared value", "[fonts][preferences]") {
     SettingCleared cleared;
     setFontsFolderSetting({});
     CHECK(fontsFolderSetting().isEmpty());
-    CHECK_FALSE(appSettings()->contains(QLatin1String(kFontsFolderKey)));
+    CHECK(appSettings()->contains(QLatin1String(kFontsFolderKey)));
     CHECK_FALSE(loadFontsFolder({}));
 
     setFontsFolderSetting(QStringLiteral("/some/fonts"));
     CHECK(fontsFolderSetting() == QStringLiteral("/some/fonts"));
     CHECK(appSettings()->value(QLatin1String(kFontsFolderKey)).toString() == QStringLiteral("/some/fonts"));
     setFontsFolderSetting({});
-    CHECK_FALSE(appSettings()->contains(QLatin1String(kFontsFolderKey)));
+    CHECK(appSettings()->contains(QLatin1String(kFontsFolderKey)));
 }
 
 TEST_CASE("Preferences lists the fonts folder's fonts and the files it couldn't read", "[fonts][preferences]") {
     QTemporaryDir tmp;
     const QString dir = fontsFolder(tmp);
     PreferencesDialog d(dir);
+    awaitFonts([&] { return !d.scanning(); });
     REQUIRE(d.catalogue());
     CHECK(d.catalogue()->fonts.size() == 4);
     CHECK(d.fontsSummary()->text() == QStringLiteral("4 TheDraw fonts; 1 file not read"));
@@ -122,6 +135,7 @@ TEST_CASE("Preferences lists the fonts folder's fonts and the files it couldn't 
     d.fontsFolderEdit()->setText(dir + QStringLiteral("/more"));
     d.buttons()->button(QDialogButtonBox::Ok)->click();
     CHECK(d.result() == QDialog::Accepted);
+    awaitFonts([&] { return !d.scanning(); });
     REQUIRE(d.catalogue());
     CHECK(d.catalogue()->fonts.size() == 1);
     CHECK(d.fontsSummary()->text() == QStringLiteral("1 TheDraw font"));
@@ -149,10 +163,12 @@ TEST_CASE("Edit > Preferences sets the fonts folder the document and the next wi
     a->trigger();
     REQUIRE(shown);
     CHECK(fontsFolderSetting() == dir);
+    awaitFonts([&] { return !w.document()->fontsScanning(); });
     REQUIRE(w.document()->fontsFolder());
     CHECK(w.document()->fontsFolder()->fonts.size() == 4);
 
     MainWindow next;
+    awaitFonts([&] { return !next.document()->fontsScanning(); });
     REQUIRE(next.document()->fontsFolder());
     CHECK(next.document()->fontsFolder()->fonts.size() == 4);
 }
@@ -164,11 +180,13 @@ TEST_CASE("Preferences' OK scans the folder again even when it is unchanged", "[
     const QString dir = tmp.filePath(QStringLiteral("fonts"));
     REQUIRE(QDir().mkpath(dir));
     PreferencesDialog d(dir);
+    awaitFonts([&] { return !d.scanning(); });
     REQUIRE(d.catalogue());
     CHECK(d.catalogue()->fonts.empty());
     writeBytes(dir + QStringLiteral("/bw-block.tdf"), tdfData("bw-block.tdf"));
     d.buttons()->button(QDialogButtonBox::Ok)->click();
     CHECK(d.result() == QDialog::Accepted);
+    awaitFonts([&] { return !d.scanning(); });
     REQUIRE(d.catalogue());
     REQUIRE(d.catalogue()->fonts.size() == 1);
     CHECK(d.catalogue()->fonts[0].ref.name == "BW Block");
@@ -210,7 +228,7 @@ TEST_CASE("a font copy no layer uses is no unsaved content: undone, a flat save 
     doc.setFontsFolder(nullptr);
     doc.undoStack()->redo();
     CHECK(*doc.active() == drawn);
-    CHECK(doc.active()->cells == renderText(s, *block.face).cells);
+    CHECK(doc.active()->cells == renderText(s, *block.resolvedFace()).cells);
     CHECK(doc.isModified());
     CHECK_FALSE(doc.flatHoldsAll());
 }
@@ -232,7 +250,7 @@ TEST_CASE("a folder font a text layer takes is copied into the project and saved
     p.text = s;
     CHECK(doc.extras().fonts.empty());
     REQUIRE(doc.setLayerProperties(id, p, QStringLiteral("Text")));
-    CHECK(doc.active()->cells == renderText(s, *colour.face).cells);
+    CHECK(doc.active()->cells == renderText(s, *colour.resolvedFace()).cells);
     REQUIRE(doc.extras().fonts.file(colour.ref.file));
     CHECK(doc.extras().fonts.files().size() == 1);
 

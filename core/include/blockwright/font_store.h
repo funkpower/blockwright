@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <memory>
@@ -37,13 +38,14 @@ bool isSha256Hex(std::string_view s);
 struct FontFile {
     // A file of `bytes` holding the fonts `names`. loadFontFile makes one
     // from bytes it has read; this one checks nothing.
-    FontFile(std::string bytes, std::vector<std::string> names);
+    FontFile(std::string bytes, std::vector<std::string> names, std::vector<TdfType> types);
     FontFile(const FontFile&) = delete;
     FontFile& operator=(const FontFile&) = delete;
 
     std::string sha256;
     std::string bytes;
     std::vector<std::string> names;  // each font's name, as face(i)->name()
+    std::vector<TdfType> types;
 
     // The face of font `i`, made with the rest of the file's on the first
     // call (safe from any thread); null past the fonts, or when the bytes
@@ -64,7 +66,8 @@ using FontFilePtr = std::shared_ptr<const FontFile>;
 // kMaxTdfBytes, when readTdf throws, or when the file holds no font.
 FontFilePtr loadFontFile(std::string bytes);
 
-// Font files by hash. Copies share the files.
+// Font files by hash. Copies share the files. Mutate a store only on its
+// owning thread; an immutable catalogue may be handed to another thread.
 class FontStore {
 public:
     // Adds the file (a file already held is kept); returns it as held.
@@ -98,23 +101,30 @@ struct FontSources {
     FontFilePtr file(std::string_view sha256) const;
 };
 
-// A face a picker offers: what a text source names, what the list shows,
-// and the face itself.
+// A face a picker offers: identity and searchable metadata, with an owning
+// file for lazy resolution or a pointer to an already constructed pixel face.
 struct FaceEntry {
     FaceRef ref;
     std::string displayName;
     const Face* face = nullptr;
+    FontFilePtr fontFile;  // keeps a lazy TheDraw face alive
+    std::string type = "pixel";
+    const Face* resolvedFace() const {
+        return face ? face : (fontFile ? fontFile->face(static_cast<std::size_t>(ref.index)) : nullptr);
+    }
 };
 
 // The fonts folder, scanned: every .tdf file under it (the extension in any
-// case, subfolders too) read as readTdfFile reads it, its fonts screened. A file
+// case, subfolders too) read as readTdfFile reads it, its font names and types read, with faces constructed lazily. A file
 // that can't be read is listed in `rejected` with the reason, never thrown.
 struct FontCatalogue {
     struct Font {
         FaceRef ref;
-        std::string displayName;  // "NAME (file.tdf)"
+        std::string displayName;  // "NAME (file.tdf)"; a relative path or "#N" only to tell labels apart
         std::filesystem::path file;
-        const Face* face = nullptr;
+        TdfType type = TdfType::Block;
+        FontFilePtr fontFile;
+        const Face* resolvedFace() const { return fontFile->face(static_cast<std::size_t>(ref.index)); }
     };
     struct Rejected {
         std::filesystem::path file;
@@ -131,6 +141,7 @@ struct FontCatalogue {
 
 // The catalogue of `folder`; an empty one when the folder is empty or isn't
 // a directory, with a rejected entry for the folder when it can't be read.
-FontCatalogue scanFontsFolder(const std::filesystem::path& folder);
+FontCatalogue scanFontsFolder(const std::filesystem::path& folder,
+                              const std::function<bool()>& cancelled = {});
 
 } // namespace bw

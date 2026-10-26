@@ -50,8 +50,9 @@ void MainWindow::editPreferences() {
     PreferencesDialog dialog(fontsFolderSetting(), nullptr, this);
     if (dialog.exec() != QDialog::Accepted)
         return;
-    setFontsFolderSetting(dialog.fontsFolder());
-    doc_.setFontsFolder(dialog.catalogue());
+    if (dialog.fontsFolderChanged())
+        setFontsFolderSetting(dialog.fontsFolder());
+    doc_.scanFontsFolder(dialog.fontsFolder());
 }
 
 void MainWindow::setIceColours(bool on) {

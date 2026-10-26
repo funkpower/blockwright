@@ -33,11 +33,13 @@
 #include <QLabel>
 #include <QKeyEvent>
 #include <QLineEdit>
-#include <QListWidget>
+#include <QListView>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QProxyStyle>
 #include <QSpinBox>
+#include <QStyleOptionViewItem>
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -67,6 +69,12 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
 namespace {
+
+int faceCount(const QListView* list) { return list->model()->rowCount(); }
+QModelIndex faceRow(const QListView* list, int row) { return list->model()->index(row, 0); }
+QString faceLabel(const QListView* list, int row) { return faceRow(list, row).data(Qt::ToolTipRole).toString(); }
+QIcon faceIcon(const QListView* list, int row) { return qvariant_cast<QIcon>(faceRow(list, row).data(Qt::DecorationRole)); }
+void selectFaceRow(QListView* list, int row) { list->setCurrentIndex(faceRow(list, row)); }
 
 QAction* act(MainWindow& w, const QString& name) {
     auto* a = w.findChild<QAction*>(name);
@@ -328,10 +336,10 @@ TEST_CASE("each Text tool option sets the text layer's source, one undo step eac
         CHECK(sourceOf(d) == start);
     };
     check("face", [&] {
-        QListWidget* list = o->facePicker()->list();
-        for (int i = 0; i < list->count(); ++i)
-            if (list->item(i)->text().startsWith(QStringLiteral("vga")))
-                list->setCurrentRow(i);
+        QListView* list = o->facePicker()->list();
+        for (int i = 0; i < faceCount(list); ++i)
+            if (faceLabel(list, i).startsWith(QStringLiteral("vga")))
+                selectFaceRow(list, i);
     }, [](const TextSource& s) { return s.face == pixel("vga"); });
     check("case", [&] { o->caseBox()->setCurrentIndex(o->caseBox()->findData(int(TextCase::Capitals))); },
           [](const TextSource& s) { return s.textCase == TextCase::Capitals; });
@@ -402,8 +410,8 @@ TEST_CASE("the face picker lists the bundled faces with previews, searches them 
     }
     FacePicker p;
     CHECK(p.listed() == QStringList{QStringLiteral("block"), QStringLiteral("vga"), QStringLiteral("mini")});
-    for (int i = 0; i < p.list()->count(); ++i)
-        CHECK_FALSE(p.list()->item(i)->icon().isNull());
+    for (int i = 0; i < faceCount(p.list()); ++i)
+        CHECK_FALSE(faceIcon(p.list(), i).isNull());
     CHECK(p.current() == pixel("block"));
 
     p.searchField()->setText(QStringLiteral("V"));
@@ -429,7 +437,7 @@ TEST_CASE("the face picker lists the bundled faces with previews, searches them 
     // picking a face emits it
     FaceRef picked;
     QObject::connect(&next, &FacePicker::picked, [&](const FaceRef& r) { picked = r; });
-    next.list()->setCurrentRow(1);
+    selectFaceRow(next.list(), 1);
     CHECK(picked == pixel("vga"));
 }
 
@@ -442,16 +450,16 @@ TEST_CASE("the face picker marks the characters a face lacks and its confusables
     }
     CHECK(p.confusablesIn(pixel("block")).isEmpty());
     CHECK(p.confusablesIn(pixel("mini")) == QStringLiteral("S5 O0"));
-    const QListWidget* list = p.list();
-    for (int i = 0; i < list->count(); ++i) {
-        const QString label = list->item(i)->text();
+    const QListView* list = p.list();
+    for (int i = 0; i < faceCount(list); ++i) {
+        const QString label = faceLabel(list, i);
         INFO(label.toStdString());
         CHECK(label.contains(QStringLiteral("missing é")));
         CHECK(label.startsWith(QStringLiteral("mini")) == label.contains(QStringLiteral("confusable S5 O0")));
     }
     p.setText(U"funk");
     CHECK(p.missingIn(pixel("mini")).isEmpty());
-    CHECK(p.list()->item(0)->text() == QStringLiteral("block"));
+    CHECK(faceLabel(p.list(), 0) == QStringLiteral("block"));
 
     // the dock's picker marks the active text layer's text, in its case
     MainWindow w;
@@ -462,6 +470,47 @@ TEST_CASE("the face picker marks the characters a face lacks and its confusables
     CHECK(dock->confusablesIn(pixel("mini")).isEmpty());  // S and O aren't a pair
     type(w.canvasView(), QStringLiteral("50"));
     CHECK(dock->confusablesIn(pixel("mini")) == QStringLiteral("S5 O0"));
+}
+
+// Records the text of every list row the style is asked to draw.
+class RowTextRecorder : public QProxyStyle {
+public:
+    mutable QStringList texts;
+    void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter,
+                     const QWidget* widget) const override {
+        if (element == CE_ItemViewItem)
+            if (const auto* item = qstyleoption_cast<const QStyleOptionViewItem*>(option))
+                texts << item->text;
+        QProxyStyle::drawControl(element, option, painter, widget);
+    }
+};
+
+TEST_CASE("the face list paints each row with its missing and confusable marks", "[text][round2]") {
+    RowTextRecorder style;
+    FacePicker p;
+    p.list()->setStyle(&style);
+    p.setText(U"SO50 é");
+    p.resize(400, 400);
+    p.show();
+    QCoreApplication::processEvents();
+    p.list()->viewport()->repaint();
+    REQUIRE(faceCount(p.list()) == 3);
+    for (int i = 0; i < faceCount(p.list()); ++i) {
+        const QString label = faceLabel(p.list(), i);
+        INFO(label.toStdString());
+        CHECK(label.contains(QStringLiteral("missing é")));
+        CHECK(style.texts.contains(label));
+    }
+    CHECK(style.texts.contains(QStringLiteral("mini\nmissing é · confusable S5 O0")));
+
+    // a text the faces cover paints the bare names again
+    style.texts.clear();
+    p.setText(U"funk");
+    p.list()->viewport()->repaint();
+    CHECK(style.texts.contains(QStringLiteral("block")));
+    for (const QString& text : std::as_const(style.texts))
+        CHECK_FALSE(text.contains(QLatin1Char('\n')));
+    p.list()->setStyle(nullptr);
 }
 
 TEST_CASE("Bake Text makes the text layer a cells layer, one undo step", "[text]") {
@@ -872,10 +921,10 @@ TEST_CASE("a Tool Options change at a waiting text cursor shows in the status ba
     REQUIRE(status->text() == QStringLiteral("Face: block"));
     int changes = 0;
     QObject::connect(textTool(w), &Tool::changed, [&] { ++changes; });
-    QListWidget* list = w.toolOptions()->textOptions()->facePicker()->list();
-    for (int i = 0; i < list->count(); ++i)
-        if (list->item(i)->text().startsWith(QStringLiteral("mini")))
-            list->setCurrentRow(i);
+    QListView* list = w.toolOptions()->textOptions()->facePicker()->list();
+    for (int i = 0; i < faceCount(list); ++i)
+        if (faceLabel(list, i).startsWith(QStringLiteral("mini")))
+            selectFaceRow(list, i);
     REQUIRE(textTool(w)->defaults().face == pixel("mini"));
     CHECK(status->text() == QStringLiteral("Face: mini"));
     CHECK(changes > 0);  // the canvas repaints the text cursor
@@ -1047,24 +1096,24 @@ TEST_CASE("the face picker lists the fonts folder's TheDraw fonts, and picking o
     // listed after the bundled faces, with a preview, searchable
     CHECK(picker->listed() ==
           QStringList{QStringLiteral("block"), QStringLiteral("vga"), QStringLiteral("mini"), name});
-    CHECK_FALSE(picker->list()->item(3)->icon().isNull());
+    CHECK_FALSE(faceIcon(picker->list(), 3).isNull());
     picker->searchField()->setText(QStringLiteral("bw b"));
     CHECK(picker->listed() == QStringList{name});
     picker->searchField()->clear();
     // marked as the bundled faces are
     CHECK(picker->missingIn(font.ref) == QStringLiteral("é"));
-    CHECK(picker->list()->item(3)->text().contains(QStringLiteral("missing é")));
+    CHECK(faceLabel(picker->list(), 3).contains(QStringLiteral("missing é")));
     CHECK(picker->confusablesIn(font.ref) ==
           [&] {
               QStringList pairs;
-              for (const ConfusablePair& p : confusablesIn(*font.face, U"funk é"))
+              for (const ConfusablePair& p : confusablesIn(*font.resolvedFace(), U"funk é"))
                   pairs << QString::fromUcs4(&p.a, 1) + QString::fromUcs4(&p.b, 1);
               return pairs.join(QLatin1Char(' '));
           }());
     // a favourite, by the font's file and place in it
     picker->setFavourite(font.ref, true);
     CHECK(rowOf(picker, name) == 0);
-    CHECK(picker->list()->item(0)->text().startsWith(QStringLiteral("★ ")));
+    CHECK(faceLabel(picker->list(), 0).startsWith(QStringLiteral("★ ")));
     picker->setFavourite(font.ref, false);
     REQUIRE(rowOf(picker, name) == 3);
 
@@ -1073,12 +1122,12 @@ TEST_CASE("the face picker lists the fonts folder's TheDraw fonts, and picking o
     const TextSource before = sourceOf(d);
     const Canvas cellsBefore = d->active()->cells;
     const int steps = d->undoStack()->count();
-    picker->list()->setCurrentRow(rowOf(picker, name));
+    selectFaceRow(picker->list(), rowOf(picker, name));
     CHECK(sourceOf(d).face == font.ref);
     CHECK(d->undoStack()->count() == steps + 1);
     TextSource after = before;
     after.face = font.ref;
-    CHECK(d->active()->cells == renderText(after, *font.face).cells);
+    CHECK(d->active()->cells == renderText(after, *font.resolvedFace()).cells);
     CHECK(d->extras().fonts.file(font.ref.file));
     CHECK(textTool(w)->status() == QStringLiteral("Face: BW Block"));
     // typing goes on in it
@@ -1103,7 +1152,7 @@ TEST_CASE("the face picker lists the fonts folder's TheDraw fonts, and picking o
     CHECK(d->active()->cells == [&] {
         TextSource s = after;
         s.text = U"funk éz";
-        return renderText(s, *d->fontSources().face(font.ref)).cells;
+        return renderText(s, *font.resolvedFace()).cells;
     }());
 }
 
@@ -1117,7 +1166,7 @@ TEST_CASE("a new text layer starts in a TheDraw font picked at the waiting text 
     use(w, "text");
     click(w.canvasView(), 2, 1);
     FacePicker* picker = w.toolOptions()->textOptions()->facePicker();
-    picker->list()->setCurrentRow(rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
+    selectFaceRow(picker->list(), rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
     REQUIRE(textTool(w)->defaults().face == font.ref);
     CHECK(d->undoStack()->count() == 0);
     // Codex round 4 (#167): the folder cleared before the first keystroke
@@ -1133,7 +1182,7 @@ TEST_CASE("a new text layer starts in a TheDraw font picked at the waiting text 
     CHECK(sourceOf(d).face == font.ref);
     CHECK(d->extras().fonts.file(font.ref.file));
     TextSource s = sourceOf(d);
-    CHECK(d->active()->cells == renderText(s, *font.face).cells);
+    CHECK(d->active()->cells == renderText(s, *font.resolvedFace()).cells);
     CHECK(textTool(w)->status() == QStringLiteral("Face: BW Block"));
     // the project's copy now lists it, once
     CHECK(rowOf(picker, QStringLiteral("BW Block (in the project)")) >= 0);
@@ -1151,7 +1200,7 @@ TEST_CASE("a TheDraw font picked for new text outlasts a fonts folder changed to
     use(w, "text");
     click(w.canvasView(), 2, 1);
     FacePicker* picker = w.toolOptions()->textOptions()->facePicker();
-    picker->list()->setCurrentRow(rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
+    selectFaceRow(picker->list(), rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
     REQUIRE(textTool(w)->defaults().face == font.ref);
     d->setFontsFolder(loadFontsFolder(other.path()));
     REQUIRE(d->fontsFolder());
@@ -1174,11 +1223,11 @@ TEST_CASE("a TheDraw font kept for new text leaves the face picker when another 
     use(w, "text");
     click(w.canvasView(), 2, 1);
     FacePicker* picker = w.toolOptions()->textOptions()->facePicker();
-    picker->list()->setCurrentRow(rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
+    selectFaceRow(picker->list(), rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
     d->setFontsFolder(nullptr);
     const QString kept = QStringLiteral("BW Block (kept for new text)");
     REQUIRE(rowOf(picker, kept) >= 0);
-    picker->list()->setCurrentRow(rowOf(picker, QStringLiteral("vga")));
+    selectFaceRow(picker->list(), rowOf(picker, QStringLiteral("vga")));
     CHECK(textTool(w)->defaults().face == pixel("vga"));
     for (int i = 0; i < 5 && rowOf(picker, kept) >= 0; ++i)
         QCoreApplication::processEvents();
@@ -1202,17 +1251,17 @@ TEST_CASE("a TheDraw font kept for new text can be picked again before the face 
     use(w, "text");
     click(w.canvasView(), 2, 1);
     FacePicker* picker = w.toolOptions()->textOptions()->facePicker();
-    picker->list()->setCurrentRow(rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
+    selectFaceRow(picker->list(), rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
     d->setFontsFolder(nullptr);
     const QString kept = QStringLiteral("BW Block (kept for new text)");
     REQUIRE(rowOf(picker, kept) >= 0);
-    picker->list()->setCurrentRow(rowOf(picker, QStringLiteral("vga")));
+    selectFaceRow(picker->list(), rowOf(picker, QStringLiteral("vga")));
     CHECK(textTool(w)->defaults().face == pixel("vga"));
     // Codex round 5 (#167): the kept row, still listed until the picker
     // lists the faces again, picked again before that found the file nowhere
     REQUIRE(rowOf(picker, kept) >= 0);
     CHECK(textTool(w)->keptFonts().file(font.ref.file));
-    picker->list()->setCurrentRow(rowOf(picker, kept));
+    selectFaceRow(picker->list(), rowOf(picker, kept));
     REQUIRE(textTool(w)->defaults().face == font.ref);
     QCoreApplication::processEvents();
     CHECK(rowOf(picker, kept) >= 0);
@@ -1221,7 +1270,7 @@ TEST_CASE("a TheDraw font kept for new text can be picked again before the face 
     REQUIRE(d->active()->props.text);
     CHECK(sourceOf(d).face == font.ref);
     CHECK(d->extras().fonts.file(font.ref.file));
-    CHECK(d->active()->cells == renderText(sourceOf(d), *font.face).cells);
+    CHECK(d->active()->cells == renderText(sourceOf(d), *font.resolvedFace()).cells);
 }
 
 TEST_CASE("a TheDraw font kept for new text can be picked for a text layer", "[text][fonts]") {
@@ -1239,7 +1288,7 @@ TEST_CASE("a TheDraw font kept for new text can be picked for a text layer", "[t
     // cleared and the cursor taken away: the layer's face shows again
     click(w.canvasView(), 20, 10);
     REQUIRE(textTool(w)->spot());
-    picker->list()->setCurrentRow(rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
+    selectFaceRow(picker->list(), rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
     d->setFontsFolder(nullptr);
     key(w.canvasView(), Qt::Key_Escape);
     REQUIRE_FALSE(textTool(w)->spot());
@@ -1251,12 +1300,12 @@ TEST_CASE("a TheDraw font kept for new text can be picked for a text layer", "[t
     // Codex round 5 (#167): picking it set nothing, the file being in
     // nothing the document looked in
     const int steps = d->undoStack()->count();
-    picker->list()->setCurrentRow(rowOf(picker, kept));
+    selectFaceRow(picker->list(), rowOf(picker, kept));
     CHECK(sourceOf(d).face == font.ref);
     CHECK(sourceOf(d).text == U"A");
     CHECK(d->undoStack()->count() == steps + 1);
     CHECK(d->extras().fonts.file(font.ref.file));
-    CHECK(d->active()->cells == renderText(sourceOf(d), *font.face).cells);
+    CHECK(d->active()->cells == renderText(sourceOf(d), *font.resolvedFace()).cells);
     QCoreApplication::processEvents();
     CHECK(picker->current() == font.ref);
     CHECK(rowOf(picker, QStringLiteral("BW Block (in the project)")) >= 0);
@@ -1276,13 +1325,13 @@ TEST_CASE("a project's copy of a TheDraw font picked for new text outlasts a new
     FacePicker* picker = w.toolOptions()->textOptions()->facePicker();
     // a layer in the font copies it into the project; then the folder goes
     makeText(w, QStringLiteral("A"));
-    picker->list()->setCurrentRow(rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
+    selectFaceRow(picker->list(), rowOf(picker, QStringLiteral("BW Block (bw-block.tdf)")));
     REQUIRE(sourceOf(d).face == font.ref);
     textTool(w)->endEdit();
     d->setFontsFolder(nullptr);
     // the project's copy picked at a waiting text cursor
     click(w.canvasView(), 20, 10);
-    picker->list()->setCurrentRow(rowOf(picker, QStringLiteral("BW Block (in the project)")));
+    selectFaceRow(picker->list(), rowOf(picker, QStringLiteral("BW Block (in the project)")));
     REQUIRE(textTool(w)->defaults().face == font.ref);
     // a new document holds no copy, and no folder is set
     d->clear();
@@ -1296,39 +1345,27 @@ TEST_CASE("a project's copy of a TheDraw font picked for new text outlasts a new
     CHECK(d->extras().fonts.file(font.ref.file));
 }
 
-TEST_CASE("the face picker draws the previews past the first screenful when the event loop is idle", "[text][fonts]") {
-    // a large fonts folder lists at once
+TEST_CASE("the face picker paints only requested previews and keeps them cached", "[text][fonts]") {
     std::vector<FaceEntry> entries;
-    const Face* face = bundledFaces().front();
     for (int i = 0; i < 200; ++i) {
         FaceRef ref;
-        ref.kind = FaceRef::Kind::Tdf;
-        ref.name = "F" + std::to_string(i);
-        ref.file = std::string(64, 'a');
-        ref.index = i;
-        entries.push_back({ref, ref.name, face});
+        ref.name = "face " + std::to_string(i);
+        entries.push_back({ref, ref.name, bundledFaces().front(), {}, "pixel"});
     }
     FacePicker picker(entries);
-    const auto blank = [&] {
-        int n = 0;
-        for (int i = 0; i < picker.list()->count(); ++i)
-            n += picker.list()->item(i)->icon().isNull() ? 1 : 0;
-        return n;
-    };
-    REQUIRE(picker.list()->count() == 200);
-    CHECK_FALSE(picker.list()->item(0)->icon().isNull());
-    CHECK(blank() > 100);
-    for (int i = 0; i < 50 && blank() > 0; ++i)
-        QCoreApplication::processEvents();
-    CHECK(blank() == 0);
-    // the same entries again keep the list and its previews
-    QListWidgetItem* first = picker.list()->item(0);
+    CHECK(faceCount(picker.list()) == 200);
+    CHECK(picker.previewsBuilt() == 0);
+    CHECK_FALSE(faceIcon(picker.list(), 0).isNull());
+    CHECK(picker.previewsBuilt() == 1);
+    CHECK_FALSE(faceIcon(picker.list(), 0).isNull());
+    CHECK(picker.previewsBuilt() == 1);
     picker.setEntries(entries);
-    CHECK(picker.list()->item(0) == first);
+    CHECK(picker.previewsBuilt() == 1);
     entries.pop_back();
     picker.setEntries(entries);
-    CHECK(picker.list()->count() == 199);
-    CHECK(blank() == 0);
+    CHECK(faceCount(picker.list()) == 199);
+    CHECK_FALSE(faceIcon(picker.list(), 0).isNull());
+    CHECK(picker.previewsBuilt() == 1);
 }
 
 TEST_CASE("an input-method commit with the tool on a text layer edits it, from its end", "[text]") {
