@@ -8,13 +8,15 @@
 // the docks, the Layer and Window menus and the saved layout in
 // main_window_docks.cpp; projects (opening and saving them, snapshots) in
 // main_window_project.cpp; the IRC row meter beside the canvas, View > IRC
-// and File > Export IRC Text... in main_window_irc.cpp.
+// and File > Export IRC Text... in main_window_irc.cpp; generator runs and
+// the trust they ask for in main_window_generators.cpp.
 
 #include "blockwright/canvas_renderer.h"
 
 #include "document.h"
 
 #include <QHash>
+#include <QSet>
 #include <QMainWindow>
 
 #include <filesystem>
@@ -29,6 +31,7 @@ class QScrollArea;
 namespace bw {
 
 class CanvasView;
+class GeneratorRunner;
 class IrcMeter;
 class PaletteWidget;
 class PreviewWidget;
@@ -100,6 +103,10 @@ public:
     IrcViewDock* ircViewWidget() const { return ircView_; }
     QDockWidget* ircViewDock() const { return ircViewDock_; }
     IrcMeter* ircMeter() const { return ircMeter_; }
+    GeneratorRunner* generatorRunner() const { return runner_; }
+    // Whether the document's generators may run without asking: its project
+    // was trusted this session (main_window_generators.cpp).
+    bool generatorsTrusted() const { return generatorsTrusted_; }
 
     // The Library (main_window_library.cpp). Floats the stamp at `path` (a
     // .ans in the Library dock, or any stamp on disk) with its top-left at
@@ -227,6 +234,11 @@ private:
     // The window's size and dock layout, kept in the settings between runs.
     void saveLayout() const;
     void restoreLayout();
+    // Generator runs, after the trust check (main_window_generators.cpp).
+    void createGenerators();
+    // Asks, the first time in the session for a project, whether its
+    // generators may run (layer `id`'s command shown); true if they may.
+    bool trustGenerators(LayerId id);
 
     Document doc_;
     AtlasRenderer renderer_;
@@ -263,6 +275,10 @@ private:
     QAction* ninePxAction_ = nullptr;
     QAction* otherFormAction_ = nullptr;
     QAction* snapshotAction_ = nullptr;
+    GeneratorRunner* runner_ = nullptr;
+    QSet<QString> trustedProjects_;  // canonical paths
+    bool generatorsTrusted_ = false;
+    bool trustFromPath_ = false;  // reset: pathChanged decides from trustedProjects_
 };
 
 } // namespace bw

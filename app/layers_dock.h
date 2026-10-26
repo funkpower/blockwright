@@ -5,7 +5,8 @@
 // edited in place; the boxes toggle visibility and alpha lock. Under the
 // list, New Cells Layer, New Pixel Layer, Delete, Raise and Lower, the same
 // actions as the Layer menu. Every change but the active layer is an undo
-// command on the document (Document::addLayer and the rest).
+// command on the document (Document::addLayer and the rest). Under those, the
+// active generator layer's parameters (GeneratorForm).
 
 #include "blockwright/layer.h"
 
@@ -18,6 +19,7 @@ class QTreeWidgetItem;
 namespace bw {
 
 class Document;
+class GeneratorForm;
 
 class LayersDock : public QWidget {
     Q_OBJECT
@@ -33,6 +35,7 @@ public:
     QAction* deleteAction() const { return delete_; }
     QAction* raiseAction() const { return raise_; }
     QAction* lowerAction() const { return lower_; }
+    GeneratorForm* generatorForm() const { return form_; }
 
     // The layer a row shows; 0 for none.
     static LayerId layerOf(const QTreeWidgetItem* item);
@@ -52,6 +55,7 @@ private:
     QAction* delete_;
     QAction* raise_;
     QAction* lower_;
+    GeneratorForm* form_;
 };
 
 } // namespace bw

@@ -19,6 +19,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/composite.h"
 #include "blockwright/edit.h"
+#include "blockwright/generator.h"
 #include "blockwright/layer.h"
 #include "blockwright/project.h"
 #include "blockwright/text.h"
@@ -28,6 +29,7 @@
 #include <QString>
 #include <QUndoStack>
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -255,6 +257,49 @@ public:
     bool setLayerVisible(LayerId id, bool visible);
     bool setLayerAlphaLocked(LayerId id, bool on);
 
+    // ---- generator layers (PLAN §7) ----------------------------------------
+
+    // A kept file (extras().files), or nothing.
+    std::optional<std::string> keptFile(const std::string& path) const;
+    // The generator layer's spec (generator::layerSpec on the kept files);
+    // nothing, and `error`, for a layer that isn't a generator or a
+    // generator.json that can't be read.
+    std::optional<generator::Spec> generatorSpec(LayerId id, QString* error = nullptr) const;
+    // Sets the declared parameter `name` of generator layer `id` to `value`
+    // as one undo command ("Generator Parameter") through the layers'
+    // property commands: params.json, kept in the project's files, is
+    // rewritten with every declared parameter (generator::withParam), and
+    // the layer's cells stay as they are until a run for the new params
+    // lands (applyGeneratorRun). Then emits generatorRunWanted with the
+    // command's serial. Undo and redo put back the params and the cells
+    // the step had before and after, and run nothing. False, and `error`,
+    // and nothing pushed, for a layer that isn't a generator, a spec or
+    // params.json that can't be read, a parameter it doesn't declare or a
+    // value it can't take; false when it changes nothing.
+    bool setGeneratorParam(LayerId id, const std::string& name, const generator::ParamValue& value,
+                           QString* error = nullptr);
+    // Asks for a run of generator layer `id` with its params as they are:
+    // emits generatorRunWanted(id, 0). False for a layer that isn't a
+    // generator. Where the undo stack stands now is kept: the run's result
+    // is dropped if an edit was undone after this (applyGeneratorRun).
+    bool requestGeneratorRun(LayerId id);
+    // A run's cells landing for generator layer `id`: `serial` from
+    // generatorRunWanted, and the params.json and generator.json the run
+    // read (nothing for none). Taken only while the layer still has those
+    // files. For a parameter step (serial not 0) the step must be done and
+    // the newest on the layer's generator in the whole undo stack (a newer
+    // one, even undone, holds the step's cells as they are): it is amended
+    // so its cells after are `cells`, which become the layer's, and no step
+    // is added (when they differ from what it had, a saved state that held
+    // the step is no longer clean: QUndoStack::resetClean). For serial 0,
+    // `cells` other than the layer's are one undo command, "Run Generator",
+    // unless the stack has moved since the run was asked for and has
+    // something to redo: an edit undone while the run went, which pushing
+    // would discard, overtakes it.
+    // False when the result is out of date and was dropped.
+    bool applyGeneratorRun(std::uint64_t serial, LayerId id, const std::optional<std::string>& params,
+                           const std::optional<std::string>& spec, Canvas cells);
+
     // Pushes `edit`, built on layerCanvas(), as one undo command on the
     // active layer, which applies it now. Undo reverts it and emits
     // cursorRequested(before); redo applies it again and emits
@@ -304,6 +349,14 @@ signals:
     // extras().ircBudget changed (setIrcBudget, its undo and redo; not on
     // open or new, see reset).
     void ircBudgetChanged();
+    // A generator layer's params.json or cells changed through a generator
+    // step (setGeneratorParam, a run landing, their undo and redo).
+    void generatorChanged(bw::LayerId id);
+    // A run of the generator layer is wanted: after setGeneratorParam (for
+    // the step `serial`) or requestGeneratorRun (serial 0). Nothing runs
+    // until something that may run it hears this (the app's GeneratorRunner,
+    // after asking).
+    void generatorRunWanted(bw::LayerId id, quint64 serial);
 
 private:
     friend class LayerEditCommand;
@@ -332,6 +385,9 @@ private:
     void placeLayer(LayerId id, std::size_t index);
     // Applies the edit (`revert`: undoes it, bw::applyEdit) to its layer.
     void putProperties(const LayerPropsEdit& edit, bool revert);
+    // Gives generator layer `id` the params.json `params` (nothing: none)
+    // and the cells `cells`.
+    void putGenerator(LayerId id, const std::optional<std::string>& params, const Canvas& cells);
     void makeActive(LayerId id);
     void refreshLayerCanvas();
 
@@ -348,6 +404,13 @@ private:
     // some until the next save, which leaves no blink of that file to lose.
     bool countLostBlink_ = false;
     bool modified_ = false;
+    // The last generator step's serial (setGeneratorParam).
+    std::uint64_t generatorSerial_ = 0;
+    // How often the undo stack's index has changed (a push, an undo, a
+    // redo, a clear), and its count when each layer's last Run was asked
+    // for (requestGeneratorRun).
+    std::uint64_t undoMoves_ = 0;
+    std::map<LayerId, std::uint64_t> runAsked_;
 };
 
 } // namespace bw

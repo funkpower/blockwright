@@ -20,6 +20,7 @@
 
 class QAction;
 class QCheckBox;
+class QIcon;
 class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
@@ -27,6 +28,11 @@ class QLabel;
 class QSpinBox;
 
 namespace bw {
+
+struct Ramp;
+
+// The ramp's colours dark to light, a swatch each: the ramp lists' icons.
+QIcon rampIcon(const Ramp& ramp);
 
 class CanvasView;
 class CloneTool;

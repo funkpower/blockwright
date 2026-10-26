@@ -1,0 +1,10 @@
+{
+  "command": ["sh", "gen.sh"],
+  "params": [
+    {"name": "count", "type": "integer", "label": "Count", "min": 1, "max": 8, "default": 3},
+    {"name": "ink", "type": "colour", "label": "Ink", "default": 4},
+    {"name": "bright", "type": "boolean", "label": "Bright"},
+    {"name": "glyph", "type": "text", "label": "Glyph", "default": "#"},
+    {"name": "fail", "type": "boolean", "label": "Fail"}
+  ]
+}

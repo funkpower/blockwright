@@ -6,7 +6,8 @@
 // id), kept byte for byte with the project (Project::files):
 //
 //   scripts/<id>/generator.json  {"command": ["python3", "scene.py", ...],
-//                                 "key": 0}   ("key" optional)
+//                                 "key": 0, "params": [...]}
+//                                ("key" and "params" optional; Param)
 //   scripts/<id>/params.json     the parameters, a JSON object (optional)
 //   scripts/<id>/…               anything else it needs: its source, data
 //
@@ -19,7 +20,9 @@
 //
 //   {"canvas": {"width", "height", "ice"},
 //    "layer":  {"id", "name", "x", "y", "width", "height"},
-//    "params": the contents of params.json, or {}}
+//    "params": the contents of params.json, or {}, with each parameter
+//              generator.json declares (Param) and params.json lacks set
+//              to its default}
 //
 // stdout is read as an .ans (parseAnsi, at the layer's width, or the
 // canvas's for a layer with none, unless its SAUCE gives one) and opened as
@@ -33,7 +36,8 @@
 // below.
 //
 // The program runs with the user's environment and rights: a project's
-// generators run only when asked for (cli run-generators, add-generator).
+// generators run only when asked for (cli run-generators, add-generator;
+// in the app, a changed parameter or Run once the project is trusted).
 // It leads a process group of its own, and the run ends with the group
 // killed whichever way it ends (a success too): a background process it
 // leaves behind is stopped, and what that process would have written is
@@ -67,6 +71,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include <sys/types.h>
@@ -88,6 +93,46 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// The kinds of parameter a generator can declare (Param), by their names
+// in generator.json: "integer", "number", "boolean", "colour" (a palette
+// colour 0-15, numbered as Spec::key is), "ramp" (a named ramp, ramp.h)
+// and "text".
+enum class ParamType { Integer, Number, Boolean, Colour, Ramp, Text };
+std::string_view paramTypeName(ParamType type);
+
+// A parameter's value: a boolean's, a number's (an integer's and a
+// colour's are whole), or a ramp's name or a text's.
+using ParamValue = std::variant<bool, double, std::string>;
+
+// A parameter the generator declares in generator.json's "params" list,
+// for the editor to show as a form; its value is params.json's key `name`.
+//
+//   {"name": "density", "type": "number", "label": "Density",
+//    "min": 0, "max": 1, "step": 0.05, "default": 0.25}
+//
+// "name" and "type" are needed, the rest optional. An integer's values,
+// bounds and default are whole numbers from -2147483648 to 2147483647, and
+// a number's values, bounds, step and default are from -1e12 to 1e12 with
+// at most six decimal places (what the form's fields hold). "min" and "max"
+// bound an integer or a number, "step" is a number's step in the form
+// (above 0). "default" is the value
+// a params.json without the key gives; without one it is the minimum or 0,
+// false, 7 (light grey), the first named ramp or "".
+struct Param {
+    std::string name;
+    ParamType type = ParamType::Number;
+    std::string label;  // empty: the name
+    std::optional<double> min, max, step;
+    ParamValue defaultValue;
+
+    bool operator==(const Param&) const = default;
+};
+
+// Why `value` can't be the parameter's (of another kind, out of its range
+// or an integer's, not whole for an integer or a colour, not a named ramp),
+// or empty.
+std::string paramProblem(const Param& param, const ParamValue& value);
+
 // What generator.json says.
 struct Spec {
     // The program and its arguments; at least the program, none empty or
@@ -97,6 +142,9 @@ struct Spec {
     // blue, 4 red, the order of the PC's palette rather than SGR's) whose
     // blank cells are transparent; none: every cell is opaque.
     std::optional<std::uint8_t> key;
+    // The parameters it declares, in the form's order; none: params.json is
+    // passed on as it is.
+    std::vector<Param> params;
 
     bool operator==(const Spec&) const = default;
 };
@@ -105,8 +153,10 @@ struct Spec {
 std::string directory(LayerId id);
 
 // generator.json read strictly: a JSON object, no key twice, "command" a
-// list of strings as Spec says, "key" absent, null or a whole number 0-15.
-// Keys it doesn't know are skipped, as a newer minor version's. Throws
+// list of strings as Spec says, "key" absent, null or a whole number 0-15,
+// "params" absent or a list of objects as Param says, no name twice, min
+// no more than max, a default the parameter can take. Keys it doesn't know
+// are skipped, as a newer minor version's, in a param too. Throws
 // GeneratorError.
 Spec parseSpec(std::string_view json);
 // generator.json as parseSpec reads it back.
@@ -120,9 +170,26 @@ std::vector<LayerId> generatorLayers(const LayerStack& stack);
 // a readable generator.json.
 Spec layerSpec(const project::Project& project, LayerId id);
 
-// What the program reads on stdin for the layer (above). Throws
-// GeneratorError for a params.json that isn't a JSON object, or that has a
-// key twice.
+// The declared parameters' values in `paramsJson` (params.json, or empty
+// for none), by name: each key's value, or the parameter's default for a
+// key that is missing or holds a value the parameter can't take (so a form
+// always has one to show). Throws GeneratorError for params.json that isn't
+// a JSON object, or that has a key twice.
+std::map<std::string, ParamValue> paramValues(const Spec& spec, std::string_view paramsJson);
+
+// params.json with the declared parameter `name` set to `value` and every
+// other declared one to its value in `paramsJson` (paramValues), keeping
+// the keys nothing declares. Throws GeneratorError for a name the spec
+// doesn't declare, a value it can't take (paramProblem), and what
+// paramValues refuses.
+std::string withParam(const Spec& spec, std::string_view paramsJson, const std::string& name,
+                      const ParamValue& value);
+
+// What the program reads on stdin for the layer (above), its params with
+// each declared parameter params.json lacks set to its default. Throws
+// GeneratorError for a params.json that isn't a JSON object, that has a
+// key twice, or that holds a value a declared parameter can't take, and for
+// a generator.json that is there and can't be read (parseSpec).
 std::string input(const project::Project& project, const Layer& layer);
 
 // The program's stdout as the layer's cells (above): read at `width`

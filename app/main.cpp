@@ -3,6 +3,7 @@
 //   blockwright [file.ans | project.bwp | project-directory]
 //   blockwright --version | --help
 
+#include "generator_runner.h"
 #include "main_window.h"
 
 #include "blockwright/credits.h"
@@ -54,6 +55,9 @@ int main(int argc, char** argv) {
     // The dev install runs as blockwright-dev, with a .desktop file of that
     // name: matching it lets the desktop find its launcher entry.
     QApplication::setDesktopFileName(QFileInfo(QString::fromLocal8Bit(argv[0])).fileName());
+
+    // A generator still running when the app quits is stopped, not waited for.
+    bw::killGeneratorsOnQuit(&app);
 
     bw::MainWindow w;
     w.show();

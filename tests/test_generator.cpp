@@ -123,6 +123,180 @@ TEST_CASE("generator.json is read strictly and written back as it reads", "[gene
     CHECK_THROWS_AS(gen::parseSpec(big), gen::GeneratorError);
 }
 
+TEST_CASE("a generator's declared params are read strictly, with defaults, and written back", "[generator][params]") {
+    const gen::Spec s = gen::parseSpec(R"({"command": ["sh", "gen.sh"], "params": [
+        {"name": "count", "type": "integer", "label": "Stars", "min": 1, "max": 9, "default": 3},
+        {"name": "density", "type": "number", "min": 0, "max": 1, "step": 0.05, "default": 0.25},
+        {"name": "twinkle", "type": "boolean", "default": true},
+        {"name": "ink", "type": "colour", "default": 14},
+        {"name": "sky", "type": "ramp", "default": "sea"},
+        {"name": "title", "type": "text", "default": "night", "newer": [1]},
+        {"name": "n", "type": "integer", "min": 2},
+        {"name": "neg", "type": "number", "max": -3},
+        {"name": "b", "type": "boolean"}, {"name": "c", "type": "colour"},
+        {"name": "r", "type": "ramp"}, {"name": "t", "type": "text"}
+    ]})");
+    REQUIRE(s.params.size() == 12);
+    const gen::Param& count = s.params[0];
+    CHECK(count.name == "count");
+    CHECK(count.type == gen::ParamType::Integer);
+    CHECK(count.label == "Stars");
+    CHECK(count.min == 1.0);
+    CHECK(count.max == 9.0);
+    CHECK_FALSE(count.step);
+    CHECK(count.defaultValue == gen::ParamValue(3.0));
+    CHECK(s.params[1].step == 0.05);
+    CHECK(s.params[2].defaultValue == gen::ParamValue(true));
+    CHECK(s.params[3].defaultValue == gen::ParamValue(14.0));
+    CHECK(s.params[4].defaultValue == gen::ParamValue(std::string("sea")));
+    CHECK(s.params[5].defaultValue == gen::ParamValue(std::string("night")));
+    // without a default: the minimum (or a maximum below 0) or 0, false,
+    // light grey, the first named ramp, ""
+    CHECK(s.params[6].defaultValue == gen::ParamValue(2.0));
+    CHECK(s.params[7].defaultValue == gen::ParamValue(-3.0));
+    CHECK(s.params[8].defaultValue == gen::ParamValue(false));
+    CHECK(s.params[9].defaultValue == gen::ParamValue(7.0));
+    CHECK(s.params[10].defaultValue == gen::ParamValue(std::string("fire")));
+    CHECK(s.params[11].defaultValue == gen::ParamValue(std::string()));
+    CHECK(gen::parseSpec(gen::specJson(s)) == s);
+    CHECK(gen::parseSpec(R"({"command": ["x"], "params": []})").params.empty());
+
+    for (const char* bad : {
+             R"({"command": ["x"], "params": {}})",
+             R"({"command": ["x"], "params": [1]})",
+             R"({"command": ["x"], "params": [{"type": "text"}]})",
+             R"({"command": ["x"], "params": [{"name": "", "type": "text"}]})",
+             R"({"command": ["x"], "params": [{"name": 3, "type": "text"}]})",
+             R"({"command": ["x"], "params": [{"name": "a"}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "float"}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "text"}, {"name": "a", "type": "text"}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "text", "label": 1}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "integer", "min": 1.5}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "integer", "max": "9"}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "number", "min": 2, "max": 1}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "text", "min": 0}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "integer", "step": 1}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "number", "step": 0}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "integer", "default": 2.5}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "integer", "max": 3, "default": 4}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "number", "min": 0, "default": -1}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "number", "default": "1"}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "boolean", "default": 1}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "colour", "default": 16}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "colour", "default": 2.5}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "ramp", "default": "plaid"}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "text", "default": 3}]})",
+             R"({"command": ["x"], "params": [{"name": "a", "type": "text", "type": "integer"}]})",
+         })
+        CHECK_THROWS_AS(gen::parseSpec(bad), gen::GeneratorError);
+    CHECK_THROWS_WITH(gen::parseSpec(R"({"command": ["x"], "params": [{"name": "a", "type": "integer", "max": 3,
+                                        "default": 4}]})"),
+                      ContainsSubstring("parameter \"a\": \"default\" is above the maximum, 3"));
+}
+
+TEST_CASE("an integer param stays within what the form's fields hold and is written without narrowing",
+          "[generator][params]") {
+    // the form's integer fields are 32-bit: a bound, a default or a value past
+    // them is refused rather than shown clamped
+    const gen::Spec edges = gen::parseSpec(R"({"command": ["x"], "params": [
+        {"name": "n", "type": "integer", "min": -2147483648, "max": 2147483647, "default": 2147483647}]})");
+    CHECK(edges.params[0].min == -2147483648.0);
+    CHECK(edges.params[0].max == 2147483647.0);
+    CHECK(gen::parseSpec(gen::specJson(edges)) == edges);
+    for (const char* bad : {
+             R"({"command": ["x"], "params": [{"name": "n", "type": "integer", "default": 1e20}]})",
+             R"({"command": ["x"], "params": [{"name": "n", "type": "integer", "default": 2147483648}]})",
+             R"({"command": ["x"], "params": [{"name": "n", "type": "integer", "min": -2147483649}]})",
+             R"({"command": ["x"], "params": [{"name": "seed", "type": "integer",
+                 "min": 3000000000, "max": 3000000010, "default": 3000000000}]})",
+         })
+        CHECK_THROWS_AS(gen::parseSpec(bad), gen::GeneratorError);
+    CHECK_THROWS_WITH(gen::parseSpec(R"({"command": ["x"], "params": [{"name": "seed", "type": "integer",
+                                        "min": 3000000000}]})"),
+                      ContainsSubstring("\"min\" is not a whole number from -2147483648 to 2147483647"));
+    CHECK_THROWS_WITH(gen::parseSpec(R"({"command": ["x"], "params": [{"name": "n", "type": "integer",
+                                        "default": 1e20}]})"),
+                      ContainsSubstring("\"default\" is outside an integer's range, -2147483648 to 2147483647"));
+
+    const gen::Spec s = gen::parseSpec(R"({"command": ["x"], "params": [{"name": "n", "type": "integer"}]})");
+    CHECK_THROWS_AS(gen::withParam(s, "", "n", 3e9), gen::GeneratorError);
+    CHECK_THROWS_AS(gen::withParam(s, "", "n", 1e20), gen::GeneratorError);
+    CHECK(gen::paramValues(s, R"({"n": 1e20})").at("n") == gen::ParamValue(0.0));
+    CHECK(jsonObject(gen::withParam(s, "", "n", -2147483648.0)) == jsonObject(R"({"n": -2147483648})"));
+
+    // a spec built by hand with a value no parse would take is still written
+    // as it is, not narrowed
+    gen::Spec hand = s;
+    hand.params[0].defaultValue = 1e20;
+    hand.params[0].max = 1e20;
+    const QJsonObject written = jsonObject(gen::specJson(hand))[QStringLiteral("params")][0].toObject();
+    CHECK(written[QStringLiteral("default")].toDouble() == 1e20);
+    CHECK(written[QStringLiteral("max")].toDouble() == 1e20);
+}
+
+TEST_CASE("a number param stays within what the form's fields hold", "[generator][params]") {
+    // the form's number fields hold -1e12 to 1e12 to six decimal places: a
+    // bound, a step, a default or a value past them is refused rather than
+    // shown rounded
+    const gen::Spec edges = gen::parseSpec(R"({"command": ["x"], "params": [
+        {"name": "x", "type": "number", "min": -1e12, "max": 1e12, "step": 0.000001, "default": 0.123456}]})");
+    CHECK(edges.params[0].min == -1e12);
+    CHECK(edges.params[0].max == 1e12);
+    CHECK(edges.params[0].step == 0.000001);
+    CHECK(gen::parseSpec(gen::specJson(edges)) == edges);
+    for (const char* bad : {
+             R"({"command": ["x"], "params": [{"name": "n", "type": "number", "min": 0.00000001,
+                 "max": 0.00000002, "step": 0.000000001, "default": 0.000000015}]})",
+             R"({"command": ["x"], "params": [{"name": "n", "type": "number", "default": 1e20}]})",
+             R"({"command": ["x"], "params": [{"name": "n", "type": "number", "max": 1000000000001}]})",
+             R"({"command": ["x"], "params": [{"name": "n", "type": "number", "min": -1e13}]})",
+             R"({"command": ["x"], "params": [{"name": "n", "type": "number", "min": 0.0000001}]})",
+             R"({"command": ["x"], "params": [{"name": "n", "type": "number", "step": 0.0000005}]})",
+             R"({"command": ["x"], "params": [{"name": "n", "type": "number", "step": 1e13}]})",
+             R"({"command": ["x"], "params": [{"name": "n", "type": "number", "default": 0.1234567}]})",
+         })
+        CHECK_THROWS_AS(gen::parseSpec(bad), gen::GeneratorError);
+    CHECK_THROWS_WITH(gen::parseSpec(R"({"command": ["x"], "params": [{"name": "n", "type": "number",
+                                        "min": 0.00000001}]})"),
+                      ContainsSubstring("\"min\" is not a number from -1e+12 to 1e+12 with at most six decimal places"));
+    CHECK_THROWS_WITH(gen::parseSpec(R"({"command": ["x"], "params": [{"name": "n", "type": "number",
+                                        "step": 0.000000001}]})"),
+                      ContainsSubstring("\"step\" is not a number above 0"));
+    CHECK_THROWS_WITH(gen::parseSpec(R"({"command": ["x"], "params": [{"name": "n", "type": "number",
+                                        "default": 1e20}]})"),
+                      ContainsSubstring("\"default\" is outside a number's range, -1e+12 to 1e+12"));
+
+    const gen::Spec s = gen::parseSpec(R"({"command": ["x"], "params": [{"name": "n", "type": "number"}]})");
+    CHECK_THROWS_AS(gen::withParam(s, "", "n", 1e20), gen::GeneratorError);
+    CHECK_THROWS_WITH(gen::withParam(s, "", "n", 0.1234567), ContainsSubstring("has more than six decimal places"));
+    CHECK(gen::paramValues(s, R"({"n": 1e20})").at("n") == gen::ParamValue(0.0));
+    CHECK(gen::paramValues(s, R"({"n": 0.1234567})").at("n") == gen::ParamValue(0.0));
+    CHECK(gen::paramValues(s, R"({"n": -1e12})").at("n") == gen::ParamValue(-1e12));
+    CHECK(jsonObject(gen::withParam(s, "", "n", 0.3)) == jsonObject(R"({"n": 0.3})"));
+}
+
+TEST_CASE("params.json gives the declared params' values and is written with every one", "[generator][params]") {
+    const gen::Spec s = gen::parseSpec(R"({"command": ["x"], "params": [
+        {"name": "count", "type": "integer", "min": 1, "max": 9, "default": 3},
+        {"name": "ink", "type": "colour"}, {"name": "sky", "type": "ramp"}]})");
+    using V = std::map<std::string, gen::ParamValue>;
+    CHECK(gen::paramValues(s, "") == V{{"count", 3.0}, {"ink", 7.0}, {"sky", std::string("fire")}});
+    // a value the param can't take shows its default
+    CHECK(gen::paramValues(s, R"({"count": 5, "ink": "red", "sky": "plaid", "other": 1})") ==
+          V{{"count", 5.0}, {"ink", 7.0}, {"sky", std::string("fire")}});
+    CHECK_THROWS_AS(gen::paramValues(s, "[]"), gen::GeneratorError);
+    CHECK_THROWS_AS(gen::paramValues(s, R"({"count": 1, "count": 2})"), gen::GeneratorError);
+
+    const std::string json = gen::withParam(s, R"({"other": [1, 2], "count": 4})", "ink", 12.0);
+    CHECK(jsonObject(json) == jsonObject(R"({"other": [1, 2], "count": 4, "ink": 12, "sky": "fire"})"));
+    CHECK(gen::paramValues(s, json) == V{{"count", 4.0}, {"ink", 12.0}, {"sky", std::string("fire")}});
+    CHECK_THROWS_WITH(gen::withParam(s, "", "nope", 1.0), ContainsSubstring("no parameter \"nope\""));
+    CHECK_THROWS_WITH(gen::withParam(s, "", "count", 10.0), ContainsSubstring("above the maximum, 9"));
+    CHECK_THROWS_AS(gen::withParam(s, "", "count", 2.5), gen::GeneratorError);
+    CHECK_THROWS_AS(gen::withParam(s, "", "sky", 1.0), gen::GeneratorError);
+    CHECK_THROWS_AS(gen::withParam(s, "", "ink", true), gen::GeneratorError);
+}
+
 TEST_CASE("a generator's files are under scripts/<id>/; the stack lists its generators bottom first",
           "[generator]") {
     CHECK(gen::directory(7) == "scripts/7/");
@@ -171,6 +345,20 @@ TEST_CASE("a generator reads the canvas, its layer and its params on stdin", "[g
         p.files[gen::directory(id) + "params.json"] = bad;
         CHECK_THROWS_WITH(gen::input(p, added), ContainsSubstring("params.json"));
     }
+
+    // declared params: a missing one gets its default, a bad one is refused
+    p.files[gen::directory(id) + "generator.json"] = R"({"command": ["x"], "params": [
+        {"name": "count", "type": "integer", "max": 5, "default": 2}, {"name": "on", "type": "boolean"}]})";
+    p.files[gen::directory(id) + "params.json"] = R"({"count": 4, "extra": "kept"})";
+    o = jsonObject(gen::input(p, added));
+    CHECK(o.value("params").toObject() == jsonObject(R"({"count": 4, "on": false, "extra": "kept"})"));
+    for (const char* bad : {R"({"count": 6})", R"({"count": 1.5})", R"({"on": 1})"}) {
+        p.files[gen::directory(id) + "params.json"] = bad;
+        CHECK_THROWS_WITH(gen::input(p, added), ContainsSubstring("params.json"));
+    }
+    p.files[gen::directory(id) + "params.json"] = "{}";
+    p.files[gen::directory(id) + "generator.json"] = R"({"command": ["x"], "params": 1})";
+    CHECK_THROWS_WITH(gen::input(p, added), ContainsSubstring("generator.json"));
 }
 
 TEST_CASE("a generator's output is read as an .ans; the key colour's blank cells are transparent",

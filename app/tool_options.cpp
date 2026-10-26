@@ -28,9 +28,6 @@
 
 namespace bw {
 
-namespace {
-
-// The ramp's colours dark to light, a swatch each.
 QIcon rampIcon(const Ramp& ramp) {
     constexpr int kSwatch = 8, kHeight = 12;
     QPixmap pm(kSwatch * int(ramp.colours.size()), kHeight);
@@ -41,6 +38,8 @@ QIcon rampIcon(const Ramp& ramp) {
     }
     return QIcon(pm);
 }
+
+namespace {
 
 QString keyText(const QKeySequence& key) { return key.toString(QKeySequence::NativeText); }
 

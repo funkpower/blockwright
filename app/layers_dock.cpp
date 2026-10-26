@@ -1,6 +1,7 @@
 #include "layers_dock.h"
 
 #include "document.h"
+#include "generator_form.h"
 
 #include <QAction>
 #include <QHBoxLayout>
@@ -90,6 +91,8 @@ LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(d
     layout->setContentsMargins(4, 4, 4, 4);
     layout->addWidget(tree_);
     layout->addLayout(buttons);
+    form_ = new GeneratorForm(doc_);
+    layout->addWidget(form_);
 
     connect(tree_, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
         if (const LayerId id = layerOf(item); id && id != doc_->activeLayer())

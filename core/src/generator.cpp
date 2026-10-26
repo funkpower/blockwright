@@ -1,6 +1,7 @@
 #include "blockwright/generator.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/ramp.h"
 #include "blockwright/selection.h"
 
 #include <QByteArray>
@@ -10,6 +11,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QJsonValue>
+#include <QLocale>
 #include <QString>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
@@ -27,9 +29,11 @@
 #include <atomic>
 #include <cerrno>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <thread>
 #include <utility>
@@ -328,6 +332,189 @@ void killRunning() noexcept {
     --killers;
 }
 
+namespace {
+
+constexpr std::pair<ParamType, std::string_view> kParamTypes[] = {
+    {ParamType::Integer, "integer"}, {ParamType::Number, "number"}, {ParamType::Boolean, "boolean"},
+    {ParamType::Colour, "colour"},   {ParamType::Ramp, "ramp"},     {ParamType::Text, "text"},
+};
+
+bool whole(double d) { return std::isfinite(d) && d == std::floor(d); }
+
+// An integer param's values: what a 32-bit field (the app's form) holds.
+constexpr double kIntegerMin = double(std::numeric_limits<std::int32_t>::min());
+constexpr double kIntegerMax = double(std::numeric_limits<std::int32_t>::max());
+bool integer(double d) { return whole(d) && d >= kIntegerMin && d <= kIntegerMax; }
+
+// A number param's values: what the form's number field holds, -1e12 to
+// 1e12 to six decimal places (written with six and read back unchanged).
+constexpr double kNumberLimit = 1e12;
+bool inNumberRange(double d) { return std::isfinite(d) && std::abs(d) <= kNumberLimit; }
+bool sixPlaces(double d) { return QByteArray::number(d, 'f', 6).toDouble() == d; }
+bool formNumber(double d) { return inNumberRange(d) && sixPlaces(d); }
+
+std::string number(double d) {
+    const QByteArray b = QByteArray::number(d, 'g', QLocale::FloatingPointShortest);
+    return std::string(b.constData(), std::size_t(b.size()));
+}
+
+// A JSON value as a value of `type`, or nothing for one of another kind.
+std::optional<ParamValue> fromJson(ParamType type, const QJsonValue& v) {
+    switch (type) {
+    case ParamType::Boolean:
+        if (v.isBool())
+            return v.toBool();
+        break;
+    case ParamType::Integer:
+    case ParamType::Number:
+    case ParamType::Colour:
+        if (v.isDouble())
+            return v.toDouble();
+        break;
+    case ParamType::Ramp:
+    case ParamType::Text:
+        if (v.isString())
+            return utf8(v.toString());
+        break;
+    }
+    return std::nullopt;
+}
+
+QJsonValue toJson(ParamType type, const ParamValue& value) {
+    if (const bool* b = std::get_if<bool>(&value))
+        return *b;
+    // written as an integer only when it is one that converts exactly
+    if (const double* d = std::get_if<double>(&value))
+        return type != ParamType::Number && whole(*d) && std::abs(*d) <= 9007199254740992.0 ? QJsonValue(qint64(*d))
+                                                                                            : QJsonValue(*d);
+    return QString::fromStdString(std::get<std::string>(value));
+}
+
+Param parseParam(const QJsonValue& entry, std::size_t index) {
+    const std::string at = "\"params\" entry " + std::to_string(index + 1);
+    if (!entry.isObject())
+        fail(at + " is not an object");
+    const QJsonObject o = entry.toObject();
+    Param p;
+    const QJsonValue name = o.value(QLatin1String("name"));
+    if (!name.isString() || name.toString().isEmpty() || name.toString().contains(QChar(0)))
+        fail(at + ": \"name\" is not a non-empty string");
+    p.name = utf8(name.toString());
+    const std::string what = "parameter \"" + p.name + "\"";
+    const QJsonValue type = o.value(QLatin1String("type"));
+    const auto known = std::find_if(std::begin(kParamTypes), std::end(kParamTypes), [&](const auto& t) {
+        return type.isString() && utf8(type.toString()) == t.second;
+    });
+    if (known == std::end(kParamTypes))
+        fail(what + ": \"type\" is not one of integer, number, boolean, colour, ramp, text");
+    p.type = known->first;
+    const QJsonValue label = o.value(QLatin1String("label"));
+    if (!label.isUndefined()) {
+        if (!label.isString())
+            fail(what + ": \"label\" is not a string");
+        p.label = utf8(label.toString());
+    }
+    const bool numeric = p.type == ParamType::Integer || p.type == ParamType::Number;
+    const auto bound = [&](const char* key, std::optional<double>& into) {
+        const QJsonValue v = o.value(QLatin1String(key));
+        if (v.isUndefined())
+            return;
+        if (!numeric)
+            fail(what + ": \"" + key + "\" is only for an integer or a number");
+        if (!v.isDouble() || !(p.type == ParamType::Integer ? integer(v.toDouble()) : formNumber(v.toDouble())))
+            fail(what + ": \"" + key + "\" is not " +
+                 (p.type == ParamType::Integer ? "a whole number from -2147483648 to 2147483647"
+                                               : "a number from -1e+12 to 1e+12 with at most six decimal places"));
+        into = v.toDouble();
+    };
+    bound("min", p.min);
+    bound("max", p.max);
+    if (p.min && p.max && *p.min > *p.max)
+        fail(what + ": \"min\" is more than \"max\"");
+    const QJsonValue step = o.value(QLatin1String("step"));
+    if (!step.isUndefined()) {
+        if (p.type != ParamType::Number)
+            fail(what + ": \"step\" is only for a number");
+        if (!step.isDouble() || !formNumber(step.toDouble()) || step.toDouble() <= 0)
+            fail(what + ": \"step\" is not a number above 0, up to 1e+12 with at most six decimal places");
+        p.step = step.toDouble();
+    }
+    const QJsonValue def = o.value(QLatin1String("default"));
+    if (def.isUndefined()) {
+        switch (p.type) {
+        case ParamType::Integer:
+        case ParamType::Number:
+            p.defaultValue = p.min ? *p.min : (p.max && *p.max < 0 ? *p.max : 0.0);
+            break;
+        case ParamType::Boolean: p.defaultValue = false; break;
+        case ParamType::Colour: p.defaultValue = 7.0; break;
+        case ParamType::Ramp: p.defaultValue = namedRamps().front().name; break;
+        case ParamType::Text: p.defaultValue = std::string(); break;
+        }
+    } else {
+        const std::optional<ParamValue> v = fromJson(p.type, def);
+        if (!v)
+            fail(what + ": \"default\" is not of the type " + std::string(paramTypeName(p.type)));
+        if (const std::string problem = paramProblem(p, *v); !problem.empty())
+            fail(what + ": \"default\" " + problem);
+        p.defaultValue = *v;
+    }
+    return p;
+}
+
+// params.json's object, or an empty one for none.
+QJsonObject paramsObject(std::string_view json) {
+    return json.empty() ? QJsonObject{} : parseObject(json, std::string(kParamsFile));
+}
+
+} // namespace
+
+std::string_view paramTypeName(ParamType type) {
+    for (const auto& [t, name] : kParamTypes)
+        if (t == type)
+            return name;
+    return {};
+}
+
+std::string paramProblem(const Param& param, const ParamValue& value) {
+    const std::string kind(paramTypeName(param.type));
+    switch (param.type) {
+    case ParamType::Boolean:
+        return std::holds_alternative<bool>(value) ? std::string() : "is not a boolean";
+    case ParamType::Ramp: {
+        const std::string* s = std::get_if<std::string>(&value);
+        return !s ? "is not a ramp's name" : findRamp(*s) ? std::string() : "\"" + *s + "\" is not a named ramp";
+    }
+    case ParamType::Text:
+        return std::holds_alternative<std::string>(value) ? std::string() : "is not text";
+    case ParamType::Colour: {
+        const double* d = std::get_if<double>(&value);
+        return d && whole(*d) && *d >= 0 && *d <= 15 ? std::string()
+                                                     : "is not a palette colour, a whole number from 0 to 15";
+    }
+    case ParamType::Integer:
+    case ParamType::Number: {
+        const double* d = std::get_if<double>(&value);
+        if (!d || !std::isfinite(*d))
+            return "is not a number";
+        if (param.type == ParamType::Integer && !whole(*d))
+            return "is not a whole number";
+        if (param.type == ParamType::Integer && !integer(*d))
+            return "is outside an integer's range, -2147483648 to 2147483647";
+        if (param.type == ParamType::Number && !inNumberRange(*d))
+            return "is outside a number's range, -1e+12 to 1e+12";
+        if (param.type == ParamType::Number && !sixPlaces(*d))
+            return "has more than six decimal places";
+        if (param.min && *d < *param.min)
+            return "is below the minimum, " + number(*param.min);
+        if (param.max && *d > *param.max)
+            return "is above the maximum, " + number(*param.max);
+        return {};
+    }
+    }
+    return "is not a " + kind;
+}
+
 Spec parseSpec(std::string_view json) {
     const std::string what(kSpecFile);
     const QJsonObject o = parseObject(json, what);
@@ -347,6 +534,22 @@ Spec parseSpec(std::string_view json) {
             fail(what + ": \"key\" is not a palette colour, a whole number from 0 to 15");
         spec.key = std::uint8_t(d);
     }
+    const QJsonValue params = o.value(QLatin1String("params"));
+    if (!params.isUndefined()) {
+        if (!params.isArray())
+            fail(what + ": \"params\" is not a list of parameters");
+        std::set<std::string> names;
+        const QJsonArray list = params.toArray();
+        for (qsizetype i = 0; i < list.size(); ++i) {
+            try {
+                spec.params.push_back(parseParam(list.at(i), std::size_t(i)));
+            } catch (const GeneratorError& e) {
+                fail(what + ": " + e.what());
+            }
+            if (!names.insert(spec.params.back().name).second)
+                fail(what + ": \"params\" declares \"" + spec.params.back().name + "\" more than once");
+        }
+    }
     return spec;
 }
 
@@ -357,6 +560,24 @@ std::string specJson(const Spec& spec) {
     QJsonObject o{{QStringLiteral("command"), command}};
     if (spec.key)
         o.insert(QStringLiteral("key"), int(*spec.key));
+    if (!spec.params.empty()) {
+        QJsonArray params;
+        for (const Param& p : spec.params) {
+            QJsonObject e{{QStringLiteral("name"), QString::fromStdString(p.name)},
+                          {QStringLiteral("type"), QString::fromStdString(std::string(paramTypeName(p.type)))},
+                          {QStringLiteral("default"), toJson(p.type, p.defaultValue)}};
+            if (!p.label.empty())
+                e.insert(QStringLiteral("label"), QString::fromStdString(p.label));
+            if (p.min)
+                e.insert(QStringLiteral("min"), toJson(p.type, *p.min));
+            if (p.max)
+                e.insert(QStringLiteral("max"), toJson(p.type, *p.max));
+            if (p.step)
+                e.insert(QStringLiteral("step"), *p.step);
+            params.append(e);
+        }
+        o.insert(QStringLiteral("params"), params);
+    }
     const QByteArray b = QJsonDocument(o).toJson(QJsonDocument::Indented);
     return std::string(b.constData(), std::size_t(b.size()));
 }
@@ -382,11 +603,58 @@ Spec layerSpec(const project::Project& project, LayerId id) {
     }
 }
 
+std::map<std::string, ParamValue> paramValues(const Spec& spec, std::string_view paramsJson) {
+    const QJsonObject o = paramsObject(paramsJson);
+    std::map<std::string, ParamValue> values;
+    for (const Param& p : spec.params) {
+        const std::optional<ParamValue> v = fromJson(p.type, o.value(QString::fromStdString(p.name)));
+        values[p.name] = v && paramProblem(p, *v).empty() ? *v : p.defaultValue;
+    }
+    return values;
+}
+
+std::string withParam(const Spec& spec, std::string_view paramsJson, const std::string& name,
+                      const ParamValue& value) {
+    const auto declared = std::find_if(spec.params.begin(), spec.params.end(),
+                                       [&](const Param& p) { return p.name == name; });
+    if (declared == spec.params.end())
+        fail("the generator declares no parameter \"" + name + "\"");
+    if (const std::string problem = paramProblem(*declared, value); !problem.empty())
+        fail("parameter \"" + name + "\": the value " + problem);
+    QJsonObject o = paramsObject(paramsJson);
+    std::map<std::string, ParamValue> values = paramValues(spec, paramsJson);
+    values[name] = value;
+    for (const Param& p : spec.params)
+        o.insert(QString::fromStdString(p.name), toJson(p.type, values.at(p.name)));
+    const QByteArray b = QJsonDocument(o).toJson(QJsonDocument::Indented);
+    return std::string(b.constData(), std::size_t(b.size()));
+}
+
 std::string input(const project::Project& project, const Layer& layer) {
     QJsonObject params;
     const std::string path = directory(layer.props.id) + std::string(kParamsFile);
     if (const std::string* json = file(project, path))
         params = parseObject(*json, path);
+    if (const std::string* json = file(project, directory(layer.props.id) + std::string(kSpecFile))) {
+        Spec spec;
+        try {
+            spec = parseSpec(*json);
+        } catch (const GeneratorError& e) {
+            fail(directory(layer.props.id) + e.what());
+        }
+        for (const Param& p : spec.params) {
+            const QString key = QString::fromStdString(p.name);
+            if (!params.contains(key)) {
+                params.insert(key, toJson(p.type, p.defaultValue));
+                continue;
+            }
+            const std::optional<ParamValue> v = fromJson(p.type, params.value(key));
+            const std::string problem =
+                v ? paramProblem(p, *v) : "is not of the type " + std::string(paramTypeName(p.type));
+            if (!problem.empty())
+                fail(path + ": \"" + p.name + "\" " + problem);
+        }
+    }
     const LayerStack& s = project.layers;
     const QJsonObject o{
         {QStringLiteral("canvas"),

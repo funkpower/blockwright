@@ -139,17 +139,41 @@ private:
 };
 
 // A layer's properties (name, visibility, alpha lock), before and after.
+//
+// On a generator layer the step can also carry its generator's params.json
+// and cells, before and after (Document::setGeneratorParam): a run landing
+// later amends the cells after, so redo gives back what it drew.
 class LayerPropsCommand : public QUndoCommand {
 public:
-    LayerPropsCommand(Document* doc, LayerPropsEdit edit, const QString& text)
-        : QUndoCommand(text), doc_(doc), edit_(std::move(edit)) {}
+    struct GeneratorStep {
+        std::uint64_t serial = 0;
+        std::optional<std::string> paramsBefore, paramsAfter;
+        Canvas cellsBefore{0, 0}, cellsAfter{0, 0};
+    };
 
-    void redo() override { doc_->putProperties(edit_, false); }
-    void undo() override { doc_->putProperties(edit_, true); }
+    LayerPropsCommand(Document* doc, LayerPropsEdit edit, const QString& text,
+                      std::optional<GeneratorStep> generator = std::nullopt)
+        : QUndoCommand(text), doc_(doc), edit_(std::move(edit)), generator_(std::move(generator)) {}
+
+    void redo() override {
+        doc_->putProperties(edit_, false);
+        if (generator_)
+            doc_->putGenerator(edit_.id, generator_->paramsAfter, generator_->cellsAfter);
+    }
+    void undo() override {
+        doc_->putProperties(edit_, true);
+        if (generator_)
+            doc_->putGenerator(edit_.id, generator_->paramsBefore, generator_->cellsBefore);
+    }
+
+    LayerId layerId() const { return edit_.id; }
+    const std::optional<GeneratorStep>& generator() const { return generator_; }
+    void setCellsAfter(Canvas cells) { generator_->cellsAfter = std::move(cells); }
 
 private:
     Document* doc_;
     LayerPropsEdit edit_;
+    std::optional<GeneratorStep> generator_;
 };
 
 // A snapshot added to the project's snapshots; undo takes it off.
@@ -211,6 +235,7 @@ private:
 Document::Document(QObject* parent) : QObject(parent), doc_(blank()) {
     resetLayers(LayerStack::fromCanvas(doc_.canvas));
     connect(&undo_, &QUndoStack::cleanChanged, this, [this](bool clean) { setModified(!clean); });
+    connect(&undo_, &QUndoStack::indexChanged, this, [this] { ++undoMoves_; });
 }
 
 bool Document::load(const QString& path, QString* error) {
@@ -687,6 +712,125 @@ bool Document::setLayerProperties(LayerId id, LayerProperties props, const QStri
         emit layersAboutToChange();
     undo_.push(new LayerPropsCommand(this, propsEdit(*l, std::move(props)), text));
     return true;
+}
+
+std::optional<std::string> Document::keptFile(const std::string& path) const {
+    const auto it = extras_.files.find(path);
+    return it == extras_.files.end() ? std::nullopt : std::optional(it->second);
+}
+
+std::optional<generator::Spec> Document::generatorSpec(LayerId id, QString* error) const {
+    project::Project p;
+    p.layers = stack_;
+    p.files = extras_.files;
+    try {
+        return generator::layerSpec(p, id);
+    } catch (const generator::GeneratorError& e) {
+        if (error)
+            *error = QString::fromStdString(e.what());
+        return std::nullopt;
+    }
+}
+
+namespace {
+
+std::string paramsPath(LayerId id) { return generator::directory(id) + std::string(generator::kParamsFile); }
+std::string specPath(LayerId id) { return generator::directory(id) + std::string(generator::kSpecFile); }
+
+} // namespace
+
+bool Document::setGeneratorParam(LayerId id, const std::string& name, const generator::ParamValue& value,
+                                 QString* error) {
+    const std::optional<generator::Spec> spec = generatorSpec(id, error);
+    if (!spec)
+        return false;
+    const std::optional<std::string> before = keptFile(paramsPath(id));
+    std::string after;
+    try {
+        after = generator::withParam(*spec, before.value_or(std::string()), name, value);
+    } catch (const generator::GeneratorError& e) {
+        if (error)
+            *error = QString::fromStdString(e.what());
+        return false;
+    }
+    if (before == after)
+        return false;
+    const Layer& l = *stack_.find(id);
+    const std::uint64_t serial = ++generatorSerial_;
+    undo_.push(new LayerPropsCommand(this, propsEdit(l, l.props), tr("Generator Parameter"),
+                                     LayerPropsCommand::GeneratorStep{serial, before, after, l.cells, l.cells}));
+    emit generatorRunWanted(id, serial);
+    return true;
+}
+
+bool Document::requestGeneratorRun(LayerId id) {
+    const Layer* l = stack_.find(id);
+    if (!l || l->props.kind != LayerKind::Generator)
+        return false;
+    runAsked_[id] = undoMoves_;
+    emit generatorRunWanted(id, 0);
+    return true;
+}
+
+bool Document::applyGeneratorRun(std::uint64_t serial, LayerId id, const std::optional<std::string>& params,
+                                 const std::optional<std::string>& spec, Canvas cells) {
+    const Layer* l = stack_.find(id);
+    if (!l || l->props.kind != LayerKind::Generator || keptFile(paramsPath(id)) != params ||
+        keptFile(specPath(id)) != spec)
+        return false;
+    if (serial == 0) {
+        // An edit undone since the Run was asked for (a parameter step put
+        // back to the params the run read, or any other) stays to be
+        // redone: the result, which would push over it, is dropped.
+        const auto asked = runAsked_.find(id);
+        if (undo_.canRedo() && (asked == runAsked_.end() || asked->second != undoMoves_))
+            return false;
+        if (cells != l->cells)
+            undo_.push(new LayerPropsCommand(this, propsEdit(*l, l->props), tr("Run Generator"),
+                                             LayerPropsCommand::GeneratorStep{0, params, params, l->cells, cells}));
+        return true;
+    }
+    // The newest step on this layer's generator in the whole stack, done or
+    // undone, and it must be done: a step that came after it, though undone
+    // since, holds the cells this one has now as its cells before, so this
+    // one's can't change under it.
+    for (int i = undo_.count() - 1; i >= 0; --i) {
+        const auto* c = dynamic_cast<const LayerPropsCommand*>(undo_.command(i));
+        if (!c || !c->generator() || c->layerId() != id)
+            continue;
+        if (c->generator()->serial != serial || i >= undo_.index())
+            return false;
+        if (cells == c->generator()->cellsAfter)
+            return true;
+        const_cast<LayerPropsCommand*>(c)->setCellsAfter(cells);
+        // a save holding this step holds the cells it had before
+        if (undo_.cleanIndex() > i)
+            undo_.resetClean();
+        putGenerator(id, params, cells);
+        return true;
+    }
+    return false;
+}
+
+void Document::putGenerator(LayerId id, const std::optional<std::string>& params, const Canvas& cells) {
+    Layer* layer = stack_.find(id);
+    if (!layer)
+        return;
+    if (params)
+        extras_.files[paramsPath(id)] = *params;
+    else
+        extras_.files.erase(paramsPath(id));
+    QRegion changed;
+    if (layer->cells != cells) {
+        const CellRect before = layer->bounds();
+        layer->cells = cells;
+        changed = recomposite(unite(before, layer->bounds(), stack_.canvasRect()));
+        if (id == active_)
+            refreshLayerCanvas();
+    }
+    emit generatorChanged(id);
+    if (!changed.isEmpty())
+        emit cellsChanged(changed);
 }
 
 bool Document::renameLayer(LayerId id, const QString& name) {
