@@ -17,6 +17,7 @@
 #include "toolbox.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAction>
 #include <QApplication>
@@ -32,6 +33,8 @@
 #include <QFileInfo>
 #include <QSettings>
 #include <QSpinBox>
+#include <QStyle>
+#include <QStyleOptionToolButton>
 #include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
@@ -53,6 +56,15 @@ QString keyText(const QKeySequence& k) { return k.toString(QKeySequence::NativeT
 void press(QWidget* w, QPoint at, Qt::MouseButton button = Qt::LeftButton) {
     QMouseEvent e(QEvent::MouseButtonPress, QPointF(at), w->mapToGlobal(QPointF(at)), button, button, Qt::NoModifier);
     QApplication::sendEvent(w, &e);
+}
+
+// Ask the current style for the split button's arrow or icon hit area.
+QRect toolboxButtonRect(QToolButton* button, QStyle::SubControl control) {
+    QStyleOptionToolButton option;
+    option.initFrom(button);
+    option.features = QStyleOptionToolButton::HasMenu | QStyleOptionToolButton::MenuButtonPopup;
+    option.iconSize = button->iconSize();
+    return button->style()->subControlRect(QStyle::CC_ToolButton, &option, control, button);
 }
 
 // The Window menu, by its title.
@@ -107,7 +119,7 @@ TEST_CASE("the toolbox has a button for every tool, with the Tools menu's action
     CHECK(shapes->menu()->actions() == QList<QAction*>{toolAction(w, QStringLiteral("line")),
                                                        toolAction(w, QStringLiteral("rectangle")),
                                                        toolAction(w, QStringLiteral("ellipse"))});
-    CHECK(shapes->popupMode() == QToolButton::DelayedPopup);
+    CHECK(shapes->popupMode() == QToolButton::MenuButtonPopup);
     CHECK(toolAction(w, QStringLiteral("ellipse"))->toolTip().contains(QStringLiteral("right-click")));
     CHECK_FALSE(toolAction(w, QStringLiteral("eyedropper"))->toolTip().contains(QStringLiteral("right-click")));
 }
@@ -133,6 +145,113 @@ TEST_CASE("a toolbox button picks its tool, and a group's button shows the last 
     CHECK_FALSE(brushes->isChecked());
     brushes->click();
     CHECK(w.tools()->active()->id() == QStringLiteral("soft"));
+}
+
+TEST_CASE("clicking each toolbox group's arrow opens its flyout") {
+    const auto id = QString::fromLatin1(GENERATE("halfBlock", "rampShade", "outline", "line", "fill"));
+    INFO(id.toStdString());
+    MainWindow w;
+    w.show();
+    QApplication::processEvents();
+    auto* button = w.toolbox()->buttonFor(id);
+    REQUIRE(button);
+    auto* menu = button->menu();
+    REQUIRE(menu);
+    const QRect arrow = toolboxButtonRect(button, QStyle::SC_ToolButtonMenu);
+    REQUIRE_FALSE(arrow.isEmpty());
+    REQUIRE(button->rect().contains(arrow));
+    const QString activeBefore = w.tools()->active()->id();
+    bool shown = false;
+    // QToolButton opens QMenu in a nested event loop. This timer closes it
+    // whether the click blocks inside sendEvent or returns asynchronously.
+    QTimer closeMenu;
+    closeMenu.setInterval(0);
+    QObject::connect(&closeMenu, &QTimer::timeout, menu, [&] {
+        if (menu->isVisible()) {
+            shown = true;
+            menu->close();
+        }
+    });
+    closeMenu.start();
+    press(button, arrow.center());
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(arrow.center()),
+                        button->mapToGlobal(QPointF(arrow.center())), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(button, &release);
+    QApplication::processEvents();
+    closeMenu.stop();
+    CHECK(shown);
+    CHECK_FALSE(menu->isVisible());
+    CHECK(w.tools()->active()->id() == activeBefore);
+}
+
+TEST_CASE("clicking each toolbox group's icon picks its current tool without opening the flyout") {
+    const auto id = QString::fromLatin1(GENERATE("halfBlock", "rampShade", "outline", "line", "fill"));
+    INFO(id.toStdString());
+    MainWindow w;
+    w.show();
+    QApplication::processEvents();
+    auto* button = w.toolbox()->buttonFor(id);
+    REQUIRE(button);
+    auto* menu = button->menu();
+    REQUIRE(menu);
+    // Pick another member first, then leave the group. The icon must select
+    // that remembered member, rather than reverting to the group's first.
+    QAction* current = menu->actions().last();
+    current->trigger();
+    REQUIRE(button->defaultAction() == current);
+    toolAction(w, QStringLiteral("keyboard"))->trigger();
+    const QRect icon = toolboxButtonRect(button, QStyle::SC_ToolButton);
+    REQUIRE_FALSE(icon.isEmpty());
+    REQUIRE_FALSE(toolboxButtonRect(button, QStyle::SC_ToolButtonMenu).contains(icon.center()));
+    bool opened = false;
+    QObject::connect(menu, &QMenu::aboutToShow, menu, [&] { opened = true; });
+    QTimer closeMenu;
+    QObject::connect(&closeMenu, &QTimer::timeout, menu, &QMenu::close);
+    closeMenu.start(0); // also bounds an accidental popup's nested event loop
+    press(button, icon.center());
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(icon.center()),
+                        button->mapToGlobal(QPointF(icon.center())), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(button, &release);
+    QApplication::processEvents();
+    closeMenu.stop();
+    CHECK_FALSE(opened);
+    CHECK_FALSE(menu->isVisible());
+    CHECK(button->defaultAction() == current);
+    CHECK(toolAction(w, w.tools()->active()->id()) == current);
+    CHECK(button->isChecked());
+}
+
+TEST_CASE("the toolbox's two columns fit the default dock and a 240 pixel column") {
+    MainWindow w;
+    w.show();
+    QApplication::processEvents();
+    const auto checkFits = [](Toolbox* box) {
+        const auto buttons = box->buttons();
+        for (int i = 0; i < buttons.size(); ++i) {
+            INFO(buttons[i]->objectName().toStdString());
+            CHECK(box->rect().contains(buttons[i]->geometry()));
+            CHECK(buttons[i]->width() >= buttons[i]->sizeHint().width());
+            if (i % 2 == 1) {
+                CHECK(buttons[i]->y() == buttons[i - 1]->y());
+                CHECK(buttons[i]->x() > buttons[i - 1]->geometry().right());
+            } else if (i >= 2) {
+                CHECK(buttons[i]->x() == buttons[i - 2]->x());
+                CHECK(buttons[i]->y() > buttons[i - 2]->geometry().bottom());
+            }
+        }
+    };
+    checkFits(w.toolbox());
+    QHash<QString, QAction*> actions;
+    for (Tool* tool : w.tools()->tools())
+        actions.insert(tool->id(), toolAction(w, tool->id()));
+    Toolbox narrow(w.tools(), actions);
+    CHECK(narrow.minimumSizeHint().width() <= 240);
+    CHECK(narrow.sizeHint().width() <= 240);
+    narrow.resize(240, narrow.sizeHint().height());
+    narrow.show();
+    QApplication::processEvents();
+    REQUIRE(narrow.width() == 240);
+    checkFits(&narrow);
 }
 
 TEST_CASE("a right click on a group's toolbox button opens the group") {

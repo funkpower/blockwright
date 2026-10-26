@@ -19,7 +19,7 @@ constexpr int kColumns = 2;
 constexpr int kIcon = 24;
 
 // The hint a group's tools carry in their tooltips.
-QString groupHint() { return Toolbox::tr("Hold or right-click for the rest of the group"); }
+QString groupHint() { return Toolbox::tr("Click the arrow or right-click for the rest of the group"); }
 
 } // namespace
 
@@ -242,7 +242,7 @@ Toolbox::Toolbox(ToolRegistry* tools, const QHash<QString, QAction*>& actions, Q
                     a->setToolTip(a->toolTip() + QLatin1Char('\n') + groupHint());
             }
             b->setMenu(menu);
-            b->setPopupMode(QToolButton::DelayedPopup);
+            b->setPopupMode(QToolButton::MenuButtonPopup);
             b->setContextMenuPolicy(Qt::CustomContextMenu);
             connect(b, &QWidget::customContextMenuRequested, b, &QToolButton::showMenu);
         }

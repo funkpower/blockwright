@@ -1,7 +1,8 @@
 #pragma once
 // The Toolbox dock (PLAN §11): a button per tool, or per group of tools. A
-// group's button shows the tool of the group last picked; holding it down or
-// right-clicking it opens the rest of the group. The buttons are the Tools
+// group's button shows the tool of the group last picked; clicking its arrow
+// or right-clicking it opens the rest of the group. Clicking the icon picks
+// the current tool. The buttons are the Tools
 // menu's actions, so a button has the tool's shortcut in its tooltip, shows
 // the active tool pressed, and adds no shortcut of its own.
 
