@@ -27,8 +27,13 @@ private:
     bool reduce_;
 };
 
+// The glyph a dab's image writes for `ch`: mirrored as the image is
+// flipped, and turned a quarter clockwise for each of its turns
+// (rotateGlyph), so a radial image a quarter round writes ▀ as ▐.
+char32_t dabGlyph(char32_t ch, const Dab& d);
+
 // Glyph brush: writes one cell (a glyph in the pen's colours; a blank cell
-// erases).
+// erases), its glyph as each image writes it (dabGlyph).
 class GlyphBrush : public Brush {
 public:
     explicit GlyphBrush(Cell cell) : cell_(cell) {}

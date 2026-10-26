@@ -94,14 +94,20 @@ protected:
     const BrushSettings& brushSettings() const { return brushSettings_; }
     // The pen colour for a button, as a palette index.
     std::uint8_t colourFor(Qt::MouseButton button) const;
-    // True for a tool whose cells are ramp shades (░▒▓), which a Pixels
-    // layer can't hold (PLAN §3): on one it declines a press, and its
-    // status() says why (pixelRefusal). A text layer is painted as a cells
-    // layer.
+    // True for a tool whose cells are shades (░▒▓), which a Pixels layer
+    // can't hold (PLAN §3): on one it declines a press, and its status()
+    // says why (pixelRefusal). A text layer is painted as a cells layer.
     virtual bool paintsShades() const { return false; }
-    // Whether the tool declines the active layer, as above.
-    bool refusesLayer() const;
-    // The status-bar text saying why.
+    // The same for glyphs: what the tool writes with `button` that a Pixels
+    // layer can't hold, as pixelRefusal names it ("stars", the glyph brush's
+    // glyph), or empty when it holds all of it. A Pixels layer holds only
+    // █ ▀ ▄ and blanks.
+    virtual QString unheldGlyphs(Qt::MouseButton) const { return {}; }
+    // Whether the tool declines the active layer for a press with `button`,
+    // as above. A setting changed mid-drag (settingsChanged) that makes it
+    // decline drops the drag.
+    bool refusesLayer(Qt::MouseButton button = Qt::LeftButton) const;
+    // The status-bar text saying why, for the left button.
     QString pixelRefusal() const;
 
 private:
@@ -153,14 +159,18 @@ private:
 };
 
 // Shade brush: left builds a cell up a step of space ░ ▒ ▓ █ in the pen's
-// colours, right takes it a step down.
+// colours, right takes it a step down. It declines a press on a Pixels
+// layer, which can't hold its shades, and says so in its status.
 class ShadeTool : public BrushTool {
     Q_OBJECT
 public:
     explicit ShadeTool(QObject* parent = nullptr);
 
+    QString status() const override;
+
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    bool paintsShades() const override { return true; }
 };
 
 // Ramp shade brush (PLAN §10): left lightens the cells under it along the
@@ -246,7 +256,12 @@ protected:
 
 // Glyph brush: left writes the brush's glyph in the pen's colours, right
 // erases to blank. F1-F10 pick the glyph from the current glyph set while
-// the tool is active; it starts as the full block.
+// the tool is active; it starts as the full block. On a Pixels layer the
+// left button declines a press when the glyph, or an image of it mirror
+// mode writes (▀ turned on its side by radial symmetry), is one the layer
+// can't hold, and the status says so; the right button still erases. A
+// glyph picked mid-drag redoes the drag with it, or ends the drag when the
+// layer refuses it.
 class GlyphTool : public BrushTool {
     Q_OBJECT
 public:
@@ -260,6 +275,7 @@ public:
 
 protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
+    QString unheldGlyphs(Qt::MouseButton button) const override;
 
 private:
     char32_t glyph_;
@@ -534,7 +550,9 @@ QString sprayKindName(SprayKind kind);
 // the pen's foreground on open ground, and the right button takes them off;
 // haze and smoke lift ░▒ along the view's ramp, lighter with the left
 // button and darker with the right. Each kind is fixed to the canvas by its
-// seed, so strokes over one another paint one field.
+// seed, so strokes over one another paint one field. Every kind declines a
+// press on a Pixels layer, which holds neither stars nor shades, and says
+// so in its status; changing the kind changes what it names.
 class SprayTool : public BrushTool {
     Q_OBJECT
 public:
@@ -553,6 +571,7 @@ protected:
     std::unique_ptr<Brush> makeBrush(Qt::MouseButton button) const override;
     // haze and smoke; stars are glyphs
     bool paintsShades() const override { return options_.kind != SprayKind::Stars; }
+    QString unheldGlyphs(Qt::MouseButton) const override;
 
 private:
     void setOptions(const SprayOptions& options);

@@ -45,6 +45,13 @@ void DragTool::finish() {
 void DragTool::settingsChanged() {
     if (!dragging_ || !view())
         return;
+    if (refusesLayer(button_)) {
+        // what the drag would land now is what a press would be declined
+        // for (the glyph brush's new glyph, or its glyph under a new
+        // symmetry): it ends, and the status says why
+        drop();
+        return;
+    }
     takeSettings();
     rebuild();
     refresh();
@@ -55,7 +62,7 @@ bool DragTool::mousePress(const ToolEvent& e) {
         return true;  // a second button during a drag does nothing
     if (!view() || (e.button != Qt::LeftButton && e.button != Qt::RightButton))
         return false;
-    if (refusesLayer())
+    if (refusesLayer(e.button))
         return false;
     takeSettings();
     if (!begin(e))
@@ -105,16 +112,19 @@ std::uint8_t DragTool::colourFor(Qt::MouseButton button) const {
     return (button == Qt::RightButton ? pen.bg : pen.fg).paletteIndex();
 }
 
-bool DragTool::refusesLayer() const {
-    if (!view() || !paintsShades())
+bool DragTool::refusesLayer(Qt::MouseButton button) const {
+    if (!view())
         return false;
     const Layer* layer = view()->document()->active();
-    return layer && layer->props.kind == LayerKind::Pixels;
+    if (!layer || layer->props.kind != LayerKind::Pixels)
+        return false;
+    return paintsShades() || !unheldGlyphs(button).isEmpty();
 }
 
 QString DragTool::pixelRefusal() const {
-    return tr("The %1 can't paint a Pixels layer: it holds no shades")
-        .arg(QString(name()).remove(QLatin1Char('&')).toLower());
+    return tr("The %1 can't paint a Pixels layer: it holds no %2")
+        .arg(QString(name()).remove(QLatin1Char('&')).toLower(),
+             paintsShades() ? tr("shades") : unheldGlyphs(Qt::LeftButton));
 }
 
 void DragTool::takeSettings() {
@@ -192,6 +202,8 @@ void BrushTool::reset() {
 }
 
 ShadeTool::ShadeTool(QObject* parent) : BrushTool(QStringLiteral("shade"), tr("Sh&ade Brush"), parent) {}
+
+QString ShadeTool::status() const { return refusesLayer() ? pixelRefusal() : QString(); }
 
 std::unique_ptr<Brush> ShadeTool::makeBrush(Qt::MouseButton button) const {
     return std::make_unique<ShadeBrush>(pen(), button == Qt::RightButton);
@@ -300,6 +312,8 @@ void GlyphTool::setGlyph(char32_t glyph) {
     if (glyph == glyph_)
         return;
     glyph_ = glyph;
+    // a drag under way is redone with it, or ends if the layer refuses it
+    settingsChanged();
     emit changed();
 }
 
@@ -315,8 +329,30 @@ bool GlyphTool::keyPress(QKeyEvent* e) {
 }
 
 QString GlyphTool::status() const {
+    if (refusesLayer())
+        return pixelRefusal() + tr("; right button erases");
     const char32_t g = glyph_;
     return tr("Glyph %1").arg(QString::fromUcs4(&g, 1));
+}
+
+QString GlyphTool::unheldGlyphs(Qt::MouseButton button) const {
+    if (button == Qt::RightButton || !view())
+        return {};  // it erases, to a blank every layer holds
+    const auto held = [](char32_t ch) {
+        Cell c;
+        c.ch = ch;
+        return halfBlocks(c).has_value();
+    };
+    const char32_t g = glyph_;
+    if (!held(g))
+        return QString::fromUcs4(&g, 1);
+    // the images mirror mode writes: flips keep █ ▀ ▄ and blanks, a quarter
+    // turn puts a half block on its side
+    const Canvas& c = canvas();
+    for (const Dab& d : symmetryDabs(view()->symmetry(), Dab{c.width() / 2, c.height() / 2}, c.width(), c.height()))
+        if (!held(dabGlyph(g, d)))
+            return tr("%1 turned on its side, which radial symmetry writes").arg(QString::fromUcs4(&g, 1));
+    return {};
 }
 
 std::unique_ptr<Brush> GlyphTool::makeBrush(Qt::MouseButton button) const {
@@ -913,6 +949,11 @@ QString SprayTool::status() const {
         .arg(QString::fromStdString(view()->ramp().name), sprayKindName(options_.kind).toLower())
         .arg(options_.density)
         .arg(options_.seed);
+}
+
+QString SprayTool::unheldGlyphs(Qt::MouseButton) const {
+    // the right button takes stars off, and a Pixels layer has none
+    return options_.kind == SprayKind::Stars ? tr("stars") : QString();
 }
 
 std::unique_ptr<Brush> SprayTool::makeBrush(Qt::MouseButton button) const {

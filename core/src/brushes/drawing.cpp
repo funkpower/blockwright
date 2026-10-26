@@ -39,17 +39,21 @@ std::optional<Cell> ShadeBrush::paintCell(const Stroke& stroke, int x, int y, do
     return out;
 }
 
+char32_t dabGlyph(char32_t ch, const Dab& d) {
+    if (d.flipX)
+        ch = flipGlyph(ch, Flip::Horizontal);
+    if (d.flipY)
+        ch = flipGlyph(ch, Flip::Vertical);
+    for (int i = 0; i < d.turns; ++i)
+        ch = rotateGlyph(ch, true);
+    return ch;
+}
+
 std::optional<Cell> GlyphBrush::paintCell(const Stroke& stroke, int, int, double) const {
     // a mirrored image of the stroke writes the glyph mirrored, and a
     // radial image a quarter turn round writes it turned
     Cell c = cell_;
-    const Dab& d = stroke.currentDab();
-    if (d.flipX)
-        c.ch = flipGlyph(c.ch, Flip::Horizontal);
-    if (d.flipY)
-        c.ch = flipGlyph(c.ch, Flip::Vertical);
-    for (int i = 0; i < d.turns; ++i)
-        c.ch = rotateGlyph(c.ch, true);
+    c.ch = dabGlyph(c.ch, stroke.currentDab());
     return c;
 }
 

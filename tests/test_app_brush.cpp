@@ -1,12 +1,13 @@
 // The brushes' common behaviour in the main window (PLAN §4, phase 2b.1):
 // Tool Options' size, tip, strength, pressure mapping, ramp and alpha
-// lock, the ramp shade brush, the ramp tools on a Pixels layer, and a
-// stylus's pressure through QTabletEvent.
+// lock, the ramp shade brush, the tools that write shades or glyphs on a
+// Pixels layer, and a stylus's pressure through QTabletEvent.
 
 #include "tool_options.h"
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
+#include "glyph_bar.h"
 #include "main_window.h"
 #include "settings.h"
 #include "tool.h"
@@ -39,6 +40,7 @@
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTabletEvent>
+#include <QToolButton>
 #include <QUndoStack>
 
 #include <algorithm>
@@ -437,7 +439,7 @@ TEST_CASE("the ramp shade brush shades a Text layer as it does a cells layer", "
     CHECK(undo->count() == steps + 2);
 }
 
-TEST_CASE("the ramp tools that write shades refuse a Pixels layer; outline, despeckle and stars paint it", "[layers]") {
+TEST_CASE("the ramp tools that write shades refuse a Pixels layer; outline and despeckle paint it", "[layers]") {
     FreshSpraySettings fresh;
     struct Case {
         const char* id;
@@ -449,11 +451,11 @@ TEST_CASE("the ramp tools that write shades refuse a Pixels layer; outline, desp
         {"soft", SprayKind::Stars, true},      {"smudge", SprayKind::Stars, true},
         {"rimLight", SprayKind::Stars, true},  {"texture", SprayKind::Stars, true},
         {"spray", SprayKind::Haze, true},      {"spray", SprayKind::Smoke, true},
+        // stars are glyphs, which it doesn't hold either (#164)
+        {"spray", SprayKind::Stars, true},
         // whole cells and half blocks, which a pixel layer holds (the outline
-        // leaves its shade rungs out there), and glyphs, which it doesn't,
-        // but not shades
+        // leaves its shade rungs out there)
         {"outline", SprayKind::Stars, false},  {"despeckle", SprayKind::Stars, false},
-        {"spray", SprayKind::Stars, false},
     };
     for (const Case& c : cases) {
         INFO(c.id << " " << sprayKindName(c.spray).toStdString());
@@ -487,6 +489,373 @@ TEST_CASE("the ramp tools that write shades refuse a Pixels layer; outline, desp
         CHECK(t->dragging());
         mouse(v, QEvent::MouseButtonRelease, 2, 8);
     }
+}
+
+// #164: the shade brush (░▒▓), the glyph brush with a glyph a Pixels layer
+// can't hold and the spray's stars took the press there, showed the stroke,
+// and landed nothing on release, no undo step and no word why: the layer
+// refused the edit (fitLayerEdit). Now each declines the press and says why,
+// and a cells or text layer still takes the stroke.
+TEST_CASE("the shade brush, the glyph brush and the spray's stars refuse a Pixels layer and say why", "[layers]") {
+    FreshSpraySettings fresh;
+    struct Case {
+        const char* id;
+        char32_t glyph;  // the glyph brush's
+        QPoint from, to;  // half-block pixels
+        const char* message;
+    };
+    // the shade brush on blank cells, which it builds up to ░; the others on
+    // black whole cells (fillWhole), open ground for the stars
+    const Case cases[] = {
+        {"shade", 0, {50, 30}, {60, 30}, "The shade brush can't paint a Pixels layer: it holds no shades"},
+        {"glyph", U'░', {2, 8}, {30, 8},
+         "The glyph brush can't paint a Pixels layer: it holds no ░; right button erases"},
+        {"glyph", U'☺', {2, 8}, {30, 8},
+         "The glyph brush can't paint a Pixels layer: it holds no ☺; right button erases"},
+        {"spray", 0, {2, 8}, {30, 8}, "The glyph spray can't paint a Pixels layer: it holds no stars"},
+    };
+    for (const Case& c : cases) {
+        INFO(c.id << " " << QString::fromUcs4(&c.glyph, 1).toStdString());
+        MainWindow w;
+        Document* doc = w.document();
+        CanvasView* v = w.canvasView();
+        QUndoStack* undo = doc->undoStack();
+        auto* label = w.findChild<QLabel*>(QStringLiteral("toolStatusLabel"));
+        REQUIRE(label);
+        w.toolOptions()->sizeBox()->setValue(9);
+        use(w, c.id);
+        if (auto* glyph = qobject_cast<GlyphTool*>(w.tools()->active()))
+            glyph->setGlyph(c.glyph);
+        if (auto* spray = qobject_cast<SprayTool*>(w.tools()->active())) {
+            spray->setKind(SprayKind::Stars);
+            spray->setDensity(kMaxSprayDensity);
+            spray->setSeed(17);
+        }
+        DragTool* t = dragTool(w);
+        const LayerId cells = doc->activeLayer();
+        fillWhole(w, {Black});
+        CHECK_FALSE(label->text().contains(QStringLiteral("Pixels layer")));
+
+        act(w, QStringLiteral("newPixelLayer"))->trigger();
+        REQUIRE(doc->active()->props.kind == LayerKind::Pixels);
+        fillWhole(w, {Black});
+        CHECK(label->isVisibleTo(&w));
+        CHECK(label->text() == QString::fromUtf8(c.message));
+        CHECK(t->status() == label->text());
+        const Canvas layer = doc->active()->cells, shown = doc->canvas();
+        const int steps = undo->count();
+        mouse(v, QEvent::MouseButtonPress, c.from.x(), c.from.y());
+        mouse(v, QEvent::MouseMove, c.to.x(), c.to.y());
+        CHECK_FALSE(t->dragging());
+        CHECK(t->pending().empty());
+        mouse(v, QEvent::MouseButtonRelease, c.to.x(), c.to.y());
+        CHECK(doc->active()->cells == layer);
+        CHECK(doc->canvas() == shown);
+        CHECK(undo->count() == steps);
+        CHECK(label->text() == QString::fromUtf8(c.message));
+
+        // a cells layer and a text layer take the stroke
+        const auto paints = [&] {
+            CHECK_FALSE(t->status().contains(QStringLiteral("Pixels layer")));
+            CHECK(label->text() == t->status());
+            const Canvas before = doc->active()->cells;
+            const int n = undo->count();
+            drag(v, {c.from, c.to});
+            CHECK_FALSE(doc->active()->cells == before);
+            CHECK(undo->count() == n + 1);
+        };
+        REQUIRE(doc->setActiveLayer(cells));
+        paints();
+        doc->addLayer(LayerKind::Text);
+        REQUIRE(doc->active()->props.kind == LayerKind::Text);
+        fillWhole(w, {Black});
+        paints();
+    }
+}
+
+// The glyph brush on a Pixels layer refuses only what the layer can't hold:
+// █ ▀ ▄ paint it, the right button erases with any glyph, and ▀ is refused
+// only where radial symmetry would write it on its side (▐ ▌), which
+// dropped the whole stroke on release before (#164).
+TEST_CASE("the glyph brush paints a Pixels layer with the glyphs it holds, as mirror mode writes them", "[layers]") {
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    QUndoStack* undo = doc->undoStack();
+    auto* label = w.findChild<QLabel*>(QStringLiteral("toolStatusLabel"));
+    REQUIRE(label);
+    act(w, QStringLiteral("newPixelLayer"))->trigger();
+    REQUIRE(doc->active()->props.kind == LayerKind::Pixels);
+    fillWhole(w, {Black});
+    use(w, "glyph");
+    auto* t = qobject_cast<GlyphTool*>(w.tools()->active());
+    REQUIRE(t);
+    const auto lands = [&](QPoint from, QPoint to, Qt::MouseButton button = Qt::LeftButton) {
+        const Canvas before = doc->active()->cells;
+        const int n = undo->count();
+        drag(v, {from, to}, button);
+        CHECK_FALSE(doc->active()->cells == before);
+        CHECK(undo->count() == n + 1);
+    };
+    const auto declined = [&](QPoint from, QPoint to) {
+        const Canvas before = doc->active()->cells;
+        const int n = undo->count();
+        mouse(v, QEvent::MouseButtonPress, from.x(), from.y());
+        CHECK_FALSE(t->dragging());
+        mouse(v, QEvent::MouseMove, to.x(), to.y());
+        mouse(v, QEvent::MouseButtonRelease, to.x(), to.y());
+        CHECK(doc->active()->cells == before);
+        CHECK(undo->count() == n);
+    };
+
+    // the right button erases whatever the glyph
+    t->setGlyph(U'░');
+    CHECK(label->text().contains(QStringLiteral("can't paint a Pixels layer")));
+    lands({2, 2}, {10, 2}, Qt::RightButton);
+    CHECK(doc->active()->cells.at(4, 1).transparent);
+    for (const char32_t g : {kFullBlock, kUpperHalf, kLowerHalf}) {
+        INFO(int(g));
+        t->setGlyph(g);
+        CHECK(label->text() == t->status());
+        CHECK_FALSE(label->text().contains(QStringLiteral("Pixels layer")));
+        lands({2, 4}, {10, 4});
+        // the layer keeps its pixels (pixelLayerCell), not the glyph itself
+        Cell written;
+        written.ch = g;
+        written.fg = v->pen().fg;
+        written.bg = v->pen().bg;
+        CHECK(halfBlocks(doc->active()->cells.at(4, 2)) == halfBlocks(written));
+    }
+
+    // ▀ mirrored is ▀ or ▄; turned a quarter it is ▐ or ▌
+    t->setGlyph(kUpperHalf);
+    v->setSymmetry({SymmetryMode::MirrorY, 4, std::nullopt});
+    CHECK_FALSE(label->text().contains(QStringLiteral("Pixels layer")));
+    lands({2, 6}, {10, 6});
+    v->setSymmetry({SymmetryMode::Radial, 4, std::nullopt});
+    CHECK(label->text() == QStringLiteral("The glyph brush can't paint a Pixels layer: it holds no ▀ turned on its "
+                                          "side, which radial symmetry writes; right button erases"));
+    CHECK(t->status() == label->text());
+    declined({2, 10}, {10, 10});
+    // a half turn only flips it
+    v->setSymmetry({SymmetryMode::Radial, 2, std::nullopt});
+    CHECK_FALSE(label->text().contains(QStringLiteral("Pixels layer")));
+    lands({2, 12}, {10, 12});
+
+    // radial symmetry turned on mid-drag ends the drag, as a press would be
+    // declined, and nothing lands
+    v->setMirror(false);
+    const Canvas before = doc->active()->cells;
+    const int n = undo->count();
+    mouse(v, QEvent::MouseButtonPress, 2, 16);
+    mouse(v, QEvent::MouseMove, 10, 16);
+    REQUIRE(t->dragging());
+    v->setSymmetry({SymmetryMode::Radial, 4, std::nullopt});
+    CHECK_FALSE(t->dragging());
+    CHECK(t->pending().empty());
+    mouse(v, QEvent::MouseMove, 14, 16);
+    mouse(v, QEvent::MouseButtonRelease, 14, 16);
+    CHECK(doc->active()->cells == before);
+    CHECK(undo->count() == n);
+    CHECK(label->text().contains(QStringLiteral("can't paint a Pixels layer")));
+}
+
+// Codex round 1 on PR #165: on a Pixels layer, a glyph picked mid-drag
+// (F1-F10, or a click on the glyph bar, which sends the F-key) that the
+// layer can't hold left the drag and its preview, and the old glyph's
+// stroke landed on release with an undo step, while the status said the
+// layer refused the new one. Picking it ends the drag as the press would
+// have been declined. A glyph set switch picks no glyph: the drag goes on.
+TEST_CASE("a glyph the Pixels layer refuses, picked mid-drag, ends the glyph brush's drag", "[layers]") {
+    const bool viaBar = GENERATE(false, true);
+    INFO((viaBar ? "glyph bar" : "F-key"));
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    QUndoStack* undo = doc->undoStack();
+    auto* label = w.findChild<QLabel*>(QStringLiteral("toolStatusLabel"));
+    REQUIRE(label);
+    act(w, QStringLiteral("newPixelLayer"))->trigger();
+    REQUIRE(doc->active()->props.kind == LayerKind::Pixels);
+    use(w, "glyph");
+    auto* t = qobject_cast<GlyphTool*>(w.tools()->active());
+    REQUIRE(t);
+    // the sixth set, ░▒▓█▀▄▌▐■·
+    v->setGlyphSet(5);
+    const auto pick = [&](int k) {
+        if (viaBar) {
+            w.glyphBar()->cell(k)->click();
+        } else {
+            QKeyEvent f(QEvent::KeyPress, Qt::Key_F1 + k, Qt::NoModifier);
+            QApplication::sendEvent(v, &f);
+        }
+    };
+    pick(3);
+    REQUIRE(t->glyph() == kFullBlock);
+    CHECK_FALSE(label->text().contains(QStringLiteral("Pixels layer")));
+
+    const Canvas layer = doc->active()->cells, shown = doc->canvas();
+    const int steps = undo->count();
+    mouse(v, QEvent::MouseButtonPress, 2, 8);
+    mouse(v, QEvent::MouseMove, 30, 8);
+    REQUIRE(t->dragging());
+    REQUIRE_FALSE(t->pending().empty());
+    // another set changes no glyph
+    v->setGlyphSet(6);
+    CHECK(t->dragging());
+    CHECK_FALSE(t->pending().empty());
+    v->setGlyphSet(5);
+    pick(0);
+    REQUIRE(t->glyph() == U'░');
+    CHECK(label->text() == QStringLiteral("The glyph brush can't paint a Pixels layer: it holds no ░; right "
+                                          "button erases"));
+    CHECK_FALSE(t->dragging());
+    CHECK(t->pending().empty());
+    mouse(v, QEvent::MouseMove, 40, 8);
+    mouse(v, QEvent::MouseButtonRelease, 40, 8);
+    CHECK(doc->active()->cells == layer);
+    CHECK(doc->canvas() == shown);
+    CHECK(undo->count() == steps);
+}
+
+// A glyph picked mid-drag that the layer holds redoes the drag with it, as
+// the other settings do: the stroke shown is the new glyph's, and it lands.
+TEST_CASE("a glyph picked mid-drag redoes the glyph brush's drag with it", "[layers]") {
+    const bool pixels = GENERATE(false, true);
+    INFO((pixels ? "Pixels layer" : "cells layer"));
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    QUndoStack* undo = doc->undoStack();
+    if (pixels)
+        act(w, QStringLiteral("newPixelLayer"))->trigger();
+    use(w, "glyph");
+    auto* t = qobject_cast<GlyphTool*>(w.tools()->active());
+    REQUIRE(t);
+    t->setGlyph(kFullBlock);
+    const int steps = undo->count();
+    mouse(v, QEvent::MouseButtonPress, 2, 8);
+    mouse(v, QEvent::MouseMove, 30, 8);
+    REQUIRE(t->dragging());
+    t->setGlyph(kUpperHalf);
+    REQUIRE(t->dragging());
+    const CellEdit e = t->pending();
+    REQUIRE_FALSE(e.empty());
+    Cell written;
+    written.ch = kUpperHalf;
+    written.fg = v->pen().fg;
+    written.bg = v->pen().bg;
+    for (const auto& c : e.changes)
+        CHECK(halfBlocks(c.after) == halfBlocks(written));
+    mouse(v, QEvent::MouseButtonRelease, 30, 8);
+    CHECK(undo->count() == steps + 1);
+    CHECK(halfBlocks(doc->active()->cells.at(4, 4)) == halfBlocks(written));
+}
+
+// A change of active layer, or of the active layer's kind, to one the glyph
+// can't paint doesn't reach the refusal mid-drag: the drag lands on the
+// layer it was editing first, which took it, and no drag is left.
+TEST_CASE("a switch to a Pixels layer mid-drag lands the glyph brush's drag first", "[layers]") {
+    const bool kind = GENERATE(false, true);
+    INFO((kind ? "kind" : "active layer"));
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    QUndoStack* undo = doc->undoStack();
+    const LayerId cells = doc->activeLayer();
+    act(w, QStringLiteral("newPixelLayer"))->trigger();
+    const LayerId pixels = doc->activeLayer();
+    REQUIRE(doc->setActiveLayer(cells));
+    use(w, "glyph");
+    auto* t = qobject_cast<GlyphTool*>(w.tools()->active());
+    REQUIRE(t);
+    t->setGlyph(U'░');
+    const int steps = undo->count();
+    mouse(v, QEvent::MouseButtonPress, 2, 8);
+    mouse(v, QEvent::MouseMove, 30, 8);
+    REQUIRE(t->dragging());
+    if (kind) {
+        LayerProperties p = doc->active()->props;
+        p.kind = LayerKind::Pixels;
+        REQUIRE(doc->setLayerProperties(cells, p, QStringLiteral("Kind")));
+        REQUIRE(doc->active()->props.kind == LayerKind::Pixels);
+        // the stroke, then the kind
+        CHECK(undo->count() == steps + 2);
+        CHECK(undo->text(steps + 1) == QStringLiteral("Kind"));
+    } else {
+        REQUIRE(doc->setActiveLayer(pixels));
+        CHECK(undo->count() == steps + 1);
+    }
+    CHECK_FALSE(t->dragging());
+    CHECK(t->pending().empty());
+    const int landed = undo->count();
+    mouse(v, QEvent::MouseMove, 40, 8);
+    mouse(v, QEvent::MouseButtonRelease, 40, 8);
+    CHECK(undo->count() == landed);
+    if (!kind) {
+        REQUIRE(doc->setActiveLayer(cells));
+        CHECK(doc->active()->cells.at(4, 4).ch == U'░');
+        CHECK(doc->active()->cells.at(30, 4).ch == U'░');
+        CHECK(doc->active()->cells.at(35, 4).ch != U'░');
+    }
+}
+
+// The spray's refusal follows its kind: a Pixels layer holds neither stars
+// nor the haze and smoke shades, and the status names which (#164). On a
+// cells layer a kind changed mid-drag redoes the drag and it lands.
+TEST_CASE("the glyph spray's refusal of a Pixels layer follows its kind", "[layers]") {
+    FreshSpraySettings fresh;
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    QUndoStack* undo = doc->undoStack();
+    auto* label = w.findChild<QLabel*>(QStringLiteral("toolStatusLabel"));
+    REQUIRE(label);
+    w.toolOptions()->sizeBox()->setValue(9);
+    use(w, "spray");
+    auto* t = qobject_cast<SprayTool*>(w.tools()->active());
+    REQUIRE(t);
+    t->setDensity(kMaxSprayDensity);
+    t->setSeed(17);
+    // open ground for the stars
+    const LayerId cells = doc->activeLayer();
+    fillWhole(w, {Black});
+    act(w, QStringLiteral("newPixelLayer"))->trigger();
+    fillWhole(w, {Black});
+    const Canvas layer = doc->active()->cells;
+    const int steps = undo->count();
+    const QString stars = QStringLiteral("The glyph spray can't paint a Pixels layer: it holds no stars");
+    const QString shades = QStringLiteral("The glyph spray can't paint a Pixels layer: it holds no shades");
+    for (const SprayKind k : {SprayKind::Stars, SprayKind::Haze, SprayKind::Stars, SprayKind::Smoke, SprayKind::Stars}) {
+        INFO(sprayKindName(k).toStdString());
+        t->setKind(k);
+        CHECK(label->text() == (k == SprayKind::Stars ? stars : shades));
+        CHECK(t->status() == label->text());
+        for (const Qt::MouseButton b : {Qt::LeftButton, Qt::RightButton}) {
+            mouse(v, QEvent::MouseButtonPress, 2, 8, b);
+            CHECK_FALSE(t->dragging());
+            mouse(v, QEvent::MouseMove, 30, 8, b);
+            mouse(v, QEvent::MouseButtonRelease, 30, 8, b);
+        }
+    }
+    CHECK(doc->active()->cells == layer);
+    CHECK(undo->count() == steps);
+
+    REQUIRE(doc->setActiveLayer(cells));
+    t->setKind(SprayKind::Haze);
+    CHECK_FALSE(label->text().contains(QStringLiteral("Pixels layer")));
+    const Canvas before = doc->active()->cells;
+    mouse(v, QEvent::MouseButtonPress, 2, 8);
+    mouse(v, QEvent::MouseMove, 30, 8);
+    REQUIRE(t->dragging());
+    t->setKind(SprayKind::Stars);
+    CHECK(t->dragging());
+    CHECK_FALSE(label->text().contains(QStringLiteral("Pixels layer")));
+    const CellEdit shown = t->pending();
+    CHECK_FALSE(shown.empty());
+    mouse(v, QEvent::MouseButtonRelease, 30, 8);
+    CHECK_FALSE(doc->active()->cells == before);
+    CHECK(undo->count() == steps + 1);
 }
 
 // Codex round 1 on PR #161: an outline click where the darkest line would

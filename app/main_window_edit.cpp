@@ -260,6 +260,8 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         connect(t, &Tool::changed, this, updateToolStatus);
     connect(tools_, &ToolRegistry::activeChanged, this, updateToolStatus);
     connect(view_, &CanvasView::brushChanged, this, updateToolStatus);
+    // the glyph brush's refusal of a Pixels layer reads the symmetry
+    connect(view_, &CanvasView::symmetryChanged, this, updateToolStatus);
     updateToolStatus();
 
     // Selection.
