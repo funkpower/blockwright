@@ -52,7 +52,9 @@ void MainWindow::createDocks() {
     layers_ = new LayersDock(&doc_);
     layersDock_ = dock(tr("Layers"), "layersDock", layers_);
 
-    // Layer: the Layers dock's actions, no shortcuts.
+    // Layer: the Layers dock's actions, no shortcuts. Their tooltips show
+    // here too, so the add items explain their kinds as the buttons do.
+    layerMenu_->setToolTipsVisible(true);
     layerMenu_->addAction(layers_->newCellsAction());
     layerMenu_->addAction(layers_->newPixelsAction());
     layerMenu_->addAction(layers_->deleteAction());

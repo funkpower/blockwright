@@ -701,7 +701,7 @@ LayerId Document::addLayer(LayerKind kind) {
     const std::optional<std::size_t> at = stack_.indexOf(active_);
     Layer layer = makeLayer(kind, stack_.width(), stack_.height(), std::move(name));
     auto* c = LayerStackCommand::add(this, std::move(layer), at ? *at + 1 : stack_.size(),
-                                     kind == LayerKind::Pixels ? tr("New Pixel Layer") : tr("New Cells Layer"));
+                                     kind == LayerKind::Pixels ? tr("New Pixels Layer") : tr("New Cells Layer"));
     undo_.push(c);
     return c->layerId();
 }

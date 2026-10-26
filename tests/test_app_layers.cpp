@@ -31,12 +31,18 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QStatusBar>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
+
+#include <limits>
+#include <type_traits>
 
 using namespace bw;
 
@@ -112,7 +118,164 @@ const Layer& layerById(const Document* doc, LayerId id) {
     return *l;
 }
 
+void checkKindHelp(LayerKind kind, const QString& tip) {
+    INFO("kind: " << layerKindName(kind));
+    REQUIRE_FALSE(tip.isEmpty());
+    QStringList terms;
+    switch (kind) {
+    case LayerKind::Cells:
+        terms = {QStringLiteral("glyph plus foreground and background"), QStringLiteral("Keyboard (typing)"),
+                 QStringLiteral("Glyph Brush"), QStringLiteral("shade and ramp brushes"),
+                 QStringLiteral("pixel tools"), QStringLiteral("transparent cells show through"),
+                 QStringLiteral("Exports flatten")};
+        break;
+    case LayerKind::Pixels:
+        terms = {QStringLiteral("two half-block colours per cell"), QStringLiteral("Half-Block Brush"),
+                 QStringLiteral("Line, Rectangle, Ellipse or Fill"), QStringLiteral("space, █, ▀ or ▄"),
+                 QStringLiteral("shade-producing tools and other glyphs are refused"),
+                 QStringLiteral("transparent halves show through"), QStringLiteral("Text layers stay in front"),
+                 QStringLiteral("Exports flatten")};
+        break;
+    case LayerKind::Text:
+        terms = {QStringLiteral("text rendered as glyph cells"), QStringLiteral("foreground and background"),
+                 QStringLiteral("Text tool"), QStringLiteral("painting tools cannot change it"),
+                 QStringLiteral("Without a live text source"), QStringLiteral("cannot be covered by Pixels layers"),
+                 QStringLiteral("Exports flatten")};
+        break;
+    case LayerKind::Generator:
+        terms = {QStringLiteral("cached output as glyph cells"), QStringLiteral("foreground and background"),
+                 QStringLiteral("parameters and Run"), QStringLiteral("painting tools cannot edit"),
+                 QStringLiteral("composite like a Cells layer"), QStringLiteral("export"),
+                 QStringLiteral("does not run the generator")};
+        break;
+    case LayerKind::Reference:
+        terms = {QStringLiteral("reserved for a reference image"), QStringLiteral("Painting tools cannot edit"),
+                 QStringLiteral("skipped by the compositor"), QStringLiteral("never exported")};
+        break;
+    default: FAIL("Add help expectations for the new core layer kind");
+    }
+    for (const QString& term : terms) {
+        INFO("required explanation: " << term.toStdString());
+        CHECK(tip.contains(term));
+    }
+}
+
 } // namespace
+
+TEST_CASE("layer creation actions and buttons explain what their kind holds", "[layers][help]") {
+    MainWindow w;
+    LayersDock* d = w.layersWidget();
+    int adding = 0;
+    // Include any future add action in the dock, not just today's two accessors.
+    for (QAction* a : d->findChildren<QAction*>()) {
+        if (!a->objectName().startsWith(QStringLiteral("new")) ||
+            !a->objectName().endsWith(QStringLiteral("Layer")))
+            continue;
+        INFO(a->objectName().toStdString());
+        ++adding;
+        a->trigger();
+        const LayerKind kind = w.document()->active()->props.kind;
+        checkKindHelp(kind, a->toolTip());
+        CHECK(a->toolTip().contains(QStringLiteral("above the active layer")));
+        auto* button = d->findChild<QToolButton*>(a->objectName() + QStringLiteral("Button"));
+        REQUIRE(button);
+        CHECK(button->defaultAction() == a);
+        CHECK(button->toolTip() == a->toolTip());
+        auto* row = rowOf(d, w.document()->activeLayer());
+        REQUIRE(row);
+        checkKindHelp(kind, row->toolTip(LayersDock::KindColumn));
+        CHECK(a->toolTip().contains(row->toolTip(LayersDock::KindColumn)));
+    }
+    REQUIRE(adding >= 2);
+}
+
+TEST_CASE("every core layer kind has explanatory help in the kind column", "[layers][help]") {
+    MainWindow w;
+    LayersDock* d = w.layersWidget();
+    int kinds = 0;
+    // LayerKind has a fixed uint8_t underlying type and no Count sentinel.
+    // Ask the core which values have stable names, so a future serialized
+    // kind is tested even when it is added after Reference or leaves a gap.
+    using KindValue = std::underlying_type_t<LayerKind>;
+    for (unsigned value = 0; value <= std::numeric_limits<KindValue>::max(); ++value) {
+        const auto kind = static_cast<LayerKind>(value);
+        if (layerKindName(kind).empty())
+            continue;
+        ++kinds;
+        const LayerId id = w.document()->addLayer(kind);
+        auto* row = rowOf(d, id);
+        REQUIRE(row);
+        CHECK_FALSE(row->text(LayersDock::KindColumn).isEmpty());
+        checkKindHelp(kind, row->toolTip(LayersDock::KindColumn));
+    }
+    REQUIRE(kinds >= 5);
+}
+
+TEST_CASE("the Layers dock's hint tells Cells and Pixels apart", "[layers][help]") {
+    MainWindow w;
+    LayersDock* d = w.layersWidget();
+    auto* hint = d->findChild<QLabel*>(QStringLiteral("layerKindHint"));
+    REQUIRE(hint);
+    CHECK(hint->isVisibleTo(d));
+    CHECK(hint->wordWrap());
+    CHECK(hint->text().contains(QStringLiteral("Cells: glyphs and shades")));
+    CHECK(hint->text().contains(QStringLiteral("Pixels: half-block drawing")));
+}
+
+TEST_CASE("the add actions and their undo steps name the kind as the kind column does", "[layers][help]") {
+    MainWindow w;
+    LayersDock* d = w.layersWidget();
+    const struct {
+        QAction* action;
+        QString kind, text, undo;
+    } adds[] = {
+        {d->newCellsAction(), QStringLiteral("Cells"), QStringLiteral("New &Cells Layer"),
+         QStringLiteral("New Cells Layer")},
+        {d->newPixelsAction(), QStringLiteral("Pixels"), QStringLiteral("New &Pixels Layer"),
+         QStringLiteral("New Pixels Layer")},
+    };
+    for (const auto& add : adds) {
+        INFO(add.kind.toStdString());
+        CHECK(add.action->text() == add.text);
+        CHECK(add.action->iconText() == QStringLiteral("+ ") + add.kind);
+        add.action->trigger();
+        CHECK(w.document()->undoStack()->undoText() == add.undo);
+        auto* row = rowOf(d, w.document()->activeLayer());
+        REQUIRE(row);
+        CHECK(row->text(LayersDock::KindColumn) == add.kind);
+        CHECK(add.action->toolTip().startsWith(QStringLiteral("Add a %1 layer").arg(add.kind)));
+    }
+}
+
+TEST_CASE("the Layer menu shows the add actions' explanations", "[layers][help]") {
+    MainWindow w;
+    LayersDock* d = w.layersWidget();
+    QMenu* layerMenu = nullptr;
+    for (QAction* m : w.menuBar()->actions())
+        if (m->menu() && m->text() == QStringLiteral("&Layer"))
+            layerMenu = m->menu();
+    REQUIRE(layerMenu);
+    // QMenu hides tooltips unless asked to show them
+    CHECK(layerMenu->toolTipsVisible());
+    const struct {
+        QAction* action;
+        QString status;
+    } adds[] = {
+        {d->newCellsAction(), QStringLiteral("Add a Cells layer above the active layer: glyphs and shades")},
+        {d->newPixelsAction(), QStringLiteral("Add a Pixels layer above the active layer: half-block drawing")},
+    };
+    for (const auto& add : adds) {
+        INFO(add.action->objectName().toStdString());
+        CHECK(layerMenu->actions().contains(add.action));
+        CHECK_FALSE(add.action->toolTip().isEmpty());
+        CHECK(add.action->statusTip() == add.status);
+        // hovering the item puts it in the status bar: QMenu sends the tip
+        // to the menu bar that opened it
+        w.statusBar()->clearMessage();
+        add.action->showStatusText(w.menuBar());
+        CHECK(w.statusBar()->currentMessage() == add.status);
+    }
+}
 
 TEST_CASE("the Layers dock lists the layers top first, the active one current", "[layers]") {
     MainWindow w;

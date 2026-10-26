@@ -931,7 +931,7 @@ TEST_CASE("a command from elsewhere takes back the empty layer the edit made bef
         CHECK(d->undoStack()->index() == steps);
         d->undoStack()->redo();
     }
-    SECTION("New Pixel Layer") {
+    SECTION("New Pixels Layer") {
         act(w, QStringLiteral("newPixelLayer"))->trigger();
         added = newLayers = 1;
         CHECK(d->active()->props.kind == LayerKind::Pixels);

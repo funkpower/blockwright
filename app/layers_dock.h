@@ -3,7 +3,7 @@
 // each with its visibility and name, its alpha lock and its kind. The
 // current row is the active layer; picking a row makes it active. A name is
 // edited in place; the boxes toggle visibility and alpha lock. Under the
-// list, New Cells Layer, New Pixel Layer, Delete, Raise and Lower, the same
+// list, New Cells Layer, New Pixels Layer, Delete, Raise and Lower, the same
 // actions as the Layer menu. Every change but the active layer is an undo
 // command on the document (Document::addLayer and the rest). Under those, the
 // active generator layer's parameters (GeneratorForm).

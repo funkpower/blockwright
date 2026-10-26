@@ -6,6 +6,7 @@
 #include <QAction>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QLabel>
 #include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QToolButton>
@@ -25,6 +26,43 @@ QString kindLabel(LayerKind kind) {
     case LayerKind::Text: return LayersDock::tr("Text");
     case LayerKind::Generator: return LayersDock::tr("Generator");
     case LayerKind::Reference: return LayersDock::tr("Reference");
+    }
+    return {};
+}
+
+QString kindToolTip(LayerKind kind) {
+    switch (kind) {
+    case LayerKind::Cells:
+        return LayersDock::tr(
+            "A Cells layer holds a glyph plus foreground and background colours in each cell.\n"
+            "Use Keyboard (typing), Glyph Brush, shade and ramp brushes, detail brushes, or pixel tools.\n"
+            "Opaque cells normally replace the cells below; transparent cells show through. "
+            "Exports flatten the visible layers into character cells.");
+    case LayerKind::Pixels:
+        return LayersDock::tr(
+            "A Pixels layer holds two half-block colours per cell (top and bottom), "
+            "each either a palette colour or transparent.\n"
+            "Paint with Half-Block Brush, Line, Rectangle, Ellipse or Fill. Other tools can only write "
+            "space, █, ▀ or ▄; shade-producing tools and other glyphs are refused.\n"
+            "Set halves cover what is below; transparent halves show through. Text layers stay in front of pixels. "
+            "Exports flatten these pixels into half-block glyphs and colours in the visible composite.");
+    case LayerKind::Text:
+        return LayersDock::tr(
+            "A Text layer holds text rendered as glyph cells with foreground and background colours.\n"
+            "Edit live text with the Text tool and Tool Options; painting tools cannot change it. "
+            "Without a live text source, the cells can be painted like a Cells layer.\n"
+            "Opaque text cells normally replace cells below and cannot be covered by Pixels layers; "
+            "transparent cells show through. Exports flatten the visible rendered text into character cells.");
+    case LayerKind::Generator:
+        return LayersDock::tr(
+            "A Generator layer holds a program's cached output as glyph cells with foreground and background colours.\n"
+            "Change parameters and Run below; painting tools cannot edit the output.\n"
+            "The cached cells composite like a Cells layer and export in the visible composite. "
+            "Opening or exporting does not run the generator.");
+    case LayerKind::Reference:
+        return LayersDock::tr(
+            "Reference layers are reserved for a reference image.\n"
+            "Painting tools cannot edit them. They are currently skipped by the compositor and never exported.");
     }
     return {};
 }
@@ -55,10 +93,11 @@ LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(d
         connect(a, &QAction::triggered, this, slot);
         return a;
     };
-    newCells_ = action(tr("New &Cells Layer"), "newCellsLayer", tr("Add a layer of cells above the active layer"),
+    newCells_ = action(tr("New &Cells Layer"), "newCellsLayer",
+                       tr("Add a Cells layer above the active layer.\n%1").arg(kindToolTip(LayerKind::Cells)),
                        [this] { doc_->addLayer(LayerKind::Cells); });
-    newPixels_ = action(tr("New &Pixel Layer"), "newPixelLayer",
-                        tr("Add a layer of half-block pixels above the active layer"),
+    newPixels_ = action(tr("New &Pixels Layer"), "newPixelLayer",
+                        tr("Add a Pixels layer above the active layer.\n%1").arg(kindToolTip(LayerKind::Pixels)),
                         [this] { doc_->addLayer(LayerKind::Pixels); });
     delete_ = action(tr("&Delete Layer"), "deleteLayer", tr("Delete the active layer"),
                      [this] { doc_->removeLayer(doc_->activeLayer()); });
@@ -70,6 +109,11 @@ LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(d
         if (const auto i = doc_->layers().indexOf(doc_->activeLayer()); i && *i > 0)
             doc_->moveLayer(doc_->activeLayer(), *i - 1);
     });
+
+    // The hint's half for each kind, in the status bar while the item is
+    // under the pointer in the Layer menu.
+    newCells_->setStatusTip(tr("Add a Cells layer above the active layer: glyphs and shades"));
+    newPixels_->setStatusTip(tr("Add a Pixels layer above the active layer: half-block drawing"));
 
     // Short labels and arrows, so the dock stays narrow.
     newCells_->setIconText(tr("+ Cells"));
@@ -91,6 +135,10 @@ LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(d
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);
     layout->addWidget(tree_);
+    auto* hint = new QLabel(tr("Cells: glyphs and shades. Pixels: half-block drawing."));
+    hint->setObjectName(QStringLiteral("layerKindHint"));
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
     layout->addLayout(buttons);
     form_ = new GeneratorForm(doc_);
     layout->addWidget(form_);
@@ -157,6 +205,7 @@ void LayersDock::fill(QTreeWidgetItem* item, const Layer& layer) {
     item->setCheckState(NameColumn, checkState(p.visible));
     item->setCheckState(AlphaLockColumn, checkState(p.alphaLocked));
     item->setText(KindColumn, kindLabel(p.kind));
+    item->setToolTip(KindColumn, kindToolTip(p.kind));
     item->setToolTip(NameColumn, tr("Shown or hidden; double-click to rename"));
     item->setToolTip(AlphaLockColumn, p.kind == LayerKind::Pixels
                                           ? tr("Alpha lock: the tools paint only the layer's opaque pixels")
