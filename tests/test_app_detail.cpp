@@ -221,8 +221,11 @@ TEST_CASE("the clone stamp is in the Tools menu and the detail group, on Ctrl+Sh
 TEST_CASE("the clone stamp: Ctrl+click sets the source and paints nothing; a drag copies from it") {
     FreshCloneSettings fresh;
     MainWindow w;
+    // Keep the system-input targets visible, independent of the screen-sized default.
+    w.resize(1400, 900);
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
+    REQUIRE(v->visibleRegion().contains(pixel(v, 41, 12).toPoint()));
     QUndoStack* undo = w.document()->undoStack();
     v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
     paintLetters(w);

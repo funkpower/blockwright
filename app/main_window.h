@@ -193,7 +193,10 @@ public slots:
     void editIrcBudget();
 
 protected:
+    bool eventFilter(QObject* watched, QEvent* e) override;
     void closeEvent(QCloseEvent* e) override;
+    void showEvent(QShowEvent* e) override;
+    void resizeEvent(QResizeEvent* e) override;
 
 private:
     void createActions();
@@ -234,6 +237,10 @@ private:
     // The window's size and dock layout, kept in the settings between runs.
     void saveLayout() const;
     void restoreLayout();
+    void applyDefaultDockWidths();
+    bool defaultDockWidthsPending_ = true;
+    QSize defaultDockWidths_;
+    QSize defaultDockWindowSize_;
     // Generator runs, after the trust check (main_window_generators.cpp).
     void createGenerators();
     // Asks, the first time in the session for a project, whether its

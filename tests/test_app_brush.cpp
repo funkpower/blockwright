@@ -1204,8 +1204,11 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
     // Through Qt's own delivery: a real QMenu takes the mouse's events, and
     // once it has had one Qt sends the drag's release to the canvas no more.
     MainWindow w;
+    // Keep the system-input targets visible, independent of the screen-sized default.
+    w.resize(1400, 900);
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
+    REQUIRE(v->visibleRegion().contains(pixel(v, 40, 4).toPoint()));
     use(w, "glyph");
     v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
     const auto sys = [&](QEvent::Type type, int x, int py, Qt::MouseButtons held) {
@@ -1866,8 +1869,11 @@ TEST_CASE("another device's click mid-drag leaves the owner's drag to finish (#4
     // owner's later moves and its release; the view keeps the other
     // device's events from Qt for the drag, and takes no mouse grab.
     MainWindow w;
+    // Keep the system-input targets visible, independent of the screen-sized default.
+    w.resize(1400, 900);
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
+    REQUIRE(v->visibleRegion().contains(pixel(v, 30, 4).toPoint()));
     use(w, "glyph");
     v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Nothing});
     // Whether a click of the pen's (or the mouse's) on the status bar

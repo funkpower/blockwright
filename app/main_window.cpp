@@ -23,6 +23,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QScrollArea>
+#include <QScreen>
 #include <QStatusBar>
 
 #include <stdexcept>
@@ -159,7 +160,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     updateTitle();
     updateStatus();
     updateGlyphSet();
-    resize(1400, 900);
+    resize(QSize(1400, 900).boundedTo(screen()->availableGeometry().size()));
     restoreLayout();
     view_->setFocus();
 }

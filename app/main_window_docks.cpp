@@ -19,14 +19,23 @@
 #include <QAction>
 #include <QDockWidget>
 #include <QMenu>
+#include <QLayout>
 #include <QScrollArea>
+#include <QResizeEvent>
+#include <QShowEvent>
+
+#include <algorithm>
 
 namespace bw {
 
 namespace {
 
 // Bumped when the docks change, so an older saved layout is dropped.
-constexpr int kLayoutVersion = 3;
+constexpr int kLayoutVersion = 4;
+constexpr int kLeftColumnWidth = 256;
+constexpr int kRightColumnWidth = 360;
+// An 80-column piece at 1x, excluding the frame, scrollbar and IRC gutter.
+constexpr int kCanvasViewportFloor = 640;
 
 } // namespace
 
@@ -112,6 +121,8 @@ void MainWindow::createDocks() {
     resetLayoutAction->setObjectName(QStringLiteral("resetLayout"));
     resetLayoutAction->setToolTip(tr("Put every dock back where it starts"));
 
+    toolboxDock_->installEventFilter(this);
+    previewDock_->installEventFilter(this);
     resetLayout();
 }
 
@@ -141,6 +152,77 @@ void MainWindow::resetLayout() {
     }
     // the second goes on top
     tabifyDockWidget(ircViewDock_, lintDock_);
+    defaultDockWidthsPending_ = true;
+    if (isVisible())
+        applyDefaultDockWidths();
+}
+
+void MainWindow::showEvent(QShowEvent* e) {
+    QMainWindow::showEvent(e);
+    if (defaultDockWidthsPending_)
+        applyDefaultDockWidths();
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
+    if ((watched == toolboxDock_ || watched == previewDock_) && e->type() == QEvent::Resize &&
+        defaultDockWidths_.isValid() && size() == defaultDockWindowSize_) {
+        const auto* resize = static_cast<QResizeEvent*>(e);
+        // A column changed width without the window changing size. Remember
+        // the customization before a later window shrink could hide it.
+        if (resize->size().width() != resize->oldSize().width())
+            defaultDockWidths_ = {};
+    }
+    return QMainWindow::eventFilter(watched, e);
+}
+
+void MainWindow::resizeEvent(QResizeEvent* e) {
+    // A window manager can fit the window after showEvent. Follow window
+    // sizing while the columns still have the widths we chose. Qt can
+    // squeeze them before this handler on a large window shrink; that is
+    // not a manual column resize and must not end the sizing policy.
+    const QSize columns(toolboxDock_->width(), previewDock_->width());
+    const bool squeezed = e->size().width() < e->oldSize().width() &&
+                          columns.width() <= defaultDockWidths_.width() &&
+                          columns.height() <= defaultDockWidths_.height();
+    const bool followDefaults = isVisible() && defaultDockWidths_.isValid() &&
+                                (columns == defaultDockWidths_ || squeezed);
+    defaultDockWidths_ = {};
+    QMainWindow::resizeEvent(e);
+    if (followDefaults)
+        applyDefaultDockWidths();
+}
+
+void MainWindow::applyDefaultDockWidths() {
+    defaultDockWidthsPending_ = false;
+    defaultDockWidths_ = {};
+    // One dock per column sizes the whole vertical stack, including tabs.
+    // Measure the resulting viewport so native separators, scrollbars and
+    // the IRC gutter count as space the canvas can't use.
+    resizeDocks({toolboxDock_, previewDock_}, {kLeftColumnWidth, kRightColumnWidth}, Qt::Horizontal);
+    layout()->activate();
+    const int deficit = kCanvasViewportFloor - scroll_->viewport()->width();
+    if (deficit > 0) {
+        int leftMinimum = 0;
+        int rightMinimum = 0;
+        for (QDockWidget* d : docks()) {
+            const int minimum = std::max(d->minimumWidth(), d->minimumSizeHint().width());
+            if (dockWidgetArea(d) == Qt::LeftDockWidgetArea)
+                leftMinimum = std::max(leftMinimum, minimum);
+            else if (dockWidgetArea(d) == Qt::RightDockWidgetArea)
+                rightMinimum = std::max(rightMinimum, minimum);
+        }
+        const int leftRoom = std::max(0, toolboxDock_->width() - leftMinimum);
+        const int rightRoom = std::max(0, previewDock_->width() - rightMinimum);
+        // Keep the options readable while the right column has room to give.
+        // When even the minimums can't leave 640px, give the canvas all we can.
+        const int rightShrink = std::min(deficit, rightRoom);
+        const int leftShrink = std::min(deficit - rightShrink, leftRoom);
+        resizeDocks({toolboxDock_, previewDock_},
+                    {toolboxDock_->width() - leftShrink, previewDock_->width() - rightShrink}, Qt::Horizontal);
+        layout()->activate();
+    }
+    defaultDockWidths_ = QSize(toolboxDock_->width(), previewDock_->width());
+    defaultDockWindowSize_ = size();
 }
 
 void MainWindow::saveLayout() const {
@@ -152,7 +234,7 @@ void MainWindow::saveLayout() const {
 void MainWindow::restoreLayout() {
     const auto s = appSettings();
     restoreGeometry(s->value(QStringLiteral("window/geometry")).toByteArray());
-    restoreState(s->value(QStringLiteral("window/state")).toByteArray(), kLayoutVersion);
+    defaultDockWidthsPending_ = !restoreState(s->value(QStringLiteral("window/state")).toByteArray(), kLayoutVersion);
     // The docks that can't close are always shown, whatever was saved.
     for (QDockWidget* d : docks())
         if (!d->features().testFlag(QDockWidget::DockWidgetClosable))

@@ -32,6 +32,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSettings>
+#include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSpinBox>
 #include <QStyle>
 #include <QStyleOptionToolButton>
@@ -579,6 +582,284 @@ TEST_CASE("Reset Layout puts every dock back, shown and docked") {
     CHECK_FALSE(w.ircViewWidget()->shown());
     // the toolbox is above its options
     CHECK(w.toolboxDock()->geometry().bottom() < w.toolOptionsDock()->geometry().top());
+}
+
+TEST_CASE("the right dock column can grow and shrink", "[dock-width]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.show();
+    QApplication::processEvents();
+    for (int width : {480, 300}) {
+        w.resizeDocks({w.libraryDock()}, {width}, Qt::Horizontal);
+        QApplication::processEvents();
+        for (QDockWidget* d : {w.previewDock(), w.paletteDock(), w.layersDock(), w.libraryDock(), w.lintDock()}) {
+            INFO(d->objectName().toStdString());
+            CHECK(d->width() == width);
+        }
+        w.ircViewDock()->raise();
+        QApplication::processEvents();
+        CHECK(w.ircViewDock()->width() == width);
+        w.lintDock()->raise();
+    }
+}
+
+TEST_CASE("the left dock column can grow and shrink", "[dock-width]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.show();
+    QApplication::processEvents();
+    for (int width : {320, 200}) {
+        w.resizeDocks({w.toolboxDock()}, {width}, Qt::Horizontal);
+        QApplication::processEvents();
+        CHECK(w.toolboxDock()->width() == width);
+        CHECK(w.toolOptionsDock()->width() == width);
+    }
+}
+
+TEST_CASE("Reset Layout restores the default dock column widths", "[dock-width]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1920, 1080);
+    w.show();
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.libraryDock()->width() == 360);
+    w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {320, 480}, Qt::Horizontal);
+    QApplication::processEvents();
+    REQUIRE(w.toolboxDock()->width() == 320);
+    REQUIRE(w.libraryDock()->width() == 480);
+    act(w, QStringLiteral("resetLayout"))->trigger();
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.toolOptionsDock()->width() == 256);
+    CHECK(w.previewDock()->width() == 360);
+    CHECK(w.paletteDock()->width() == 360);
+    CHECK(w.layersDock()->width() == 360);
+    CHECK(w.libraryDock()->width() == 360);
+    CHECK(w.lintDock()->width() == 360);
+}
+
+TEST_CASE("default dock widths preserve room for the canvas", "[dock-width][dock-floor]") {
+    ClearLayout clear;
+    const QSize size = GENERATE(QSize(700, 500), QSize(1280, 720), QSize(1366, 768), QSize(1920, 1080));
+    const bool reset = GENERATE(false, true);
+    CAPTURE(size.width(), size.height(), reset);
+    MainWindow w;
+    if (reset) {
+        // Reset must use the current size, rather than the size at first show.
+        w.resize(1920, 1080);
+        w.show();
+        QApplication::processEvents();
+        w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {320, 480}, Qt::Horizontal);
+        QApplication::processEvents();
+        w.resize(size);
+        act(w, QStringLiteral("resetLayout"))->trigger();
+    } else {
+        w.resize(size);
+        w.show();
+    }
+    QApplication::processEvents();
+    auto* canvasScroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(canvasScroll);
+    const int viewport = canvasScroll->viewport()->width();
+    CAPTURE(viewport, w.toolboxDock()->width(), w.libraryDock()->width());
+    if (viewport < 640) {
+        // At 700px there isn't room even at the native dock minimums.
+        CHECK(w.toolboxDock()->width() == w.toolboxDock()->minimumSizeHint().width());
+        CHECK(w.libraryDock()->width() == w.paletteDock()->minimumSizeHint().width());
+    } else {
+        CHECK(viewport >= 640);
+    }
+    if (size.width() >= 1366) {
+        CHECK(viewport >= 640);
+        CHECK(w.toolboxDock()->width() == 256);
+        CHECK(w.libraryDock()->width() == 360);
+    } else if (size.width() == 1280) {
+        // The right column alone can surrender enough space for the floor.
+        CHECK(viewport >= 640);
+        CHECK(w.toolboxDock()->width() == 256);
+        CHECK(w.libraryDock()->width() < 360);
+    }
+}
+
+TEST_CASE("the first-run window width fits the available screen", "[dock-width][dock-screen]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.show();
+    QApplication::processEvents();
+    const QSize available = w.screen()->availableGeometry().size();
+    CAPTURE(w.width(), available.width());
+    CHECK(w.width() <= available.width());
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(scroll);
+    if (scroll->viewport()->width() < 640) {
+        CHECK(w.toolboxDock()->width() == w.toolboxDock()->minimumSizeHint().width());
+        CHECK(w.libraryDock()->width() == w.paletteDock()->minimumSizeHint().width());
+    }
+}
+
+TEST_CASE("first-run dock widths follow window sizing until a column is resized", "[dock-width][dock-settle]") {
+    ClearLayout clear;
+    MainWindow w;
+    // Exercise both main()'s construct/show path and a larger starting window
+    // followed by the WM fitting it to a 1280px work area after first show.
+    const bool largeStart = GENERATE(false, true);
+    CAPTURE(largeStart);
+    if (largeStart)
+        w.resize(1400, 900);
+    w.show();
+    QApplication::processEvents();
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(scroll);
+    for (QSize size : {QSize(1280, 720), QSize(1366, 768), QSize(1280, 720)}) {
+        CAPTURE(size.width(), size.height());
+        w.resize(size);
+        QApplication::processEvents();
+        CHECK(scroll->viewport()->width() >= 640);
+        CHECK(w.toolboxDock()->width() == 256);
+        CHECK(w.libraryDock()->width() >= w.paletteDock()->minimumSizeHint().width());
+    }
+    // Manual widths take precedence, even if the canvas then falls below
+    // the default floor. Returning to an earlier size must keep them too.
+    const QSize manual = GENERATE(QSize(300, 400), QSize(230, 280));
+    CAPTURE(manual.width(), manual.height());
+    w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {manual.width(), manual.height()}, Qt::Horizontal);
+    QApplication::processEvents();
+    REQUIRE(w.toolboxDock()->width() == manual.width());
+    REQUIRE(w.libraryDock()->width() == manual.height());
+    for (QSize size : {QSize(1200, 720), QSize(1366, 768), QSize(1280, 720)}) {
+        w.resize(size);
+        QApplication::processEvents();
+        CHECK(w.toolboxDock()->width() == manual.width());
+        CHECK(w.libraryDock()->width() == manual.height());
+    }
+}
+
+TEST_CASE("first-run dock widths recover after a one-step window squeeze", "[dock-width][dock-squeeze]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1920, 1080);
+    w.show();
+    QApplication::processEvents();
+    REQUIRE(w.toolboxDock()->width() == 256);
+    REQUIRE(w.libraryDock()->width() == 360);
+
+    struct ResizeCounter : QObject {
+        int count = 0;
+        bool eventFilter(QObject*, QEvent* event) override {
+            if (event->type() == QEvent::Resize)
+                ++count;
+            return false;
+        }
+    } counter;
+    w.installEventFilter(&counter);
+    for (QSize size : {QSize(600, 720), QSize(1920, 1080)}) {
+        CAPTURE(size.width(), size.height());
+        counter.count = 0;
+        w.resize(size);
+        QApplication::processEvents();
+        CHECK(w.width() == size.width());
+        CHECK(counter.count == 1);
+    }
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.libraryDock()->width() == 360);
+    toolAction(w, QStringLiteral("text"))->trigger();
+    QApplication::processEvents();
+    auto* scroll = qobject_cast<QScrollArea*>(w.toolOptionsDock()->widget());
+    REQUIRE(scroll);
+    CHECK(scroll->horizontalScrollBar()->maximum() == 0);
+    CHECK_FALSE(scroll->horizontalScrollBar()->isVisible());
+}
+
+TEST_CASE("every tool's options fit the default left column without horizontal scrolling", "[dock-width][tool-options-width]") {
+    ClearLayout clear;
+    const QSize size = GENERATE(QSize(1280, 720), QSize(1920, 1080));
+    CAPTURE(size.width(), size.height());
+    MainWindow w;
+    w.resize(size);
+    w.show();
+    QApplication::processEvents();
+    auto* scroll = qobject_cast<QScrollArea*>(w.toolOptionsDock()->widget());
+    REQUIRE(scroll);
+    // A short options panel also covers the vertical scrollbar taking space.
+    w.resizeDocks({w.toolOptionsDock()}, {200}, Qt::Vertical);
+    for (Tool* tool : w.tools()->tools()) {
+        INFO(tool->id().toStdString());
+        toolAction(w, tool->id())->trigger();
+        QApplication::processEvents();
+        CHECK(scroll->horizontalScrollBar()->maximum() == 0);
+        CHECK_FALSE(scroll->horizontalScrollBar()->isVisible());
+    }
+}
+
+TEST_CASE("resized dock column widths survive closing the window", "[dock-width]") {
+    ClearLayout clear;
+    {
+        MainWindow w;
+        // Fit the offscreen screen so restoreGeometry keeps the same size.
+        w.resize(760, 740);
+        w.show();
+        QApplication::processEvents();
+        w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {200, 300}, Qt::Horizontal);
+        QApplication::processEvents();
+        REQUIRE(w.toolboxDock()->width() == 200);
+        REQUIRE(w.libraryDock()->width() == 300);
+        REQUIRE(w.close());
+    }
+    MainWindow w;
+    w.show();
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 200);
+    CHECK(w.toolOptionsDock()->width() == 200);
+    CHECK(w.previewDock()->width() == 300);
+    CHECK(w.paletteDock()->width() == 300);
+    CHECK(w.layersDock()->width() == 300);
+    CHECK(w.libraryDock()->width() == 300);
+    CHECK(w.lintDock()->width() == 300);
+    // A restored layout must never opt into the first-run sizing policy.
+    for (QSize size : {QSize(1366, 768), QSize(1280, 720)}) {
+        w.resize(size);
+        QApplication::processEvents();
+        CHECK(w.toolboxDock()->width() == 200);
+        CHECK(w.libraryDock()->width() == 300);
+    }
+}
+
+TEST_CASE("a legacy narrow dock layout gives way to the default widths", "[dock-width]") {
+    ClearLayout clear;
+    {
+        MainWindow w;
+        w.resize(760, 740);
+        w.show();
+        QApplication::processEvents();
+        w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {160, 246}, Qt::Horizontal);
+        w.glyphBarDock()->hide();
+        QApplication::processEvents();
+        REQUIRE(w.toolboxDock()->width() == 160);
+        REQUIRE(w.libraryDock()->width() == 246);
+        // Version 3 is the layout before the column-width defaults. Its
+        // narrow widths must not override the new first-run layout.
+        const QByteArray legacy = w.saveState(3);
+        REQUIRE(w.close());
+        appSettings()->setValue(QStringLiteral("window/state"), legacy);
+    }
+    MainWindow w;
+    // Give the migrated layout room for the full defaults.
+    w.resize(1920, 1080);
+    w.show();
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.toolOptionsDock()->width() == 256);
+    CHECK(w.previewDock()->width() == 360);
+    CHECK(w.paletteDock()->width() == 360);
+    CHECK(w.layersDock()->width() == 360);
+    CHECK(w.libraryDock()->width() == 360);
+    CHECK(w.lintDock()->width() == 360);
+    CHECK(w.glyphBarDock()->isVisible());
+    w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {200, 300}, Qt::Horizontal);
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 200);
+    CHECK(w.libraryDock()->width() == 300);
 }
 
 TEST_CASE("the app's settings are an INI file in the test's scratch directory") {

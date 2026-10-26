@@ -24,7 +24,9 @@ QColor toQColor(const Color& c) {
 } // namespace
 
 PaletteWidget::PaletteWidget(QWidget* parent) : QWidget(parent) {
-    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    // A fixed horizontal policy caps the entire dock column at this hint.
+    // Keep every swatch visible, but let the column grow for the other docks.
+    setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     setToolTip(tr("Left click: foreground. Right click: background."));
 }
 
