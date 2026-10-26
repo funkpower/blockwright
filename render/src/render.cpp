@@ -1,6 +1,7 @@
 #include "blockwright/render.h"
 
 #include "blockwright/cp437.h"
+#include "blockwright/pc_fonts.h"
 
 #include <array>
 #include <stdexcept>
@@ -9,10 +10,6 @@
 namespace bw {
 
 namespace {
-
-constexpr std::array<std::uint8_t, 256 * 16> kVgaBits = {
-#include "font_ibm_vga_8x16.inc"
-};
 
 // Images past this many pixels are refused rather than half-allocated
 // (QImage gives up at 2 GiB; a 400x5000 canvas at 9 px is 288 Mpx at 1x).
@@ -23,7 +20,7 @@ QRgb toQRgb(Rgb c) { return qRgb(c.r, c.g, c.b); }
 } // namespace
 
 const BitmapFont& vgaFont() {
-    static const BitmapFont font{16, kVgaBits};
+    static const BitmapFont font{16, ibmVga8x16()};
     return font;
 }
 

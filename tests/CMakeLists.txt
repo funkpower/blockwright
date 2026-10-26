@@ -24,6 +24,7 @@ add_executable(blockwright-tests
   test_spray.cpp
   test_draw.cpp
   test_edit.cpp
+  test_face.cpp
   test_form_brush.cpp
   test_golden.cpp
   test_generator.cpp

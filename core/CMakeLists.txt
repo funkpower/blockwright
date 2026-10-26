@@ -22,6 +22,7 @@ add_library(blockwright_core STATIC
   src/canvas.cpp
   src/cp437.cpp
   src/edit.cpp
+  src/face.cpp
   src/generator.cpp
   src/glyph_sets.cpp
   src/composite.cpp
@@ -35,6 +36,7 @@ add_library(blockwright_core STATIC
   src/lint_rules.cpp
   src/mirc.cpp
   src/palette.cpp
+  src/pc_fonts.cpp
   src/pipeline.cpp
   src/project.cpp
   src/ramp.cpp

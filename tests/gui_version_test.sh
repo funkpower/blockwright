@@ -14,7 +14,7 @@ if [[ $st -eq 0 && $first =~ ^blockwright\ 0\.1\.0\ \([0-9a-f]{7,}(-dirty)?\)$|^
 else
   bad "--version (exit $st): $out"
 fi
-if grep -q 'IBM VGA 8x16 font, (c) 2016-2020 VileR, CC BY-SA 4.0' <<<"$out" && grep -q 'share/doc/blockwright/' <<<"$out"; then
+if grep -q 'IBM VGA 8x16 and IBM PC BIOS 8x8 fonts, (c) 2016-2020 VileR,' <<<"$out" && grep -q 'CC BY-SA 4.0, https://int10h.org/oldschool-pc-fonts/' <<<"$out" && grep -q 'share/doc/blockwright/' <<<"$out"; then
   ok "--version credits the font"
 else
   bad "--version has no font credit: $out"

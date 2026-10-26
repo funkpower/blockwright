@@ -51,10 +51,11 @@ finds_fonts() {
   fi
 }
 
-# credits <name> <cli>: --version names the font, its author and licence
+# credits <name> <cli>: --version names the fonts, their author and licence
 credits() {
   local out; out=$("$2" --version 2>&1)
-  if grep -q 'IBM VGA 8x16 font, (c) 2016-2020 VileR, CC BY-SA 4.0' <<<"$out" \
+  if grep -q 'IBM VGA 8x16 and IBM PC BIOS 8x8 fonts, (c) 2016-2020 VileR,' <<<"$out" \
+     && grep -q 'CC BY-SA 4.0, https://int10h.org/oldschool-pc-fonts/' <<<"$out" \
      && grep -q 'share/doc/blockwright/' <<<"$out"; then
     ok "$1"
   else
