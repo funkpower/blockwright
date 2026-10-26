@@ -3,13 +3,15 @@
 // files kept with it, saved as one zip file or as a directory of the same
 // layout (for git and other tools):
 //
-//   manifest.json      "format": "blockwright", "version": "1.1", the canvas
+//   manifest.json      "format": "blockwright", "version": "1.2", the canvas
 //                      size, palette, iCE, IRC budget, SAUCE fields (font and
 //                      letter spacing among them), the layer order (ids,
 //                      bottom first) and the next layer id
 //   layers/<id>.json   the layer's properties (LayerProperties, its size;
 //                      a live text layer's source, text.h)
 //   layers/<id>.cells  its cells (encodeCells: a versioned header, zstd)
+//   fonts/<sha256>.tdf a TheDraw font file a text layer is set in, named by
+//                      the sha256 of its bytes (lowercase hex)
 //   notes.md           brief, plan, notes; absent when empty
 //   snapshots/r<N>.ans saved rounds, each the composite flattened to .ans
 //   refs/, scripts/<id>/, thumbnail.png and anything else: kept as bytes
@@ -27,8 +29,18 @@
 // 1.0 reader drops the source and shows the same cells. A source this build
 // can't draw (a face it doesn't have, a setting out of range) or one on a
 // layer that isn't a text layer is refused, by the reader and the writer.
+//
+// A source set in a TheDraw font (1.2) is the layer's "tdfSource" rather
+// than its "source", and its font file is copied in once under fonts/ for
+// every layer that uses it, so the project opens, and its text is edited,
+// with the project's copy wherever it goes. A 1.1 reader, which refuses a
+// face kind it doesn't know under "source", drops the unknown key and shows
+// the saved cells, and keeps the copies as files it doesn't know. A copy
+// whose bytes don't hash to its name, that doesn't read as a TheDraw file,
+// or that a layer names and the project lacks is refused by the reader.
 
 #include "blockwright/ansi.h"
+#include "blockwright/font_store.h"
 #include "blockwright/irc.h"
 #include "blockwright/layer.h"
 
@@ -45,7 +57,7 @@
 namespace bw::project {
 
 inline constexpr int kFormatMajor = 1;
-inline constexpr int kFormatMinor = 1;
+inline constexpr int kFormatMinor = 2;
 
 // Limits a reader holds a file to, and a writer checks before it writes
 // anything: no more than kMaxEntries entries, none over kMaxEntryBytes, all
@@ -54,8 +66,11 @@ inline constexpr int kFormatMinor = 1;
 // more than kMaxTotalCells cells (about 256 MiB decoded, checked from the
 // .cells headers before any layer is decoded); manifest.json and each
 // layers/<id>.json no more than kMaxJsonBytes, checked before it is parsed;
-// a canvas within ansi.h's kMaxColumns by kMaxRows; SAUCE text within the
-// record's fields (Sauce::kTitleLen and the rest, a date of 8).
+// no more than kMaxFontFiles font copies (fonts/<sha256>.tdf), each within
+// tdf.h's kMaxTdfBytes, counted before any is read (each can make up to
+// kMaxTdfCells cells of glyphs); a canvas within ansi.h's kMaxColumns by
+// kMaxRows; SAUCE text within the record's fields (Sauce::kTitleLen and the
+// rest, a date of 8).
 inline constexpr std::size_t kMaxEntries = 10'000;
 inline constexpr std::size_t kMaxEntryBytes = std::size_t{256} << 20;
 inline constexpr std::size_t kMaxTotalBytes = std::size_t{1} << 30;
@@ -63,6 +78,7 @@ inline constexpr std::size_t kMaxLayers = 1024;
 inline constexpr std::size_t kMaxLayerCells = std::size_t{kMaxColumns} * kMaxRows;
 inline constexpr std::size_t kMaxTotalCells = 8 * kMaxLayerCells;
 inline constexpr std::size_t kMaxJsonBytes = std::size_t{1} << 20;
+inline constexpr std::size_t kMaxFontFiles = 16;
 
 class ProjectError : public std::runtime_error {
 public:
@@ -103,6 +119,10 @@ struct Project {
     // refs/…, scripts/<id>/…, thumbnail.png, and whatever a newer minor
     // version added. Kept byte for byte.
     std::map<std::string, std::string> files;
+    // The TheDraw font files its text layers may be set in (fonts/…): what
+    // a layer's TheDraw face is drawn from. A save writes the ones a layer
+    // uses; a file none uses isn't written.
+    FontStore fonts;
 
     bool operator==(const Project&) const = default;
 };
@@ -143,10 +163,11 @@ Canvas decodeCells(std::string_view data);
 // and Unicode-normalised ("refs/A" and "refs/a", "é" composed and
 // decomposed, a directory spelled two ways), or one a file and the other a
 // directory ("refs/x" and "refs/x/y"); so a directory save never writes one
-// file over another. encode
+// file over another, or a font copy it refuses (above). encode
 // throws it for a path in `files` that is unsafe or that the format owns
-// (manifest.json, notes.md, layers/<n>.json and .cells, snapshots/r<N>.ans),
-// and for a project whose entries decode would refuse that way.
+// (manifest.json, notes.md, layers/<n>.json and .cells, snapshots/r<N>.ans,
+// fonts/<sha256>.tdf), for a text source in a TheDraw font `fonts` doesn't
+// hold, and for a project whose entries decode would refuse that way.
 using Entries = std::map<std::string, std::string>;
 Entries encode(const Project& project);
 Project decode(const Entries& entries);

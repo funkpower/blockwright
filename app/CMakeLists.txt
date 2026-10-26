@@ -29,6 +29,8 @@ add_library(blockwright_app STATIC
   main_window_project.cpp
   palette_widget.cpp
   palette_widget.h
+  preferences.cpp
+  preferences.h
   publish.cpp
   publish.h
   reference_scale.cpp

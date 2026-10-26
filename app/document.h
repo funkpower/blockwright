@@ -30,6 +30,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -60,13 +61,15 @@ FileForm fileFormFor(const QString& path);
 // meter and Export IRC Text hold lines to, set in View > IRC > Budget...),
 // and, kept without showing them, notes.md, the snapshots and the files kept
 // byte for byte (refs/, scripts/, thumbnail.png, what a newer minor version
-// added). Opened with a project and saved back with it; a flat file and a
-// new canvas have the defaults.
+// added), and the TheDraw font files its text layers are set in (the
+// project's copies, fonts/…). Opened with a project and saved back with it;
+// a flat file and a new canvas have the defaults.
 struct ProjectExtras {
     project::IrcBudget ircBudget;
     std::string notes;
     std::vector<project::Snapshot> snapshots;
     std::map<std::string, std::string> files;
+    FontStore fonts;
 
     bool operator==(const ProjectExtras&) const = default;
 };
@@ -135,7 +138,8 @@ public:
     // Whether a flat .ans holds all of the document: one visible cells
     // layer, at (0, 0) and the canvas's size, compositing normally, and no
     // IRC budget, notes, snapshots or kept files besides it. Its name, id
-    // and locks are not art and don't count.
+    // and locks are not art and don't count, nor are font copies, which no
+    // cells layer uses (they're kept for a redo of a text layer).
     bool flatHoldsAll() const;
     // Writes project() to `path` as a zip (project::writeZip) or a directory
     // (project::writeDirectory), as `form` says, makes `path` the document's
@@ -230,12 +234,23 @@ public:
     bool moveLayer(LayerId id, std::size_t index);
     // Replaces the layer's properties but its id, as one command named
     // `text`; false if it changes nothing, or gives a text source to a layer
-    // that isn't a text layer or one this build can't draw
-    // (textSourceProblem). A change of visibility (or mode, kind, offset)
+    // that isn't a text layer or one that can't be drawn with fontSources()
+    // (textSourceProblem). A TheDraw font taken from the fonts folder is
+    // copied into the project's fonts (extras().fonts), so the step's redo
+    // and the project's save have it whatever the folder holds later. A change of visibility (or mode, kind, offset)
     // recomposites the cells the layer covers; a change of a live text
     // layer's source redraws its cells from it, and its undo puts back the
     // cells it replaced (bw::applyEdit). Any other change keeps the cells.
     bool setLayerProperties(LayerId id, LayerProperties props, const QString& text);
+
+    // The fonts folder's catalogue (PLAN §15), where TheDraw faces not yet
+    // in the project are found; null when no folder is set. Kept across
+    // opening and closing documents.
+    void setFontsFolder(std::shared_ptr<const FontCatalogue> catalogue);
+    const FontCatalogue* fontsFolder() const { return fontsFolder_.get(); }
+    // Where a text source's TheDraw face is looked up: the project's copies,
+    // then the fonts folder.
+    FontSources fontSources() const;
     bool renameLayer(LayerId id, const QString& name);
     bool setLayerVisible(LayerId id, bool visible);
     bool setLayerAlphaLocked(LayerId id, bool on);
@@ -327,6 +342,7 @@ private:
     QString path_;
     FileForm form_ = FileForm::Ansi;
     ProjectExtras extras_;
+    std::shared_ptr<const FontCatalogue> fontsFolder_;
     QUndoStack undo_;
     // The marked cells count as lost (encode): from an open that marked
     // some until the next save, which leaves no blink of that file to lose.

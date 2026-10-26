@@ -174,12 +174,23 @@ std::optional<int> snapshotFile(std::string_view path) {
     return int(*n);
 }
 
+// fonts/<sha256>.tdf: the hash.
+std::optional<std::string_view> fontFile(std::string_view path) {
+    if (!path.starts_with("fonts/") || !path.ends_with(".tdf"))
+        return std::nullopt;
+    const std::string_view sha = path.substr(6, path.size() - 10);
+    if (!isSha256Hex(sha))
+        return std::nullopt;
+    return sha;
+}
+
 bool ownedPath(std::string_view path) {
-    return path == "manifest.json" || path == "notes.md" || layerFile(path) || snapshotFile(path);
+    return path == "manifest.json" || path == "notes.md" || layerFile(path) || snapshotFile(path) || fontFile(path);
 }
 
 std::string layerPath(LayerId id, bool cells) { return "layers/" + std::to_string(id) + (cells ? ".cells" : ".json"); }
 std::string snapshotPath(int round) { return "snapshots/r" + std::to_string(round) + ".ans"; }
+std::string fontPath(std::string_view sha) { return "fonts/" + std::string(sha) + ".tdf"; }
 
 // A path as a case-insensitive, normalisation-insensitive disk may take it:
 // Unicode's canonical caseless form, NFD(fold(NFD(path))), with full case
@@ -458,11 +469,21 @@ Sauce normalSauce(const Sauce& from, int width, int height, bool ice) {
 // ---- layers ----
 
 // A live text layer's source (text.h): the text, the Text tool's settings
-// and the face, named by its kind and the fields that kind has.
+// and the face, named by its kind and the fields that kind has. A source in
+// a pixel face is the layer's "source"; one in a TheDraw font (1.2) is its
+// "tdfSource", the same shape, so a 1.1 reader, which refuses a face kind
+// it doesn't know, drops the key instead and shows the saved cells.
+const char* sourceKey(const TextSource& t) { return t.face.kind == FaceRef::Kind::Tdf ? "tdfSource" : "source"; }
+
 QJsonObject textSourceJson(const TextSource& t) {
     QJsonObject face{{"kind", qstr(faceKindName(t.face.kind))}};
     switch (t.face.kind) {
     case FaceRef::Kind::Pixel: face["name"] = qstr(t.face.name); break;
+    case FaceRef::Kind::Tdf:
+        face["file"] = qstr(t.face.file);
+        face["index"] = t.face.index;
+        face["name"] = qstr(t.face.name);
+        break;
     }
     return QJsonObject{
         {"text", QString::fromStdU32String(t.text)},
@@ -476,8 +497,9 @@ QJsonObject textSourceJson(const TextSource& t) {
     };
 }
 
-TextSource textSourceFromJson(const QJsonObject& o, const std::string& what) {
-    const Reader r(o, what + " source");
+TextSource textSourceFromJson(const QJsonObject& o, const std::string& what, const char* key,
+                              const FontStore& fonts) {
+    const Reader r(o, what + " " + key);
     TextSource t;
     const QJsonValue text = r.value("text");
     if (!text.isString())
@@ -488,8 +510,19 @@ TextSource textSourceFromJson(const QJsonObject& o, const std::string& what) {
     if (!kind)
         fail(f.what() + ": unknown face kind \"" + f.string("kind") + "\"");
     t.face.kind = *kind;
+    if (std::string_view(sourceKey(t)) != key)
+        fail(f.what() + ": a " + f.string("kind") + " face under \"" + key + "\"");
     switch (*kind) {
     case FaceRef::Kind::Pixel: t.face.name = f.string("name"); break;
+    case FaceRef::Kind::Tdf:
+        t.face.file = f.string("file");
+        if (!isSha256Hex(t.face.file))
+            fail(f.what() + ": \"file\" is not a sha256 in lowercase hex");
+        t.face.index = int(f.integer("index", 0, kMaxTdfFonts - 1));
+        t.face.name = f.string("name");
+        if (!fonts.file(t.face.file))
+            fail(f.what() + ": no " + fontPath(t.face.file) + " in the project");
+        break;
     }
     const auto textCase = textCaseFromName(r.string("case"));
     if (!textCase)
@@ -503,7 +536,7 @@ TextSource textSourceFromJson(const QJsonObject& o, const std::string& what) {
     t.align = *align;
     t.wrapWidth = int(r.integer("wrapWidth", 0, TextSource::kMaxWrapWidth));
     t.colour = std::uint8_t(r.integer("colour", 0, 15));
-    if (const auto problem = textSourceProblem(t))
+    if (const auto problem = textSourceProblem(t, {&fonts, nullptr}))
         fail(r.what() + ": " + *problem);
     return t;
 }
@@ -524,11 +557,11 @@ QJsonObject layerJson(const Layer& l) {
         {"mode", qstr(layerModeName(p.mode))},
     };
     if (p.text)
-        o["source"] = textSourceJson(*p.text);
+        o[QLatin1String(sourceKey(*p.text))] = textSourceJson(*p.text);
     return o;
 }
 
-Layer layerFromEntries(LayerId id, const std::string& json, const std::string& cells) {
+Layer layerFromEntries(LayerId id, const std::string& json, const std::string& cells, const FontStore& fonts) {
     const std::string what = layerPath(id, false);
     const Reader r(parseObject(json, what), what);
     Layer l;
@@ -551,11 +584,14 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     p.locked = r.boolean("locked");
     p.alphaLocked = r.boolean("alphaLocked");
     // a live text layer's source; the cells are its drawn text as saved
-    if (r.has("source")) {
-        if (p.kind != LayerKind::Text)
-            fail(what + ": a " + std::string(layerKindName(p.kind)) + " layer has a text source");
-        p.text = textSourceFromJson(r.object("source"), what);
-    }
+    if (r.has("source") && r.has("tdfSource"))
+        fail(what + " has both a \"source\" and a \"tdfSource\"");
+    for (const char* key : {"source", "tdfSource"})
+        if (r.has(key)) {
+            if (p.kind != LayerKind::Text)
+                fail(what + ": a " + std::string(layerKindName(p.kind)) + " layer has a text source");
+            p.text = textSourceFromJson(r.object(key), what, key, fonts);
+        }
     const auto w = r.integer("width", 0, kMaxSide);
     const auto h = r.integer("height", 0, kMaxSide);
     try {
@@ -678,6 +714,18 @@ void checkEntries(const Entries& entries) {
         checkSize(name, bytes.size(), total);
 }
 
+// A font copy's size, and the number of them so far with this one, against
+// kMaxTdfBytes and kMaxFontFiles: what decode checks, checked by a reader
+// from the size the archive or the disk gives, before the entry is read.
+void checkFontEntry(const std::string& name, std::uint64_t size, std::size_t& fonts) {
+    if (!fontFile(name))
+        return;
+    if (++fonts > kMaxFontFiles)
+        fail("the project holds over " + std::to_string(kMaxFontFiles) + " font files");
+    if (size > kMaxTdfBytes)
+        fail(name + " is over " + std::to_string(kMaxTdfBytes >> 20) + " MiB");
+}
+
 // Takes an entry from a zip or a directory: skipped if hidden, refused if
 // unsafe, repeated or one too many.
 bool takeEntry(Entries& out, const std::string& name) {
@@ -731,6 +779,7 @@ Entries readZip(const fs::path& path) {
     } closer{z};
     Entries out;
     std::uint64_t total = 0;
+    std::size_t fonts = 0;
     const zip_int64_t n = zip_get_num_entries(z, 0);
     for (zip_int64_t i = 0; i < n; ++i) {
         zip_stat_t st;
@@ -751,6 +800,7 @@ Entries readZip(const fs::path& path) {
         if ((st.valid & ZIP_STAT_ENCRYPTION_METHOD) && st.encryption_method != ZIP_EM_NONE)
             fail(path.string() + ": " + name + " is encrypted");
         checkSize(name, st.size, total);
+        checkFontEntry(name, st.size, fonts);
         std::string bytes(std::size_t(st.size), '\0');
         zip_file_t* f = zip_fopen_index(z, zip_uint64_t(i), 0);
         if (!f)
@@ -772,6 +822,7 @@ Entries readZip(const fs::path& path) {
 Entries readDirectory(const fs::path& root) {
     Entries out;
     std::uint64_t total = 0;
+    std::size_t fonts = 0;
     std::error_code ec;
     fs::recursive_directory_iterator it(root, ec), end;
     if (ec)
@@ -798,6 +849,7 @@ Entries readDirectory(const fs::path& root) {
         if (ec)
             fail("can't read " + e.path().string() + ": " + ec.message());
         checkSize(name, size, total);
+        checkFontEntry(name, size, fonts);
         if (testing::directoryStep)
             testing::directoryStep("read", e.path());
         out.emplace(name, readWhole(e.path(), std::size_t(size)));
@@ -1376,6 +1428,7 @@ Entries encode(const Project& project) {
         checkSauce(*project.sauce);
     checkCount(project.files.size());
     Entries out;
+    std::size_t fonts = 0;  // distinct font files written
     for (const auto& [path, bytes] : project.files) {
         if (!safeEntryPath(path))
             fail("\"" + path + "\" is not a path a project can hold");
@@ -1393,8 +1446,16 @@ Entries encode(const Project& project) {
             const std::string what = layerPath(l.props.id, false);
             if (l.props.kind != LayerKind::Text)
                 fail(what + ": a " + std::string(layerKindName(l.props.kind)) + " layer has a text source");
-            if (const auto problem = textSourceProblem(*l.props.text))
-                fail(what + " source: " + *problem);
+            if (const auto problem = textSourceProblem(*l.props.text, {&project.fonts, nullptr}))
+                fail(what + " " + sourceKey(*l.props.text) + ": " + *problem);
+            // each font file the layers use, once
+            if (l.props.text->face.kind == FaceRef::Kind::Tdf) {
+                const FontFilePtr font = project.fonts.file(l.props.text->face.file);
+                if (font->bytes.size() > kMaxTdfBytes)  // before it is copied
+                    fail(fontPath(font->sha256) + " is over " + std::to_string(kMaxTdfBytes >> 20) + " MiB");
+                if (out.emplace(fontPath(font->sha256), font->bytes).second && ++fonts > kMaxFontFiles)
+                    fail("the project's text layers use over " + std::to_string(kMaxFontFiles) + " font files");
+            }
         }
         const std::string json = toJson(layerJson(l));
         checkJsonSize(layerPath(l.props.id, false), json.size());
@@ -1465,6 +1526,26 @@ Project decode(const Entries& entries) {
         p.sauce = normalSauce(sauce, w, h, p.ice);
     }
 
+    // the font copies, counted, then each checked against its name, before
+    // the layers that use them
+    if (std::size_t(std::count_if(entries.begin(), entries.end(),
+                                  [](const auto& e) { return fontFile(e.first).has_value(); })) > kMaxFontFiles)
+        fail("the project holds over " + std::to_string(kMaxFontFiles) + " font files");
+    for (const auto& [path, bytes] : entries) {
+        const auto sha = fontFile(path);
+        if (!sha)
+            continue;
+        if (bytes.size() > kMaxTdfBytes)
+            fail(path + " is over " + std::to_string(kMaxTdfBytes >> 20) + " MiB");
+        if (sha256Hex(bytes) != *sha)
+            fail(path + ": its bytes hash to " + sha256Hex(bytes) + ", not its name");
+        try {
+            p.fonts.add(loadFontFile(bytes));
+        } catch (const TdfError& e) {
+            fail(path + ": " + e.what());
+        }
+    }
+
     p.layers = LayerStack(w, h);
     // the cells every layer will hold, from the .cells headers, before any
     // is decoded
@@ -1486,7 +1567,7 @@ Project decode(const Entries& entries) {
         const auto cells = entries.find(layerPath(id, true));
         if (json == entries.end() || cells == entries.end())
             fail("layer " + std::to_string(id) + " has no " + layerPath(id, json != entries.end()));
-        p.layers.add(layerFromEntries(id, json->second, cells->second));
+        p.layers.add(layerFromEntries(id, json->second, cells->second, p.fonts));
     }
     const LayerId next = LayerId(m.integer("nextLayerId", 0, UINT32_MAX));
     if (next != 0 && !listed.empty() && next <= *listed.rbegin())
@@ -1503,6 +1584,8 @@ Project decode(const Entries& entries) {
                 fail(path + " is a layer manifest.json doesn't list");
         } else if (const auto round = snapshotFile(path)) {
             p.snapshots.push_back({*round, bytes});
+        } else if (fontFile(path)) {
+            // read above
         } else {
             p.files.emplace(path, bytes);
         }

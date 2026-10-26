@@ -4,6 +4,7 @@
 #include "irc_meter.h"
 #include "select_tool.h"
 #include "palette_widget.h"
+#include "preferences.h"
 #include "publish.h"
 
 #include "blockwright/credits.h"
@@ -87,6 +88,7 @@ void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project)
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     renderer_.setCanvas(&doc_.canvas(), glyphWidth(doc_.ansi()));
+    doc_.setFontsFolder(loadFontsFolder(fontsFolderSetting()));
 
     view_ = new CanvasView(&doc_, &renderer_);
     view_->setObjectName(QStringLiteral("canvasView"));
@@ -196,6 +198,11 @@ void MainWindow::createActions() {
         emit s->redoTextChanged(s->redoText());
     });
     edit->addAction(a);
+    edit->addSeparator();
+    // no shortcut: Ctrl+, (QKeySequence::Preferences) steps the glyph set
+    a = edit->addAction(tr("&Preferences..."), this, &MainWindow::editPreferences);
+    a->setObjectName(QStringLiteral("preferences"));
+    a->setMenuRole(QAction::PreferencesRole);
 
     QMenu* view = menuBar()->addMenu(tr("&View"));
     a = view->addAction(tr("Zoom &In"), this, &MainWindow::zoomIn);

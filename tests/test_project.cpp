@@ -411,7 +411,7 @@ TEST_CASE("every layer kind and field survives encode and decode", "[project]") 
     // the manifest is readable JSON with the layout PLAN §6 gives
     const QJsonObject m = object(e.at("manifest.json"));
     CHECK(m.value("format").toString() == "blockwright");
-    CHECK(m.value("version").toString() == "1.1");
+    CHECK(m.value("version").toString() == "1.2");
     CHECK(m.value("width").toInt() == 20);
     CHECK(m.value("height").toInt() == 8);
     CHECK(m.value("palette").toString() == "cga");
@@ -647,6 +647,147 @@ TEST_CASE("a zip with an unsafe path is refused", "[project][io]") {
     CHECK_THROWS_AS(project::read(dir / "junk.bwp"), ProjectError);
     CHECK_THROWS_AS(project::read(dir / "missing.bwp"), ProjectError);
     CHECK_THROWS_AS(project::read(bwtest::dataDir() / "golden" / "tux.ans"), ProjectError);
+}
+
+namespace {
+
+// A zip source of `size` zero bytes, made as libzip reads them, so a test
+// can deflate an entry far larger than it ever holds.
+struct Zeros {
+    zip_uint64_t size = 0, at = 0;
+};
+
+zip_int64_t readZeros(void* state, void* data, zip_uint64_t len, zip_source_cmd_t cmd) {
+    auto* z = static_cast<Zeros*>(state);
+    switch (cmd) {
+    case ZIP_SOURCE_OPEN: z->at = 0; return 0;
+    case ZIP_SOURCE_READ: {
+        const zip_uint64_t n = std::min(len, z->size - z->at);
+        std::memset(data, 0, std::size_t(n));
+        z->at += n;
+        return zip_int64_t(n);
+    }
+    case ZIP_SOURCE_CLOSE: return 0;
+    case ZIP_SOURCE_STAT: {
+        auto* st = static_cast<zip_stat_t*>(data);
+        zip_stat_init(st);
+        st->size = z->size;
+        st->valid |= ZIP_STAT_SIZE;
+        return sizeof(zip_stat_t);
+    }
+    case ZIP_SOURCE_ERROR: std::memset(data, 0, 2 * sizeof(int)); return 2 * sizeof(int);
+    case ZIP_SOURCE_FREE: return 0;
+    case ZIP_SOURCE_SUPPORTS:
+        return zip_source_make_command_bitmap(ZIP_SOURCE_OPEN, ZIP_SOURCE_READ, ZIP_SOURCE_CLOSE, ZIP_SOURCE_STAT,
+                                              ZIP_SOURCE_ERROR, ZIP_SOURCE_FREE, -1);
+    default: return -1;
+    }
+}
+
+// fonts/<sha256>.tdf for 256 MiB of zeros, named by their hash.
+const std::string kZerosFont = "fonts/a6d72ac7690f53be6ae46ba88506bd97302a093f7108472bd9efc3cefda06484.tdf";
+constexpr zip_uint64_t kZerosSize = zip_uint64_t{256} << 20;
+
+// A zip of `entries`, then `zeros` entries of kZerosSize zero bytes each,
+// deflated, under the names given.
+void writeZipWith(const fs::path& path, const Entries& entries, const std::vector<std::string>& zeros) {
+    int err = 0;
+    zip_t* z = zip_open(path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
+    REQUIRE(z);
+    for (const auto& [name, bytes] : entries) {
+        zip_source_t* src = zip_source_buffer(z, bytes.data(), bytes.size(), 0);
+        REQUIRE(src);
+        REQUIRE(zip_file_add(z, name.c_str(), src, ZIP_FL_ENC_UTF_8) >= 0);
+    }
+    std::vector<Zeros> states(zeros.size(), Zeros{kZerosSize});
+    for (std::size_t i = 0; i < zeros.size(); ++i) {
+        zip_source_t* src = zip_source_function(z, readZeros, &states[i]);
+        REQUIRE(src);
+        const zip_int64_t at = zip_file_add(z, zeros[i].c_str(), src, ZIP_FL_ENC_UTF_8);
+        REQUIRE(at >= 0);
+        REQUIRE(zip_set_file_compression(z, zip_uint64_t(at), ZIP_CM_DEFLATE, 1) == 0);
+    }
+    REQUIRE(zip_close(z) == 0);
+}
+
+// What reading `path` refuses, with no allocation over 64 MiB allowed.
+std::string readRefusal(const fs::path& path) {
+    struct Reset {
+        ~Reset() { bwtest::largestAllocation = 0; }
+    } reset;
+    bwtest::largestAllocation = std::size_t{64} << 20;
+    try {
+        project::read(path);
+    } catch (const ProjectError& e) {
+        return e.what();
+    }
+    return "(read)";
+}
+
+} // namespace
+
+TEST_CASE("a font copy over 4 MiB is refused by its declared size, before it is read", "[project][io][fonts]") {
+    // Codex round 1 (#168): a deflated 256 MiB entry at a font copy's path
+    // was allocated and inflated before the 4 MiB limit was checked.
+    const fs::path dir = scratch("font-copy-size");
+    writeZipWith(dir / "big.bwp", project::encode(everything()), {kZerosFont});
+    CHECK(fs::file_size(dir / "big.bwp") < (std::size_t{4} << 20));
+    std::string why = readRefusal(dir / "big.bwp");
+    CHECK(why.find(kZerosFont + " is over 4 MiB") != std::string::npos);
+    // refused as the archive is read: a zip with nothing else is refused
+    // for the copy, not for having no manifest
+    writeZipWith(dir / "alone.bwp", {}, {kZerosFont});
+    why = readRefusal(dir / "alone.bwp");
+    CHECK(why.find(kZerosFont + " is over 4 MiB") != std::string::npos);
+
+    // a directory: the file's size is checked before it is opened
+    const fs::path tree = dir / "tree";
+    project::writeDirectory(everything(), tree);
+    fs::create_directories(tree / "fonts");
+    { std::ofstream(tree / kZerosFont); }
+    fs::resize_file(tree / kZerosFont, kZerosSize);  // sparse: nothing on disk
+    std::vector<fs::path> opened;
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step == "read")
+            opened.push_back(at);
+    };
+    why = readRefusal(tree);
+    CHECK(why.find(kZerosFont + " is over 4 MiB") != std::string::npos);
+    CHECK(std::find(opened.begin(), opened.end(), tree / kZerosFont) == opened.end());
+}
+
+TEST_CASE("more than kMaxFontFiles font copies are refused as they are counted, before the next is read",
+          "[project][io][fonts]") {
+    const fs::path dir = scratch("font-copy-count");
+    Entries fonts;
+    for (std::size_t i = 0; i <= project::kMaxFontFiles; ++i)
+        fonts["fonts/" + std::string(62, 'a') + "0123456789abcdef"[i >> 4] + "0123456789abcdef"[i & 15] + ".tdf"] =
+            "not read";
+    // a zip of the copies alone: refused for their number, not for having
+    // no manifest
+    writeZipWith(dir / "many.bwp", fonts, {});
+    std::string why = readRefusal(dir / "many.bwp");
+    CHECK(why.find("over 16 font files") != std::string::npos);
+    // 16 are read as far as the manifest
+    Entries sixteen = fonts;
+    sixteen.erase(std::prev(sixteen.end()));
+    writeZipWith(dir / "sixteen.bwp", sixteen, {});
+    CHECK(readRefusal(dir / "sixteen.bwp").find("no manifest.json") != std::string::npos);
+
+    const fs::path tree = dir / "tree";
+    for (const auto& [name, bytes] : fonts)
+        writeBytes(tree / name, bytes);
+    std::size_t read = 0;
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path&) { read += step == "read"; };
+    why = readRefusal(tree);
+    CHECK(why.find("over 16 font files") != std::string::npos);
+    CHECK(read == project::kMaxFontFiles);
 }
 
 TEST_CASE("a directory save keeps hidden files and removes what the project dropped", "[project][io]") {

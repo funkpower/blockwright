@@ -13,12 +13,15 @@
 namespace bw {
 
 // The face a text layer is set in. A pixel face is named (face.h's
-// bundledFace). Other sources (TheDraw fonts, kept in the project) are kinds
-// to come, each with the fields that name its font.
+// bundledFace). A TheDraw font is the font at `index` in the .tdf file whose
+// bytes hash to `file` (sha256, 64 lowercase hex digits), and `name` is that
+// font's name, checked against it (font_store.h).
 struct FaceRef {
-    enum class Kind : std::uint8_t { Pixel };
+    enum class Kind : std::uint8_t { Pixel, Tdf };
     Kind kind = Kind::Pixel;
-    std::string name = "block";  // a pixel face's name
+    std::string name = "block";  // the face's or font's name
+    std::string file;            // Tdf: the file's sha256
+    int index = 0;               // Tdf: the font's place in the file
 
     bool operator==(const FaceRef&) const = default;
 };
@@ -51,7 +54,7 @@ struct TextSource {
     bool operator==(const TextSource&) const = default;
 };
 
-// Stable names for the project format (layers/<id>.json): pixel; as-typed,
+// Stable names for the project format (layers/<id>.json): pixel, tdf; as-typed,
 // capitals; left, centre, right.
 std::string_view faceKindName(FaceRef::Kind kind);
 std::optional<FaceRef::Kind> faceKindFromName(std::string_view name);

@@ -1,9 +1,11 @@
-// The MainWindow parts for the document format: File > SAUCE... and the
-// View menu's iCE colours and letter-spacing toggles.
+// The MainWindow parts for the document format: File > SAUCE..., the
+// View menu's iCE colours and letter-spacing toggles, and Edit > Preferences...
+// (the fonts folder TheDraw faces come from).
 
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "preferences.h"
 #include "sauce_dialog.h"
 
 #include <QAction>
@@ -41,6 +43,15 @@ void MainWindow::editSauce() {
     SauceDialog dialog(shown, this);
     if (dialog.exec() == QDialog::Accepted && dialog.problem().isEmpty())
         doc_.setSauceFields(dialog.fields());
+}
+
+void MainWindow::editPreferences() {
+    // scanned afresh, so OK on the same folder picks up fonts added since
+    PreferencesDialog dialog(fontsFolderSetting(), nullptr, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    setFontsFolderSetting(dialog.fontsFolder());
+    doc_.setFontsFolder(dialog.catalogue());
 }
 
 void MainWindow::setIceColours(bool on) {

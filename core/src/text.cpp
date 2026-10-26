@@ -12,8 +12,9 @@ namespace bw {
 
 namespace {
 
-constexpr std::array<std::pair<FaceRef::Kind, std::string_view>, 1> kFaceKindNames = {{
+constexpr std::array<std::pair<FaceRef::Kind, std::string_view>, 2> kFaceKindNames = {{
     {FaceRef::Kind::Pixel, "pixel"},
+    {FaceRef::Kind::Tdf, "tdf"},
 }};
 constexpr std::array<std::pair<TextCase, std::string_view>, 2> kCaseNames = {{
     {TextCase::AsTyped, "as-typed"},
@@ -98,9 +99,10 @@ std::optional<TextCase> textCaseFromName(std::string_view name) { return fromNam
 std::string_view textAlignName(TextAlign a) { return nameOf(kAlignNames, a); }
 std::optional<TextAlign> textAlignFromName(std::string_view name) { return fromName(kAlignNames, name); }
 
-const Face* findFace(const FaceRef& ref) {
+const Face* findFace(const FaceRef& ref, const FontSources& fonts) {
     switch (ref.kind) {
     case FaceRef::Kind::Pixel: return bundledFace(ref.name);
+    case FaceRef::Kind::Tdf: return fonts.face(ref);
     }
     return nullptr;
 }
@@ -152,8 +154,15 @@ TextRender renderText(const TextSource& source, const Face& face) {
     return out;
 }
 
-std::optional<std::string> textSourceProblem(const TextSource& source) {
-    const Face* face = findFace(source.face);
+std::optional<std::string> textSourceProblem(const TextSource& source, const FontSources& fonts) {
+    const Face* face = findFace(source.face, fonts);
+    if (!face && source.face.kind == FaceRef::Kind::Tdf) {
+        const std::string font = "TheDraw font \"" + source.face.name + "\" (font " +
+                                 std::to_string(source.face.index) + " of fonts/" + source.face.file + ".tdf)";
+        if (fonts.file(source.face.file))
+            return "no " + font + ": the file has no such font";
+        return "no " + font + " in the project or the fonts folder";
+    }
     if (!face)
         return "no " + std::string(faceKindName(source.face.kind)) + " face \"" + source.face.name + "\"";
     if (source.text.size() > TextSource::kMaxLength)
@@ -177,17 +186,17 @@ std::optional<std::string> textSourceProblem(const TextSource& source) {
 
 namespace {
 
-Canvas drawSource(const TextSource& source) {
-    if (const auto problem = textSourceProblem(source))
+Canvas drawSource(const TextSource& source, const FontSources& fonts) {
+    if (const auto problem = textSourceProblem(source, fonts))
         throw TextError(*problem);
-    return renderText(source, *findFace(source.face)).cells;
+    return renderText(source, *findFace(source.face, fonts)).cells;
 }
 
 } // namespace
 
-Layer makeTextLayer(TextSource source, std::string name, int x, int y) {
+Layer makeTextLayer(TextSource source, std::string name, int x, int y, const FontSources& fonts) {
     Layer l = makeLayer(LayerKind::Text, 0, 0, std::move(name), x, y);
-    l.cells = drawSource(source);
+    l.cells = drawSource(source, fonts);
     l.props.text = std::move(source);
     return l;
 }
@@ -196,20 +205,20 @@ namespace {
 
 // Gives the layer `props` (its id kept), drawing its cells from their source
 // when `redraw`; refused before the layer is touched.
-void put(Layer& layer, LayerProperties props, bool redraw) {
+void put(Layer& layer, LayerProperties props, bool redraw, const FontSources& fonts) {
     props.id = layer.props.id;
     if (props.text && props.kind != LayerKind::Text)
         throw TextError("a " + std::string(layerKindName(props.kind)) + " layer has no text source");
     if (redraw && props.text)
-        layer.cells = drawSource(*props.text);
+        layer.cells = drawSource(*props.text, fonts);
     layer.props = std::move(props);
 }
 
 } // namespace
 
-bool applyLayerProperties(Layer& layer, LayerProperties props) {
+bool applyLayerProperties(Layer& layer, LayerProperties props, const FontSources& fonts) {
     const bool redraw = props.text && props.text != layer.props.text;
-    put(layer, std::move(props), redraw);
+    put(layer, std::move(props), redraw, fonts);
     return redraw;
 }
 
@@ -231,29 +240,29 @@ LayerPropsEdit bakeEdit(const Layer& layer) {
     return propsEdit(layer, bake(Layer{layer.props, Canvas{0, 0}}).props);
 }
 
-bool applyEdit(Layer& layer, const LayerPropsEdit& edit, bool revert) {
+bool applyEdit(Layer& layer, const LayerPropsEdit& edit, bool revert, const FontSources& fonts) {
     // a step that changes the source: redone, it draws its after (a run of
     // typing may end on the source it began with); undone, it puts back the
     // cells it replaced as they were
     if (!edit.cellsBefore) {
-        put(layer, revert ? edit.before : edit.after, false);
+        put(layer, revert ? edit.before : edit.after, false, fonts);
         return false;
     }
     if (!revert) {
-        put(layer, edit.after, true);
+        put(layer, edit.after, true, fonts);
         return true;
     }
-    put(layer, edit.before, false);
+    put(layer, edit.before, false, fonts);
     layer.cells = *edit.cellsBefore;
     return true;
 }
 
-CellRect applyEdit(LayerStack& stack, const LayerPropsEdit& edit, bool revert) {
+CellRect applyEdit(LayerStack& stack, const LayerPropsEdit& edit, bool revert, const FontSources& fonts) {
     Layer* l = stack.find(edit.id);
     if (!l)
         throw LayerError("no layer " + std::to_string(edit.id) + " in the stack");
     const CellRect before = l->bounds();
-    applyEdit(*l, edit, revert);
+    applyEdit(*l, edit, revert, fonts);
     return unite(before, l->bounds(), stack.canvasRect());
 }
 

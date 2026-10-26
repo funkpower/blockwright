@@ -46,7 +46,8 @@
 // A glyph past the format's limits (wider than 30, over 12 rows, no end) is
 // left out and the rest of the font read; a broken file or font header is
 // an error, and so is a file over kMaxTdfFonts fonts or kMaxTdfCells cells
-// of glyphs, found before the glyph past the limit is made.
+// of glyphs, each counted as tall as its font's tallest glyph (as a face
+// draws it), found before the glyph past the limit is made.
 
 namespace bw {
 
@@ -201,7 +202,9 @@ std::vector<TdfFont> readTdf(std::string_view file) {
     if (!file.starts_with(kSignature))
         fail(0, "no TheDraw font signature");
     std::vector<TdfFont> fonts;
-    std::size_t pos = kSignature.size(), cellsLeft = kMaxTdfCells;
+    // cells of the fonts before this one, each glyph as tall as its font's
+    // tallest (tdfFace pads them so)
+    std::size_t pos = kSignature.size(), cellsBefore = 0;
     while (pos < file.size() && byteAt(file, pos) != 0x00 && byteAt(file, pos) != 0x1A) {
         if (fonts.size() == kMaxTdfFonts)
             fail(pos, "over " + std::to_string(kMaxTdfFonts) + " fonts in the file");
@@ -228,6 +231,7 @@ std::vector<TdfFont> readTdf(std::string_view file) {
         for (std::size_t k = 0; k < font.glyphs.size(); ++k)
             starts.push_back(u16At(file, pos + kOffsetsAt + 2 * k));
         std::sort(starts.begin(), starts.end());
+        std::size_t widths = 0, rows = 1;  // the font's glyphs so far: their widths, the tallest
         for (std::size_t k = 0; k < font.glyphs.size(); ++k) {
             const char32_t ch = TdfFont::kFirst + static_cast<char32_t>(k);
             const std::size_t at = pos + kOffsetsAt + 2 * k;
@@ -245,13 +249,18 @@ std::vector<TdfFont> readTdf(std::string_view file) {
                 font.rejected.push_back({ch, why});
                 continue;
             }
-            // Glyphs that share data are each made, so each counts.
-            const std::size_t cells = g->width * g->rows.size();
-            if (cells > cellsLeft)
-                fail(dataAt + offset, "the glyphs come to over " + std::to_string(kMaxTdfCells) + " cells");
-            cellsLeft -= cells;
+            // Glyphs that share data are each made, so each counts, as
+            // tall as the font's tallest so far: a taller glyph adds rows to
+            // every glyph before it. widths and rows stay under 94 * 30 and
+            // 12, so nothing here overflows.
+            widths += g->width;
+            rows = std::max(rows, g->rows.size());
+            if (widths * rows > kMaxTdfCells - cellsBefore)
+                fail(dataAt + offset, "the glyphs, each as tall as its font's tallest, come to over " +
+                                          std::to_string(kMaxTdfCells) + " cells");
             font.glyphs[k] = cellsOf(*g);
         }
+        cellsBefore += widths * rows;
         fonts.push_back(std::move(font));
         pos = dataAt + size;
     }
@@ -260,7 +269,7 @@ std::vector<TdfFont> readTdf(std::string_view file) {
     return fonts;
 }
 
-std::vector<TdfFont> readTdfFile(const std::filesystem::path& path) {
+std::string readTdfBytes(const std::filesystem::path& path) {
     std::error_code ec;
     const std::uintmax_t size = std::filesystem::file_size(path, ec);
     if (ec)
@@ -276,8 +285,10 @@ std::vector<TdfFont> readTdfFile(const std::filesystem::path& path) {
     bytes.resize(static_cast<std::size_t>(in.gcount()));
     if (bytes.size() > kMaxTdfBytes)
         throw TdfError(path.string() + " is over " + std::to_string(kMaxTdfBytes >> 20) + " MiB");
-    return readTdf(bytes);
+    return bytes;
 }
+
+std::vector<TdfFont> readTdfFile(const std::filesystem::path& path) { return readTdf(readTdfBytes(path)); }
 
 namespace {
 
@@ -308,6 +319,9 @@ public:
         CellBlock blank(spaceWidth, rows);
         std::fill(blank.cells.begin(), blank.cells.end(), transparentCell());
         space_ = Glyph{InkMask(spaceWidth, height_), std::move(blank)};
+        // the glyphs as read are in glyphs_ now; only the name and spacing
+        // are kept
+        font_.glyphs = {};
     }
 
     void screen() { confusables_ = screenConfusables(*this); }

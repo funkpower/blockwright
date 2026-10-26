@@ -310,7 +310,9 @@ TEST_CASE("a face reference finds the bundled pixel faces", "[text]") {
     CHECK(findFace(ref) == nullptr);
     CHECK(faceKindName(FaceRef::Kind::Pixel) == "pixel");
     CHECK(faceKindFromName("pixel") == FaceRef::Kind::Pixel);
-    CHECK_FALSE(faceKindFromName("tdf"));
+    CHECK(faceKindName(FaceRef::Kind::Tdf) == "tdf");
+    CHECK(faceKindFromName("tdf") == FaceRef::Kind::Tdf);
+    CHECK_FALSE(faceKindFromName("truetype"));
     CHECK(textCaseFromName(textCaseName(TextCase::Capitals)) == TextCase::Capitals);
     CHECK(textAlignFromName(textAlignName(TextAlign::Centre)) == TextAlign::Centre);
     CHECK_FALSE(textAlignFromName("center"));
@@ -852,7 +854,9 @@ TEST_CASE("a reader refuses a source it can't draw or that is misplaced", "[text
     CHECK(refuses([](QJsonObject& o) { o["kind"] = "cells"; }).find("cells layer has a text source") !=
           std::string::npos);
     CHECK(inFace([](QJsonObject& f) { f["name"] = "nope"; }).find("no pixel face \"nope\"") != std::string::npos);
-    CHECK(inFace([](QJsonObject& f) { f["kind"] = "tdf"; }).find("unknown face kind") != std::string::npos);
+    CHECK(inFace([](QJsonObject& f) { f["kind"] = "truetype"; }).find("unknown face kind") != std::string::npos);
+    // a TheDraw face goes under "tdfSource" (test_font_store.cpp)
+    CHECK(inFace([](QJsonObject& f) { f["kind"] = "tdf"; }).find("a tdf face under \"source\"") != std::string::npos);
     CHECK(inSource([](QJsonObject& s) { s["case"] = "lower"; }).find("unknown case") != std::string::npos);
     CHECK(inSource([](QJsonObject& s) { s["align"] = "center"; }).find("unknown alignment") != std::string::npos);
     CHECK(inSource([](QJsonObject& s) { s["text"] = 3; }).find("\"text\" is not a string") != std::string::npos);

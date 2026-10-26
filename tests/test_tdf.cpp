@@ -395,24 +395,53 @@ TEST_CASE("a file whose glyphs come to over 1 Mi cells fails before they are mad
     } catch (const TdfError& e) {
         CHECK(std::string(e.what()).find("cells") != std::string::npos);
     }
-    // At the limit a file reads: 30 fonts of 94 such glyphs, one of 92 and
-    // two 16x8 glyphs, 1,048,576 cells. One cell more fails.
+    // At the limit a file reads: 30 fonts of 94 such glyphs; one of 92 of
+    // them and a 21x12; and one of a 1x2 and a 1x1, which its face draws 2
+    // rows tall: 1,048,576 cells, each glyph as tall as its font's tallest.
+    // One cell more fails.
     constexpr std::size_t kCells = std::size_t{1} << 20;
     FontSpec rest;
     rest.glyphs = {{'A', glyphBytes(30, 12, std::string(11, '\r'))}};
     for (char ch = '!'; ch < '!' + 92; ++ch)
         rest.at.push_back({ch, 0});
-    rest.glyphs.push_back({'}', glyphBytes(16, 8, std::string(7, '\r'))});
-    rest.glyphs.push_back({'~', glyphBytes(16, 8, std::string(7, '\r'))});
-    REQUIRE(30 * 94 * 360 + 92 * 360 + 2 * 128 == kCells);
+    rest.glyphs.push_back({'}', glyphBytes(21, 12, std::string(11, '\r'))});
+    FontSpec tail;
+    tail.glyphs = {{'A', glyphBytes(1, 2, "\xDB\r\xDB")}, {'B', glyphBytes(1, 1, "\xDB")}};
+    REQUIRE(30 * 94 * 360 + 92 * 360 + 252 + 2 * 2 == kCells);
     std::string full = kSignature;
     for (int n = 0; n < 30; ++n)
         full += one;
-    full += fontBytes(rest);
-    CHECK(readTdf(full).size() == 31);
+    full += fontBytes(rest) + fontBytes(tail);
+    CHECK(readTdf(full).size() == 32);
     FontSpec tiny;
     tiny.glyphs = {{'A', glyphBytes(1, 1, "\xDB")}};
     CHECK_THROWS_AS(readTdf(full + fontBytes(tiny)), TdfError);
+}
+
+TEST_CASE("a file whose glyphs, each as tall as its font's tallest, come to over 1 Mi cells fails") {
+    // Codex round 1 (#168): 256 fonts of 93 characters sharing a 30x1
+    // glyph and one 30x12, 66,580 bytes. Read as stored they are 806,400
+    // cells; their faces stand every glyph 12 rows tall, 8,663,040 cells.
+    FontSpec font;
+    font.glyphs = {{'!', glyphBytes(30, 1, std::string(30, '\xDB'))}, {'~', glyphBytes(30, 12, std::string(11, '\r'))}};
+    for (char ch = '!'; ch < '~'; ++ch)
+        font.at.push_back({ch, 0});
+    std::string bytes = kSignature;
+    for (int n = 0; n < 256; ++n)
+        bytes += fontBytes(font);
+    REQUIRE(bytes.size() == 66580);
+    try {
+        readTdf(bytes);
+        FAIL("read");
+    } catch (const TdfError& e) {
+        CHECK(std::string(e.what()).find("cells") != std::string::npos);
+    }
+    // 30 such fonts are 1,015,200 cells as their faces draw them, and read
+    std::string fewer = kSignature;
+    for (int n = 0; n < 30; ++n)
+        fewer += fontBytes(font);
+    CHECK(readTdf(fewer).size() == 30);
+    CHECK_THROWS_AS(readTdf(fewer + fontBytes(font)), TdfError);
 }
 
 TEST_CASE("a file of over 256 fonts fails") {

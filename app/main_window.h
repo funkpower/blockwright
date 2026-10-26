@@ -169,6 +169,9 @@ public slots:
     void zoomReset();
     // File > SAUCE...: edits the record's text fields as one undo step.
     void editSauce();
+    // Edit > Preferences...: the fonts folder, kept in the settings and
+    // scanned into the document's fonts folder when it changes.
+    void editPreferences();
     // View > iCE Colours and 9 px Letter Spacing, each one undo step. A 9 px
     // canvas too large to display is refused with a status message.
     void setIceColours(bool on);

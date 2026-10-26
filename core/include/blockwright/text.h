@@ -33,6 +33,7 @@
 // gives back the live layer.
 
 #include "blockwright/face.h"
+#include "blockwright/font_store.h"
 #include "blockwright/layer.h"
 #include "blockwright/text_source.h"
 
@@ -44,9 +45,13 @@
 
 namespace bw {
 
-// The face a reference names, or null when this build has none by that
-// name.
-const Face* findFace(const FaceRef& ref);
+// The face a reference names, or null when there is none: a pixel face
+// from this build, a TheDraw font from `fonts` (the project's copies, then
+// the fonts folder; font_store.h).
+//
+// Every call below that draws or checks a source takes the same `fonts`; a
+// source in a TheDraw font that none of them holds can't be drawn.
+const Face* findFace(const FaceRef& ref, const FontSources& fonts = {});
 
 struct TextRender {
     Canvas cells{0, 0};
@@ -68,20 +73,22 @@ public:
 
 // Why the source can't be drawn (its face unknown, the text too long, a
 // setting out of range, or its box larger than a layer the project file
-// holds: project.h's limits), or nothing. The box is measured, not drawn,
+// holds: project.h's limits), or nothing. A TheDraw font no source holds
+// is named with its file's hash. The box is measured, not drawn,
 // so a source far too large is refused without allocating its size.
-std::optional<std::string> textSourceProblem(const TextSource& source);
+std::optional<std::string> textSourceProblem(const TextSource& source, const FontSources& fonts = {});
 
 // A live text layer of `source` at (x, y), its cells drawn. Throws
 // TextError when the source can't be drawn.
-Layer makeTextLayer(TextSource source, std::string name = {}, int x = 0, int y = 0);
+Layer makeTextLayer(TextSource source, std::string name = {}, int x = 0, int y = 0,
+                    const FontSources& fonts = {});
 
 // Gives the layer `props` (its id kept) and, when they hold a text source
 // other than the layer's, redraws its cells from it, the layer taking the
 // drawn size; otherwise the cells are kept. True when it redrew them.
 // Throws TextError for a source that can't be drawn, before the layer is
 // touched, and for a source on a layer that isn't a text layer.
-bool applyLayerProperties(Layer& layer, LayerProperties props);
+bool applyLayerProperties(Layer& layer, LayerProperties props, const FontSources& fonts = {});
 
 // One undo step on a layer's properties: the layer's properties before and
 // after. A text edit with a non-zero `typingRun` is a keystroke of that
@@ -114,11 +121,12 @@ LayerPropsEdit bakeEdit(const Layer& layer);
 // cells back without drawing; any other step leaves the cells alone. True
 // when the layer's cells were replaced. Throws as applyLayerProperties does,
 // before the layer is touched.
-bool applyEdit(Layer& layer, const LayerPropsEdit& edit, bool revert = false);
+bool applyEdit(Layer& layer, const LayerPropsEdit& edit, bool revert = false, const FontSources& fonts = {});
 // The same on its layer in the stack, returning the canvas cells to
 // recomposite: the layer's bounds before and after, united clipped to the
 // canvas. Throws LayerError when the stack doesn't hold the layer.
-CellRect applyEdit(LayerStack& stack, const LayerPropsEdit& edit, bool revert = false);
+CellRect applyEdit(LayerStack& stack, const LayerPropsEdit& edit, bool revert = false,
+                   const FontSources& fonts = {});
 
 // Folds `next` into `into` when both are keystrokes of the same run of
 // typing on the same layer, each leaving it a live text layer, and `next`

@@ -26,6 +26,7 @@ add_executable(blockwright-tests
   test_edit.cpp
   test_face.cpp
   test_tdf.cpp
+  test_font_store.cpp
   test_form_brush.cpp
   test_golden.cpp
   test_generator.cpp
@@ -177,6 +178,7 @@ add_executable(blockwright-app-tests
   test_app_detail.cpp
   test_app_workspace.cpp
   test_app_project.cpp
+  test_app_fonts.cpp
   scratch_settings.h
   system_input.h
   util.h

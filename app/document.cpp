@@ -270,7 +270,8 @@ void Document::replace(project::Project p, const QString& path, FileForm form) {
     doc_.ice = p.ice;
     doc_.sauce = std::move(p.sauce);
     resetLayers(std::move(p.layers));
-    extras_ = {std::move(p.ircBudget), std::move(p.notes), std::move(p.snapshots), std::move(p.files)};
+    extras_ = {std::move(p.ircBudget), std::move(p.notes), std::move(p.snapshots), std::move(p.files),
+               std::move(p.fonts)};
     countLostBlink_ = false;
     path_ = path;
     form_ = form;
@@ -290,6 +291,7 @@ project::Project Document::project() const {
     p.notes = extras_.notes;
     p.snapshots = extras_.snapshots;
     p.files = extras_.files;
+    p.fonts = extras_.fonts;
     return p;
 }
 
@@ -480,7 +482,11 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
 }
 
 bool Document::flatHoldsAll() const {
-    if (stack_.size() != 1 || !(extras_ == ProjectExtras{}))
+    // the font copies count only through text layers that use them, and one
+    // cells layer uses none: those left are kept for a redo, not art
+    const ProjectExtras none;
+    if (stack_.size() != 1 || !(extras_.ircBudget == none.ircBudget && extras_.notes == none.notes &&
+                                extras_.snapshots == none.snapshots && extras_.files == none.files))
         return false;
     const Layer& l = stack_[0];
     return l.props.kind == LayerKind::Cells && l.props.visible && l.props.mode == LayerMode::Normal &&
@@ -666,9 +672,12 @@ bool Document::setLayerProperties(LayerId id, LayerProperties props, const QStri
     props.id = id;
     if (props == before)
         return false;
-    // a text source only on a text layer, and one this build can draw
-    if (props.text && (props.kind != LayerKind::Text || textSourceProblem(*props.text)))
+    // a text source only on a text layer, and one that can be drawn
+    if (props.text && (props.kind != LayerKind::Text || textSourceProblem(*props.text, fontSources())))
         return false;
+    // a TheDraw font from the folder becomes the project's copy
+    if (props.text && props.text->face.kind == FaceRef::Kind::Tdf)
+        extras_.fonts.add(fontSources().file(props.text->face.file));
     // A name or the alpha lock changes no cell: a tool keeps what it holds
     // (a drag redoes itself with the new lock).
     LayerProperties same = props;
@@ -791,6 +800,14 @@ void Document::placeLayer(LayerId id, std::size_t index) {
         emit cellsChanged(cells);
 }
 
+void Document::setFontsFolder(std::shared_ptr<const FontCatalogue> catalogue) {
+    fontsFolder_ = std::move(catalogue);
+}
+
+FontSources Document::fontSources() const {
+    return {&extras_.fonts, fontsFolder_ ? &fontsFolder_->store : nullptr};
+}
+
 void Document::putProperties(const LayerPropsEdit& edit, bool revert) {
     const LayerId id = edit.id;
     Layer* layer = stack_.find(id);
@@ -799,7 +816,7 @@ void Document::putProperties(const LayerPropsEdit& edit, bool revert) {
     const LayerProperties was = layer->props;
     const CellRect before = layer->bounds();
     // a step changing a live text layer's source replaces its cells
-    const bool redrawn = applyEdit(*layer, edit, revert);
+    const bool redrawn = applyEdit(*layer, edit, revert, fontSources());
     const LayerProperties& now = layer->props;
     // Only these change the composite (locks and the name are the tools').
     const bool shows = was.visible != now.visible || was.kind != now.kind || was.mode != now.mode || redrawn ||

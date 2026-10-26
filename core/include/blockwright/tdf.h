@@ -45,18 +45,25 @@ struct TdfFont {
 };
 
 // Over these a file isn't read. The published ones are at most 241 KiB,
-// 34 fonts and 132,441 cells of glyphs (tdfonts-3.tdf); the limit on cells
-// bounds memory, which a file's size doesn't: glyphs can share data.
+// 34 fonts and 132,441 cells of glyphs (tdfonts-3.tdf), 159,786 with each
+// glyph as tall as its font's tallest (colosall.tdf). The limit on cells
+// bounds memory, which a file's size doesn't (glyphs can share data): it
+// counts each glyph as tall as its font's tallest, as tdfFace pads it, so
+// it bounds the faces of a file too, at kMaxTdfCells source cells and twice
+// as many mask pixels, beside each font's space.
 inline constexpr std::uintmax_t kMaxTdfBytes = 4u << 20;
 inline constexpr std::size_t kMaxTdfFonts = 256, kMaxTdfCells = std::size_t{1} << 20;
 
 // The fonts of a .tdf file, in file order. Throws TdfError, naming the byte
 // offset, when the file or a font header is broken or the file is over
-// kMaxTdfFonts or kMaxTdfCells; a glyph that can't be read is left out and
+// kMaxTdfFonts or kMaxTdfCells (each glyph counted as tall as its font's
+// tallest, before the glyph is made); a glyph that can't be read is left out and
 // listed in its font's `rejected`.
 std::vector<TdfFont> readTdf(std::string_view file);
-// readTdf on the file at `path`; TdfError too when it can't be read or is
-// over kMaxTdfBytes.
+// The bytes of the file at `path`. Throws TdfError when it can't be read or
+// is over kMaxTdfBytes.
+std::string readTdfBytes(const std::filesystem::path& path);
+// readTdf on the file at `path` (readTdfBytes), throwing as both do.
 std::vector<TdfFont> readTdfFile(const std::filesystem::path& path);
 
 // A face drawing `font`: '!' to '~' where the font has the glyph, and a
