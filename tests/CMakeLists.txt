@@ -167,6 +167,7 @@ add_executable(blockwright-app-tests
   test_app.cpp
   test_app_brush.cpp
   test_app_layers.cpp
+  test_app_layer_move.cpp
   test_app_cli_shade.cpp
   test_app_draw.cpp
   test_app_format.cpp

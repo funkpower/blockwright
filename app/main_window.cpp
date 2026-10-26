@@ -148,6 +148,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(view_, &CanvasView::glyphRejected, this, [this](const QString& text) {
         statusBar()->showMessage(tr("%1 has no CP437 glyph; not typed").arg(text), 3000);
     });
+    connect(view_, &CanvasView::layerMoveStatus, this, [this](const QString& text) {
+        statusBar()->showMessage(text);
+    });
 
     createActions();
     createLibrary();

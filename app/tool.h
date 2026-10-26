@@ -1,6 +1,7 @@
 #pragma once
 // The canvas view's tools. The view hands its mouse and key events to the
-// active tool first, in cell coordinates; whatever the tool doesn't take
+// active tool first, in cell coordinates, except Alt+left-drag, which moves
+// the active layer; whatever the tool doesn't take
 // goes on to the view's keyboard mode (typing, the cell cursor). A tool edits
 // through CanvasView::applyEdit, so each edit is one undo step and mirror
 // mode applies to it, and draws what it has in progress (a floating block, a

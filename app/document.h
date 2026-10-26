@@ -275,6 +275,10 @@ public:
     // layer's source redraws its cells from it, and its undo puts back the
     // cells it replaced (bw::applyEdit). Any other change keeps the cells.
     bool setLayerProperties(LayerId id, LayerProperties props, const QString& text);
+    // Shows an offset without changing the layer or undo history. `from`
+    // is the bounds currently shown; recomposites their union with the new
+    // bounds, or just `from` if another command has removed the layer.
+    void previewLayerOffset(LayerId id, CellRect from, QPoint to);
 
     // The fonts folder's catalogue (PLAN §15), where TheDraw faces not yet
     // in the project are found; null when no folder is set. Kept across

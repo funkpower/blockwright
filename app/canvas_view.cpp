@@ -167,6 +167,11 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
             cancelTool();
     });
     connect(doc_, &Document::reset, this, [this] {
+        // The new document already has its own composite, possibly with the
+        // same layer ids. No preview from the old document belongs on it.
+        if (layerMove_)
+            emit layerMoveStatus({});
+        layerMove_.reset();
         cancelTool();
         setSelection({});
         fitSymmetryCentre();
@@ -179,6 +184,9 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
             cancelDrag();
     });
     connect(doc_, &Document::formatChanged, this, &CanvasView::cancelDrag);
+    connect(doc_, &Document::commandAboutToPush, this, [this] {
+        endLayerMove(false);
+    });
     // A layer panel change lands what the tool holds on the layer it was
     // editing first. The alpha lock is the active layer's, so a change of
     // layer properties or of active layer changes the brush settings; a new
@@ -352,6 +360,7 @@ int CanvasView::halfRowAt(const QPoint& pixel) const {
 void CanvasView::setTool(Tool* tool) {
     if (tool == tool_)
         return;
+    endLayerMove(false);
     if (tool_) {
         disconnect(tool_, nullptr, this, nullptr);
         tool_->deactivate();
@@ -398,12 +407,14 @@ void CanvasView::setSelection(const Selection& selection) {
 }
 
 void CanvasView::cancelTool() {
+    endLayerMove(false);
     setDrag(Pointer::None);
     if (tool_)
         tool_->cancel();
 }
 
 void CanvasView::cancelDrag() {
+    endLayerMove(false);
     if (!tool_ || !tool_->dragging()) {
         syncDrag();
         return;
@@ -413,6 +424,7 @@ void CanvasView::cancelDrag() {
 }
 
 void CanvasView::finishTool() {
+    endLayerMove(false);
     if (tool_)
         tool_->finish();
     syncDrag();
@@ -725,7 +737,7 @@ bool CanvasView::event(QEvent* e) {
     // The undo key during a drag is the view's (keyPressEvent), not the
     // Undo action's: it must not undo a step the drag can't see, and works
     // with nothing to undo.
-    if (e->type() == QEvent::ShortcutOverride && tool_ && tool_->dragging() &&
+    if (e->type() == QEvent::ShortcutOverride && dragging() &&
         static_cast<QKeyEvent*>(e)->matches(QKeySequence::Undo)) {
         e->accept();
         return true;
@@ -763,7 +775,11 @@ bool CanvasView::eventFilter(QObject* watched, QEvent* e) {
 }
 
 void CanvasView::keyPressEvent(QKeyEvent* e) {
-    if (tool_ && tool_->dragging() && e->matches(QKeySequence::Undo)) {
+    if (layerMove_ && e->key() == Qt::Key_Escape) {
+        cancelDrag();
+        return;
+    }
+    if (dragging() && e->matches(QKeySequence::Undo)) {
         cancelDrag();
         return;
     }
@@ -883,8 +899,7 @@ void CanvasView::setDrag(Pointer p) {
     // the view or the window reach it without one, by Qt's record of the
     // press and the window system's implicit grab on it.
     // A view that isn't shown filters nothing: no window input reaches it.
-    const bool filter =
-        (p == Pointer::Mouse || p == Pointer::StylusMouse) && tool_ && tool_->dragging() && isVisible();
+    const bool filter = (p == Pointer::Mouse || p == Pointer::StylusMouse) && dragging() && isVisible();
     if (filter == filtering_)
         return;
     filtering_ = filter;
@@ -895,8 +910,72 @@ void CanvasView::setDrag(Pointer p) {
 }
 
 void CanvasView::syncDrag() {
-    if (!tool_ || !tool_->dragging())
+    if (!dragging())
         setDrag(Pointer::None);
+}
+
+bool CanvasView::dragging() const { return layerMove_.has_value() || (tool_ && tool_->dragging()); }
+
+void CanvasView::beginLayerMove(QPoint cell) {
+    finishTool();
+    setFocus(Qt::MouseFocusReason);
+    const Layer* layer = doc_->active();
+    if (!layer || layer->props.locked || !layer->props.visible) {
+        layerMove_ = LayerMove{0, cell, {}, {}, {}};
+        emit layerMoveStatus(!layer ? tr("No active layer to move")
+                             : layer->props.locked ? tr("Cannot move layer: locked")
+                                                   : tr("Cannot move layer: hidden"));
+    } else {
+        const QPoint origin(layer->props.x, layer->props.y);
+        layerMove_ = LayerMove{layer->props.id, cell, origin, origin, {layer->width(), layer->height()}};
+        moveLayerTo(cell);
+    }
+}
+
+void CanvasView::moveLayerTo(QPoint cell) {
+    if (!layerMove_ || !layerMove_->id)
+        return;
+    LayerMove& m = *layerMove_;
+    const QPoint to(clampInt((long long)m.origin.x() + cell.x() - m.press.x()),
+                    clampInt((long long)m.origin.y() + cell.y() - m.press.y()));
+    if (to != m.shown) {
+        const QPoint from = m.shown;
+        m.shown = to;
+        ownChange([&] {
+            doc_->previewLayerOffset(m.id, {from.x(), from.y(), m.size.width(), m.size.height()}, to);
+        });
+    }
+    emit layerMoveStatus(tr("Move Layer: dx %1, dy %2 | x %3, y %4")
+                             .arg((long long)to.x() - m.origin.x())
+                             .arg((long long)to.y() - m.origin.y())
+                             .arg(to.x())
+                             .arg(to.y()));
+}
+
+void CanvasView::endLayerMove(bool commit) {
+    if (!layerMove_)
+        return;
+    const LayerMove m = *layerMove_;
+    layerMove_.reset();
+    setDrag(Pointer::None);
+    emit layerMoveStatus({});
+    if (!m.id)
+        return;
+    ownChange([&] {
+        // A command from elsewhere may already have moved or removed the
+        // layer. Drop the preview onto the current document, not its start.
+        const Layer* current = doc_->layers().find(m.id);
+        const QPoint actual = current ? QPoint(current->props.x, current->props.y) : m.origin;
+        doc_->previewLayerOffset(m.id, {m.shown.x(), m.shown.y(), m.size.width(), m.size.height()}, actual);
+        if (commit && m.shown != m.origin) {
+            if (const Layer* layer = doc_->layers().find(m.id)) {
+                LayerProperties props = layer->props;
+                props.x = m.shown.x();
+                props.y = m.shown.y();
+                doc_->setLayerProperties(m.id, std::move(props), tr("Move Layer"));
+            }
+        }
+    });
 }
 
 bool CanvasView::othersDrag(Pointer p) {
@@ -907,6 +986,10 @@ bool CanvasView::othersDrag(Pointer p) {
 void CanvasView::mouseMoveEvent(QMouseEvent* e) {
     if (othersDrag(pointerOf(e)))
         return;
+    if (layerMove_) {
+        moveLayerTo(cellAt(toView(e->position())));
+        return;
+    }
     if (!tool_ || !tool_->mouseMove(toolEvent(*this, e)))
         QWidget::mouseMoveEvent(e);
 }
@@ -914,6 +997,13 @@ void CanvasView::mouseMoveEvent(QMouseEvent* e) {
 void CanvasView::mouseReleaseEvent(QMouseEvent* e) {
     if (othersDrag(pointerOf(e)))
         return;
+    if (layerMove_) {
+        if (e->button() == Qt::LeftButton) {
+            moveLayerTo(cellAt(toView(e->position())));
+            endLayerMove(true);
+        }
+        return;
+    }
     if (e->buttons() == Qt::NoButton)
         setDrag(Pointer::None);
     if (!tool_ || !tool_->mouseRelease(toolEvent(*this, e)))
@@ -992,7 +1082,14 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
             type = QEvent::TabletRelease;
             button = b;
         }
-        if (tool_) {
+        if (layerMove_) {
+            if (b == Qt::LeftButton) {
+                if (seen)
+                    moveLayerTo(te.cell);
+                endLayerMove(true);
+            }
+            taken = true;
+        } else if (tool_) {
             if (seen)
                 taken = tool_->mouseRelease(te) || taken;
             else
@@ -1011,7 +1108,13 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
         }
         te.button = b;
         te.buttons |= b;
-        if (tool_ && tool_->mousePress(te)) {
+        if (layerMove_) {
+            taken = true;
+        } else if (b == Qt::LeftButton && (e->modifiers() & Qt::AltModifier)) {
+            beginLayerMove(te.cell);
+            taken = true;
+            setDrag(Pointer::Stylus);
+        } else if (tool_ && tool_->mousePress(te)) {
             taken = true;
             setDrag(Pointer::Stylus);
             setFocus(Qt::MouseFocusReason);
@@ -1019,7 +1122,12 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
     }
     if (!pressed && !here) {
         te.button = Qt::NoButton;
-        taken = tool_ && tool_->mouseMove(te);
+        if (layerMove_) {
+            moveLayerTo(te.cell);
+            taken = true;
+        } else {
+            taken = tool_ && tool_->mouseMove(te);
+        }
     }
     stylusCell_ = te.cell;
     stylusHalfRow_ = te.halfRow;
@@ -1046,7 +1154,7 @@ void CanvasView::focusOutEvent(QFocusEvent* e) {
     // bar; Alt tapped alone, for the menu bar). The window then watches the
     // undo key for the view (eventFilter).
     const bool menu = e->reason() == Qt::PopupFocusReason || e->reason() == Qt::MenuBarFocusReason;
-    if (!menu || drag_ != Pointer::Stylus)
+    if (layerMove_ || !menu || drag_ != Pointer::Stylus)
         cancelDrag();
     else
         window()->installEventFilter(this);
@@ -1056,6 +1164,13 @@ void CanvasView::focusOutEvent(QFocusEvent* e) {
 void CanvasView::mousePressEvent(QMouseEvent* e) {
     if (othersDrag(pointerOf(e)))
         return;
+    if (layerMove_)
+        return;
+    if (e->button() == Qt::LeftButton && (e->modifiers() & Qt::AltModifier)) {
+        beginLayerMove(cellAt(toView(e->position())));
+        setDrag(pointerOf(e));
+        return;
+    }
     if (tool_ && tool_->mousePress(toolEvent(*this, e))) {
         setDrag(pointerOf(e));
         setFocus(Qt::MouseFocusReason);

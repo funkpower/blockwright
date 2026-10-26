@@ -5,7 +5,8 @@
 // the glyphs of the current glyph set; Backspace and Delete clear. Every
 // edit is one command on the document's undo stack.
 //
-// A tool (tool.h) sees mouse and key events first; what it doesn't take
+// Alt+left-drag moves the active layer. A tool (tool.h) sees other mouse
+// and key events first; what it doesn't take
 // falls through to the keyboard behaviour above. The view holds the
 // selection, which every tool reads. Over the canvas it draws, in order, the
 // tool's cells in progress, a reference image, the screen-size guides, the
@@ -218,6 +219,8 @@ signals:
     void toolChanged();
     // The brush settings, the ramp or the alpha lock changed.
     void brushChanged();
+    // Offset feedback for the canvas's Alt+drag, or why it was refused.
+    void layerMoveStatus(const QString& text);
 
 protected:
     bool event(QEvent* e) override;
@@ -253,6 +256,10 @@ private:
     void cancelTool();
     // Ends a drag the tool has going, if any, without an edit.
     void cancelDrag();
+    bool dragging() const;
+    void beginLayerMove(QPoint cell);
+    void moveLayerTo(QPoint cell);
+    void endLayerMove(bool commit);
     void brushSettingsChanged();
 
     Document* doc_;
@@ -263,6 +270,12 @@ private:
     int glyphSet_;
     Tool* tool_ = nullptr;  // owned by the tool registry
     bool ownEdit_ = false;  // the view is pushing an edit
+    struct LayerMove {
+        std::uint64_t id;  // 0: consume a refused gesture without a tool edit
+        QPoint press, origin, shown;
+        QSize size;
+    };
+    std::optional<LayerMove> layerMove_;
     // The device whose press started the tool's drag: it owns the drag, and
     // the other device's events are ignored while the drag goes on. The
     // ownership ends with the drag, however it ends (a release, Esc, a lost

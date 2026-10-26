@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QScopedValueRollback>
 #include <QUndoCommand>
 
 #include <algorithm>
@@ -793,6 +794,18 @@ bool Document::moveLayer(LayerId id, std::size_t index) {
     emit layersAboutToChange();
     undo_.push(LayerStackCommand::move(this, id, index, index > *at ? tr("Raise Layer") : tr("Lower Layer")));
     return true;
+}
+
+void Document::previewLayerOffset(LayerId id, CellRect from, QPoint to) {
+    Layer* layer = stack_.find(id);
+    QRegion cells;
+    if (layer) {
+        const QScopedValueRollback<int> x(layer->props.x, to.x()), y(layer->props.y, to.y());
+        cells = recomposite(unite(from, layer->bounds(), stack_.canvasRect()));
+    } else
+        cells = recomposite(from);
+    if (!cells.isEmpty())
+        emit cellsChanged(cells);
 }
 
 bool Document::setLayerProperties(LayerId id, LayerProperties props, const QString& text) {
