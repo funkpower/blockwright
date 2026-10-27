@@ -195,7 +195,12 @@ public slots:
     void exportIrc();
     void editIrcBudget();
 
+    // QMainWindow's, as the user's own column widths: a horizontal resize
+    // of a side dock ends the default sizing, as dragging its separator does.
+    void resizeDocks(const QList<QDockWidget*>& docks, const QList<int>& sizes, Qt::Orientation orientation);
+
 protected:
+    bool event(QEvent* e) override;
     bool eventFilter(QObject* watched, QEvent* e) override;
     void closeEvent(QCloseEvent* e) override;
     void showEvent(QShowEvent* e) override;
@@ -241,9 +246,23 @@ private:
     void saveLayout() const;
     void restoreLayout();
     void applyDefaultDockWidths();
+    // The user sized a column: the defaults stop following the window.
+    void keepDockWidths();
+    // A side column's measure: its first open, docked dock that isn't a tab
+    // behind another, or null when it has none. A closed dock, or a tab
+    // behind another, keeps a stale width Qt no longer lays out.
+    QDockWidget* columnDock(Qt::DockWidgetArea area) const;
+    // The widest minimum of the docks open in a side column.
+    int columnMinimum(Qt::DockWidgetArea area) const;
+    // The left and right columns' widths, 0 for a column with no open dock.
+    QSize dockColumnWidths() const;
     bool defaultDockWidthsPending_ = true;
-    QSize defaultDockWidths_;
-    QSize defaultDockWindowSize_;
+    // The default widths follow window sizing and docks opening and closing
+    // until the user sizes a column (PLAN §11).
+    bool followDefaultDockWidths_ = false;
+    bool dockColumnChangePending_ = false;
+    // A left press on a separator, until its release.
+    bool separatorDrag_ = false;
     // Generator runs, after the trust check (main_window_generators.cpp).
     void createGenerators();
     // Asks, the first time in the session for a project, whether its

@@ -26,6 +26,7 @@
 #include <QDockWidget>
 #include <QHelpEvent>
 #include <QLabel>
+#include <QLayout>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
@@ -80,14 +81,42 @@ QMenu* windowMenu(MainWindow& w) {
     return nullptr;
 }
 
-// The right column's native minimum width: its widest dock's minimum,
+// The right column's native minimum width: its widest open dock's minimum,
 // the palette's or a scrolling panel's with its vertical scrollbar.
 int rightColumnMinimum(MainWindow& w) {
     int minimum = 0;
     for (QDockWidget* d : w.docks())
-        if (w.dockWidgetArea(d) == Qt::RightDockWidgetArea)
+        if (w.dockWidgetArea(d) == Qt::RightDockWidgetArea && !d->isHidden() && !d->isFloating())
             minimum = std::max({minimum, d->minimumWidth(), d->minimumSizeHint().width()});
     return minimum;
+}
+
+// The narrowest the right column goes, by Qt's own clamp. Leaves it there.
+int rightColumnFloor(MainWindow& w) {
+    w.resizeDocks({w.libraryDock()}, {100}, Qt::Horizontal);
+    QApplication::processEvents();
+    return w.libraryDock()->width();
+}
+
+// Drags the separator between a side dock's column and the canvas with the
+// mouse until the column is `width` wide, as the user does.
+void dragColumn(MainWindow& w, QDockWidget* d, int width) {
+    const Qt::DockWidgetArea area = w.dockWidgetArea(d);
+    REQUIRE((area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea));
+    const QRect dock = d->geometry();
+    const QRect canvas = w.centralWidget()->geometry();
+    const bool left = area == Qt::LeftDockWidgetArea;
+    const QPoint from((left ? dock.right() + canvas.left() : canvas.right() + dock.left()) / 2 + 1, dock.center().y());
+    const QPoint to = from + QPoint(left ? width - d->width() : d->width() - width, 0);
+    const auto send = [&w](QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent e(type, QPointF(at), w.mapToGlobal(QPointF(at)), button, buttons, Qt::NoModifier);
+        QApplication::sendEvent(&w, &e);
+    };
+    send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    send(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton);
+    QApplication::processEvents(); // Qt moves the separator on a timer
+    send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+    QApplication::processEvents();
 }
 
 // The scratch directory the run's settings file is in.
@@ -962,6 +991,372 @@ TEST_CASE("a legacy narrow dock layout gives way to the default widths", "[dock-
     QApplication::processEvents();
     CHECK(w.toolboxDock()->width() == 200);
     CHECK(w.libraryDock()->width() == 300);
+}
+
+TEST_CASE("a closed dock doesn't set the right column's floor", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1100, 708);
+    w.show();
+    QApplication::processEvents();
+    w.layersDock()->close();
+    QApplication::processEvents();
+    w.resize(1024, 708); // follows the defaults: the right column falls to its minimum
+    QApplication::processEvents();
+    const int after = w.libraryDock()->width();
+    CHECK(after == rightColumnMinimum(w));
+    CHECK(after == rightColumnFloor(w));
+}
+
+TEST_CASE("closing and reopening a dock re-applies the default widths", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1024, 708);
+    w.show();
+    QApplication::processEvents();
+    const int withLayers = rightColumnMinimum(w);
+    REQUIRE(w.libraryDock()->width() == withLayers);
+    REQUIRE(w.layersDock()->minimumSizeHint().width() > w.paletteDock()->minimumSizeHint().width());
+
+    // Closed, Layers gives its width to the canvas at once.
+    w.layersDock()->close();
+    QApplication::processEvents();
+    const int withoutLayers = rightColumnMinimum(w);
+    CAPTURE(withLayers, withoutLayers);
+    CHECK(withoutLayers < withLayers);
+    CHECK(w.libraryDock()->width() == withoutLayers);
+
+    // Shown again, it brings its floor back, and the column still follows the window.
+    w.layersDock()->show();
+    QApplication::processEvents();
+    CHECK(w.layersDock()->width() == withLayers);
+    CHECK(w.libraryDock()->width() == withLayers);
+    w.resize(1366, 708);
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.libraryDock()->width() == 360);
+    w.resize(1024, 708);
+    QApplication::processEvents();
+    CHECK(w.libraryDock()->width() == withLayers);
+    CHECK(w.libraryDock()->width() == rightColumnFloor(w));
+}
+
+TEST_CASE("Reset Layout brings a closed dock and its floor back", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1024, 708);
+    w.show();
+    QApplication::processEvents();
+    const int withLayers = rightColumnMinimum(w);
+    w.layersDock()->close();
+    QApplication::processEvents();
+    w.resize(1000, 708);
+    QApplication::processEvents();
+    REQUIRE(w.libraryDock()->width() < withLayers);
+    w.resize(1024, 708);
+    act(w, QStringLiteral("resetLayout"))->trigger();
+    QApplication::processEvents();
+    CHECK(w.layersDock()->isVisible());
+    CHECK(w.layersDock()->width() == withLayers);
+    CHECK(w.libraryDock()->width() == withLayers);
+    CHECK(w.libraryDock()->width() == rightColumnFloor(w));
+}
+
+TEST_CASE("closing a dock keeps manually resized columns", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+    w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {230, 300}, Qt::Horizontal);
+    QApplication::processEvents();
+    REQUIRE(w.libraryDock()->width() == 300);
+    for (bool open : {false, true}) {
+        CAPTURE(open);
+        w.layersDock()->setVisible(open);
+        QApplication::processEvents();
+        CHECK(w.toolboxDock()->width() == 230);
+        CHECK(w.libraryDock()->width() == 300);
+    }
+}
+
+TEST_CASE("closing Toolbox preserves the space-aware Tool Options width",
+          "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    bw::appSettings()->clear();
+    MainWindow w;
+    w.resize(1100, 708);
+    w.show();
+    QApplication::processEvents();
+
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(scroll);
+    const int left = w.toolOptionsDock()->width();
+    REQUIRE(left < 256);
+    REQUIRE(left > std::max(w.toolOptionsDock()->minimumWidth(),
+                           w.toolOptionsDock()->minimumSizeHint().width()));
+    REQUIRE(w.libraryDock()->width() == rightColumnMinimum(w));
+    REQUIRE(scroll->viewport()->width() == 640);
+
+    REQUIRE(w.toolboxDock()->close());
+    QApplication::processEvents();
+
+    CHECK(w.toolOptionsDock()->width() == left);
+    CHECK(scroll->viewport()->width() == 640);
+}
+
+TEST_CASE("manual resizing after reopening a dock wins before queued defaults",
+          "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    bw::appSettings()->clear();
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+
+    REQUIRE(w.layersDock()->close());
+    QApplication::processEvents();
+
+    w.layersDock()->show();
+    // Deliberately resize before the queued dock-open callback runs.
+    w.resizeDocks({w.toolboxDock(), w.libraryDock()},
+                  {230, 300}, Qt::Horizontal);
+    w.layout()->activate();
+    REQUIRE(w.toolboxDock()->width() == 230);
+    REQUIRE(w.libraryDock()->width() == 300);
+
+    QApplication::processEvents();
+
+    CHECK(w.toolboxDock()->width() == 230);
+    CHECK(w.libraryDock()->width() == 300);
+}
+
+TEST_CASE("reopening Toolbox keeps following the window", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1100, 708);
+    w.show();
+    QApplication::processEvents();
+    const int left = w.toolOptionsDock()->width();
+    REQUIRE(w.toolboxDock()->close());
+    QApplication::processEvents();
+    w.toolboxDock()->show();
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == left);
+    CHECK(w.toolOptionsDock()->width() == left);
+    w.resize(1366, 708);
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.libraryDock()->width() == 360);
+}
+
+TEST_CASE("resizing the left column with Toolbox closed keeps its width", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+    REQUIRE(w.toolboxDock()->close());
+    QApplication::processEvents();
+    REQUIRE(w.toolOptionsDock()->width() == 256);
+    w.resizeDocks({w.toolOptionsDock()}, {230}, Qt::Horizontal);
+    QApplication::processEvents();
+    REQUIRE(w.toolOptionsDock()->width() == 230);
+    w.resize(1300, 708);
+    QApplication::processEvents();
+    CHECK(w.toolOptionsDock()->width() == 230);
+}
+
+TEST_CASE("dragging a column's separator keeps its width as the window changes", "[dock-width][dock-drag]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+    REQUIRE(w.toolboxDock()->width() == 256);
+    REQUIRE(w.libraryDock()->width() == 360);
+    const bool left = GENERATE(true, false);
+    CAPTURE(left);
+    QDockWidget* const d = left ? w.toolboxDock() : w.libraryDock();
+    const int width = left ? 230 : 300;
+    dragColumn(w, d, width);
+    REQUIRE(d->width() == width);
+    for (QSize size : {QSize(1300, 708), QSize(1400, 708)}) {
+        CAPTURE(size.width());
+        w.resize(size);
+        QApplication::processEvents();
+        CHECK(d->width() == width);
+    }
+}
+
+TEST_CASE("a separator drag that leaves the column widths is no column resize", "[dock-width][dock-drag]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+    // the separator between the Toolbox and Tool Options moves heights only
+    const QRect box = w.toolboxDock()->geometry();
+    const QRect options = w.toolOptionsDock()->geometry();
+    const QPoint between(box.center().x(), (box.bottom() + options.top()) / 2 + 1);
+    const QPoint lower = between + QPoint(0, 40);
+    const auto send = [&w](QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent e(type, QPointF(at), w.mapToGlobal(QPointF(at)), button, buttons, Qt::NoModifier);
+        QApplication::sendEvent(&w, &e);
+    };
+    send(QEvent::MouseButtonPress, between, Qt::LeftButton, Qt::LeftButton);
+    send(QEvent::MouseMove, lower, Qt::NoButton, Qt::LeftButton);
+    QApplication::processEvents();
+    send(QEvent::MouseButtonRelease, lower, Qt::LeftButton, Qt::NoButton);
+    QApplication::processEvents();
+    REQUIRE(w.toolboxDock()->height() == box.height() + 40);
+    REQUIRE(w.toolboxDock()->width() == 256);
+    w.resize(1024, 708);
+    QApplication::processEvents();
+    w.resize(1400, 708);
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.libraryDock()->width() == 360);
+}
+
+TEST_CASE("a column's displayed tab measures it, not one behind it", "[dock-width][dock-tabs]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+    w.tabifyDockWidget(w.toolboxDock(), w.toolOptionsDock());
+    w.toolOptionsDock()->raise();
+    QApplication::processEvents();
+    const bool drag = GENERATE(false, true);
+    CAPTURE(drag);
+    if (drag)
+        dragColumn(w, w.toolOptionsDock(), 230);
+    else
+        w.resizeDocks({w.toolOptionsDock()}, {230}, Qt::Horizontal);
+    QApplication::processEvents();
+    REQUIRE(w.toolOptionsDock()->width() == 230);
+    w.resize(1400, 708);
+    QApplication::processEvents();
+    CHECK(w.toolOptionsDock()->width() == 230);
+}
+
+TEST_CASE("choosing a tab is no column resize", "[dock-width][dock-tabs]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+    w.tabifyDockWidget(w.toolboxDock(), w.toolOptionsDock());
+    w.toolOptionsDock()->raise();
+    QApplication::processEvents();
+    w.resize(1100, 708);
+    QApplication::processEvents();
+    const int narrowed = w.toolOptionsDock()->width();
+    REQUIRE(narrowed < 256);
+    w.toolboxDock()->raise();
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == narrowed);
+    w.resize(1366, 708);
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.libraryDock()->width() == 360);
+}
+
+TEST_CASE("a window resize before queued defaults keeps following them", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1024, 708);
+    w.show();
+    QApplication::processEvents();
+    const int withLayers = rightColumnMinimum(w);
+    REQUIRE(w.layersDock()->close());
+    QApplication::processEvents();
+    w.layersDock()->show();
+    w.layout()->activate();
+    w.resize(1366, 708);
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.libraryDock()->width() == 360);
+    w.resize(1024, 708);
+    QApplication::processEvents();
+    CHECK(w.libraryDock()->width() == withLayers);
+}
+
+TEST_CASE("reopening an empty column keeps a width set before queued defaults", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+    REQUIRE(w.toolboxDock()->close());
+    REQUIRE(w.toolOptionsDock()->close());
+    QApplication::processEvents();
+    w.toolboxDock()->show();
+    w.resizeDocks({w.toolboxDock()}, {230}, Qt::Horizontal);
+    w.layout()->activate();
+    REQUIRE(w.toolboxDock()->width() == 230);
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 230);
+}
+
+TEST_CASE("opening and closing a dock in one turn gives its width back", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1024, 708);
+    w.show();
+    QApplication::processEvents();
+    REQUIRE(w.layersDock()->close());
+    QApplication::processEvents();
+    const int withoutLayers = w.libraryDock()->width();
+    REQUIRE(withoutLayers == rightColumnMinimum(w));
+    w.layersDock()->show();
+    w.layout()->activate();
+    w.layersDock()->hide();
+    w.layout()->activate();
+    QApplication::processEvents();
+    CHECK(w.libraryDock()->width() == withoutLayers);
+    w.resize(1366, 708);
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.libraryDock()->width() == 360);
+}
+
+TEST_CASE("Qt narrowing the other column for a wide dock is no column resize", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+    REQUIRE(w.layersDock()->close());
+    QApplication::processEvents();
+    w.layersDock()->setMinimumWidth(1050);
+    w.layersDock()->show();
+    QApplication::processEvents();
+    w.resize(2048, 708);
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == 256);
+    CHECK(w.libraryDock()->width() == 1050);
+}
+
+TEST_CASE("a column set to exactly a reopened dock's minimum is the user's", "[dock-width][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1366, 708);
+    w.show();
+    QApplication::processEvents();
+    REQUIRE(w.layersDock()->close());
+    QApplication::processEvents();
+    w.resize(1024, 708);
+    QApplication::processEvents();
+    w.layersDock()->show();
+    const int minimum = rightColumnMinimum(w);
+    w.resizeDocks({w.libraryDock()}, {minimum}, Qt::Horizontal);
+    QApplication::processEvents();
+    REQUIRE(w.libraryDock()->width() == minimum);
+    w.resize(1366, 708);
+    QApplication::processEvents();
+    CHECK(w.libraryDock()->width() == minimum);
 }
 
 TEST_CASE("the app's settings are an INI file in the test's scratch directory") {
