@@ -174,6 +174,7 @@ add_executable(blockwright-app-tests
   test_app_format.cpp
   test_app_irc.cpp
   test_app_library.cpp
+  test_app_library_styles.cpp
   test_app_lint.cpp
   test_app_select.cpp
   test_app_shading.cpp

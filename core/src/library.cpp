@@ -948,20 +948,34 @@ std::vector<std::string> categories(const std::vector<Stamp>& stamps) {
     return {s.begin(), s.end()};
 }
 
-bool matches(const Stamp& stamp, std::string_view query) {
-    const std::string name = lowered(stamp.displayName());
-    std::vector<std::string> tags;
-    for (const std::string& t : stamp.meta.tags)
-        tags.push_back(lowered(t));
+namespace {
+
+// Every whitespace-separated term of `query` is in `name` or one of `tags`,
+// ignoring ASCII case.
+bool matchesTerms(const std::string& name, const std::vector<std::string>& tags, std::string_view query) {
+    const std::string lname = lowered(name);
+    std::vector<std::string> ltags;
+    for (const std::string& t : tags)
+        ltags.push_back(lowered(t));
     std::istringstream in{std::string(query)};
     std::string term;
     while (in >> term) {
         term = lowered(term);
-        if (name.find(term) == std::string::npos &&
-            std::none_of(tags.begin(), tags.end(), [&](const std::string& t) { return t.find(term) != std::string::npos; }))
+        if (lname.find(term) == std::string::npos &&
+            std::none_of(ltags.begin(), ltags.end(), [&](const std::string& t) { return t.find(term) != std::string::npos; }))
             return false;
     }
     return true;
+}
+
+} // namespace
+
+bool matches(const Stamp& stamp, std::string_view query) {
+    return matchesTerms(stamp.displayName(), stamp.meta.tags, query);
+}
+
+bool matches(const TextStyleEntry& style, std::string_view query) {
+    return matchesTerms(style.name, style.tags, query);
 }
 
 fs::path realBinDir(const fs::path& exe, const fs::path& fallback) {

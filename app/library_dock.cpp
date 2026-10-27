@@ -35,6 +35,7 @@ namespace bw {
 namespace {
 
 constexpr int kPathRole = Qt::UserRole;
+constexpr int kStyleRole = Qt::UserRole + 1;  // true on a text style's item
 
 QString qpath(const std::filesystem::path& p) { return QFile::decodeName(QByteArray::fromStdString(p.string())); }
 
@@ -81,7 +82,8 @@ StampGrid::StampGrid(QWidget* parent) : QListWidget(parent) {
 QStringList StampGrid::mimeTypes() const { return {QString::fromLatin1(kStampMimeType)}; }
 
 QMimeData* StampGrid::mimeData(const QList<QListWidgetItem*>& items) const {
-    if (items.isEmpty())
+    // A text style isn't dragged (its item isn't drag-enabled either).
+    if (items.isEmpty() || items.first()->data(kStyleRole).toBool())
         return nullptr;
     auto* m = new QMimeData;
     m->setData(QString::fromLatin1(kStampMimeType), items.first()->data(kPathRole).toByteArray());
@@ -120,7 +122,13 @@ LibraryDock::LibraryDock(QWidget* parent) : QWidget(parent) {
     connect(search_, &QLineEdit::textChanged, this, &LibraryDock::refill);
     connect(categories_, &QListWidget::currentRowChanged, this, &LibraryDock::refill);
     connect(grid_, &QListWidget::itemActivated, this,
-            [this](QListWidgetItem* item) { emit stampActivated(item->data(kPathRole).toByteArray()); });
+            [this](QListWidgetItem* item) {
+                const QByteArray key = item->data(kPathRole).toByteArray();
+                if (item->data(kStyleRole).toBool())
+                    emit textStyleActivated(key);
+                else
+                    emit stampActivated(key);
+            });
 }
 
 void LibraryDock::setDirectories(const std::filesystem::path& bundled, const std::filesystem::path& user) {
@@ -131,6 +139,7 @@ void LibraryDock::setDirectories(const std::filesystem::path& bundled, const std
 
 void LibraryDock::rescan() {
     entries_.clear();
+    styles_.clear();
     problems_.clear();
     for (const auto& [dir, bundled] : {std::pair{bundled_, true}, std::pair{user_, false}}) {
         if (dir.empty())
@@ -140,11 +149,17 @@ void LibraryDock::rescan() {
             QByteArray key = thumbnailKey(s);
             entries_.push_back({std::move(s), bundled, std::move(key)});
         }
+        for (library::TextStyleEntry& t : r.styles) {
+            QByteArray key = thumbnailKey(t);
+            styles_.push_back({std::move(t), bundled, std::move(key)});
+        }
         problems_.insert(problems_.end(), r.problems.begin(), r.problems.end());
     }
-    // Forget the thumbnails of stamps that are gone or have changed.
+    // Forget the thumbnails of entries that are gone or have changed.
     QSet<QByteArray> keys;
     for (const Entry& e : entries_)
+        keys.insert(e.thumbKey);
+    for (const StyleEntry& e : styles_)
         keys.insert(e.thumbKey);
     for (auto it = thumbnails_.begin(); it != thumbnails_.end();)
         it = keys.contains(it.key()) ? std::next(it) : thumbnails_.erase(it);
@@ -179,6 +194,8 @@ QStringList LibraryDock::categories() const {
     std::vector<std::string> cats;
     for (const Entry& e : entries_)
         cats.push_back(e.stamp.meta.category);
+    for (const StyleEntry& e : styles_)
+        cats.push_back(e.style.category);
     std::sort(cats.begin(), cats.end());
     cats.erase(std::unique(cats.begin(), cats.end()), cats.end());
     for (const std::string& c : cats)
@@ -190,6 +207,13 @@ const library::Stamp* LibraryDock::findKey(const QByteArray& key) const {
     for (const Entry& e : entries_)
         if (stampKey(e.stamp.path) == key)
             return &e.stamp;
+    return nullptr;
+}
+
+const library::TextStyleEntry* LibraryDock::findStyleKey(const QByteArray& key) const {
+    for (const StyleEntry& e : styles_)
+        if (stampKey(e.style.path) == key)
+            return &e.style;
     return nullptr;
 }
 
@@ -223,6 +247,19 @@ QByteArray LibraryDock::thumbnailKey(const library::Stamp& s) {
                                        std::uint32_t(bg.b)};
             h.addData(QByteArrayView(reinterpret_cast<const char*>(v), sizeof v));
         }
+    return h.result();
+}
+
+QByteArray LibraryDock::thumbnailKey(const library::TextStyleEntry& s) {
+    // The sample is drawn from the style alone, so the entry's JSON (which
+    // holds it) names the picture; the prefix keeps it apart from a stamp's.
+    QCryptographicHash h(QCryptographicHash::Sha1);
+    h.addData(QByteArrayView("text-style\n"));
+    try {
+        h.addData(QByteArray::fromStdString(library::textStyleEntryJson(s)));
+    } catch (const std::exception&) {
+        h.addData(stampKey(s.path));
+    }
     return h.result();
 }
 
@@ -275,18 +312,35 @@ QImage stampIcon(const Canvas& cv, int glyphWidth, QSize box, std::int64_t bandP
     return out;
 }
 
-QImage LibraryDock::thumbnail(const Entry& e) {
-    if (const auto it = thumbnails_.constFind(e.thumbKey); it != thumbnails_.constEnd())
+QImage LibraryDock::cachedThumbnail(const QByteArray& key, const std::function<QImage()>& render) {
+    if (const auto it = thumbnails_.constFind(key); it != thumbnails_.constEnd())
         return *it;
     QImage img;
     try {
-        img = stampIcon(e.stamp.art.canvas, glyphWidth(e.stamp.art), kIconBox);
+        img = render();
         ++renders_;
     } catch (const std::exception&) {
         return {};
     }
-    thumbnails_.insert(e.thumbKey, img);
+    thumbnails_.insert(key, img);
     return img;
+}
+
+QImage LibraryDock::thumbnail(const Entry& e) {
+    return cachedThumbnail(e.thumbKey,
+                           [&] { return stampIcon(e.stamp.art.canvas, glyphWidth(e.stamp.art), kIconBox); });
+}
+
+QImage LibraryDock::thumbnail(const StyleEntry& e) {
+    return cachedThumbnail(e.thumbKey,
+                           [&] { return stampIcon(library::textStyleSample(e.style.style, true), 8, kIconBox); });
+}
+
+void LibraryDock::setIceColours(bool on) {
+    if (on == ice_)
+        return;
+    ice_ = on;
+    refill();
 }
 
 void LibraryDock::refill() {
@@ -314,6 +368,33 @@ void LibraryDock::refill() {
                              .arg(s.meta.ircBytes)
                              .arg(qtext(s.meta.category), tags.isEmpty() ? tr("none") : tags.join(QStringLiteral(", ")),
                                   e.bundled ? tr("Bundled") : tr("User"), qpath(s.path)));
+    }
+    for (const StyleEntry& e : styles_) {
+        const library::TextStyleEntry& t = e.style;
+        if (!cat.isEmpty() && qtext(t.category) != cat)
+            continue;
+        if (!library::matches(t, query))
+            continue;
+        auto* item = new QListWidgetItem(qtext(t.name), grid_);
+        item->setData(kPathRole, stampKey(t.path));
+        item->setData(kStyleRole, true);
+        item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled);
+        const bool usable = ice_ || !t.iceRequired;
+        if (!usable)
+            item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+        const QImage img = thumbnail(e);
+        if (!img.isNull())
+            item->setIcon(QIcon(QPixmap::fromImage(img)));
+        QStringList tags;
+        for (const std::string& tag : t.tags)
+            tags << qtext(tag);
+        const QString iceNeed = !usable         ? tr("Needs iCE colours, which are off: turn on View > iCE Colours to use it")
+                                : t.iceRequired ? tr("Needs iCE colours")
+                                                : tr("Works with iCE colours on or off");
+        item->setToolTip(tr("%1\nText style\nCategory: %2\nTags: %3\n%4\n%5 library: %6")
+                             .arg(qtext(t.name), qtext(t.category),
+                                  tags.isEmpty() ? tr("none") : tags.join(QStringLiteral(", ")),
+                                  iceNeed, e.bundled ? tr("Bundled") : tr("User"), qpath(t.path)));
     }
 }
 

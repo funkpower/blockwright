@@ -5,6 +5,7 @@
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "library_dock.h"
 #include "preferences.h"
 #include "sauce_dialog.h"
 
@@ -32,6 +33,9 @@ void MainWindow::createFormatActions(QMenu* view) {
 }
 
 void MainWindow::syncFormatActions() {
+    // The Library shows a style that needs iCE disabled while it is off.
+    if (library_)
+        library_->setIceColours(doc_.ansi().ice);
     if (!iceAction_)
         return;
     iceAction_->setChecked(doc_.ansi().ice);

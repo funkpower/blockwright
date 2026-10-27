@@ -1,6 +1,7 @@
 #pragma once
-// The Library dock (PLAN §12): the stamps of the bundled and user libraries
-// as a grid of thumbnails, with a category list and a search box. Double-
+// The Library dock (PLAN §12): the stamps and text styles of the bundled and
+// user libraries as a grid of thumbnails, with a category list and a search
+// box (both cover the two kinds alike). Double-
 // clicking a stamp (or Enter on it) asks for it to be placed at the cell
 // cursor; dragging it carries its stampKey as kStampMimeType, which the canvas
 // takes through StampDropFilter. The window does the placing, through the
@@ -10,6 +11,14 @@
 // fit the grid (stampIcon). Only the icon is cached, keyed by what it draws (the cells
 // and the glyph width), so a rescan re-renders only stamps whose art
 // changed, and drops the icons of stamps that changed or are gone.
+//
+// A text style's thumbnail is its sample (library::textStyleSample, the one
+// `library check` draws: "Aa" in the block face) drawn with iCE colours, as
+// `library list` sizes it, through the same stampIcon and the same cache,
+// keyed by the entry's JSON. A text style isn't dragged and isn't placed:
+// activating one emits textStyleActivated, which nothing applies yet (PLAN
+// §15, As built). A style that needs iCE colours is shown disabled while the
+// document has them off (setIceColours); its thumbnail is still the iCE look.
 //
 // StampDialog is Selection > Save to Library...: name, category and tags.
 
@@ -26,6 +35,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <vector>
 
 class QComboBox;
@@ -76,6 +86,12 @@ public:
         QByteArray thumbKey;  // what its thumbnail draws
     };
 
+    struct StyleEntry {
+        library::TextStyleEntry style;
+        bool bundled = false;
+        QByteArray thumbKey;  // what its thumbnail draws
+    };
+
     explicit LibraryDock(QWidget* parent = nullptr);
 
     // The two libraries; rescans.
@@ -87,19 +103,29 @@ public:
     // and the category.
     void rescan();
 
+    // The document's iCE setting (on until told otherwise). With it off, a
+    // text style that needs iCE colours is shown disabled.
+    void setIceColours(bool on);
+    bool iceColours() const { return ice_; }
+
     const std::vector<Entry>& entries() const { return entries_; }
+    const std::vector<StyleEntry>& styles() const { return styles_; }
     const std::vector<library::Problem>& problems() const { return problems_; }
     // The stamp read from the .ans at `path`, or null.
     const library::Stamp* find(const std::filesystem::path& path) const;
     // The stamp whose stampKey is `key`, or null: any other bytes (from
     // another application's drag, say) are no stamp, and are never decoded.
     const library::Stamp* findKey(const QByteArray& key) const;
+    // The text style whose stampKey (of its .style.json) is `key`, or null.
+    const library::TextStyleEntry* findStyleKey(const QByteArray& key) const;
     QStringList categories() const;
 
-    // The names the grid shows, in order (for tests).
+    // The names the grid shows, in order (for tests): the stamps, then the
+    // text styles.
     QStringList shownNames() const;
     // How many thumbnails have been rendered (a cache miss each), and the
-    // cache: one icon-sized image per distinct stamp art in the libraries.
+    // cache: one icon-sized image per distinct stamp art or text style in
+    // the libraries.
     int thumbnailRenders() const { return renders_; }
     const QHash<QByteArray, QImage>& thumbnailCache() const { return thumbnails_; }
 
@@ -111,17 +137,25 @@ public:
 signals:
     // A stamp was double-clicked or activated with Enter (its stampKey).
     void stampActivated(const QByteArray& key);
+    // A text style was double-clicked or activated with Enter (the stampKey
+    // of its .style.json).
+    void textStyleActivated(const QByteArray& key);
 
 private:
     void refill();
     static QByteArray thumbnailKey(const library::Stamp& s);
+    static QByteArray thumbnailKey(const library::TextStyleEntry& s);
     QImage thumbnail(const Entry& e);
+    QImage thumbnail(const StyleEntry& e);
+    QImage cachedThumbnail(const QByteArray& key, const std::function<QImage()>& render);
 
     std::filesystem::path bundled_, user_;
     std::vector<Entry> entries_;
+    std::vector<StyleEntry> styles_;
     std::vector<library::Problem> problems_;
     QHash<QByteArray, QImage> thumbnails_;
     int renders_ = 0;
+    bool ice_ = true;
 
     QLineEdit* search_;
     QListWidget* categories_;

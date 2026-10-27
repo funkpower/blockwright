@@ -228,6 +228,8 @@ std::vector<std::string> categories(const std::vector<Stamp>& stamps);
 // `query` is in its name or one of its tags, ignoring ASCII case. An empty
 // query matches everything.
 bool matches(const Stamp& stamp, std::string_view query);
+// The same for a text style, by its name and tags.
+bool matches(const TextStyleEntry& style, std::string_view query);
 
 // Where the libraries are. BLOCKWRIGHT_BUNDLED_LIBRARY and
 // BLOCKWRIGHT_USER_LIBRARY override them (tests, and running a build tree
