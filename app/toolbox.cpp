@@ -2,6 +2,7 @@
 
 #include "tool.h"
 
+#include <QAccessibleWidget>
 #include <QAction>
 #include <QGridLayout>
 #include <QMenu>
@@ -20,6 +21,88 @@ constexpr int kIcon = 24;
 
 // The hint a group's tools carry in their tooltips.
 QString groupHint() { return Toolbox::tr("Click the arrow or right-click for the rest of the group"); }
+
+// Marks a group's button for groupButtonAccessible().
+constexpr char kGroupButton[] = "bwToolboxGroup";
+
+// What a screen reader sees of a group's button. Qt's own interface makes a
+// split button a ButtonMenu whose only action, listed twice, is Show Menu, so
+// the group's current tool can't be picked through it (#179). This one offers
+// Press, which clicks the button as the mouse does, and Show Menu, each once,
+// names the current tool, and keeps the flyout as its child.
+class GroupButtonAccessible : public QAccessibleWidget {
+public:
+    explicit GroupButtonAccessible(QToolButton* b) : QAccessibleWidget(b, QAccessible::ButtonDropDown) {}
+
+    QAccessible::State state() const override {
+        QAccessible::State s = QAccessibleWidget::state();
+        s.checkable = button()->isCheckable();
+        s.checked = button()->isChecked();
+        s.pressed = button()->isDown();
+        s.hasPopup = true;
+        return s;
+    }
+
+    QString text(QAccessible::Text t) const override {
+        if (t == QAccessible::Name && widget()->accessibleName().isEmpty())
+            return button()->text(); // the current tool's, from its action's icon text
+        if (t == QAccessible::Description && widget()->accessibleDescription().isEmpty()) {
+            QAction* a = button()->defaultAction();
+            QStringList group;
+            if (button()->menu())
+                for (QAction* m : button()->menu()->actions())
+                    group << m->iconText();
+            const QString tool = a ? a->toolTip().section(QLatin1Char('\n'), 0, 0) : button()->text();
+            return Toolbox::tr("%1. Press picks it; Show Menu opens the group: %2.")
+                .arg(tool, group.join(QStringLiteral(", ")));
+        }
+        return QAccessibleWidget::text(t);
+    }
+
+    QStringList actionNames() const override {
+        if (!widget()->isEnabled())
+            return {};
+        return {pressAction(), showMenuAction()};
+    }
+
+    void doAction(const QString& action) override {
+        if (!widget()->isEnabled())
+            return;
+        if (action == pressAction())
+            button()->click();
+        else if (action == showMenuAction())
+            button()->showMenu();
+    }
+
+    // The flyout is the button's one child, as in Qt's interface for a split
+    // button; QAccessibleWidget leaves menus out of a widget's children.
+    int childCount() const override { return button()->menu() ? 1 : 0; }
+
+    QAccessibleInterface* child(int index) const override {
+        return index == 0 && button()->menu() ? QAccessible::queryAccessibleInterface(button()->menu()) : nullptr;
+    }
+
+    int indexOfChild(const QAccessibleInterface* child) const override {
+        return child && button()->menu() && child->object() == button()->menu() ? 0 : -1;
+    }
+
+    QStringList keyBindingsForAction(const QString& action) const override {
+        const QAction* a = button()->defaultAction();
+        if (action == pressAction() && a && !a->shortcut().isEmpty())
+            return {a->shortcut().toString(QKeySequence::NativeText)};
+        return {};
+    }
+
+private:
+    QToolButton* button() const { return static_cast<QToolButton*>(widget()); }
+};
+
+// The accessibility factory for the buttons marked kGroupButton; every other
+// object keeps Qt's interface.
+QAccessibleInterface* groupButtonAccessible(const QString&, QObject* o) {
+    auto* b = qobject_cast<QToolButton*>(o);
+    return b && b->property(kGroupButton).toBool() ? new GroupButtonAccessible(b) : nullptr;
+}
 
 } // namespace
 
@@ -205,6 +288,8 @@ QIcon toolIcon(const QString& id) {
 
 Toolbox::Toolbox(ToolRegistry* tools, const QHash<QString, QAction*>& actions, QWidget* parent)
     : QWidget(parent), actions_(actions) {
+    static const bool factoryInstalled = (QAccessible::installFactory(groupButtonAccessible), true);
+    Q_UNUSED(factoryInstalled);
     QList<QStringList> layout;
     QSet<QString> placed;
     for (const QStringList& group : groups()) {
@@ -226,6 +311,8 @@ Toolbox::Toolbox(ToolRegistry* tools, const QHash<QString, QAction*>& actions, Q
     grid->setContentsMargins(4, 4, 4, 4);
     for (const QStringList& group : layout) {
         auto* b = new QToolButton;
+        // before anything asks for its accessible interface, which Qt caches
+        b->setProperty(kGroupButton, group.size() > 1);
         b->setObjectName(QStringLiteral("toolbox_") + group.front());
         b->setAutoRaise(true);
         b->setFocusPolicy(Qt::NoFocus);
@@ -270,6 +357,9 @@ void Toolbox::follow(Tool* tool) {
         QMenu* menu = b->menu();
         b->setDefaultAction(a);
         b->setMenu(menu);
+        // The name follows the button's text; the description names the tool too.
+        QAccessibleEvent changed(b, QAccessible::DescriptionChanged);
+        QAccessible::updateAccessibility(&changed);
     }
 }
 
