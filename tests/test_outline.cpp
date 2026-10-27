@@ -22,6 +22,7 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <random>
 #include <string>
 #include <vector>
@@ -1181,7 +1182,8 @@ TEST_CASE("an outline dab keeps the line an earlier dab of the stroke drew", "[d
         CHECK(added(c, applied(c, e), fire()).empty());
         // either way it draws a line, and the cell both dabs above line
         // (which neighbours it takes with it still depends on the order: a
-        // dab keeps the line where settling again would take some back)
+        // dab keeps the line where settling again would take some back;
+        // the "slope neighbours" permutation case below checks this limit)
         const auto w = written(e);
         REQUIRE(w.count({4, 4}));
         CHECK(w.at({4, 4}) == rungCell(fire(), 6));
@@ -2383,4 +2385,71 @@ TEST_CASE("the outline writes pixel cells only on a pixel layer", "[detail][laye
     }
     CHECK(shaded > 0);
     CHECK(written > 0);
+}
+
+// Permute stamps, not joined mouse segments: joining shuffled points changes
+// the covered set and cannot establish the property requested by #159.
+TEST_CASE("Outline dab permutations check independence and its documented limits", "[detail][lint][permutations]") {
+    struct Path {
+        const char* name;
+        size_t maxDifferent;
+        std::vector<Dab> dabs;
+    };
+    // PLAN §10 deliberately retains order dependence: settling cannot take
+    // back earlier line, the window is bounded, and each dab must add no
+    // finding. Counts are upper-bound ratchets: lowering a bound is welcome,
+    // including to zero if #159 improves. These size-3 square, unjoined dabs
+    // do not establish independence for other tips, sizes or joined drags.
+    // The full curve and loop agree by coverage of this small blob; their
+    // two-dab sub-strokes below expose the dependence hidden by that coverage.
+    const std::vector<Path> paths{
+        {"straight", 0, {{2, 1}, {3, 1}, {4, 1}, {5, 1}}},
+        {"diagonal", 20, {{2, 1}, {3, 2}, {4, 3}, {5, 4}}},
+        {"curve", 0, {{2, 3}, {2, 2}, {3, 1}, {4, 1}, {5, 2}, {6, 3}}},
+        {"overlap and corner touch", 0, {{2, 1}, {3, 1}, {5, 3}, {6, 4}}},
+        {"canvas edge", 15, {{0, 0}, {1, 0}, {2, 1}, {1, 2}, {0, 3}}},
+        {"self-crossing loop", 0, {{2, 1}, {3, 2}, {4, 3}, {5, 4}, {6, 3},
+                                {5, 2}, {4, 3}, {3, 4}, {2, 3}}},
+        {"curve sub-stroke", 1, {{2, 3}, {4, 1}}},
+        {"loop sub-stroke", 1, {{3, 2}, {2, 3}}},
+        {"slope neighbours", 14, {{6, 8}, {6, 7}, {5, 7}, {5, 6}, {5, 5},
+                              {5, 4}, {4, 4}, {4, 3}, {4, 2}}}
+    };
+    std::mt19937 rng(159177);
+    for (const auto& path : paths) {
+        const bool onSlope = std::string(path.name) == "slope neighbours";
+        const Canvas c = onSlope ? slope() : blob();
+        const Ramp r = onSlope ? fire() : steel();
+        const OutlineBrush brush(r);
+        const auto run = [&](const std::vector<size_t>& order) {
+            Stroke stroke(c, brush, square(3));
+            for (const auto i : order)
+                stroke.addDab(path.dabs[i], false);
+            const auto e = stroke.edit();
+            const Canvas out = applied(c, e);
+            REQUIRE(lint::addedFindingsOnce(c, out, r, cellsOf(e)).empty());
+            return out;
+        };
+        std::vector<size_t> order(path.dabs.size());
+        std::iota(order.begin(), order.end(), size_t{0});
+        const Canvas expected = run(order);
+        REQUIRE(expected != c); // A no-op would prove no useful property.
+        size_t checked = 0, different = 0;
+        const auto check = [&] {
+            different += run(order) != expected; // Cell equality includes glyph and both colours.
+            ++checked;
+        };
+        if (order.size() <= 7) {
+            do { check(); } while (std::next_permutation(order.begin(), order.end()));
+        } else {
+            std::reverse(order.begin(), order.end());
+            check();
+            for (int sample = 0; sample < 64; ++sample) {
+                std::shuffle(order.begin(), order.end(), rng);
+                check();
+            }
+        }
+        INFO(path.name << ": " << different << " of " << checked << " permutations differ");
+        CHECK(different <= path.maxDifferent);
+    }
 }

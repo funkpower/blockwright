@@ -32,13 +32,14 @@
 using namespace bw;
 
 namespace {
-void await(const std::function<bool()>& done) {
+void await(const std::function<bool()>& done, qint64 budgetMs = 10000) {
     QElapsedTimer timer;
     timer.start();
-    while (!done() && timer.elapsed() < 10000) {
+    while (!done() && timer.elapsed() < budgetMs) {
         QCoreApplication::processEvents();
         QThread::msleep(1);
     }
+    INFO("event-pumping wait: " << timer.elapsed() << " ms elapsed; deadline " << budgetMs << " ms");
     REQUIRE(done());
 }
 void writeFont(const QString& path, const std::string& bytes) {
@@ -301,4 +302,76 @@ TEST_CASE("Preferences OK preserves an untouched implicit fonts folder", "[fonts
         CHECK(fontsFolderIsDefault());
     }
     await([&] { return !window.document()->fontsScanning(); });
+}
+
+TEST_CASE("a background scan of 3501 synthetic faces meets the picker budget", "[fonts][collection][budget]") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    // These are our synthetic outline/block/colour fonts, not collection data.
+    const auto source = bwtest::readFile(bwtest::dataDir() / "tdf/bw-all.tdf");
+    const auto at = source.find("BW Outline");
+    REQUIRE(at != std::string::npos);
+    constexpr int files = 1167, faces = files * 3;
+    static_assert(faces >= 3500);
+    for (int i = 0; i < files; ++i) {
+        auto bytes = source;
+        const auto name = QStringLiteral("Font%1").arg(i, 6, 10, QLatin1Char('0')).toStdString();
+        bytes.replace(at, name.size(), name); // Distinct hashes keep every file in the store.
+        writeFont(tmp.filePath(QStringLiteral("synthetic-%1.tdf").arg(i)), bytes);
+    }
+
+    // Disk IO and publication get a hang deadline, not a throughput budget:
+    // concurrent scans may take seconds without blocking the GUI. The picker
+    // open budget below is the user-facing latency required by #177(a).
+    FontScanner scanner;
+    QElapsedTimer timer;
+    timer.start();
+    scanner.start(tmp.path());
+    CHECK(scanner.scanning());
+    await([&] { return !scanner.scanning(); }, 30000);
+    const qint64 scanMs = timer.elapsed();
+    INFO("3501-face background scan and publication: " << scanMs << " ms");
+    const auto c = scanner.catalogue();
+    REQUIRE(c);
+    REQUIRE(c->fonts.size() == faces);
+    CHECK(c->store.files().size() == files);
+    CHECK(c->rejected.empty());
+    CHECK(facesMade(*c) == 0);
+
+    // Opening includes entries, list layout and the first visible previews.
+    timer.restart();
+    FacePicker picker(c->entries());
+    picker.setText(U"Abc é");
+    picker.resize(400, 400);
+    picker.show();
+    QCoreApplication::processEvents();
+    const qint64 openMs = timer.elapsed();
+    INFO("3501-face picker open and first paint: " << openMs << " ms");
+    CHECK(openMs < 300);
+    CHECK(picker.listed().size() == faces);
+    CHECK(picker.previewsBuilt() > 0);
+    CHECK(picker.previewsBuilt() < 20);
+    CHECK(facesMade(*c) < 20);
+
+    timer.restart();
+    picker.searchField()->setText(QStringLiteral("SYNTHETIC-1166.TDF"));
+    CHECK(picker.listed().size() == 3);
+    picker.searchField()->setText(QStringLiteral("Font001166"));
+    CHECK(picker.listed() == QStringList{QStringLiteral("Font001166 (synthetic-1166.tdf)")});
+    picker.searchField()->setText(QStringLiteral("colour"));
+    CHECK(picker.listed().size() == files);
+    picker.searchField()->clear();
+    picker.typeFilter()->setCurrentIndex(picker.typeFilter()->findData(QStringLiteral("outline")));
+    CHECK(picker.listed().size() == files);
+    picker.searchField()->setText(QStringLiteral("no such font"));
+    CHECK(picker.listed().isEmpty());
+    picker.searchField()->clear();
+    picker.typeFilter()->setCurrentIndex(0);
+    CHECK(picker.listed().size() == faces);
+    const qint64 filterMs = timer.elapsed();
+    INFO("3501-face filter sequence: " << filterMs << " ms");
+    // Normally 2–5 ms, but a concurrent full suite reached 58 ms. Allow
+    // scheduling headroom while catching a user-visible 100 ms filter delay.
+    CHECK(filterMs < 100);
+    CHECK(picker.previewsBuilt() < 20);
 }
