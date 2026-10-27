@@ -45,6 +45,7 @@ add_library(blockwright_core STATIC
   src/sauce.cpp
   src/selection.cpp
   src/shapes.cpp
+  src/big_text.cpp
   src/text.cpp
   src/text_style.cpp
 )

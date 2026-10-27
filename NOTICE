@@ -4,8 +4,10 @@ It includes third-party material under its own licence:
 
 - IBM VGA 8x16 and IBM PC BIOS 8x8 glyph bitmaps from The Ultimate Oldschool
   PC Font Pack v2.2, (c) 2016-2020 VileR, https://int10h.org/oldschool-pc-fonts/,
-  licensed under CC BY-SA 4.0. No glyph is modified: the slashed 0 of the
-  block text face is the BIOS font's own. Source, version and licence text:
+  licensed under CC BY-SA 4.0. The native block and vga faces use the
+  original glyphs; the slashed 0 of block is the BIOS font's own. The big
+  text modes adapt the BIOS glyphs to the reference 8x8 variant with XOR
+  differences in core/src/big_text_deltas.inc and double each pixel row. Source, version and licence text:
   in an install, the oldschool-pc-fonts/ directory beside this file
   (share/doc/blockwright/oldschool-pc-fonts/); in the source tree,
   third_party/oldschool-pc-fonts/.

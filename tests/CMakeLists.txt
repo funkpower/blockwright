@@ -50,6 +50,7 @@ add_executable(blockwright-tests
   test_sauce.cpp
   test_selection.cpp
   test_symmetry_stroke.cpp
+  test_big_text.cpp
   test_text.cpp
   test_text_presets.cpp
   test_text_style.cpp

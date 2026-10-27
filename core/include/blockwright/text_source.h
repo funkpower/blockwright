@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace bw {
 
@@ -32,6 +33,11 @@ enum class TextCase : std::uint8_t { AsTyped, Capitals };
 // column left over goes on the right) or right edge.
 enum class TextAlign : std::uint8_t { Left, Centre, Right };
 
+// Whole-cell big lettering; None keeps the selected face at its native size.
+enum class BigTextStyle : std::uint8_t { None, Shadow, ThreeD, Outline, Block };
+std::string_view bigTextStyleName(BigTextStyle style);
+std::optional<BigTextStyle> bigTextStyleFromName(std::string_view name);
+
 struct TextSource {
     std::u32string text;  // at most kMaxLength characters
     FaceRef face;
@@ -46,6 +52,12 @@ struct TextSource {
     // The letters' colour, a palette index: what they show until a text
     // style's Fill colours them.
     std::uint8_t colour = 7;
+
+    BigTextStyle bigStyle = BigTextStyle::None;
+    // mIRC colour numbers (0–15), face then edge.
+    // Empty uses the selected big style's defaults.
+    std::vector<std::uint8_t> bigColours;
+    static constexpr std::size_t kMaxBigColours = 16;
 
     static constexpr std::size_t kMaxLength = 4096;
     static constexpr int kMaxSpacing = 64;

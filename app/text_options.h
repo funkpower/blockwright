@@ -1,7 +1,7 @@
 #pragma once
 // The Text tool's settings in the Tool Options dock (PLAN §11, §15): the
 // face picker, case, letter and line spacing, alignment, wrap width and
-// colour. They show the active text layer's source, or what a new text
+// colour, plus whole-cell big modes and their mIRC colours. They show the active text layer's source, or what a new text
 // layer starts with when the active layer isn't one or the tool's text
 // cursor waits for a new layer (TextTool::spot), and a change sets both
 // (TextTool::setSettings), one undo step on the layer.
@@ -20,6 +20,7 @@
 
 class QComboBox;
 class QSpinBox;
+class QLineEdit;
 
 namespace bw {
 
@@ -29,7 +30,7 @@ class TextTool;
 
 class TextOptions : public QWidget {
     Q_OBJECT
-public:
+  public:
     TextOptions(CanvasView* view, TextTool* tool, QWidget* parent = nullptr);
 
     FacePicker* facePicker() const { return picker_; }
@@ -39,8 +40,10 @@ public:
     QComboBox* alignBox() const { return align_; }
     QSpinBox* wrapWidthBox() const { return wrap_; }
     QComboBox* colourBox() const { return colour_; }
+    QComboBox* bigStyleBox() const { return bigStyle_; }
+    QLineEdit* bigColoursBox() const { return bigColours_; }
 
-private:
+  private:
     // The source the controls show.
     TextSource shown() const;
     void sync();
@@ -61,6 +64,8 @@ private:
     QComboBox* align_;
     QSpinBox* wrap_;
     QComboBox* colour_;
+    QComboBox* bigStyle_;
+    QLineEdit* bigColours_;
     bool syncing_ = false;
     // What the listed TheDraw faces belong to, held so they last; the tool
     // holds the kept one's file until it has told (TextTool::keptChanged).

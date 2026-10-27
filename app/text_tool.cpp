@@ -1,4 +1,5 @@
 #include "text_tool.h"
+#include "blockwright/big_text.h"
 
 #include "canvas_view.h"
 #include "document.h"
@@ -55,7 +56,8 @@ struct Laid {
     struct Line {
         int first = 0, count = 0;  // characters of the text
         int shift = 0;             // its first column in the box
-        int top = 0;               // its first cell row in the box
+        int top = 0;               // its font origin row, for drawing the cursor
+        int hitTop = 0;            // its first line-box row, for selecting the line
         std::vector<int> columns;  // count + 1 caret columns, from the line's start
     };
     std::vector<Line> lines;
@@ -94,7 +96,7 @@ struct Laid {
         if (lines.empty())
             return {};
         int l = 0;
-        while (l + 1 < int(lines.size()) && lines[l + 1].top <= cell.y())
+        while (l + 1 < int(lines.size()) && lines[l + 1].hitTop <= cell.y())
             ++l;
         const Line& line = lines[l];
         // the caret before the character the cell is in, or after it if the
@@ -109,6 +111,25 @@ struct Laid {
 };
 
 Laid lay(const TextSource& s, const Face& face) {
+    if (s.bigStyle != BigTextStyle::None) {
+        const auto big = renderBigText(s);
+        Laid out;
+        out.rows = 8;
+        out.width = big.drawing.cells.width();
+        out.height = big.drawing.cells.height();
+        for (const auto& line : big.lines) {
+            Laid::Line placed;
+            placed.first = int(line.first);
+            placed.count = int(line.count);
+            placed.shift = line.left;
+            placed.top = line.top;
+            placed.hitTop = line.hitTop;
+            for (std::size_t i = 0; i <= line.count; ++i)
+                placed.columns.push_back(int(i) * (8 + s.letterSpacing));
+            out.lines.push_back(std::move(placed));
+        }
+        return out;
+    }
     const SpacedFace spaced(face, s.letterSpacing);
     const std::u32string text = casedText(s);
     const TextLayout layout = layoutText(spaced, text, {s.wrapWidth});
@@ -128,6 +149,7 @@ Laid lay(const TextSource& s, const Face& face) {
                      : s.align == TextAlign::Right ? out.width - src.width
                                                    : (out.width - src.width) / 2;
         line.top = int(l) * (out.rows + s.lineSpacing);
+        line.hitTop = line.top;
         line.columns.reserve(src.count + 1);
         int x = 0;
         line.columns.push_back(0);
@@ -139,7 +161,7 @@ Laid lay(const TextSource& s, const Face& face) {
         out.lines.push_back(std::move(line));
     }
     if (out.lines.empty())
-        out.lines.push_back({0, 0, 0, 0, {0}});
+        out.lines.push_back({0, 0, 0, 0, 0, {0}});
     return out;
 }
 
@@ -576,7 +598,7 @@ bool TextTool::keyPress(QKeyEvent* e) {
             const int to = line + (e->key() == Qt::Key_Up ? -1 : 1);
             if (to >= 0 && to < int(laid.lines.size())) {
                 const QPoint at = laid.place(caret_, after_);
-                const Laid::Caret c = laid.caretAt({at.x(), laid.lines[to].top});
+                const Laid::Caret c = laid.caretAt({at.x(), laid.lines[to].hitTop});
                 moveCaret(c.at, c.after);
             }
         }

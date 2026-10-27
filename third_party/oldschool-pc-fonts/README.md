@@ -9,6 +9,8 @@
   - BIOS 8×8, 2048 bytes (256 glyphs × 8 rows): `75c79a7e7fa423dda67ec6d6d76cec86b63f85677726368750c75b0920ddf319`
 
   Last re-derived from a fresh download of the pack on 2026-10-25: the archive and member hashes above matched, the regenerated VGA `.inc` was byte-identical to the committed one, and the BIOS `.inc` was generated then.
-- **What Blockwright uses:** the 256 glyph bitmaps of each font only, converted by `fon2inc.py` into the two `.inc` tables and compiled into the core library. The renderer draws cells with the VGA font, and the `block` and `vga` text faces draw lettering with the BIOS and VGA fonts. The bitmaps are unchanged: the 9th pixel column of 9 px rendering is added at draw time, not stored, and the slashed 0 of the `block` face is the BIOS font's own 0.
+- **What Blockwright uses:** the 256 glyph bitmaps of each font only, converted by `fon2inc.py` into the two `.inc` tables and compiled into the core library. The renderer draws cells with the VGA font, and the `block` and `vga` text faces draw lettering with the BIOS and VGA fonts. The native faces' bitmaps are unchanged: the 9th pixel column of 9 px rendering is added at draw time, not stored, and the slashed 0 of the `block` face is the BIOS font's own 0.
+
+The whole-cell big text modes reuse the BIOS face and adapt it to ascii.py's 8×8 variant at draw time (`core/src/big_text_deltas.inc`), then double each pixel row. The two bundled tables and the native faces remain unchanged.
 
 CC BY-SA 4.0 is one-way compatible with GPLv3 (Creative Commons compatibility list, 2015): an adaptation of BY-SA 4.0 material may be licensed under GPL-3.0, so the fonts can ship inside a GPL-3.0-or-later program. The attribution above and this notice travel with the source and binaries: `cmake --install` puts this README, `LICENSE` and the top-level `NOTICE` in `<prefix>/share/doc/blockwright/`, and `blockwright-cli --version` names the fonts, their author and licence.

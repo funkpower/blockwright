@@ -479,7 +479,12 @@ Sauce normalSauce(const Sauce& from, int width, int height, bool ice) {
 // a pixel face is the layer's "source"; one in a TheDraw font (1.2) is its
 // "tdfSource", the same shape, so a 1.1 reader, which refuses a face kind
 // it doesn't know, drops the key instead and shows the saved cells.
-const char* sourceKey(const TextSource& t) { return t.face.kind == FaceRef::Kind::Tdf ? "tdfSource" : "source"; }
+// Whole-cell big text uses bigSource (1.4) for the same fallback.
+const char* sourceKey(const TextSource& t) {
+    if (t.bigStyle != BigTextStyle::None)
+        return "bigSource";
+    return t.face.kind == FaceRef::Kind::Tdf ? "tdfSource" : "source";
+}
 
 QJsonObject textSourceJson(const TextSource& t) {
     QJsonObject face{{"kind", qstr(faceKindName(t.face.kind))}};
@@ -491,7 +496,7 @@ QJsonObject textSourceJson(const TextSource& t) {
         face["name"] = qstr(t.face.name);
         break;
     }
-    return QJsonObject{
+    QJsonObject out{
         {"text", QString::fromStdU32String(t.text)},
         {"face", face},
         {"case", qstr(textCaseName(t.textCase))},
@@ -501,6 +506,14 @@ QJsonObject textSourceJson(const TextSource& t) {
         {"wrapWidth", t.wrapWidth},
         {"colour", int(t.colour)},
     };
+    if (t.bigStyle != BigTextStyle::None || !t.bigColours.empty()) {
+        out["bigStyle"] = qstr(bigTextStyleName(t.bigStyle));
+        QJsonArray colours;
+        for (const auto c : t.bigColours)
+            colours.append(int(c));
+        out["bigColours"] = colours;
+    }
+    return out;
 }
 
 TextSource textSourceFromJson(const QJsonObject& o, const std::string& what, const char* key,
@@ -516,6 +529,18 @@ TextSource textSourceFromJson(const QJsonObject& o, const std::string& what, con
     if (!kind)
         fail(f.what() + ": unknown face kind \"" + f.string("kind") + "\"");
     t.face.kind = *kind;
+    if (r.has("bigStyle")) {
+        const auto style = bigTextStyleFromName(r.string("bigStyle"));
+        if (!style)
+            fail(r.what() + ": unknown big text style");
+        t.bigStyle = *style;
+        const auto colours = r.array("bigColours");
+        if (colours.size() > int(TextSource::kMaxBigColours))
+            fail(r.what() + ": too many big text colours");
+        for (const auto c : colours)
+            t.bigColours.push_back(std::uint8_t(r.integerOf(c, "bigColours", 0, 15)));
+    } else if (r.has("bigColours"))
+        fail(r.what() + ": bigColours without bigStyle");
     if (std::string_view(sourceKey(t)) != key)
         fail(f.what() + ": a " + f.string("kind") + " face under \"" + key + "\"");
     switch (*kind) {
@@ -660,9 +685,16 @@ QJsonObject layerJson(const Layer& l) {
         {"alphaLocked", p.alphaLocked},
         {"mode", qstr(layerModeName(p.mode))},
     };
-    if (p.text)
-        o[QLatin1String(sourceKey(*p.text))] = textSourceJson(*p.text);
-    if (p.style)
+    const bool big = p.text && p.text->bigStyle != BigTextStyle::None;
+    if (p.text) {
+        auto source = textSourceJson(*p.text);
+        // A 1.3 reader refuses a styled text layer without a known source.
+        // Keep both new properties under the key it skips together.
+        if (big && p.style)
+            source["style"] = textStyleJson(*p.style);
+        o[QLatin1String(sourceKey(*p.text))] = source;
+    }
+    if (p.style && !big)
         o["style"] = textStyleJson(*p.style);
     return o;
 }
@@ -693,7 +725,9 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     // a live text layer's source; the cells are its drawn text as saved
     if (r.has("source") && r.has("tdfSource"))
         fail(what + " has both a \"source\" and a \"tdfSource\"");
-    for (const char* key : {"source", "tdfSource"})
+    if (r.has("bigSource") && (r.has("source") || r.has("tdfSource")))
+        fail(what + " has more than one text source");
+    for (const char* key : {"source", "tdfSource", "bigSource"})
         if (r.has(key)) {
             if (p.kind != LayerKind::Text)
                 fail(what + ": a " + std::string(layerKindName(p.kind)) + " layer has a text source");
@@ -703,7 +737,15 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     // pixels layer's is drawn at composite time, which a 1.x reader would
     // drop, so only a 2.x project has one
     if (r.has("style")) {
+        if (p.text && p.text->bigStyle != BigTextStyle::None)
+            fail(what + ": big text effects belong inside bigSource");
         p.style = textStyleFromJson(r.object("style"), what);
+    } else if (r.has("bigSource")) {
+        const Reader big(r.object("bigSource"), what + " bigSource");
+        if (big.has("style"))
+            p.style = textStyleFromJson(big.object("style"), big.what());
+    }
+    if (p.style) {
         if (const auto problem = layerStyleProblem(p, {&fonts, nullptr}))
             fail(what + ": " + *problem);
         // any style there, even one with nothing switched on
@@ -1560,9 +1602,11 @@ Entries encode(const Project& project) {
 
     QJsonArray order;
     bool styled = false;  // a layer whose style a 1.x reader would drop
+    bool bigText = false;
     for (const Layer& l : stack.layers()) {
         order.append(qint64(l.props.id));
         if (l.props.text) {
+            bigText = bigText || l.props.text->bigStyle != BigTextStyle::None;
             const std::string what = layerPath(l.props.id, false);
             if (l.props.kind != LayerKind::Text)
                 fail(what + ": a " + std::string(layerKindName(l.props.kind)) + " layer has a text source");
@@ -1587,8 +1631,9 @@ Entries encode(const Project& project) {
     }
     const QJsonObject manifest{
         {"format", "blockwright"},
-        {"version", qstr(styled ? std::to_string(kStyledFormatMajor) + "." + std::to_string(kStyledFormatMinor)
-                                  : std::to_string(kFormatMajor) + "." + std::to_string(kFormatMinor))},
+        {"version",
+         qstr(styled ? std::to_string(kStyledFormatMajor) + "." + std::to_string(kStyledFormatMinor)
+                     : std::to_string(kFormatMajor) + "." + std::to_string(bigText ? kBigTextFormatMinor : kFormatMinor))},
         {"width", stack.width()},
         {"height", stack.height()},
         {"palette", "cga"},

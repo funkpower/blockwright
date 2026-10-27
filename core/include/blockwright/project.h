@@ -70,6 +70,8 @@ namespace bw::project {
 
 inline constexpr int kFormatMajor = 1;
 inline constexpr int kFormatMinor = 3;
+// A live whole-cell big text source, skipped by older readers as saved cells.
+inline constexpr int kBigTextFormatMinor = 4;
 // The version of a project with a cells or pixels layer that has a style.
 inline constexpr int kStyledFormatMajor = 2;
 inline constexpr int kStyledFormatMinor = 0;

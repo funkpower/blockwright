@@ -1,4 +1,5 @@
 #include "blockwright/text.h"
+#include "blockwright/big_text.h"
 
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
@@ -75,6 +76,10 @@ struct Box {
 };
 
 Box measure(const TextSource& source, const Face& face) {
+    if (source.bigStyle != BigTextStyle::None) {
+        const auto e = measureBigText(source);
+        return {e.width, e.height};
+    }
     const SpacedFace spaced(face, source.letterSpacing);
     const TextExtent e = measureText(spaced, casedText(source), {source.wrapWidth});
     return {std::max<std::int64_t>(source.wrapWidth, e.width),
@@ -133,6 +138,21 @@ Laid laidOut(const TextSource& source, const Face& face, const TextStyle* style)
     const Box box = measure(source, face);
     if (const auto problem = boxProblem(grown(box, style)))
         throw TextError(*problem);
+    if (source.bigStyle != BigTextStyle::None) {
+        const auto big = renderBigText(source);
+        Laid out;
+        out.missing = big.drawing.missing;
+        Layer layer = makeLayer(LayerKind::Cells, 0, 0);
+        layer.cells = big.drawing.cells;
+        out.in = styleInputOf(layer);
+        out.in.box = CellRect{0, 0, layer.width(), layer.height()};
+        out.in.bands.clear();
+        for (std::size_t i = 0; i < big.lines.size(); ++i)
+            out.in.bands.emplace_back(2 * std::max(0, big.lines[i].top),
+                                      i + 1 < big.lines.size() ? 2 * std::max(0, big.lines[i + 1].top)
+                                                               : 2 * layer.cells.height());
+        return out;
+    }
     const SpacedFace spaced(face, source.letterSpacing);
     const TextLayout layout = layoutText(spaced, casedText(source), {source.wrapWidth});
     const int lineRows = face.height() / 2;
@@ -181,6 +201,8 @@ Laid laidOut(const TextSource& source, const Face& face, const TextStyle* style)
 } // namespace
 
 TextRender renderText(const TextSource& source, const Face& face) {
+    if (source.bigStyle != BigTextStyle::None)
+        return renderBigText(source).drawing;
     Laid laid = laidOut(source, face, nullptr);
     const StyleInput& in = laid.in;
     const int width = in.mask.width, height = in.mask.height / 2;
@@ -247,6 +269,16 @@ std::optional<std::string> textSourceProblem(const TextSource& source, const Fon
                std::to_string(TextSource::kMaxWrapWidth);
     if (source.colour > 15)
         return "colour " + std::to_string(source.colour) + " is not a palette index 0 to 15";
+    if (bigTextStyleName(source.bigStyle).empty())
+        return "unknown big text style";
+    if (source.bigColours.size() > TextSource::kMaxBigColours)
+        return "too many big text colours";
+    for (const auto c : source.bigColours)
+        if (c > 15)
+            return "big text colour is not mIRC 0 to 15";
+    if (source.bigStyle != BigTextStyle::None &&
+        (source.face.kind != FaceRef::Kind::Pixel || source.face.name != "block"))
+        return "a big text style needs the block face";
     // a layer the project file holds, measured without drawing it
     return boxProblem(measure(source, *face));
 }

@@ -16,6 +16,7 @@
 #include "toolbox.h"
 
 #include "blockwright/font_store.h"
+#include "blockwright/big_text.h"
 #include "blockwright/layer.h"
 #include "blockwright/text.h"
 
@@ -1518,4 +1519,189 @@ TEST_CASE("a key that edits nothing neither starts an edit nor changes one", "[t
     key(v, Qt::Key_Backspace, QStringLiteral("\b"));
     CHECK(textTool(w)->editing() == id);
     CHECK(sourceOf(d).text == U"ABCD");
+}
+
+TEST_CASE("big text options create each style and undo colours and modes", "[text][big-text]") {
+    MainWindow w;
+    w.show();
+    use(w, "text");
+    auto* d = w.document();
+    auto* o = w.toolOptions()->textOptions();
+    auto* tool = textTool(w);
+    REQUIRE(o->bigStyleBox()->count() == 5);
+    click(w.canvasView(), 2, 2);
+    for (const auto style :
+         {BigTextStyle::Shadow, BigTextStyle::ThreeD, BigTextStyle::Outline, BigTextStyle::Block}) {
+        o->bigStyleBox()->setCurrentIndex(o->bigStyleBox()->findData(int(style)));
+        CHECK(tool->defaults().bigStyle == style);
+        CHECK_FALSE(o->facePicker()->isEnabled());
+    }
+    type(w.canvasView(), QStringLiteral("420"));
+    REQUIRE(d->active());
+    REQUIRE(sourceOf(d).bigStyle == BigTextStyle::Block);
+    const auto rainbow = *d->active();
+    CHECK(rainbow.cells == renderText(sourceOf(d), blockFace()).cells);
+    CHECK(tool->caretRect()->height() == 8 * w.canvasView()->cellRect(QPoint(0, 0)).height());
+    const int steps = d->undoStack()->count();
+    o->bigColoursBox()->setText(QStringLiteral("ice"));
+    QMetaObject::invokeMethod(o->bigColoursBox(), "editingFinished", Qt::DirectConnection);
+    CHECK(sourceOf(d).bigColours == std::vector<std::uint8_t>{0, 11, 12, 2, 12, 11});
+    CHECK(d->undoStack()->count() == steps + 1);
+    d->undoStack()->undo();
+    CHECK(*d->active() == rainbow);
+    CHECK(o->bigColoursBox()->text() == QStringLiteral("0"));
+    d->undoStack()->redo();
+    CHECK(o->bigColoursBox()->text() == QStringLiteral("0,11,12,2,12,11"));
+    const auto beforeBad = *d->active();
+    o->bigColoursBox()->setText(QStringLiteral("16"));
+    QMetaObject::invokeMethod(o->bigColoursBox(), "editingFinished", Qt::DirectConnection);
+    CHECK(*d->active() == beforeBad);
+    o->bigStyleBox()->setCurrentIndex(o->bigStyleBox()->findData(int(BigTextStyle::None)));
+    CHECK(sourceOf(d).bigStyle == BigTextStyle::None);
+    CHECK(o->facePicker()->isEnabled());
+    CHECK(o->colourBox()->isEnabled());
+    CHECK_FALSE(o->bigColoursBox()->isEnabled());
+    d->undoStack()->undo();
+    CHECK(*d->active() == beforeBad);
+}
+
+TEST_CASE("big text clicks stay on the first line above a low glyph", "[text][big-text][line-hit]") {
+    MainWindow w;
+    use(w, "text");
+    auto* v = w.canvasView();
+    auto* d = w.document();
+    auto* o = w.toolOptions()->textOptions();
+    o->bigStyleBox()->setCurrentIndex(o->bigStyleBox()->findData(int(BigTextStyle::Block)));
+    click(v, 2, 2);
+    type(v, QStringLiteral("A"));
+    key(v, Qt::Key_Return);
+    type(v, QStringLiteral("_"));
+    REQUIRE(sourceOf(d).text == U"A\n_");
+    REQUIRE(sourceOf(d).letterSpacing == 0);
+    REQUIRE(sourceOf(d).lineSpacing == 0);
+    REQUIRE(sourceOf(d).wrapWidth == 0);
+    REQUIRE(sourceOf(d).align == TextAlign::Left);
+    REQUIRE_FALSE(d->active()->cells.at(0, 2).transparent);  // the A's left stroke
+    click(v, 2, 4);
+    CHECK(textTool(w)->caret() == 0);
+    CHECK(textTool(w)->caretCell() == QPoint(2, 2));
+    type(v, QStringLiteral("B"));
+    CHECK(sourceOf(d).text == U"BA\n_");
+}
+
+TEST_CASE("big text clicks use line boxes across gaps and below the last line", "[text][big-text][line-hit]") {
+    for (const int spacing : {0, 3}) {
+        INFO("line spacing " << spacing);
+        MainWindow w;
+        use(w, "text");
+        auto* v = w.canvasView();
+        auto* d = w.document();
+        auto* tool = textTool(w);
+        auto* o = w.toolOptions()->textOptions();
+        o->bigStyleBox()->setCurrentIndex(o->bigStyleBox()->findData(int(BigTextStyle::Block)));
+        o->lineSpacingBox()->setValue(spacing);
+        click(v, 2, 2);
+        type(v, QStringLiteral("A"));
+        key(v, Qt::Key_Return);
+        type(v, QStringLiteral("_"));
+        REQUIRE(sourceOf(d).text == U"A\n_");
+        const LayerId id = d->activeLayer();
+        const size_t layers = d->layers().size();
+        // A occupies rows 0..6, the gap 7..7+spacing, and _ row 8+spacing.
+        for (int row = 7; row <= 7 + spacing; ++row) {
+            click(v, 2, 2 + row);
+            CHECK(tool->caret() == 0);
+            CHECK(tool->caretCell() == QPoint(2, 2));
+        }
+        click(v, 2, 10 + spacing);
+        CHECK(tool->caret() == 2);
+        // The low glyph's cursor keeps the untrimmed eight-row font origin.
+        CHECK(tool->caretCell() == QPoint(2, 3 + spacing));
+        key(v, Qt::Key_Up);
+        CHECK(tool->caret() == 0);
+        CHECK(tool->caretCell() == QPoint(2, 2));
+        key(v, Qt::Key_Down);
+        CHECK(tool->caret() == 2);
+        CHECK(tool->caretCell() == QPoint(2, 3 + spacing));
+        // A click below the tight layer starts a new text cursor.
+        click(v, 2, 11 + spacing);
+        CHECK(tool->editing() == 0);
+        CHECK(tool->spot() == QPoint(2, 11 + spacing));
+        type(v, QStringLiteral("B"));
+        CHECK(d->layers().size() == layers + 1);
+        CHECK(d->activeLayer() != id);
+        CHECK(sourceOf(d).text == U"B");
+        CHECK(d->layers().find(id)->props.text->text == U"A\n_");
+    }
+}
+
+TEST_CASE("wrapped big text clicks and vertical arrows use the visible line", "[text][big-text][line-hit]") {
+    for (const auto style : {BigTextStyle::Block, BigTextStyle::Shadow, BigTextStyle::ThreeD,
+                             BigTextStyle::Outline}) {
+        INFO(bigTextStyleName(style));
+        MainWindow w;
+        use(w, "text");
+        auto* v = w.canvasView();
+        auto* d = w.document();
+        auto* tool = textTool(w);
+        auto* o = w.toolOptions()->textOptions();
+        o->bigStyleBox()->setCurrentIndex(o->bigStyleBox()->findData(int(style)));
+        o->wrapWidthBox()->setValue(10);  // one eight-column glyph plus the effect room
+        click(v, 2, 2);
+        type(v, QStringLiteral("A_"));
+        REQUIRE(sourceOf(d).text == U"A_");
+        const auto drawn = renderBigText(sourceOf(d));
+        REQUIRE(drawn.lines.size() == 2);
+        click(v, 3, 4);
+        CHECK(tool->caret() == 0);
+        key(v, Qt::Key_Down);
+        CHECK(tool->caret() == 1);
+        CHECK(tool->caretCell() == QPoint(2 + drawn.lines[1].left, 2 + drawn.lines[1].top));
+        key(v, Qt::Key_Up);
+        CHECK(tool->caret() == 0);
+        CHECK(tool->caretCell() == QPoint(2 + drawn.lines[0].left, 2 + drawn.lines[0].top));
+        type(v, QStringLiteral("B"));
+        CHECK(sourceOf(d).text == U"BA_");
+    }
+}
+
+TEST_CASE("TheDraw text line clicks retain native boundaries with and without wrapping", "[text][fonts][line-hit]") {
+    const auto folder = loadFontsFolder(QString::fromStdString((bwtest::dataDir() / "tdf").string()));
+    REQUIRE(folder);
+    REQUIRE_FALSE(folder->fonts.empty());
+    for (const auto& font : folder->fonts)
+        for (const bool wrapped : {false, true}) {
+            INFO(font.displayName << " wrapped " << wrapped);
+            MainWindow w;
+            auto* v = w.canvasView();
+            auto* d = w.document();
+            auto* tool = textTool(w);
+            d->setFontsFolder(folder);
+            use(w, "text");
+            TextSource s;
+            s.face = font.ref;
+            s.lineSpacing = 3;
+            s.wrapWidth = wrapped ? 1 : 0;
+            tool->setSettings(s, QStringLiteral("Text settings"), d);
+            click(v, 2, 2);
+            type(v, QStringLiteral("A"));
+            if (!wrapped)
+                key(v, Qt::Key_Return);
+            type(v, QStringLiteral("_"));
+            REQUIRE(sourceOf(d).text == (wrapped ? U"A_" : U"A\n_"));
+            const int rows = font.resolvedFace()->height() / 2;
+            REQUIRE(rows >= 3);
+            click(v, 2, 3);  // inside A
+            CHECK(tool->caret() == 0);
+            click(v, 2, 2 + rows + 2);  // last row of the gap belongs to the first line
+            CHECK(tool->caret() == 0);
+            click(v, 2, 2 + rows + 3);  // second line starts here
+            CHECK(tool->caret() == (wrapped ? 1 : 2));
+            CHECK(tool->caretCell() == QPoint(2, 2 + rows + 3));
+            key(v, Qt::Key_Up);
+            CHECK(tool->caret() == 0);
+            CHECK(tool->caretCell() == QPoint(2, 2));
+            type(v, QStringLiteral("B"));
+            CHECK(sourceOf(d).text == (wrapped ? U"BA_" : U"BA\n_"));
+        }
 }

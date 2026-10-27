@@ -5,11 +5,13 @@
 #include "face_picker.h"
 #include "text_tool.h"
 
+#include "blockwright/big_text.h"
 #include "blockwright/palette.h"
 #include "blockwright/text.h"
 
 #include <QComboBox>
 #include <QFormLayout>
+#include <QLineEdit>
 #include <QPixmap>
 #include <QScopedValueRollback>
 #include <QSpinBox>
@@ -83,9 +85,25 @@ TextOptions::TextOptions(CanvasView* view, TextTool* tool, QWidget* parent)
         colour_->addItem(swatch(i), names[i], i);
     colour_->setToolTip(tr("The letters' colour"));
 
+    bigStyle_ = new QComboBox;
+    bigStyle_->setObjectName(QStringLiteral("textBigStyle"));
+    bigStyle_->addItem(tr("None"), int(BigTextStyle::None));
+    bigStyle_->addItem(tr("Big shadow"), int(BigTextStyle::Shadow));
+    bigStyle_->addItem(tr("Big 3D"), int(BigTextStyle::ThreeD));
+    bigStyle_->addItem(tr("Big outline"), int(BigTextStyle::Outline));
+    bigStyle_->addItem(tr("Big block"), int(BigTextStyle::Block));
+    bigStyle_->setToolTip(tr("Whole-cell IBM 8×8 lettering, matching /ascii big"));
+    bigColours_ = new QLineEdit;
+    bigColours_->setObjectName(QStringLiteral("textBigColours"));
+    bigColours_->setMaxLength(256);
+    bigColours_->setToolTip(tr("mIRC colours 0–15 or names, separated by commas: face, then shadow or border. "
+                               "Palette names: fire, ice, neon, sea, forest, candy, steel, rainbow."));
+
     auto* form = new QFormLayout(this);
     form->setContentsMargins(0, 0, 0, 0);
     form->addRow(tr("Face"), picker_);
+    form->addRow(tr("Big style"), bigStyle_);
+    form->addRow(tr("Big colours"), bigColours_);
     form->addRow(tr("Case"), case_);
     form->addRow(tr("Letter spacing"), letterSpacing_);
     form->addRow(tr("Line spacing"), lineSpacing_);
@@ -93,6 +111,14 @@ TextOptions::TextOptions(CanvasView* view, TextTool* tool, QWidget* parent)
     form->addRow(tr("Wrap"), wrap_);
     form->addRow(tr("Colour"), colour_);
 
+    connect(bigStyle_, &QComboBox::currentIndexChanged, this, [this] {
+        if (syncing_)
+            return;
+        const auto style = BigTextStyle(bigStyle_->currentData().toInt());
+        bigColours_->setText(QString::fromStdString(bigTextColoursText(bigTextDefaultColours(style))));
+        apply(tr("Big Text Style"));
+    });
+    connect(bigColours_, &QLineEdit::editingFinished, this, [this] { apply(tr("Big Text Colours")); });
     connect(picker_, &FacePicker::picked, this, [this] { apply(tr("Text Face")); });
     connect(case_, &QComboBox::currentIndexChanged, this, [this] { apply(tr("Text Case")); });
     connect(letterSpacing_, &QSpinBox::valueChanged, this, [this] { apply(tr("Letter Spacing")); });
@@ -180,6 +206,14 @@ void TextOptions::sync() {
     align_->setCurrentIndex(align_->findData(int(s.align)));
     wrap_->setValue(s.wrapWidth);
     colour_->setCurrentIndex(colour_->findData(int(s.colour)));
+    bigStyle_->setCurrentIndex(bigStyle_->findData(int(s.bigStyle)));
+    bigColours_->setText(QString::fromStdString(
+        bigTextColoursText(s.bigColours.empty() ? bigTextDefaultColours(s.bigStyle) : s.bigColours)));
+    const bool big = s.bigStyle != BigTextStyle::None;
+    picker_->setEnabled(!big);
+    colour_->setEnabled(!big);
+    bigColours_->setEnabled(big);
+
 }
 
 void TextOptions::apply(const QString& undoText) {
@@ -187,6 +221,19 @@ void TextOptions::apply(const QString& undoText) {
         return;
     TextSource s = shown();
     s.face = picker_->current();
+    s.bigStyle = BigTextStyle(bigStyle_->currentData().toInt());
+    if (s.bigStyle != BigTextStyle::None) {
+        const auto colours = parseBigTextColours(bigColours_->text().toStdString());
+        if (!colours) {
+            bigColours_->setToolTip(tr("Use mIRC colours 0–15 or names separated by "
+                                       "commas, or a palette name."));
+            bigColours_->selectAll();
+            return;
+        }
+        s.bigColours = *colours;
+        s.face = FaceRef{};
+    } else
+        s.bigColours.clear();
     s.textCase = TextCase(case_->currentData().toInt());
     s.letterSpacing = letterSpacing_->value();
     s.lineSpacing = lineSpacing_->value();
