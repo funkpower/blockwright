@@ -1,10 +1,11 @@
 // The selection, mirror, guide and reference-image parts of the main window:
-// the Tools and Selection menus, and their items in File, Edit and View.
+// the Tools and Selection menus, and their items in File, Edit, View and Layer.
 
 #include "main_window.h"
 
 #include "canvas_view.h"
 #include "draw_tools.h"
+#include "reference_scale.h"
 #include "select_tool.h"
 #include "text_tool.h"
 #include "tool.h"
@@ -12,6 +13,8 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QBuffer>
+#include <QFile>
 #include <QFileDialog>
 #include <QLabel>
 #include <QImageReader>
@@ -24,16 +27,75 @@
 namespace bw {
 
 bool MainWindow::loadReferenceImage(const QString& path, QString* error) {
-    QImageReader reader(path);
-    reader.setAutoTransform(true);
-    const QImage image = reader.read();
-    if (image.isNull()) {
-        *error = reader.errorString();
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        *error = file.errorString();
         return false;
     }
-    view_->setReferenceImage(image);
-    view_->setReferenceVisible(true);
+    if (quint64(file.size()) > project::kMaxEntryBytes) {
+        *error = tr("The picture is over %1 MiB.").arg(project::kMaxEntryBytes >> 20);
+        return false;
+    }
+    QByteArray bytes = file.readAll();
+    // Enforce the decode ceiling and retain at most the view's pixel budget.
+    QSize original;
+    const QImage image = readReferencePicture(bytes, CanvasView::kMaxReferencePixels, &original, error);
+    if (image.isNull() || original.isEmpty()) {
+        statusBar()->showMessage(tr("Could not open reference image: %1").arg(*error), 5000);
+        return false;
+    }
+    if (!referenceImageType(std::string_view(bytes.constData(), std::size_t(bytes.size())))) {
+        // kept as a PNG: the project holds PNG and JPEG pictures only
+        QByteArray png;
+        QBuffer out(&png);
+        if (!out.open(QIODevice::WriteOnly) || !image.save(&out, "PNG")) {
+            *error = tr("The picture could not be kept as a PNG.");
+            return false;
+        }
+        bytes = png;
+    }
+    ReferenceImage picture;
+    picture.bytes = std::make_shared<const std::string>(bytes.toStdString());
+    picture.width = std::max(1, view_->canvasPixels().width());
+    picture.height = int(std::clamp<double>(std::round(double(picture.width) * original.height() / original.width()),
+                                            1, ReferenceImage::kMaxPlace));
+    const auto kept = picture.bytes;
+    if (!doc_.addReferenceLayer(std::move(picture))) {
+        *error = tr("The picture can't be kept in a project.");
+        return false;
+    }
+    view_->keepReferencePicture(kept, image);
     return true;
+}
+
+void MainWindow::createReferenceActions() {
+    layerMenu_->addSeparator();
+    QMenu* opacity = layerMenu_->addMenu(tr("Reference &Opacity"));
+    opacity->setObjectName(QStringLiteral("referenceOpacity"));
+    auto* group = new QActionGroup(this);
+    for (const int percent : {25, 50, 75, 100}) {
+        QAction* a = opacity->addAction(tr("%1%").arg(percent), this, [this, percent] {
+            const Layer* l = doc_.active();
+            if (!l || !l->props.reference || l->props.reference->opacity == percent)
+                return;
+            LayerProperties props = l->props;
+            props.reference->opacity = percent;
+            doc_.setLayerProperties(l->props.id, std::move(props), tr("Reference Opacity"));
+        });
+        a->setObjectName(QStringLiteral("referenceOpacity%1").arg(percent));
+        a->setCheckable(true);
+        group->addAction(a);
+    }
+    const auto update = [this, opacity, group] {
+        const Layer* l = doc_.active();
+        const bool on = l && l->props.reference;
+        opacity->setEnabled(on);
+        for (QAction* a : group->actions())
+            a->setChecked(on && a->objectName() == QStringLiteral("referenceOpacity%1").arg(l->props.reference->opacity));
+    };
+    connect(&doc_, &Document::layersChanged, this, update);
+    connect(&doc_, &Document::activeLayerChanged, this, update);
+    update();
 }
 
 void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
@@ -149,7 +211,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
                 [this, a, mode = m.mode] { a->setChecked(view_->symmetryChoice().mode == mode); });
     }
 
-    // View: guides and the reference image.
+    // View: guides.
     view->addSeparator();
     QMenu* guides = view->addMenu(tr("&Guides"));
     auto* guideGroup = new QActionGroup(this);
@@ -163,29 +225,8 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         check(add(guides, text, g.name, QKeySequence(), [this, s = g.size] { view_->setGuide(s); }), guideGroup,
               g.size == view_->guide());
     }
-    QMenu* reference = view->addMenu(tr("&Reference Image"));
-    QAction* showReference = check(add(reference, tr("&Show"), "showReferenceImage", QKeySequence(), [] {}), nullptr,
-                                   view_->referenceVisible());
-    connect(showReference, &QAction::toggled, view_, &CanvasView::setReferenceVisible);
-    QMenu* opacity = reference->addMenu(tr("&Opacity"));
-    auto* opacityGroup = new QActionGroup(this);
-    for (const int percent : {25, 50, 75, 100})
-        check(add(opacity, tr("%1%").arg(percent), "", QKeySequence(),
-                  [this, percent] { view_->setReferenceOpacity(percent / 100.0); }),
-              opacityGroup, qRound(view_->referenceOpacity() * 100) == percent)
-            ->setObjectName(QStringLiteral("referenceOpacity%1").arg(percent));
-    QAction* clearReference = add(reference, tr("&Clear"), "clearReferenceImage", QKeySequence(),
-                                  [this] { view_->setReferenceImage({}); });
-    const auto updateReference = [this, showReference, opacity, clearReference] {
-        const bool any = !view_->referenceImage().isNull();
-        showReference->setEnabled(any);
-        opacity->setEnabled(any);
-        clearReference->setEnabled(any);
-        showReference->setChecked(view_->referenceVisible());
-    };
-    connect(view_, &CanvasView::referenceChanged, this, updateReference);
     connect(view_, &CanvasView::referenceFailed, this, [this] {
-        statusBar()->showMessage(tr("The reference image is too large to show at this zoom"), 5000);
+        statusBar()->showMessage(tr("A reference image can't be shown at this zoom"), 5000);
     });
 
     // Tools: one checkable item per tool in the registry.
@@ -323,7 +364,6 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     connect(selectTool_, &Tool::changed, this, updateSelection);
     connect(view_, &CanvasView::selectionChanged, this, updateSelection);
     updateSelection();
-    updateReference();
 }
 
 } // namespace bw

@@ -239,6 +239,10 @@ public:
     // font from either is copied into the project's fonts, as
     // setLayerProperties copies one from the folder.
     LayerId addTextLayer(const TextSource& source, int x, int y, const FontStore* held = nullptr);
+    // A reference layer showing `picture` (layer.h), named "Reference N", on
+    // top of the stack and made active: one undo step. 0 when the project
+    // writer would refuse the picture (project::layerReferenceProblem).
+    LayerId addReferenceLayer(ReferenceImage picture);
     // Takes back a text layer addTextLayer made that holds no text, when the
     // steps after its own, done or undone, only change its properties (its
     // typing): the layer goes and so do those steps, with nothing left to

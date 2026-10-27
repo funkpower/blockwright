@@ -29,8 +29,9 @@
 // - generator: the cells a program made (generator.h), its cached output,
 //   composited as a cells layer's are. Tools don't edit them; running the
 //   generator again replaces them. bake() turns it into a cells layer.
-// - reference: reserved (the reference image); a stack holds it but the
-//   compositor skips it, and it is never exported.
+// - reference: a picture to trace (ReferenceImage, below), drawn by the
+//   views over the art. It has no cells (0 x 0), takes no paint, and the
+//   compositor skips it, so it is never exported.
 //
 // Groups (pass-through only in PLAN §5) are not modelled yet: the stack is
 // flat.
@@ -45,6 +46,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -89,6 +91,25 @@ CellRect unite(CellRect a, CellRect b);
 // after), exact at any offset.
 CellRect unite(CellRect a, CellRect b, CellRect clip);
 
+// A reference layer's picture (PLAN §5, #178): a PNG or JPEG kept as its
+// file's bytes, which the core never decodes, and where it is drawn. Its
+// place and size are in canvas pixels (the renderer's 1x pixels, a cell
+// being its glyph cell), not cells: (x, y) is its top-left corner, either
+// may be negative or past the canvas, and width by height the area it is
+// scaled across, its aspect kept or not. Opacity is a percentage.
+struct ReferenceImage {
+    static constexpr int kMaxPlace = 1 << 24;  // |x|, |y|, width and height at most
+    std::shared_ptr<const std::string> bytes;
+    int x = 0, y = 0;
+    int width = 1, height = 1;
+    int opacity = 50;  // 0-100
+    // The bytes by value, so a copy read back from a file is equal.
+    bool operator==(const ReferenceImage& o) const;
+};
+
+// "png" or "jpg" by the file's signature; empty for anything else.
+std::optional<std::string_view> referenceImageType(std::string_view bytes);
+
 // Everything about a layer but its cells: what layers/<id>.json holds.
 struct LayerProperties {
     LayerId id = 0;
@@ -111,6 +132,9 @@ struct LayerProperties {
     // (text.h); any other's is drawn by the compositor over its cells
     // (style_draw.h), which stay as they were painted.
     std::optional<TextStyle> style;
+    // A reference layer's picture: only a reference layer has one, and one
+    // without is empty (an older reader that dropped it).
+    std::optional<ReferenceImage> reference;
 
     bool operator==(const LayerProperties&) const = default;
 };

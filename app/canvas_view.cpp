@@ -10,7 +10,9 @@
 #include "blockwright/selection.h"
 
 #include <QApplication>
+#include <QBuffer>
 #include <QGuiApplication>
+#include <QImageReader>
 #include <QInputMethod>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -193,6 +195,8 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     // active layer is other cells under the tool.
     connect(doc_, &Document::layersAboutToChange, this, &CanvasView::finishTool);
     connect(doc_, &Document::layersChanged, this, &CanvasView::brushSettingsChanged);
+    // a reference layer's picture, place or opacity changes no cell
+    connect(doc_, &Document::layersChanged, this, qOverload<>(&QWidget::update));
     connect(doc_, &Document::activeLayerChanged, this, [this] {
         cancelTool();
         brushSettingsChanged();
@@ -493,30 +497,6 @@ void CanvasView::setGuide(const QSize& size) {
     update();
 }
 
-void CanvasView::setReferenceImage(const QImage& image) {
-    reference_ = image;
-    referenceScaled_ = {};
-    referenceTarget_ = {};
-    update();
-    emit referenceChanged();
-}
-
-void CanvasView::setReferenceVisible(bool on) {
-    if (on == referenceVisible_)
-        return;
-    referenceVisible_ = on;
-    update();
-    emit referenceChanged();
-}
-
-void CanvasView::setReferenceOpacity(qreal opacity) {
-    opacity = std::clamp(opacity, 0.0, 1.0);
-    if (opacity == referenceOpacity_)
-        return;
-    referenceOpacity_ = opacity;
-    update();
-}
-
 QSize CanvasView::sizeHint() const { return DeviceGrid::of(this).widgetSize(viewSize()); }
 
 QVariant CanvasView::inputMethodQuery(Qt::InputMethodQuery query) const {
@@ -592,7 +572,7 @@ void CanvasView::paintOverlays(QPainter& p, const QRect& clip) {
         const SavedPainter saved(p);
         tool_->paintCells(p, clip);
     }
-    paintReference(p, clip);
+    paintReferenceLayers(p, clip);
     if (!guide_.isEmpty()) {
         const Canvas& cv = doc_->canvas();
         const QSize size = viewSize();
@@ -616,94 +596,123 @@ void CanvasView::paintOverlays(QPainter& p, const QRect& clip) {
     }
 }
 
-void CanvasView::paintReference(QPainter& p, const QRect& clip) {
-    const QSize size = viewSize();
-    if (!referenceVisible_ || reference_.isNull() || size.isEmpty())
+void CanvasView::paintReferenceLayers(QPainter& p, const QRect& clip) {
+    const LayerStack& stack = doc_->layers();
+    std::vector<const Layer*> shown;
+    for (std::size_t i = 0; i < stack.size(); ++i) {
+        const LayerProperties& l = stack[i].props;
+        if (l.kind == LayerKind::Reference && l.visible && l.reference)
+            shown.push_back(&stack[i]);
+    }
+    // drop what no visible layer shows any more
+    const auto shows = [&](const std::shared_ptr<const std::string>& bytes) {
+        for (const Layer* l : shown)
+            if (l->props.reference->bytes == bytes || *l->props.reference->bytes == *bytes)
+                return true;
+        return false;
+    };
+    std::erase_if(pictures_, [&](const Picture& k) { return !shows(k.bytes); });
+    std::erase_if(scaled_, [&](const Scaled& k) {
+        const Layer* l = stack.find(k.id);
+        return !l || !l->props.visible || !l->props.reference || l->props.reference->bytes != k.bytes;
+    });
+    if (shown.empty())
         return;
-    // Across the canvas width at the picture's own aspect, top-aligned: one
-    // scale both ways, the canvas width over the picture's. Only the part
-    // over the canvas is scaled, and each of its pixels is what the whole
-    // picture scaled by that factor has there.
-    const int w = size.width();
-    const double scale = double(w) / reference_.width();
-    const double fullH = reference_.height() * scale;
-    const QSize target(w, int(std::clamp<double>(std::ceil(fullH), 1, size.height())));
-    if (target != referenceTarget_) {
-        referenceTarget_ = target;
-        referenceScaled_ = {};
-        QSize cache = target;  // the cache pixels over the target
-        int margin = 0;  // cache rows below the target
-        const qint64 pixels = qint64(target.width()) * target.height();
-        if (pixels > kMaxReferencePixels) {
-            // Drawn scaled up, so where the picture goes on below the
-            // canvas, a row more: the interpolation in the last view row,
-            // which reads the cache's last row and the one after it, then
-            // reads the picture's next row, not the last one over again. The
-            // picture ends at the right edge anyway.
-            margin = fullH > target.height() ? 1 : 0;
-            // The largest f with (width * f) * (height * f + margin) <= the cap.
-            const double tw = target.width(), th = target.height(), cap = double(kMaxReferencePixels);
-            const double f = (std::sqrt(tw * tw * margin * margin + 4 * tw * th * cap) - tw * margin) / (2 * tw * th);
-            cache = QSize(std::max(1, int(tw * f)), std::max(1, int(th * f)));
-            if (qint64(cache.width()) * (cache.height() + margin) > kMaxReferencePixels)
-                cache.setHeight(std::max(1, int(kMaxReferencePixels / cache.width()) - margin));
-        }
-        // Cache pixels to a source pixel: `scale` both ways, but for the
-        // rounding of a cache shrunk to the cap.
-        const double kx = double(cache.width()) / reference_.width();
-        const double ky = scale * cache.height() / target.height();
-        // Only a row the picture covers whole: one it covers in part would be
-        // that part opaque and fade the last view row. Short of a whole row
-        // the interpolation reads the cache's last row again, as the whole
-        // picture's does at its own bottom edge.
-        margin = int(std::clamp(std::floor(reference_.height() * ky) - cache.height(), 0.0, double(margin)));
-        referenceDrawn_ = QSizeF(target.width(), double(target.height()) * (cache.height() + margin) / cache.height());
-        try {
-            QImage scaled(cache.width(), cache.height() + margin, QImage::Format_ARGB32_Premultiplied);
-            if (!scaled.isNull()) {
-                scaled.fill(Qt::transparent);
-                bool ok = true;
-                if (kx >= 1 && ky >= 1) {
-                    // Enlarged: interpolated. The source rows under the
-                    // cache and two more, so the interpolation at its bottom
-                    // edge reads the rows the whole picture has there.
-                    const int srcH =
-                        std::min(reference_.height(), int(std::ceil(scaled.height() / ky)) + 2);
-                    QPainter sp(&scaled);
-                    sp.setRenderHint(QPainter::SmoothPixmapTransform);
-                    sp.drawImage(QRectF(0, 0, scaled.width(), srcH * ky), reference_,
-                                 QRectF(0, 0, reference_.width(), srcH));
-                } else {
-                    // Reduced: averaged, as interpolating would alias.
-                    ok = areaScale(reference_, scaled, kx, ky);
+    const QRect canvas = clip & QRect(QPoint(0, 0), viewSize());
+    // the copies' share of the cap
+    const qint64 budget = kMaxReferencePixels / qint64(shown.size());
+    for (const Layer* l : shown) {
+        const ReferenceImage& r = *l->props.reference;
+        // canvas pixels to view pixels: the zoom
+        const QRectF to(QPointF(r.x, r.y) * zoom_, QSizeF(r.width, r.height) * zoom_);
+        const QSize target(int(std::min<double>(to.width(), INT_MAX)), int(std::min<double>(to.height(), INT_MAX)));
+        const QSize cache = fitPixels(to.width(), to.height(), budget);
+        auto it = std::find_if(scaled_.begin(), scaled_.end(), [&](const Scaled& k) { return k.id == l->props.id; });
+        if (it == scaled_.end() || it->target != target || it->cache != cache) {
+            if (it == scaled_.end())
+                it = scaled_.insert(scaled_.end(), Scaled{l->props.id, r.bytes, {}, {}, {}});
+            it->target = target;
+            it->cache = cache;
+            it->image = {};
+            const QImage& source = referencePicture(r);
+            try {
+                QImage scaled = source.isNull() ? QImage{} : QImage(cache, QImage::Format_ARGB32_Premultiplied);
+                if (!source.isNull() && !scaled.isNull()) {
+                    scaled.fill(Qt::transparent);
+                    const double kx = double(cache.width()) / source.width();
+                    const double ky = double(cache.height()) / source.height();
+                    bool ok = true;
+                    if (kx >= 1 && ky >= 1) {
+                        // enlarged: interpolated
+                        QPainter sp(&scaled);
+                        sp.setRenderHint(QPainter::SmoothPixmapTransform);
+                        sp.drawImage(QRect(QPoint(0, 0), cache), source);
+                    } else {
+                        // reduced: averaged, as interpolating would alias
+                        ok = areaScale(source, scaled, kx, ky);
+                    }
+                    if (ok)
+                        it->image = std::move(scaled);
                 }
-                if (ok)
-                    referenceScaled_ = std::move(scaled);
+            } catch (const std::bad_alloc&) {
+                it->image = {};
             }
-        } catch (const std::bad_alloc&) {
-            referenceScaled_ = {};
+            // a failure stays cached with its sizes, so it isn't retried on
+            // every paint
+            if (it->image.isNull())
+                emit referenceFailed();
         }
-        // A failure stays cached with its target, so it isn't retried on
-        // every paint.
-        if (referenceScaled_.isNull())
-            emit referenceFailed();
+        if (it->image.isNull() || !to.intersects(canvas))
+            continue;
+        const SavedPainter saved(p);
+        p.setClipRect(canvas, Qt::IntersectClip);
+        p.setOpacity(r.opacity / 100.0);
+        if (it->image.size() == target && to.topLeft() == to.toRect().topLeft()) {
+            const QRect part = canvas & to.toRect();
+            p.drawImage(part.topLeft(), it->image, part.translated(-to.toRect().topLeft()));
+        } else {
+            p.setRenderHint(QPainter::SmoothPixmapTransform);
+            p.drawImage(to, it->image);
+        }
     }
-    if (referenceScaled_.isNull())
-        return;
-    const QRect r = clip & QRect(QPoint(0, 0), target);
-    if (r.isEmpty())
-        return;
-    const SavedPainter saved(p);
-    p.setOpacity(referenceOpacity_);
-    if (referenceScaled_.size() == target) {
-        p.drawImage(r.topLeft(), referenceScaled_, r);
-        return;
-    }
-    // The whole cache over the whole target and its margin, clipped to what
-    // is repainted, so a pixel doesn't depend on which part of the view is.
-    p.setClipRect(r, Qt::IntersectClip);
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
-    p.drawImage(QRectF(QPointF(0, 0), referenceDrawn_), referenceScaled_);
+}
+
+QSize CanvasView::referenceCacheSize(LayerId id) const {
+    for (const Scaled& k : scaled_)
+        if (k.id == id)
+            return k.image.size();
+    return {};
+}
+
+const QImage& CanvasView::referencePicture(const ReferenceImage& picture) {
+    for (const Picture& k : pictures_)
+        if (k.bytes == picture.bytes || *k.bytes == *picture.bytes)
+            return k.image;
+    QImage image = readReferencePicture(
+        QByteArray::fromRawData(picture.bytes->data(), qsizetype(picture.bytes->size())), kMaxReferencePixels);
+    if (!image.isNull())
+        image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    pictures_.push_back(Picture{picture.bytes, std::move(image)});
+    return pictures_.back().image;
+}
+
+void CanvasView::keepReferencePicture(const std::shared_ptr<const std::string>& bytes, QImage image) {
+    for (const Picture& k : pictures_)
+        if (k.bytes == bytes || *k.bytes == *bytes)
+            return;
+    if (!image.isNull())
+        image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    pictures_.push_back(Picture{bytes, std::move(image)});
+}
+
+QSize CanvasView::referencePictureSize(LayerId id) const {
+    const Layer* l = doc_->layers().find(id);
+    if (!l || !l->props.reference)
+        return {};
+    for (const Picture& k : pictures_)
+        if (*k.bytes == *l->props.reference->bytes)
+            return k.image.size();
+    return {};
 }
 
 void CanvasView::paintOutline(QPainter& p, const CellRect& r, bool floating) const {
@@ -920,11 +929,12 @@ void CanvasView::beginLayerMove(QPoint cell) {
     finishTool();
     setFocus(Qt::MouseFocusReason);
     const Layer* layer = doc_->active();
-    if (!layer || layer->props.locked || !layer->props.visible) {
+    if (!layer || layer->props.locked || !layer->props.visible || layer->props.kind == LayerKind::Reference) {
         layerMove_ = LayerMove{0, cell, {}, {}, {}};
-        emit layerMoveStatus(!layer ? tr("No active layer to move")
-                             : layer->props.locked ? tr("Cannot move layer: locked")
-                                                   : tr("Cannot move layer: hidden"));
+        emit layerMoveStatus(!layer                                      ? tr("No active layer to move")
+                             : layer->props.locked                       ? tr("Cannot move layer: locked")
+                             : layer->props.kind == LayerKind::Reference ? tr("Cannot move a reference layer yet")
+                                                                         : tr("Cannot move layer: hidden"));
     } else {
         const QPoint origin(layer->props.x, layer->props.y);
         layerMove_ = LayerMove{layer->props.id, cell, origin, origin, {layer->width(), layer->height()}};

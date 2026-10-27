@@ -166,6 +166,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createLibrary();
     createDocks();
     createGenerators();
+    createReferenceActions();
     updateTitle();
     updateStatus();
     updateGlyphSet();

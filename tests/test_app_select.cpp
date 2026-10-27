@@ -1,4 +1,4 @@
-// The selection tool, mirror mode, guides and the reference image in the
+// The selection tool, mirror mode, guides and reference layers in the
 // main window (PLAN §4), driven through the menus, keys and mouse.
 
 #include "canvas_view.h"
@@ -15,6 +15,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QBuffer>
 #include <QFile>
 #include <QImage>
 #include <QKeyEvent>
@@ -458,7 +459,7 @@ TEST_CASE("switching tools stamps a floating selection and keeps the selection; 
     CHECK(w.document()->undoStack()->count() == 0);
 }
 
-TEST_CASE("guides and the reference image are drawn, never saved") {
+TEST_CASE("guides and reference layers are drawn, never exported") {
     MainWindow w;
     CanvasView* v = w.canvasView();
     write(w, 0, 0, QStringLiteral("hi"));
@@ -477,13 +478,11 @@ TEST_CASE("guides and the reference image are drawn, never saved") {
     red.fill(Qt::red);
     const QString png = dir.filePath(QStringLiteral("ref.png"));
     REQUIRE(red.save(png));
-    CHECK_FALSE(act(w, "showReferenceImage")->isEnabled());
     CHECK_FALSE(w.loadReferenceImage(dir.filePath(QStringLiteral("missing.png")), &error));
     REQUIRE(w.loadReferenceImage(png, &error));
-    CHECK(v->referenceVisible());
-    CHECK(act(w, "showReferenceImage")->isEnabled());
-    CHECK(act(w, "showReferenceImage")->isChecked());
-    CHECK_FALSE(w.document()->isModified());
+    // a layer of the document, so a change to it
+    CHECK(w.document()->isModified());
+    REQUIRE(w.document()->active()->props.kind == LayerKind::Reference);
 
     // Drawn: the reference tints the black canvas red at half opacity; the
     // guide is a magenta line under row 24.
@@ -501,27 +500,18 @@ TEST_CASE("guides and the reference image are drawn, never saved") {
     CHECK(guide);
 
     act(w, "referenceOpacity100")->trigger();
-    CHECK(v->referenceOpacity() == 1.0);
+    CHECK(w.document()->active()->props.reference->opacity == 100);
     shot = v->grab().toImage();
     CHECK(shot.pixelColor(40, 300).red() > 240);
 
-    act(w, "showReferenceImage")->setChecked(false);
-    CHECK_FALSE(v->referenceVisible());
-    shot = v->grab().toImage();
-    CHECK(shot.pixelColor(40, 300) == QColor(Qt::black));
-
-    // Saved: the same bytes as without them.
+    // Saved: the same bytes as without it.
     const QString overlaid = dir.filePath(QStringLiteral("overlaid.ans"));
-    act(w, "showReferenceImage")->setChecked(true);
     REQUIRE(w.saveFile(overlaid, &error));
     QFile a(plain), b(overlaid);
     REQUIRE(a.open(QIODevice::ReadOnly));
     REQUIRE(b.open(QIODevice::ReadOnly));
     CHECK(a.readAll() == b.readAll());
 
-    act(w, "clearReferenceImage")->trigger();
-    CHECK(v->referenceImage().isNull());
-    CHECK_FALSE(act(w, "showReferenceImage")->isEnabled());
     act(w, "guideNone")->trigger();
     CHECK(v->guide().isEmpty());
 }
@@ -589,8 +579,14 @@ TEST_CASE("a floating selection is drawn as it will stamp") {
     // them, as once stamped
     QImage red(64, 64, QImage::Format_RGB32);
     red.fill(Qt::red);
-    v->setReferenceImage(red);
-    v->setReferenceOpacity(0.5);
+    QByteArray png;
+    QBuffer out(&png);
+    REQUIRE(out.open(QIODevice::WriteOnly));
+    REQUIRE(red.save(&out, "PNG"));
+    const LayerId art = w.document()->activeLayer();
+    REQUIRE(w.document()->addReferenceLayer(
+        ReferenceImage{std::make_shared<const std::string>(png.toStdString()), 0, 0, 640, 640, 50}));
+    REQUIRE(w.document()->setActiveLayer(art));
     v->setGuide({6, 2});  // a line down the left edge of column 6
     v->setCellCursor({5, 2});
     act(w, "paste")->trigger();
@@ -1123,80 +1119,6 @@ TEST_CASE("a paste on a clean canvas is an unsaved change") {
     CHECK(row(w, 0, 0, 6) == QStringLiteral("A    A"));
 }
 
-TEST_CASE("the reference image is scaled only where it covers the canvas") {
-    MainWindow w;
-    CanvasView* v = w.canvasView();
-    QImage tall(100, 10000, QImage::Format_RGB32);
-    tall.fill(Qt::red);
-    v->setReferenceImage(tall);
-    v->setReferenceVisible(true);
-    v->setReferenceOpacity(1.0);
-
-    // 80x25 at 8x: the canvas size at this zoom, not the image's 5120x512000.
-    w.document()->replace(AnsiDocument{Canvas(80, 25)}, QString());
-    v->setZoom(8);
-    const QRect cell = v->cellRect(QPoint(79, 24));
-    CHECK(v->grab(cell).toImage().pixelColor(4, 4).red() > 240);
-    CHECK(v->referenceCacheSize().width() <= v->width());
-    CHECK(v->referenceCacheSize().height() <= v->height());
-
-    // 80x500 at 8x would be 5120x64000: past the cap, so cached smaller and
-    // drawn scaled up.
-    AnsiDocument big;
-    big.canvas = Canvas(80, 500);
-    w.document()->replace(std::move(big), QString());
-    const QImage corner = v->grab(v->cellRect(QPoint(79, 499))).toImage();
-    CHECK(corner.pixelColor(4, 4).red() > 240);
-    const QSize cache = v->referenceCacheSize();
-    CHECK(qint64(cache.width()) * cache.height() <= CanvasView::kMaxReferencePixels);
-    CHECK(cache.width() <= v->width());
-    CHECK(cache.height() <= v->height());
-}
-
-TEST_CASE("the reference image keeps its aspect where it is cropped to the canvas") {
-    // #35: the crop was rounded up to whole source rows and stretched to the
-    // canvas height, so a 2x10 picture on 640x400 px put the edge of its
-    // first row at y=200, not 320
-    MainWindow w;
-    w.document()->replace(AnsiDocument{Canvas(80, 25)}, QString());
-    CanvasView* v = w.canvasView();
-    v->setZoom(1);
-    REQUIRE(v->size() == QSize(640, 400));
-    QImage stripes(2, 10, QImage::Format_RGB32);
-    stripes.fill(Qt::blue);
-    stripes.setPixelColor(0, 0, Qt::red);
-    stripes.setPixelColor(1, 0, Qt::red);
-    v->setReferenceImage(stripes);
-    v->setReferenceOpacity(1.0);
-    const QImage full = stripes.scaled(640, 3200, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    const auto near = [](QColor a, QColor b) {
-        return std::abs(a.red() - b.red()) <= 8 && std::abs(a.green() - b.green()) <= 8 &&
-               std::abs(a.blue() - b.blue()) <= 8;
-    };
-    const QImage shot = v->grab().toImage();
-    for (const QPoint at : {QPoint(100, 100), QPoint(100, 250), QPoint(100, 330), QPoint(500, 390)}) {
-        INFO("at " << at.x() << "," << at.y() << ": " << shot.pixelColor(at).name().toStdString() << " vs "
-                   << full.pixelColor(at).name().toStdString());
-        CHECK(near(shot.pixelColor(at), full.pixelColor(at)));
-    }
-    // A repaint of part of the view (as when scrolled) draws the same.
-    const QImage part = v->grab(QRect(64, 240, 128, 120)).toImage();
-    for (const QPoint at : {QPoint(100, 250), QPoint(100, 330)})
-        CHECK(near(part.pixelColor(at - QPoint(64, 240)), full.pixelColor(at)));
-
-    // Shorter than the canvas: it covers only its own height.
-    QImage wide(10, 4, QImage::Format_RGB32);
-    wide.fill(Qt::blue);
-    for (int x = 0; x < 10; ++x)
-        wide.setPixelColor(x, 0, Qt::red);
-    v->setReferenceImage(wide);
-    const QImage fullWide = wide.scaled(640, 256, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    const QImage shotWide = v->grab().toImage();
-    for (const QPoint at : {QPoint(100, 20), QPoint(100, 70), QPoint(100, 200)})
-        CHECK(near(shotWide.pixelColor(at), fullWide.pixelColor(at)));
-    CHECK(shotWide.pixelColor(100, 300) == QColor(Qt::black));
-}
-
 namespace {
 
 // Whether a and b are within `tol` in each channel.
@@ -1205,261 +1127,7 @@ bool within(QColor a, QColor b, int tol) {
            std::abs(a.blue() - b.blue()) <= tol;
 }
 
-// A picture of repeating rows: one red, then two blue.
-QImage redBlueBlue(int width, int height) {
-    QImage img(width, height, QImage::Format_RGB32);
-    for (int y = 0; y < height; ++y) {
-        const QRgb c = y % 3 == 0 ? qRgb(255, 0, 0) : qRgb(0, 0, 255);
-        auto* line = reinterpret_cast<QRgb*>(img.scanLine(y));
-        std::fill(line, line + width, c);
-    }
-    return img;
-}
-
 }  // namespace
-
-TEST_CASE("the reference image is interpolated across the edge of its crop") {
-    // #35: the crop kept only the source rows under the canvas, and the
-    // interpolation at its bottom edge stopped at the last of them, so on
-    // 640x400 px a 3x10 picture stayed blue at y=399 where the whole picture
-    // blends into its green third row.
-    MainWindow w;
-    w.document()->replace(AnsiDocument{Canvas(80, 25)}, QString());
-    CanvasView* v = w.canvasView();
-    v->setZoom(1);
-    REQUIRE(v->size() == QSize(640, 400));
-    QImage pic(3, 10, QImage::Format_RGB32);
-    pic.fill(Qt::green);
-    for (int x = 0; x < 3; ++x) {
-        pic.setPixelColor(x, 0, Qt::red);
-        pic.setPixelColor(x, 1, Qt::blue);
-    }
-    v->setReferenceImage(pic);
-    v->setReferenceOpacity(1.0);
-
-    // The whole picture at 640/3 both ways.
-    QImage full(640, 400, QImage::Format_RGB32);
-    full.fill(Qt::black);
-    {
-        QPainter p(&full);
-        p.setRenderHint(QPainter::SmoothPixmapTransform);
-        p.drawImage(QRectF(0, 0, 640, 10 * 640 / 3.0), pic);
-    }
-    CHECK(within(full.pixelColor(100, 399), QColor(0, 95, 160), 3));
-    const QImage shot = v->grab().toImage();
-    for (const QPoint at : {QPoint(100, 399), QPoint(100, 100), QPoint(320, 250), QPoint(320, 330), QPoint(600, 380)}) {
-        INFO("at " << at.x() << "," << at.y() << ": " << shot.pixelColor(at).name().toStdString() << " vs "
-                   << full.pixelColor(at).name().toStdString());
-        CHECK(within(shot.pixelColor(at), full.pixelColor(at), 3));
-    }
-}
-
-TEST_CASE("a reference image wider than the canvas is averaged, not sampled") {
-    // #35: shrinking interpolated between the two source pixels nearest each
-    // view pixel and skipped the rest, so fine detail turned into moire.
-    MainWindow w;
-    w.document()->replace(AnsiDocument{Canvas(80, 25)}, QString());
-    CanvasView* v = w.canvasView();
-    v->setZoom(1);
-    REQUIRE(v->size() == QSize(640, 400));
-    v->setReferenceOpacity(1.0);
-
-    // 1 px black and white columns, 4000 px wide: an even grey at 640.
-    QImage stripes(4000, 2500, QImage::Format_RGB32);
-    for (int y = 0; y < stripes.height(); ++y) {
-        auto* line = reinterpret_cast<QRgb*>(stripes.scanLine(y));
-        for (int x = 0; x < stripes.width(); ++x)
-            line[x] = (x & 1) ? qRgb(255, 255, 255) : qRgb(0, 0, 0);
-    }
-    v->setReferenceImage(stripes);
-    const QImage grey = v->grab().toImage();
-    int lo = 255, hi = 0;
-    for (int x = 0; x < 640; ++x) {
-        const int g = qGray(grey.pixel(x, 200));
-        lo = std::min(lo, g);
-        hi = std::max(hi, g);
-    }
-    INFO("grey from " << lo << " to " << hi);
-    CHECK(hi - lo <= 24);
-    CHECK(std::abs((lo + hi) / 2 - 128) <= 12);
-
-    // One red row then two blue, 1920x1080 at 640x360: each view row is one
-    // red and two blue rows averaged.
-    v->setReferenceImage(redBlueBlue(1920, 1080));
-    const QImage mixed = v->grab().toImage();
-    for (const QPoint at : {QPoint(16, 20), QPoint(100, 100), QPoint(320, 201), QPoint(639, 359), QPoint(500, 290)}) {
-        INFO("at " << at.x() << "," << at.y() << ": " << mixed.pixelColor(at).name().toStdString());
-        CHECK(within(mixed.pixelColor(at), QColor(85, 0, 170), 3));
-    }
-    CHECK(mixed.pixelColor(100, 380) == QColor(Qt::black));
-}
-
-TEST_CASE("a capped reference image draws the same whatever part is repainted") {
-    // #35: past the cap, a repaint scaled up only the cache pixels under the
-    // repainted rect, so the interpolation at its edge depended on the rect
-    // and a scrolled repaint showed a seam.
-    MainWindow w;
-    w.document()->replace(AnsiDocument{Canvas(80, 500)}, QString());
-    CanvasView* v = w.canvasView();
-    v->setZoom(8);
-    REQUIRE(v->size() == QSize(5120, 64000));
-    v->setReferenceImage(redBlueBlue(256, 4000));
-    v->setReferenceOpacity(1.0);
-
-    const QImage tall = v->grab(QRect(64, 0, 128, 400)).toImage();
-    REQUIRE(v->referenceCacheSize() != v->size());
-    REQUIRE(qint64(v->referenceCacheSize().width()) * v->referenceCacheSize().height() <=
-            CanvasView::kMaxReferencePixels);
-    const QImage part = v->grab(QRect(64, 239, 128, 120)).toImage();
-    REQUIRE(part.size() == QSize(128, 120));
-    int worst = 0;
-    for (int y = 0; y < part.height(); ++y)
-        for (int x = 0; x < part.width(); ++x) {
-            const QColor a = part.pixelColor(x, y), b = tall.pixelColor(x, 239 + y);
-            worst = std::max({worst, std::abs(a.red() - b.red()), std::abs(a.green() - b.green()),
-                              std::abs(a.blue() - b.blue())});
-        }
-    CHECK(worst <= 1);
-}
-
-TEST_CASE("a capped reference image blends into the rows below the canvas") {
-    // #35: the cache past the cap ended at the canvas's bottom edge, so the
-    // interpolation in the last view rows read its last row over again where
-    // the whole picture goes on: (156,0,98) at y=63999 where it is (134,0,120).
-    MainWindow w;
-    w.document()->replace(AnsiDocument{Canvas(80, 500)}, QString());
-    CanvasView* v = w.canvasView();
-    v->setZoom(8);
-    REQUIRE(v->size() == QSize(5120, 64000));
-    QImage pic(256, 4000, QImage::Format_RGB32);
-    for (int y = 0; y < pic.height(); ++y) {
-        auto* line = reinterpret_cast<QRgb*>(pic.scanLine(y));
-        std::fill(line, line + pic.width(), y % 2 ? qRgb(255, 0, 0) : qRgb(0, 0, 255));
-    }
-    v->setReferenceImage(pic);
-    v->setReferenceOpacity(1.0);
-
-    // The whole picture at 20x, over the last 8 rows of x 64..191.
-    const QRect bottom(64, 63992, 128, 8);
-    QImage full(bottom.size(), QImage::Format_RGB32);
-    full.fill(Qt::black);
-    {
-        QPainter p(&full);
-        p.setRenderHint(QPainter::SmoothPixmapTransform);
-        p.translate(-bottom.topLeft());
-        p.drawImage(QRectF(0, 0, 5120, 80000), pic);
-    }
-    CHECK(within(full.pixelColor(QPoint(100, 63999) - bottom.topLeft()), QColor(134, 0, 120), 3));
-    const QImage shot = v->grab(bottom).toImage();
-    REQUIRE(v->referenceCacheSize() != v->size());
-    REQUIRE(qint64(v->referenceCacheSize().width()) * v->referenceCacheSize().height() <=
-            CanvasView::kMaxReferencePixels);
-    // Rows 63993 on, where a stripe fades: the cache's own resolution
-    // flattens each stripe's peak by up to 20 anywhere in the picture.
-    for (const QPoint at : {QPoint(100, 63999), QPoint(64, 63999), QPoint(191, 63998), QPoint(150, 63996),
-                            QPoint(80, 63994), QPoint(120, 63993)}) {
-        const QPoint in = at - bottom.topLeft();
-        INFO("at " << at.x() << "," << at.y() << ": " << shot.pixelColor(in).name().toStdString() << " vs "
-                   << full.pixelColor(in).name().toStdString());
-        CHECK(within(shot.pixelColor(in), full.pixelColor(in), 3));
-    }
-}
-
-TEST_CASE("a capped reference image ending just below the canvas stays opaque to its bottom row") {
-    // #35: the cache past the cap took two rows more wherever the picture
-    // went on below the canvas, however little, so a row the picture only
-    // partly covers came out partly transparent and the last view rows
-    // faded where the whole picture is opaque: (244,244,244) at y=8191 on
-    // 512x512 cells for a white 4096x8193 picture.
-    struct Case {
-        int cols, rows, zoom;
-        QSize pic;
-        int y;  // the last view row
-    };
-    for (const Case& c : {Case{512, 512, 1, QSize(4096, 8193), 8191},     // reduced, 1 row past
-                          Case{512, 2048, 1, QSize(2048, 16385), 32767},  // reduced, 2 rows past
-                          Case{80, 504, 8, QSize(768, 9677), 64511}}) {   // enlarged, 1.33 rows past
-        INFO(c.cols << "x" << c.rows << " at zoom " << c.zoom << ", picture " << c.pic.width() << "x"
-                    << c.pic.height());
-        MainWindow w;
-        w.document()->replace(AnsiDocument{Canvas(c.cols, c.rows)}, QString());
-        CanvasView* v = w.canvasView();
-        v->setZoom(c.zoom);
-        REQUIRE(v->size().height() == c.y + 1);
-        QImage pic(c.pic, QImage::Format_Grayscale8);
-        pic.fill(255);
-        v->setReferenceImage(pic);
-        v->setReferenceOpacity(1.0);
-        const QRect bottom(64, c.y - 7, 128, 8);
-        const QImage shot = v->grab(bottom).toImage();
-        REQUIRE(v->referenceCacheSize() != v->size());
-        REQUIRE(qint64(v->referenceCacheSize().width()) * v->referenceCacheSize().height() <=
-                CanvasView::kMaxReferencePixels);
-        for (const QPoint at : {QPoint(100, c.y), QPoint(64, c.y), QPoint(191, c.y - 1), QPoint(150, c.y - 2)}) {
-            const QPoint in = at - bottom.topLeft();
-            INFO("at " << at.x() << "," << at.y() << ": " << shot.pixelColor(in).name().toStdString());
-            CHECK(within(shot.pixelColor(in), QColor(255, 255, 255), 1));
-        }
-    }
-}
-
-TEST_CASE("a reduced reference image weighs the rows it covers in part") {
-    MainWindow w;
-    w.document()->replace(AnsiDocument{Canvas(80, 25)}, QString());
-    CanvasView* v = w.canvasView();
-    v->setZoom(1);
-    REQUIRE(v->size() == QSize(640, 400));
-    v->setReferenceOpacity(1.0);
-
-    // 1000x1000 at 640: 1.5625 source rows to a view row, so most view rows
-    // take part of a red or blue row. Row 0 is red 1 and blue 0.5625.
-    v->setReferenceImage(redBlueBlue(1000, 1000));
-    const QImage shot = v->grab().toImage();
-    const auto expected = [](int j) {
-        const double a = j / 0.64, b = (j + 1) / 0.64;
-        double red = 0;
-        for (int y = int(a); y < b; ++y)
-            if (y % 3 == 0)
-                red += std::min<double>(b, y + 1) - std::max<double>(a, y);
-        const double share = red / (b - a);
-        return QColor(int(std::lround(255 * share)), 0, int(std::lround(255 * (1 - share))));
-    };
-    CHECK(within(expected(0), QColor(163, 0, 92), 1));
-    for (const int j : {0, 1, 2, 3, 7, 150, 251, 399}) {
-        INFO("row " << j << ": " << shot.pixelColor(320, j).name().toStdString() << " vs "
-                    << expected(j).name().toStdString());
-        CHECK(within(shot.pixelColor(320, j), expected(j), 2));
-    }
-
-    // Half transparent, on the black canvas: as dark at its edges as in its
-    // middle, so its own alpha is averaged and not the canvas past it.
-    QImage half(1000, 777, QImage::Format_ARGB32);
-    half.fill(QColor(100, 50, 0, 128));
-    v->setReferenceImage(half);
-    const QImage over = v->grab().toImage();
-    for (const QPoint at : {QPoint(8, 0), QPoint(639, 0), QPoint(320, 200), QPoint(639, 200), QPoint(320, 399),
-                            QPoint(639, 399), QPoint(0, 399)}) {
-        INFO("at " << at.x() << "," << at.y() << ": " << over.pixelColor(at).name().toStdString());
-        CHECK(within(over.pixelColor(at), QColor(50, 25, 0), 2));
-    }
-
-    // Opaque red rows between transparent blue ones, at half size: each view
-    // pixel is one of each, red at half alpha, (128,0,0) on black. Averaging
-    // the colours as they are, not by their alpha, lets the blue in:
-    // (64,0,64).
-    QImage rows(1280, 799, QImage::Format_ARGB32);
-    for (int y = 0; y < rows.height(); ++y) {
-        auto* line = reinterpret_cast<QRgb*>(rows.scanLine(y));
-        std::fill(line, line + rows.width(), y % 2 ? qRgba(0, 0, 255, 0) : qRgba(255, 0, 0, 255));
-    }
-    v->setReferenceImage(rows);
-    const QImage mixed = v->grab().toImage();
-    for (const QPoint at : {QPoint(8, 0), QPoint(639, 0), QPoint(320, 200), QPoint(639, 200), QPoint(320, 398),
-                            QPoint(0, 398)}) {
-        INFO("at " << at.x() << "," << at.y() << ": " << mixed.pixelColor(at).name().toStdString());
-        CHECK(within(mixed.pixelColor(at), QColor(128, 0, 0), 2));
-    }
-}
 
 TEST_CASE("a reference image is converted in bounded pieces, however wide") {
     // #35: a chunk was whole rows, at least one, so a 16,777,217x1 picture

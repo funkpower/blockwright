@@ -44,6 +44,7 @@ add_executable(blockwright-tests
   test_outline_property.cpp
   test_pipeline.cpp
   test_project.cpp
+  test_reference_layers.cpp
   test_shading_brushes.cpp
   test_smudge_brush.cpp
   test_soft_brush.cpp
@@ -177,6 +178,7 @@ add_executable(blockwright-app-tests
   test_app_library_styles.cpp
   test_app_lint.cpp
   test_app_select.cpp
+  test_app_reference_layers.cpp
   test_app_shading.cpp
   test_app_gradient.cpp
   test_app_perf.cpp

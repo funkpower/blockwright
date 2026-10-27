@@ -670,6 +670,77 @@ TextStyle textStyleFromJson(const QJsonObject& o, const std::string& what) {
 
 namespace {
 
+// refs/<sha256>.<png|jpg>: a reference layer's picture, named by the sha256
+// of its bytes (#178).
+std::string referencePath(const ReferenceImage& r) {
+    return "refs/" + sha256Hex(*r.bytes) + "." + std::string(referenceImageType(*r.bytes).value_or("png"));
+}
+
+QJsonObject referenceJson(const ReferenceImage& r) {
+    return QJsonObject{
+        {"image", qstr(referencePath(r))},
+        {"x", r.x},
+        {"y", r.y},
+        {"width", r.width},
+        {"height", r.height},
+        {"opacity", r.opacity},
+    };
+}
+
+// What a reader refuses in a reference: a writer refuses it too.
+std::optional<std::string> referenceProblem(const LayerProperties& p) {
+    if (!p.reference)
+        return std::nullopt;
+    const ReferenceImage& r = *p.reference;
+    if (p.kind != LayerKind::Reference)
+        return "a " + std::string(layerKindName(p.kind)) + " layer has a reference image";
+    if (!r.bytes || !referenceImageType(*r.bytes))
+        return std::string("a reference image that is not a PNG or JPEG");
+    if (r.bytes->size() > kMaxEntryBytes)
+        return "a reference image over " + std::to_string(kMaxEntryBytes >> 20) + " MiB";
+    const int m = ReferenceImage::kMaxPlace;
+    if (r.x < -m || r.x > m || r.y < -m || r.y > m || r.width < 1 || r.width > m || r.height < 1 ||
+        r.height > m || r.opacity < 0 || r.opacity > 100)
+        return std::string("a reference image's place, size or opacity is out of range");
+    return std::nullopt;
+}
+
+// The pictures read so far, by path: layers naming one share its bytes, and
+// they are checked once.
+using ReadRefs = std::map<std::string, std::shared_ptr<const std::string>>;
+
+ReferenceImage referenceFromJson(const QJsonObject& o, const std::string& what, const Entries& entries,
+                                 ReadRefs& refs) {
+    const Reader r(o, what + " reference");
+    const int m = ReferenceImage::kMaxPlace;
+    ReferenceImage ref;
+    const std::string path = r.string("image");
+    const std::string_view name(path);
+    const std::size_t dot = name.rfind('.');
+    if (!name.starts_with("refs/") || dot == std::string_view::npos || !isSha256Hex(name.substr(5, dot - 5)) ||
+        (name.substr(dot + 1) != "png" && name.substr(dot + 1) != "jpg"))
+        fail(r.what() + ": \"" + path + "\" is not refs/<sha256>.png or .jpg");
+    if (const auto known = refs.find(path); known != refs.end()) {
+        ref.bytes = known->second;
+    } else {
+        const auto it = entries.find(path);
+        if (it == entries.end())
+            fail(r.what() + ": the project has no " + path);
+        if (sha256Hex(it->second) != name.substr(5, dot - 5))
+            fail(path + ": its bytes hash to " + sha256Hex(it->second) + ", not its name");
+        if (referenceImageType(it->second) != name.substr(dot + 1))
+            fail(path + ": not a " + std::string(name.substr(dot + 1)) + " file");
+        ref.bytes = std::make_shared<const std::string>(it->second);
+        refs.emplace(path, ref.bytes);
+    }
+    ref.x = int(r.integer("x", -m, m));
+    ref.y = int(r.integer("y", -m, m));
+    ref.width = int(r.integer("width", 1, m));
+    ref.height = int(r.integer("height", 1, m));
+    ref.opacity = int(r.integer("opacity", 0, 100));
+    return ref;
+}
+
 QJsonObject layerJson(const Layer& l) {
     const LayerProperties& p = l.props;
     QJsonObject o{
@@ -696,11 +767,13 @@ QJsonObject layerJson(const Layer& l) {
     }
     if (p.style && !big)
         o["style"] = textStyleJson(*p.style);
+    if (p.reference)
+        o["reference"] = referenceJson(*p.reference);
     return o;
 }
 
 Layer layerFromEntries(LayerId id, const std::string& json, const std::string& cells, int major,
-                       const FontStore& fonts) {
+                       const FontStore& fonts, const Entries& entries, ReadRefs& refs) {
     const std::string what = layerPath(id, false);
     const Reader r(parseObject(json, what), what);
     Layer l;
@@ -752,6 +825,12 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
         if (!p.text && major < kStyledFormatMajor)
             fail(what + ": a styled " + std::string(layerKindName(p.kind)) + " layer in a " +
                  std::to_string(major) + ".x project");
+    }
+    // a reference layer's picture (1.5), its file under refs/
+    if (r.has("reference")) {
+        if (p.kind != LayerKind::Reference)
+            fail(what + ": a " + std::string(layerKindName(p.kind)) + " layer has a reference image");
+        p.reference = referenceFromJson(r.object("reference"), what, entries, refs);
     }
     const auto w = r.integer("width", 0, kMaxSide);
     const auto h = r.integer("height", 0, kMaxSide);
@@ -1602,7 +1681,9 @@ Entries encode(const Project& project) {
 
     QJsonArray order;
     bool styled = false;  // a layer whose style a 1.x reader would drop
-    bool bigText = false;
+    bool bigText = false;  // a live big text source (1.4)
+    bool referenced = false;  // a reference layer with a picture (1.5, 2.1)
+    std::set<std::string> writtenReferences;
     for (const Layer& l : stack.layers()) {
         order.append(qint64(l.props.id));
         if (l.props.text) {
@@ -1624,6 +1705,16 @@ Entries encode(const Project& project) {
         if (const auto problem = layerStyleProblem(l.props, {&project.fonts, nullptr}))
             fail(layerPath(l.props.id, false) + ": " + *problem);
         styled = styled || (l.props.style && !l.props.text);
+        if (const auto problem = referenceProblem(l.props))
+            fail(layerPath(l.props.id, false) + ": " + *problem);
+        if (l.props.reference) {
+            referenced = true;
+            const std::string path = referencePath(*l.props.reference);
+            // Reference layers own their paths, including a path previously
+            // kept as an opaque file. Copy each picture only once per save.
+            if (writtenReferences.insert(path).second)
+                out.insert_or_assign(path, *l.props.reference->bytes);
+        }
         const std::string json = toJson(layerJson(l));
         checkJsonSize(layerPath(l.props.id, false), json.size());
         out[layerPath(l.props.id, false)] = json;
@@ -1631,9 +1722,12 @@ Entries encode(const Project& project) {
     }
     const QJsonObject manifest{
         {"format", "blockwright"},
-        {"version",
-         qstr(styled ? std::to_string(kStyledFormatMajor) + "." + std::to_string(kStyledFormatMinor)
-                     : std::to_string(kFormatMajor) + "." + std::to_string(bigText ? kBigTextFormatMinor : kFormatMinor))},
+        {"version", qstr(styled ? std::to_string(kStyledFormatMajor) + "." +
+                                      std::to_string(referenced ? kReferenceStyledFormatMinor : kStyledFormatMinor)
+                                : std::to_string(kFormatMajor) + "." +
+                                      std::to_string(referenced ? kReferenceFormatMinor
+                                                     : bigText  ? kBigTextFormatMinor
+                                                                : kFormatMinor))},
         {"width", stack.width()},
         {"height", stack.height()},
         {"palette", "cga"},
@@ -1728,6 +1822,7 @@ Project decode(const Entries& entries) {
     }
     checkCells(std::size_t(layers.size()), cells);
     std::set<LayerId> listed;
+    ReadRefs refs;  // the refs/ files reference layers hold
     for (const QJsonValue& v : layers) {
         const LayerId id = LayerId(m.integerOf(v, "layers", 1, UINT32_MAX));
         if (!listed.insert(id).second)
@@ -1736,7 +1831,7 @@ Project decode(const Entries& entries) {
         const auto cells = entries.find(layerPath(id, true));
         if (json == entries.end() || cells == entries.end())
             fail("layer " + std::to_string(id) + " has no " + layerPath(id, json != entries.end()));
-        p.layers.add(layerFromEntries(id, json->second, cells->second, major, p.fonts));
+        p.layers.add(layerFromEntries(id, json->second, cells->second, major, p.fonts, entries, refs));
     }
     const LayerId next = LayerId(m.integer("nextLayerId", 0, UINT32_MAX));
     if (next != 0 && !listed.empty() && next <= *listed.rbegin())
@@ -1753,7 +1848,7 @@ Project decode(const Entries& entries) {
                 fail(path + " is a layer manifest.json doesn't list");
         } else if (const auto round = snapshotFile(path)) {
             p.snapshots.push_back({*round, bytes});
-        } else if (fontFile(path)) {
+        } else if (fontFile(path) || refs.count(path)) {
             // read above
         } else {
             p.files.emplace(path, bytes);
@@ -2297,5 +2392,7 @@ void writeDirectory(const Project& project, const fs::path& path) {
     } catch (...) {
     }
 }
+
+std::optional<std::string> layerReferenceProblem(const LayerProperties& props) { return referenceProblem(props); }
 
 } // namespace bw::project

@@ -150,7 +150,8 @@ void checkKindHelp(LayerKind kind, const QString& tip) {
                  QStringLiteral("does not run the generator")};
         break;
     case LayerKind::Reference:
-        terms = {QStringLiteral("reserved for a reference image"), QStringLiteral("Painting tools cannot edit"),
+        terms = {QStringLiteral("picture to trace"), QStringLiteral("saved with the project"),
+                 QStringLiteral("Painting tools cannot edit"),
                  QStringLiteral("skipped by the compositor"), QStringLiteral("never exported")};
         break;
     default: FAIL("Add help expectations for the new core layer kind");

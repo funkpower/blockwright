@@ -24,6 +24,7 @@
 #include "blockwright/canvas_renderer.h"
 #include "blockwright/edit.h"
 #include "blockwright/halfblock.h"
+#include "blockwright/layer.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
 
@@ -174,20 +175,27 @@ public:
     QSize guide() const { return guide_; }
     void setGuide(const QSize& size);
 
-    // A picture to trace over, drawn across the canvas width at its own
-    // aspect, at `opacity` (0-1) over the canvas. Never saved.
-    const QImage& referenceImage() const { return reference_; }
-    void setReferenceImage(const QImage& image);
-    bool referenceVisible() const { return referenceVisible_; }
-    void setReferenceVisible(bool on);
-    qreal referenceOpacity() const { return referenceOpacity_; }
-    void setReferenceOpacity(qreal opacity);
-    // The scaled copy of the reference image the view draws from: only the
-    // part that covers the canvas, at most the canvas size at this zoom and
-    // at most kMaxReferencePixels (drawn scaled up past that, with a row
-    // more where the picture goes on below the canvas by at least that).
-    QSize referenceCacheSize() const { return referenceScaled_.size(); }
+    // The visible reference layers (layer.h), bottom first, each drawn at
+    // its own place, size and opacity over the art. A canvas pixel is
+    // `zoom` view pixels.
+    //
+    // Each is drawn from a copy of its whole picture scaled to the view
+    // size it shows at (averaged when reduced, interpolated when enlarged),
+    // the copies of all the visible ones at most kMaxReferencePixels
+    // together (shared evenly, drawn scaled up past that). Made on paint.
+    QSize referenceCacheSize(LayerId id) const;
     static constexpr qint64 kMaxReferencePixels = qint64(1) << 24;
+    // The decoded pictures the copies are made from: one a picture however
+    // many visible layers show it, each read at most kMaxReferencePixels
+    // (scaled on read past that). Only the visible layers' are kept.
+    int referencePictureCount() const { return int(pictures_.size()); }
+    QSize referencePictureSize(LayerId id) const;
+    // Keeps `image` as the decoded picture of `bytes`, as Open Reference
+    // Image has just read it, so the first paint doesn't decode it again.
+    void keepReferencePicture(const std::shared_ptr<const std::string>& bytes, QImage image);
+    // The size, in canvas pixels, the canvas is: its columns and rows in
+    // cells of this glyph width.
+    QSize canvasPixels() const { return renderer_->imageSize(); }
 
     QSize sizeHint() const override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
@@ -209,10 +217,9 @@ signals:
     // The symmetry or the pencil's connectivity changed (and mirror mode
     // with it, if it did).
     void symmetryChanged();
-    // The reference image, or whether it shows, changed.
-    void referenceChanged();
-    // The reference image could not be scaled for this zoom; it is not drawn
-    // (or tried again) until the zoom, the canvas or the image changes.
+    // A reference layer's picture could not be decoded or scaled for this
+    // zoom; it is not drawn (or tried again) until the zoom, its size or its
+    // picture changes.
     void referenceFailed();
     void selectionChanged();
     // setTool switched to another tool.
@@ -251,7 +258,10 @@ private:
     // The device pixel ratio changed: view pixels changed size.
     void dprChanged();
     void paintOverlays(QPainter& p, const QRect& clip);
-    void paintReference(QPainter& p, const QRect& clip);
+    // The visible reference layers (layer.h), bottom first, each at its own
+    // place, size and opacity, over the art.
+    void paintReferenceLayers(QPainter& p, const QRect& clip);
+    const QImage& referencePicture(const ReferenceImage& picture);
     // The document changed under the tool: it drops what it has in progress.
     void cancelTool();
     // Ends a drag the tool has going, if any, without an edit.
@@ -327,12 +337,19 @@ private:
     Symmetry symmetry_{SymmetryMode::MirrorX, 4, std::nullopt};
     Connectivity pencil_ = Connectivity::Four;
     QSize guide_;
-    QImage reference_;
-    QImage referenceScaled_;  // see referenceCacheSize, made on paint
-    QSize referenceTarget_;  // the view pixels referenceScaled_ covers
-    QSizeF referenceDrawn_;  // the view size all of referenceScaled_ is drawn at
-    bool referenceVisible_ = true;
-    qreal referenceOpacity_ = 0.5;
+    struct Picture {
+        std::shared_ptr<const std::string> bytes;
+        QImage image;  // null: the bytes would not decode
+    };
+    std::vector<Picture> pictures_;
+    struct Scaled {
+        LayerId id;
+        std::shared_ptr<const std::string> bytes;
+        QSize target;  // the view size the layer shows at
+        QSize cache;  // the size `image` was asked to be (it is null if that failed)
+        QImage image;
+    };
+    std::vector<Scaled> scaled_;
     qreal sizedDpr_ = 0;  // the device pixel ratio updateSize last ran at
 };
 

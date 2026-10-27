@@ -61,8 +61,8 @@ QString kindToolTip(LayerKind kind) {
             "Opening or exporting does not run the generator.");
     case LayerKind::Reference:
         return LayersDock::tr(
-            "Reference layers are reserved for a reference image.\n"
-            "Painting tools cannot edit them. They are currently skipped by the compositor and never exported.");
+            "A Reference layer holds a picture to trace, saved with the project with its place, size and opacity.\n"
+            "Painting tools cannot edit it. It is skipped by the compositor and never exported.");
     }
     return {};
 }

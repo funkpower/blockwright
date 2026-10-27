@@ -723,6 +723,18 @@ LayerId Document::addTextLayer(const TextSource& source, int x, int y, const Fon
     return c->layerId();
 }
 
+LayerId Document::addReferenceLayer(ReferenceImage picture) {
+    emit commandAboutToPush();
+    Layer layer = makeLayer(LayerKind::Reference, 0, 0, freeLayerName(tr("Reference %1")));
+    layer.props.reference = std::move(picture);
+    if (project::layerReferenceProblem(layer.props))
+        return 0;
+    emit layersAboutToChange();
+    auto* c = LayerStackCommand::add(this, std::move(layer), stack_.size(), tr("New Reference Layer"));
+    undo_.push(c);
+    return c->layerId();
+}
+
 bool Document::dropNewTextLayer(LayerId id) {
     const Layer* l = stack_.find(id);
     if (!l || !l->props.text || !l->props.text->text.empty())

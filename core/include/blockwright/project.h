@@ -50,6 +50,17 @@
 // setting out of range, over TextStyle::kMaxEffects effects, checked before
 // any is read) or one on a layer that can't have one is refused, by the
 // reader and the writer.
+//
+// A reference layer's picture (1.5; 2.1 in a styled project) is the file
+// refs/<sha256>.png or .jpg, named by the sha256 of its bytes and written
+// once however many layers show it, and the layer's "reference" key: the
+// file's path, the picture's place and size in canvas pixels and its
+// opacity. A reader refuses a file whose bytes don't hash to its name or
+// don't start as its type says, a path the project lacks, and the key on a
+// layer that isn't a reference layer. A 1.3 reader knows the kind, which
+// the compositor skips, so it shows the same art; it drops the key and
+// keeps the picture as a file it doesn't know, so a project it saves opens
+// here with an empty reference layer and the picture under refs/.
 
 #include "blockwright/ansi.h"
 #include "blockwright/font_store.h"
@@ -75,6 +86,11 @@ inline constexpr int kBigTextFormatMinor = 4;
 // The version of a project with a cells or pixels layer that has a style.
 inline constexpr int kStyledFormatMajor = 2;
 inline constexpr int kStyledFormatMinor = 0;
+// The minor versions of a project with a reference layer that has a picture
+// (refs/<sha256>.png or .jpg, the layer's "reference" key; #178): 1.5, or
+// 2.1 when it is styled as well. 1.5 implies 1.4's big text sources.
+inline constexpr int kReferenceFormatMinor = 5;
+inline constexpr int kReferenceStyledFormatMinor = 1;
 
 // Limits a reader holds a file to, and a writer checks before it writes
 // anything: no more than kMaxEntries entries, none over kMaxEntryBytes, all
@@ -157,6 +173,11 @@ AnsiDocument toAnsi(const Project& project);
 // last, r1 for the first). Returns what writeAnsi wrote, so a caller can
 // report a lossy snapshot (glyphs written as '?', blink dropped).
 AnsiOutput takeSnapshot(Project& project);
+
+// Why the writer would refuse a layer's reference image (a picture that is
+// not a PNG or JPEG, or too big; a place, size or opacity out of range; one
+// on a layer that is not a reference layer), or nullopt when it would not.
+std::optional<std::string> layerReferenceProblem(const LayerProperties& props);
 
 // A layer's cells as layers/<id>.cells holds them: "BWCL", the format
 // version (u16, 1), reserved (u16, 0), width and height (u32), then one zstd

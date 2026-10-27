@@ -130,8 +130,11 @@ public:
     // QString is for showing; saving uses the native path.
     QString libraryPathFor(const QString& name, bool* exists = nullptr, QString* error = nullptr) const;
 
-    // Shows the picture at `path` over the canvas to trace (View > Reference
-    // Image). It is never saved. False and `error` if it can't be read.
+    // File > Open Reference Image...: the picture at `path` as a new
+    // reference layer (Document::addReferenceLayer) across the canvas width
+    // at its own aspect, top-left on the canvas's, at 50% opacity: one undo
+    // step, saved with the project. A picture that is not a PNG or JPEG is
+    // kept as a PNG of it. False and `error` if it can't be read or kept.
     bool loadReferenceImage(const QString& path, QString* error);
 
     // Opens `path` without asking anything; false and `error` on failure.
@@ -237,6 +240,9 @@ private:
     // The tools, selection, mirror, guides and reference image
     // (main_window_edit.cpp).
     void createEditingActions(QMenu* file, QMenu* edit, QMenu* view);
+    // Layer > Reference Opacity, for the active reference layer
+    // (main_window_edit.cpp).
+    void createReferenceActions();
     // The Library dock and stamp drops on the canvas.
     void createLibrary();
     // The Toolbox, Tool Options, glyph bar, Lint and IRC View docks and the Window menu

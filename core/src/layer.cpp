@@ -388,3 +388,22 @@ std::optional<std::size_t> LayerStack::indexOf(LayerId id) const {
 }
 
 } // namespace bw
+
+namespace bw {
+
+// ---- reference layers --------------------------------------------------------
+
+bool ReferenceImage::operator==(const ReferenceImage& o) const {
+    const bool sameBytes = bytes == o.bytes || (bytes && o.bytes && *bytes == *o.bytes);
+    return sameBytes && x == o.x && y == o.y && width == o.width && height == o.height && opacity == o.opacity;
+}
+
+std::optional<std::string_view> referenceImageType(std::string_view bytes) {
+    if (bytes.starts_with(std::string_view("\x89PNG\r\n\x1a\n", 8)))
+        return "png";
+    if (bytes.starts_with(std::string_view("\xff\xd8\xff", 3)))
+        return "jpg";
+    return {};
+}
+
+} // namespace bw
