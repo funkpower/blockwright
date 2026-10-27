@@ -17,6 +17,7 @@
 #include "main_window.h"
 #include "sauce_dialog.h"
 #include "select_tool.h"
+#include "shortcuts_dialog.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1284,7 +1285,7 @@ TEST_CASE("no two actions share a shortcut") {
     // #7: the format actions add none, and nothing else may clash either
     MainWindow w;
     std::map<QString, QString> seen;
-    for (QAction* a : w.findChildren<QAction*>()) {
+    for (QAction* a : windowActions(&w)) {
         for (const QKeySequence& seq : a->shortcuts()) {
             const QString k = seq.toString(QKeySequence::PortableText);
             const auto it = seen.find(k);

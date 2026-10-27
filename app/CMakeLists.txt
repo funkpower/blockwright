@@ -50,6 +50,8 @@ add_library(blockwright_app STATIC
   select_tool.h
   settings.cpp
   settings.h
+  shortcuts_dialog.cpp
+  shortcuts_dialog.h
   text_options.cpp
   text_options.h
   text_tool.cpp

@@ -6,6 +6,7 @@
 #include "palette_widget.h"
 #include "preferences.h"
 #include "publish.h"
+#include "shortcuts_dialog.h"
 
 #include "blockwright/credits.h"
 #include "blockwright/glyph_sets.h"
@@ -285,6 +286,9 @@ void MainWindow::createActions() {
     windowMenu_ = menuBar()->addMenu(tr("&Window"));
 
     QMenu* help = menuBar()->addMenu(tr("&Help"));
+    // No shortcut: F1, the standard help key, types a glyph in keyboard mode.
+    a = help->addAction(tr("&Keyboard Shortcuts..."), this, [this] { showShortcuts(this); });
+    a->setObjectName(QStringLiteral("keyboardShortcuts"));
     help->addAction(tr("&About Blockwright"), this, [this] {
         QMessageBox::about(this, tr("About Blockwright"),
                            tr("<p><b>Blockwright</b> %1 (%2)</p><p>ANSI and IRC art editor. GPL-3.0-or-later.</p>"
