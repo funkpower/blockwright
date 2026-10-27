@@ -265,7 +265,7 @@ TEST_CASE("clicking each toolbox group's icon picks its current tool without ope
     CHECK(button->isChecked());
 }
 
-TEST_CASE("the toolbox's two columns fit the default dock and a 240 pixel column") {
+TEST_CASE("the toolbox keeps two columns and stays within 240 pixels") {
     MainWindow w;
     w.show();
     QApplication::processEvents();
@@ -1165,6 +1165,50 @@ TEST_CASE("resizing the left column with Toolbox closed keeps its width", "[dock
     w.resize(1300, 708);
     QApplication::processEvents();
     CHECK(w.toolOptionsDock()->width() == 230);
+}
+
+TEST_CASE("a drag of the options column with the Toolbox hidden is kept", "[dock-width][dock-follow]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1920, 1080);
+    w.show();
+    QApplication::processEvents();
+    act(w, QStringLiteral("show_toolboxDock"))->trigger();
+    QApplication::processEvents();
+    REQUIRE(w.toolboxDock()->isHidden());
+    const bool drag = GENERATE(false, true);
+    CAPTURE(drag);
+    if (drag)
+        dragColumn(w, w.toolOptionsDock(), 200);
+    else
+        w.resizeDocks({w.toolOptionsDock()}, {200}, Qt::Horizontal);
+    QApplication::processEvents();
+    REQUIRE(w.toolOptionsDock()->width() == 200);
+    w.resize(1280, 720);
+    QApplication::processEvents();
+    CHECK(w.toolOptionsDock()->width() == 200);
+}
+
+TEST_CASE("a drag of the right column with the Preview floating is kept", "[dock-width][dock-follow]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1920, 1080);
+    w.show();
+    QApplication::processEvents();
+    w.previewDock()->setFloating(true);
+    QApplication::processEvents();
+    REQUIRE(w.previewDock()->isFloating());
+    const bool drag = GENERATE(false, true);
+    CAPTURE(drag);
+    if (drag)
+        dragColumn(w, w.libraryDock(), 300);
+    else
+        w.resizeDocks({w.libraryDock()}, {300}, Qt::Horizontal);
+    QApplication::processEvents();
+    REQUIRE(w.libraryDock()->width() == 300);
+    w.resize(1280, 720);
+    QApplication::processEvents();
+    CHECK(w.libraryDock()->width() == 300);
 }
 
 TEST_CASE("dragging a column's separator keeps its width as the window changes", "[dock-width][dock-drag]") {
