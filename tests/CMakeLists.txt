@@ -265,9 +265,10 @@ catch_discover_tests(blockwright-app-scale-tests
 # QSettings construction belongs in the settings factory. This secondary
 # token guard checks direct construction, value template arguments/defaults
 # and local macro arguments in any position (including cv-qualified and
-# elaborated class types, and after earlier arguments holding -> or a
-# comparison >), aliases, Qt global-static macros and bases in any position
-# with or without access/virtual. Only * and & exempt type arguments/aliases,
+# elaborated class types, and after earlier arguments holding ->, a
+# comparison >, or < inside nested (), [] or {} groups: comparisons, shifts
+# and operator< / operator<<), aliases, Qt global-static macros and bases in
+# any position with or without access/virtual. Only * and & exempt type arguments/aliases,
 # including in a base's template arguments; explicit smart-pointer types are
 # reported. Plain template-return declarations ending directly in ); remain
 # exempt, as do includes and __has_include operands. It doesn't resolve types

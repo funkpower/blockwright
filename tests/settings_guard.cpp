@@ -190,9 +190,18 @@ bool declaresParameters(const std::vector<Token>& t, size_t open) {
 // A template return type in a function declaration doesn't build an object:
 // std::unique_ptr<QSettings> appSettings(); is the factory's public interface.
 bool templateFunctionDeclaration(const std::vector<Token>& t, size_t open) {
-    int depth = 0;
+    int depth = 0, nested = 0;
     for (size_t i = open; i < t.size(); ++i) {
-        if (is(t, i, "<"))
+        // Angles inside a nested group belong to that group's expressions
+        // or template lists, not the return type's enclosing template list.
+        if (is(t, i, "(") || is(t, i, "[") || is(t, i, "{"))
+            ++nested;
+        else if (is(t, i, ")") || is(t, i, "]") || is(t, i, "}")) {
+            if (--nested < 0)
+                return false; // Left the enclosing group before closing the list.
+        } else if (nested > 0)
+            continue;
+        else if (is(t, i, "<"))
             ++depth;
         else if (is(t, i, ">") && --depth == 0) {
             if (!ident(t, i + 1) || !is(t, i + 2, "(") || !declaresParameters(t, i + 2))
@@ -222,6 +231,9 @@ size_t argumentOpen(const std::vector<Token>& t, size_t start) {
             // A '>' that isn't closing a template list ('->', a comparison).
             while (word != "<" && !closes.empty() && closes.back() == ">")
                 closes.pop_back();
+            // A '<' inside a nested group is a comparison or a shift.
+            if (word == "<" && !closes.empty() && closes.back() != ">")
+                continue;
             if (closes.empty())
                 return word == "<" || word == "(" ? start : t.size();
             const std::string close = word == "<" ? ">" : word == "(" ? ")" : word == "[" ? "]" : "}";
