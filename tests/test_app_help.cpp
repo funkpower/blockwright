@@ -1,6 +1,7 @@
 // In-app help (#153): every tool in the registry has help text, and the
 // toolbox tooltips, the Tool Options help panel, Help > Manual and What's
-// This all read it from the one store (help_text.h). main() is in
+// This all read it from the one store (help_text.h); every tool but those
+// that change no cells has a picture made by running it (tool_illustration.h). main() is in
 // test_app.cpp.
 
 #include "canvas_view.h"
@@ -13,6 +14,7 @@
 #include "scratch_settings.h"
 #include "shortcuts_dialog.h"
 #include "tool.h"
+#include "tool_illustration.h"
 #include "tool_options.h"
 #include "whats_this.h"
 
@@ -20,6 +22,7 @@
 
 #include "blockwright/glyph_sets.h"
 #include "blockwright/layer.h"
+#include "blockwright/palette.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -29,6 +32,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QHelpEvent>
 #include <QKeyEvent>
@@ -42,6 +46,9 @@
 #include <QTabletEvent>
 #include <QTextBrowser>
 #include <QTextDocument>
+#include <QTextBlock>
+#include <QTextFragment>
+#include <QTextImageFormat>
 #include <QToolButton>
 #include <QUndoStack>
 #include <QWhatsThis>
@@ -545,4 +552,233 @@ TEST_CASE("A stylus stroke under way when What's This starts goes on and ends on
     CHECK(w.document()->undoStack()->count() == 1);
     CHECK(!(w.document()->canvas().at(5, 2) == Cell{}));
     QWhatsThis::leaveWhatsThisMode();
+}
+
+
+namespace {
+
+// The glyphs of row `y`.
+QString rowText(const Canvas& c, int y) {
+    QString row;
+    for (int x = 0; x < c.width(); ++x)
+        row += QString::fromUcs4(&c.at(x, y).ch, 1);
+    return row;
+}
+
+bool shows(const Cell& c, std::uint8_t colour) {
+    return (c.ch != U' ' && c.fg == Color::indexed(colour)) || (c.ch != U'█' && c.bg == Color::indexed(colour));
+}
+
+QByteArray settingsBytes() {
+    appSettings()->sync();
+    QFile f(bwtest::scratchSettingsFile());
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+} // namespace
+
+TEST_CASE("every tool in the registry has a picture or a reason it has none", "[help][illustration]") {
+    MainWindow w;
+    const QStringList ids = registryIds(w);
+    QStringList none;
+    for (const auto& [id, why] : help::toolsWithoutIllustration()) {
+        INFO("tool " << id.toStdString());
+        CHECK(!why.isEmpty());
+        none << id;
+    }
+    for (const QString& id : ids) {
+        INFO("tool " << id.toStdString());
+        const help::Illustration* picture = help::toolIllustration(id);
+        CHECK(bool(picture) != none.contains(id));
+        if (!picture)
+            continue;
+        CHECK(help::scriptToolId(id) == id);
+        CHECK(picture->cells.width() == help::kIllustrationSize.width());
+        CHECK(picture->cells.height() == help::kIllustrationSize.height());
+        CHECK(picture->image.size() == QSize(help::kIllustrationSize.width() * 8, help::kIllustrationSize.height() * 16));
+        CHECK(picture->image.pixelColor(0, 0).isValid());
+        // Not the document it started on: the tool did something.
+        REQUIRE(picture->before.width() == picture->cells.width());
+        REQUIRE(picture->before.height() == picture->cells.height());
+        bool changed = false;
+        for (int y = 0; y < picture->cells.height(); ++y)
+            for (int x = 0; x < picture->cells.width(); ++x)
+                changed = changed || !(picture->cells.at(x, y) == picture->before.at(x, y));
+        CHECK(changed);
+    }
+    // No script or reason for a tool that isn't there.
+    for (const QString& id : help::illustratedTools())
+        CHECK(ids.contains(id));
+    for (const QString& id : none)
+        CHECK(ids.contains(id));
+    CHECK(help::toolIllustration(QStringLiteral("eyedropper")) == nullptr);
+    CHECK(help::toolIllustration(QStringLiteral("noSuchTool")) == nullptr);
+    // Made once and kept.
+    CHECK(help::toolIllustration(QStringLiteral("line")) == help::toolIllustration(QStringLiteral("line")));
+}
+
+TEST_CASE("making the pictures leaves the open document, its undo and the settings alone", "[help][illustration]") {
+    REQUIRE(bwtest::settingsInScratch(scratchDir()));
+    // Two of the scripts set options their tools keep in the settings (the
+    // spray's density, the texture stamp's kind): start from the defaults,
+    // so a run that wrote them would show.
+    for (const char* group : {"spray", "texture"})
+        appSettings()->remove(QString::fromLatin1(group));
+    MainWindow w;
+    Document* doc = w.document();
+    CellEdit e;
+    e.changes.push_back({2, 1, doc->layerCanvas().at(2, 1), Cell{U'X', Color::indexed(Yellow), Color::indexed(Blue)}});
+    REQUIRE(doc->edit(e));
+    e.changes = {{3, 1, doc->layerCanvas().at(3, 1), Cell{U'Y', Color::indexed(Red), Color::indexed(Black)}}};
+    REQUIRE(doc->edit(e));
+    doc->undoStack()->undo();
+    w.tools()->setActive(QStringLiteral("clone"));
+    const Pen pen{Color::indexed(Brown), Color::indexed(Green)};
+    w.canvasView()->setPen(pen);
+    const BrushSettings brush = w.canvasView()->brushSettings();
+    const Canvas canvas = doc->canvas();
+    const int count = doc->undoStack()->count(), index = doc->undoStack()->index();
+    const QString settingsFile = appSettings()->fileName();
+    const QByteArray settings = settingsBytes();
+
+    for (const QString& id : help::illustratedTools()) {
+        INFO("tool " << id.toStdString());
+        CHECK(help::makeToolIllustration(id).has_value());
+    }
+
+    CHECK(doc->canvas() == canvas);
+    CHECK(doc->undoStack()->count() == count);
+    CHECK(doc->undoStack()->index() == index);
+    CHECK(doc->undoStack()->isClean() == false);
+    CHECK(w.tools()->active()->id() == QStringLiteral("clone"));
+    CHECK(!static_cast<CloneTool*>(w.tools()->active())->mark());
+    CHECK(w.canvasView()->pen().fg == pen.fg);
+    CHECK(w.canvasView()->pen().bg == pen.bg);
+    CHECK(w.canvasView()->brushSettings() == brush);
+    CHECK(appSettings()->fileName() == settingsFile);
+    CHECK(settingsBytes() == settings);
+}
+
+TEST_CASE("the pictures show what their tools do", "[help][illustration]") {
+    auto cells = [](const char* id) {
+        const help::Illustration* p = help::toolIllustration(QString::fromLatin1(id));
+        REQUIRE(p);
+        return p->cells;
+    };
+
+    SECTION("the line climbs from the bottom left to the top right") {
+        const Canvas c = cells("line");
+        int last = c.width(), top = -1;
+        for (int y = 0; y < c.height(); ++y) {
+            INFO("row " << y);
+            int left = -1;
+            for (int x = 0; x < c.width() && left < 0; ++x)
+                if (shows(c.at(x, y), LightCyan))
+                    left = x;
+            REQUIRE(left >= 0);
+            if (y == 0)
+                top = left;
+            CHECK(left <= last);
+            last = left;
+        }
+        CHECK(top - last >= 10);
+    }
+    SECTION("the fill floods the inside of the outline and nothing outside it") {
+        const Canvas c = cells("fill");
+        CHECK(shows(c.at(7, 3), Cyan));
+        CHECK(shows(c.at(4, 2), Cyan));
+        CHECK(c.at(0, 0) == Cell{});
+        CHECK(c.at(15, 5) == Cell{});
+    }
+    SECTION("the shade brush builds up ░▒▓█") {
+        const QString row = rowText(cells("shade"), 3);
+        const qsizetype a = row.indexOf(u'░'), b = row.indexOf(u'▒'), c = row.indexOf(u'▓'), d = row.indexOf(u'█');
+        CHECK(a >= 0);
+        CHECK(a < b);
+        CHECK(b < c);
+        CHECK(c < d);
+    }
+    SECTION("the clone stamp copies the art") {
+        const Canvas c = cells("clone");
+        for (int y = 1; y <= 3; ++y)
+            for (int x = 1; x <= 5; ++x) {
+                INFO("cell " << x << "," << y);
+                CHECK(c.at(x + 8, y) == c.at(x, y));
+            }
+        CHECK(shows(c.at(3, 2), Yellow));
+    }
+    SECTION("the selection lifts the art and sets it down further on") {
+        const Canvas c = cells("select");
+        bool artLeft = false;
+        for (int y = 1; y <= 3; ++y)
+            for (int x = 1; x <= 5; ++x)
+                artLeft = artLeft || shows(c.at(x, y), Yellow);
+        CHECK(!artLeft);
+        CHECK(shows(c.at(11, 3), Yellow));
+    }
+    SECTION("the keyboard types") {
+        CHECK(rowText(cells("keyboard"), 2).contains(QStringLiteral("hello, ansi")));
+    }
+    SECTION("the colorize brush recolours the right and keeps the glyphs") {
+        const Canvas c = cells("colorize");
+        CHECK(c.at(1, 0).fg == Color::indexed(Grey));
+        CHECK(c.at(14, 0).fg == Color::indexed(LightMagenta));
+        CHECK(rowText(c, 0) == QStringLiteral("░▒▓█ colour ▓▒░░"));
+    }
+}
+
+TEST_CASE("the Tool Options help panel shows the active tool's picture", "[help][illustration]") {
+    REQUIRE(bwtest::settingsInScratch(scratchDir()));
+    appSettings()->remove(QStringLiteral("toolOptions/showHelp"));
+    MainWindow w;
+    ToolOptions* o = w.toolOptions();
+    QLabel* picture = o->illustrationLabel();
+    REQUIRE(picture);
+    CHECK(picture->objectName() == QStringLiteral("toolIllustration"));
+    for (const Tool* t : w.tools()->tools()) {
+        INFO("tool " << t->id().toStdString());
+        w.tools()->setActive(t->id());
+        const help::Illustration* p = help::toolIllustration(t->id());
+        CHECK(picture->pixmap().isNull() == !p);
+        CHECK(picture->isVisibleTo(o) == bool(p));
+        if (p)
+            CHECK(picture->pixmap().toImage().convertToFormat(p->image.format()) == p->image);
+    }
+    w.tools()->setActive(QStringLiteral("line"));
+    o->helpToggle()->setChecked(false);
+    CHECK(!picture->isVisibleTo(o));
+    w.tools()->setActive(QStringLiteral("fill"));
+    CHECK(!picture->isVisibleTo(o));
+    o->helpToggle()->setChecked(true);
+    CHECK(picture->isVisibleTo(o));
+    w.tools()->setActive(QStringLiteral("eyedropper"));
+    CHECK(!picture->isVisibleTo(o));
+    appSettings()->remove(QStringLiteral("toolOptions/showHelp"));
+}
+
+TEST_CASE("Help > Manual shows each tool's picture under its heading", "[help][illustration]") {
+    MainWindow w;
+    const QString md = manualMarkdown(*w.tools(), &w);
+    for (const Tool* t : w.tools()->tools()) {
+        INFO("tool " << t->id().toStdString());
+        const QString image = QStringLiteral("](%1)").arg(illustrationUrl(t->id()).toString());
+        CHECK(md.contains(image) == bool(help::toolIllustration(t->id())));
+    }
+    const qsizetype heading = md.indexOf(QStringLiteral("## Line")), image = md.indexOf(QStringLiteral("](illustration:line)"));
+    CHECK(heading >= 0);
+    CHECK(heading < image);
+    CHECK(md.indexOf(QStringLiteral("\n## "), heading + 1) > image);
+
+    ManualDialog* d = showManual(*w.tools(), &w);
+    QTextDocument* doc = d->text()->document();
+    QStringList shown;
+    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+        for (auto f = b.begin(); !f.atEnd(); ++f)
+            if (f.fragment().charFormat().isImageFormat())
+                shown << f.fragment().charFormat().toImageFormat().name();
+    CHECK(shown.contains(illustrationUrl(QStringLiteral("line")).toString()));
+    CHECK(!shown.contains(illustrationUrl(QStringLiteral("eyedropper")).toString()));
+    const QImage line = doc->resource(QTextDocument::ImageResource, illustrationUrl(QStringLiteral("line"))).value<QImage>();
+    CHECK(line == help::toolIllustration(QStringLiteral("line"))->image);
+    d->close();
 }

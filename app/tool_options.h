@@ -17,7 +17,8 @@
 // row is shown while the active tool reads it (optionsFor). It edits the
 // view's settings and the tools' and follows them, so the menus and the
 // dock stay in step. Under the tool's name, a panel that can be folded
-// away shows the tool's help (help_text.h) and follows the active tool.
+// away shows the tool's picture (tool_illustration.h) and help (help_text.h)
+// and follows the active tool.
 
 #include <QFlags>
 #include <QWidget>
@@ -124,6 +125,9 @@ public:
     // The help panel: its fold button, and the active tool's help.
     QToolButton* helpToggle() const { return helpToggle_; }
     QLabel* helpLabel() const { return help_; }
+    // The active tool's picture, in the help panel; no pixmap for a tool
+    // with none.
+    QLabel* illustrationLabel() const { return illustration_; }
     QCheckBox* filledBox() const { return filled_; }
     QComboBox* pasteModeBox() const { return pasteMode_; }
     QCheckBox* sampleMergedBox() const { return merged_; }
@@ -174,6 +178,7 @@ private:
     QLabel* none_;
     QToolButton* helpToggle_;
     QLabel* help_;
+    QLabel* illustration_;
     QSpinBox* size_;
     QComboBox* tip_;
     QSpinBox* strength_;

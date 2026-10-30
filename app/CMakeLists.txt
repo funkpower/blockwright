@@ -65,6 +65,8 @@ add_library(blockwright_app STATIC
   text_tool.h
   tool.cpp
   tool.h
+  tool_illustration.cpp
+  tool_illustration.h
   tool_options.cpp
   tool_options.h
   toolbox.cpp

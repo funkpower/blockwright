@@ -11,6 +11,7 @@
 #include "text_options.h"
 #include "text_tool.h"
 #include "tool.h"
+#include "tool_illustration.h"
 #include "transform_options.h"
 #include "whats_this.h"
 
@@ -150,6 +151,8 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     help_->setWordWrap(true);
     help_->setTextInteractionFlags(Qt::TextBrowserInteraction);
     connect(help_, &QLabel::linkActivated, this, &ToolOptions::shortcutsRequested);
+    illustration_ = new QLabel;
+    illustration_->setObjectName(QStringLiteral("toolIllustration"));
 
     size_ = new QSpinBox;
     size_->setObjectName(QStringLiteral("brushSize"));
@@ -362,6 +365,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     whatsThisFromToolTips(this);
     form->addRow(title_);
     form->addRow(helpToggle_);
+    form->addRow(illustration_);
     form->addRow(help_);
     form->addRow(none_);
     form->addRow(tr("Glyph"), glyph_);
@@ -484,8 +488,12 @@ void ToolOptions::showFor(Tool* tool) {
     const QString help = tool ? help::toolText(tool->id()) : QString();
     help_->setText(help.isEmpty() ? help
                                   : help + tr("\n\n[All keyboard shortcuts](shortcuts) (Help > Keyboard Shortcuts)"));
+    const help::Illustration* picture = tool ? help::toolIllustration(tool->id()) : nullptr;
+    illustration_->setPixmap(picture ? QPixmap::fromImage(picture->image) : QPixmap());
+    illustration_->setAccessibleName(picture ? tr("Picture of the %1 tool at work").arg(title_->text()) : QString());
     QFormLayout* f = form_layout_;
     f->setRowVisible(helpToggle_, !help.isEmpty());
+    f->setRowVisible(illustration_, picture && !help.isEmpty() && helpToggle_->isChecked());
     f->setRowVisible(help_, !help.isEmpty() && helpToggle_->isChecked());
     helpToggle_->setArrowType(helpToggle_->isChecked() ? Qt::DownArrow : Qt::RightArrow);
     f->setRowVisible(none_, !o);
@@ -527,6 +535,7 @@ void ToolOptions::showFor(Tool* tool) {
 }
 
 void ToolOptions::showHelp(bool shown) {
+    form_layout_->setRowVisible(illustration_, shown && !help_->text().isEmpty() && !illustration_->pixmap().isNull());
     form_layout_->setRowVisible(help_, shown && !help_->text().isEmpty());
     helpToggle_->setArrowType(shown ? Qt::DownArrow : Qt::RightArrow);
     appSettings()->setValue(kShowHelpKey, shown);

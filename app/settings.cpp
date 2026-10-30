@@ -19,4 +19,11 @@ std::unique_ptr<QSettings> appSettings() {
 
 void setSettingsFile(const QString& path) { settingsFile() = path; }
 
+ScratchSettings::ScratchSettings() : before_(settingsFile()) {
+    if (dir_.isValid())
+        setSettingsFile(dir_.filePath(QStringLiteral("settings.ini")));
+}
+
+ScratchSettings::~ScratchSettings() { setSettingsFile(before_); }
+
 } // namespace bw

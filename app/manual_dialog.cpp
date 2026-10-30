@@ -3,17 +3,45 @@
 #include "help_text.h"
 #include "shortcuts_dialog.h"
 #include "tool.h"
+#include "tool_illustration.h"
 
 #include <QAction>
 #include <QDialogButtonBox>
 #include <QKeySequence>
 #include <QPushButton>
 #include <QTextBrowser>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <limits>
 
 namespace bw {
+
+namespace {
+
+constexpr auto kIllustrationScheme = "illustration";
+
+// The manual's view: an image at illustration:<tool id> is the tool's
+// picture (tool_illustration.h), made when the manual is first laid out.
+class ManualBrowser : public QTextBrowser {
+public:
+    QVariant loadResource(int type, const QUrl& name) override {
+        if (type == QTextDocument::ImageResource && name.scheme() == QLatin1String(kIllustrationScheme)) {
+            const help::Illustration* picture = help::toolIllustration(name.path());
+            return picture ? QVariant(picture->image) : QVariant();
+        }
+        return QTextBrowser::loadResource(type, name);
+    }
+};
+
+} // namespace
+
+QUrl illustrationUrl(const QString& toolId) {
+    QUrl url;
+    url.setScheme(QLatin1String(kIllustrationScheme));
+    url.setPath(toolId);
+    return url;
+}
 
 QString manualMarkdown(const ToolRegistry& tools, const QWidget* window) {
     QStringList md;
@@ -24,11 +52,16 @@ QString manualMarkdown(const ToolRegistry& tools, const QWidget* window) {
         const QString text = help::toolText(t->id());
         if (text.isEmpty())
             continue;
-        QString heading = QString(t->name()).remove(QLatin1Char('&'));
+        const QString plainName = QString(t->name()).remove(QLatin1Char('&'));
+        QString heading = plainName;
         const auto* a = window ? window->findChild<QAction*>(t->id() + QStringLiteral("Tool")) : nullptr;
         if (a && !a->shortcut().isEmpty())
             heading += QStringLiteral(" (%1)").arg(a->shortcut().toString(QKeySequence::NativeText));
-        md << QStringLiteral("## ") + heading << text;
+        md << QStringLiteral("## ") + heading;
+        if (help::toolIllustration(t->id()))
+            md << QStringLiteral("![%1](%2)").arg(ManualDialog::tr("The %1 tool at work").arg(plainName),
+                                                  illustrationUrl(t->id()).toString());
+        md << text;
     }
     md << ManualDialog::tr("# Layers")
        << ManualDialog::tr("The Layers dock adds, orders and hides layers. Each kind holds something different:");
@@ -45,7 +78,7 @@ QString manualMarkdown(const ToolRegistry& tools, const QWidget* window) {
 }
 
 ManualDialog::ManualDialog(const ToolRegistry& tools, QWidget* window)
-    : QDialog(window), text_(new QTextBrowser), shortcuts_(new QPushButton(tr("&Keyboard Shortcuts..."))) {
+    : QDialog(window), text_(new ManualBrowser), shortcuts_(new QPushButton(tr("&Keyboard Shortcuts..."))) {
     setWindowTitle(tr("Blockwright Manual"));
     text_->setObjectName(QStringLiteral("manualText"));
     text_->setMarkdown(manualMarkdown(tools, window));
