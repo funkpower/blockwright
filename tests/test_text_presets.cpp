@@ -261,11 +261,11 @@ fs::path scratch(const std::string& name) {
 
 } // namespace
 
-TEST_CASE("the bundled presets are the ten, none needing iCE", "[presets]") {
+TEST_CASE("the bundled presets are the eleven, none needing iCE", "[presets]") {
     const std::map<std::string, bool> expected{{"Gold 3D", false}, {"Shadow", false}, {"Outline", false},
                                                {"Chrome", false},  {"Ice", false},    {"Neon", false},
                                                {"Warning sign", false}, {"Masthead", false}, {"Fire", false},
-                                               {"Rainbow", false}};
+                                               {"Rainbow", false}, {"Sunset", false}};
     std::map<std::string, bool> got;
     for (const TextStyleEntry& p : presets()) {
         INFO(p.path.string());
@@ -297,7 +297,7 @@ TEST_CASE("every preset on every fixture word and face lints clean and fits 80 c
     const std::vector<TextStyleEntry> all = presets();
     const std::vector<MatrixFace> fs = faces();
     const std::vector<TextSource> ws = words();
-    REQUIRE(all.size() == 10);
+    REQUIRE(all.size() == 11);
     int cases = 0;
     for (const TextStyleEntry& p : all)
         for (const MatrixFace& f : fs)
@@ -307,8 +307,8 @@ TEST_CASE("every preset on every fixture word and face lints clean and fits 80 c
                     CHECK(faults({&p, &f, &w, ice}) == "");
                     ++cases;
                 }
-    // 10 presets, each with iCE on and off, over 6 faces and 5 words
-    CHECK(cases == 10 * 2 * 6 * 5);
+    // 11 presets, each with iCE on and off, over 6 faces and 5 words
+    CHECK(cases == 11 * 2 * 6 * 5);
 }
 
 TEST_CASE("the TheDraw test fonts unstyled lint clean and fit 80 columns and the budget", "[presets][matrix]") {
@@ -601,7 +601,7 @@ TEST_CASE("a preset read from its Library file is the same stack, and writes bac
     const ScanResult r = scan(dir);
     CHECK(r.problems.empty());
     CHECK(r.stamps.empty());
-    CHECK(r.styles.size() == 10);
+    CHECK(r.styles.size() == 11);
 }
 
 TEST_CASE("a text layer in each preset, face, word and iCE setting saves, reopens, redraws, undoes and bakes",
@@ -693,5 +693,5 @@ TEST_CASE("a text layer in each preset, face, word and iCE setting saves, reopen
                     ++cases;
                 }
     }
-    CHECK(cases == 10 * 2 * 6 * 5);
+    CHECK(cases == 11 * 2 * 6 * 5);
 }
