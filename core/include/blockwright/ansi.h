@@ -4,6 +4,7 @@
 #include "blockwright/canvas.h"
 #include "blockwright/sauce.h"
 
+#include <array>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -12,11 +13,29 @@
 
 namespace bw {
 
+// A font a file carries (XBIN): 256 glyphs 8 px wide, `height` bytes each,
+// one per row, bit 7 leftmost.
+struct FileFont {
+    int height = 16;
+    std::string bits;  // 256 * height bytes
+
+    bool operator==(const FileFont&) const = default;
+};
+
 struct AnsiDocument {
     Canvas canvas{Canvas::kDefaultWidth, 1};
     std::optional<Sauce> sauce;
     bool ice = true;  // blink = bright background
+    // What an XBIN carries besides its cells, kept so that saving it as XBIN
+    // writes them back. Nothing draws with them yet: the editor and renderer
+    // use kPalette and the bundled IBM VGA font. Only XBIN can hold them, so
+    // the other writers report them lost (AnsiOutput, customPalette).
+    std::optional<std::array<Rgb, 16>> palette;
+    std::optional<FileFont> font;
 };
+
+// Whether `doc` has a palette other than kPalette, which only XBIN can write.
+bool customPalette(const AnsiDocument& doc);
 
 class AnsiError : public std::runtime_error {
 public:
@@ -51,8 +70,12 @@ struct AnsiOutput {
     // blink shows count: blink hides and shows the foreground, so on a blank
     // glyph (blankGlyph) it shows nothing and nothing is lost.
     int blinkDropped = 0;
+    // The document's palette (customPalette) or font, which this format
+    // can't hold, left out.
+    bool paletteDropped = false;
+    bool fontDropped = false;
 
-    bool lossy() const { return !unwritable.empty() || blinkDropped; }
+    bool lossy() const { return !unwritable.empty() || blinkDropped || paletteDropped || fontDropped; }
 };
 
 // Writes the canvas in canonical form: ESC[0m first; per row, trailing
@@ -62,10 +85,17 @@ struct AnsiOutput {
 // document's record if it has one (width, height, iCE and FileSize updated)
 // or a fresh one. iCE is the document's, except that a canvas with a bright
 // background is written with iCE on (blinking cells then lose their blink,
-// counted in `blinkDropped` unless the glyph is blank). Glyphs with no CP437
-// byte, or whose byte is a control code the parser would act on, are written
-// as '?' and listed in `unwritable`.
+// counted in `blinkDropped` unless the glyph is blank; see writtenIce). Glyphs
+// with no CP437 byte, or whose byte is a control code the parser would act
+// on, are written as '?' and listed in `unwritable`. A custom palette or a
+// font is left out (paletteDropped, fontDropped).
 AnsiOutput writeAnsi(const AnsiDocument& doc);
+
+// The iCE colours writeAnsi, writeXbin and writeBin write `doc` with: its
+// own, or on when a cell has a bright background. With them on, the cells
+// whose blink shows (not on a blank glyph) lose it, and `blinkDropped` (if
+// given) is set to how many.
+bool writtenIce(const AnsiDocument& doc, int* blinkDropped = nullptr);
 
 // A cell as it shows, and is saved, with iCE colours `ice`. Blink and a
 // bright background are one bit here, as in Moebius and PabloDraw: with iCE

@@ -1,4 +1,4 @@
-# The core library: cell model, palette, CP437, ANSI and SAUCE codecs, IRC
+# The core library: cell model, palette, CP437, ANSI, XBIN/BIN and SAUCE codecs, IRC
 # text (mIRC colours and the row encoder), ramps, brushes and the lint.
 # Plain C++20 (QtCore for the Library, tag case folding, projects' JSON and
 # running generators; libzip and zstd for project files); it must never link
@@ -48,6 +48,7 @@ add_library(blockwright_core STATIC
   src/big_text.cpp
   src/text.cpp
   src/text_style.cpp
+  src/xbin.cpp
 )
 add_library(blockwright::core ALIAS blockwright_core)
 target_include_directories(blockwright_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

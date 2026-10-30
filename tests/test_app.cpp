@@ -6,6 +6,7 @@
 
 #include "blockwright/cp437.h"
 #include "blockwright/glyph_sets.h"
+#include "blockwright/xbin.h"
 
 #include "canvas_view.h"
 #include "document.h"
@@ -428,6 +429,102 @@ TEST_CASE("a lossy save is refused unless allowed") {
     CHECK_FALSE(QFile::exists(out));
     CHECK(w.saveFile(out, &error, true));
     CHECK(QFile::exists(out));
+}
+
+TEST_CASE("XBIN and BIN open and save in the format their names give") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path xb = bwtest::dataDir() / "xbin";
+    const std::string tux = bwtest::readFile(goldenDir() / "tux.ans");
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(qpath(xb / "tux.xb"), &error));
+    CHECK(w.document()->canvas() == parseXbin(bwtest::readFile(xb / "tux.xb")).canvas);
+    CHECK(w.document()->ansi().ice);
+    const QString asXb = tmp.filePath(QStringLiteral("tux.xb")), asBin = tmp.filePath(QStringLiteral("tux.bin")),
+                  asAns = tmp.filePath(QStringLiteral("tux.ans"));
+    REQUIRE(w.saveFile(asXb, &error));
+    CHECK(bwtest::readFile(asXb.toStdString()) == bwtest::readFile(xb / "tux.xb"));
+    // XBIN's SAUCE names no font, so this BIN names none either
+    REQUIRE(w.saveFile(asBin, &error));
+    const std::string bin = bwtest::readFile(asBin.toStdString());
+    CHECK(bin == writeBin(parseXbin(bwtest::readFile(xb / "tux.xb"))).bytes);
+    CHECK(parseBin(bin).canvas == parseAnsi(tux).canvas);
+
+    // a BIN made from the piece, read back and saved as .ans, is the piece
+    REQUIRE(w.openFile(qpath(xb / "tux.bin"), &error));
+    CHECK(w.document()->canvas() == parseAnsi(tux).canvas);
+    REQUIRE(w.saveFile(asAns, &error));
+    CHECK(bwtest::readFile(asAns.toStdString()) == tux);
+
+    // an XBIN under another name is read by its header
+    const QString disguised = tmp.filePath(QStringLiteral("xbin.ans"));
+    REQUIRE(QFile::copy(qpath(xb / "tux.xb"), disguised));
+    REQUIRE(w.openFile(disguised, &error));
+    CHECK(w.document()->canvas() == parseAnsi(tux).canvas);
+
+    // a bad XBIN is refused and the document stays
+    const QString bad = tmp.filePath(QStringLiteral("bad.xb"));
+    QFile f(bad);
+    REQUIRE(f.open(QIODevice::WriteOnly));
+    f.write("XBIN\x1a\x00\x00\x01\x00\x10\x00", 11);
+    f.close();
+    CHECK_FALSE(w.openFile(bad, &error));
+    CHECK(error.contains(QStringLiteral("width 0")));
+    CHECK(w.document()->path() == disguised);
+}
+
+TEST_CASE("an XBIN's palette and font are kept by an XBIN save and lost after a warning by any other") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path pf = bwtest::dataDir() / "xbin" / "tux-palette-font.xb";
+    const std::string fixture = bwtest::readFile(pf);
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(qpath(pf), &error));
+    REQUIRE(w.document()->ansi().palette);
+    REQUIRE(w.document()->ansi().font);
+    CHECK(w.document()->ansi().font->height == 8);
+
+    // XBIN keeps both, and a save as XBIN is the file it was
+    CHECK_FALSE(w.document()->encode(ArtFormat::Xbin).lossy());
+    const QString again = tmp.filePath(QStringLiteral("again.xb"));
+    REQUIRE(w.saveFile(again, &error));
+    CHECK(bwtest::readFile(again.toStdString()) == fixture);
+
+    // the others lose them: refused unless allowed, and the warning says so
+    for (const ArtFormat f : {ArtFormat::Ansi, ArtFormat::Bin}) {
+        const AnsiOutput out = w.document()->encode(f);
+        CHECK(out.paletteDropped);
+        CHECK(out.fontDropped);
+    }
+    const AnsiOutput lost = w.document()->encode(ArtFormat::Bin);
+    CHECK(saveWarning(lost, false, ArtFormat::Bin).startsWith(QStringLiteral("Before saving as BIN:")));
+    CHECK(saveWarning(lost, false, ArtFormat::Xbin).startsWith(QStringLiteral("Before saving as XBIN:")));
+    CHECK(lossDescription(lost).contains(QStringLiteral("palette is left out")));
+    CHECK(lossDescription(lost).contains(QStringLiteral("font is left out")));
+    const QString ans = tmp.filePath(QStringLiteral("pf.ans")), bwp = tmp.filePath(QStringLiteral("pf.bwp"));
+    CHECK_FALSE(w.saveFile(ans, &error));
+    CHECK(error.contains(QStringLiteral("palette")));
+    CHECK_FALSE(QFile::exists(ans));
+    CHECK_FALSE(w.saveFile(bwp, &error));
+    CHECK(error.contains(QStringLiteral("font")));
+    CHECK_FALSE(QFile::exists(bwp));
+
+    // saved as .ans anyway, the document is that file, which holds neither
+    REQUIRE(w.saveFile(ans, &error, true));
+    CHECK_FALSE(w.document()->ansi().palette);
+    CHECK_FALSE(w.document()->ansi().font);
+    CHECK_FALSE(w.document()->encode(ArtFormat::Bin).lossy());
+    const QString plain = tmp.filePath(QStringLiteral("plain.xb"));
+    REQUIRE(w.saveFile(plain, &error));
+    CHECK(bwtest::readFile(plain.toStdString()) == bwtest::readFile(bwtest::dataDir() / "xbin" / "tux.xb"));
+
+    // and a project save drops them too
+    REQUIRE(w.openFile(qpath(pf), &error));
+    REQUIRE(w.saveFile(bwp, &error, true));
+    CHECK_FALSE(w.document()->ansi().palette);
+    CHECK_FALSE(w.document()->ansi().font);
 }
 
 TEST_CASE("a canvas too large to display is refused and the open document stays") {

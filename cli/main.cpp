@@ -2,7 +2,7 @@
 //
 //   blockwright-cli --version
 //   blockwright-cli info <file.ans|project>
-//   blockwright-cli convert [--allow-lossy] <in.ans|project> <out.ans>
+//   blockwright-cli convert [--allow-lossy] <in.ans|project> <out.ans|out.xb|out.bin>
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli export --irc [--budget N] [--fit] [--pad] [--swap-shades]
 //                          [--allow-over-budget] <in.ans|project> <out.txt>
@@ -15,17 +15,19 @@
 //   blockwright-cli render --irc [--budget N] [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli library list [dir]
 //   blockwright-cli library check <dir>
-//   blockwright-cli pack <in.ans|project> <out.bwp>
-//   blockwright-cli unpack <in.ans|project> <dir>
+//   blockwright-cli pack [--allow-lossy] <in.ans|project> <out.bwp>
+//   blockwright-cli unpack [--allow-lossy] <in.ans|project> <dir>
 //   blockwright-cli snapshot [--allow-lossy] <project>
 //   blockwright-cli add-generator [--name NAME] [--timeout S] <project> <generator-dir>
 //   blockwright-cli run-generators [--layer ID]... [--timeout S] <project>
 //
-// Every command that reads an .ans also reads a project (PLAN §6), a .bwp
-// zip or a project directory, as its flattened composite.
+// Every command that reads an .ans also reads an XBIN (.xb, or any file that
+// starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
+// .bwp zip or a project directory, as its flattened composite. convert and
+// shade write the format <out>'s name gives (.xb, .bin, else .ans).
 //
-// Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert or shade
-// without --allow-lossy (nothing is written), or a library check that found
+// Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert, shade,
+// pack or unpack without --allow-lossy (nothing is written), or a library check that found
 // a problem, or a lossy snapshot without --allow-lossy, or a generator that failed (nothing is written), 2 usage
 // error, 3 an IRC line over the byte budget without
 // --allow-over-budget (nothing is written), 4 lint reported findings.
@@ -44,6 +46,7 @@
 #include "blockwright/project.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
+#include "blockwright/xbin.h"
 #include "generators.h"
 #include "lint.h"
 #include "read_file.h"
@@ -93,7 +96,7 @@ bw::project::Project loadProject(const std::string& path) {
     }
 }
 
-// An .ans, or a project as its flattened composite.
+// An .ans, XBIN or BIN, or a project as its flattened composite.
 bw::AnsiDocument load(const std::string& path) {
     if (bw::project::isProject(path))
         return bw::project::toAnsi(loadProject(path));
@@ -101,7 +104,7 @@ bw::AnsiDocument load(const std::string& path) {
     if (data.empty())
         throw Failure{path + ": empty file"};
     try {
-        return bw::parseAnsi(data);
+        return bw::parseArt(data, bw::artFormatOf(path, data));
     } catch (const bw::AnsiError& e) {
         throw Failure{path + ": " + e.what()};
     }
@@ -177,9 +180,22 @@ int info(const std::string& path) {
         return projectInfo(path);
     const bw::AnsiDocument doc = load(path);
     const std::string data = readFile(path);
-    const auto content = bw::splitSauce(data).content;
-    std::cout << "file:        " << path << "\n"
-              << "size:        " << doc.canvas.width() << "x" << doc.canvas.height() << "\n"
+    const bw::ArtFormat format = bw::artFormatOf(path, data);
+    // in binary text 0x1A is a glyph or a colour: the content is the bytes the cells take
+    const std::string_view content = bw::splitArtSauce(data, format).content;
+    std::cout << "file:        " << path << "\n";
+    if (format == bw::ArtFormat::Xbin) {
+        std::cout << "format:      XBIN" << (data[10] & 0x04 ? ", compressed" : "") << "\n"
+                  << "palette:     " << (!doc.palette ? "none" : bw::customPalette(doc) ? "custom" : "standard") << "\n"
+                  << "font:        ";
+        if (doc.font)
+            std::cout << "8x" << doc.font->height << "\n";
+        else
+            std::cout << "none\n";
+    } else if (format == bw::ArtFormat::Bin) {
+        std::cout << "format:      BIN\n";
+    }
+    std::cout << "size:        " << doc.canvas.width() << "x" << doc.canvas.height() << "\n"
               << "ice:         " << (doc.ice ? "on" : "off") << "\n";
     if (!doc.sauce) {
         std::cout << "sauce:       none\n";
@@ -232,7 +248,8 @@ void save(const std::string& out, const std::string& bytes) {
         throw Failure{out + ": write failed: " + f.errorString().toStdString()};
 }
 
-// Writes the document as .ans, warning once per kind of loss; a lossy
+// Writes the document in the format out's name gives (.xb, .bin, else
+// .ans), warning once per kind of loss; a lossy
 // result is written only with allowLossy. `why` replaces the refusal's
 // reason when the caller knows it. `blinkDropped` is blink the document lost
 // before it got here (openAsEditor), counted with what writeAnsi drops.
@@ -252,11 +269,15 @@ void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
         std::cerr << "blockwright-cli: warning: " << in << ": " << n
                   << (n == 1 ? " blinking cell loses its blink" : " blinking cells lose their blink")
                   << ": bright backgrounds need iCE colours, where blink is a bright background\n";
+    if (res.paletteDropped)
+        std::cerr << "blockwright-cli: warning: " << in << ": its palette is left out: only XBIN holds one\n";
+    if (res.fontDropped)
+        std::cerr << "blockwright-cli: warning: " << in << ": its font is left out: only XBIN holds one\n";
 }
 
 void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocument& doc, bool allowLossy,
               const std::string& why = {}, int blinkDropped = 0) {
-    bw::AnsiOutput res = bw::writeAnsi(doc);
+    bw::AnsiOutput res = bw::writeArt(doc, bw::artFormatFor(out));
     res.blinkDropped += blinkDropped;
     warnLoss(in, res);
     if (res.lossy() && !allowLossy)
@@ -284,16 +305,24 @@ void refuseSameFile(const std::string& in, const std::string& out) {
         throw Failure{out + ": not written: it is the input file"};
 }
 
-// An .ans as a one-layer project, opened as the editor opens it (a warning
-// for blink that loses), or a project as it is.
-bw::project::Project asProject(const std::string& in) {
+// An .ans (or XBIN, BIN) as a one-layer project, opened as the editor opens
+// it (a warning for blink that loses), or a project as it is. A project
+// doesn't keep an XBIN's palette or font: a warning for each, and nothing is
+// written to `out` without allowLossy, as convert refuses. Blink is lost on
+// opening, as the editor loses it, so it is only warned of.
+bw::project::Project asProject(const std::string& in, const std::string& out, bool allowLossy) {
     if (bw::project::isProject(in))
         return loadProject(in);
     bw::Opened opened;
-    bw::project::Project p = bw::project::fromAnsi(load(in), &opened);
+    bw::AnsiDocument doc = load(in);
     bw::AnsiOutput loss;
+    loss.paletteDropped = bw::customPalette(doc);
+    loss.fontDropped = doc.font.has_value();
+    bw::project::Project p = bw::project::fromAnsi(doc, &opened);
     loss.blinkDropped = opened.blinkDropped;
     warnLoss(in, loss);
+    if ((loss.paletteDropped || loss.fontDropped) && !allowLossy)
+        throw Failure{out + ": not written: the project loses data (--allow-lossy writes it anyway)"};
     return p;
 }
 
@@ -308,9 +337,9 @@ void writeProject(const bw::project::Project& p, const std::string& out, bool di
     }
 }
 
-int pack(const std::string& in, const std::string& out, bool directory) {
+int pack(const std::string& in, const std::string& out, bool directory, bool allowLossy) {
     refuseSameFile(in, out);
-    writeProject(asProject(in), out, directory);
+    writeProject(asProject(in, out, allowLossy), out, directory);
     return kOk;
 }
 
@@ -710,7 +739,8 @@ int main(int argc, char** argv) {
         "Headless Blockwright.\n\n"
         "Commands:\n"
         "  info <file>          dimensions and SAUCE fields\n"
-        "  convert <in> <out>   read an .ans and write it back out; <out> may be\n"
+        "  convert <in> <out>   read an .ans and write it back out as .ans, XBIN\n"
+        "                       (<out> named .xb) or BIN (.bin); <out> may be\n"
         "                       <in>, which is rewritten in place (export and\n"
         "                       render refuse to write over their input)\n"
         "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font\n"
@@ -747,7 +777,9 @@ int main(int argc, char** argv) {
         "                       drawing each text style's sample\n"
         "  pack <in> <out.bwp>  write an .ans or a project as a project zip\n"
         "  unpack <in> <dir>    write an .ans or a project as a project directory;\n"
-        "                       <dir> must be empty or a project already\n"
+        "                       <dir> must be empty or a project already. A\n"
+        "                       project can't hold an XBIN's palette or font:\n"
+        "                       pack and unpack drop them only with --allow-lossy\n"
         "  snapshot <project>   save the flattened composite as the project's next\n"
         "                       round (snapshots/rN.ans) and print rN\n"
         "  add-generator <project> <dir>\n"
@@ -758,12 +790,14 @@ int main(int argc, char** argv) {
         "                       run the project's generator layers (or each\n"
         "                       --layer) again and save their output; this runs\n"
         "                       the programs their generator.json names\n\n"
-        "Every command that reads an .ans also reads a project (a .bwp zip or a\n"
-        "project directory) as its flattened composite."));
+        "Every command that reads an .ans also reads an XBIN (.xb) or BIN (.bin),\n"
+        "and a project (a .bwp zip or a project directory) as its flattened\n"
+        "composite. convert and shade write XBIN to an <out> named .xb and BIN\n"
+        "to one named .bin."));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
-                                      QStringLiteral("convert, shade, snapshot: write even if something can't be represented"));
+                                      QStringLiteral("convert, shade, pack, unpack, snapshot: write even if something can't be represented"));
     parser.addOption(lossyOpt);
     const QCommandLineOption scaleOpt(QStringLiteral("scale"),
                                       QStringLiteral("render: integer zoom, nearest neighbour (1-8, default 1)"),
@@ -896,7 +930,7 @@ int main(int argc, char** argv) {
     const QString cmd = args.first();
     // Each option belongs to its commands; every other command refuses it.
     const std::pair<const QCommandLineOption*, std::vector<const char*>> owners[] = {
-        {&lossyOpt, {"convert", "shade", "snapshot"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
+        {&lossyOpt, {"convert", "shade", "pack", "unpack", "snapshot"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
         {&ircOpt, {"export", "render"}},   {&budgetOpt, {"export", "render"}}, {&overOpt, {"export"}},
         {&fitOpt, {"export"}},             {&padOpt, {"export"}},    {&swapShadesOpt, {"export"}},
         {&rampOpt, {"shade", "lint"}},     {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
@@ -1050,7 +1084,8 @@ int main(int argc, char** argv) {
             if (args.size() != 3)
                 return usage(cmd == QLatin1String("pack") ? "pack takes an input and an output .bwp"
                                                           : "unpack takes an input and an output directory");
-            return pack(args[1].toStdString(), args[2].toStdString(), cmd == QLatin1String("unpack"));
+            return pack(args[1].toStdString(), args[2].toStdString(), cmd == QLatin1String("unpack"),
+                        parser.isSet(lossyOpt));
         }
         if (cmd == QLatin1String("snapshot")) {
             if (args.size() != 2)

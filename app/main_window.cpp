@@ -36,8 +36,8 @@ namespace bw {
 
 namespace {
 
-const QString kFilter = QObject::tr(
-    "Blockwright projects and ANSI art (*.bwp *.ans);;Blockwright projects (*.bwp);;ANSI art (*.ans);;All files (*)");
+const QString kFilter = QObject::tr("Blockwright projects and ANSI art (*.bwp *.ans *.xb *.bin);;Blockwright projects "
+                                    "(*.bwp);;ANSI art (*.ans);;XBIN (*.xb);;BIN (*.bin);;All files (*)");
 
 } // namespace
 
@@ -54,11 +54,18 @@ QString lossDescription(const AnsiOutput& out) {
         parts << QObject::tr(
             "%n cell(s) lost their blink when the file was opened with iCE colours, and this save doesn't put it back",
             nullptr, out.blinkDropped);
+    if (out.paletteDropped)
+        parts << QObject::tr("the file's own palette is left out (only XBIN keeps one)");
+    if (out.fontDropped)
+        parts << QObject::tr("the file's own font is left out (only XBIN keeps one)");
     return parts.join(QStringLiteral(";\n"));
 }
 
-QString saveWarning(const AnsiOutput& out, bool project) {
-    const QString before = project ? QObject::tr("Before saving the project:") : QObject::tr("Before saving as .ans:");
+QString saveWarning(const AnsiOutput& out, bool project, ArtFormat format) {
+    const QString before = project                       ? QObject::tr("Before saving the project:")
+                           : format == ArtFormat::Xbin ? QObject::tr("Before saving as XBIN:")
+                           : format == ArtFormat::Bin  ? QObject::tr("Before saving as BIN:")
+                                                       : QObject::tr("Before saving as .ans:");
     return QObject::tr("%1\n%2.\n\nSave anyway?").arg(before, lossDescription(out));
 }
 
@@ -70,18 +77,30 @@ SavePath resolveSavePath(const QString& chosen, const QString& suffix) {
 }
 
 void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project) {
-    const QString ansi = QObject::tr("ANSI art (*.ans)"), bwp = QObject::tr("Blockwright project (*.bwp)");
+    // Each filter and the suffix it adds; "All files" keeps the last one.
+    const std::vector<std::pair<QString, QString>> filters = {
+        {QObject::tr("ANSI art (*.ans)"), QStringLiteral("ans")},
+        {QObject::tr("Blockwright project (*.bwp)"), QStringLiteral("bwp")},
+        {QObject::tr("XBIN (*.xb)"), QStringLiteral("xb")},
+        {QObject::tr("BIN (*.bin)"), QStringLiteral("bin")},
+    };
     dialog.setAcceptMode(QFileDialog::AcceptSave);
     dialog.setFileMode(QFileDialog::AnyFile);
-    dialog.setNameFilters({ansi, bwp, QObject::tr("All files (*)")});
-    dialog.selectNameFilter(project ? bwp : ansi);
-    dialog.setDefaultSuffix(project ? QStringLiteral("bwp") : QStringLiteral("ans"));
-    // The suffix follows the filter; "All files" keeps the last one.
-    QObject::connect(&dialog, &QFileDialog::filterSelected, &dialog, [&dialog, ansi, bwp](const QString& f) {
-        if (f == ansi)
-            dialog.setDefaultSuffix(QStringLiteral("ans"));
-        else if (f == bwp)
-            dialog.setDefaultSuffix(QStringLiteral("bwp"));
+    QStringList names;
+    for (const auto& f : filters)
+        names << f.first;
+    dialog.setNameFilters(names << QObject::tr("All files (*)"));
+    const ArtFormat format = artFormatFor(QFile::encodeName(path).toStdString());
+    const auto& selected = filters[project                       ? 1
+                                   : format == ArtFormat::Xbin ? 2
+                                   : format == ArtFormat::Bin  ? 3
+                                                               : 0];
+    dialog.selectNameFilter(selected.first);
+    dialog.setDefaultSuffix(selected.second);
+    QObject::connect(&dialog, &QFileDialog::filterSelected, &dialog, [&dialog, filters](const QString& name) {
+        for (const auto& f : filters)
+            if (f.first == name)
+                dialog.setDefaultSuffix(f.second);
     });
     if (!path.isEmpty()) {
         const QFileInfo fi(path);
@@ -407,10 +426,11 @@ bool MainWindow::saveAsFile() {
 
 bool MainWindow::saveInteractive(const QString& path, FileForm form) {
     view_->finishTool();
-    const AnsiOutput out = saveLoss(form);
+    const AnsiOutput out = saveLoss(path, form);
     if (out.lossy()) {
         const auto answer = QMessageBox::warning(
-            this, tr("Save"), saveWarning(out, form != FileForm::Ansi),
+            this, tr("Save"),
+            saveWarning(out, form != FileForm::Ansi, artFormatFor(QFile::encodeName(path).toStdString())),
             QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);
         if (answer != QMessageBox::Save)
             return false;

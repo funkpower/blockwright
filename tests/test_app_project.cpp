@@ -912,11 +912,25 @@ TEST_CASE("Save As offers .bwp, and adds the suffix of the filter chosen") {
     CHECK(dialog.defaultSuffix() == QStringLiteral("bwp"));
     CHECK(dialog.selectedNameFilter().contains(QStringLiteral("*.bwp")));
     const QStringList filters = dialog.nameFilters();
-    REQUIRE(filters.size() == 3);
+    REQUIRE(filters.size() == 5);
     emit dialog.filterSelected(filters[0]);
     CHECK(dialog.defaultSuffix() == QStringLiteral("ans"));
-    emit dialog.filterSelected(filters[2]);  // All files keeps the last
+    emit dialog.filterSelected(filters[4]);  // All files keeps the last
     CHECK(dialog.defaultSuffix() == QStringLiteral("ans"));
     emit dialog.filterSelected(filters[1]);
     CHECK(dialog.defaultSuffix() == QStringLiteral("bwp"));
+    emit dialog.filterSelected(filters[2]);
+    CHECK(dialog.defaultSuffix() == QStringLiteral("xb"));
+    emit dialog.filterSelected(filters[3]);
+    CHECK(dialog.defaultSuffix() == QStringLiteral("bin"));
+
+    // a flat file starts on its own format's filter
+    QFileDialog xbin;
+    configureSaveDialog(xbin, tmp.filePath(QStringLiteral("piece.xb")));
+    CHECK(xbin.defaultSuffix() == QStringLiteral("xb"));
+    CHECK(xbin.selectedNameFilter().contains(QStringLiteral("*.xb")));
+    QFileDialog bin;
+    configureSaveDialog(bin, tmp.filePath(QStringLiteral("PIECE.BIN")));
+    CHECK(bin.defaultSuffix() == QStringLiteral("bin"));
+    CHECK(bin.selectedNameFilter().contains(QStringLiteral("*.bin")));
 }

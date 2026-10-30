@@ -461,6 +461,27 @@ AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts) {
     return doc;
 }
 
+bool customPalette(const AnsiDocument& doc) { return doc.palette && *doc.palette != kPalette; }
+
+bool writtenIce(const AnsiDocument& doc, int* blinkDropped) {
+    const Canvas& cv = doc.canvas;
+    bool ice = doc.ice;
+    for (int y = 0; y < cv.height() && !ice; ++y)
+        for (int x = 0; x < cv.width() && !ice; ++x)
+            ice = !cv.at(x, y).transparent && cv.at(x, y).bg.paletteIndex() >= 8;
+    if (blinkDropped) {
+        *blinkDropped = 0;
+        if (ice)
+            for (int y = 0; y < cv.height(); ++y)
+                for (int x = 0; x < cv.width(); ++x) {
+                    const Cell& c = cv.at(x, y);
+                    if (!c.transparent && (c.attrs & attr::Blink) && !blankGlyph(c.ch))
+                        ++*blinkDropped;
+                }
+    }
+    return ice;
+}
+
 AnsiOutput writeAnsi(const AnsiDocument& doc) {
     AnsiOutput out;
     std::string& s = out.bytes;
@@ -471,17 +492,9 @@ AnsiOutput writeAnsi(const AnsiDocument& doc) {
     // so a canvas with any bright background is written with iCE on. Blink
     // can't be written with iCE on: those cells lose it, and that's reported
     // where it showed (not on a blank glyph).
-    bool ice = doc.ice;
-    for (int y = 0; y < cv.height() && !ice; ++y)
-        for (int x = 0; x < cv.width() && !ice; ++x)
-            ice = !cv.at(x, y).transparent && cv.at(x, y).bg.paletteIndex() >= 8;
-    if (ice)
-        for (int y = 0; y < cv.height(); ++y)
-            for (int x = 0; x < cv.width(); ++x) {
-                const Cell& c = cv.at(x, y);
-                if (!c.transparent && (c.attrs & attr::Blink) && !blankGlyph(c.ch))
-                    ++out.blinkDropped;
-            }
+    const bool ice = writtenIce(doc, &out.blinkDropped);
+    out.paletteDropped = customPalette(doc);
+    out.fontDropped = doc.font.has_value();
     s = "\x1b[0m";
     for (int y = 0; y < cv.height(); ++y) {
         int end = cv.width();

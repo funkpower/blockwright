@@ -92,6 +92,73 @@ if cmp -s "$tmp/darkmage-out.ans" "$tmp/darkmage.ans"; then ok "in-place convert
 expect "in-place convert again" 0 '^$' -- "$cli" convert "$tmp/darkmage.ans" "$tmp/darkmage.ans"
 if cmp -s "$tmp/darkmage-out.ans" "$tmp/darkmage.ans"; then ok "a second in-place convert changes nothing"; else bad "a second in-place convert changed the file"; fi
 expect "--help says convert may rewrite in place" 0 '<out> may be' -- "$cli" --help
+
+# XBIN and BIN (#21): the format follows <out>'s name, and reading goes by the
+# XBIN header first, then the name
+xb=$data/xbin
+expect "convert to .xb" 0 '^$' -- "$cli" convert "$piece" "$tmp/tux.xb"
+if cmp -s "$xb/tux.xb" "$tmp/tux.xb"; then ok "convert to .xb writes the fixture"; else bad "convert to .xb differs from xbin/tux.xb"; fi
+expect "convert to .bin" 0 '^$' -- "$cli" convert "$piece" "$tmp/tux.bin"
+if cmp -s "$xb/tux.bin" "$tmp/tux.bin"; then ok "convert to .bin writes the fixture"; else bad "convert to .bin differs from xbin/tux.bin"; fi
+expect "info: XBIN format" 0 '^format: +XBIN, compressed$' -- "$cli" info "$tmp/tux.xb"
+expect "info: XBIN uncompressed" 0 '^format: +XBIN$' -- "$cli" info "$xb/tux-plain.xb"
+expect "info: XBIN size" 0 '^size: +30x17$' -- "$cli" info "$tmp/tux.xb"
+expect "info: XBIN FileSize checked" 0 '^filesize: +443 \(matches content\)$' -- "$cli" info "$tmp/tux.xb"
+expect "info: XBIN SAUCE" 0 '^datatype: +6$' -- "$cli" info "$tmp/tux.xb"
+expect "info: BIN format" 0 '^format: +BIN$' -- "$cli" info "$tmp/tux.bin"
+expect "info: BIN FileSize checked" 0 '^filesize: +1020 \(matches content\)$' -- "$cli" info "$tmp/tux.bin"
+expect "info: BIN size from SAUCE" 0 '^size: +30x17$' -- "$cli" info "$tmp/tux.bin"
+expect "info: .ans has no format line" 1 '' -- grep -q '^format:' <("$cli" info "$piece")
+cp "$tmp/tux.xb" "$tmp/tux-xb.ans"
+expect "an XBIN is read by its header whatever its name" 0 '^format: +XBIN' -- "$cli" info "$tmp/tux-xb.ans"
+expect "convert .xb to .ans" 0 '^$' -- "$cli" convert "$tmp/tux.xb" "$tmp/from-xb.ans"
+expect "convert .bin to .ans" 0 '^$' -- "$cli" convert "$tmp/tux.bin" "$tmp/from-bin.ans"
+if cmp -s "$piece" "$tmp/from-bin.ans"; then ok ".ans -> .bin -> .ans is the same file"; else bad ".bin round trip through .ans differs"; fi
+# XBin's SAUCE has no font name (TInfoS), so only that is gone
+expect ".ans from XBIN: no SAUCE font name" 0 '^font: *$' -- "$cli" info "$tmp/from-xb.ans"
+expect "convert .ans from XBIN back to .xb" 0 '^$' -- "$cli" convert "$tmp/from-xb.ans" "$tmp/again.xb"
+if cmp -s "$xb/tux.xb" "$tmp/again.xb"; then ok ".ans -> .xb -> .ans -> .xb is the same file"; else bad ".xb round trip through .ans differs"; fi
+expect "info: XBIN palette" 0 '^palette: +custom$' -- "$cli" info "$xb/tux-palette-font.xb"
+expect "info: XBIN font" 0 '^font: +8x8$' -- "$cli" info "$xb/tux-palette-font.xb"
+expect "info: no XBIN palette" 0 '^palette: +none$' -- "$cli" info "$tmp/tux.xb"
+expect "XBIN palette lost as .ans: refused" 1 'tux-palette-font\.xb: its palette is left out: only XBIN holds one' -- \
+  "$cli" convert "$xb/tux-palette-font.xb" "$tmp/pf.ans"
+expect "XBIN font lost as .bin: refused" 1 'tux-palette-font\.xb: its font is left out: only XBIN holds one' -- \
+  "$cli" convert "$xb/tux-palette-font.xb" "$tmp/pf.bin"
+if [[ -e $tmp/pf.ans || -e $tmp/pf.bin ]]; then bad "refused XBIN convert left a file"; else ok "refused XBIN convert writes nothing"; fi
+expect "XBIN palette and font: --allow-lossy writes" 0 'its palette is left out' -- \
+  "$cli" convert --allow-lossy "$xb/tux-palette-font.xb" "$tmp/pf.ans"
+expect "XBIN to XBIN keeps the palette and font" 0 '^$' -- "$cli" convert "$xb/tux-palette-font.xb" "$tmp/pf.xb"
+if cmp -s "$xb/tux-palette-font.xb" "$tmp/pf.xb"; then ok "XBIN with a palette and font rewrites byte for byte"; else bad "XBIN with a palette and font differs rewritten"; fi
+# a project holds no palette or font either: pack and unpack refuse to drop them
+expect "pack: XBIN palette and font lost: refused" 1 \
+  'pf\.bwp: not written: the project loses data \(--allow-lossy writes it anyway\)' -- \
+  "$cli" pack "$xb/tux-palette-font.xb" "$tmp/pf.bwp"
+expect "unpack: XBIN palette and font lost: refused" 1 \
+  'pf-dir: not written: the project loses data \(--allow-lossy writes it anyway\)' -- \
+  "$cli" unpack "$xb/tux-palette-font.xb" "$tmp/pf-dir"
+if [[ -e $tmp/pf.bwp || -e $tmp/pf-dir ]]; then bad "refused pack or unpack left a project"; else ok "refused pack and unpack write nothing"; fi
+expect "pack --allow-lossy writes without the palette" 0 'its palette is left out' -- \
+  "$cli" pack --allow-lossy "$xb/tux-palette-font.xb" "$tmp/pf.bwp"
+expect "unpack --allow-lossy writes without the font" 0 'its font is left out' -- \
+  "$cli" unpack --allow-lossy "$xb/tux-palette-font.xb" "$tmp/pf-dir"
+expect "the packed project is the XBIN's cells" 0 '^size: +30x17$' -- "$cli" info "$tmp/pf.bwp"
+[[ -f $tmp/pf-dir/manifest.json ]] && ok "unpack --allow-lossy wrote the project" || bad "unpack --allow-lossy wrote no project"
+expect "pack: an XBIN without a palette or font is not lossy" 0 '^$' -- "$cli" pack "$tmp/tux.xb" "$tmp/tux-xb.bwp"
+# SAUCE is only what follows the cells: cells that spell it are cells, and
+# a last 0x1A attribute right before the record is a cell, not its EOF
+{ printf 'XBIN\x1a\x40\x00\x01\x00\x10\x08SAUCE00'; head -c 121 /dev/zero; } > "$tmp/spelled.xb"
+expect "info: cells that spell SAUCE are no SAUCE" 0 '^sauce: +none$' -- "$cli" info "$tmp/spelled.xb"
+{
+  printf 'XBIN\x1a\x01\x00\x01\x00\x10\x08A\x1a'
+  printf 'SAUCE00%-35s%-20s%-20s20261030' '' '' ''
+  printf '\x0d\x00\x00\x00\x06\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x00'
+  head -c 22 /dev/zero
+} > "$tmp/last-1a.xb"
+expect "info: a last 0x1A attribute is content" 0 '^filesize: +13 \(matches content\)$' -- "$cli" info "$tmp/last-1a.xb"
+printf 'XBIN\x1a\x00\x00\x01\x00\x10\x00' > "$tmp/zero.xb"
+expect "XBIN of width 0 refused" 1 'zero\.xb: .*width 0' -- "$cli" info "$tmp/zero.xb"
+expect "--help names XBIN and BIN" 0 'XBIN \(\.xb\) or BIN \(\.bin\)' -- "$cli" --help
 expect "--help says export and render refuse" 0 'render refuse to write over their input' -- "$cli" --help
 
 # export --irc: per-line byte report, the budget, and the override
@@ -370,7 +437,7 @@ expect "lint bad input" 1 'nope\.ans: No such file' -- "$cli" lint "$tmp/nope.an
 
 # Every command refuses every option it doesn't use: exit 2, a usage message
 # naming the option and the command, and nothing written.
-declare -A owner=([--allow-lossy]="convert shade snapshot" [--scale]=render [--font-width]=render
+declare -A owner=([--allow-lossy]="convert shade pack unpack snapshot" [--scale]=render [--font-width]=render
                   [--irc]="export render" [--budget]="export render" [--allow-over-budget]=export
                   [--fit]=export [--pad]=export [--swap-shades]=export
                   [--ramp]="shade lint" [--darken]=shade [--steps]=shade [--box]="shade lint" [--ice]=shade
@@ -401,7 +468,7 @@ done
 out=$("$cli" info --scale 2 "$piece" 2>/dev/null)
 if [[ -z $out ]]; then ok "info with a foreign option prints no info"; else bad "info with a foreign option printed: $out"; fi
 if [[ -z $(ls -A "$foreign") ]]; then ok "commands with a foreign option write nothing"; else bad "foreign options wrote: $(ls -A "$foreign")"; fi
-expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert, shade or snapshot option, not a render option$' -- \
+expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert, shade, pack, unpack or snapshot option, not a render option$' -- \
   "$cli" render "$piece" "$foreign/late.png" --allow-lossy
 
 expect "export bad input" 1 'nope\.ans: No such file' -- "$cli" export --irc "$tmp/nope.ans" "$tmp/x.txt"
@@ -553,7 +620,7 @@ if cmp -s "$piece" "$proj/tux/snapshots/r2.ans"; then ok "a snapshot is the flat
 expect "snapshot a zip" 0 '^r1$' -- "$cli" snapshot "$proj/tux.bwp"
 expect "info: snapshots" 0 '^snapshots: +1 \(last r1\)$' -- "$cli" info "$proj/tux.bwp"
 expect "snapshot takes a project" 1 'tux\.ans: not a project' -- "$cli" snapshot "$piece"
-expect "snapshot --allow-lossy is snapshot's" 2 '--allow-lossy is a convert, shade or snapshot option, not a pack option' -- "$cli" pack --allow-lossy "$piece" "$proj/x.bwp"
+expect "pack takes --allow-lossy" 0 '^$' -- "$cli" pack --allow-lossy "$piece" "$proj/x.bwp"
 cp "$proj/tux.bwp" "$proj/keep.bwp"
 expect "a flat file never replaces a project" 1 'keep\.bwp: not written: it is a project' -- "$cli" convert "$piece" "$proj/keep.bwp"
 if cmp -s "$proj/tux.bwp" "$proj/keep.bwp"; then ok "the project is untouched"; else bad "convert wrote over a project"; fi

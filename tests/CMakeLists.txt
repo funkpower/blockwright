@@ -49,6 +49,7 @@ add_executable(blockwright-tests
   test_smudge_brush.cpp
   test_soft_brush.cpp
   test_sauce.cpp
+  test_xbin.cpp
   test_selection.cpp
   test_symmetry_stroke.cpp
   test_big_text.cpp

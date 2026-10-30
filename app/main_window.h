@@ -46,20 +46,22 @@ struct SavePath {
 };
 SavePath resolveSavePath(const QString& chosen, const QString& suffix = QStringLiteral("ans"));
 
-// Sets up `dialog` for Save As starting at `path`, with filters for ANSI art
-// and Blockwright projects: the project filter, and ".bwp", selected when
-// `project`, else ANSI art and ".ans". It adds the selected filter's suffix
-// itself, so its own overwrite check sees the name that will be written.
+// Sets up `dialog` for Save As starting at `path`, with filters for ANSI art,
+// Blockwright projects, XBIN and BIN: the project filter, and ".bwp",
+// selected when `project`, else the one `path`'s name gives (artFormatFor:
+// XBIN and ".xb", BIN and ".bin", else ANSI art and ".ans"). It adds the
+// selected filter's suffix itself, so its own overwrite check sees the name
+// that will be written.
 void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project = false);
 
 // What a lossy save or snapshot loses, one line per kind of loss.
 QString lossDescription(const AnsiOutput& out);
-// The question Save asks before a lossy save (AnsiOutput::lossy) as .ans,
-// or, with `project`, as a project (which keeps every glyph, so only blink
-// lost on open counts). Blink lost on open is stated as what happened on
-// open, not as something this save loses, as the cells may have been put
-// back.
-QString saveWarning(const AnsiOutput& out, bool project = false);
+// The question Save asks before a lossy save (AnsiOutput::lossy) as .ans
+// (or the XBIN or BIN `format` names), or, with `project`, as a project
+// (which keeps every glyph, so only blink lost on open and an XBIN's palette
+// and font count). Blink lost on open is stated as what happened on open,
+// not as something this save loses, as the cells may have been put back.
+QString saveWarning(const AnsiOutput& out, bool project = false, ArtFormat format = ArtFormat::Ansi);
 
 class SelectTool;
 class GlyphBar;
@@ -234,9 +236,10 @@ private:
     // openFile for a project, and saveFile's write in `form`.
     bool openProject(const QString& path, QString* error);
     bool writeFile(const QString& path, FileForm form, QString* error, bool allowLossy);
-    // What a save in `form` would lose, for the warning: encode() for .ans,
-    // blink lost on open for a project.
-    AnsiOutput saveLoss(FileForm form) const;
+    // What a save to `path` in `form` would lose, for the warning: encode()
+    // in the format `path` names (artFormatFor) for a flat file; for a
+    // project, blink lost on open and the XBIN palette and font it can't keep.
+    AnsiOutput saveLoss(const QString& path, FileForm form) const;
     // File > Save As Project Directory... and Take Snapshot, after Save As.
     void createProjectActions(QMenu* file);
     void syncProjectActions();

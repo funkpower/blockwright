@@ -286,7 +286,8 @@ bool Document::read(const QString& path, AnsiDocument* out, QString* error) {
         return false;
     }
     try {
-        *out = parseAnsi(std::string_view(data.constData(), size_t(data.size())));
+        const std::string_view bytes(data.constData(), size_t(data.size()));
+        *out = parseArt(bytes, artFormatOf(QFile::encodeName(path).toStdString(), bytes));
     } catch (const AnsiError& e) {
         *error = QString::fromStdString(e.what());
         return false;
@@ -340,12 +341,15 @@ project::Project Document::project() const {
     return p;
 }
 
-AnsiOutput Document::encode() const {
+AnsiOutput Document::encode(ArtFormat format) const {
     project::Project p;
     p.layers = stack_;
     p.ice = doc_.ice;
     p.sauce = doc_.sauce;
-    AnsiOutput out = writeAnsi(project::toAnsi(p));
+    AnsiDocument flat = project::toAnsi(p);
+    flat.palette = doc_.palette;
+    flat.font = doc_.font;
+    AnsiOutput out = writeArt(flat, format);
     out.blinkDropped += lostBlinkOnOpen();
     return out;
 }
@@ -520,6 +524,11 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         emit pathChanged(path_);
     }
     countLostBlink_ = false;  // the file written has no blink left to lose
+    if (artFormatFor(QFile::encodeName(path).toStdString()) != ArtFormat::Xbin) {
+        // nor a palette or font, now it is the document's file
+        doc_.palette.reset();
+        doc_.font.reset();
+    }
     if (whole) {
         undo_.setClean();
         setModified(false);
@@ -561,6 +570,8 @@ bool Document::saveProject(const QString& path, FileForm form, QString* error) {
         emit pathChanged(path_);
     }
     countLostBlink_ = false;
+    doc_.palette.reset();  // a project keeps neither
+    doc_.font.reset();
     undo_.setClean();
     setModified(false);
     return true;

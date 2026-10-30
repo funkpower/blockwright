@@ -46,6 +46,8 @@ struct Sauce {
 
 struct SauceSplit {
     std::string_view content;    // the art: before the SAUCE/COMNT and the first EOF (0x1A)
+    std::string_view body;       // everything before the SAUCE/COMNT, EOFs and all
+                                 // (binary formats, where 0x1A is a glyph or colour)
     std::optional<Sauce> sauce;
 };
 

@@ -88,6 +88,7 @@ SauceSplit splitSauce(std::string_view file) {
             out.sauce = std::move(s);
         }
     }
+    out.body = content;
     const size_t eof = content.find('\x1a');
     out.content = eof == std::string_view::npos ? content : content.substr(0, eof);
     return out;

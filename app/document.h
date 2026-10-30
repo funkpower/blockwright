@@ -17,6 +17,7 @@
 // it holds (ProjectExtras) to save back.
 
 #include "blockwright/ansi.h"
+#include "blockwright/xbin.h"
 #include "blockwright/composite.h"
 #include "blockwright/edit.h"
 #include "blockwright/generator.h"
@@ -86,7 +87,8 @@ public:
     // document is unchanged, `error` says why and false is returned.
     bool load(const QString& path, QString* error);
     // Reads and parses the file at `path` into `out` without touching any
-    // document; false and `error` on failure. A file whose iCE flag is off
+    // document, as the format its bytes and name give (artFormatOf: XBIN,
+    // BIN or .ans); false and `error` on failure. A file whose iCE flag is off
     // but which sets a bright background opens with iCE on, as writeAnsi
     // writes it and `cli render` draws it: its blinking cells keep their
     // dark background and lose the blink, and those whose blink showed (not
@@ -127,15 +129,20 @@ public:
     // blinks again is back; one moved or flipped is still lost; one erased or
     // drawn over is gone with its mark, and a copy carries a mark of its own,
     // so the count can run over what the file lost but never under what the
-    // save loses. It gates the save (lossy()) until the next save.
-    AnsiOutput encode() const;
+    // save loses. It gates the save (lossy()) until the next save. In XBIN
+    // or BIN (`format`, see writeArt) the same cells, with the palette and
+    // font an XBIN was opened with: XBIN writes them back, the others lose
+    // them (paletteDropped, fontDropped).
+    AnsiOutput encode(ArtFormat format = ArtFormat::Ansi) const;
     // Writes `out` (from encode()) to `path` all or nothing. Refuses to
     // write over a project (project::isProject), as the CLI does. When the
     // .ans holds the whole document (flatHoldsAll), `path` becomes the
     // document's file and the undo stack is marked clean. Otherwise a
     // project stays the document's file, as unsaved as it was (an export);
     // a flat document takes `path` as its file but stays modified, with no
-    // clean state left in its undo stack, until a project save.
+    // clean state left in its undo stack, until a project save. A flat
+    // document saved to anything but an XBIN name (artFormatFor) drops the
+    // palette and font it was opened with, as the file it is now holds none.
     bool save(const QString& path, const AnsiOutput& out, QString* error);
     // Whether a flat .ans holds all of the document: one visible cells
     // layer, at (0, 0) and the canvas's size, compositing normally, and no
@@ -145,7 +152,8 @@ public:
     bool flatHoldsAll() const;
     // Writes project() to `path` as a zip (project::writeZip) or a directory
     // (project::writeDirectory), as `form` says, makes `path` the document's
-    // file and `form` its form and marks the undo stack clean. On failure
+    // file and `form` its form and marks the undo stack clean. A project
+    // keeps no XBIN palette or font: the document drops them. On failure
     // the document is unchanged, `error` says why and false is returned.
     bool saveProject(const QString& path, FileForm form, QString* error);
     // The cells that lost their blink when the file was opened and that a

@@ -107,7 +107,7 @@ Shaded shadeDocument(bw::AnsiDocument& doc, const ShadeOptions& o) {
     r.edit.apply(c);
     r.blinkDropped = bw::lostBlinkCount(doc);
     r.iceTurnedOn = !flag && doc.ice;
-    if (!before.lossy()) {
+    if (before.unwritable.empty() && !before.blinkDropped) {
         const int n = bw::writeAnsi(doc).blinkDropped;
         if (n)
             r.why = "--ice turns iCE colours on, and " + std::to_string(n) +
