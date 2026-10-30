@@ -238,18 +238,31 @@ private:
     project::IrcBudget before_, after_;
 };
 
-// One format change (SAUCE, iCE, letter spacing) on the stack.
+// One format change (SAUCE, iCE, letter spacing) on the stack. An iCE
+// toggle also redraws each live text layer's style (iceEdit), its cells
+// before and after kept, so undo and redo put back exactly what was shown.
 class FormatCommand : public QUndoCommand {
 public:
-    FormatCommand(Document* doc, DocumentFormat before, DocumentFormat after, const QString& text)
-        : QUndoCommand(text), doc_(doc), before_(std::move(before)), after_(std::move(after)) {}
+    FormatCommand(Document* doc, DocumentFormat before, DocumentFormat after, const QString& text,
+                  std::vector<LayerPropsEdit> restyles = {})
+        : QUndoCommand(text), doc_(doc), before_(std::move(before)), after_(std::move(after)),
+          restyles_(std::move(restyles)) {}
 
-    void redo() override { doc_->applyFormat(after_); }
-    void undo() override { doc_->applyFormat(before_); }
+    void redo() override {
+        doc_->applyFormat(after_);
+        for (const LayerPropsEdit& e : restyles_)
+            doc_->putProperties(e, false);
+    }
+    void undo() override {
+        doc_->applyFormat(before_);
+        for (auto it = restyles_.rbegin(); it != restyles_.rend(); ++it)
+            doc_->putProperties(*it, true);
+    }
 
 private:
     Document* doc_;
     DocumentFormat before_, after_;
+    std::vector<LayerPropsEdit> restyles_;
 };
 
 Document::Document(QObject* parent) : QObject(parent), doc_(blank()) {
@@ -397,7 +410,20 @@ bool Document::setFormat(const DocumentFormat& format, const QString& text) {
     const DocumentFormat before = this->format();
     if (format == before)
         return false;
-    undo_.push(new FormatCommand(this, before, format, text));
+    std::vector<LayerPropsEdit> restyles;
+    if (format.ice != before.ice)
+        for (const Layer& l : stack_.layers()) {
+            try {
+                if (auto e = iceEdit(l, format.ice, fontSources()))
+                    restyles.push_back(std::move(*e));
+            } catch (const TextError&) {
+                // a source that can't be drawn now (its font gone) keeps
+                // the cells it has
+            }
+        }
+    if (!restyles.empty())
+        emit layersAboutToChange();
+    undo_.push(new FormatCommand(this, before, format, text, std::move(restyles)));
     return true;
 }
 
@@ -734,14 +760,20 @@ LayerId Document::addLayer(LayerKind kind) {
     return c->layerId();
 }
 
-LayerId Document::addTextLayer(const TextSource& source, int x, int y, const FontStore* held) {
+LayerId Document::addTextLayer(const TextSource& source, int x, int y, const FontStore* held,
+                               const std::optional<TextStyle>& style) {
     emit commandAboutToPush();
     FontSources from = fontSources();
     from.held = held;
-    if (textSourceProblem(source, from))
+    if (style ? styledTextProblem(source, *style, from) : textSourceProblem(source, from))
         return 0;
     keepFont(source.face, held);
     Layer layer = makeTextLayer(source, freeLayerName(tr("Text %1")), x, y, fontSources());
+    if (style) {
+        LayerProperties props = layer.props;
+        props.style = style;
+        applyLayerProperties(layer, std::move(props), fontSources(), doc_.ice);
+    }
     emit layersAboutToChange();
     const std::optional<std::size_t> at = stack_.indexOf(active_);
     auto* c = LayerStackCommand::add(this, std::move(layer), at ? *at + 1 : stack_.size(), tr("New Text Layer"));
@@ -795,7 +827,7 @@ bool Document::setTextSource(LayerId id, TextSource source, const QString& text,
         return false;
     keepFont(source.face, held);
     emit layersAboutToChange();
-    undo_.push(new LayerPropsCommand(this, textEdit(*l, std::move(source), typingRun), text));
+    undo_.push(new LayerPropsCommand(this, textEdit(*l, std::move(source), typingRun, doc_.ice), text));
     return true;
 }
 

@@ -38,8 +38,8 @@
 // layer a style grows it right and down from its offset. Its cells are
 // redrawn when the source or the style changes, and a step changing either
 // keeps the cells it replaced. A style is drawn with the iCE colours the
-// step is made with (`ice`, the document's setting); the cells don't follow
-// a later change of the setting until the next redraw. A cells or pixels
+// step is made with (`ice`, the document's setting); a later change of the
+// setting redraws them as a step of its own (iceEdit). A cells or pixels
 // layer's style is drawn by the compositor (style_draw.h): a step changing
 // it touches no cell, and Bake of such a layer keeps the cells before and
 // after it (LayerPropsEdit::cellsAfter).
@@ -166,6 +166,13 @@ LayerPropsEdit styleEdit(const Layer& layer, std::optional<TextStyle> style, boo
 // for a pixel layer, the normal mode it composited in. Undo gives back the
 // properties as they were, the mode with them.
 LayerPropsEdit bakeEdit(const Layer& layer, bool ice = true);
+
+// The edit redrawing a live text layer's style with iCE colours `ice`, for
+// a change of the document's setting: its properties stay, its cells before
+// and those drawn with `ice` are both kept, so undo and redo put each back as
+// it was. None when the layer isn't a live text layer with a style, or the
+// drawing doesn't change. Throws TextError as applyLayerProperties does.
+std::optional<LayerPropsEdit> iceEdit(const Layer& layer, bool ice, const FontSources& fonts = {});
 
 // Applies the edit's `after` (`revert`: its `before`) to the layer. A step
 // that kept cells redraws the source after it, and its revert puts the kept

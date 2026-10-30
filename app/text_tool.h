@@ -66,6 +66,12 @@ public:
     // Ends the edit; a layer the edit made that is empty again goes, and so
     // do its undo steps, with nothing left to redo.
     void endEdit();
+    // A new text layer of `text` in the defaults' settings, with `style`,
+    // its top-left cell at `cell`, as one undo step (Document::addTextLayer),
+    // and the text cursor at the end of its text, as if it had been typed
+    // there: a text style dropped from the Library. The tool must be active.
+    // 0, and nothing made, when the styled text can't be drawn.
+    LayerId placeStyled(QPoint cell, const std::u32string& text, const TextStyle& style);
 
     void activate(CanvasView* view) override;
     void deactivate() override;
@@ -101,9 +107,9 @@ private:
     // With nothing being edited and no text cursor waiting, starts editing
     // resumable() from its end; false if there is none.
     bool resume();
-    // The source the text cursor is in and its top-left cell: the edited
-    // layer's, or the settings a new layer starts with at spot(); null for
-    // neither.
+    // The source the text cursor is in and the top-left cell of its
+    // letters: the edited layer's (inside its style's margins), or the
+    // settings a new layer starts with at spot(); null for neither.
     const TextSource* shown(QPoint* origin) const;
     void setSpot(std::optional<QPoint> spot);
     // Starts editing `id` with the cursor at `caret`, a new run of typing.

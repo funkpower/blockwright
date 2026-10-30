@@ -15,10 +15,12 @@
 // A text style's thumbnail is its sample (library::textStyleSample, the one
 // `library check` draws: "Aa" in the block face) drawn with iCE colours, as
 // `library list` sizes it, through the same stampIcon and the same cache,
-// keyed by the entry's JSON. A text style isn't dragged and isn't placed:
-// activating one emits textStyleActivated, which nothing applies yet (PLAN
-// §15, As built). A style that needs iCE colours is shown disabled while the
-// document has them off (setIceColours); its thumbnail is still the iCE look.
+// keyed by the entry's JSON. Activating one emits textStyleActivated (the
+// window applies it to the active layer); dragging one carries its stampKey
+// as kTextStyleMimeType, which StampDropFilter takes as styleDropped (the
+// window makes a text layer in it). A style that needs iCE colours is shown
+// disabled, so it can be neither activated nor dragged, while the document
+// has them off (setIceColours); its thumbnail is still the iCE look.
 //
 // StampDialog is Selection > Save to Library...: name, category and tags.
 
@@ -48,6 +50,7 @@ namespace bw {
 class CanvasView;
 
 inline constexpr char kStampMimeType[] = "application/x-blockwright-stamp";
+inline constexpr char kTextStyleMimeType[] = "application/x-blockwright-text-style";
 
 // A stamp's id in the dock, its drag payload and stampActivated: the .ans
 // path's native bytes (UTF-16 as UTF-8 on Windows), so a name that isn't
@@ -66,7 +69,8 @@ inline constexpr QSize kIconBox(96, 64);
 // image; the result is the same whatever the band size.
 QImage stampIcon(const Canvas& cv, int glyphWidth, QSize box, std::int64_t bandPixels = std::int64_t(1) << 22);
 
-// The thumbnail grid: an icon-mode list whose drags carry the stamp's path.
+// The thumbnail grid: an icon-mode list whose drags carry the stamp's or
+// text style's key.
 class StampGrid : public QListWidget {
     Q_OBJECT
 public:
@@ -171,7 +175,8 @@ public:
     explicit StampDropFilter(CanvasView* view);
 
 signals:
-    void dropped(const QByteArray& key, QPoint cell);  // a stampKey
+    void dropped(const QByteArray& key, QPoint cell);       // a stamp's stampKey
+    void styleDropped(const QByteArray& key, QPoint cell);  // a text style's
 
 protected:
     bool eventFilter(QObject* watched, QEvent* e) override;

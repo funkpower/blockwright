@@ -194,7 +194,9 @@ public:
     // The SAUCE dialog's record: its text fields and date replace the
     // document's, the rest of the record (flags, font, sizes) stays.
     bool setSauceFields(const Sauce& fields);
-    // iCE colours on or off, and the SAUCE iCE flag with them.
+    // iCE colours on or off, and the SAUCE iCE flag with them. Each live
+    // text layer with a style is redrawn with the new setting in the same
+    // step (bw::iceEdit); undo puts back the cells it showed before.
     bool setIce(bool on);
     // 8 or 9 px cells: the SAUCE letter-spacing flag, 8 px or 9 px. Adds a
     // fresh SAUCE record if there is none.
@@ -245,8 +247,12 @@ public:
     // fontSources() and `held`, files the caller holds on to (the Text
     // tool's font, picked from a folder or project since gone). A TheDraw
     // font from either is copied into the project's fonts, as
-    // setLayerProperties copies one from the folder.
-    LayerId addTextLayer(const TextSource& source, int x, int y, const FontStore* held = nullptr);
+    // setLayerProperties copies one from the folder. With `style` the layer
+    // has it from the start, drawn with the document's iCE setting, in the
+    // same step (a text style dropped from the Library); 0 when the styled
+    // text can't be drawn.
+    LayerId addTextLayer(const TextSource& source, int x, int y, const FontStore* held = nullptr,
+                         const std::optional<TextStyle>& style = std::nullopt);
     // A reference layer showing `picture` (layer.h), named "Reference N", on
     // top of the stack and made active: one undo step. 0 when the project
     // writer would refuse the picture (project::layerReferenceProblem).
@@ -443,6 +449,7 @@ private:
     friend class LayerPropsCommand;
     friend class SnapshotCommand;
     friend class IrcBudgetCommand;
+    friend class FormatCommand;
 
     void setModified(bool on);
     // Copies the TheDraw font file `face` names from the fonts folder (or

@@ -30,6 +30,10 @@ class QScrollArea;
 
 namespace bw {
 
+namespace library {
+struct TextStyleEntry;
+}
+
 class CanvasView;
 class GeneratorRunner;
 class IrcMeter;
@@ -125,6 +129,20 @@ public:
     // path written, or empty and `error`.
     QString saveSelectionToLibrary(const QString& name, const QString& category, const QStringList& tags,
                                    QString* error, bool replace = false);
+    // A Library text style (PLAN §12, §15). Double-clicking one applies it
+    // to the active layer: its effects replace the layer's style, one undo
+    // step through Document::setLayerProperties. It goes on the layers the
+    // Layer Style dialog opens on (a live text, cells or pixels layer);
+    // false, and `error`, on any other, for a style that needs iCE colours
+    // while the document has them off, for one the layer can't hold or
+    // draw, or when the layer has it already.
+    bool applyTextStyle(const library::TextStyleEntry& entry, QString* error);
+    // Dragging one onto the canvas makes a new live text layer in it at
+    // `cell`, one undo step: the word "Text" in the Text tool's settings,
+    // the Text tool made active with its cursor after the word, so typing
+    // goes on from there. 0, and `error`, when it needs iCE colours that are
+    // off or the styled text can't be drawn.
+    LayerId newStyledText(const library::TextStyleEntry& entry, QPoint cell, QString* error);
     // The .ans a stamp called `name` is saved as in the user library
     // (library::stampPathFor): a stamp with another title is never
     // replaced. `exists` says whether a stamp of that name is there.

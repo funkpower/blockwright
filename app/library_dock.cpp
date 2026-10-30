@@ -79,14 +79,16 @@ StampGrid::StampGrid(QWidget* parent) : QListWidget(parent) {
     setDefaultDropAction(Qt::CopyAction);
 }
 
-QStringList StampGrid::mimeTypes() const { return {QString::fromLatin1(kStampMimeType)}; }
+QStringList StampGrid::mimeTypes() const {
+    return {QString::fromLatin1(kStampMimeType), QString::fromLatin1(kTextStyleMimeType)};
+}
 
 QMimeData* StampGrid::mimeData(const QList<QListWidgetItem*>& items) const {
-    // A text style isn't dragged (its item isn't drag-enabled either).
-    if (items.isEmpty() || items.first()->data(kStyleRole).toBool())
+    if (items.isEmpty())
         return nullptr;
     auto* m = new QMimeData;
-    m->setData(QString::fromLatin1(kStampMimeType), items.first()->data(kPathRole).toByteArray());
+    m->setData(QString::fromLatin1(items.first()->data(kStyleRole).toBool() ? kTextStyleMimeType : kStampMimeType),
+               items.first()->data(kPathRole).toByteArray());
     return m;
 }
 
@@ -378,7 +380,6 @@ void LibraryDock::refill() {
         auto* item = new QListWidgetItem(qtext(t.name), grid_);
         item->setData(kPathRole, stampKey(t.path));
         item->setData(kStyleRole, true);
-        item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled);
         const bool usable = ice_ || !t.iceRequired;
         if (!usable)
             item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
@@ -406,11 +407,12 @@ StampDropFilter::StampDropFilter(CanvasView* view) : QObject(view), view_(view) 
 bool StampDropFilter::eventFilter(QObject* watched, QEvent* e) {
     if (watched != view_)
         return false;
+    const QString stamp = QString::fromLatin1(kStampMimeType), style = QString::fromLatin1(kTextStyleMimeType);
     switch (e->type()) {
     case QEvent::DragEnter:
     case QEvent::DragMove: {
         auto* d = static_cast<QDragMoveEvent*>(e);
-        if (!d->mimeData()->hasFormat(QString::fromLatin1(kStampMimeType)))
+        if (!d->mimeData()->hasFormat(stamp) && !d->mimeData()->hasFormat(style))
             return false;
         // Always a copy: a move would have the grid drop the item.
         d->setDropAction(Qt::CopyAction);
@@ -419,12 +421,16 @@ bool StampDropFilter::eventFilter(QObject* watched, QEvent* e) {
     }
     case QEvent::Drop: {
         auto* d = static_cast<QDropEvent*>(e);
-        if (!d->mimeData()->hasFormat(QString::fromLatin1(kStampMimeType)))
+        const bool isStamp = d->mimeData()->hasFormat(stamp);
+        if (!isStamp && !d->mimeData()->hasFormat(style))
             return false;
         d->setDropAction(Qt::CopyAction);
         d->accept();
-        emit dropped(d->mimeData()->data(QString::fromLatin1(kStampMimeType)),
-                     view_->cellAt(view_->toView(d->position())));
+        const QPoint cell = view_->cellAt(view_->toView(d->position()));
+        if (isStamp)
+            emit dropped(d->mimeData()->data(stamp), cell);
+        else
+            emit styleDropped(d->mimeData()->data(style), cell);
         return true;
     }
     default: return false;

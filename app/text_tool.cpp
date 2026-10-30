@@ -25,6 +25,17 @@ const TextSource* liveText(const Layer* l) { return l && l->props.text ? &*l->pr
 
 bool editableText(const Layer* l) { return liveText(l) && l->props.visible && !l->props.locked; }
 
+// The top-left cell of a live text layer's letters: its offset, moved right
+// and down by its style's margins (renderStyledText draws them there).
+QPoint lettersAt(const Layer& l) {
+    QPoint at(l.props.x, l.props.y);
+    if (l.props.style) {
+        const StyleMargins m = styleMargins(*l.props.style);
+        at += QPoint(m.left, m.top);
+    }
+    return at;
+}
+
 // The face with the source's letter spacing on top of its own, as
 // renderText lays the text out (text.cpp).
 class SpacedFace final : public Face {
@@ -208,7 +219,7 @@ const TextSource* TextTool::shown(QPoint* origin) const {
     const Layer* l = edited();
     if (!l)
         return nullptr;
-    *origin = QPoint(l->props.x, l->props.y);
+    *origin = lettersAt(*l);
     return &*l->props.text;
 }
 
@@ -398,7 +409,7 @@ bool TextTool::mousePress(const ToolEvent& e) {
         const Face* face = l ? findFace(l->props.text->face, d->fontSources()) : nullptr;
         if (!face)
             return true;
-        const Laid::Caret at = lay(*l->props.text, *face).caretAt(e.cell - QPoint(l->props.x, l->props.y));
+        const Laid::Caret at = lay(*l->props.text, *face).caretAt(e.cell - lettersAt(*l));
         if (hit == editing_) {
             moveCaret(at.at, at.after);
         } else {
@@ -472,6 +483,22 @@ bool TextTool::replace(int at, int count, const std::u32string& text) {
     after_ = false;
     emit changed();
     return true;
+}
+
+LayerId TextTool::placeStyled(QPoint cell, const std::u32string& text, const TextStyle& style) {
+    Document* d = doc();
+    if (!d || !view() || text.empty() || text.size() > TextSource::kMaxLength)
+        return 0;
+    endEdit();
+    TextSource s = defaults_;
+    s.text = text;
+    LayerId id = 0;
+    own([&] { id = d->addTextLayer(s, cell.x(), cell.y(), &kept_, style); });
+    if (!id)
+        return 0;
+    begin(id, int(text.size()));
+    made_ = id;
+    return id;
 }
 
 void TextTool::moveCaret(int to, bool after) {
@@ -660,7 +687,7 @@ std::optional<QRect> TextTool::caretRect() const {
     int at = caret_;
     bool after = after_;
     if (const Layer* l = resumable()) {
-        origin = QPoint(l->props.x, l->props.y);
+        origin = lettersAt(*l);
         s = &*l->props.text;
         at = int(s->text.size());
         after = false;

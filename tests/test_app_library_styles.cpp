@@ -108,10 +108,13 @@ TEST_CASE("every bundled text style is in the Library dock with a thumbnail of i
             for (int x = 0; x < icon.width(); ++x)
                 colours.insert(icon.pixel(x, y));
         CHECK(colours.size() > 1);
-        // A text style isn't dragged: it's no stamp.
-        CHECK_FALSE(it->flags().testFlag(Qt::ItemIsDragEnabled));
+        // A text style is dragged as a style, not a stamp.
+        CHECK(it->flags().testFlag(Qt::ItemIsDragEnabled));
         const QModelIndex index = f.dock.grid()->model()->index(f.dock.grid()->row(it), 0);
-        CHECK(std::unique_ptr<QMimeData>(f.dock.grid()->model()->mimeData({index})) == nullptr);
+        const std::unique_ptr<QMimeData> mime(f.dock.grid()->model()->mimeData({index}));
+        REQUIRE(mime);
+        CHECK(mime->hasFormat(QString::fromLatin1(kTextStyleMimeType)));
+        CHECK_FALSE(mime->hasFormat(QString::fromLatin1(kStampMimeType)));
     }
     // The categories cover the text styles as well as the stamps.
     for (const char* c : {"classic", "metal", "elements", "signs"})

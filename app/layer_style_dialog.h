@@ -8,10 +8,15 @@
 // its face draws alike. Every change redraws those; the layer itself is
 // changed only by OK, as one undo step "Layer Style" through
 // Document::setLayerProperties (Cancel changes nothing). Save as Preset…
-// writes the style to the user library as a .style.json.
+// writes the style to the user library as a .style.json. The Preset box
+// above the effects lists the Library's text styles: picking one puts its
+// effects in the rows, in its order, in place of the layer's. A preset that
+// needs iCE colours is shown disabled, its tooltip saying why, while the
+// document has them off.
 
 #include "blockwright/canvas.h"
 #include "blockwright/layer.h"
+#include "blockwright/library.h"
 #include "blockwright/lint_rules.h"
 #include "blockwright/text_style.h"
 
@@ -75,6 +80,15 @@ public:
     const lint::LintReport& lintReport();
     QString confusables();
 
+    // The presets the Preset box offers (the Library dock's text styles).
+    void setPresets(std::vector<library::TextStyleEntry> presets);
+    const std::vector<library::TextStyleEntry>& presets() const { return presets_; }
+    // Puts preset `index`'s effects in the rows, in its order, in place of
+    // the layer's (what picking it in the box does); false, and the rows as
+    // they were, for an index out of range or a preset that needs iCE
+    // colours while the document has them off.
+    bool usePreset(int index);
+
     // Where Save as Preset… writes; empty turns it off.
     void setPresetDir(std::filesystem::path dir, QStringList categories = {});
     // Writes style() as a preset (library::writeTextStyle) and emits
@@ -90,6 +104,8 @@ public:
     QLabel* confusableLabel() const { return confusable_; }
     QLabel* problemLabel() const { return problem_; }
     QPushButton* presetButton() const { return preset_; }
+    // The Preset box: a "Choose…" row, then one row per preset.
+    QComboBox* presetBox() const { return presetBox_; }
     QDialogButtonBox* buttons() const { return buttons_; }
 
 signals:
@@ -115,7 +131,11 @@ private:
     Document* doc_;
     LayerId id_;
     std::optional<TextStyle> original_;
+    // The effects whose order style() keeps: the layer's, or a preset's
+    // once one is picked.
+    std::optional<TextStyle> order_;
     std::vector<Effect> rows_;
+    std::vector<library::TextStyleEntry> presets_;
     std::array<Page, TextStyle::kMaxEffects> page_{};
     int filling_ = 0;
     bool stale_ = true;
@@ -126,6 +146,7 @@ private:
     std::filesystem::path presetDir_;
     QStringList categories_;
 
+    QComboBox* presetBox_;
     QListWidget* list_;
     QStackedWidget* pages_;
     QLabel* preview_;

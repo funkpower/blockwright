@@ -387,6 +387,15 @@ LayerPropsEdit bakeEdit(const Layer& layer, bool ice) {
     return e;
 }
 
+std::optional<LayerPropsEdit> iceEdit(const Layer& layer, bool ice, const FontSources& fonts) {
+    if (!layer.props.text || !layer.props.style)
+        return std::nullopt;
+    Canvas after = drawSource(*layer.props.text, &*layer.props.style, ice, fonts);
+    if (after == layer.cells)
+        return std::nullopt;
+    return LayerPropsEdit{layer.props.id, layer.props, layer.props, 0, layer.cells, std::move(after), ice};
+}
+
 bool applyEdit(Layer& layer, const LayerPropsEdit& edit, bool revert, const FontSources& fonts) {
     // a step that gives the cells after it (Bake of a style the compositor
     // draws) puts them, or those before it, in place as they were

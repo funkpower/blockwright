@@ -1,5 +1,6 @@
 // The Library parts of the main window (PLAN §12): the Library dock, placing
-// a stamp on the canvas, and Selection > Save to Library....
+// a stamp on the canvas, applying a text style or dropping one as a new text
+// layer, and Selection > Save to Library....
 
 #include "main_window.h"
 
@@ -8,6 +9,7 @@
 #include "library_dock.h"
 #include "sauce_dialog.h"
 #include "select_tool.h"
+#include "text_tool.h"
 #include "tool.h"
 
 #include "blockwright/library.h"
@@ -68,6 +70,82 @@ void MainWindow::createLibrary() {
     });
     auto* drops = new StampDropFilter(view_);
     connect(drops, &StampDropFilter::dropped, this, place);
+
+    // A text style's key is looked up the same way.
+    connect(library_, &LibraryDock::textStyleActivated, this, [this](const QByteArray& key) {
+        const library::TextStyleEntry* style = library_->findStyleKey(key);
+        QString error = tr("not a text style in the Library");
+        if (!style || !applyTextStyle(*style, &error))
+            statusBar()->showMessage(tr("Text style not applied: %1").arg(error), 5000);
+    });
+    connect(drops, &StampDropFilter::styleDropped, this, [this](const QByteArray& key, QPoint cell) {
+        const library::TextStyleEntry* style = library_->findStyleKey(key);
+        QString error = tr("not a text style in the Library");
+        if (!style || !newStyledText(*style, cell, &error))
+            statusBar()->showMessage(tr("No text layer made: %1").arg(error), 5000);
+    });
+}
+
+namespace {
+
+// Why `entry` can't be used while the document's iCE setting is `ice`.
+QString iceProblem(const library::TextStyleEntry& entry, bool ice) {
+    return entry.iceRequired && !ice
+               ? MainWindow::tr("%1 needs iCE colours, which are off (View > iCE Colours)").arg(QString::fromStdString(entry.name))
+               : QString();
+}
+
+} // namespace
+
+bool MainWindow::applyTextStyle(const library::TextStyleEntry& entry, QString* error) {
+    if (const QString why = iceProblem(entry, doc_.ansi().ice); !why.isEmpty()) {
+        *error = why;
+        return false;
+    }
+    const Layer* l = doc_.active();
+    if (!l || !(l->props.kind == LayerKind::Cells || l->props.kind == LayerKind::Pixels ||
+                (l->props.kind == LayerKind::Text && l->props.text))) {
+        *error = tr("a text style goes on a live text, cells or pixels layer");
+        return false;
+    }
+    LayerProperties props = l->props;
+    props.style = entry.style;
+    if (props.style == l->props.style) {
+        *error = tr("the layer has this style already");
+        return false;
+    }
+    if (const auto problem = layerStyleProblem(props, doc_.fontSources())) {
+        *error = QString::fromStdString(*problem);
+        return false;
+    }
+    if (!doc_.setLayerProperties(l->props.id, std::move(props),
+                                 tr("Text Style %1").arg(QString::fromStdString(entry.name)))) {
+        *error = tr("the layer can't take it");
+        return false;
+    }
+    return true;
+}
+
+LayerId MainWindow::newStyledText(const library::TextStyleEntry& entry, QPoint cell, QString* error) {
+    if (const QString why = iceProblem(entry, doc_.ansi().ice); !why.isEmpty()) {
+        *error = why;
+        return 0;
+    }
+    auto* text = qobject_cast<TextTool*>(tools_->find(QStringLiteral("text")));
+    if (!text) {
+        *error = tr("there is no Text tool");
+        return 0;
+    }
+    const Canvas& cv = doc_.canvas();
+    cell = {std::clamp(cell.x(), 0, cv.width() - 1), std::clamp(cell.y(), 0, cv.height() - 1)};
+    tools_->setActive(text);
+    const LayerId id = text->placeStyled(cell, U"Text", entry.style);
+    if (!id) {
+        *error = tr("the text can't be drawn in %1").arg(QString::fromStdString(entry.name));
+        return 0;
+    }
+    view_->setFocus();
+    return id;
 }
 
 bool MainWindow::placeStamp(const QString& path, QPoint cell, QString* error) {
@@ -205,6 +283,10 @@ void MainWindow::editLayerStyle(LayerId id) {
     auto* dialog = new LayerStyleDialog(&doc_, id, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setPresetDir(library_->userDir(), library_->categories());
+    std::vector<library::TextStyleEntry> presets;
+    for (const LibraryDock::StyleEntry& e : library_->styles())
+        presets.push_back(e.style);
+    dialog->setPresets(std::move(presets));
     connect(dialog, &LayerStyleDialog::presetSaved, this, [this](const QString& path) {
         library_->rescan();
         statusBar()->showMessage(tr("Saved %1 to the library").arg(path), 3000);

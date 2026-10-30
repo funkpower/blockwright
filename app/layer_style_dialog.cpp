@@ -28,6 +28,8 @@
 #include <QPushButton>
 #include <QScopedValueRollback>
 #include <QScrollArea>
+#include <QSignalBlocker>
+#include <QStandardItemModel>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QVBoxLayout>
@@ -186,7 +188,19 @@ LayerStyleDialog::LayerStyleDialog(Document* doc, LayerId id, QWidget* parent)
     setObjectName(QStringLiteral("layerStyleDialog"));
     if (const Layer* l = doc_->layers().find(id_))
         original_ = l->props.style;
+    order_ = original_;
     rows_ = styleRows(original_);
+
+    presetBox_ = new QComboBox;
+    presetBox_->setObjectName(QStringLiteral("stylePresets"));
+    presetBox_->setToolTip(tr("Start from a text style in the Library: its effects replace these"));
+    presetBox_->addItem(tr("Choose…"));
+    connect(presetBox_, &QComboBox::activated, this, [this](int row) {
+        if (row > 0)
+            usePreset(row - 1);
+        const QSignalBlocker block(presetBox_);
+        presetBox_->setCurrentIndex(0);
+    });
 
     list_ = new QListWidget;
     list_->setObjectName(QStringLiteral("effectList"));
@@ -248,10 +262,13 @@ LayerStyleDialog::LayerStyleDialog(Document* doc, LayerId id, QWidget* parent)
         changed();
     });
 
+    auto* presetRow = new QFormLayout;
+    presetRow->addRow(tr("P&reset:"), presetBox_);
     auto* top = new QHBoxLayout;
     top->addWidget(list_, 1);
     top->addWidget(pages_, 2);
     auto* layout = new QVBoxLayout(this);
+    layout->addLayout(presetRow);
     layout->addLayout(top);
     layout->addWidget(previewArea_, 1);
     layout->addWidget(irc_);
@@ -441,7 +458,46 @@ void LayerStyleDialog::setRow(const Effect& effect) {
     changed();
 }
 
-std::optional<TextStyle> LayerStyleDialog::style() const { return styleFromRows(original_, rows_); }
+std::optional<TextStyle> LayerStyleDialog::style() const { return styleFromRows(order_, rows_); }
+
+void LayerStyleDialog::setPresets(std::vector<library::TextStyleEntry> presets) {
+    presets_ = std::move(presets);
+    const bool ice = doc_->ansi().ice;
+    const QSignalBlocker block(presetBox_);
+    while (presetBox_->count() > 1)
+        presetBox_->removeItem(1);
+    auto* model = qobject_cast<QStandardItemModel*>(presetBox_->model());
+    for (const library::TextStyleEntry& p : presets_) {
+        presetBox_->addItem(QString::fromStdString(p.name));
+        QStandardItem* item = model->item(presetBox_->count() - 1);
+        if (p.iceRequired && !ice) {
+            item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+            item->setToolTip(tr("Needs iCE colours, which are off: turn on View > iCE Colours to use it"));
+        } else {
+            item->setToolTip(p.iceRequired ? tr("Needs iCE colours") : tr("Works with iCE colours on or off"));
+        }
+    }
+    presetBox_->setCurrentIndex(0);
+}
+
+bool LayerStyleDialog::usePreset(int index) {
+    if (index < 0 || std::size_t(index) >= presets_.size())
+        return false;
+    const library::TextStyleEntry& p = presets_[std::size_t(index)];
+    if (p.iceRequired && !doc_->ansi().ice)
+        return false;
+    order_ = p.style;
+    rows_ = styleRows(order_);
+    for (int k = 0; k < kKinds; ++k)
+        fillRow(k);
+    for (int k = 0; k < kKinds; ++k)
+        if (rows_[std::size_t(k)].enabled) {
+            list_->setCurrentRow(k);
+            break;
+        }
+    changed();
+    return true;
+}
 
 void LayerStyleDialog::changed() {
     stale_ = true;
