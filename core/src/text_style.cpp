@@ -215,6 +215,99 @@ int luma(std::uint8_t i) {
     return 299 * c.r + 587 * c.g + 114 * c.b;
 }
 
+// The ramp step a background at step `i` shows: the step itself with iCE
+// on; with it off, which shows no bright background, the nearest step at or
+// below it whose colour is dark.
+std::size_t backStep(const Ramp& ramp, std::size_t i, bool ice) {
+    if (!ice)
+        while (i > 0 && ramp.colours[i] >= 8)
+            --i;
+    return i;
+}
+
+// A source cell's foreground and background as ranks (-1 for black, which
+// stays step 0), for the cells whose two colours differ.
+using RankPair = std::pair<int, int>;
+// Each pair and how many cells it is on.
+using RankPairs = std::map<RankPair, int>;
+
+// How badly `steps` (a step for each rank) draws the cells of `pairs`: how
+// many cells come out one colour over itself, and how many with their
+// foreground and background in the other order on the ramp (or one step).
+std::pair<int, int> rankFaults(const Ramp& ramp, const std::vector<std::size_t>& steps, const RankPairs& pairs,
+                               bool ice) {
+    int same = 0, turned = 0;
+    for (const auto& [pair, cells] : pairs) {
+        const auto [f, b] = pair;
+        const std::size_t fs = f < 0 ? 0 : steps[static_cast<std::size_t>(f)];
+        const std::size_t bs = backStep(ramp, b < 0 ? 0 : steps[static_cast<std::size_t>(b)], ice);
+        if (ramp.colours[fs] == (ramp.colours[bs] & (ice ? 15 : 7)))
+            same += cells;
+        if (fs == bs || (f < b) != (fs < bs))
+            turned += cells;
+    }
+    return {same, turned};
+}
+
+// The ramp step for each of `n` colours ranked dark to light past black
+// (#184), drawing the cells of `pairs`. First the consecutive steps ending
+// at `top`, or failing that at the highest step below it, whose cells keep
+// their two colours apart and in rank order; ranks below step 1 take step 1.
+// With iCE off a background colour shows the dark step at or below its own
+// (backStep), so the top window can merge two colours of one cell (blue on
+// cyan under steel: grey on grey). When no window keeps every cell, the
+// steps (each at most `top`, rising with rank) that keep the most cells
+// apart, then the most in order, then put the fewest colours on black, then
+// leave the fewest gaps, then reach highest.
+std::vector<std::size_t> rankSteps(const Ramp& ramp, int top, int n, const RankPairs& pairs, bool ice) {
+    const int lowest = std::min(1, top);
+    std::vector<std::size_t> steps(static_cast<std::size_t>(n));
+    for (int t = top; t >= lowest; --t) {
+        for (int i = 0; i < n; ++i)
+            steps[static_cast<std::size_t>(i)] = static_cast<std::size_t>(std::max(lowest, t - (n - 1 - i)));
+        if (rankFaults(ramp, steps, pairs, ice) == std::pair{0, 0})
+            return steps;
+    }
+    for (int i = 0; i < n; ++i)
+        steps[static_cast<std::size_t>(i)] = static_cast<std::size_t>(std::max(lowest, top - (n - 1 - i)));
+    // every rising run of n steps in 0..top: C(n + top, n), at most 15504
+    // for a named ramp (15 colours, 6 steps); a longer search keeps the top
+    // window
+    double runs = 1;
+    for (int i = 1; i <= n; ++i)
+        runs = runs * (top + i) / i;
+    if (n == 0 || runs > 1e5)
+        return steps;
+    using Score = std::array<int, 5>;
+    const auto score = [&](const std::vector<std::size_t>& s) {
+        const auto [same, turned] = rankFaults(ramp, s, pairs, ice);
+        int black = 0, gaps = 0;
+        for (int i = 0; i < n; ++i) {
+            black += s[static_cast<std::size_t>(i)] == 0;
+            if (i > 0)
+                gaps += std::abs(int(s[static_cast<std::size_t>(i)]) - int(s[static_cast<std::size_t>(i - 1)]) - 1);
+        }
+        return Score{same, turned, black, gaps, -int(s.back())};
+    };
+    Score best = score(steps);
+    std::vector<std::size_t> s(static_cast<std::size_t>(n), 0);
+    for (;;) {
+        if (const Score sc = score(s); sc < best) {
+            best = sc;
+            steps = s;
+        }
+        int i = n - 1;
+        while (i >= 0 && int(s[static_cast<std::size_t>(i)]) == top)
+            --i;
+        if (i < 0)
+            break;
+        const std::size_t v = s[static_cast<std::size_t>(i)] + 1;
+        for (int j = i; j < n; ++j)
+            s[static_cast<std::size_t>(j)] = v;
+    }
+    return steps;
+}
+
 // One effect's layer of the style, the output's size.
 Layer effectLayer(LayerKind kind, int w, int h) { return makeLayer(kind, w, h); }
 
@@ -461,9 +554,16 @@ private:
         return ramp.colours[static_cast<std::size_t>(i)];
     }
 
-    // Each source cell's colours mapped onto the ramp by rank (ascii.py's
-    // recolour): every colour the source cells use, dark to light, rank i of
-    // n taking the ramp's colour i * len / n.
+    // Each source cell's colours mapped onto the ramp by rank (#184): black
+    // stays the ramp's darkest (black on every named ramp), as ascii.py's
+    // recolour keeps it; the other colours the source cells use, dark to
+    // light, take consecutive ramp steps ending at the top step a Fill
+    // reaches (the ramp's top with iCE on, where walkRungs stops with it
+    // off), so colours a rank apart are ramp neighbours. Ranks below the
+    // ramp's first step past black all take that step. A cell of two
+    // colours keeps them apart and in order: the steps move down, or stop
+    // being consecutive, where the top would merge them (rankSteps), and a
+    // cell no choice of steps keeps apart and in order is moved (apart).
     void recolourSources(Layer& l, const Ramp& ramp) const {
         std::set<std::uint8_t> used;
         for (int y = 0; y < h_; ++y)
@@ -473,28 +573,77 @@ private:
                     used.insert(c.fg.paletteIndex());
                     used.insert(c.bg.paletteIndex());
                 }
+        used.erase(Black);
         std::vector<std::uint8_t> ranked(used.begin(), used.end());
         std::stable_sort(ranked.begin(), ranked.end(),
                          [](std::uint8_t a, std::uint8_t b) { return luma(a) < luma(b); });
-        const std::size_t len = ramp.colours.size();
-        std::map<std::uint8_t, std::size_t> to;
+        std::map<std::uint8_t, int> rank{{Black, -1}};
         for (std::size_t i = 0; i < ranked.size(); ++i)
-            to[ranked[i]] = std::min(len - 1, i * len / ranked.size());
+            rank[ranked[i]] = static_cast<int>(i);
+        RankPairs pairs;
+        for (int y = 0; y < h_; ++y)
+            for (int x = 0; x < w_; ++x)
+                if (source(x, y)) {
+                    const Cell& c = sourceCell(x, y);
+                    if (c.fg.paletteIndex() != c.bg.paletteIndex())
+                        ++pairs[{rank[c.fg.paletteIndex()], rank[c.bg.paletteIndex()]}];
+                }
+        const int top = walkRungs(ramp, {ramp.topRung()}, ice_).front() / kRungsPerStep;
+        const std::vector<std::size_t> steps = rankSteps(ramp, top, int(ranked.size()), pairs, ice_);
+        const auto stepOf = [&](const Color& c) {
+            const int r = rank[c.paletteIndex()];
+            return r < 0 ? std::size_t{0} : steps[static_cast<std::size_t>(r)];
+        };
         for (int y = 0; y < h_; ++y)
             for (int x = 0; x < w_; ++x)
                 if (source(x, y)) {
                     Cell c = sourceCell(x, y);
                     c.transparent = false;
-                    c.fg = Color::indexed(ramp.colours[to[c.fg.paletteIndex()]]);
-                    std::size_t bi = to[c.bg.paletteIndex()];
-                    // iCE off shows no bright background: the nearest ramp
-                    // colour below it that is dark
-                    if (!ice_)
-                        while (bi > 0 && ramp.colours[bi] >= 8)
-                            --bi;
+                    std::size_t fi = stepOf(c.fg);
+                    std::size_t bi = backStep(ramp, stepOf(c.bg), ice_);
+                    const int rf = rank[c.fg.paletteIndex()], rb = rank[c.bg.paletteIndex()];
+                    if (rf != rb && (rf > rb ? fi <= bi : fi >= bi))
+                        apart(ramp, rf, rb, fi, bi);
+                    c.fg = Color::indexed(ramp.colours[fi]);
                     c.bg = Color::indexed(ramp.colours[bi] & (ice_ ? 15 : 7));
                     l.cells.at(x, y) = c;
                 }
+    }
+
+    // A source cell's steps, foreground `fi` over background `bi`, moved a
+    // step apart in its colours' order (ranks `rf` over `rb`, -1 for black):
+    // the foreground to the step past the background, up for a lighter one
+    // and down for a darker; where it is black or the background is at the
+    // ramp's end, the background to the nearest step it can show past the
+    // foreground the other way. Black never moves. Left as it is where
+    // neither can move.
+    void apart(const Ramp& ramp, int rf, int rb, std::size_t& fi, std::size_t& bi) const {
+        const bool up = rf > rb;
+        const std::size_t n = ramp.colours.size();
+        if (up && bi + 1 < n) {
+            fi = bi + 1;
+            return;
+        }
+        if (!up && rf >= 0 && bi > 0) {
+            fi = bi - 1;
+            return;
+        }
+        if (rb < 0)
+            return;
+        const auto shows = [&](std::size_t j) { return ice_ || ramp.colours[j] < 8; };
+        if (up) {
+            for (std::size_t j = fi; j-- > 0;)
+                if (shows(j)) {
+                    bi = j;
+                    return;
+                }
+        } else {
+            for (std::size_t j = fi + 1; j < n; ++j)
+                if (shows(j)) {
+                    bi = j;
+                    return;
+                }
+        }
     }
 
     // The letters as Fill draws them: the cells layer (source cells, a

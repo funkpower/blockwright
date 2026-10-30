@@ -23,8 +23,10 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -548,6 +550,241 @@ TEST_CASE("a TheDraw face's cells: kept, recoloured or outlined, and shaded only
                         if (la < lb)
                             CHECK(rank(ramped.at(x, y).fg) < rank(ramped.at(x2, y2).fg));
                     }
+    }
+}
+
+// #184: a ramp Fill maps a TheDraw face's colours onto consecutive ramp
+// steps from the top: the lightest to the top step a Fill reaches, each
+// darker colour the step below, black kept black. bw-colour uses black (the
+// background of its █), blue and cyan; bw-block draws in one colour on black.
+TEST_CASE("a ramp Fill maps a TheDraw face's colours onto consecutive steps from the ramp's top and keeps black",
+          "[style][tdf]") {
+    const TextSource s = word(U"FUNK");
+    const auto colour = tdf("bw-colour.tdf");
+    const auto block = tdf("bw-block.tdf");
+    const Canvas base = plain(s, *colour);
+    // what each source colour becomes, read off the drawing: every source
+    // cell's foreground and background
+    const auto mapping = [&](const Face& face, const char* ramp, FillMode mode, bool ice) {
+        const Canvas from = plain(s, face);
+        const Canvas to = styled(s, styleOf({FillEffect{mode, Grey, ramp}}), face, ice);
+        std::map<std::uint8_t, std::set<std::uint8_t>> got;
+        for (int y = 0; y < from.height(); ++y)
+            for (int x = 0; x < from.width(); ++x) {
+                const Cell& b = from.at(x, y);
+                if (b.transparent)
+                    continue;
+                got[b.fg.paletteIndex()].insert(to.at(x, y).fg.paletteIndex());
+                if (b.ch != kFullBlock)
+                    got[b.bg.paletteIndex()].insert(to.at(x, y).bg.paletteIndex());
+            }
+        // black (a blank's, a space's foreground) stays black
+        if (const auto k = got.find(Black); k != got.end()) {
+            CHECK(k->second == std::set<std::uint8_t>{Black});
+            got.erase(k);
+        }
+        return got;
+    };
+    using M = std::map<std::uint8_t, std::set<std::uint8_t>>;
+    REQUIRE(mapping(*colour, "sea", FillMode::Rows, true).count(Cyan));
+
+    for (const FillMode mode : {FillMode::Rows, FillMode::Columns, FillMode::Rainbow}) {
+        INFO(int(mode));
+        // iCE on: the ramp's top two steps
+        CHECK(mapping(*colour, "fire", mode, true) == M{{Cyan, {White}}, {Blue, {Yellow}}});
+        CHECK(mapping(*colour, "sunset", mode, true) == M{{Cyan, {Yellow}}, {Blue, {LightRed}}});
+        CHECK(mapping(*colour, "ice", mode, true) == M{{Cyan, {White}}, {Blue, {LightCyan}}});
+        CHECK(mapping(*colour, "toxic", mode, true) == M{{Cyan, {White}}, {Blue, {LightCyan}}});
+        CHECK(mapping(*colour, "steel", mode, true) == M{{Cyan, {White}}, {Blue, {Grey}}});
+        // a ramp of two steps past black: no step skipped
+        CHECK(mapping(*colour, "sea", mode, true) == M{{Cyan, {LightCyan}}, {Blue, {Cyan}}});
+        // iCE off: the top a Fill reaches without a bright background, as a
+        // Fill's gradient tops out (fire at LightRed, sunset at LightMagenta)
+        CHECK(mapping(*colour, "fire", mode, false) == M{{Cyan, {LightRed}}, {Blue, {Red}}});
+        CHECK(mapping(*colour, "sunset", mode, false) == M{{Cyan, {LightMagenta}}, {Blue, {Magenta}}});
+        // one colour on black: the ramp's top
+        const M one = mapping(*block, "fire", mode, true);
+        REQUIRE(one.size() == 1);
+        CHECK(one.begin()->second == std::set<std::uint8_t>{White});
+    }
+    // the black under bw-colour's █ stays black, as its blank cells do
+    const Canvas fired = styled(s, styleOf({FillEffect{FillMode::Rows, Grey, "fire"}}), *colour);
+    for (int y = 0; y < base.height(); ++y)
+        for (int x = 0; x < base.width(); ++x)
+            if (!base.at(x, y).transparent && base.at(x, y).ch == kFullBlock) {
+                INFO(x << "," << y);
+                CHECK(fired.at(x, y).bg.paletteIndex() == Black);
+            }
+}
+
+// A colour face whose one glyph is a row of ▒, a cell for each ordered pair
+// of unequal `colours` (foreground, background) and then each of `extra`.
+std::unique_ptr<Face> pairFace(const std::vector<std::uint8_t>& colours,
+                               const std::vector<std::pair<std::uint8_t, std::uint8_t>>& extra = {}) {
+    std::vector<std::pair<std::uint8_t, std::uint8_t>> pairs;
+    for (const std::uint8_t a : colours)
+        for (const std::uint8_t b : colours)
+            if (a != b)
+                pairs.push_back({a, b});
+    pairs.insert(pairs.end(), extra.begin(), extra.end());
+    TdfFont font;
+    font.name = "pairs";
+    font.type = TdfType::Colour;
+    CellBlock row(int(pairs.size()), 1);
+    for (std::size_t i = 0; i < pairs.size(); ++i) {
+        Cell& c = row.at(int(i), 0);
+        c.ch = kShadeMedium;
+        c.fg = Color::indexed(pairs[i].first);
+        c.bg = Color::indexed(pairs[i].second);
+    }
+    font.glyphs[U'A' - TdfFont::kFirst] = row;
+    return tdfFace(std::move(font));
+}
+
+// A palette colour's perceived brightness, as the rank mapping orders them.
+int luma(const Color& c) {
+    const Rgb& p = kPalette[c.paletteIndex() & 15];
+    return 299 * p.r + 587 * p.g + 114 * p.b;
+}
+
+// #184: with iCE off a background shows only a dark ramp colour, so the top
+// steps can merge a cell's two colours. A colour face whose one glyph is a
+// ▓, blue on cyan (glyph bytes 01 01 B2 31 00): steel's top two steps would
+// draw it grey on grey (cyan's white can't be a background), fire's red on
+// red (light red can't either, and red is the step below).
+TEST_CASE("a ramp Fill keeps a TheDraw cell's two colours apart with iCE off", "[style][tdf]") {
+    TdfFont font;
+    font.name = "shade";
+    font.type = TdfType::Colour;
+    CellBlock glyph(1, 1);
+    glyph.at(0, 0).ch = kShadeDark;
+    glyph.at(0, 0).fg = Color::indexed(Blue);
+    glyph.at(0, 0).bg = Color::indexed(Cyan);
+    font.glyphs[U'A' - TdfFont::kFirst] = glyph;
+    const auto face = tdfFace(std::move(font));
+    const TextSource s = word(U"A");
+    REQUIRE(plain(s, *face).at(0, 0).ch == kShadeDark);
+
+    struct Want {
+        const char* ramp;
+        bool ice;
+        std::uint8_t fg, bg;
+    };
+    const Want wants[] = {
+        // the top steps a step lower: still consecutive
+        {"steel", false, DarkGrey, Grey},
+        {"sunset", false, Blue, Magenta},
+        {"wood", false, Red, Brown},
+        // one dark step past black: no consecutive steps keep them apart,
+        // so blue goes to black, as a darker colour under a lighter
+        {"fire", false, Black, Red},
+        {"ice", false, Black, Blue},
+        // iCE on shows the bright background: the top two steps
+        {"steel", true, Grey, White},
+        {"fire", true, Yellow, White},
+    };
+    for (const FillMode mode : {FillMode::Rows, FillMode::Columns, FillMode::Rainbow})
+        for (const Want& w : wants) {
+            INFO(w.ramp << " / mode " << int(mode) << " / iCE " << (w.ice ? "on" : "off"));
+            const Canvas out = styled(s, styleOf({FillEffect{mode, Grey, w.ramp}}), *face, w.ice);
+            CHECK(out.at(0, 0).ch == kShadeDark);
+            CHECK(out.at(0, 0).fg != out.at(0, 0).bg);
+            CHECK(out.at(0, 0).fg == Color::indexed(w.fg));
+            CHECK(out.at(0, 0).bg == Color::indexed(w.bg));
+        }
+    // every named ramp, either iCE: the two colours stay apart
+    for (const Ramp& r : namedRamps())
+        for (const bool ice : {true, false}) {
+            INFO(r.name << " / iCE " << (ice ? "on" : "off"));
+            const Canvas out = styled(s, styleOf({FillEffect{FillMode::Rows, Grey, r.name}}), *face, ice);
+            CHECK(out.at(0, 0).fg != out.at(0, 0).bg);
+        }
+
+    // more colours than steps, each pair on a cell: no steps keep them all
+    // apart, so a merged cell is moved a step apart, its source order kept
+    // and black kept black
+    const std::vector<std::uint8_t> colours = {Black, Blue, Green, Cyan, Red, Magenta, Brown, Grey};
+    const auto manyFace = pairFace(colours);
+    const std::size_t cells = colours.size() * (colours.size() - 1);
+    REQUIRE(plain(s, *manyFace).width() == int(cells));
+    const Canvas src = plain(s, *manyFace);
+    // where a drawn colour sits on the ramp
+    const auto stepOn = [](const Ramp& r, const Color& c) {
+        return std::find(r.colours.begin(), r.colours.end(), c.paletteIndex()) - r.colours.begin();
+    };
+    for (const char* ramp : {"sea", "fire", "steel"})
+        for (const FillMode mode : {FillMode::Rows, FillMode::Columns, FillMode::Rainbow})
+            for (const bool ice : {true, false}) {
+                const Ramp r = *findRamp(ramp);
+                const Canvas out = styled(s, styleOf({FillEffect{mode, Grey, ramp}}), *manyFace, ice);
+                for (int x = 0; x < out.width(); ++x) {
+                    INFO(ramp << " / mode " << int(mode) << " / iCE " << (ice ? "on" : "off") << " / cell " << x);
+                    const Cell& a = src.at(x, 0);
+                    const Cell& b = out.at(x, 0);
+                    CHECK(b.fg != b.bg);
+                    if (!ice)
+                        CHECK(b.bg.paletteIndex() < 8);
+                    // black stays black
+                    if (a.fg.paletteIndex() == Black)
+                        CHECK(b.fg.paletteIndex() == Black);
+                    if (a.bg.paletteIndex() == Black)
+                        CHECK(b.bg.paletteIndex() == Black);
+                    // the lighter side stays the lighter on the ramp
+                    CHECK((luma(a.fg) < luma(a.bg)) == (stepOn(r, b.fg) < stepOn(r, b.bg)));
+                }
+            }
+    // sea with iCE on puts the seven colours on steps 0 1 1 2 2 3 3 (blue
+    // with black, grey with cyan): black on blue keeps its black and moves
+    // blue up, grey on cyan moves cyan down at the ramp's top
+    const auto at = [&](std::uint8_t fg, std::uint8_t bg) {
+        for (int x = 0; x < src.width(); ++x)
+            if (src.at(x, 0).fg.paletteIndex() == fg && src.at(x, 0).bg.paletteIndex() == bg)
+                return x;
+        FAIL("no cell");
+        return -1;
+    };
+    for (const FillMode mode : {FillMode::Rows, FillMode::Columns, FillMode::Rainbow}) {
+        INFO(int(mode));
+        const Canvas out = styled(s, styleOf({FillEffect{mode, Grey, "sea"}}), *manyFace, true);
+        CHECK(out.at(at(Black, Blue), 0).fg == Color::indexed(Black));
+        CHECK(out.at(at(Black, Blue), 0).bg == Color::indexed(Blue));
+        CHECK(out.at(at(Grey, Cyan), 0).fg == Color::indexed(LightCyan));
+        CHECK(out.at(at(Grey, Cyan), 0).bg == Color::indexed(Cyan));
+    }
+}
+
+// #184: the steps that keep the most cells apart, counting every cell: a
+// face with each pair of black, blue, red, magenta and green on a cell and
+// 20 more blue on red. On sea with iCE on the four colours past black can't
+// take four steps; putting blue and red on one step merges 22 cells, red
+// and magenta 2.
+TEST_CASE("a ramp Fill keeps the most TheDraw cells apart, counting each cell", "[style][tdf]") {
+    const TextSource s = word(U"A");
+    std::vector<std::pair<std::uint8_t, std::uint8_t>> extra(20, {Blue, Red});
+    const auto face = pairFace({Black, Blue, Red, Magenta, Green}, extra);
+    const Canvas src = plain(s, *face);
+    REQUIRE(src.width() == 40);
+    for (const FillMode mode : {FillMode::Rows, FillMode::Columns, FillMode::Rainbow}) {
+        INFO(int(mode));
+        const Canvas out = styled(s, styleOf({FillEffect{mode, Grey, "sea"}}), *face, true);
+        // blue, red, magenta, green on steps 1 2 2 3: blue, cyan, cyan,
+        // light cyan
+        const std::map<std::uint8_t, std::uint8_t> want = {
+            {Black, Black}, {Blue, Blue}, {Red, Cyan}, {Magenta, Cyan}, {Green, LightCyan}};
+        int merged = 0;
+        for (int x = 0; x < src.width(); ++x) {
+            INFO("cell " << x);
+            const Cell& a = src.at(x, 0);
+            const Cell& b = out.at(x, 0);
+            CHECK(b.fg != b.bg);
+            if (want.at(a.fg.paletteIndex()) == want.at(a.bg.paletteIndex()))
+                ++merged;
+            else {
+                CHECK(b.fg == Color::indexed(want.at(a.fg.paletteIndex())));
+                CHECK(b.bg == Color::indexed(want.at(a.bg.paletteIndex())));
+            }
+        }
+        CHECK(merged == 2);
     }
 }
 
@@ -1384,7 +1621,16 @@ TEST_CASE("Style: a styled cell keeps the dither mark only while it looks as its
         CHECK_FALSE(bake(l, true).cells.at(1, 1).dithered);
     }
     SECTION("a style that leaves the cell as it was keeps the mark") {
-        // steel's own ramp maps each colour these cells use to itself
+        // steel's own ramp maps the colours of its top two steps to
+        // themselves (a ramp Fill ends a TheDraw face's colours at the top,
+        // #184): the same cells a step up, grey with a white rung
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 3; ++x)
+                l.cells.at(x, y) = rungCell(steel, 8);
+        marked = rungCell(steel, 9);
+        marked.dithered = true;
+        l.cells.at(1, 1) = marked;
+        REQUIRE_FALSE(speckAt(l.cells));
         l.props.style = styleOf({FillEffect{FillMode::Rows, Grey, "steel"}});
         const Canvas out = styledCells(l, true);
         REQUIRE(out.at(1, 1) == marked);

@@ -334,6 +334,47 @@ TEST_CASE("the TheDraw test fonts unstyled lint clean and fit 80 columns and the
     CHECK(cases == 3 * 5 * 2);
 }
 
+TEST_CASE("a ramp Fill on every named ramp lints clean on the TheDraw test fonts", "[presets][matrix]") {
+    // #184: a ramp Fill maps a TheDraw face's colours onto consecutive ramp
+    // steps, so the font's own ladder stays one on the ramp: no ramp, however
+    // many steps it has, skips a rung between colours the font shades between.
+    const std::vector<MatrixFace> fs = faces();
+    const std::vector<TextSource> ws = words();
+    int cases = 0;
+    for (const Ramp& r : namedRamps())
+        for (const FillMode mode : {FillMode::Rows, FillMode::Columns, FillMode::Rainbow}) {
+            TextStyleEntry fill;
+            fill.name = r.name + " fill";
+            fill.style.effects.push_back(Effect{true, FillEffect{mode, Grey, r.name}});
+            for (const MatrixFace& f : fs) {
+                if (!f.file)
+                    continue;
+                for (const TextSource& w : ws)
+                    for (const bool ice : {true, false}) {
+                        INFO(r.name << " / mode " << int(mode) << " / " << f.name << " / " << utf8(w.text)
+                                    << " / iCE " << (ice ? "on" : "off"));
+                        CHECK(faults({&fill, &f, &w, ice}) == "");
+                        // a source cell of two colours keeps two
+                        const StyleInput in = textStyleInput(w, *f.face);
+                        const StyleMargins m = styleMargins(fill.style);
+                        const Canvas drawn = renderStyledText(w, fill.style, *f.face, ice).cells;
+                        int merged = 0;
+                        for (int y = 0; y < in.source.height(); ++y)
+                            for (int x = 0; x < in.source.width(); ++x) {
+                                const Cell& c = in.source.at(x, y);
+                                const Cell& d = drawn.at(x + m.left, y + m.top);
+                                if (!c.transparent && c.fg != c.bg && d.fg == d.bg)
+                                    ++merged;
+                            }
+                        CHECK(merged == 0);
+                        ++cases;
+                    }
+            }
+        }
+    // 10 ramps, 3 modes, 3 test fonts, 5 words, iCE on and off
+    CHECK(cases == 10 * 3 * 3 * 5 * 2);
+}
+
 // The comparison sheets: for each face and iCE setting, each fixture word
 // unstyled and then in each preset, each drawing under its name, written as
 // <face>-ice-<on|off>.ans in the directory BW_PRESET_SHEETS names. Run with
