@@ -94,8 +94,14 @@ public:
 
     // Draws, in view pixels, cells as the canvas will hold them once the
     // tool finishes (a floating selection): over the canvas, under the
-    // reference image and the guides. `exposed` is the part being painted.
+    // reference layers and the guides. `exposed` is the part being painted.
     virtual void paintCells(QPainter&, const QRect& /*exposed*/) const {}
+    // The active layer's cells paintCells draws changed, in canvas cells,
+    // each `after` as the layer composites it (Document::previewEdit's
+    // layerCells): the reference layers under the active layer are drawn
+    // where they leave them uncovered (coverageAbove). Empty when it draws
+    // none or the stack shows no reference layer.
+    virtual const CellEdit& layerCells() const;
     // Draws the tool's marks (a marquee) over everything but the cell
     // cursor.
     virtual void paint(QPainter&) const {}
@@ -136,14 +142,17 @@ public:
     void clear();
     bool empty() const { return changes_.empty(); }
     // Keeps what `edit`, built on the active layer, makes of the composite
-    // (Document::previewEdit), to draw over the view's canvas.
+    // (Document::previewEdit), to draw over the view's canvas, and the
+    // active layer's cells it changes (its layerCells).
     void set(const CanvasView& view, const CellEdit& edit);
+    const CellEdit& layerCells() const { return layerCells_; }
     // Draws it in view pixels, the part within `exposed`.
     void paint(QPainter& p, const CanvasView& view, const QRect& exposed) const;
 
 private:
     std::vector<CellChange> changes_;  // on the canvas, row-major
     QRect cells_;                      // their bounding box, in cells
+    CellEdit layerCells_;
 };
 
 class ToolRegistry : public QObject {

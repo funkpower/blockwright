@@ -85,6 +85,7 @@ public:
     bool mouseRelease(const ToolEvent& e) override;
     bool keyPress(QKeyEvent* e) override;
     void paintCells(QPainter& p, const QRect& exposed) const override;
+    const CellEdit& layerCells() const override;
     void paint(QPainter& p) const override;
     bool drawsSelection() const override { return floating_; }
     // What stamping the floating selection would write.

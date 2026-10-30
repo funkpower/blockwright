@@ -217,6 +217,69 @@ Canvas composite(const LayerStack& stack, const CompositeOptions& options) {
     return out;
 }
 
+Coverage coverageAbove(const LayerStack& stack, std::size_t index, CellRect rect, const CompositeOptions& options,
+                       ShownOffset shown, ShownCells pending) {
+    Coverage out;
+    out.rect = intersect(rect, stack.canvasRect());
+    if (out.rect.empty()) {
+        out.rect = {};
+        return out;
+    }
+    const CellRect& r0 = out.rect;
+    out.halves.assign(static_cast<std::size_t>(r0.width) * r0.height, 0);
+    // whether each cell is text so far, as compositeInto tracks it
+    std::vector<char> text(out.halves.size(), 0);
+    // the pending layer's cells in progress, by cell of the rect
+    std::vector<const Cell*> over;
+    if (pending.id && pending.changes) {
+        over.assign(out.halves.size(), nullptr);
+        for (const CellChange& c : *pending.changes)
+            if (r0.contains(c.x, c.y))
+                over[static_cast<std::size_t>(c.y - r0.y) * r0.width + (c.x - r0.x)] = &c.after;
+    }
+    const auto& layers = stack.layers();
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        const Layer& l = layers[i];
+        if (!composites(l))
+            continue;
+        const bool moved = shown.id && l.props.id == shown.id;
+        const int lx = moved ? shown.x : l.props.x, ly = moved ? shown.y : l.props.y;
+        const CellRect r = intersect(r0, {lx, ly, l.width(), l.height()});
+        if (r.empty())
+            continue;
+        const bool above = i > index;
+        const bool styled = styledAtComposite(l.props);
+        const Canvas& cells = styled ? cachedStyledCells(l, options.ice) : l.cells;
+        // a styled layer composites as a cells layer (styledProps)
+        const bool pixels = !styled && l.props.kind == LayerKind::Pixels;
+        const bool blockedByText = l.props.kind == LayerKind::Pixels;
+        const bool isText = !styled && l.props.kind == LayerKind::Text;
+        const LayerMode mode = styled ? styledProps(l.props).mode : l.props.mode;
+        const bool edited = !over.empty() && l.props.id == pending.id;
+        for (int y = r.y; y < r.y + r.height; ++y)
+            for (int x = r.x; x < r.x + r.width; ++x) {
+                const std::size_t k = static_cast<std::size_t>(y - r0.y) * r0.width + (x - r0.x);
+                const Cell& lc = edited && over[k] ? *over[k] : cells.at(x - lx, y - ly);
+                if (blockedByText && text[k])
+                    continue;
+                if (pixels) {
+                    // a pixel cell may be transparent and still hold one half
+                    const LayerPixels p = layerPixels(lc);
+                    if (above)
+                        out.halves[k] |= (p.top ? Coverage::kTop : 0) | (p.bottom ? Coverage::kBottom : 0);
+                    continue;
+                }
+                if (lc.transparent)
+                    continue;
+                if (above)
+                    out.halves[k] = Coverage::kBoth;
+                if (mode != LayerMode::ColoursOnly)
+                    text[k] = isText;
+            }
+    }
+    return out;
+}
+
 Cell compositeCell(const LayerStack& stack, int x, int y, const CompositeOptions& options) {
     return compositeCellBelow(stack, stack.size(), x, y, options);
 }

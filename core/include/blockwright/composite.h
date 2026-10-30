@@ -61,6 +61,9 @@
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
 
+#include <cstdint>
+#include <vector>
+
 namespace bw {
 
 struct CompositeOptions {
@@ -95,6 +98,40 @@ Cell compositeCell(const LayerStack& stack, int x, int y, const CompositeOptions
 // cell of that layer shows through to.
 Cell compositeCellBelow(const LayerStack& stack, std::size_t index, int x, int y,
                         const CompositeOptions& options = {});
+
+// The halves of the cells of `rect` (clipped to the canvas) that the visible
+// layers above the layer at `index` (those from index + 1 up) show in the
+// composite: what a reference layer at `index` is drawn under (PLAN §4).
+// An opaque cell of a cells, text or generator layer covers the whole cell
+// in any mode; a pixel layer covers the halves it sets, and none of a text
+// cell, which its pixels never cover. A styled layer covers by its styled
+// cells, as it composites. The layers at and under `index` cover nothing,
+// but decide which cells are text. Reference layers cover nothing.
+struct Coverage {
+    static constexpr std::uint8_t kTop = 1, kBottom = 2, kBoth = kTop | kBottom;
+    CellRect rect;                       // clipped to the canvas
+    std::vector<std::uint8_t> halves;    // a cell's kTop | kBottom, row by row
+
+    std::uint8_t at(int x, int y) const {
+        return rect.contains(x, y) ? halves[static_cast<std::size_t>(y - rect.y) * rect.width + (x - rect.x)] : 0;
+    }
+};
+// `shown`, when its id isn't 0, puts that layer at another offset than its
+// own, as a layer move's preview shows it (Document::previewLayerOffset).
+struct ShownOffset {
+    LayerId id = 0;
+    int x = 0, y = 0;
+};
+// `pending`, when its id isn't 0, puts `changes` (canvas cells, each its
+// `after` as that layer composites it: its styled cells on a styled layer)
+// on that layer, as a tool's edit in progress shows them
+// (Document::previewEdit); the last change of a cell wins.
+struct ShownCells {
+    LayerId id = 0;
+    const std::vector<CellChange>* changes = nullptr;
+};
+Coverage coverageAbove(const LayerStack& stack, std::size_t index, CellRect rect,
+                       const CompositeOptions& options = {}, ShownOffset shown = {}, ShownCells pending = {});
 
 // What exports write: the visible composite. (LayerStack::fromCanvas of it
 // is the stack flattened to one layer.)

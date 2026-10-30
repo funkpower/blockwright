@@ -105,6 +105,10 @@ void DragTool::paintCells(QPainter& p, const QRect& exposed) const {
         preview_.paint(p, *view(), exposed);
 }
 
+const CellEdit& DragTool::layerCells() const {
+    return dragging_ && view() ? preview_.layerCells() : Tool::layerCells();
+}
+
 const Canvas& DragTool::canvas() const { return view()->document()->layerCanvas(); }
 
 std::uint8_t DragTool::colourFor(Qt::MouseButton button) const {

@@ -66,6 +66,7 @@ public:
     bool mouseRelease(const ToolEvent& e) override;
     bool keyPress(QKeyEvent* e) override;
     void paintCells(QPainter& p, const QRect& exposed) const override;
+    const CellEdit& layerCells() const override;
 
 protected:
     // Starts a drag; false declines the press.

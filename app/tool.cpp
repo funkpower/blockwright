@@ -21,6 +21,11 @@ const CellEdit& Tool::pending() const {
     return none;
 }
 
+const CellEdit& Tool::layerCells() const {
+    static const CellEdit none;
+    return none;
+}
+
 void Tool::activate(CanvasView* view) { view_ = view; }
 
 void Tool::deactivate() { view_ = nullptr; }
@@ -28,6 +33,7 @@ void Tool::deactivate() { view_ = nullptr; }
 void EditPreview::clear() {
     changes_.clear();
     cells_ = {};
+    layerCells_ = {};
 }
 
 void EditPreview::set(const CanvasView& view, const CellEdit& edit) {
@@ -35,7 +41,7 @@ void EditPreview::set(const CanvasView& view, const CellEdit& edit) {
     const Canvas& cv = view.document()->canvas();
     // The tool's edit is on the active layer; what it shows is the
     // composite with it applied.
-    changes_ = view.document()->previewEdit(edit).changes;
+    changes_ = view.document()->previewEdit(edit, &layerCells_).changes;
     const auto rowMajor = [](const CellChange& a, const CellChange& b) {
         return a.y != b.y ? a.y < b.y : a.x < b.x;
     };

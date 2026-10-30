@@ -6,6 +6,7 @@
 #include "settings.h"
 #include "tool.h"
 
+#include "blockwright/composite.h"
 #include "blockwright/glyph_sets.h"
 #include "blockwright/selection.h"
 
@@ -198,6 +199,8 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     connect(doc_, &Document::layersChanged, this, &CanvasView::brushSettingsChanged);
     // a reference layer's picture, place or opacity changes no cell
     connect(doc_, &Document::layersChanged, this, qOverload<>(&QWidget::update));
+    // nor does art that covers one the way the composite already showed
+    connect(doc_, &Document::layerCellsChanged, this, &CanvasView::cellsChanged);
     connect(doc_, &Document::activeLayerChanged, this, [this] {
         cancelTool();
         brushSettingsChanged();
@@ -570,6 +573,9 @@ void CanvasView::paintEvent(QPaintEvent* e) {
 }
 
 void CanvasView::paintOverlays(QPainter& p, const QRect& clip) {
+    // The tool's cells in progress are the composite as they will leave it;
+    // each reference layer is drawn over them where the art above it, those
+    // cells among it, leaves it uncovered (uncoveredBy).
     if (tool_) {
         const SavedPainter saved(p);
         tool_->paintCells(p, clip);
@@ -601,10 +607,13 @@ void CanvasView::paintOverlays(QPainter& p, const QRect& clip) {
 void CanvasView::paintReferenceLayers(QPainter& p, const QRect& clip) {
     const LayerStack& stack = doc_->layers();
     std::vector<const Layer*> shown;
+    std::vector<std::size_t> at;
     for (std::size_t i = 0; i < stack.size(); ++i) {
         const LayerProperties& l = stack[i].props;
-        if (l.kind == LayerKind::Reference && l.visible && l.reference)
+        if (l.kind == LayerKind::Reference && l.visible && l.reference) {
             shown.push_back(&stack[i]);
+            at.push_back(i);
+        }
     }
     // drop what no visible layer shows any more
     const auto shows = [&](const std::shared_ptr<const std::string>& bytes) {
@@ -623,7 +632,8 @@ void CanvasView::paintReferenceLayers(QPainter& p, const QRect& clip) {
     const QRect canvas = clip & QRect(QPoint(0, 0), viewSize());
     // the copies' share of the cap
     const qint64 budget = kMaxReferencePixels / qint64(shown.size());
-    for (const Layer* l : shown) {
+    for (std::size_t n = 0; n < shown.size(); ++n) {
+        const Layer* l = shown[n];
         const ReferenceImage& r = *l->props.reference;
         // A move or resize in progress shows the layer where the drag has it,
         // the copy made for where it was stretched across that: a resize
@@ -674,6 +684,8 @@ void CanvasView::paintReferenceLayers(QPainter& p, const QRect& clip) {
             continue;
         const SavedPainter saved(p);
         p.setClipRect(canvas, Qt::IntersectClip);
+        // under the art above it in the stack
+        p.setClipRegion(uncoveredBy(at[n], canvas & to.toAlignedRect()), Qt::IntersectClip);
         p.setOpacity(r.opacity / 100.0);
         if (it->image.size() == target && to.topLeft() == to.toRect().topLeft()) {
             const QRect part = canvas & to.toRect();
@@ -683,6 +695,51 @@ void CanvasView::paintReferenceLayers(QPainter& p, const QRect& clip) {
             p.drawImage(to, it->image);
         }
     }
+}
+
+QRegion CanvasView::uncoveredBy(std::size_t index, const QRect& view) const {
+    const QSize cs = renderer_->cellSize() * zoom_;
+    if (view.isEmpty() || cs.isEmpty())
+        return {};
+    const QPoint a = cellAt(view.topLeft()), b = cellAt(view.bottomRight());
+    const CompositeOptions options{doc_->format().ice, {}};
+    // an art layer's move shows it where the drag has it
+    ShownOffset shown;
+    if (layerMove_ && layerMove_->id && !layerMove_->reference)
+        shown = {LayerId(layerMove_->id), layerMove_->shown.x(), layerMove_->shown.y()};
+    // and the active layer's cells in progress, as the tool will leave them
+    ShownCells pending;
+    if (tool_)
+        if (const CellEdit& cells = tool_->layerCells(); !cells.changes.empty())
+            pending = {doc_->activeLayer(), &cells.changes};
+    const Coverage cover = coverageAbove(doc_->layers(), index, {a.x(), a.y(), b.x() - a.x() + 1, b.y() - a.y() + 1},
+                                         options, shown, pending);
+    if (cover.rect.empty())
+        return {};
+    // A cell's top half is the view rows halfRowAt reads as it.
+    const int top = (cs.height() + 1) / 2;
+    // the uncovered runs of each half row, top to bottom: y-x banded
+    std::vector<QRect> rects;
+    for (int y = cover.rect.y; y < cover.rect.y + cover.rect.height; ++y)
+        for (const std::uint8_t half : {Coverage::kTop, Coverage::kBottom}) {
+            const int y0 = y * cs.height() + (half == Coverage::kTop ? 0 : top);
+            const int h = half == Coverage::kTop ? top : cs.height() - top;
+            if (h <= 0)
+                continue;
+            for (int x = cover.rect.x; x < cover.rect.x + cover.rect.width;) {
+                if (cover.at(x, y) & half) {
+                    ++x;
+                    continue;
+                }
+                const int x0 = x;
+                while (x < cover.rect.x + cover.rect.width && !(cover.at(x, y) & half))
+                    ++x;
+                rects.emplace_back(x0 * cs.width(), y0, (x - x0) * cs.width(), h);
+            }
+        }
+    QRegion region;
+    region.setRects(rects.data(), int(rects.size()));
+    return region;
 }
 
 QSize CanvasView::referenceCacheSize(LayerId id) const {

@@ -617,7 +617,9 @@ bool Document::edit(const CellEdit& edit, Cursor before, Cursor after) {
     return true;
 }
 
-CellEdit Document::previewEdit(const CellEdit& edit) {
+CellEdit Document::previewEdit(const CellEdit& edit, CellEdit* layerCells) {
+    if (layerCells)
+        *layerCells = {};
     if (!editable())
         return {};
     Layer& layer = *stack_.find(active_);
@@ -628,6 +630,8 @@ CellEdit Document::previewEdit(const CellEdit& edit) {
     e->apply(layer.cells);
     CellEdit out;
     const CompositeOptions opts = compositeOptions();
+    // what the layer covers of a reference layer under it, as it will
+    const bool cover = layerCells && showsReference();
     if (styledAtComposite(layer.props)) {
         // the style redrawn over the whole layer: each cell it changes
         const CellRect rect = intersect(dirtyRect(layer, *e), stack_.canvasRect());
@@ -636,12 +640,23 @@ CellEdit Document::previewEdit(const CellEdit& edit) {
             for (int x = rect.x; x < rect.x + rect.width; ++x)
                 if (const Cell& now = fresh.at(x - rect.x, y - rect.y); !identical(now, doc_.canvas.at(x, y)))
                     out.changes.push_back({x, y, doc_.canvas.at(x, y), now});
+        if (cover && !rect.empty()) {
+            const Canvas styled = styledCells(layer, doc_.ice);
+            layerCells->changes.reserve(static_cast<std::size_t>(rect.width) * rect.height);
+            for (int y = rect.y; y < rect.y + rect.height; ++y)
+                for (int x = rect.x; x < rect.x + rect.width; ++x)
+                    layerCells->changes.push_back(
+                        {x, y, {}, styled.at(x - layer.props.x, y - layer.props.y)});
+        }
     } else {
         out.changes.reserve(e->changes.size());
         for (const CellChange& c : e->changes) {
             const int x = c.x + layer.props.x, y = c.y + layer.props.y;
-            if (doc_.canvas.contains(x, y))
-                out.changes.push_back({x, y, doc_.canvas.at(x, y), compositeCell(stack_, x, y, opts)});
+            if (!doc_.canvas.contains(x, y))
+                continue;
+            out.changes.push_back({x, y, doc_.canvas.at(x, y), compositeCell(stack_, x, y, opts)});
+            if (cover)
+                layerCells->changes.push_back({x, y, c.before, c.after});
         }
     }
     e->revert(layer.cells);
@@ -832,13 +847,23 @@ bool Document::moveLayer(LayerId id, std::size_t index) {
 void Document::previewLayerOffset(LayerId id, CellRect from, QPoint to) {
     Layer* layer = stack_.find(id);
     QRegion cells;
+    CellRect moved = from;
     if (layer) {
         const QScopedValueRollback<int> x(layer->props.x, to.x()), y(layer->props.y, to.y());
-        cells = recomposite(unite(from, layer->bounds(), stack_.canvasRect()));
+        moved = unite(from, layer->bounds(), stack_.canvasRect());
+        cells = recomposite(moved);
     } else
         cells = recomposite(from);
     if (!cells.isEmpty())
         emit cellsChanged(cells);
+    if (!showsReference())
+        return;
+    // what it covers moved: the cells it shows otherwise at the two offsets
+    moved = intersect(moved, stack_.canvasRect());
+    if (!layer || styledAtComposite(layer->props))
+        touchLayerCells(QRect(moved.x, moved.y, moved.width, moved.height));
+    else
+        touchLayerCells(otherCells(layer->cells, {from.x, from.y}, layer->cells, to, moved));
 }
 
 bool Document::setLayerProperties(LayerId id, LayerProperties props, const QString& text) {
@@ -975,17 +1000,24 @@ void Document::putGenerator(LayerId id, const std::optional<std::string>& params
         extras_.files[paramsPath(id)] = *params;
     else
         extras_.files.erase(paramsPath(id));
-    QRegion changed;
+    QRegion changed, touched;
     if (layer->cells != cells) {
         const CellRect before = layer->bounds();
-        layer->cells = cells;
-        changed = recomposite(unite(before, layer->bounds(), stack_.canvasRect()));
+        Canvas was = std::exchange(layer->cells, cells);
+        const CellRect run = intersect(unite(before, layer->bounds(), stack_.canvasRect()), stack_.canvasRect());
+        changed = recomposite(run);
+        if (showsReference()) {
+            const QPoint at(layer->props.x, layer->props.y);
+            touched = styledAtComposite(layer->props) ? QRegion(QRect(run.x, run.y, run.width, run.height))
+                                                      : otherCells(was, at, layer->cells, at, run);
+        }
         if (id == active_)
             refreshLayerCanvas();
     }
     emit generatorChanged(id);
     if (!changed.isEmpty())
         emit cellsChanged(changed);
+    touchLayerCells(touched);
 }
 
 bool Document::renameLayer(LayerId id, const QString& name) {
@@ -1028,6 +1060,20 @@ void Document::refreshLayerCanvas() {
     layerCanvas_ = l ? bw::layerCanvas(*l, stack_.width(), stack_.height()) : Canvas(stack_.width(), stack_.height());
 }
 
+QRegion Document::otherCells(const Canvas& a, QPoint aAt, const Canvas& b, QPoint bAt, CellRect rect) {
+    const Cell none = transparentCell();
+    const auto at = [&](const Canvas& c, QPoint o, int x, int y) -> const Cell& {
+        const long long lx = 1LL * x - o.x(), ly = 1LL * y - o.y();
+        return lx >= 0 && ly >= 0 && lx < c.width() && ly < c.height() ? c.at(int(lx), int(ly)) : none;
+    };
+    CellEdit diff;
+    for (int y = rect.y; y < rect.y + rect.height; ++y)
+        for (int x = rect.x; x < rect.x + rect.width; ++x)
+            if (const Cell &was = at(a, aAt, x, y), &now = at(b, bAt, x, y); !identical(was, now))
+                diff.changes.push_back({x, y, was, now});
+    return changedCells(diff);
+}
+
 QRegion Document::recomposite(CellRect rect) {
     rect = intersect(rect, stack_.canvasRect());
     const Canvas fresh = compositeRect(stack_, rect, compositeOptions());
@@ -1058,19 +1104,26 @@ void Document::applyLayerEdit(LayerId id, const CellEdit& layerEdit, bool revert
             for (const CellChange& c : layerEdit.changes)
                 if (doc_.canvas.contains(c.x + layer->props.x, c.y + layer->props.y))
                     layerCanvas_.at(c.x + layer->props.x, c.y + layer->props.y) = layer->cells.at(c.x, c.y);
-        const QRegion cells = recomposite(dirtyRect(*layer, layerEdit));
+        const CellRect dirty = intersect(dirtyRect(*layer, layerEdit), stack_.canvasRect());
+        const QRegion cells = recomposite(dirty);
         if (!cells.isEmpty())
             emit cellsChanged(cells);
+        if (!dirty.empty())
+            touchLayerCells(QRect(dirty.x, dirty.y, dirty.width, dirty.height));
         return;
     }
     const CompositeOptions opts = compositeOptions();
-    CellEdit diff;
+    // the layer's cells changed, whether or not the composite did
+    const bool cover = showsReference();
+    CellEdit diff, touched;
     for (const CellChange& c : layerEdit.changes) {
         const int x = c.x + layer->props.x, y = c.y + layer->props.y;
         if (!doc_.canvas.contains(x, y))
             continue;
         if (id == active_)
             layerCanvas_.at(x, y) = layer->cells.at(c.x, c.y);
+        if (cover)
+            touched.changes.push_back({x, y, c.before, c.after});
         Cell& cell = doc_.canvas.at(x, y);
         const Cell now = compositeCell(stack_, x, y, opts);
         if (!identical(now, cell)) {
@@ -1081,6 +1134,19 @@ void Document::applyLayerEdit(LayerId id, const CellEdit& layerEdit, bool revert
     const QRegion cells = changedCells(diff);
     if (!cells.isEmpty())
         emit cellsChanged(cells);
+    if (cover)
+        touchLayerCells(changedCells(touched));
+}
+
+bool Document::showsReference() const {
+    return std::any_of(stack_.layers().begin(), stack_.layers().end(), [](const Layer& l) {
+        return l.props.kind == LayerKind::Reference && l.props.visible && l.props.reference;
+    });
+}
+
+void Document::touchLayerCells(const QRegion& cells) {
+    if (!cells.isEmpty() && showsReference())
+        emit layerCellsChanged(cells);
 }
 
 LayerId Document::insertLayer(Layer layer, std::size_t index) {

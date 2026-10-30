@@ -373,8 +373,12 @@ public:
     // What `edit` (built on layerCanvas()) would make of the composite,
     // without applying it: each cell it changes, before and after, as the
     // canvas shows it. Empty when edit() would refuse it. The tools preview
-    // their drags with it.
-    CellEdit previewEdit(const CellEdit& edit);
+    // their drags with it. While the stack shows a reference layer,
+    // `layerCells` (if given) gets the active layer's cells the edit
+    // changes, in canvas cells, each `after` as the layer composites it
+    // (its styled cells, on a styled layer: all of them), for coverageAbove;
+    // otherwise it is left empty.
+    CellEdit previewEdit(const CellEdit& edit, CellEdit* layerCells = nullptr);
 
     // The cells an edit changes: those whose before and after differ
     // (identical, so a mark moving counts).
@@ -383,6 +387,12 @@ public:
 signals:
     // Cells (in cell coordinates) that now hold something else.
     void cellsChanged(const QRegion& cells);
+    // Cells where a layer's cells changed or a layer edit, offset preview or
+    // generator run moved them, whether or not the composite changed there
+    // (cellsChanged): what the art covers of a reference layer
+    // (coverageAbove) may have changed. Emitted only while the stack shows a
+    // reference layer; a change that emits layersChanged doesn't emit it.
+    void layerCellsChanged(const QRegion& cells);
     // The whole canvas was replaced (open, new): sizes may have changed.
     void reset();
     void modifiedChanged(bool modified);
@@ -444,6 +454,14 @@ private:
     CompositeOptions compositeOptions() const { return {doc_.ice, Cell{}}; }
     // shownBelow, for fitLayerEdit
     std::function<Cell(int, int)> below() const;
+    // Whether the stack has a visible reference layer with a picture.
+    bool showsReference() const;
+    // layerCellsChanged for `cells`, while showsReference().
+    void touchLayerCells(const QRegion& cells);
+    // The cells of `rect` (canvas cells) where layer cells `a` at offset
+    // `aAt` and `b` at `bAt` show other cells (a transparent cell past
+    // either's edges).
+    static QRegion otherCells(const Canvas& a, QPoint aAt, const Canvas& b, QPoint bAt, CellRect rect);
     // Starts over with `stack`, its bottom layer active.
     void resetLayers(LayerStack stack);
     // The layer edit (Layer::cells coordinates) applied to layer `id`

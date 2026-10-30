@@ -9,9 +9,10 @@
 // and key events first; what it doesn't take
 // falls through to the keyboard behaviour above. The view holds the
 // selection, which every tool reads. Over the canvas it draws, in order, the
-// tool's cells in progress, a reference image, the screen-size guides, the
+// tool's cells in progress, the reference layers, the screen-size guides, the
 // selection's outline and the tool's marks; none of them is part of the
-// document.
+// document. Each reference layer is drawn under the visible art layers above
+// it in the stack, the tool's cells in progress among them.
 //
 // The view and the preview draw in view pixels (device_grid.h): logical
 // pixels at a whole device pixel ratio, whole device pixels at a fractional
@@ -177,8 +178,9 @@ public:
     void setGuide(const QSize& size);
 
     // The visible reference layers (layer.h), bottom first, each drawn at
-    // its own place, size and opacity over the art. A canvas pixel is
-    // `zoom` view pixels.
+    // its own place, size and opacity in its place in the stack: over the
+    // art under it, and under the halves of cells the visible art layers
+    // above it cover (coverageAbove). A canvas pixel is `zoom` view pixels.
     //
     // Each is drawn from a copy of its whole picture scaled to the view
     // size it shows at (averaged when reduced, interpolated when enlarged),
@@ -273,8 +275,14 @@ private:
     void dprChanged();
     void paintOverlays(QPainter& p, const QRect& clip);
     // The visible reference layers (layer.h), bottom first, each at its own
-    // place, size and opacity, over the art.
+    // place, size and opacity, under the art above it.
     void paintReferenceLayers(QPainter& p, const QRect& clip);
+    // The part of `view` (view pixels) a reference layer at `index` shows
+    // through: what the visible art layers above it don't cover
+    // (coverageAbove), by half cells, an art layer being moved where the
+    // drag has it and the active layer's cells as the tool's cells in
+    // progress leave them (Tool::layerCells).
+    QRegion uncoveredBy(std::size_t index, const QRect& view) const;
     const QImage& referencePicture(const ReferenceImage& picture);
     // The document changed under the tool: it drops what it has in progress.
     void cancelTool();

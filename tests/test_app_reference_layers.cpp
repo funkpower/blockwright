@@ -1,7 +1,8 @@
 // Reference layers in the main window (#178): File > Open Reference Image
 // adds one, the view draws each visible one at its own place, size and
 // opacity, Layer > Reference Opacity sets it, and tools leave it alone
-// (moving and resizing it: test_app_reference_transform.cpp).
+// (moving and resizing it: test_app_reference_transform.cpp). Each is drawn
+// in its place in the stack, under the visible art layers above it.
 
 #include "canvas_view.h"
 #include "document.h"
@@ -9,6 +10,7 @@
 #include "reference_scale.h"
 #include "tool.h"
 
+#include "blockwright/palette.h"
 #include "blockwright/project.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -23,6 +25,7 @@
 #include <QImageWriter>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPaintEvent>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QScopeGuard>
@@ -107,10 +110,11 @@ bool near(QColor a, QColor b, int tol = 3) {
            std::abs(a.blue() - b.blue()) <= tol;
 }
 
-void mouse(CanvasView* v, QEvent::Type type, QPoint cell, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+void mouse(CanvasView* v, QEvent::Type type, QPoint cell, Qt::KeyboardModifiers mods = Qt::NoModifier,
+           Qt::MouseButton button = Qt::LeftButton) {
     const QPointF at = v->toWidget(v->cellRect(cell)).center();
-    QMouseEvent e(type, at, v->mapToGlobal(at), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
-                  type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, mods);
+    QMouseEvent e(type, at, v->mapToGlobal(at), type == QEvent::MouseMove ? Qt::NoButton : button,
+                  type == QEvent::MouseButtonRelease ? Qt::NoButton : button, mods);
     QApplication::sendEvent(v, &e);
 }
 
@@ -947,4 +951,403 @@ TEST_CASE("Open Reference Image refuses an SVG without adding a layer", "[refere
     CHECK(d->project().layers == before);
     CHECK(d->undoStack()->count() == steps);
     CHECK(QImageReader::allocationLimit() == 512);
+}
+
+namespace {
+
+// Writes `c` at cell (x, y) of the active layer.
+void put(Document* d, int x, int y, Cell c) {
+    CellEdit e;
+    e.changes.push_back({x, y, d->layerCanvas().at(x, y), c});
+    REQUIRE(d->edit(e));
+}
+
+Cell solid(std::uint8_t bg) { return Cell{U' ', Color::indexed(Grey), Color::indexed(bg), 0, false}; }
+
+// View pixel colours inside cell `c`: its centre, a point in its top half
+// and one in its bottom half.
+QColor centre(CanvasView* v, const QImage& shot, QPoint c) { return shot.pixelColor(v->cellRect(c).center()); }
+QColor topHalf(CanvasView* v, const QImage& shot, QPoint c) {
+    const QRect r = v->cellRect(c);
+    return shot.pixelColor(r.center().x(), r.top() + 1);
+}
+QColor bottomHalf(CanvasView* v, const QImage& shot, QPoint c) {
+    const QRect r = v->cellRect(c);
+    return shot.pixelColor(r.center().x(), r.bottom() - 1);
+}
+
+} // namespace
+
+TEST_CASE("a reference layer draws in its place in the stack, under the visible art above it", "[reference]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const LayerId background = d->activeLayer();
+    // the whole canvas red, opaque, on top of the background
+    const QSize px = v->canvasPixels();
+    const LayerId ref =
+        d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100});
+    REQUIRE(ref);
+    // the background's own art stays under it
+    REQUIRE(d->setActiveLayer(background));
+    put(d, 0, 0, solid(Green));
+    // an art layer above the reference: addLayer puts it just above the active one
+    REQUIRE(d->setActiveLayer(ref));
+    const LayerId art = d->addLayer(LayerKind::Cells);
+    REQUIRE(art);
+    REQUIRE(*d->layers().indexOf(art) == 2);
+    put(d, 2, 1, solid(Blue));
+    const LayerId pixels = d->addLayer(LayerKind::Pixels);
+    REQUIRE(*d->layers().indexOf(pixels) == 3);
+    put(d, 4, 1, pixelLayerCell({std::uint8_t(Yellow), std::nullopt}));
+    put(d, 5, 1, pixelLayerCell({std::nullopt, std::uint8_t(Yellow)}));
+
+    // what the art alone shows, the reference hidden
+    LayerProperties props = d->layers().find(ref)->props;
+    props.visible = false;
+    REQUIRE(d->setLayerProperties(ref, props, QStringLiteral("Hide")));
+    const QImage bare = v->grab().toImage();
+    d->undoStack()->undo();
+    REQUIRE(d->layers().find(ref)->props.visible);
+    const QColor blue = centre(v, bare, {2, 1}), yellow = topHalf(v, bare, {4, 1});
+    REQUIRE_FALSE(near(blue, Qt::red));
+    REQUIRE_FALSE(near(yellow, Qt::red));
+
+    QImage shot = v->grab().toImage();
+    CHECK(near(centre(v, shot, {0, 0}), Qt::red));  // the background's art is under it
+    CHECK(near(centre(v, shot, {3, 1}), Qt::red));  // nothing above it there
+    CHECK(centre(v, shot, {2, 1}) == blue);  // the art above covers it
+    // pixels cover the half they set, and only that half
+    CHECK(topHalf(v, shot, {4, 1}) == yellow);
+    CHECK(near(bottomHalf(v, shot, {4, 1}), Qt::red));
+    CHECK(near(topHalf(v, shot, {5, 1}), Qt::red));
+    CHECK(bottomHalf(v, shot, {5, 1}) == bottomHalf(v, bare, {5, 1}));
+
+    // the art layer hidden: the reference shows there
+    props = d->layers().find(art)->props;
+    props.visible = false;
+    REQUIRE(d->setLayerProperties(art, props, QStringLiteral("Hide")));
+    shot = v->grab().toImage();
+    CHECK(near(centre(v, shot, {2, 1}), Qt::red));
+    d->undoStack()->undo();
+    CHECK(centre(v, v->grab().toImage(), {2, 1}) == blue);
+
+    // the reference raised to the top: over all the art
+    REQUIRE(d->moveLayer(ref, d->layers().size() - 1));
+    shot = v->grab().toImage();
+    CHECK(near(centre(v, shot, {2, 1}), Qt::red));
+    CHECK(near(topHalf(v, shot, {4, 1}), Qt::red));
+    // and back down by undo: under them again
+    d->undoStack()->undo();
+    REQUIRE(*d->layers().indexOf(ref) == 1);
+    CHECK(centre(v, v->grab().toImage(), {2, 1}) == blue);
+
+    // at 2x the halves are two view pixels a canvas pixel
+    v->setZoom(2);
+    shot = v->grab().toImage();
+    CHECK(topHalf(v, shot, {4, 1}) == yellow);
+    CHECK(near(bottomHalf(v, shot, {4, 1}), Qt::red));
+    CHECK(near(centre(v, shot, {3, 1}), Qt::red));
+}
+
+TEST_CASE("two reference layers each draw under the art above them, at their own opacity", "[reference]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const QSize px = v->canvasPixels();
+    // the red one under the art, the blue one at half over it
+    const LayerId red =
+        d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100});
+    const LayerId art = d->addLayer(LayerKind::Cells);
+    put(d, 1, 0, solid(Green));
+    const LayerId blue =
+        d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::blue)), 0, 0, px.width(), px.height(), 50});
+    REQUIRE(red);
+    REQUIRE(art);
+    REQUIRE(blue);
+    REQUIRE(*d->layers().indexOf(blue) == 3);
+
+    QImage shot = v->grab().toImage();
+    // no art: the blue one at half over the red one
+    CHECK(near(centre(v, shot, {3, 0}), QColor(128, 0, 128)));
+    // the art covers the red one, and the blue one at half is over the art
+    const QColor green(kPalette[Green].r, kPalette[Green].g, kPalette[Green].b);
+    CHECK(near(centre(v, shot, {1, 0}), QColor(green.red() / 2, green.green() / 2, green.blue() / 2 + 128)));
+
+    // the blue one hidden: the art shows as it is
+    LayerProperties props = d->layers().find(blue)->props;
+    props.visible = false;
+    REQUIRE(d->setLayerProperties(blue, props, QStringLiteral("Hide")));
+    shot = v->grab().toImage();
+    CHECK(near(centre(v, shot, {1, 0}), green));
+    CHECK(near(centre(v, shot, {3, 0}), Qt::red));
+}
+
+TEST_CASE("a tool's cells in progress draw over the reference layers under the active layer", "[reference]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const LayerId background = d->activeLayer();
+    const QSize px = v->canvasPixels();
+    const LayerId ref =
+        d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100});
+    REQUIRE(ref);
+    const LayerId art = d->addLayer(LayerKind::Cells);
+    REQUIRE(art);
+    v->setPen(Pen{Color::indexed(Yellow), Color::indexed(Blue)});
+    w.tools()->setActive(QStringLiteral("line"));
+
+    // on the art layer, above the reference: the stroke shows as it is drawn
+    REQUIRE(near(centre(v, v->grab().toImage(), {3, 2}), Qt::red));
+    mouse(v, QEvent::MouseButtonPress, {1, 2});
+    mouse(v, QEvent::MouseMove, {6, 2});
+    CHECK_FALSE(near(centre(v, v->grab().toImage(), {3, 2}), Qt::red));
+    mouse(v, QEvent::MouseButtonRelease, {6, 2});
+    CHECK_FALSE(near(centre(v, v->grab().toImage(), {3, 2}), Qt::red));
+
+    // on the background, under the reference: the reference covers it
+    REQUIRE(d->setActiveLayer(background));
+    mouse(v, QEvent::MouseButtonPress, {1, 4});
+    mouse(v, QEvent::MouseMove, {6, 4});
+    CHECK(near(centre(v, v->grab().toImage(), {3, 4}), Qt::red));
+    mouse(v, QEvent::MouseButtonRelease, {6, 4});
+    CHECK(near(centre(v, v->grab().toImage(), {3, 4}), Qt::red));
+    CHECK_FALSE(d->layers().find(background)->cells.at(3, 4) == Cell{});
+}
+
+TEST_CASE("an art layer moving over a reference layer covers it as it goes", "[reference]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const QSize px = v->canvasPixels();
+    const LayerId ref =
+        d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100});
+    REQUIRE(ref);
+    const LayerId art = d->addLayer(LayerKind::Cells);
+    REQUIRE(art);
+    put(d, 1, 1, solid(Blue));
+    const QColor blue = centre(v, v->grab().toImage(), {1, 1});
+    REQUIRE_FALSE(near(blue, Qt::red));
+
+    mouse(v, QEvent::MouseButtonPress, {1, 1}, Qt::AltModifier);
+    mouse(v, QEvent::MouseMove, {4, 2}, Qt::AltModifier);
+    QImage shot = v->grab().toImage();
+    CHECK(centre(v, shot, {4, 2}) == blue);
+    CHECK(near(centre(v, shot, {1, 1}), Qt::red));
+    // Esc drops the move: the art and the reference are where they were
+    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(v, &esc);
+    shot = v->grab().toImage();
+    CHECK(centre(v, shot, {1, 1}) == blue);
+    CHECK(near(centre(v, shot, {4, 2}), Qt::red));
+    mouse(v, QEvent::MouseButtonRelease, {4, 2}, Qt::AltModifier);
+}
+
+TEST_CASE("a stroke in progress on an art layer hides the reference under it only where it draws", "[reference]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const QSize px = v->canvasPixels();
+    REQUIRE(d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100}));
+    REQUIRE(d->addLayer(LayerKind::Cells));
+    v->setPen(Pen{Color::indexed(Yellow), Color::indexed(Blue)});
+    w.tools()->setActive(QStringLiteral("line"));
+    REQUIRE(near(centre(v, v->grab().toImage(), {5, 2}), Qt::red));
+    // a diagonal: its bounding box holds cells it doesn't draw
+    mouse(v, QEvent::MouseButtonPress, {1, 1});
+    mouse(v, QEvent::MouseMove, {6, 6});
+    QImage shot = v->grab().toImage();
+    CHECK_FALSE(near(centre(v, shot, {3, 3}), Qt::red));
+    CHECK(near(centre(v, shot, {5, 2}), Qt::red));
+    CHECK(near(centre(v, shot, {2, 5}), Qt::red));
+    mouse(v, QEvent::MouseButtonRelease, {6, 6});
+    shot = v->grab().toImage();
+    CHECK_FALSE(near(centre(v, shot, {3, 3}), Qt::red));
+    CHECK(near(centre(v, shot, {5, 2}), Qt::red));
+}
+
+TEST_CASE("a half-block stroke in progress hides only the half of the reference it paints", "[reference]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const QSize px = v->canvasPixels();
+    REQUIRE(d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100}));
+    REQUIRE(d->addLayer(LayerKind::Pixels));
+    v->setPen(Pen{Color::indexed(Yellow), Color::indexed(Blue)});
+    w.tools()->setActive(QStringLiteral("halfBlock"));
+    // the cell's centre row is in its top half
+    mouse(v, QEvent::MouseButtonPress, {3, 2});
+    QImage shot = v->grab().toImage();
+    CHECK_FALSE(near(topHalf(v, shot, {3, 2}), Qt::red));
+    CHECK(near(bottomHalf(v, shot, {3, 2}), Qt::red));
+    mouse(v, QEvent::MouseButtonRelease, {3, 2});
+    shot = v->grab().toImage();
+    CHECK_FALSE(near(topHalf(v, shot, {3, 2}), Qt::red));
+    CHECK(near(bottomHalf(v, shot, {3, 2}), Qt::red));
+}
+
+TEST_CASE("an erase in progress uncovers the reference only where it erases", "[reference]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const QSize px = v->canvasPixels();
+    REQUIRE(d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100}));
+    REQUIRE(d->addLayer(LayerKind::Cells));
+    for (int x = 2; x <= 5; ++x)
+        put(d, x, 2, solid(Blue));
+    w.tools()->setActive(QStringLiteral("glyph"));
+    REQUIRE_FALSE(near(centre(v, v->grab().toImage(), {3, 2}), Qt::red));
+    // the right button erases to the blank cell
+    mouse(v, QEvent::MouseButtonPress, {2, 2}, Qt::NoModifier, Qt::RightButton);
+    mouse(v, QEvent::MouseMove, {3, 2}, Qt::NoModifier, Qt::RightButton);
+    QImage shot = v->grab().toImage();
+    CHECK(near(centre(v, shot, {2, 2}), Qt::red));
+    CHECK(near(centre(v, shot, {3, 2}), Qt::red));
+    CHECK_FALSE(near(centre(v, shot, {4, 2}), Qt::red));
+    mouse(v, QEvent::MouseButtonRelease, {3, 2}, Qt::NoModifier, Qt::RightButton);
+    shot = v->grab().toImage();
+    CHECK(near(centre(v, shot, {2, 2}), Qt::red));
+    CHECK(near(centre(v, shot, {3, 2}), Qt::red));
+    CHECK_FALSE(near(centre(v, shot, {4, 2}), Qt::red));
+}
+
+TEST_CASE("a floating selection uncovers the reference where it was lifted and covers it where it is", "[reference]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const QSize px = v->canvasPixels();
+    REQUIRE(d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100}));
+    REQUIRE(d->addLayer(LayerKind::Cells));
+    put(d, 2, 1, solid(Blue));
+    const QColor blue = centre(v, v->grab().toImage(), {2, 1});
+    REQUIRE_FALSE(near(blue, Qt::red));
+    w.tools()->setActive(QStringLiteral("select"));
+    // select (2, 1)-(3, 1), then drag it three cells right
+    mouse(v, QEvent::MouseButtonPress, {2, 1});
+    mouse(v, QEvent::MouseMove, {3, 1});
+    mouse(v, QEvent::MouseButtonRelease, {3, 1});
+    mouse(v, QEvent::MouseButtonPress, {2, 1});
+    mouse(v, QEvent::MouseMove, {5, 1});
+    REQUIRE_FALSE(w.tools()->active()->pending().changes.empty());
+    QImage shot = v->grab().toImage();
+    CHECK(near(centre(v, shot, {2, 1}), Qt::red));  // lifted
+    CHECK(centre(v, shot, {5, 1}) == blue);
+    CHECK(near(centre(v, shot, {4, 1}), Qt::red));  // in the edit's span, not in the selection
+    CHECK(near(centre(v, shot, {6, 1}), Qt::red));  // the selection's clear cell
+    mouse(v, QEvent::MouseButtonRelease, {5, 1});
+    w.tools()->active()->finish();
+    shot = v->grab().toImage();
+    CHECK(near(centre(v, shot, {2, 1}), Qt::red));
+    CHECK(centre(v, shot, {5, 1}) == blue);
+    CHECK(near(centre(v, shot, {6, 1}), Qt::red));
+}
+
+namespace {
+
+// What the view repaints, as its paint events give it: offscreen grab()
+// repaints the whole widget, so it can't tell.
+struct PaintSpy : QObject {
+    QRegion painted;
+    bool eventFilter(QObject*, QEvent* e) override {
+        if (e->type() == QEvent::Paint)
+            painted += static_cast<QPaintEvent*>(e)->region();
+        return false;
+    }
+};
+
+void settle() {
+    for (int i = 0; i < 5; ++i)
+        QApplication::processEvents();
+}
+
+bool repainted(CanvasView* v, const QRegion& painted, QPoint cell) {
+    return painted.intersects(v->toWidget(v->cellRect(cell)));
+}
+
+} // namespace
+
+TEST_CASE("an edit that covers a reference but leaves the composite as it was repaints the cell, and so does its undo",
+          "[reference]") {
+    MainWindow w;
+    w.show();
+    settle();
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const LayerId background = d->activeLayer();
+    const QSize px = v->canvasPixels();
+    REQUIRE(d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100}));
+    const LayerId art = d->addLayer(LayerKind::Cells);
+    REQUIRE(*d->layers().indexOf(art) == 2);
+    settle();
+    REQUIRE(near(centre(v, v->grab().toImage(), {2, 1}), Qt::red));
+    PaintSpy spy;
+    v->installEventFilter(&spy);
+    // the background's own cell: the composite is as it was
+    put(d, 2, 1, d->layers().find(background)->cells.at(2, 1));
+    settle();
+    const QRegion byEdit = spy.painted;
+    REQUIRE_FALSE(near(centre(v, v->grab().toImage(), {2, 1}), Qt::red));
+    CHECK(repainted(v, byEdit, {2, 1}));
+    CHECK_FALSE(repainted(v, byEdit, {6, 6}));  // not a full repaint
+    spy.painted = {};
+    d->undoStack()->undo();
+    settle();
+    const QRegion byUndo = spy.painted;
+    REQUIRE(near(centre(v, v->grab().toImage(), {2, 1}), Qt::red));
+    CHECK(repainted(v, byUndo, {2, 1}));
+    spy.painted = {};
+    d->undoStack()->redo();
+    settle();
+    CHECK(repainted(v, spy.painted, {2, 1}));
+    v->removeEventFilter(&spy);
+}
+
+TEST_CASE("an art layer of blank cells moving over a reference repaints where it covers and where it left",
+          "[reference]") {
+    MainWindow w;
+    w.show();
+    settle();
+    CanvasView* v = w.canvasView();
+    v->setZoom(1);
+    Document* d = w.document();
+    const LayerId background = d->activeLayer();
+    const QSize px = v->canvasPixels();
+    REQUIRE(d->addReferenceLayer(ReferenceImage{encoded(filled(4, 4, Qt::red)), 0, 0, px.width(), px.height(), 100}));
+    REQUIRE(d->addLayer(LayerKind::Cells));
+    put(d, 1, 1, d->layers().find(background)->cells.at(1, 1));
+    settle();
+    PaintSpy spy;
+    v->installEventFilter(&spy);
+    mouse(v, QEvent::MouseButtonPress, {1, 1}, Qt::AltModifier);
+    mouse(v, QEvent::MouseMove, {3, 2}, Qt::AltModifier);
+    settle();
+    CHECK(repainted(v, spy.painted, {1, 1}));
+    CHECK(repainted(v, spy.painted, {3, 2}));
+    spy.painted = {};
+    mouse(v, QEvent::MouseMove, {4, 2}, Qt::AltModifier);
+    settle();
+    const QRegion byMove = spy.painted;
+    REQUIRE_FALSE(near(centre(v, v->grab().toImage(), {4, 2}), Qt::red));
+    CHECK(repainted(v, byMove, {4, 2}));
+    CHECK(repainted(v, byMove, {3, 2}));
+    CHECK_FALSE(repainted(v, byMove, {6, 6}));
+    // Esc puts it back: where it was shown and where it lands repaint
+    spy.painted = {};
+    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(v, &esc);
+    settle();
+    REQUIRE(near(centre(v, v->grab().toImage(), {4, 2}), Qt::red));
+    CHECK(repainted(v, spy.painted, {4, 2}));
+    CHECK(repainted(v, spy.painted, {1, 1}));
+    mouse(v, QEvent::MouseButtonRelease, {4, 2}, Qt::AltModifier);
+    v->removeEventFilter(&spy);
 }

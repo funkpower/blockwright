@@ -343,6 +343,13 @@ void SelectTool::paintCells(QPainter& p, const QRect& exposed) const {
     preview_.paint(p, *view(), exposed);
 }
 
+const CellEdit& SelectTool::layerCells() const {
+    if (!view() || !floating_)
+        return Tool::layerCells();
+    updatePreview();
+    return preview_.layerCells();
+}
+
 void SelectTool::paint(QPainter& p) const {
     if (view() && floating_)
         view()->paintOutline(p, {floatPos_.x(), floatPos_.y(), float_.width, float_.height}, true);

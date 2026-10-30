@@ -1,11 +1,13 @@
 // Reference layers in the core (PLAN §5, §6; #178): the picture's bytes,
 // place, size and opacity round-trip through a project, the file under
 // refs/ is checked as a reader checks it, and nothing that exports the art
-// sees the layer.
+// sees the layer. coverageAbove gives what a reference is drawn under.
 
 #include "blockwright/composite.h"
 #include "blockwright/irc.h"
 #include "blockwright/project.h"
+#include "blockwright/style_draw.h"
+#include "blockwright/text_style.h"
 #include "blockwright/text.h"
 #include "util.h"
 
@@ -328,4 +330,159 @@ TEST_CASE("a project with Big rainbow is 1.6, or 2.2 when styled", "[project][re
     e = project::encode(p);
     CHECK(object(e.at("manifest.json")).value("version").toString() == "2.2");
     CHECK(project::decode(e) == p);
+}
+
+namespace {
+
+Cell ink(char32_t ch = U'#') { return Cell{ch, Color::indexed(15), Color::indexed(4), 0, false}; }
+
+} // namespace
+
+TEST_CASE("coverageAbove covers by the visible art layers above the index, by half cells",
+          "[layers][reference][composite]") {
+    // 0: art, 1: reference, 2: cells (normal), 3: pixels, 4: cells colours-only,
+    // 5: cells chars-only, hidden
+    LayerStack stack = LayerStack::fromCanvas(Canvas(6, 2));
+    stack[0].cells.at(0, 0) = ink();
+    stack.add(referenceLayer(kPng, "photo", 0, 0, 48, 32, 100));
+    Layer cells = makeLayer(LayerKind::Cells, 6, 2, "cells");
+    cells.cells.at(1, 0) = ink();
+    stack.add(std::move(cells));
+    Layer pixels = makeLayer(LayerKind::Pixels, 6, 2, "pixels");
+    pixels.cells.at(2, 0) = pixelLayerCell({std::uint8_t(12), std::nullopt});
+    pixels.cells.at(3, 0) = pixelLayerCell({std::nullopt, std::uint8_t(9)});
+    pixels.cells.at(4, 0) = pixelLayerCell({std::uint8_t(12), std::uint8_t(9)});
+    stack.add(std::move(pixels));
+    Layer colours = makeLayer(LayerKind::Cells, 6, 2, "colours");
+    colours.props.mode = LayerMode::ColoursOnly;
+    colours.cells.at(5, 0) = ink();
+    stack.add(std::move(colours));
+    Layer hidden = makeLayer(LayerKind::Cells, 6, 2, "hidden");
+    hidden.props.mode = LayerMode::CharsOnly;
+    hidden.props.visible = false;
+    hidden.cells.at(0, 1) = ink();
+    stack.add(std::move(hidden));
+    REQUIRE(stack.size() == 6);
+
+    const Coverage c = coverageAbove(stack, 1, stack.canvasRect());
+    CHECK(c.rect == stack.canvasRect());
+    CHECK(c.at(0, 0) == 0);  // the art under the reference
+    CHECK(c.at(1, 0) == Coverage::kBoth);
+    CHECK(c.at(2, 0) == Coverage::kTop);
+    CHECK(c.at(3, 0) == Coverage::kBottom);
+    CHECK(c.at(4, 0) == Coverage::kBoth);
+    CHECK(c.at(5, 0) == Coverage::kBoth);  // colours-only still shows over it
+    CHECK(c.at(0, 1) == 0);  // hidden
+    for (int x = 1; x < 6; ++x)
+        CHECK(c.at(x, 1) == 0);
+
+    // above the top, nothing covers; at the bottom layer everything above does
+    CHECK(coverageAbove(stack, 5, stack.canvasRect()).halves == std::vector<std::uint8_t>(12, 0));
+    CHECK(coverageAbove(stack, 0, stack.canvasRect()).at(1, 0) == Coverage::kBoth);
+    // a layer at the index itself doesn't cover
+    CHECK(coverageAbove(stack, 2, stack.canvasRect()).at(1, 0) == 0);
+    CHECK(coverageAbove(stack, 2, stack.canvasRect()).at(2, 0) == Coverage::kTop);
+    // another reference above covers nothing
+    stack.add(referenceLayer(kJpg, "sketch", 0, 0, 48, 32, 100));
+    CHECK(coverageAbove(stack, 1, stack.canvasRect()).at(0, 1) == 0);
+
+    // the rect is clipped to the canvas; outside it nothing is covered
+    const Coverage part = coverageAbove(stack, 1, {3, -4, 10, 5});
+    CHECK(part.rect == CellRect{3, 0, 3, 1});
+    CHECK(part.at(3, 0) == Coverage::kBottom);
+    CHECK(part.at(1, 0) == 0);
+    CHECK(coverageAbove(stack, 1, {10, 10, 2, 2}).rect.empty());
+
+    // a layer shown at another offset, as a move previews it, covers there
+    const LayerId moved = stack[2].props.id;
+    const Coverage shifted = coverageAbove(stack, 1, stack.canvasRect(), {}, ShownOffset{moved, 2, 1});
+    CHECK(shifted.at(1, 0) == 0);
+    CHECK(shifted.at(3, 1) == Coverage::kBoth);
+    CHECK(stack[2].props.x == 0);
+}
+
+TEST_CASE("coverageAbove: pixels above a text cell don't cover it", "[layers][reference][composite]") {
+    // a text cell under the reference, and pixels over both: the composite
+    // shows the text there, not the pixels, so the reference shows over it
+    LayerStack stack(3, 1);
+    Layer text = makeLayer(LayerKind::Text, 3, 1, "text");
+    text.cells.at(0, 0) = ink(U'A');
+    stack.add(std::move(text));
+    stack.add(referenceLayer(kPng, "photo", 0, 0, 24, 16, 100));
+    Layer pixels = makeLayer(LayerKind::Pixels, 3, 1, "pixels");
+    for (int x = 0; x < 3; ++x)
+        pixels.cells.at(x, 0) = pixelLayerCell({std::uint8_t(12), std::uint8_t(9)});
+    stack.add(std::move(pixels));
+    Coverage c = coverageAbove(stack, 1, stack.canvasRect());
+    CHECK(c.at(0, 0) == 0);
+    CHECK(c.at(1, 0) == Coverage::kBoth);
+    CHECK(compositeCell(stack, 0, 0).ch == U'A');
+
+    // a cells layer over the reference that writes its glyph on the text
+    // covers it, and makes it a cells cell again, which the pixels cover
+    Layer over = makeLayer(LayerKind::Cells, 3, 1, "over");
+    over.cells.at(0, 0) = ink();
+    stack.add(std::move(over), 2);
+    REQUIRE(stack[2].props.name == "over");
+    CHECK(coverageAbove(stack, 1, stack.canvasRect()).at(0, 0) == Coverage::kBoth);
+    CHECK(coverageAbove(stack, 2, stack.canvasRect()).at(0, 0) == Coverage::kBoth);
+    // in colours-only it covers but leaves the text, so the pixels don't
+    stack[2].props.mode = LayerMode::ColoursOnly;
+    CHECK(coverageAbove(stack, 1, stack.canvasRect()).at(0, 0) == Coverage::kBoth);
+    CHECK(coverageAbove(stack, 2, stack.canvasRect()).at(0, 0) == 0);
+}
+
+TEST_CASE("coverageAbove: a styled layer covers by its styled cells", "[layers][reference][composite]") {
+    LayerStack stack(5, 3);
+    stack.add(referenceLayer(kPng, "photo", 0, 0, 40, 48, 100));
+    Layer art = makeLayer(LayerKind::Cells, 5, 3, "styled");
+    art.cells.at(2, 1) = ink(U'█');
+    TextStyle style;
+    style.effects.push_back(Effect{true, OutlineEffect{OutlineForm::Cells, Blue}});
+    art.props.style = style;
+    REQUIRE(styledAtComposite(art.props));
+    const Canvas styled = styledCells(art, true);
+    stack.add(std::move(art));
+    const Coverage c = coverageAbove(stack, 0, stack.canvasRect());
+    bool grown = false;
+    for (int y = 0; y < 3; ++y)
+        for (int x = 0; x < 5; ++x) {
+            CHECK(c.at(x, y) == (styled.at(x, y).transparent ? 0 : Coverage::kBoth));
+            grown = grown || ((x != 2 || y != 1) && !styled.at(x, y).transparent);
+        }
+    CHECK(grown);  // the outline covers cells the layer's own cells don't
+}
+
+TEST_CASE("coverageAbove: a tool's cells in progress cover and uncover as they will", "[layers][reference][composite]") {
+    // 0: reference, 1: cells with ink at (1, 0), 2: pixels
+    LayerStack stack(4, 1);
+    stack.add(referenceLayer(kPng, "photo", 0, 0, 32, 16, 100));
+    Layer cells = makeLayer(LayerKind::Cells, 4, 1, "cells");
+    cells.cells.at(1, 0) = ink();
+    stack.add(std::move(cells));
+    stack.add(makeLayer(LayerKind::Pixels, 4, 1, "pixels"));
+    const LayerId art = stack[1].props.id, pixels = stack[2].props.id;
+    REQUIRE(coverageAbove(stack, 0, stack.canvasRect()).at(1, 0) == Coverage::kBoth);
+
+    // ink drawn at (0, 0) and (1, 0) erased, on the cells layer
+    const std::vector<CellChange> stroke{{0, 0, transparentCell(), ink()}, {1, 0, ink(), transparentCell()}};
+    Coverage c = coverageAbove(stack, 0, stack.canvasRect(), {}, {}, ShownCells{art, &stroke});
+    CHECK(c.at(0, 0) == Coverage::kBoth);
+    CHECK(c.at(1, 0) == 0);
+    CHECK(c.at(2, 0) == 0);
+    // for a layer the stack doesn't hold they change nothing
+    c = coverageAbove(stack, 0, stack.canvasRect(), {}, {}, ShownCells{LayerId(pixels + 100), &stroke});
+    CHECK(c.at(0, 0) == 0);
+    CHECK(c.at(1, 0) == Coverage::kBoth);
+    // a cell's last change wins
+    const std::vector<CellChange> twice{{2, 0, transparentCell(), ink()}, {2, 0, ink(), transparentCell()}};
+    CHECK(coverageAbove(stack, 0, stack.canvasRect(), {}, {}, ShownCells{art, &twice}).at(2, 0) == 0);
+    // a pixel layer's cell in progress covers the half it sets
+    const std::vector<CellChange> half{{3, 0, transparentCell(), pixelLayerCell({std::nullopt, std::uint8_t(9)})}};
+    c = coverageAbove(stack, 0, stack.canvasRect(), {}, {}, ShownCells{pixels, &half});
+    CHECK(c.at(3, 0) == Coverage::kBottom);
+    // outside the rect asked for, nothing
+    CHECK(coverageAbove(stack, 0, {0, 0, 2, 1}, {}, {}, ShownCells{pixels, &half}).at(3, 0) == 0);
+    // the stack itself is as it was
+    CHECK(coverageAbove(stack, 0, stack.canvasRect()).at(1, 0) == Coverage::kBoth);
 }
