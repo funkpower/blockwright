@@ -127,14 +127,16 @@ std::optional<std::pair<double, double>> rimNormal(const Canvas& canvas, const R
 // settles only round its own new cells: the covered cells within three of
 // it, the ones the stroke has written too, again from their stroke-start
 // values, against the line beyond them, settled again until it is its own
-// fixed point; the line there is the covered cells' and not the order of
-// the dabs (#159). Where that changes the line within two of the window's
-// side, with a covered cell past it within three, the window widens to six
-// where that writes no less of the line. Where that would take back a cell
-// the stroke has written or leave a lone cell of line, the dab settles only
-// the covered cells the stroke has left as they were, and the line so far
-// stays; a dab that would add a finding adds nothing. A dab's work is flat
-// in the stroke's length and O(W + H) per changed cell.
+// fixed point; the line there comes from the covered cells rather than
+// the line before, though the order of the dabs still shows where a line
+// is kept or a dab refused (PLAN §10, #159). Where that changes the line
+// within two of the window's side, with a covered cell past it within
+// three, the window widens to six where that writes no less of the line.
+// Where that would take back a cell the stroke has written or leave a lone
+// cell of line, the dab settles only the covered cells the stroke has left
+// as they were, and the line so far stays; a dab that would add a finding
+// adds nothing. A dab's work is flat in the stroke's length and O(W + H)
+// per changed cell.
 // Each symmetry image (Dab::image) is outlined on its own, a mirror image in
 // its own frame (the canvas mirrored back). The stroke stamps each point's
 // images in turn, and their composite is judged on the shown canvas as a

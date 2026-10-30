@@ -1389,14 +1389,15 @@ void OutlineBrush::settleImage(Stroke& stroke, Plan& planRef, const Dab& d, int 
     }
     // The dab settles the line again from the stroke-start values over the
     // covered cells within kReach of its new cells, against the line beyond
-    // them and kContext more of the canvas, so the line there is the covered
-    // cells' and not the order of the dabs; where the settle changes the
-    // line near the window's side, the window widens. A window the stroke has
-    // drawn in settles as an image's first settle does, carefully where the
-    // plain settle writes nothing. Where that would take back a cell the stroke has
-    // written or leave a lone cell of line, the dab settles only the covered
-    // cells the stroke has left as they were, and the line so far stays: a
-    // dab never takes back the line an earlier one drew.
+    // them and kContext more of the canvas, so the line there comes from the
+    // covered cells rather than the line before (not wholly: PLAN §10's order
+    // limit, #159); where the settle changes the line near the window's
+    // side, the window widens. A window the stroke has drawn in settles as
+    // an image's first settle does, carefully where the plain settle writes
+    // nothing. Where that would take back a cell the stroke has written or
+    // leave a lone cell of line, the dab settles only the covered cells the
+    // stroke has left as they were, and the line so far stays: a dab never
+    // takes back the line an earlier one drew.
     {
         int fx0 = w, fy0 = h, fx1 = -1, fy1 = -1;
         for (const auto& [x, y] : fresh)
