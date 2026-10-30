@@ -191,6 +191,7 @@ add_executable(blockwright-app-tests
   test_app_fonts.cpp
   test_app_font_collection.cpp
   test_app_shortcuts.cpp
+  test_app_help.cpp
   scratch_settings.h
   system_input.h
   util.h
@@ -205,6 +206,7 @@ target_link_libraries(blockwright-app-tests PRIVATE blockwright_app blockwright_
 add_dependencies(blockwright-app-tests blockwright-cli)
 target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
                                                         BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library"
+                                                        BW_HELP_SOURCE="${PROJECT_SOURCE_DIR}/app/help"
                                                         BW_CLI="$<TARGET_FILE:blockwright-cli>")
 set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
 catch_discover_tests(blockwright-app-tests

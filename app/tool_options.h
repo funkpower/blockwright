@@ -14,7 +14,8 @@
 // case, spacing, alignment, wrap width and colour (text_options.h). Each
 // row is shown while the active tool reads it (optionsFor). It edits the
 // view's settings and the tools' and follows them, so the menus and the
-// dock stay in step.
+// dock stay in step. Under the tool's name, a panel that can be folded
+// away shows the tool's help (help_text.h) and follows the active tool.
 
 #include <QFlags>
 #include <QWidget>
@@ -27,6 +28,7 @@ class QDoubleSpinBox;
 class QFormLayout;
 class QLabel;
 class QSpinBox;
+class QToolButton;
 
 namespace bw {
 
@@ -111,6 +113,9 @@ public:
     QSpinBox* centreYBox() const { return centreY_; }
     QCheckBox* pencil4Box() const { return pencil4_; }
     QLabel* glyphLabel() const { return glyph_; }
+    // The help panel: its fold button, and the active tool's help.
+    QToolButton* helpToggle() const { return helpToggle_; }
+    QLabel* helpLabel() const { return help_; }
     QCheckBox* filledBox() const { return filled_; }
     QComboBox* pasteModeBox() const { return pasteMode_; }
     QCheckBox* sampleMergedBox() const { return merged_; }
@@ -125,7 +130,14 @@ public:
     QCheckBox* rimLintBox() const { return rimLint_; }
     TextOptions* textOptions() const { return text_; }
 
+signals:
+    // The help panel's link to Help > Keyboard Shortcuts was clicked.
+    void shortcutsRequested();
+
 private:
+    // Shows or folds away the help panel, and keeps the choice in the
+    // settings.
+    void showHelp(bool shown);
     // Shows the view's and the tools' settings.
     void sync();
     // Limits the centre spins to the canvas.
@@ -150,6 +162,8 @@ private:
     QLabel* title_;
     TextOptions* text_ = nullptr;
     QLabel* none_;
+    QToolButton* helpToggle_;
+    QLabel* help_;
     QSpinBox* size_;
     QComboBox* tip_;
     QSpinBox* strength_;

@@ -18,6 +18,8 @@ add_library(blockwright_app STATIC
   generator_runner.h
   glyph_bar.cpp
   glyph_bar.h
+  help_text.cpp
+  help_text.h
   irc_meter.cpp
   irc_meter.h
   document.h
@@ -36,6 +38,8 @@ add_library(blockwright_app STATIC
   main_window_irc.cpp
   main_window_library.cpp
   main_window_project.cpp
+  manual_dialog.cpp
+  manual_dialog.h
   palette_widget.cpp
   palette_widget.h
   preferences.cpp
@@ -64,6 +68,37 @@ add_library(blockwright_app STATIC
   toolbox.h
 )
 set_target_properties(blockwright_app PROPERTIES AUTOMOC ON)
+# The help text (help_text.h): a Markdown file a tool and a layer kind.
+qt_add_resources(blockwright_app "help" PREFIX "/help" BASE help FILES
+  help/layers/cells.md
+  help/layers/generator.md
+  help/layers/pixels.md
+  help/layers/reference.md
+  help/layers/text.md
+  help/tools/clone.md
+  help/tools/colorize.md
+  help/tools/despeckle.md
+  help/tools/ellipse.md
+  help/tools/eyedropper.md
+  help/tools/fill.md
+  help/tools/form.md
+  help/tools/glyph.md
+  help/tools/gradient.md
+  help/tools/halfBlock.md
+  help/tools/keyboard.md
+  help/tools/line.md
+  help/tools/outline.md
+  help/tools/rampShade.md
+  help/tools/rectangle.md
+  help/tools/rimLight.md
+  help/tools/select.md
+  help/tools/shade.md
+  help/tools/smudge.md
+  help/tools/soft.md
+  help/tools/spray.md
+  help/tools/text.md
+  help/tools/texture.md
+)
 add_dependencies(blockwright_app bw_version)
 target_include_directories(blockwright_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(blockwright_app PUBLIC blockwright::core blockwright::render Qt6::Widgets Qt6::Concurrent)

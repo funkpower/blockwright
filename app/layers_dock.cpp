@@ -2,6 +2,7 @@
 
 #include "document.h"
 #include "generator_form.h"
+#include "help_text.h"
 
 #include <QAction>
 #include <QHBoxLayout>
@@ -30,42 +31,8 @@ QString kindLabel(LayerKind kind) {
     return {};
 }
 
-QString kindToolTip(LayerKind kind) {
-    switch (kind) {
-    case LayerKind::Cells:
-        return LayersDock::tr(
-            "A Cells layer holds a glyph plus foreground and background colours in each cell.\n"
-            "Use Keyboard (typing), Glyph Brush, shade and ramp brushes, detail brushes, or pixel tools.\n"
-            "Opaque cells normally replace the cells below; transparent cells show through. "
-            "Exports flatten the visible layers into character cells.");
-    case LayerKind::Pixels:
-        return LayersDock::tr(
-            "A Pixels layer holds two half-block colours per cell (top and bottom), "
-            "each either a palette colour or transparent.\n"
-            "Paint with Half-Block Brush, Line, Rectangle, Ellipse or Fill. Other tools can only write "
-            "space, █, ▀ or ▄; shade-producing tools and other glyphs are refused.\n"
-            "Set halves cover what is below; transparent halves show through. Text layers stay in front of pixels. "
-            "Exports flatten these pixels into half-block glyphs and colours in the visible composite.");
-    case LayerKind::Text:
-        return LayersDock::tr(
-            "A Text layer holds text rendered as glyph cells with foreground and background colours.\n"
-            "Edit live text with the Text tool and Tool Options; painting tools cannot change it. "
-            "Without a live text source, the cells can be painted like a Cells layer.\n"
-            "Opaque text cells normally replace cells below and cannot be covered by Pixels layers; "
-            "transparent cells show through. Exports flatten the visible rendered text into character cells.");
-    case LayerKind::Generator:
-        return LayersDock::tr(
-            "A Generator layer holds a program's cached output as glyph cells with foreground and background colours.\n"
-            "Change parameters and Run below; painting tools cannot edit the output.\n"
-            "The cached cells composite like a Cells layer and export in the visible composite. "
-            "Opening or exporting does not run the generator.");
-    case LayerKind::Reference:
-        return LayersDock::tr(
-            "A Reference layer holds a picture to trace, saved with the project with its place, size and opacity.\n"
-            "Painting tools cannot edit it. It is skipped by the compositor and never exported.");
-    }
-    return {};
-}
+// What the kind holds, which tools paint it, how it composites and exports.
+QString kindToolTip(LayerKind kind) { return help::plainText(help::layerText(kind)); }
 
 Qt::CheckState checkState(bool on) { return on ? Qt::Checked : Qt::Unchecked; }
 

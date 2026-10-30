@@ -2,6 +2,7 @@
 
 #include "canvas_view.h"
 #include "irc_meter.h"
+#include "manual_dialog.h"
 #include "select_tool.h"
 #include "palette_widget.h"
 #include "preferences.h"
@@ -290,6 +291,9 @@ void MainWindow::createActions() {
     // No shortcut: F1, the standard help key, types a glyph in keyboard mode.
     a = help->addAction(tr("&Keyboard Shortcuts..."), this, [this] { showShortcuts(this); });
     a->setObjectName(QStringLiteral("keyboardShortcuts"));
+    a = help->addAction(tr("&Manual..."), this, [this] { showManual(*tools_, this); });
+    a->setObjectName(QStringLiteral("manual"));
+    a->setStatusTip(tr("What each tool, its options and each kind of layer do"));
     help->addAction(tr("&About Blockwright"), this, [this] {
         QMessageBox::about(this, tr("About Blockwright"),
                            tr("<p><b>Blockwright</b> %1 (%2)</p><p>ANSI and IRC art editor. GPL-3.0-or-later.</p>"

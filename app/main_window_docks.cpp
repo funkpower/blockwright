@@ -12,6 +12,7 @@
 #include "palette_widget.h"
 #include "select_tool.h"
 #include "settings.h"
+#include "shortcuts_dialog.h"
 #include "tool.h"
 #include "tool_options.h"
 #include "toolbox.h"
@@ -76,6 +77,7 @@ void MainWindow::createDocks() {
     toolbox_ = new Toolbox(tools_, toolActions_);
     toolboxDock_ = dock(tr("Toolbox"), "toolboxDock", toolbox_);
     toolOptions_ = new ToolOptions(view_, tools_, selectTool_, findChild<QAction*>(QStringLiteral("filledShapes")));
+    connect(toolOptions_, &ToolOptions::shortcutsRequested, this, [this] { showShortcuts(this); });
     auto* optionsScroll = new QScrollArea;
     optionsScroll->setWidget(toolOptions_);
     optionsScroll->setWidgetResizable(true);

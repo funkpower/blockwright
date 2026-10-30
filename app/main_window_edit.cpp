@@ -5,6 +5,7 @@
 
 #include "canvas_view.h"
 #include "draw_tools.h"
+#include "help_text.h"
 #include "reference_scale.h"
 #include "select_tool.h"
 #include "text_tool.h"
@@ -263,7 +264,13 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         a->setObjectName(t->id() + QStringLiteral("Tool"));
         a->setIcon(toolIcon(t->id()));
         const QString name = QString(t->name()).remove(QLatin1Char('&'));
-        a->setToolTip(key.isEmpty() ? name : tr("%1 (%2)").arg(name, key.toString(QKeySequence::NativeText)));
+        // the name and key, then what the tool does (help_text.h)
+        QString tip = key.isEmpty() ? name : tr("%1 (%2)").arg(name, key.toString(QKeySequence::NativeText));
+        const QString summary = help::toolSummary(t->id());
+        if (!summary.isEmpty())
+            tip += QLatin1Char('\n') + summary;
+        a->setToolTip(tip);
+        a->setStatusTip(summary);
         check(a, toolGroup, t == tools_->active());
         toolActions.insert(t, a);
         toolActions_.insert(t->id(), a);

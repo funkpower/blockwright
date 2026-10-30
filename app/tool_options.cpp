@@ -3,7 +3,9 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
+#include "help_text.h"
 #include "select_tool.h"
+#include "settings.h"
 #include "text_options.h"
 #include "text_tool.h"
 #include "tool.h"
@@ -24,6 +26,7 @@
 #include <QScopedValueRollback>
 #include <QSpinBox>
 #include <QStandardItemModel>
+#include <QToolButton>
 
 #include <algorithm>
 #include <cmath>
@@ -42,6 +45,8 @@ QIcon rampIcon(const Ramp& ramp) {
 }
 
 namespace {
+
+const QString kShowHelpKey = QStringLiteral("toolOptions/showHelp");
 
 QString keyText(const QKeySequence& key) { return key.toString(QKeySequence::NativeText); }
 
@@ -109,6 +114,20 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
 
     none_ = new QLabel(tr("This tool has no options."));
     none_->setObjectName(QStringLiteral("toolOptionsNone"));
+
+    helpToggle_ = new QToolButton;
+    helpToggle_->setObjectName(QStringLiteral("toolHelpToggle"));
+    helpToggle_->setText(tr("About this tool"));
+    helpToggle_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    helpToggle_->setAutoRaise(true);
+    helpToggle_->setCheckable(true);
+    helpToggle_->setToolTip(tr("Show or hide what the tool does and what its options change"));
+    help_ = new QLabel;
+    help_->setObjectName(QStringLiteral("toolHelp"));
+    help_->setTextFormat(Qt::MarkdownText);
+    help_->setWordWrap(true);
+    help_->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    connect(help_, &QLabel::linkActivated, this, &ToolOptions::shortcutsRequested);
 
     size_ = new QSpinBox;
     size_->setObjectName(QStringLiteral("brushSize"));
@@ -317,6 +336,8 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
 
     auto* form = form_layout_ = new QFormLayout(this);
     form->addRow(title_);
+    form->addRow(helpToggle_);
+    form->addRow(help_);
     form->addRow(none_);
     form->addRow(tr("Glyph"), glyph_);
     form->addRow(tr("Size"), size_);
@@ -355,7 +376,9 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
 
     fitCentre();
     sync();
+    helpToggle_->setChecked(appSettings()->value(kShowHelpKey, true).toBool());
     showFor(tools->active());
+    connect(helpToggle_, &QToolButton::toggled, this, &ToolOptions::showHelp);
     connect(tools, &ToolRegistry::activeChanged, this, &ToolOptions::showFor);
     connect(view_->document(), &Document::reset, this, &ToolOptions::fitCentre);
     connect(view_, &CanvasView::brushChanged, this, &ToolOptions::sync);
@@ -432,7 +455,13 @@ void ToolOptions::showFor(Tool* tool) {
     const Options o = tool ? optionsFor(tool->id()) : Options();
     shown_ = o;
     title_->setText(tool ? QString(tool->name()).remove(QLatin1Char('&')) : QString());
+    const QString help = tool ? help::toolText(tool->id()) : QString();
+    help_->setText(help.isEmpty() ? help
+                                  : help + tr("\n\n[All keyboard shortcuts](shortcuts) (Help > Keyboard Shortcuts)"));
     QFormLayout* f = form_layout_;
+    f->setRowVisible(helpToggle_, !help.isEmpty());
+    f->setRowVisible(help_, !help.isEmpty() && helpToggle_->isChecked());
+    helpToggle_->setArrowType(helpToggle_->isChecked() ? Qt::DownArrow : Qt::RightArrow);
     f->setRowVisible(none_, !o);
     f->setRowVisible(glyph_, o.testFlag(O::Glyph));
     f->setRowVisible(size_, o.testFlag(O::Size));
@@ -468,6 +497,12 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(symmetry_, o.testFlag(O::Symmetry));
     f->setRowVisible(folds_, o.testFlag(O::Symmetry));
     f->setRowVisible(f->rowCount() - 1, o.testFlag(O::Symmetry));  // the radial centre
+}
+
+void ToolOptions::showHelp(bool shown) {
+    form_layout_->setRowVisible(help_, shown && !help_->text().isEmpty());
+    helpToggle_->setArrowType(shown ? Qt::DownArrow : Qt::RightArrow);
+    appSettings()->setValue(kShowHelpKey, shown);
 }
 
 void ToolOptions::fitCentre() {
