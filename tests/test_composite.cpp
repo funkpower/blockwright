@@ -946,3 +946,21 @@ TEST_CASE("compositing 160x100 with 8 layers, and a dirty rect, is interactive",
     CHECK(full < 50.0);
     CHECK(dab < 1.0);
 }
+
+TEST_CASE("the composite keeps a dithered cell's mark only where the cell comes through whole", "[composite][dither]") {
+    // #160: the mark says the gradient's dither laid the cell, so a cell a
+    // chars-only or colours-only layer half remakes is not the dither's
+    Cell d = cell(kShadeMedium, Grey, Black);
+    d.dithered = true;
+    const Layer dithered = filledLayer(LayerKind::Cells, 1, 1, d);
+    CHECK(composite(stackOf(1, 1, {dithered})).at(0, 0).dithered);
+    Layer over = filledLayer(LayerKind::Cells, 1, 1, cell(kShadeDark, Grey, Black));
+    over.props.mode = LayerMode::CharsOnly;
+    CHECK_FALSE(composite(stackOf(1, 1, {dithered, over})).at(0, 0).dithered);
+    over.props.mode = LayerMode::ColoursOnly;
+    CHECK_FALSE(composite(stackOf(1, 1, {dithered, over})).at(0, 0).dithered);
+    // and a dithered layer over a plain one brings its mark
+    CHECK(composite(stackOf(1, 1, {filledLayer(LayerKind::Cells, 1, 1, cell(U'x', Red, Black)), dithered}))
+              .at(0, 0)
+              .dithered);
+}

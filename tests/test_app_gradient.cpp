@@ -1,12 +1,14 @@
-// The ramp gradient tool in the main window (PLAN §10, issue #92): in the
-// Tools menu and the toolbox with its key, its settings in Tool Options and
-// kept between runs, and linear and radial drags through the window system,
+// The ramp gradient tool in the main window (PLAN §10, issues #92, #160): in
+// the Tools menu and the toolbox with its key, its settings in Tool Options
+// and kept between runs, and linear, radial and dithered drags through the
+// window system,
 // previewed as they go and landing as one undo step inside the selection and
 // the alpha lock, ladder-lint clean.
 
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
+#include "lint_dock.h"
 #include "main_window.h"
 #include "tool.h"
 #include "tool_options.h"
@@ -202,6 +204,92 @@ TEST_CASE("a linear gradient drag fills the canvas along the ramp as the core do
     CHECK(w.document()->undoStack()->count() == 1);
     w.document()->undoStack()->undo();
     CHECK(sameCells(w.document()->canvas(), Canvas(kW, kH)));
+}
+
+namespace {
+
+std::vector<std::pair<int, int>> dithered(const Canvas& c) {
+    std::vector<std::pair<int, int>> at;
+    for (int y = 0; y < c.height(); ++y)
+        for (int x = 0; x < c.width(); ++x)
+            if (c.at(x, y).dithered)
+                at.emplace_back(x, y);
+    return at;
+}
+
+bool identicalCells(const Canvas& a, const Canvas& b) {
+    if (a.width() != b.width() || a.height() != b.height())
+        return false;
+    for (int y = 0; y < a.height(); ++y)
+        for (int x = 0; x < a.width(); ++x)
+            if (!identical(a.at(x, y), b.at(x, y)))
+                return false;
+    return true;
+}
+
+size_t specks(const lint::LintReport& r) {
+    return size_t(std::count_if(r.findings.begin(), r.findings.end(), [](const lint::Finding& f) {
+        return f.kind == lint::Finding::Kind::Speckle;
+    }));
+}
+
+} // namespace
+
+TEST_CASE("a Bayer gradient drag lands the core's dither with its marks, through undo and redo, and the lint sees no speck in it",
+          "[gradient][lint]") {
+    FreshGradientSettings fresh;
+    MainWindow w;
+    blank(w);
+    CanvasView* v = w.canvasView();
+    Document* doc = w.document();
+    GradientTool* t = useGradient(w);
+    t->setBanding(GradientBanding::Bayer);
+    const Ramp ramp = v->ramp();
+    const QPoint from(2, 4), to(37, 4);
+    drag(v, from, to);
+
+    Gradient g;
+    g.banding = GradientBanding::Bayer;
+    g.toRung = ramp.topRung();
+    g.x0 = from.x(), g.y0 = from.y(), g.x1 = to.x(), g.y1 = to.y();
+    StrokeOptions options;
+    options.ice = doc->ansi().ice;
+    const Canvas want = applied(Canvas(kW, kH), rampGradient(Canvas(kW, kH), ramp, g, options));
+    CHECK(identicalCells(doc->canvas(), want));
+    const std::vector<std::pair<int, int>> marks = dithered(doc->canvas());
+    REQUIRE(marks.size() > 20);
+    CHECK(dithered(doc->layerCanvas()) == marks);
+
+    // the Lint dock's lint finds no speck; read without the marks, the
+    // same cells are specks
+    const lint::LintReport report = dockLint(doc->canvas(), doc->ansi().ice);
+    CHECK(specks(report) == 0);
+    Canvas unmarked = doc->canvas();
+    for (const auto& [x, y] : marks)
+        unmarked.at(x, y).dithered = false;
+    CHECK(specks(dockLint(unmarked, doc->ansi().ice)) > 0);
+
+    // one undo step: undo takes the dither and its marks, redo brings both
+    REQUIRE(doc->undoStack()->count() == 1);
+    doc->undoStack()->undo();
+    CHECK(identicalCells(doc->canvas(), Canvas(kW, kH)));
+    CHECK(dithered(doc->layerCanvas()).empty());
+    doc->undoStack()->redo();
+    CHECK(identicalCells(doc->canvas(), want));
+    CHECK(dithered(doc->layerCanvas()) == marks);
+
+    // a cell drawn over a dithered one: a new look drops its mark, the same
+    // look keeps it
+    const auto [mx, my] = marks.front();
+    const Cell was = doc->layerCanvas().at(mx, my);
+    Cell same = was;
+    same.dithered = false;
+    REQUIRE(doc->edit(CellEdit{{CellChange{mx, my, was, rungCell(ramp, *rungOf(ramp, was) - 1)}}}));
+    CHECK_FALSE(doc->layerCanvas().at(mx, my).dithered);
+    doc->undoStack()->undo();
+    CHECK(doc->layerCanvas().at(mx, my).dithered);
+    CHECK_FALSE(doc->edit(CellEdit{{CellChange{mx, my, was, same}}}));  // nothing to do
+    CHECK(doc->layerCanvas().at(mx, my).dithered);
 }
 
 TEST_CASE("a radial gradient drag rings out from the press", "[gradient]") {
@@ -592,14 +680,22 @@ TEST_CASE("Tool Options shows the gradient's shape, rungs on the ramp and bandin
     CHECK(dock->gradientFromBox()->value() == 6);
     CHECK(dock->gradientToBox()->value() == 2);
 
-    // cell-banded only: the Bayer dither waits on the speckle rule
+    // cell-banded or the 4×4 Bayer, both on offer; the dock sets the tool
+    // and follows it
     QComboBox* banding = dock->gradientBandingBox();
     REQUIRE(banding->count() == 2);
-    CHECK(banding->currentIndex() == 0);
+    CHECK(banding->currentData().toInt() == int(GradientBanding::Cells));
     auto* model = qobject_cast<QStandardItemModel*>(banding->model());
     REQUIRE(model);
     CHECK(model->item(0)->isEnabled());
-    CHECK_FALSE(model->item(1)->isEnabled());
+    CHECK(model->item(1)->isEnabled());
+    CHECK_FALSE(banding->itemData(1, Qt::ToolTipRole).toString().isEmpty());
+    banding->setCurrentIndex(banding->findData(int(GradientBanding::Bayer)));
+    CHECK(t->banding() == GradientBanding::Bayer);
+    CHECK(t->status() == QStringLiteral("Ramp sunset, linear, Bayer, rung 6 to 2"));
+    t->setBanding(GradientBanding::Cells);
+    CHECK(banding->currentData().toInt() == int(GradientBanding::Cells));
+    CHECK(t->status() == QStringLiteral("Ramp sunset, linear, rung 6 to 2"));
 }
 
 TEST_CASE("the gradient's shape and rungs are kept between runs", "[gradient][settings]") {
@@ -612,32 +708,39 @@ TEST_CASE("the gradient's shape and rungs are kept between runs", "[gradient][se
         dock->gradientShapeBox()->setCurrentIndex(dock->gradientShapeBox()->findData(int(GradientShape::Radial)));
         dock->gradientFromBox()->setValue(2);
         dock->gradientToBox()->setValue(9);
+        dock->gradientBandingBox()->setCurrentIndex(
+            dock->gradientBandingBox()->findData(int(GradientBanding::Bayer)));
     }
     REQUIRE(bwtest::settingsInScratch(FreshGradientSettings::dir()));
     {
         const auto s = appSettings();
         CHECK(s->value(QStringLiteral("gradient/shape")).toString() == QStringLiteral("radial"));
+        CHECK(s->value(QStringLiteral("gradient/banding")).toString() == QStringLiteral("bayer"));
         CHECK(s->value(QStringLiteral("gradient/from")).toInt() == 2);
         CHECK(s->value(QStringLiteral("gradient/to")).toInt() == 9);
     }
     MainWindow w;
     GradientTool* t = useGradient(w);
     CHECK(t->shape() == GradientShape::Radial);
+    CHECK(t->banding() == GradientBanding::Bayer);
     CHECK(t->fromRung() == 2);
     CHECK(t->toRung() == 9);
     auto* dock = w.findChild<ToolOptions*>();
     REQUIRE(dock);
     CHECK(dock->gradientShapeBox()->currentData().toInt() == int(GradientShape::Radial));
+    CHECK(dock->gradientBandingBox()->currentData().toInt() == int(GradientBanding::Bayer));
     CHECK(dock->gradientFromBox()->value() == 2);
     CHECK(dock->gradientToBox()->value() == 9);
 
     // nonsense in the file reads as the defaults' kind of value
     appSettings()->setValue(QStringLiteral("gradient/shape"), QStringLiteral("spiral"));
+    appSettings()->setValue(QStringLiteral("gradient/banding"), QStringLiteral("plaid"));
     appSettings()->setValue(QStringLiteral("gradient/from"), -4);
     MainWindow again;
     auto* t2 = qobject_cast<GradientTool*>(again.tools()->find(QStringLiteral("gradient")));
     REQUIRE(t2);
     CHECK(t2->shape() == GradientShape::Linear);
+    CHECK(t2->banding() == GradientBanding::Cells);
     CHECK(t2->fromRung() == 0);
 }
 

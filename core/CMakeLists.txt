@@ -52,6 +52,11 @@ add_library(blockwright_core STATIC
 )
 add_library(blockwright::core ALIAS blockwright_core)
 target_include_directories(blockwright_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# Test instrumentation (work counters only tests read) is compiled in only when
+# the tests are built; a BUILD_TESTING=OFF build carries none of it.
+if(BUILD_TESTING)
+  target_compile_definitions(blockwright_core PUBLIC BW_TEST_HOOKS)
+endif()
 # The Library (library.cpp) reads JSON sidecars and finds the app data
 # directory through QtCore, the pipeline (pipeline.cpp) lowercases tags with
 # QString, and projects (project.cpp) read and write their JSON with it, which

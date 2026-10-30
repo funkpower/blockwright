@@ -17,16 +17,20 @@ namespace bw {
 // top rung (a glint), with three or more neighbours on the ladder and
 // lighter than every one of them or darker than every one. It takes the
 // rung most of those neighbours share; on a tie the nearest to its own, and
-// of two as near the darker.
+// of two as near the darker. With `dithered`, whether a cell carries the
+// gradient's dither mark (Cell::dithered), a cell the lint leaves out as the
+// dither (lint::ditherExempt) isn't a speck.
 std::optional<int> speckFix(const Ramp& ramp, int x, int y,
-                            const std::function<std::optional<int>(int, int)>& rungAt);
+                            const std::function<std::optional<int>(int, int)>& rungAt,
+                            const std::function<bool(int, int)>& dithered = {});
 // Every rung a speck could take, its neighbours' rungs in that order (the
 // most shared first, then the nearest, then the darker), past the first
 // leaving out the far end of theirs (the highest for a dark speck, the
 // lowest for a light one) when only one neighbour holds it (it would leave
 // a hole or a spike); empty if it isn't a speck. speckFix is the first.
 std::vector<int> speckFixes(const Ramp& ramp, int x, int y,
-                            const std::function<std::optional<int>(int, int)>& rungAt);
+                            const std::function<std::optional<int>(int, int)>& rungAt,
+                            const std::function<bool(int, int)>& dithered = {});
 
 // Despeckle brush: each speck under it takes the rung of the neighbours
 // round it, copied from the neighbour that has it (below first, then above,
@@ -44,7 +48,8 @@ std::vector<int> speckFixes(const Ramp& ramp, int x, int y,
 // rung makes, a canvas left in one glyph, noise over the limit) gives way
 // to the speck's next rung (speckFixes), and is left undone when every one
 // would. Nothing else changes: cells off the ramp, black, the top rung,
-// and cells that aren't specks are left alone. With iCE colours off a cell is read as it shows (a
+// the gradient's dither (lint::ditherExempt) and cells that aren't specks
+// are left alone. With iCE colours off a cell is read as it shows (a
 // bright background is off the ladder).
 class DespeckleBrush : public Brush {
 public:

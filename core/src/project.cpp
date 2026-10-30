@@ -745,6 +745,37 @@ ReferenceImage referenceFromJson(const QJsonObject& o, const std::string& what, 
     return ref;
 }
 
+// The cells of the gradient's dither (Cell::dithered) as a bitmap, cell i
+// (row by row) bit i % 8 of byte i / 8, or empty when none is marked.
+std::optional<std::string> ditherMarks(const Canvas& cells) {
+    const std::size_t count = std::size_t(cells.width()) * std::size_t(cells.height());
+    std::string bits((count + 7) / 8, '\0');
+    bool any = false;
+    for (std::size_t i = 0; i < count; ++i)
+        if (cells.at(int(i % cells.width()), int(i / cells.width())).dithered) {
+            bits[i / 8] = char(bits[i / 8] | (1 << (i % 8)));
+            any = true;
+        }
+    return any ? std::optional(bits) : std::nullopt;
+}
+
+// Sets the marks a layer's "dither" holds on its cells.
+void readDitherMarks(Canvas& cells, const Reader& r, const std::string& what) {
+    const QByteArray b64 = QByteArray::fromStdString(r.string("dither"));
+    const auto decoded = QByteArray::fromBase64Encoding(b64, QByteArray::AbortOnBase64DecodingErrors);
+    const std::size_t count = std::size_t(cells.width()) * std::size_t(cells.height());
+    if (!decoded || std::size_t(decoded.decoded.size()) != (count + 7) / 8)
+        fail(what + ": \"dither\" is not a bitmap of the layer's " + std::to_string(count) + " cells");
+    const QByteArray& bits = decoded.decoded;
+    for (std::size_t i = 0; i < std::size_t(bits.size()) * 8; ++i) {
+        if (!((static_cast<unsigned char>(bits[qsizetype(i / 8)]) >> (i % 8)) & 1))
+            continue;
+        if (i >= count)
+            fail(what + ": \"dither\" marks a cell past the layer's " + std::to_string(count));
+        cells.at(int(i % cells.width()), int(i / cells.width())).dithered = true;
+    }
+}
+
 QJsonObject layerJson(const Layer& l) {
     const LayerProperties& p = l.props;
     QJsonObject o{
@@ -773,6 +804,8 @@ QJsonObject layerJson(const Layer& l) {
         o["style"] = textStyleJson(*p.style);
     if (p.reference)
         o["reference"] = referenceJson(*p.reference);
+    if (const auto marks = ditherMarks(l.cells))
+        o["dither"] = QString::fromLatin1(QByteArray::fromStdString(*marks).toBase64());
     return o;
 }
 
@@ -849,6 +882,9 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     if (l.width() != w || l.height() != h)
         fail(what + " says " + std::to_string(w) + "x" + std::to_string(h) + ", " + layerPath(id, true) +
              " holds " + std::to_string(l.width()) + "x" + std::to_string(l.height()));
+    // the gradient's dither marks (1.7, 2.3)
+    if (r.has("dither"))
+        readDitherMarks(l.cells, r, what);
     return l;
 }
 
@@ -1691,6 +1727,7 @@ Entries encode(const Project& project) {
     bool bigText = false;  // a live big text source (1.4)
     bool rainbow = false;  // a live Big rainbow source (1.6, 2.2)
     bool referenced = false;  // a reference layer with a picture (1.5, 2.1)
+    bool dithered = false;  // a layer with dither marks (1.7, 2.3)
     std::set<std::string> writtenReferences;
     for (const Layer& l : stack.layers()) {
         order.append(qint64(l.props.id));
@@ -1714,6 +1751,7 @@ Entries encode(const Project& project) {
         if (const auto problem = layerStyleProblem(l.props, {&project.fonts, nullptr}))
             fail(layerPath(l.props.id, false) + ": " + *problem);
         styled = styled || (l.props.style && !l.props.text);
+        dithered = dithered || ditherMarks(l.cells).has_value();
         if (const auto problem = referenceProblem(l.props))
             fail(layerPath(l.props.id, false) + ": " + *problem);
         if (l.props.reference) {
@@ -1732,11 +1770,13 @@ Entries encode(const Project& project) {
     const QJsonObject manifest{
         {"format", "blockwright"},
         {"version", qstr(styled ? std::to_string(kStyledFormatMajor) + "." +
-                                      std::to_string(rainbow      ? kRainbowStyledFormatMinor
+                                      std::to_string(dithered     ? kDitherStyledFormatMinor
+                                                     : rainbow    ? kRainbowStyledFormatMinor
                                                      : referenced ? kReferenceStyledFormatMinor
                                                                   : kStyledFormatMinor)
                                 : std::to_string(kFormatMajor) + "." +
-                                      std::to_string(rainbow      ? kRainbowFormatMinor
+                                      std::to_string(dithered     ? kDitherFormatMinor
+                                                     : rainbow    ? kRainbowFormatMinor
                                                      : referenced ? kReferenceFormatMinor
                                                      : bigText  ? kBigTextFormatMinor
                                                                 : kFormatMinor))},

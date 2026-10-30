@@ -262,7 +262,16 @@ public:
                 letters.push_back(std::move(*l));
         for (Layer& l : letters)
             stack.add(std::move(l));
-        return composite(stack, CompositeOptions{ice_, transparentCell()});
+        Canvas out = composite(stack, CompositeOptions{ice_, transparentCell()});
+        // whatever effect drew it (a flat or ramp fill, shade, bevel), a
+        // cell keeps its source cell's dither mark only while it looks as
+        // that cell did; any other cell has none
+        for (int y = 0; y < h_; ++y)
+            for (int x = 0; x < w_; ++x) {
+                Cell& c = out.at(x, y);
+                c.dithered = c.dithered && source(x, y) && keepDitherMark(sourceCell(x, y), c).dithered;
+            }
+        return out;
     }
 
 private:

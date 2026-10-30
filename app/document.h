@@ -358,10 +358,11 @@ public:
     // Pushes `edit`, built on layerCanvas(), as one undo command on the
     // active layer, which applies it now. Undo reverts it and emits
     // cursorRequested(before); redo applies it again and emits
-    // cursorRequested(after). The edit's lost-blink marks are settled first
-    // (settleLostBlink): a drawn cell keeps the mark of the cell it is drawn
-    // over only when the save writes the two alike, and a moved or copied
-    // cell keeps its own. Then it is fitted to the layer (fitLayerEdit):
+    // cursorRequested(after). The edit's lost-blink and dither marks are
+    // settled first (settleMarks): a drawn cell keeps the lost-blink mark of
+    // the cell it is drawn over only when the save writes the two alike and
+    // its dither mark only when the two look the same, and a moved or copied
+    // cell (and the ramp gradient's dither) keeps its own. Then it is fitted to the layer (fitLayerEdit):
     // transparent cells stored plain, a half pixel pasted onto a cells
     // layer put over what shows below it (shownBelow), a pixel layer's
     // cells as pixels, and under the alpha lock no cell cleared or made

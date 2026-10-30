@@ -518,6 +518,7 @@ int longestTopRung() {
 }
 
 const QString kGradientShapeKey = QStringLiteral("gradient/shape");
+const QString kGradientBandingKey = QStringLiteral("gradient/banding");
 const QString kGradientFromKey = QStringLiteral("gradient/from");
 const QString kGradientToKey = QStringLiteral("gradient/to");
 
@@ -528,6 +529,8 @@ GradientTool::GradientTool(QObject* parent)
     const auto s = appSettings();
     if (s->value(kGradientShapeKey).toString() == QLatin1String("radial"))
         shape_ = GradientShape::Radial;
+    if (s->value(kGradientBandingKey).toString() == QLatin1String("bayer"))
+        banding_ = GradientBanding::Bayer;
     from_ = std::max(0, s->value(kGradientFromKey, from_).toInt());
     to_ = std::max(0, s->value(kGradientToKey, to_).toInt());
 }
@@ -536,6 +539,8 @@ void GradientTool::save() const {
     const auto s = appSettings();
     s->setValue(kGradientShapeKey,
                 shape_ == GradientShape::Radial ? QStringLiteral("radial") : QStringLiteral("linear"));
+    s->setValue(kGradientBandingKey,
+                banding_ == GradientBanding::Bayer ? QStringLiteral("bayer") : QStringLiteral("cells"));
     s->setValue(kGradientFromKey, from_);
     s->setValue(kGradientToKey, to_);
 }
@@ -544,6 +549,15 @@ void GradientTool::setShape(GradientShape shape) {
     if (shape == shape_)
         return;
     shape_ = shape;
+    save();
+    settingsChanged();
+    emit changed();
+}
+
+void GradientTool::setBanding(GradientBanding banding) {
+    if (banding == banding_)
+        return;
+    banding_ = banding;
     save();
     settingsChanged();
     emit changed();
@@ -568,9 +582,10 @@ QString GradientTool::status() const {
         return pixelRefusal();
     const Ramp& ramp = view()->ramp();
     const int top = ramp.topRung();
-    QString s = tr("Ramp %1, %2, rung %3 to %4")
+    QString s = tr("Ramp %1, %2%3, rung %4 to %5")
                     .arg(QString::fromStdString(ramp.name),
-                         shape_ == GradientShape::Radial ? tr("radial") : tr("linear"))
+                         shape_ == GradientShape::Radial ? tr("radial") : tr("linear"),
+                         banding_ == GradientBanding::Bayer ? tr(", Bayer") : QString())
                     .arg(std::min(from_, top))
                     .arg(std::min(to_, top));
     if (!added_.empty())
@@ -594,6 +609,7 @@ bool GradientTool::extend(const ToolEvent& e) {
 CellEdit GradientTool::edit() const {
     Gradient g;
     g.shape = shape_;
+    g.banding = banding_;
     g.x0 = start_.x();
     g.y0 = start_.y();
     g.x1 = end_.x();

@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <functional>
+#include <map>
 
 namespace bw {
 
@@ -418,11 +420,135 @@ private:
 
 } // namespace
 
+namespace {
+
+// The Bayer banding's cells on the cell-banded fill written over `canvas`
+// (`fill` the cell it gives each painted cell), each with the rung it takes
+// across a band edge, as rampGradient's comment has it, judged by the lint
+// against that fill. The fill is written out and the lint's index built only
+// when some cell is a candidate: a drag that dithers nothing costs the
+// window's cells, not the canvas's.
+std::map<std::pair<int, int>, int> ditherCells(const Canvas& canvas, const std::function<Cell(int, int)>& fill,
+                                             const Ramp& ramp, const CellRect& win, bool ice,
+                                             const std::function<bool(int, int)>& paints) {
+    const auto rungAt = [&](const Canvas& c, int x, int y) {
+        return c.contains(x, y) ? rungOf(ramp, c.at(x, y)).value_or(-1) : -1;
+    };
+    // a painted cell's rung on the fill
+    const auto filledRung = [&](int x, int y) { return rungOf(ramp, fill(x, y)).value_or(-1); };
+    const auto writable = [&](int r) { return ice || writableWithoutIce(ramp, r); };
+    std::map<std::pair<int, int>, int> to;  // (x, y) -> the rung the dither gives it
+    visitCount += static_cast<long long>(win.width) * win.height;
+    for (int y = win.y; y < win.y + win.height; ++y)
+        for (int x = win.x; x < win.x + win.width; ++x) {
+            if (!paints(x, y))
+                continue;
+            const int g = filledRung(x, y), order = kBayer4[y % 4][x % 4];
+            if (g < 0 || blackRung(ramp, g))
+                continue;
+            int best = 0, target = -1;
+            for (const auto& s : kSteps) {
+                if (g % kRungsPerStep != 0) {
+                    // a shade beside a plateau: the plateau's rung
+                    const int nx = x + s[0], ny = y + s[1];
+                    const int o = paints(nx, ny) ? filledRung(nx, ny) : -1;
+                    if (o >= 0 && o % kRungsPerStep == 0 && std::abs(o - g) == 1 && !blackRung(ramp, o) &&
+                        order < kDitherBand)
+                        target = o;
+                    continue;
+                }
+                // a plateau's cell one or two off its edge: the next rung's
+                for (int d = 1; d <= 2; ++d) {
+                    const int nx = x + d * s[0], ny = y + d * s[1];
+                    const int o = paints(nx, ny) ? filledRung(nx, ny) : -1;
+                    if (o == g)
+                        continue;
+                    if (o >= 0 && std::abs(o - g) == 1 && !blackRung(ramp, o) && (best == 0 || d < best) &&
+                        order < (d == 1 ? kDitherNear : kDitherFar))
+                        best = d, target = o;
+                    break;
+                }
+            }
+            if (target >= 0 && writable(target))
+                to[{x, y}] = target;
+        }
+    if (to.empty())
+        return to;
+    Canvas filled = canvas;
+    for (int y = win.y; y < win.y + win.height; ++y)
+        for (int x = win.x; x < win.x + win.width; ++x)
+            if (paints(x, y))
+                filled.at(x, y) = fill(x, y);
+    Canvas after = filled;
+    for (const auto& [at, r] : to) {
+        Cell c = rungCell(ramp, r);
+        c.dithered = true;
+        after.at(at.first, at.second) = c;
+    }
+    const auto back = [&](const std::pair<int, int>& at) {
+        after.at(at.first, at.second) = filled.at(at.first, at.second);
+        to.erase(at);
+    };
+    // no skip: every neighbour on the ladder one rung off
+    for (bool again = true; again;) {
+        again = false;
+        for (auto it = to.begin(); it != to.end();) {
+            const auto [x, y] = it->first;
+            const int g = it->second;
+            ++it;
+            for (const auto& s : kSteps)
+                if (const int o = rungAt(after, x + s[0], y + s[1]); o >= 0 && std::abs(o - g) > 1) {
+                    back({x, y});
+                    again = true;
+                    break;
+                }
+        }
+    }
+    std::vector<std::pair<int, int>> changed;
+    for (const auto& [at, r] : to)
+        changed.push_back(at);
+    StrokeLint guard(filled, ramp);
+    while (!to.empty()) {
+        const std::vector<lint::LadderFinding> found = guard.judge(after, changed);
+        if (found.empty())
+            break;
+        const size_t was = to.size();
+        for (const lint::LadderFinding& f : found) {
+            const bool whole = f.kind == lint::LadderFinding::Kind::OneGlyph || f.kind == lint::LadderFinding::Kind::Noise;
+            const int x0 = std::min(f.x, f.nx) - 1, x1 = std::max(f.x, f.nx) + 1;
+            const int y0 = std::min(f.y, f.ny) - 1, y1 = std::max(f.y, f.ny) + 1;
+            for (auto it = to.begin(); it != to.end();) {
+                const auto at = it->first;
+                ++it;
+                if (whole || (at.first >= x0 && at.first <= x1 && at.second >= y0 && at.second <= y1))
+                    back(at);
+            }
+        }
+        // a finding no dithered cell is near: send them all back
+        if (to.size() == was)
+            while (!to.empty())
+                back(to.begin()->first);
+    }
+    return to;
+}
+
+} // namespace
+
 std::vector<int> gradientRungs(const Ramp& ramp, const Gradient& g, int width, int height, bool ice) {
     Fill fill(ramp, g, width, height, ice, CellRect{0, 0, width, height});
     if (fill.empty())
         return {};
-    return fill.rungs([](int, int) { return true; }, [](int, int) { return -1; });
+    std::vector<int> rungs = fill.rungs([](int, int) { return true; }, [](int, int) { return -1; });
+    if (g.banding == GradientBanding::Bayer) {
+        Canvas canvas(width, height);
+        StrokeOptions options;
+        options.ice = ice;
+        rampGradient(canvas, ramp, g, options).apply(canvas);
+        for (int y = 0; y < height; ++y)
+            for (int x = 0; x < width; ++x)
+                rungs[static_cast<size_t>(y) * width + x] = rungOf(ramp, canvas.at(x, y)).value_or(-1);
+    }
+    return rungs;
 }
 
 CellEdit rampGradient(const Canvas& canvas, const Ramp& ramp, const Gradient& g, const StrokeOptions& options,
@@ -446,6 +572,15 @@ CellEdit rampGradient(const Canvas& canvas, const Ramp& ramp, const Gradient& g,
         return r ? *r : -1;
     };
     const std::vector<int> rungs = fill.rungs(paints, outside);
+    const auto cellAt = [&](int x, int y) {
+        return rungCell(ramp, rungs[static_cast<size_t>(y - win.y) * win.width + (x - win.x)]);
+    };
+    // the Bayer banding's cells, judged on the cell-banded fill
+    std::map<std::pair<int, int>, int> dithered;
+    if (g.banding == GradientBanding::Bayer) {
+        dithered = ditherCells(canvas, cellAt, ramp, win, options.ice, paints);
+        edit.dithers = true;
+    }
     std::vector<std::pair<int, int>> changed;
     visitCount += static_cast<long long>(win.width) * win.height;
     for (int y = win.y; y < win.y + win.height; ++y) {
@@ -453,8 +588,12 @@ CellEdit rampGradient(const Canvas& canvas, const Ramp& ramp, const Gradient& g,
             if (!paints(x, y))
                 continue;
             const Cell& before = canvas.at(x, y);
-            const Cell after = rungCell(ramp, rungs[static_cast<size_t>(y - win.y) * win.width + (x - win.x)]);
-            if (after != before) {
+            Cell after = cellAt(x, y);
+            if (const auto d = dithered.find({x, y}); d != dithered.end()) {
+                after = rungCell(ramp, d->second);
+                after.dithered = true;
+            }
+            if (edit.dithers ? !identical(after, before) : after != before) {
                 edit.changes.push_back({x, y, before, after});
                 changed.push_back({x, y});
             }

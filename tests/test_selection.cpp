@@ -3,6 +3,7 @@
 #include "blockwright/selection.h"
 
 #include "blockwright/cp437.h"
+#include "blockwright/layer.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -573,5 +574,24 @@ TEST_CASE("the lost-blink mark goes with its cell through flips, rotations, move
         CellBlock fresh(1, 1);
         fresh.at(0, 0) = glyph(U'Z', Grey, Blue);
         CHECK(marks(applied(cv, pasteBlock(cv, fresh, 0, 0, PasteMode::Normal))).empty());
+    }
+}
+
+// A pasted half pixel is drawn over the cell under it: where that changes the
+// cell's look, the cell drops the gradient's dither mark (Cell::dithered).
+TEST_CASE("a half pixel pasted over a dithered cell drops its mark", "[dither]") {
+    Canvas cv(1, 1);
+    Cell marked{U'\u2591', Color::indexed(Grey), Color::indexed(DarkGrey), 0, false};
+    marked.dithered = true;
+    cv.at(0, 0) = marked;
+    CellBlock b(1, 1);
+    b.pixelLayer = true;
+    b.at(0, 0) = pixelLayerCell({std::uint8_t(Red), std::nullopt});
+    for (const bool pixelLayer : {false, true}) {
+        INFO("onto a pixel layer: " << pixelLayer);
+        const CellEdit e = pasteBlock(cv, b, 0, 0, PasteMode::Normal, PastePixels{pixelLayer, true});
+        REQUIRE(e.changes.size() == 1);
+        CHECK_FALSE(e.changes[0].after == marked);
+        CHECK_FALSE(e.changes[0].after.dithered);
     }
 }

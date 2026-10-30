@@ -1,8 +1,11 @@
 // Keyboard editing commands: cursor movement, typing, Backspace/Delete, and
 // cell deltas applied and reverted.
 
+#include "blockwright/brush.h"
+#include "blockwright/brushes/despeckle.h"
 #include "blockwright/edit.h"
 #include "blockwright/glyph_sets.h"
+#include "blockwright/ramp.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -334,4 +337,57 @@ TEST_CASE("the F-key glyph sets are Moebius's, and every glyph is typeable") {
             INFO("set " << s + 1 << " F" << k + 1);
             CHECK(isTypeable(glyphSetGlyph(s, k)));
         }
+}
+
+TEST_CASE("a drawn edit keeps the dither mark only on a cell it leaves looking the same", "[dither]") {
+    // #160: the gradient's dither marks (Cell::dithered) are settled per
+    // edit as the lost-blink marks are
+    Cell plain{U'▒', Color::indexed(7), Color::indexed(8), 0, false};
+    Cell marked = plain;
+    marked.dithered = true;
+    const Cell other{U'█', Color::indexed(7), Color::indexed(0), 0, false};
+
+    SECTION("a new look drops it") {
+        const CellEdit e = settleMarks(CellEdit{{{0, 0, marked, other}}});
+        CHECK_FALSE(e.changes[0].after.dithered);
+    }
+    SECTION("the same look keeps it, so there is nothing to do") {
+        const CellEdit e = settleMarks(CellEdit{{{0, 0, marked, plain}}});
+        CHECK(e.changes[0].after.dithered);
+        CHECK(identical(e.changes[0].after, e.changes[0].before));
+    }
+    SECTION("a drawn cell takes no mark from its tool") {
+        const CellEdit e = settleMarks(CellEdit{{{0, 0, plain, marked}}});
+        CHECK_FALSE(e.changes[0].after.dithered);
+    }
+    SECTION("the gradient's own edit keeps its marks and drops the ones it writes over") {
+        CellEdit gradient{{{0, 0, plain, marked}, {1, 0, marked, plain}}};
+        gradient.dithers = true;
+        const CellEdit e = settleMarks(gradient);
+        CHECK(e.dithers);
+        CHECK(e.changes[0].after.dithered);
+        CHECK_FALSE(e.changes[1].after.dithered);
+    }
+    SECTION("a move carries them as they are") {
+        CellEdit move{{{0, 0, plain, marked}, {1, 0, marked, other}}};
+        move.moves = true;
+        const CellEdit e = settleMarks(move);
+        CHECK(e.changes[0].after.dithered);
+        CHECK_FALSE(e.changes[1].after.dithered);
+    }
+    SECTION("a brush stroke over the cell: the same look keeps it, a new one drops it") {
+        Canvas c(2, 1);
+        c.at(0, 0) = marked;
+        c.at(1, 0) = marked;
+        const DespeckleBrush brush(*findRamp("steel"));
+        Stroke s(c, brush, BrushSettings{});
+        CHECK(s.set(0, 0, plain));
+        CHECK(s.set(1, 0, other));
+        const Canvas out = s.preview();
+        CHECK(out.at(0, 0).dithered);
+        CHECK_FALSE(out.at(1, 0).dithered);
+        const CellEdit e = s.edit();
+        REQUIRE(e.changes.size() == 1);
+        CHECK(e.changes[0].x == 1);
+    }
 }

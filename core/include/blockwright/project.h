@@ -95,6 +95,12 @@ inline constexpr int kReferenceStyledFormatMinor = 1;
 // when styled as well. Each implies the minors before it.
 inline constexpr int kRainbowFormatMinor = 6;
 inline constexpr int kRainbowStyledFormatMinor = 2;
+// A layer with cells of the ramp gradient's dither (the layer's "dither",
+// Cell::dithered): 1.7, or 2.3 when styled as well. Each implies the minors
+// before it. An older reader drops the marks, so the lint calls those cells
+// specks again.
+inline constexpr int kDitherFormatMinor = 7;
+inline constexpr int kDitherStyledFormatMinor = 3;
 
 // Limits a reader holds a file to, and a writer checks before it writes
 // anything: no more than kMaxEntries entries, none over kMaxEntryBytes, all

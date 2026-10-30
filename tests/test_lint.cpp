@@ -3,6 +3,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
+#include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/lint.h"
 #include "util.h"
@@ -2152,4 +2153,91 @@ TEST_CASE("an index's wide rungs along a line are checkLadder's on that line", "
     }
     INFO(lines << " lines, " << found << " wide rungs");
     CHECK(found > 200);
+}
+
+// ---- the gradient's dither (#160) ------------------------------------------
+
+namespace {
+
+// The steel ramp's whole ladder across 60 columns, Bayer-dithered.
+Canvas ditheredFill() {
+    const Ramp r = steel();
+    const Canvas blank(60, 8);
+    Gradient g;
+    g.x1 = 59, g.toRung = r.topRung(), g.banding = GradientBanding::Bayer;
+    Canvas c = blank;
+    rampGradient(blank, r, g, StrokeOptions{}).apply(c);
+    return c;
+}
+
+bool speckAt(const std::vector<lint::LadderFinding>& found, int x, int y) {
+    return std::any_of(found.begin(), found.end(),
+                       [&](const lint::LadderFinding& f) { return f.kind == Kind::Speckle && f.x == x && f.y == y; });
+}
+
+} // namespace
+
+TEST_CASE("a dithered cell is exempt only while every ladder neighbour is a rung from it", "[lint][ladder][dither]") {
+    CHECK(lint::ditherExempt(true, 5, {4, 4, 4, 4}));
+    CHECK(lint::ditherExempt(true, 5, {4, 6, -1, 4}));  // off the ladder or the canvas doesn't count
+    CHECK(lint::ditherExempt(true, 5, {-1, -1, -1, -1}));
+    CHECK_FALSE(lint::ditherExempt(false, 5, {4, 4, 4, 4}));  // no mark: a speck like any other
+    CHECK_FALSE(lint::ditherExempt(true, 5, {4, 4, 4, 3}));   // a neighbour two off
+    CHECK_FALSE(lint::ditherExempt(true, 5, {4, 4, 5, 4}));   // one of its own rung
+    CHECK_FALSE(lint::ditherExempt(true, -1, {4, 4, 4, 4}));
+}
+
+TEST_CASE("the speckle rule leaves the gradient's dither alone and still finds a lone speck in it or beside it",
+          "[lint][ladder][dither]") {
+    const Ramp r = steel();
+    const Canvas c = ditheredFill();
+    REQUIRE(lint::checkLadder(c, r).clean());
+
+    // the same cells without their marks: the dither's cells are specks,
+    // and only they are
+    Canvas bare = c;
+    std::vector<std::pair<int, int>> marked;
+    for (int y = 0; y < c.height(); ++y)
+        for (int x = 0; x < c.width(); ++x)
+            if (c.at(x, y).dithered) {
+                marked.emplace_back(x, y);
+                bare.at(x, y).dithered = false;
+            }
+    const lint::LadderReport bareReport = lint::checkLadder(bare, r);
+    CHECK(count(bareReport, Kind::Speckle) > 0);
+    for (const auto& f : bareReport.findings)
+        if (f.kind == Kind::Speckle)
+            CHECK(std::find(marked.begin(), marked.end(), std::pair{f.x, f.y}) != marked.end());
+
+    // a lone cell by hand in the middle of a plateau, and one beside two
+    // dithered cells: both specks, the dither still none
+    REQUIRE(c.at(16, 0).dithered);
+    REQUIRE(c.at(17, 1).dithered);
+    REQUIRE_FALSE(c.at(17, 0).dithered);
+    REQUIRE(rungOf(r, c.at(38, 1)) == 8);
+    Canvas after = c;
+    after.at(38, 1) = rungCell(r, 9);
+    after.at(17, 0) = rungCell(r, 5);
+    const lint::LadderReport report = lint::checkLadder(after, r);
+    CHECK(speckAt(report.findings, 38, 1));
+    CHECK(speckAt(report.findings, 17, 0));
+    CHECK(count(report, Kind::Speckle) == 2);
+
+    // the incremental index agrees, and says what the edit adds
+    lint::LadderIndex index(c, r);
+    CHECK(index.findings().empty());
+    const std::vector<lint::LadderFinding> added = index.apply(after, {{38, 1}, {17, 0}});
+    CHECK(speckAt(added, 38, 1));
+    CHECK(speckAt(added, 17, 0));
+    CHECK(index.findings() == report.findings);
+
+    // a dithered cell drawn over in its own look but unmarked (a copy by
+    // hand of the dither) is a speck again
+    const auto [mx, my] = marked.front();
+    Canvas copied = c;
+    copied.at(mx, my).dithered = false;
+    lint::LadderIndex again(c, r);
+    const bool wasSpeck = speckAt(bareReport.findings, mx, my);
+    CHECK(speckAt(again.apply(copied, {{mx, my}}), mx, my) == wasSpeck);
+    CHECK(again.findings() == lint::checkLadder(copied, r).findings);
 }

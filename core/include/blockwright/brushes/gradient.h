@@ -1,7 +1,7 @@
 #pragma once
 // Ramp gradient (PLAN §10, "Shading"): a linear or radial fill along a
-// ramp's ladder, cell-banded. A 4×4 Bayer dither is speckle to the ladder
-// lint, so it waits on that conflict (PLAN §10, the speckle rule).
+// ramp's ladder, cell-banded or with a 4×4 Bayer dither along its band
+// edges, which the speck rule leaves out (lint::ditherExempt).
 
 #include "blockwright/brush.h"
 #include "blockwright/edit.h"
@@ -13,6 +13,9 @@
 namespace bw {
 
 enum class GradientShape { Linear, Radial };
+// How the rungs blend: each a band of whole cells, or the same bands with
+// their edges mixed in a 4×4 Bayer order (kBayer4).
+enum class GradientBanding { Cells, Bayer };
 
 struct Gradient {
     GradientShape shape = GradientShape::Linear;
@@ -23,7 +26,18 @@ struct Gradient {
     // The rungs at the start and at the end, either way round, clamped to
     // the ramp.
     int fromRung = 0, toRung = 0;
+    GradientBanding banding = GradientBanding::Cells;
 };
+
+// The 4×4 Bayer order: cell (x, y) of the canvas takes kBayer4[y % 4][x % 4].
+inline constexpr int kBayer4[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+// Where a solid rung's plateau meets a neighbouring rung, the Bayer banding
+// gives the plateau's cell next to it the neighbour's rung where its order is
+// below kDitherNear, the cell beyond that where it is below kDitherFar, and
+// the neighbour's cell next to the plateau the plateau's rung where its order
+// is below kDitherBand: across the edge the neighbour's share runs 2, 6, 12
+// and 16 sixteenths.
+inline constexpr int kDitherFar = 2, kDitherNear = 6, kDitherBand = 4;
 
 // Each ░▒▓ rung of a gradient is this many columns wide along it (a row
 // counting as two): two cells across a row, a row down a column.
@@ -50,7 +64,8 @@ inline constexpr double kGradientBand = 2.0;
 // one more rung goes on past the end, or else before the start. A cell left
 // a speck (all four neighbours on one side of it, the first ring of a radial
 // gradient centred a column off the canvas) takes its nearest neighbour's
-// rung. The ends may be anywhere an int reaches.
+// rung. The ends may be anywhere an int reaches. With the Bayer banding the
+// band edges are dithered as rampGradient dithers them.
 std::vector<int> gradientRungs(const Ramp& ramp, const Gradient& g, int width, int height, bool ice = true);
 
 // The gradient over every cell the options let a stroke paint (the
@@ -72,7 +87,24 @@ std::vector<int> gradientRungs(const Ramp& ramp, const Gradient& g, int width, i
 // the edge cuts, a linear one at an angle to it) can join the climb's run of
 // the same rung in an L that the lint reads as a wide rung: rare in a small
 // box, common along a long edge. A linear fill square to the edges makes
-// none. With `added`, it is set to what the edit adds to the lint's findings
+// none.
+//
+// With the Bayer banding the cell-banded fill's band edges are then mixed:
+// where a painted cell of a solid rung (not black) has a painted cell of the
+// next rung up or down one or two cells off along its row or column (only
+// its own rung between), it takes that rung where its Bayer order is below
+// kDitherNear (one off) or kDitherFar (two off), and a painted shade cell
+// beside a solid rung's cell (not black) takes the solid where it is below
+// kDitherBand. A cell keeps its new rung only where every neighbour it has on
+// the ladder is one rung from it (no skip), it can be written (iCE off), and
+// the ladder lint finds nothing the cell-banded fill didn't have but the
+// dither's own specks (StrokeLint, the dither marked): a finding sends back
+// every dithered cell within a cell of it, until none is left. The dithered
+// cells carry the dither mark (Cell::dithered), every other cell the fill
+// writes none, and the edit is CellEdit::dithers. So a dithered fill shows
+// the lint no specks but those of its dither (lint::ditherExempt).
+//
+// With `added`, it is set to what the edit adds to the lint's findings
 // on the canvas (StrokeLint's judgement), empty when clean.
 CellEdit rampGradient(const Canvas& canvas, const Ramp& ramp, const Gradient& g, const StrokeOptions& options = {},
                       std::vector<lint::LadderFinding>* added = nullptr);

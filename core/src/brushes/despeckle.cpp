@@ -1,6 +1,7 @@
 #include "blockwright/brushes/despeckle.h"
 
 #include "blockwright/brushes/guard.h"
+#include "blockwright/lint.h"
 
 #include "blockwright/ansi.h"
 #include "blockwright/palette.h"
@@ -24,7 +25,8 @@ constexpr int kNeighbours[4][2] = {{0, 1}, {0, -1}, {-1, 0}, {1, 0}};
 } // namespace
 
 std::vector<int> speckFixes(const Ramp& ramp, int x, int y,
-                            const std::function<std::optional<int>(int, int)>& rungAt) {
+                            const std::function<std::optional<int>(int, int)>& rungAt,
+                            const std::function<bool(int, int)>& dithered) {
     const auto own = rungAt(x, y);
     if (!own || *own == ramp.topRung())
         return {};
@@ -33,8 +35,11 @@ std::vector<int> speckFixes(const Ramp& ramp, int x, int y,
         return {};
     int seen = 0, above = 0, below = 0;
     std::map<int, int> votes;
-    for (const auto& d : kNeighbours) {
+    int nb[4];
+    for (int i = 0; i < 4; ++i) {
+        const auto& d = kNeighbours[i];
         const auto n = rungAt(x + d[0], y + d[1]);
+        nb[i] = n.value_or(-1);
         if (!n)
             continue;
         ++seen;
@@ -42,7 +47,7 @@ std::vector<int> speckFixes(const Ramp& ramp, int x, int y,
         below += *n < g;
         ++votes[*n];
     }
-    if (seen < 3 || (above != seen && below != seen))
+    if (seen < 3 || (above != seen && below != seen) || (dithered && lint::ditherExempt(dithered(x, y), g, nb)))
         return {};
     std::vector<int> out;
     for (const auto& [rung, count] : votes)
@@ -65,8 +70,9 @@ std::vector<int> speckFixes(const Ramp& ramp, int x, int y,
 }
 
 std::optional<int> speckFix(const Ramp& ramp, int x, int y,
-                            const std::function<std::optional<int>(int, int)>& rungAt) {
-    const auto all = speckFixes(ramp, x, y, rungAt);
+                            const std::function<std::optional<int>(int, int)>& rungAt,
+                            const std::function<bool(int, int)>& dithered) {
+    const auto all = speckFixes(ramp, x, y, rungAt, dithered);
     if (all.empty())
         return std::nullopt;
     return all.front();
@@ -84,6 +90,10 @@ void DespeckleBrush::dab(Stroke& stroke, const Dab& d, int size, double strength
         if (!cell)
             return std::nullopt;
         return rungOf(ramp_, ice ? *cell : iceCell(*cell, false));
+    };
+    auto dithered = [&](int x, int y) {
+        const auto cell = stroke.cellAt(x, y);
+        return cell && cell->dithered;
     };
     // The stroke's lint guard, read from its start at the first dab, and
     // the canvas a fix is judged on (the guard's, between fixes).
@@ -167,7 +177,7 @@ void DespeckleBrush::dab(Stroke& stroke, const Dab& d, int size, double strength
             std::vector<std::vector<int>> rungs;
             for (const Member& m : members)
                 rungs.push_back(stroke.paintable(m.at.first, m.at.second)
-                                    ? speckFixes(ramp_, m.at.first, m.at.second, rungAt)
+                                    ? speckFixes(ramp_, m.at.first, m.at.second, rungAt, dithered)
                                     : std::vector<int>{});
             for (size_t k = 0;; ++k) {
                 std::vector<std::pair<Pos, Cell>> fixes;
@@ -186,6 +196,7 @@ void DespeckleBrush::dab(Stroke& stroke, const Dab& d, int size, double strength
                             // the neighbour's look, the cell's own transparency
                             Cell out = *cell;
                             out.transparent = stroke.cellAt(x, y)->transparent;
+                            out.dithered = false;
                             fixes.emplace_back(m.at, out);
                             break;
                         }

@@ -542,7 +542,10 @@ bool Stroke::set(int x, int y, const Cell& c, double strength, int image) {
             return false;
         }
     }
-    painted_[{y, x}] = Painted{c, strength, image < 0 ? current_.image : image};
+    // a drawn cell keeps the dither mark only where it looks as it did
+    // (settleMarks), so the stroke's guard reads what the edit will leave
+    Painted p{keepDitherMark(canvas_.at(x, y), c), strength, image < 0 ? current_.image : image};
+    painted_[{y, x}] = p;
     return true;
 }
 

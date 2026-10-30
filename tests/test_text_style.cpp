@@ -1345,3 +1345,50 @@ TEST_CASE("a writer refuses a stack the reader refuses", "[style][project][refus
     cells.props.style = everyEffect();
     CHECK(writes(cells) == "(written)");
 }
+
+// A dithered cell a style recolours isn't the dither's any more: the styled
+// cells (and so Bake) keep its mark only where it looks as it did (#160).
+TEST_CASE("Style: a styled cell keeps the dither mark only while it looks as its source did", "[style][dither]") {
+    const Ramp steel = *findRamp("steel");
+    Layer l = makeLayer(LayerKind::Cells, 3, 3);
+    for (int y = 0; y < 3; ++y)
+        for (int x = 0; x < 3; ++x)
+            l.cells.at(x, y) = rungCell(steel, 4);
+    Cell marked = rungCell(steel, 5);
+    marked.dithered = true;
+    l.cells.at(1, 1) = marked;
+    const auto speckAt = [&](const Canvas& c) {
+        const lint::LadderReport r = lint::checkLadder(c, steel);
+        return std::any_of(r.findings.begin(), r.findings.end(), [](const lint::LadderFinding& f) {
+            return f.kind == lint::LadderFinding::Kind::Speckle && f.x == 1 && f.y == 1;
+        });
+    };
+    REQUIRE_FALSE(speckAt(l.cells));
+
+    SECTION("a flat fill") {
+        l.props.style = styleOf({FillEffect{FillMode::Flat, White, "steel"}});
+        const LayerPropsEdit e = bakeEdit(l, true);
+        REQUIRE(e.cellsAfter);
+        const Canvas& out = *e.cellsAfter;
+        CHECK(rungOf(steel, out.at(1, 1)) == 11);
+        CHECK(rungOf(steel, out.at(0, 1)) == 12);
+        CHECK_FALSE(out.at(1, 1).dithered);
+        CHECK(speckAt(out));
+        CHECK_FALSE(bake(l, true).cells.at(1, 1).dithered);
+    }
+    SECTION("a ramp's recolouring") {
+        l.props.style = styleOf({FillEffect{FillMode::Rows, Grey, "fire"}});
+        const Canvas out = styledCells(l, true);
+        REQUIRE_FALSE(out.at(1, 1) == marked);
+        CHECK_FALSE(out.at(1, 1).dithered);
+        CHECK_FALSE(bake(l, true).cells.at(1, 1).dithered);
+    }
+    SECTION("a style that leaves the cell as it was keeps the mark") {
+        // steel's own ramp maps each colour these cells use to itself
+        l.props.style = styleOf({FillEffect{FillMode::Rows, Grey, "steel"}});
+        const Canvas out = styledCells(l, true);
+        REQUIRE(out.at(1, 1) == marked);
+        CHECK(out.at(1, 1).dithered);
+        CHECK_FALSE(speckAt(out));
+    }
+}

@@ -34,6 +34,9 @@ std::optional<Box> clip(const Canvas& canvas, std::optional<Box> box) {
 std::string at(int x, int y) { return "cell " + std::to_string(x) + "," + std::to_string(y); }
 
 thread_local long long readCount = 0;
+#ifdef BW_TEST_HOOKS
+thread_local long long indexCount = 0;
+#endif
 
 bool solidRung(int g) { return g % kRungsPerStep == 0; }
 bool blackRung(const Ramp& ramp, int g) {
@@ -76,6 +79,13 @@ std::optional<bool> speck(const Ramp& ramp, int g, const int (&nb)[4]) {
     if (seen >= 3 && (above == seen || below == seen))
         return below == seen;
     return std::nullopt;
+}
+
+// A speck that is the gradient's dither (ditherExempt), or else speck().
+std::optional<bool> speck(const Ramp& ramp, int g, const int (&nb)[4], bool dithered) {
+    if (ditherExempt(dithered, g, nb))
+        return std::nullopt;
+    return speck(ramp, g, nb);
 }
 
 LadderFinding speckFinding(int x, int y, bool lighter) {
@@ -478,6 +488,15 @@ Detail detail(const Canvas& canvas, std::optional<Box> box) {
     return d;
 }
 
+bool ditherExempt(bool dithered, int g, const int (&nb)[4]) {
+    if (!dithered || g < 0)
+        return false;
+    for (const int n : nb)
+        if (n >= 0 && std::abs(n - g) != 1)
+            return false;
+    return true;
+}
+
 LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<Box> box, const LadderOptions& options) {
     checkOptions(options);
     LadderReport r;
@@ -594,7 +613,7 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             const int nb[4] = {rules.rung(x, y - 1), rules.rung(x, y + 1), rules.rung(x - 1, y), rules.rung(x + 1, y)};
-            if (const auto lighter = speck(ramp, rungAt(x, y), nb))
+            if (const auto lighter = speck(ramp, rungAt(x, y), nb, canvas.at(b->x0 + x, b->y0 + y).dithered))
                 r.findings.push_back(speckFinding(b->x0 + x, b->y0 + y, *lighter));
         }
     // fallback specks (lint_fallback.cpp)
@@ -714,6 +733,9 @@ LadderIndex::LadderIndex(const Canvas& canvas, const Ramp& ramp, const LadderOpt
     : canvas_(canvas.width(), canvas.height()), ramp_(ramp), options_(options), w_(canvas.width()),
       h_(canvas.height()) {
     checkOptions(options);
+#ifdef BW_TEST_HOOKS
+    ++indexCount;
+#endif
     const auto n = static_cast<std::size_t>(w_) * static_cast<std::size_t>(h_);
     for (auto* v : {&rung_, &rowSlot_, &columnSlot_})
         v->assign(n, -1);
@@ -844,7 +866,7 @@ LadderIndex::Wide LadderIndex::judgeColumn(int start) const {
 
 int LadderIndex::speckAt(int x, int y) const {
     const int nb[4] = {rungAt(x, y - 1), rungAt(x, y + 1), rungAt(x - 1, y), rungAt(x + 1, y)};
-    const auto lighter = speck(ramp_, rungAt(x, y), nb);
+    const auto lighter = speck(ramp_, rungAt(x, y), nb, canvas_.at(x, y).dithered);
     return lighter ? (*lighter ? 1 : 2) : 0;
 }
 
@@ -1234,7 +1256,7 @@ bool LadderIndex::differsOnlyAt(const Canvas& after, const std::vector<std::pair
             named[size_t(y * w_ + x)] = 1;
     for (int y = 0; y < h_; ++y)
         for (int x = 0; x < w_; ++x)
-            if (!named[size_t(y * w_ + x)] && !(after.at(x, y) == canvas_.at(x, y)))
+            if (!named[size_t(y * w_ + x)] && !identical(after.at(x, y), canvas_.at(x, y)))
                 return false;
     return true;
 }
@@ -1351,5 +1373,8 @@ std::vector<LadderFinding> addedFindingsOnce(const Canvas& before, const Canvas&
 }
 
 long long cellsRead() { return readCount; }
+#ifdef BW_TEST_HOOKS
+long long indexesBuilt() { return indexCount; }
+#endif
 
 } // namespace bw::lint

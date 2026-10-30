@@ -22,20 +22,26 @@ void CellEdit::revert(Canvas& canvas) const {
 
 Cell writtenOver(const Cell& under, Cell c) {
     c.lostBlink = c.lostBlink || (under.lostBlink && writesAlike(under, c));
+    c.dithered = c.dithered || (under.dithered && under == c);
     return c;
 }
 
-CellEdit settleLostBlink(CellEdit edit) {
-    if (edit.moves || std::none_of(edit.changes.begin(), edit.changes.end(), [](const CellChange& c) {
-            return c.before.lostBlink || c.after.lostBlink;
+CellEdit settleMarks(CellEdit edit) {
+    if (edit.moves || std::none_of(edit.changes.begin(), edit.changes.end(), [&](const CellChange& c) {
+            return c.before.lostBlink || c.after.lostBlink ||
+                   (!edit.dithers && (c.before.dithered || c.after.dithered));
         }))
         return edit;
     std::map<std::pair<int, int>, Cell> was;  // (y, x) -> the cell before the edit
     for (const CellChange& c : edit.changes)
         was.emplace(std::pair{c.y, c.x}, c.before);
     for (CellChange& c : edit.changes) {
+        const bool dithered = c.after.dithered;
         c.after.lostBlink = false;
+        c.after.dithered = false;
         c.after = writtenOver(was.at({c.y, c.x}), c.after);
+        if (edit.dithers)
+            c.after.dithered = dithered;
     }
     return edit;
 }

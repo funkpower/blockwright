@@ -30,7 +30,6 @@
 #include <QPixmap>
 #include <QScopedValueRollback>
 #include <QSpinBox>
-#include <QStandardItemModel>
 #include <QToolButton>
 
 #include <algorithm>
@@ -315,13 +314,12 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
 
     gradientBanding_ = new QComboBox;
     gradientBanding_->setObjectName(QStringLiteral("gradientBanding"));
-    gradientBanding_->addItem(tr("Cell-banded"));
-    gradientBanding_->addItem(tr("4×4 Bayer"));
-    // Bayer dither is speckle to the ladder lint; it waits on that (PLAN §10).
-    if (auto* model = qobject_cast<QStandardItemModel*>(gradientBanding_->model()))
-        model->item(1)->setEnabled(false);
+    gradientBanding_->addItem(tr("Cell-banded"), int(GradientBanding::Cells));
+    gradientBanding_->addItem(tr("4×4 Bayer"), int(GradientBanding::Bayer));
     gradientBanding_->setItemData(0, tr("Each ░▒▓ rung a band of whole cells"), Qt::ToolTipRole);
-    gradientBanding_->setItemData(1, tr("Not yet: a dither is speckle to the ladder lint"), Qt::ToolTipRole);
+    gradientBanding_->setItemData(1, tr("The same bands, each edge mixed in a 4×4 ordered dither (the lint "
+                                        "doesn't call the dither's cells specks)"),
+                                  Qt::ToolTipRole);
     gradientBanding_->setToolTip(tr("Ramp gradient: how the rungs blend"));
 
     cloneAligned_ = new QCheckBox(tr("Aligned"));
@@ -449,6 +447,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     connect(gradientShape_, &QComboBox::currentIndexChanged, this, &ToolOptions::applyGradientShape);
     connect(gradientFrom_, &QSpinBox::valueChanged, this, &ToolOptions::applyGradientFrom);
     connect(gradientTo_, &QSpinBox::valueChanged, this, &ToolOptions::applyGradientTo);
+    connect(gradientBanding_, &QComboBox::currentIndexChanged, this, &ToolOptions::applyGradientBanding);
     connect(select_, &Tool::changed, this, &ToolOptions::sync);
     connect(size_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
     connect(strength_, &QSpinBox::valueChanged, this, &ToolOptions::apply);
@@ -598,6 +597,7 @@ void ToolOptions::sync() {
         gradientTo_->setRange(0, top);
         gradientFrom_->setValue(gradientTool_->fromRung());
         gradientTo_->setValue(gradientTool_->toRung());
+        gradientBanding_->setCurrentIndex(gradientBanding_->findData(int(gradientTool_->banding())));
     }
     if (cloneTool_)
         cloneAligned_->setChecked(cloneTool_->aligned());
@@ -657,6 +657,11 @@ void ToolOptions::apply() {
 void ToolOptions::applyGradientShape() {
     if (!syncing_ && gradientTool_)
         gradientTool_->setShape(GradientShape(gradientShape_->currentData().toInt()));
+}
+
+void ToolOptions::applyGradientBanding() {
+    if (!syncing_ && gradientTool_)
+        gradientTool_->setBanding(GradientBanding(gradientBanding_->currentData().toInt()));
 }
 
 void ToolOptions::applyGradientFrom(int from) {

@@ -44,20 +44,40 @@ struct Cell {
     // Editor only: this cell lost its blink when its file was opened
     // (openAsEditor). Moved and copied cells keep it, so the mark goes where
     // the cell goes (moves, flips, copies, undo and redo); a drawn cell has
-    // none of its own (settleLostBlink in edit.h); the save counts the marked cells it still
+    // none of its own (settleMarks in edit.h); the save counts the marked cells it still
     // writes without a blink (Document::encode). No file, export or renderer
     // reads it, and == leaves it out, so cells that look the same are equal
     // to lint, previews and tests. identical() sees it.
     bool lostBlink = false;
+    // Editor only: the ramp gradient's Bayer dither put this cell here
+    // (rampGradient), so the ladder lint doesn't call it a speck while every
+    // neighbour it has on the ladder is one rung from it (PLAN §10, the
+    // speckle rule). A cell keeps it while it looks the same: a drawn cell
+    // that changes its look drops it (settleMarks in edit.h, Stroke::set),
+    // and so does a styled or baked one (keepDitherMark), a moved or copied
+    // one takes it along, and a project saves it (the layer's "dither"). ==
+    // leaves it out; identical() sees it.
+    bool dithered = false;
 
     bool operator==(const Cell& o) const {
         return ch == o.ch && fg == o.fg && bg == o.bg && attrs == o.attrs && transparent == o.transparent;
     }
 };
 
-// Whether `a` and `b` are the same cell, the lost-blink mark included: how an
-// edit tells whether it changes a cell, so moving a marked cell onto one that
-// looks the same still moves the mark.
-inline bool identical(const Cell& a, const Cell& b) { return a == b && a.lostBlink == b.lostBlink; }
+// Whether `a` and `b` are the same cell, the lost-blink and dither marks
+// included: how an edit tells whether it changes a cell, so moving a marked
+// cell onto one that looks the same still moves the mark.
+inline bool identical(const Cell& a, const Cell& b) {
+    return a == b && a.lostBlink == b.lostBlink && a.dithered == b.dithered;
+}
+
+// `c`, made from `was` (a styled, recoloured or repainted copy of it), with
+// the dither mark it keeps: `was`'s while it looks the same, else none. A
+// cell whose look a tool changes isn't the dither's any more, so the lint
+// judges it again.
+inline Cell keepDitherMark(const Cell& was, Cell c) {
+    c.dithered = was.dithered && was == c;
+    return c;
+}
 
 } // namespace bw

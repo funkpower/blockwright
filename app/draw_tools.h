@@ -367,13 +367,14 @@ private:
 };
 
 // Ramp gradient (PLAN §10): a linear or radial fill along the view's ramp,
-// cell-banded (rampGradient), from the press to the pointer; a radial one is
+// cell-banded or Bayer-dithered (rampGradient), from the press to the
+// pointer; a radial one is
 // centred on the press. The left button runs from the from rung to the to
 // rung, the right the other way round. It fills every cell the selection and
 // the alpha lock let it paint, fitted to the cells round it, and so has
 // nothing for mirror mode to add: an image could land only on a cell the
-// fill may not paint, so the symmetry isn't read. Its shape and rungs are
-// kept between runs (appSettings, "gradient/..."); the ramp is the view's,
+// fill may not paint, so the symmetry isn't read. Its shape, banding and
+// rungs are kept between runs (appSettings, "gradient/..."); the ramp is the view's,
 // shared with the ramp brushes. It declines a press on a Pixels layer, which
 // can't hold its shades, and says so in its status.
 class GradientTool : public DragTool {
@@ -383,6 +384,8 @@ public:
 
     GradientShape shape() const { return shape_; }
     void setShape(GradientShape shape);
+    GradientBanding banding() const { return banding_; }
+    void setBanding(GradientBanding banding);
     // The rungs at the press and at the pointer, as set: rampGradient clamps
     // them to the ramp, so a rung past a short ramp's top comes back on a
     // longer one.
@@ -411,6 +414,7 @@ private:
     void judge(const CellEdit& e) const;
 
     GradientShape shape_ = GradientShape::Linear;
+    GradientBanding banding_ = GradientBanding::Cells;
     int from_ = 0, to_ = 0;
     QPoint start_, end_;  // cells
     bool reversed_ = false;  // the right button

@@ -40,11 +40,13 @@ void over(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, b
             // the glyph is this layer's now, and so is whether it is text
             acc.ch = lc.ch;
             text = isText;
+            acc.dithered = false;  // a look neither layer's dither laid
             break;
         case LayerMode::ColoursOnly:
             acc.fg = lc.fg;
             acc.bg = lc.bg;
             acc.attrs = lc.attrs;
+            acc.dithered = false;
             break;
         }
         acc.transparent = false;

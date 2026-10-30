@@ -475,13 +475,13 @@ TEST_CASE("a reader refuses another major version and reads a newer minor", "[pr
     e["manifest.json"] = json(m);
     CHECK_THROWS_AS(project::decode(e), ProjectError);
 
-    m["version"] = "1.7";
-    m["mask"] = "nick!user@host";  // a key 1.7 added: ignored
+    m["version"] = "1.8";
+    m["mask"] = "nick!user@host";  // a key 1.8 added: ignored
     e["manifest.json"] = json(m);
-    e["layers/" + std::to_string(p.layers[0].props.id) + ".mask"] = "a file 1.7 added";
+    e["layers/" + std::to_string(p.layers[0].props.id) + ".mask"] = "a file 1.8 added";
     const Project newer = project::decode(e);
     CHECK(newer.layers == p.layers);
-    CHECK(newer.files.at("layers/" + std::to_string(p.layers[0].props.id) + ".mask") == "a file 1.7 added");
+    CHECK(newer.files.at("layers/" + std::to_string(p.layers[0].props.id) + ".mask") == "a file 1.8 added");
 
     for (const char* v : {"1", "one.0", "1.0.0", "-1.0", "1.x", ""}) {
         INFO(v);
@@ -3156,3 +3156,75 @@ TEST_CASE("a directory read refuses a link swapped in after the walk saw a file"
     CHECK(read == "refused");
 }
 #endif
+
+TEST_CASE("the gradient's dither marks survive a save and a reload, in a 1.7 project or 2.3 styled",
+          "[project][version][dither]") {
+    // #160: a layer's "dither" holds its cells' marks (Cell::dithered), a bit
+    // a cell in reading order
+    const auto marksOf = [](const Canvas& c) {
+        std::vector<std::pair<int, int>> at;
+        for (int y = 0; y < c.height(); ++y)
+            for (int x = 0; x < c.width(); ++x)
+                if (c.at(x, y).dithered)
+                    at.emplace_back(x, y);
+        return at;
+    };
+    using At = std::vector<std::pair<int, int>>;
+    Project p;
+    p.layers = LayerStack(6, 2);
+    Layer l = makeLayer(LayerKind::Cells, 6, 2, "fill");
+    l.cells.at(1, 0).dithered = true;
+    l.cells.at(5, 1).dithered = true;  // cell 11: the second byte
+    const LayerId id = p.layers.add(std::move(l));
+    const std::string key = "layers/" + std::to_string(id) + ".json";
+    const auto layerOf = [&](const Project& q) -> const Layer& {
+        const Layer* found = q.layers.find(id);
+        REQUIRE(found);
+        return *found;
+    };
+
+    Entries e = project::encode(p);
+    CHECK(object(e.at("manifest.json")).value("version").toString() == "1.7");
+    CHECK(object(e.at(key)).contains("dither"));
+    CHECK(marksOf(layerOf(project::decode(e)).cells) == At{{1, 0}, {5, 1}});
+
+    const fs::path dir = scratch("dither");
+    project::writeZip(p, dir / "fill.bwp");
+    CHECK(marksOf(layerOf(project::read(dir / "fill.bwp")).cells) == At{{1, 0}, {5, 1}});
+    project::writeDirectory(p, dir / "fill");
+    CHECK(marksOf(layerOf(project::read(dir / "fill")).cells) == At{{1, 0}, {5, 1}});
+
+    SECTION("styled, it is 2.3") {
+        Project styled = p;
+        TextStyle style;
+        style.effects.push_back(Effect{true, OutlineEffect{}});
+        styled.layers.find(id)->props.style = style;
+        const Entries se = project::encode(styled);
+        CHECK(object(se.at("manifest.json")).value("version").toString() == "2.3");
+        CHECK(marksOf(layerOf(project::decode(se)).cells) == At{{1, 0}, {5, 1}});
+    }
+    SECTION("without marks it stays 1.3 and writes no dither") {
+        Project plain = p;
+        plain.layers.find(id)->cells.at(1, 0).dithered = false;
+        plain.layers.find(id)->cells.at(5, 1).dithered = false;
+        const Entries pe = project::encode(plain);
+        CHECK(object(pe.at("manifest.json")).value("version").toString() == "1.3");
+        CHECK_FALSE(object(pe.at(key)).contains("dither"));
+    }
+    SECTION("a dither that isn't the layer's bitmap is refused") {
+        for (const char* bad : {"!!!!", "AA==", "AAAA", "AAAAAA==", "ABA="}) {
+            // not base64; one byte for 12 cells; three; four; a bit past cell 11
+            INFO(bad);
+            QJsonObject lo = object(e.at(key));
+            lo["dither"] = bad;
+            Entries broken = e;
+            broken[key] = json(lo);
+            CHECK_THROWS_AS(project::decode(broken), ProjectError);
+        }
+        QJsonObject lo = object(e.at(key));
+        lo["dither"] = 7;
+        Entries broken = e;
+        broken[key] = json(lo);
+        CHECK_THROWS_AS(project::decode(broken), ProjectError);
+    }
+}

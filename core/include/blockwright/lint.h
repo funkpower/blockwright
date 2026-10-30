@@ -132,6 +132,16 @@ struct LadderReport {
 // draws it and checkLadder takes it as an outline at a gradient's end.
 std::optional<int> outlineRung(const Ramp& ramp, int rung);
 
+// Whether a cell of rung `g` with the neighbours' rungs `nb` (above, below,
+// left, right; -1 off the ladder or the canvas) is left out of the speck
+// rule as the ramp gradient's Bayer dither (PLAN §10, the speckle rule):
+// the cell carries the dither mark (Cell::dithered) and every neighbour it
+// has on the ladder is one rung from it, as the dither lays them. A lone
+// cell drawn by hand or by any other tool carries no mark, and a dithered
+// cell whose neighbours were redrawn further off is judged again. checkLadder,
+// LadderIndex and the despeckle brush (speckFixes) all use this.
+bool ditherExempt(bool dithered, int g, const int (&nb)[4]);
+
 // Checks the box (the whole canvas when empty) against the ramp's ladder:
 // shades only between ramp neighbours, rungs no wider than maxRung, no
 // skipped rungs, no specks (nor fallback specks, with options.fallback),
@@ -156,7 +166,8 @@ std::optional<int> outlineRung(const Ramp& ramp, int rung);
 // one against the outside. Outside is black, off the ladder or off the box.
 // A speck is a cell with three or more ladder neighbours that is lighter
 // than all of them or darker than all of them;
-// black (ink) and the ramp's top rung (a glint) are never specks. Cells off
+// black (ink) and the ramp's top rung (a glint) are never specks, nor is a
+// cell of the ramp gradient's dither (ditherExempt). Cells off
 // the ramp (text, half blocks, RGB and other ramps' colours) aren't judged.
 // Throws LintError for options.maxRung below 1.
 LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<Box> box = {},
@@ -334,5 +345,12 @@ std::vector<LadderFinding> addedFindingsOnce(const Canvas& before, const Canvas&
 // a pixel, a run's bucket, a step of comparing a line's skips): a work counter, for tests of what a change costs
 // to judge.
 long long cellsRead();
+
+#ifdef BW_TEST_HOOKS
+// How many LadderIndexes have been built on this thread so far (each a
+// whole-canvas pass): a work counter, for tests of when a tool builds one.
+// Only in builds with the tests (BW_TEST_HOOKS).
+long long indexesBuilt();
+#endif
 
 } // namespace bw::lint

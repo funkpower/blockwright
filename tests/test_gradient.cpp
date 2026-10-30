@@ -1,6 +1,8 @@
-// The ramp gradient (PLAN §10, "Shading"): linear and radial, cell-banded,
-// along a ramp's ladder, with no ladder-lint finding on what it fills.
+// The ramp gradient (PLAN §10, "Shading"): linear and radial, cell-banded or
+// Bayer-dithered, along a ramp's ladder, with no ladder-lint finding on what
+// it fills.
 
+#include "blockwright/ansi.h"
 #include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/guard.h"
 #include "blockwright/lint.h"
@@ -17,6 +19,12 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+// lint::indexesBuilt() exists only with the test hooks, which blockwright_core
+// carries whenever the tests are built.
+#ifndef BW_TEST_HOOKS
+#error "test_gradient.cpp needs BW_TEST_HOOKS (set on blockwright_core when BUILD_TESTING is ON)"
+#endif
 
 using namespace bw;
 
@@ -620,4 +628,214 @@ TEST_CASE("gradient: on a tall canvas a square fill in a selection is clean and 
     INFO(joined << " of " << slanted << " slanted fills joined a band to the climb");
     CHECK(slanted == 64);
     CHECK(joined == 34);
+}
+
+// ---- the Bayer banding (#160) ---------------------------------------------
+
+namespace {
+
+std::vector<std::pair<int, int>> marks(const Canvas& c) {
+    std::vector<std::pair<int, int>> at;
+    for (int y = 0; y < c.height(); ++y)
+        for (int x = 0; x < c.width(); ++x)
+            if (c.at(x, y).dithered)
+                at.emplace_back(x, y);
+    return at;
+}
+
+Canvas unmarked(Canvas c) {
+    for (int y = 0; y < c.height(); ++y)
+        for (int x = 0; x < c.width(); ++x)
+            c.at(x, y).dithered = false;
+    return c;
+}
+
+int specks(const lint::LadderReport& r) {
+    return int(std::count_if(r.findings.begin(), r.findings.end(), [](const lint::LadderFinding& f) {
+        return f.kind == lint::LadderFinding::Kind::Speckle;
+    }));
+}
+
+Gradient bayer(Gradient g) {
+    g.banding = GradientBanding::Bayer;
+    return g;
+}
+
+} // namespace
+
+TEST_CASE("gradient: the Bayer banding mixes each band edge in the 4×4 order, and marks the cells it mixes",
+          "[gradient][dither]") {
+    const Ramp ramp = steel();
+    const Canvas blank(60, 8);
+    Gradient g;
+    g.x0 = 0, g.x1 = 59, g.fromRung = 0, g.toRung = ramp.topRung();
+    const std::vector<int> cells = gradientRungs(ramp, g, 60, 8);
+    g.banding = GradientBanding::Bayer;
+    const CellEdit edit = rampGradient(blank, ramp, g, StrokeOptions{});
+    CHECK(edit.dithers);
+    const Canvas out = applied(blank, edit);
+    // The rungs and the marks, a row at a time; the order repeats every four
+    // rows. Black (rung 0) isn't mixed; each other edge is, plateau and shade
+    // both ways.
+    const char* want[] = {
+        "000000000001122344444444445556678888888888999aabcccccccccccc",
+        "................*.........*.....*.........*.....*...........",
+        "000000000001122333444444444556677788888888899aabbbcccccccccc",
+        ".................*...............*...............*..........",
+        "000000000001122344344444445556678878888888999aabccbccccccccc",
+        "................*.*.......*.....*.*.......*.....*.*.........",
+        "000000000001122334444444444556677888888888899aabbccccccccccc",
+        "............................................................",
+    };
+    for (int y = 0; y < 8; ++y) {
+        std::string rungs, marked;
+        for (int x = 0; x < 60; ++x) {
+            rungs += "0123456789abcdef"[*rungOf(ramp, out.at(x, y))];
+            marked += out.at(x, y).dithered ? '*' : '.';
+        }
+        INFO("row " << y);
+        CHECK(rungs == want[2 * (y % 4)]);
+        CHECK(marked == want[2 * (y % 4) + 1]);
+    }
+    // Every cell is the cell-banded fill's but a marked one, which is a rung
+    // from it where its Bayer order is under the edge's threshold.
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 60; ++x) {
+            INFO(x << "," << y);
+            const int was = cells[size_t(y * 60 + x)], is = *rungOf(ramp, out.at(x, y));
+            const int order = kBayer4[y % 4][x % 4];
+            if (!out.at(x, y).dithered) {
+                CHECK(is == was);
+                continue;
+            }
+            CHECK(std::abs(is - was) == 1);
+            CHECK(order < (was % kRungsPerStep ? kDitherBand : kDitherNear));
+        }
+    // gradientRungs gives what the fill paints
+    CHECK(gradientRungs(ramp, g, 60, 8) == [&] {
+        std::vector<int> r;
+        for (int y = 0; y < 8; ++y)
+            for (int x = 0; x < 60; ++x)
+                r.push_back(*rungOf(ramp, out.at(x, y)));
+        return r;
+    }());
+}
+
+TEST_CASE("gradient: a Bayer fill is ladder-lint clean at every angle, its dither specks only to a lint blind to the mark",
+          "[gradient][dither]") {
+    const Canvas blank = filled(64, 32, Cell{});
+    int painted = 0, dithered = 0, unmarkedSpecks = 0;
+    for (const Ramp& ramp : namedRamps())
+        for (bool ice : {true, false})
+            for (GradientShape shape : {GradientShape::Linear, GradientShape::Radial})
+                for (int deg = 0; deg < 360; deg += 30)
+                    for (double len : {6.0, 20.0, 33.0, 52.0, 90.0})
+                        for (auto [from, to] : sweepRanges(ramp)) {
+                            const Gradient g = bayer(aimed(shape, 31, 15, deg, len, from, to));
+                            const int was = painted;
+                            sweepBlank(blank, ramp, g, ice, painted);
+                            if (painted == was)
+                                continue;
+                            StrokeOptions options;
+                            options.ice = ice;
+                            const Canvas out = applied(blank, rampGradient(blank, ramp, g, options));
+                            dithered += int(marks(out).size());
+                            unmarkedSpecks += specks(lint::checkLadder(unmarked(out), ramp));
+                            // with iCE off the dither writes no bright background either
+                            if (!ice)
+                                for (const auto& [x, y] : marks(out))
+                                    CHECK(out.at(x, y).bg.paletteIndex() < 8);
+                        }
+    CHECK(painted > 2000);
+    INFO(dithered << " dithered cells, " << unmarkedSpecks << " specks without their marks");
+    CHECK(dithered > 10 * painted);
+    CHECK(unmarkedSpecks > painted);
+}
+
+TEST_CASE("gradient: in a selection the Bayer banding adds no finding the cell-banded fill doesn't", "[gradient][dither]") {
+    const int w = 40, h = 20;
+    int painted = 0;
+    for (const Ramp& ramp : namedRamps()) {
+        const int top = ramp.topRung();
+        for (int e : {kRungsPerStep, top, 2, top - 1}) {
+            const Canvas field = filled(w, h, rungCell(ramp, e));
+            for (const CellRect& box : {CellRect{0, 0, 26, h}, CellRect{6, 4, 24, 11}}) {
+                StrokeOptions options;
+                options.selection = selectionMask(Selection(box), w, h);
+                const int cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+                for (GradientShape shape : {GradientShape::Linear, GradientShape::Radial})
+                    for (int deg = 0; deg < 360; deg += 45)
+                        for (auto [from, to] : {std::pair{0, top}, std::pair{top, 0}, std::pair{6, 2}}) {
+                            const Gradient g = aimed(shape, cx, cy, deg, 30.0, from, to);
+                            std::vector<lint::LadderFinding> cells, dither;
+                            rampGradient(field, ramp, g, options, &cells);
+                            const CellEdit edit = rampGradient(field, ramp, bayer(g), options, &dither);
+                            if (edit.empty())
+                                continue;
+                            ++painted;
+                            INFO(named(ramp, g, true) << " on rung " << e);
+                            CHECK(dither.size() <= cells.size());
+                            for (const CellChange& c : edit.changes)
+                                CHECK(options.selection->contains(c.x, c.y));
+                        }
+            }
+        }
+    }
+    CHECK(painted > 1000);
+}
+
+// A Bayer fill with no cell to dither (both ends black) writes no fill out
+// over the canvas and builds no lint index: a drag over a selection costs its
+// cells, however large the canvas.
+TEST_CASE("gradient: a Bayer fill with nothing to dither builds no lint index", "[gradient][dither]") {
+    const Ramp ramp = steel();
+    const int w = 400, h = 500;
+    const Canvas blank(w, h);
+    StrokeOptions options;
+    options.selection = selectionMask(Selection(CellRect{100, 200, 20, 10}), w, h);
+    Gradient g;
+    g.x0 = 100, g.x1 = 119, g.y0 = g.y1 = 205, g.fromRung = 0, g.toRung = 0;
+    const long long built = lint::indexesBuilt();
+    const CellEdit flat = rampGradient(blank, ramp, bayer(g), options);
+    CHECK(lint::indexesBuilt() == built);
+    for (const CellChange& c : flat.changes)
+        CHECK_FALSE(c.after.dithered);
+    // a fill that dithers judges its dither with one index
+    g.toRung = ramp.topRung();
+    const CellEdit mixed = rampGradient(blank, ramp, bayer(g), options);
+    REQUIRE_FALSE(marks(applied(blank, mixed)).empty());
+    CHECK(lint::indexesBuilt() == built + 1);
+}
+
+TEST_CASE("gradient: a fill over a dithered one keeps no stale mark", "[gradient][dither]") {
+    const Ramp ramp = steel();
+    const Canvas blank(60, 4);
+    Gradient g;
+    g.x0 = 0, g.x1 = 59, g.toRung = ramp.topRung();
+    const Canvas dithered = applied(blank, rampGradient(blank, ramp, bayer(g), StrokeOptions{}));
+    REQUIRE_FALSE(marks(dithered).empty());
+    // the cell-banded fill over it: the cells it leaves looking the same
+    // still lose their marks
+    const CellEdit again = rampGradient(dithered, ramp, g, StrokeOptions{});
+    CHECK_FALSE(again.dithers);
+    const Canvas out = applied(dithered, again);
+    CHECK(marks(out).empty());
+    CHECK(out == applied(blank, rampGradient(blank, ramp, g, StrokeOptions{})));
+    // and the same Bayer fill again changes nothing
+    CHECK(rampGradient(dithered, ramp, bayer(g), StrokeOptions{}).empty());
+}
+
+TEST_CASE("gradient: a dither saved as .ans comes back unmarked, and the lint calls it specks", "[gradient][dither]") {
+    // An .ans has no place for the mark, and a dither by hand writes the
+    // same bytes: read back, the dither is specks (a project keeps it).
+    const Ramp ramp = steel();
+    AnsiDocument doc;
+    doc.canvas = Canvas(60, 8);
+    Gradient g;
+    g.x0 = 0, g.x1 = 59, g.toRung = ramp.topRung();
+    doc.canvas = applied(doc.canvas, rampGradient(doc.canvas, ramp, bayer(g), StrokeOptions{}));
+    REQUIRE(specks(lint::checkLadder(doc.canvas, ramp)) == 0);
+    const AnsiDocument back = parseAnsi(writeAnsi(doc).bytes);
+    CHECK(marks(back.canvas).empty());
+    CHECK(specks(lint::checkLadder(back.canvas, ramp)) > 0);
 }

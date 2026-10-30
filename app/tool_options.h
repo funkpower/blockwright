@@ -157,8 +157,10 @@ private:
     void fitCentre();
     // Sets the view's from the controls.
     void apply();
-    // Sets the ramp gradient's shape, from rung or to rung from its control.
+    // Sets the ramp gradient's shape, banding, from rung or to rung from its
+    // control.
     void applyGradientShape();
+    void applyGradientBanding();
     void applyGradientFrom(int from);
     void applyGradientTo(int to);
     // Shows the rows the active tool reads.

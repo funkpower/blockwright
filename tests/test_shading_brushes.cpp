@@ -8,6 +8,7 @@
 #include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/distance.h"
 #include "blockwright/brushes/form.h"
+#include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/brushes/soft.h"
 #include "blockwright/lint.h"
@@ -2803,4 +2804,43 @@ TEST_CASE("shading brushes: random strokes add nothing to the start, checked aft
         CHECK(iced > 20);
         CHECK(painted * 4 > strokes);
     }
+}
+
+TEST_CASE("despeckle leaves the gradient's dither alone and clears a speck by hand in it", "[shading][despeckle][dither]") {
+    const Ramp r = steel();
+    const int w = 60, h = 8;
+    const Canvas blank(w, h);
+    Gradient g;
+    g.x1 = w - 1, g.toRung = r.topRung(), g.banding = GradientBanding::Bayer;
+    Canvas dithered = blank;
+    rampGradient(blank, r, g, StrokeOptions{}).apply(dithered);
+    int marks = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            marks += dithered.at(x, y).dithered;
+    REQUIRE(marks > 20);
+    REQUIRE(rungOf(r, dithered.at(38, 1)) == 8);
+    Canvas c = dithered;
+    c.at(38, 1) = rungCell(r, 9);  // a speck by hand
+
+    BrushSettings s;
+    s.size = 3;
+    std::vector<Dab> pass;  // over every cell
+    for (int y = 1; y < h; y += 3)
+        for (int x = 1; x < w; x += 2)
+            pass.push_back({x, y});
+    paintStroke(c, DespeckleBrush(r), s, pass).apply(c);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            INFO(x << "," << y);
+            CHECK(identical(c.at(x, y), dithered.at(x, y)));
+        }
+    CHECK(lint::checkLadder(c, r).clean());
+
+    // the same cells unmarked are specks to it like any other
+    Canvas bare = dithered;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            bare.at(x, y).dithered = false;
+    CHECK_FALSE(paintStroke(bare, DespeckleBrush(r), s, pass).empty());
 }
