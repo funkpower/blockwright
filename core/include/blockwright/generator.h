@@ -211,6 +211,17 @@ struct RunOptions {
 // and cellsFromOutput refuse.
 Canvas run(const project::Project& project, LayerId id, const RunOptions& options = {});
 
+// Runs `command` as run runs a generator's program, in a new empty
+// temporary directory with `stdinData` on stdin, and returns what it wrote
+// to stdout: for a program that answers with something other than a
+// layer's cells (a scene listing its layers, scene_import.h). Its first
+// word is looked up on PATH unless it is an absolute path. `name` leads
+// each message. Throws GeneratorError for an empty command, an argument
+// holding a NUL, a relative program path, and whatever run refuses about
+// starting, running and ending the program.
+std::string runCommand(const std::vector<std::string>& command, std::string_view stdinData, const std::string& name,
+                       const RunOptions& options = {});
+
 // Kills the process group of the generator running now, if one is, and
 // stops any run from starting after: from the first call on, run refuses
 // before it starts its program ("not run: generators are being stopped").

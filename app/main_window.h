@@ -161,6 +161,12 @@ public:
     // A project (project::isProject, or a name ending in .bwp, or a
     // directory) opens as one, with its layers (main_window_project.cpp).
     bool openFile(const QString& path, QString* error);
+    // Opens the Python scene at `path` as a new project, a generator layer
+    // for each scene layer (scene_import.h), running the scene once for
+    // each layer's cells, without asking anything; false and `error` on
+    // failure. The project is untitled and unsaved, its generators trusted
+    // (main_window_generators.cpp).
+    bool openSceneFile(const QString& path, QString* error);
     // Saves to `path` without asking anything, in the document's form if
     // `path` is its file, else in the form the path asks for (fileFormFor):
     // a flat .ans (the layers flattened, project::toAnsi), a .bwp zip or a
@@ -188,6 +194,9 @@ public slots:
     void openInteractive(const QString& path);
     // File > Open Project Directory...: a directory picker.
     void openDirectory();
+    // File > Open Scene...: a file picker, then the question whether to run
+    // the scene, before openSceneFile.
+    void openScene();
     bool save();
     // Save As in the document's form: a directory picker for a project
     // directory, else the file dialog (.ans or .bwp, by its filter).
@@ -298,6 +307,9 @@ private:
     // Asks, the first time in the session for a project, whether its
     // generators may run (layer `id`'s command shown); true if they may.
     bool trustGenerators(LayerId id);
+    // The question trustGenerators and openScene ask: `question`, then
+    // `why` and the command that runs. True for Yes.
+    bool askToRun(const QString& question, const QString& why, const QString& command);
 
     Document doc_;
     AtlasRenderer renderer_;

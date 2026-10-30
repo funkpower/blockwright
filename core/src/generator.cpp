@@ -696,17 +696,119 @@ Canvas cellsFromOutput(std::string_view ans, int width, std::optional<std::uint8
     return std::move(doc.canvas);
 }
 
+namespace {
+
+// Runs `argv` in `dir` with `stdinData` on stdin and returns what it wrote
+// to stdout; `program` names it in messages, `name` leads them. The group,
+// the deadline, the cap and the errors are run's.
+// Checked before anything starts: once the program has been reaped by the
+// kernel its group's id is free for reuse, so the run could no longer kill
+// what the program left running.
+void refuseIgnoredSigchld(const std::string& name) {
+    if (sigchldIgnored())
+        fail(name + ": not run: SIGCHLD is ignored in this process (SIG_IGN or SA_NOCLDWAIT), so the program "
+                    "would be reaped as it exits and what it left running could not be stopped");
+}
+
+std::string execute(const std::vector<std::string>& argv, const std::string& dir, std::string_view stdinData,
+                    const std::string& name, const std::string& program, const RunOptions& options) {
+    refuseIgnoredSigchld(name);
+
+    // stdin is a file holding the input, so a program that doesn't read it
+    // can't stall the run, and nothing is written to a pipe it has closed.
+    QTemporaryFile inFile;
+    if (!inFile.open() || inFile.write(stdinData.data(), qint64(stdinData.size())) != qint64(stdinData.size()) ||
+        !inFile.flush())
+        fail(name + ": could not write the generator's input: " + utf8(inFile.errorString()));
+    Fd in, outR, outW, errR, errW;
+    if (!in.take(::open(QFile::encodeName(inFile.fileName()).constData(), O_RDONLY | O_CLOEXEC)) ||
+        !outputPipe(outR, outW) || !outputPipe(errR, errW))
+        fail(name + ": could not set up the run: " + std::strerror(errno));
+
+    // The program leads a process group of its own, which everything it
+    // starts joins unless it leaves on purpose (setsid, setpgid): however the
+    // run ends, the group is killed, so nothing it started outlives it.
+    //
+    // Output is read as it arrives, at most one buffer from each pipe
+    // between looks at the clock and at the program, so the cap and the
+    // deadline hold against a flood and what is held stays near the cap.
+    int error = 0;
+    const pid_t leader = start(argv, dir, in.fd, outW.fd, errW.fd, error);
+    if (error == ECANCELED)
+        fail(name + ": not run: generators are being stopped");
+    if (error)
+        fail(name + ": could not run " + program + ": " + std::strerror(error));
+    Group group(leader);
+    in.close();
+    outW.close();
+    errW.close();
+    const QDeadlineTimer deadline(options.timeout);
+    QByteArray out, err;
+    std::string stopped;  // why the group was killed
+    std::vector<char> buf(64 * 1024);
+    // Takes what one read of `fd` gives; false once it gives nothing now.
+    const auto take = [&](Fd& fd) {
+        if (fd.fd < 0)
+            return false;
+        const ssize_t n = ::read(fd.fd, buf.data(), buf.size());
+        if (n <= 0) {
+            if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+                fd.close();
+            return false;
+        }
+        if (&fd == &errR) {
+            err.append(buf.data(), n);
+            if (err.size() > 8192)
+                err = err.right(4096);
+        } else if (std::size_t(out.size()) + std::size_t(n) > kMaxOutputBytes) {
+            stopped = program + " wrote more than " + std::to_string(kMaxOutputBytes) + " bytes; stopped";
+        } else {
+            out.append(buf.data(), n);
+        }
+        return true;
+    };
+    std::optional<siginfo_t> ended;
+    while (stopped.empty() && !(ended = group.ended())) {
+        if (deadline.hasExpired()) {
+            stopped = program + " took longer than " + std::to_string(options.timeout.count()) + " ms; stopped";
+            break;
+        }
+        pollfd fds[2];
+        nfds_t n = 0;
+        for (const Fd* f : {&outR, &errR})
+            if (f->fd >= 0)
+                fds[n++] = pollfd{f->fd, POLLIN, 0};
+        ::poll(fds, n, int(std::clamp<qint64>(deadline.remainingTime(), 1, 50)));
+        take(outR);
+        take(errR);
+    }
+    if (!stopped.empty())
+        fail(name + ": " + stopped);  // ~Group kills the group
+    // What it left running ends with it; what was written by then is read.
+    group.end();
+    while (stopped.empty() && take(outR)) {
+    }
+    while (take(errR)) {
+    }
+    if (!stopped.empty())
+        fail(name + ": " + stopped);
+    const std::string said = tail(err, 2000);
+    const std::string stderrNote = said.empty() ? "" : ":\n" + said;
+    if (ended->si_code != CLD_EXITED)
+        fail(name + ": " + program + " crashed" + stderrNote);
+    if (ended->si_status != 0)
+        fail(name + ": " + program + " exited with status " + std::to_string(ended->si_status) + stderrNote);
+    return out.toStdString();
+}
+
+} // namespace
+
 Canvas run(const project::Project& project, LayerId id, const RunOptions& options) {
     const Layer& layer = generatorLayer(project, id);
     const Spec spec = layerSpec(project, id);
     const std::string stdinJson = input(project, layer);
     const std::string name = "layer " + std::to_string(id) + " (" + layer.props.name + ")";
-    // Checked here, before anything starts: once the program has been
-    // reaped by the kernel its group's id is free for reuse, so the run
-    // could no longer kill what the program left running.
-    if (sigchldIgnored())
-        fail(name + ": not run: SIGCHLD is ignored in this process (SIG_IGN or SA_NOCLDWAIT), so the program "
-                    "would be reaped as it exits and what it left running could not be stopped");
+    refuseIgnoredSigchld(name);
 
     QTemporaryDir tmp;
     if (!tmp.isValid())
@@ -735,97 +837,29 @@ Canvas run(const project::Project& project, LayerId id, const RunOptions& option
         argv[0] = (root / rel).string();
     }
 
-    // stdin is a file holding the JSON, so a program that doesn't read it
-    // can't stall the run, and nothing is written to a pipe it has closed.
-    QTemporaryFile inFile;
-    if (!inFile.open() || inFile.write(stdinJson.data(), qint64(stdinJson.size())) != qint64(stdinJson.size()) ||
-        !inFile.flush())
-        fail(name + ": could not write the generator's input: " + utf8(inFile.errorString()));
-    Fd in, outR, outW, errR, errW;
-    if (!in.take(::open(QFile::encodeName(inFile.fileName()).constData(), O_RDONLY | O_CLOEXEC)) ||
-        !outputPipe(outR, outW) || !outputPipe(errR, errW))
-        fail(name + ": could not set up the run: " + std::strerror(errno));
-
-    // The program leads a process group of its own, which everything it
-    // starts joins unless it leaves on purpose (setsid, setpgid): however the
-    // run ends, the group is killed, so nothing it started outlives it.
-    //
-    // Output is read as it arrives, at most one buffer from each pipe
-    // between looks at the clock and at the program, so the cap and the
-    // deadline hold against a flood and what is held stays near the cap.
-    int error = 0;
-    const pid_t leader = start(argv, utf8(tmp.path()), in.fd, outW.fd, errW.fd, error);
-    if (error == ECANCELED)
-        fail(name + ": not run: generators are being stopped");
-    if (error)
-        fail(name + ": could not run " + spec.command[0] + ": " + std::strerror(error));
-    Group group(leader);
-    in.close();
-    outW.close();
-    errW.close();
-    const QDeadlineTimer deadline(options.timeout);
-    QByteArray out, err;
-    std::string stopped;  // why the group was killed
-    std::vector<char> buf(64 * 1024);
-    // Takes what one read of `fd` gives; false once it gives nothing now.
-    const auto take = [&](Fd& fd) {
-        if (fd.fd < 0)
-            return false;
-        const ssize_t n = ::read(fd.fd, buf.data(), buf.size());
-        if (n <= 0) {
-            if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
-                fd.close();
-            return false;
-        }
-        if (&fd == &errR) {
-            err.append(buf.data(), n);
-            if (err.size() > 8192)
-                err = err.right(4096);
-        } else if (std::size_t(out.size()) + std::size_t(n) > kMaxOutputBytes) {
-            stopped = spec.command[0] + " wrote more than " + std::to_string(kMaxOutputBytes) + " bytes; stopped";
-        } else {
-            out.append(buf.data(), n);
-        }
-        return true;
-    };
-    std::optional<siginfo_t> ended;
-    while (stopped.empty() && !(ended = group.ended())) {
-        if (deadline.hasExpired()) {
-            stopped = spec.command[0] + " took longer than " + std::to_string(options.timeout.count()) +
-                      " ms; stopped";
-            break;
-        }
-        pollfd fds[2];
-        nfds_t n = 0;
-        for (const Fd* f : {&outR, &errR})
-            if (f->fd >= 0)
-                fds[n++] = pollfd{f->fd, POLLIN, 0};
-        ::poll(fds, n, int(std::clamp<qint64>(deadline.remainingTime(), 1, 50)));
-        take(outR);
-        take(errR);
-    }
-    if (!stopped.empty())
-        fail(name + ": " + stopped);  // ~Group kills the group
-    // What it left running ends with it; what was written by then is read.
-    group.end();
-    while (stopped.empty() && take(outR)) {
-    }
-    while (take(errR)) {
-    }
-    if (!stopped.empty())
-        fail(name + ": " + stopped);
-    const std::string said = tail(err, 2000);
-    const std::string stderrNote = said.empty() ? "" : ":\n" + said;
-    if (ended->si_code != CLD_EXITED)
-        fail(name + ": " + spec.command[0] + " crashed" + stderrNote);
-    if (ended->si_status != 0)
-        fail(name + ": " + spec.command[0] + " exited with status " + std::to_string(ended->si_status) + stderrNote);
+    const std::string out = execute(argv, utf8(tmp.path()), stdinJson, name, spec.command[0], options);
     const int width = layer.width() > 0 ? layer.width() : project.layers.width();
     try {
-        return cellsFromOutput(std::string_view(out.constData(), std::size_t(out.size())), width, spec.key);
+        return cellsFromOutput(out, width, spec.key);
     } catch (const GeneratorError& e) {
         fail(name + ": " + e.what());
     }
+}
+
+std::string runCommand(const std::vector<std::string>& command, std::string_view stdinData, const std::string& name,
+                       const RunOptions& options) {
+    if (command.empty() || command[0].empty())
+        fail(name + ": no program to run");
+    for (const std::string& arg : command)
+        if (arg.find('\0') != std::string::npos)
+            fail(name + ": an argument holds a NUL");
+    if (!command[0].starts_with('/') && command[0].find('/') != std::string::npos)
+        fail(name + ": the program " + command[0] + " is neither a name on PATH nor an absolute path");
+    refuseIgnoredSigchld(name);
+    QTemporaryDir tmp;
+    if (!tmp.isValid())
+        fail(name + ": no temporary directory to run " + command[0] + " in: " + utf8(tmp.errorString()));
+    return execute(command, utf8(tmp.path()), stdinData, name, command[0], options);
 }
 
 void refresh(project::Project& project, LayerId id, const RunOptions& options) {

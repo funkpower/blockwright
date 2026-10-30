@@ -341,6 +341,11 @@ void Document::replace(project::Project p, const QString& path, FileForm form) {
     setModified(false);
 }
 
+void Document::markUnsaved() {
+    undo_.resetClean();
+    setModified(true);
+}
+
 project::Project Document::project() const {
     project::Project p;
     p.layers = stack_;

@@ -20,6 +20,7 @@
 //   blockwright-cli snapshot [--allow-lossy] <project>
 //   blockwright-cli add-generator [--name NAME] [--timeout S] <project> <generator-dir>
 //   blockwright-cli run-generators [--layer ID]... [--timeout S] <project>
+//   blockwright-cli import-scene [--timeout S] <scene.py> <out.bwp|dir>
 //
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
@@ -28,7 +29,7 @@
 //
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert, shade,
 // pack or unpack without --allow-lossy (nothing is written), or a library check that found
-// a problem, or a lossy snapshot without --allow-lossy, or a generator that failed (nothing is written), 2 usage
+// a problem, or a lossy snapshot without --allow-lossy, or a generator or scene import that failed (nothing is written), 2 usage
 // error, 3 an IRC line over the byte budget without
 // --allow-over-budget (nothing is written), 4 lint reported findings.
 
@@ -38,6 +39,7 @@
 #include "blockwright/cp437.h"
 #include "blockwright/credits.h"
 #include "blockwright/generator.h"
+#include "blockwright/scene_import.h"
 #include "blockwright/irc.h"
 #include "blockwright/irc_render.h"
 #include "blockwright/irc_view.h"
@@ -409,6 +411,31 @@ int runGenerators(const std::string& path, const std::vector<bw::LayerId>& ids,
     if (!todo.empty())
         writeProject(p, path, std::filesystem::is_directory(path));
     std::cout << todo.size() << (todo.size() == 1 ? " generator" : " generators") << " run\n";
+    return kOk;
+}
+
+// Opens the scene as a new project (scene::importScene), each scene layer a
+// generator layer run once, and writes it to `out`: a zip when its name
+// ends in .bwp, else a directory. Prints each layer as it runs. Nothing is
+// written over a file or a directory that isn't empty.
+int importScene(const std::string& scene, const std::string& out, const bw::generator::RunOptions& opts) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const bool directory = !QString::fromStdString(out).endsWith(QLatin1String(".bwp"), Qt::CaseInsensitive);
+    if (fs::exists(fs::symlink_status(out, ec)) && !(fs::is_directory(out, ec) && fs::is_empty(out, ec)))
+        throw Failure{out + ": not written: it exists" + (directory ? " and isn't an empty directory" : "")};
+    bwcli::prepareToRunGenerators();
+    bw::project::Project p;
+    try {
+        p = bw::scene::importScene(scene, opts, [](std::size_t i, std::size_t n, const std::string& name) {
+            std::cout << "layer " << i + 1 << "/" << n << " (" << name << ")\n" << std::flush;
+        });
+    } catch (const bw::scene::SceneError& e) {
+        throw Failure{scene + ": " + e.what() + "\n" + out + ": not written"};
+    }
+    writeProject(p, out, directory);
+    std::cout << p.layers.size() << (p.layers.size() == 1 ? " layer, " : " layers, ") << p.layers.width() << "x"
+              << p.layers.height() << "\n";
     return kOk;
 }
 
@@ -789,7 +816,13 @@ int main(int argc, char** argv) {
         "  run-generators <project>\n"
         "                       run the project's generator layers (or each\n"
         "                       --layer) again and save their output; this runs\n"
-        "                       the programs their generator.json names\n\n"
+        "                       the programs their generator.json names\n"
+        "  import-scene <scene.py> <out>\n"
+        "                       open a layered Python scene as a new\n"
+        "                       project with a generator layer for each of its\n"
+        "                       layers, run once; <out> is a .bwp zip, or else a\n"
+        "                       directory that doesn't exist or is empty. This\n"
+        "                       runs the scene with python3\n\n"
         "Every command that reads an .ans also reads an XBIN (.xb) or BIN (.bin),\n"
         "and a project (a .bwp zip or a project directory) as its flattened\n"
         "composite. convert and shade write XBIN to an <out> named .xb and BIN\n"
@@ -889,11 +922,11 @@ int main(int argc, char** argv) {
     parser.addOption(layerOpt);
     const QCommandLineOption timeoutOpt(
         QStringLiteral("timeout"),
-        QStringLiteral("add-generator, run-generators: seconds a generator may run (1-3600, default %1)")
+        QStringLiteral("add-generator, run-generators, import-scene: seconds a generator may run (1-3600, default %1)")
             .arg(std::chrono::duration_cast<std::chrono::seconds>(bw::generator::kDefaultTimeout).count()),
         QStringLiteral("S"));
     parser.addOption(timeoutOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator or run-generators"));
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators or import-scene"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -922,6 +955,7 @@ int main(int argc, char** argv) {
                   << "       | pack <in> <out.bwp> | unpack <in> <dir> | snapshot [--allow-lossy] <project>\n"
                   << "       | add-generator [--name NAME] [--timeout S] <project> <dir>\n"
                   << "       | run-generators [--layer ID]... [--timeout S] <project>\n"
+                  << "       | import-scene [--timeout S] <scene.py> <out.bwp|dir>\n"
                   << "       | --version\n";
         return kUsage;
     };
@@ -938,13 +972,14 @@ int main(int argc, char** argv) {
         {&formOpt, {"shade"}},             {&glintOpt, {"shade"}},   {&despeckleOpt, {"shade"}},
         {&rimOpt, {"shade"}},              {&lightOpt, {"shade"}},   {&maskOpt, {"shade"}},
         {&nameOpt, {"add-generator"}},     {&layerOpt, {"run-generators"}},
-        {&timeoutOpt, {"add-generator", "run-generators"}},
+        {&timeoutOpt, {"add-generator", "run-generators", "import-scene"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
         cmd == QLatin1String("library") ||
         cmd == QLatin1String("pack") || cmd == QLatin1String("unpack") || cmd == QLatin1String("snapshot") ||
-        cmd == QLatin1String("add-generator") || cmd == QLatin1String("run-generators"))
+        cmd == QLatin1String("add-generator") || cmd == QLatin1String("run-generators") ||
+        cmd == QLatin1String("import-scene"))
         for (const auto& [o, cmds] : owners) {
             if (!parser.isSet(*o) ||
                 std::any_of(cmds.begin(), cmds.end(), [&](const char* c) { return cmd == QLatin1String(c); }))
@@ -1115,6 +1150,11 @@ int main(int argc, char** argv) {
                 ids.push_back(static_cast<bw::LayerId>(id));
             }
             return runGenerators(args[1].toStdString(), ids, runOpts);
+        }
+        if (cmd == QLatin1String("import-scene")) {
+            if (args.size() != 3)
+                return usage("import-scene takes a scene.py and an output .bwp or directory");
+            return importScene(args[1].toStdString(), args[2].toStdString(), runOpts);
         }
         return usage(("unknown command '"+ cmd.toStdString() + "'").c_str());
     } catch (const Usage& u) {

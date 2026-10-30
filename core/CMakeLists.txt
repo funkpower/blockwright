@@ -43,6 +43,7 @@ add_library(blockwright_core STATIC
   src/project.cpp
   src/ramp.cpp
   src/sauce.cpp
+  src/scene_import.cpp
   src/selection.cpp
   src/shapes.cpp
   src/big_text.cpp

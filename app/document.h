@@ -115,6 +115,10 @@ public:
     void replace(project::Project project, const QString& path, FileForm form);
     // The document as a project: the layer stack, iCE, SAUCE and extras.
     project::Project project() const;
+    // Marks the document modified, with no undo step to go back to its
+    // unmodified state: one made rather than read (a scene opened as a
+    // project) asks to be saved.
+    void markUnsaved();
 
     // The bytes save() writes, and what they lose (see writeAnsi): the
     // visible composite, flattened through project::toAnsi with the

@@ -1,3 +1,9 @@
+# ansidraw.py's directory, which the scene import tests' scenes import
+# (tests/scene_env.h); they skip without it. Empty unless set here or in
+# the environment at the first configure.
+set(BW_ANSIDRAW_DIR "$ENV{BW_ANSIDRAW_DIR}" CACHE PATH
+    "Directory holding ansidraw.py, for the scene import tests")
+
 find_package(Catch2 3 QUIET)
 if(NOT Catch2_FOUND)
   include(FetchContent)
@@ -49,6 +55,8 @@ add_executable(blockwright-tests
   test_smudge_brush.cpp
   test_soft_brush.cpp
   test_sauce.cpp
+  test_scene_import.cpp
+  scene_env.h
   test_xbin.cpp
   test_selection.cpp
   test_symmetry_stroke.cpp
@@ -62,6 +70,7 @@ add_executable(blockwright-tests
 target_link_libraries(blockwright-tests PRIVATE blockwright::core blockwright_cli_io libzip::zip ${BW_ZSTD}
                                                 Qt6::Core Catch2::Catch2WithMain)
 target_compile_definitions(blockwright-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
+                                                    BW_ANSIDRAW_DIR="${BW_ANSIDRAW_DIR}"
                                                     BW_TEST_TMP="${CMAKE_CURRENT_BINARY_DIR}/catch-tmp"
                                                     BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
 catch_discover_tests(blockwright-tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
@@ -74,6 +83,11 @@ add_test(NAME cli_generators
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_generators_test.sh
           $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-generators-tmp)
 set_tests_properties(cli_generators PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+add_test(NAME cli_scene
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_scene_test.sh
+          $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-scene-tmp
+          "${BW_ANSIDRAW_DIR}")
+set_tests_properties(cli_scene PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen SKIP_RETURN_CODE 77)
 add_test(NAME casefold
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/casefold_test.sh
           $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/casefold-tmp)
@@ -197,6 +211,8 @@ add_executable(blockwright-app-tests
   test_app_shortcuts.cpp
   test_app_shortcut_settings.cpp
   test_app_help.cpp
+  test_app_scene.cpp
+  scene_env.h
   scratch_settings.h
   system_input.h
   util.h
@@ -212,6 +228,7 @@ add_dependencies(blockwright-app-tests blockwright-cli)
 target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
                                                         BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library"
                                                         BW_HELP_SOURCE="${PROJECT_SOURCE_DIR}/app/help"
+                                                        BW_ANSIDRAW_DIR="${BW_ANSIDRAW_DIR}"
                                                         BW_CLI="$<TARGET_FILE:blockwright-cli>")
 set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
 catch_discover_tests(blockwright-app-tests

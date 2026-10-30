@@ -3,18 +3,31 @@
 // generators are trusted, which is asked the first time one would run in a
 // session. Opening, saving and exporting never run one: they keep the
 // cells the last run left. A refused or failed run leaves the cells too,
-// and says why in the status bar.
+// and says why in the status bar. File > Open Scene... opens a Python scene
+// as a new project of generator layers (scene_import.h), running the scene
+// once, after asking.
 
 #include "main_window.h"
 
 #include "generator_runner.h"
 
 #include "blockwright/generator.h"
+#include "blockwright/scene_import.h"
 
 #include <QDir>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QMessageBox>
+#include <QProgressDialog>
 #include <QStatusBar>
+#include <QtConcurrent/QtConcurrentRun>
+
+#include <exception>
+#include <optional>
+#include <utility>
 
 namespace bw {
 
@@ -77,19 +90,119 @@ bool MainWindow::trustGenerators(LayerId id) {
         for (const std::string& arg : spec->command)
             command += (command.isEmpty() ? QString() : QStringLiteral(" ")) + QString::fromStdString(arg);
     const QString where = doc_.path().isEmpty() ? tr("this document") : QDir::toNativeSeparators(doc_.path());
-    QMessageBox box(QMessageBox::Warning, tr("Run Generators"),
-                    tr("Run the generators in %1?").arg(where), QMessageBox::Yes | QMessageBox::No, this);
-    box.setObjectName(QStringLiteral("trustGenerators"));
-    box.setInformativeText(tr("A generator is a program the project names, run on this computer with your "
-                              "permissions. Run them only if you trust where the project came from.\n\n"
-                              "This one runs: %1")
-                               .arg(command.isEmpty() ? tr("(unknown)") : command));
-    box.setDefaultButton(QMessageBox::No);
-    if (box.exec() != QMessageBox::Yes)
+    if (!askToRun(tr("Run the generators in %1?").arg(where),
+                  tr("A generator is a program the project names, run on this computer with your "
+                     "permissions. Run them only if you trust where the project came from."),
+                  command.isEmpty() ? tr("(unknown)") : command))
         return false;
     generatorsTrusted_ = true;
     if (const QString key = projectKey(doc_.path()); !key.isEmpty())
         trustedProjects_.insert(key);
+    return true;
+}
+
+bool MainWindow::askToRun(const QString& question, const QString& why, const QString& command) {
+    QMessageBox box(QMessageBox::Warning, tr("Run Generators"), question, QMessageBox::Yes | QMessageBox::No, this);
+    box.setObjectName(QStringLiteral("trustGenerators"));
+    box.setInformativeText(tr("%1\n\nThis one runs: %2").arg(why, command));
+    box.setDefaultButton(QMessageBox::No);
+    return box.exec() == QMessageBox::Yes;
+}
+
+void MainWindow::openScene() {
+    if (!maybeSave())
+        return;
+    const QString dir = doc_.path().isEmpty() ? QString() : QFileInfo(doc_.path()).absolutePath();
+    const QString path =
+        QFileDialog::getOpenFileName(this, tr("Open Scene"), dir, tr("Python scenes (*.py);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    const QFileInfo fi(path);
+    const QString scene =
+        QDir::toNativeSeparators(fi.canonicalFilePath().isEmpty() ? fi.absoluteFilePath() : fi.canonicalFilePath());
+    const QString python = QString::fromUtf8(scene::kPython.data(), qsizetype(scene::kPython.size())) +
+                           QLatin1Char(' ') +
+                           QString::fromUtf8(scene::kNoBytecode.data(), qsizetype(scene::kNoBytecode.size()));
+    if (!askToRun(tr("Run the scene %1?").arg(scene),
+                  tr("Opening a scene runs it, a Python program, on this computer with your permissions, once "
+                     "for its layers and once for each layer's cells; the project's layers run it again. Run it "
+                     "only if you trust where it came from."),
+                  tr("%1 %2 --list-layers, then --layer-ans for each layer").arg(python, scene)))
+        return;
+    QString error;
+    if (!openSceneFile(path, &error))
+        QMessageBox::warning(this, tr("Open Scene"), tr("Could not open %1:\n%2").arg(path, error));
+}
+
+bool MainWindow::openSceneFile(const QString& path, QString* error) {
+    // generator::killRunning knows one run's group: wait for the runner's.
+    if (runner_->busy()) {
+        *error = tr("a generator is running; open the scene when it ends");
+        return false;
+    }
+    struct Imported {
+        std::optional<project::Project> project;
+        QString error;
+    };
+    QProgressDialog progress(tr("Listing the scene's layers..."), QString(), 0, 0, this);
+    progress.setObjectName(QStringLiteral("openSceneProgress"));
+    progress.setWindowTitle(tr("Open Scene"));
+    progress.setCancelButton(nullptr);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.show();
+    QProgressDialog* dialog = &progress;
+    const std::string scenePath = QFile::encodeName(path).toStdString();
+    QFutureWatcher<Imported> watcher;
+    QEventLoop loop;
+    connect(&watcher, &QFutureWatcher<Imported>::finished, &loop, &QEventLoop::quit);
+    watcher.setFuture(QtConcurrent::run([scenePath, dialog] {
+        Imported out;
+        try {
+            out.project = scene::importScene(
+                scenePath, {}, [dialog](std::size_t index, std::size_t count, const std::string& name) {
+                    // Queued to the dialog, and dropped once it is gone.
+                    QMetaObject::invokeMethod(
+                        dialog,
+                        [dialog, index, count, name = QString::fromStdString(name)] {
+                            dialog->setMaximum(int(count));
+                            dialog->setValue(int(index));
+                            dialog->setLabelText(
+                                MainWindow::tr("Running layer %1 of %2 (%3)...").arg(index + 1).arg(count).arg(name));
+                        },
+                        Qt::QueuedConnection);
+                });
+        } catch (const std::exception& e) {
+            out.error = QString::fromStdString(e.what());
+        }
+        return out;
+    }));
+    if (!watcher.isFinished())
+        loop.exec();
+    progress.hide();
+    Imported result = watcher.result();
+    if (!result.project) {
+        *error = result.error;
+        return false;
+    }
+    project::Project p = std::move(*result.project);
+    // As openProject: the renderer takes the composite first, so a canvas
+    // too large to display leaves the open document as it was.
+    AnsiDocument candidate;
+    candidate.ice = p.ice;
+    candidate.sauce = p.sauce;
+    candidate.canvas = composite(p.layers, {p.ice, Cell{}});
+    try {
+        renderer_.setCanvas(&candidate.canvas, glyphWidth(candidate));
+    } catch (const std::exception&) {
+        *error = tr("the canvas is too large to display");
+        return false;
+    }
+    doc_.replace(std::move(p), QString(), FileForm::ProjectZip);
+    doc_.markUnsaved();
+    // They have just run, on the user's word.
+    generatorsTrusted_ = true;
+    statusBar()->showMessage(tr("Opened scene %1").arg(QFileInfo(path).fileName()), 5000);
     return true;
 }
 

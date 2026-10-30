@@ -214,6 +214,8 @@ void MainWindow::createActions() {
     a->setShortcut(QKeySequence::Open);
     a = file->addAction(tr("Open Project Di&rectory..."), this, &MainWindow::openDirectory);
     a->setObjectName(QStringLiteral("openDirectory"));
+    a = file->addAction(tr("Open S&cene..."), this, &MainWindow::openScene);
+    a->setObjectName(QStringLiteral("openScene"));
     a = file->addAction(tr("&Save"), this, &MainWindow::save);
     a->setObjectName(QStringLiteral("save"));
     a->setShortcut(QKeySequence::Save);
