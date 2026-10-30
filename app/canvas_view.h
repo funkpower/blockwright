@@ -33,6 +33,7 @@
 #include <QtGlobal>
 
 #include <functional>
+#include <optional>
 
 // Qt 6.6 added QEvent::DevicePixelRatioChange. Before it a scale change is
 // seen on the next paint (Qt repaints the window at the new ratio), which
@@ -197,6 +198,18 @@ public:
     // cells of this glyph width.
     QSize canvasPixels() const { return renderer_->imageSize(); }
 
+    // The active reference layer's place, in view pixels, as the canvas
+    // shows it (a move or resize in progress included); unset when the
+    // active layer isn't a visible reference layer.
+    std::optional<QRect> referenceFrame() const;
+    // A corner handle of the frame, kHandle view pixels square and centred
+    // on its corner: the one under view point `p` (0 top-left, 1 top-right,
+    // 2 bottom-right, 3 bottom-left), or -1. A left drag on one with the
+    // Move/Transform tool resizes the layer, its aspect kept unless Shift
+    // is held; a drag anywhere else moves it, by canvas pixels.
+    static constexpr int kHandle = 8;
+    int referenceHandleAt(QPoint p) const;
+
     QSize sizeHint() const override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
 
@@ -236,6 +249,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* e) override;
     void paintEvent(QPaintEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
+    void keyReleaseEvent(QKeyEvent* e) override;
     void inputMethodEvent(QInputMethodEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
@@ -267,9 +281,17 @@ private:
     // Ends a drag the tool has going, if any, without an edit.
     void cancelDrag();
     bool dragging() const;
-    void beginLayerMove(QPoint cell);
-    void moveLayerTo(QPoint cell);
+    // A layer move from view point `p`: an art layer moves by whole cells,
+    // a reference layer by canvas pixels, or is resized from the corner
+    // handle under `p` when the tool movesLayer.
+    void beginLayerMove(QPoint p);
+    void moveLayerTo(QPoint p, Qt::KeyboardModifiers modifiers);
     void endLayerMove(bool commit);
+    // Shift going down or up during a layer move: a reference layer's
+    // resize redrawn at once. True if the move takes the key.
+    bool layerMoveModifier(QKeyEvent* e);
+    // The canvas pixel under view point `p`.
+    QPoint canvasPixelAt(QPoint p) const;
     void brushSettingsChanged();
 
     Document* doc_;
@@ -282,8 +304,16 @@ private:
     bool ownEdit_ = false;  // the view is pushing an edit
     struct LayerMove {
         std::uint64_t id;  // 0: consume a refused gesture without a tool edit
-        QPoint press, origin, shown;
+        QPoint press, origin, shown;  // cells; canvas pixels for a reference
         QSize size;
+        // A reference layer's picture, in canvas pixels: where it was and
+        // where the drag shows it, and the corner handle being dragged (-1
+        // for a move). The view draws it there; the document has it only
+        // once the drag lands.
+        bool reference = false;
+        QRect from{}, frame{};
+        int corner = -1;
+        QPoint at{};  // the pointer's last view point
     };
     std::optional<LayerMove> layerMove_;
     // The device whose press started the tool's drag: it owns the drag, and

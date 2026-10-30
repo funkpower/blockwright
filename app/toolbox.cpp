@@ -110,6 +110,7 @@ const QList<QStringList>& Toolbox::groups() {
     static const QList<QStringList> g{
         {QStringLiteral("keyboard")},
         {QStringLiteral("select")},
+        {QStringLiteral("move")},
         // The brushes that lay a colour or a glyph down.
         {QStringLiteral("halfBlock"), QStringLiteral("shade"), QStringLiteral("glyph"), QStringLiteral("colorize")},
         // The brushes that walk a ramp.
@@ -155,6 +156,18 @@ QIcon toolIcon(const QString& id) {
     } else if (id == QLatin1String("select")) {
         p.setPen(QPen(ink, 1.5, Qt::DashLine));
         p.drawRect(box);
+    } else if (id == QLatin1String("move")) {
+        // a four-way arrow
+        const QPointF c = box.center();
+        const qreal r = box.width() / 2;
+        p.drawLine(QPointF(c.x() - r, c.y()), QPointF(c.x() + r, c.y()));
+        p.drawLine(QPointF(c.x(), c.y() - r), QPointF(c.x(), c.y() + r));
+        for (const QPointF d : {QPointF(1, 0), QPointF(-1, 0), QPointF(0, 1), QPointF(0, -1)}) {
+            const QPointF tip = c + d * r;
+            const QPointF side(d.y(), d.x());
+            p.drawLine(tip, tip - d * 3 + side * 3);
+            p.drawLine(tip, tip - d * 3 - side * 3);
+        }
     } else if (id == QLatin1String("halfBlock")) {
         p.fillRect(QRectF(box.left(), box.top(), box.width(), box.height() / 2), ink);
         p.drawRect(box);

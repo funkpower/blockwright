@@ -9,6 +9,7 @@
 #include "text_options.h"
 #include "text_tool.h"
 #include "tool.h"
+#include "transform_options.h"
 
 #include "blockwright/palette.h"
 
@@ -63,6 +64,7 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
     static const QHash<QString, Options> table{
         {QStringLiteral("keyboard"), {}},
         {QStringLiteral("select"), O::PasteMode},
+        {QStringLiteral("move"), O::Transform},
         {QStringLiteral("halfBlock"), draw | O::Pencil},
         {QStringLiteral("shade"), brush},
         {QStringLiteral("rampShade"), brush | O::Strength | O::Ramp},
@@ -334,6 +336,9 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
         text_->setObjectName(QStringLiteral("textOptions"));
     }
 
+    transform_ = new TransformOptions(view);
+    transform_->setObjectName(QStringLiteral("transformOptions"));
+
     auto* form = form_layout_ = new QFormLayout(this);
     form->addRow(title_);
     form->addRow(helpToggle_);
@@ -365,6 +370,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(tr("Seed"), spraySeed_);
     if (text_)
         form->addRow(text_);
+    form->addRow(transform_);
     form->addRow(filled_);
     form->addRow(pencil4_);
     form->addRow(tr("Paste"), pasteMode_);
@@ -489,6 +495,7 @@ void ToolOptions::showFor(Tool* tool) {
     f->setRowVisible(rimLint_, o.testFlag(O::RimLint));
     if (text_)
         f->setRowVisible(text_, o.testFlag(O::Text));
+    f->setRowVisible(transform_, o.testFlag(O::Transform));
     f->setRowVisible(filled_, o.testFlag(O::Filled));
     f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
     f->setRowVisible(pasteMode_, o.testFlag(O::PasteMode));

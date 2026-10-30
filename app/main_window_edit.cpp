@@ -104,6 +104,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(new Tool(QStringLiteral("keyboard"), tr("&Keyboard")));
     selectTool_ = new SelectTool;
     tools_->add(selectTool_);
+    tools_->add(new MoveTool);
     tools_->add(new HalfBlockTool);
     tools_->add(new ShadeTool);
     tools_->add(new RampShadeTool);
@@ -236,6 +237,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     const QHash<QString, QKeySequence> toolKeys{
         {QStringLiteral("keyboard"), QKeySequence(Qt::CTRL | Qt::Key_K)},
         {QStringLiteral("select"), QKeySequence(Qt::CTRL | Qt::Key_E)},
+        {QStringLiteral("move"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_J)},
         {QStringLiteral("halfBlock"), QKeySequence(Qt::CTRL | Qt::Key_B)},
         {QStringLiteral("shade"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_B)},
         {QStringLiteral("rampShade"), QKeySequence(Qt::CTRL | Qt::Key_T)},

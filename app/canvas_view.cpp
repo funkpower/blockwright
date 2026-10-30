@@ -200,6 +200,7 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     connect(doc_, &Document::activeLayerChanged, this, [this] {
         cancelTool();
         brushSettingsChanged();
+        update();  // the Move/Transform tool frames the active reference layer
     });
     // A stylus stroke kept through a menu opened from the keyboard: the menu
     // bar has the focus, so no focus-out comes here to end the stroke. The
@@ -623,12 +624,18 @@ void CanvasView::paintReferenceLayers(QPainter& p, const QRect& clip) {
     const qint64 budget = kMaxReferencePixels / qint64(shown.size());
     for (const Layer* l : shown) {
         const ReferenceImage& r = *l->props.reference;
+        // A move or resize in progress shows the layer where the drag has it,
+        // the copy made for where it was stretched across that: a resize
+        // scales it again only once it lands.
+        const bool dragged = layerMove_ && layerMove_->reference && layerMove_->id == l->props.id;
+        const QRect place = dragged ? layerMove_->frame : QRect(r.x, r.y, r.width, r.height);
         // canvas pixels to view pixels: the zoom
-        const QRectF to(QPointF(r.x, r.y) * zoom_, QSizeF(r.width, r.height) * zoom_);
+        const QRectF to(QPointF(place.x(), place.y()) * zoom_, QSizeF(place.width(), place.height()) * zoom_);
         const QSize target(int(std::min<double>(to.width(), INT_MAX)), int(std::min<double>(to.height(), INT_MAX)));
         const QSize cache = fitPixels(to.width(), to.height(), budget);
         auto it = std::find_if(scaled_.begin(), scaled_.end(), [&](const Scaled& k) { return k.id == l->props.id; });
-        if (it == scaled_.end() || it->target != target || it->cache != cache) {
+        const bool stretch = dragged && it != scaled_.end() && !it->image.isNull();
+        if (!stretch && (it == scaled_.end() || it->target != target || it->cache != cache)) {
             if (it == scaled_.end())
                 it = scaled_.insert(scaled_.end(), Scaled{l->props.id, r.bytes, {}, {}, {}});
             it->target = target;
@@ -784,6 +791,8 @@ bool CanvasView::eventFilter(QObject* watched, QEvent* e) {
 }
 
 void CanvasView::keyPressEvent(QKeyEvent* e) {
+    if (layerMoveModifier(e))
+        return;
     if (layerMove_ && e->key() == Qt::Key_Escape) {
         cancelDrag();
         return;
@@ -821,6 +830,25 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
         return;
     }
     typeText(e->text());
+}
+
+void CanvasView::keyReleaseEvent(QKeyEvent* e) {
+    if (!layerMoveModifier(e))
+        QWidget::keyReleaseEvent(e);
+}
+
+bool CanvasView::layerMoveModifier(QKeyEvent* e) {
+    if (!layerMove_ || e->key() != Qt::Key_Shift)
+        return false;
+    // A resize frees or keeps its aspect as Shift goes down or up, where
+    // the pointer is, not on its next move: the frame shown is the one a
+    // release there lands.
+    if (layerMove_->reference && layerMove_->corner >= 0) {
+        Qt::KeyboardModifiers modifiers = e->modifiers();
+        modifiers.setFlag(Qt::ShiftModifier, e->type() == QEvent::KeyPress);
+        moveLayerTo(layerMove_->at, modifiers);
+    }
+    return true;
 }
 
 void CanvasView::inputMethodEvent(QInputMethodEvent* e) {
@@ -925,27 +953,128 @@ void CanvasView::syncDrag() {
 
 bool CanvasView::dragging() const { return layerMove_.has_value() || (tool_ && tool_->dragging()); }
 
-void CanvasView::beginLayerMove(QPoint cell) {
+QPoint CanvasView::canvasPixelAt(QPoint p) const {
+    return {clampInt(floorDiv(p.x(), zoom_)), clampInt(floorDiv(p.y(), zoom_))};
+}
+
+namespace {
+
+// A reference layer's place and size in canvas pixels, as a rect.
+QRect referenceRect(const ReferenceImage& r) { return {r.x, r.y, r.width, r.height}; }
+
+// The corners of a frame, in referenceHandleAt's order: its edges, not
+// its last pixels.
+QPoint cornerOf(const QRect& r, int corner) {
+    const bool left = corner == 0 || corner == 3, top = corner == 0 || corner == 1;
+    return {left ? r.x() : r.x() + r.width(), top ? r.y() : r.y() + r.height()};
+}
+
+int clampPlace(long long v) {
+    return int(std::clamp<long long>(v, -ReferenceImage::kMaxPlace, ReferenceImage::kMaxPlace));
+}
+
+} // namespace
+
+std::optional<QRect> CanvasView::referenceFrame() const {
+    const Layer* layer = doc_->active();
+    if (!layer || layer->props.kind != LayerKind::Reference || !layer->props.visible || !layer->props.reference)
+        return std::nullopt;
+    const QRect r = layerMove_ && layerMove_->reference && layerMove_->id == layer->props.id
+                        ? layerMove_->frame
+                        : referenceRect(*layer->props.reference);
+    const auto view = [&](long long v) { return clampInt(v * zoom_); };
+    return QRect(QPoint(view(r.x()), view(r.y())),
+                 QSize(view((long long)r.width()), view((long long)r.height())));
+}
+
+int CanvasView::referenceHandleAt(QPoint p) const {
+    const std::optional<QRect> frame = referenceFrame();
+    if (!frame)
+        return -1;
+    for (int c = 0; c < 4; ++c) {
+        const QPoint at = cornerOf(*frame, c);
+        if (std::abs((long long)p.x() - at.x()) <= kHandle / 2 && std::abs((long long)p.y() - at.y()) <= kHandle / 2)
+            return c;
+    }
+    return -1;
+}
+
+void CanvasView::beginLayerMove(QPoint p) {
     finishTool();
     setFocus(Qt::MouseFocusReason);
+    const QPoint cell = cellAt(p);
     const Layer* layer = doc_->active();
-    if (!layer || layer->props.locked || !layer->props.visible || layer->props.kind == LayerKind::Reference) {
+    const bool reference = layer && layer->props.kind == LayerKind::Reference;
+    if (!layer || layer->props.locked || !layer->props.visible || (reference && !layer->props.reference)) {
         layerMove_ = LayerMove{0, cell, {}, {}, {}};
-        emit layerMoveStatus(!layer                                      ? tr("No active layer to move")
-                             : layer->props.locked                       ? tr("Cannot move layer: locked")
-                             : layer->props.kind == LayerKind::Reference ? tr("Cannot move a reference layer yet")
-                                                                         : tr("Cannot move layer: hidden"));
+        emit layerMoveStatus(!layer                 ? tr("No active layer to move")
+                             : layer->props.locked  ? tr("Cannot move layer: locked")
+                             : !layer->props.visible ? tr("Cannot move layer: hidden")
+                                                     : tr("Cannot move layer: no picture"));
+    } else if (reference) {
+        const QRect from = referenceRect(*layer->props.reference);
+        LayerMove m{layer->props.id, canvasPixelAt(p), from.topLeft(), from.topLeft(), from.size()};
+        m.reference = true;
+        m.from = m.frame = from;
+        m.corner = tool_ && tool_->movesLayer() ? referenceHandleAt(p) : -1;
+        layerMove_ = m;
+        moveLayerTo(p, {});
     } else {
         const QPoint origin(layer->props.x, layer->props.y);
         layerMove_ = LayerMove{layer->props.id, cell, origin, origin, {layer->width(), layer->height()}};
-        moveLayerTo(cell);
+        moveLayerTo(p, {});
     }
 }
 
-void CanvasView::moveLayerTo(QPoint cell) {
+void CanvasView::moveLayerTo(QPoint p, Qt::KeyboardModifiers modifiers) {
     if (!layerMove_ || !layerMove_->id)
         return;
     LayerMove& m = *layerMove_;
+    if (m.reference) {
+        m.at = p;
+        const QPoint at = canvasPixelAt(p);
+        const long long dx = (long long)at.x() - m.press.x(), dy = (long long)at.y() - m.press.y();
+        QRect frame;
+        if (m.corner < 0) {
+            frame = QRect(QPoint(clampPlace(m.from.x() + dx), clampPlace(m.from.y() + dy)), m.from.size());
+        } else {
+            // The opposite corner stays put; the dragged one follows the
+            // pointer, by how far it has gone since the press.
+            const bool left = m.corner == 0 || m.corner == 3, top = m.corner == 0 || m.corner == 1;
+            const QPoint anchor = cornerOf(m.from, (m.corner + 2) % 4);
+            const QPoint start = cornerOf(m.from, m.corner);
+            const long long m1 = ReferenceImage::kMaxPlace;
+            long long w = std::clamp<long long>(left ? anchor.x() - (start.x() + dx) : start.x() + dx - anchor.x(), 1, m1);
+            long long h = std::clamp<long long>(top ? anchor.y() - (start.y() + dy) : start.y() + dy - anchor.y(), 1, m1);
+            if (!(modifiers & Qt::ShiftModifier)) {
+                // the aspect kept: the side the pointer took further leads
+                const double w0 = m.from.width(), h0 = m.from.height();
+                const double s = std::min(std::max(w / w0, h / h0), m1 / std::max(w0, h0));
+                w = std::clamp<long long>(std::llround(w0 * s), 1, m1);
+                h = std::clamp<long long>(std::llround(h0 * s), 1, m1);
+            }
+            frame = QRect(QPoint(clampPlace(left ? anchor.x() - w : anchor.x()), clampPlace(top ? anchor.y() - h : anchor.y())),
+                          QSize(int(w), int(h)));
+        }
+        if (frame != m.frame) {
+            m.frame = frame;
+            update();
+        }
+        if (m.corner < 0)
+            emit layerMoveStatus(tr("Move Layer: dx %1, dy %2 | x %3, y %4")
+                                     .arg((long long)frame.x() - m.from.x())
+                                     .arg((long long)frame.y() - m.from.y())
+                                     .arg(frame.x())
+                                     .arg(frame.y()));
+        else
+            emit layerMoveStatus(tr("Resize Layer: w %1, h %2 | x %3, y %4")
+                                     .arg(frame.width())
+                                     .arg(frame.height())
+                                     .arg(frame.x())
+                                     .arg(frame.y()));
+        return;
+    }
+    const QPoint cell = cellAt(p);
     const QPoint to(clampInt((long long)m.origin.x() + cell.x() - m.press.x()),
                     clampInt((long long)m.origin.y() + cell.y() - m.press.y()));
     if (to != m.shown) {
@@ -971,6 +1100,24 @@ void CanvasView::endLayerMove(bool commit) {
     emit layerMoveStatus({});
     if (!m.id)
         return;
+    if (m.reference) {
+        // Only the view showed the drag: it shows the document's place again,
+        // or the one the edit lands.
+        update();
+        const Layer* layer = doc_->layers().find(m.id);
+        if (commit && m.frame != m.from && layer && layer->props.reference) {
+            LayerProperties props = layer->props;
+            props.reference->x = m.frame.x();
+            props.reference->y = m.frame.y();
+            props.reference->width = m.frame.width();
+            props.reference->height = m.frame.height();
+            ownChange([&] {
+                doc_->setLayerProperties(m.id, std::move(props),
+                                         m.frame.size() == m.from.size() ? tr("Move Layer") : tr("Resize Layer"));
+            });
+        }
+        return;
+    }
     ownChange([&] {
         // A command from elsewhere may already have moved or removed the
         // layer. Drop the preview onto the current document, not its start.
@@ -997,7 +1144,7 @@ void CanvasView::mouseMoveEvent(QMouseEvent* e) {
     if (othersDrag(pointerOf(e)))
         return;
     if (layerMove_) {
-        moveLayerTo(cellAt(toView(e->position())));
+        moveLayerTo(toView(e->position()), e->modifiers());
         return;
     }
     if (!tool_ || !tool_->mouseMove(toolEvent(*this, e)))
@@ -1009,7 +1156,7 @@ void CanvasView::mouseReleaseEvent(QMouseEvent* e) {
         return;
     if (layerMove_) {
         if (e->button() == Qt::LeftButton) {
-            moveLayerTo(cellAt(toView(e->position())));
+            moveLayerTo(toView(e->position()), e->modifiers());
             endLayerMove(true);
         }
         return;
@@ -1095,7 +1242,7 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
         if (layerMove_) {
             if (b == Qt::LeftButton) {
                 if (seen)
-                    moveLayerTo(te.cell);
+                    moveLayerTo(p, e->modifiers());
                 endLayerMove(true);
             }
             taken = true;
@@ -1120,8 +1267,8 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
         te.buttons |= b;
         if (layerMove_) {
             taken = true;
-        } else if (b == Qt::LeftButton && (e->modifiers() & Qt::AltModifier)) {
-            beginLayerMove(te.cell);
+        } else if (b == Qt::LeftButton && ((e->modifiers() & Qt::AltModifier) || (tool_ && tool_->movesLayer()))) {
+            beginLayerMove(p);
             taken = true;
             setDrag(Pointer::Stylus);
         } else if (tool_ && tool_->mousePress(te)) {
@@ -1133,7 +1280,7 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
     if (!pressed && !here) {
         te.button = Qt::NoButton;
         if (layerMove_) {
-            moveLayerTo(te.cell);
+            moveLayerTo(p, e->modifiers());
             taken = true;
         } else {
             taken = tool_ && tool_->mouseMove(te);
@@ -1176,8 +1323,8 @@ void CanvasView::mousePressEvent(QMouseEvent* e) {
         return;
     if (layerMove_)
         return;
-    if (e->button() == Qt::LeftButton && (e->modifiers() & Qt::AltModifier)) {
-        beginLayerMove(cellAt(toView(e->position())));
+    if (e->button() == Qt::LeftButton && ((e->modifiers() & Qt::AltModifier) || (tool_ && tool_->movesLayer()))) {
+        beginLayerMove(toView(e->position()));
         setDrag(pointerOf(e));
         return;
     }

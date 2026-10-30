@@ -144,6 +144,7 @@ TEST_CASE("every drawing tool is in the Tools menu with its shortcut") {
         QKeySequence key;
     };
     const Entry entries[] = {
+        {"move", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_J)},
         {"halfBlock", QKeySequence(Qt::CTRL | Qt::Key_B)},
         {"shade", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_B)},
         {"rampShade", QKeySequence(Qt::CTRL | Qt::Key_T)},

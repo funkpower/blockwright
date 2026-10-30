@@ -436,6 +436,21 @@ public:
     bool mouseRelease(const ToolEvent& e) override;
 };
 
+// Move/Transform: a left drag moves the active layer, as Alt+drag does with
+// any tool (CanvasView::beginLayerMove): an art layer by whole cells, a
+// reference layer by canvas pixels. On a reference layer it frames the
+// picture with a corner handle at each corner; a drag on one resizes the
+// layer from the opposite corner, its aspect kept unless Shift is held.
+// Tool Options takes the place and size as numbers (TransformOptions).
+class MoveTool : public Tool {
+    Q_OBJECT
+public:
+    explicit MoveTool(QObject* parent = nullptr);
+
+    bool movesLayer() const override { return true; }
+    void paint(QPainter& p) const override;
+};
+
 // Outline brush (PLAN §10, "Detail"): the edge cells of the view's ramp
 // shape under it become the ramp colour below them, one cell wide, the
 // outline the ladder lint accepts (OutlineBrush). With *Outline the

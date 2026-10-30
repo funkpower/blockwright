@@ -656,6 +656,30 @@ std::optional<Color> pickLayerColour(const Document& doc, int x, int py, bool ba
 
 } // namespace
 
+MoveTool::MoveTool(QObject* parent) : Tool(QStringLiteral("move"), tr("Mo&ve/Transform"), parent) {}
+
+void MoveTool::paint(QPainter& p) const {
+    const std::optional<QRect> frame = view() ? view()->referenceFrame() : std::nullopt;
+    if (!frame)
+        return;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(Qt::white, 1, Qt::DashLine));
+    p.drawRect(frame->adjusted(0, 0, -1, -1));
+    p.setPen(QPen(Qt::black, 1, Qt::DotLine));
+    p.drawRect(frame->adjusted(0, 0, -1, -1));
+    constexpr int h = CanvasView::kHandle;
+    const QPoint corners[] = {frame->topLeft(), {frame->x() + frame->width(), frame->y()},
+                              {frame->x() + frame->width(), frame->y() + frame->height()},
+                              {frame->x(), frame->y() + frame->height()}};
+    p.setPen(QPen(Qt::black, 1));
+    p.setBrush(Qt::white);
+    for (const QPoint& c : corners)
+        p.drawRect(QRect(c - QPoint(h / 2, h / 2), QSize(h, h)).adjusted(0, 0, -1, -1));
+    p.restore();
+}
+
 EyedropperTool::EyedropperTool(QObject* parent) : Tool(QStringLiteral("eyedropper"), tr("E&yedropper"), parent) {}
 
 bool EyedropperTool::mousePress(const ToolEvent& e) {

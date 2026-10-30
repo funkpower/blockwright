@@ -1,7 +1,8 @@
 #pragma once
 // The canvas view's tools. The view hands its mouse and key events to the
 // active tool first, in cell coordinates, except Alt+left-drag, which moves
-// the active layer; whatever the tool doesn't take
+// the active layer (a plain left drag too, for a tool that movesLayer);
+// whatever the tool doesn't take
 // goes on to the view's keyboard mode (typing, the cell cursor). A tool edits
 // through CanvasView::applyEdit, so each edit is one undo step and mirror
 // mode applies to it, and draws what it has in progress (a floating block, a
@@ -100,6 +101,9 @@ public:
     virtual void paint(QPainter&) const {}
     // Whether paint() draws the selection's outline, so the view doesn't.
     virtual bool drawsSelection() const { return false; }
+    // Whether a plain left drag moves the active layer, as Alt+drag does
+    // (the Move/Transform tool): the view takes it before the tool.
+    virtual bool movesLayer() const { return false; }
     // The edit finish() would write, as the document gets it (mirrored, on
     // the active layer); Document::previewEdit makes it the composite cells
     // paintCells draws. Empty when nothing is in progress.

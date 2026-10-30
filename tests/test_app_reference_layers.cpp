@@ -1,6 +1,7 @@
 // Reference layers in the main window (#178): File > Open Reference Image
 // adds one, the view draws each visible one at its own place, size and
-// opacity, Layer > Reference Opacity sets it, and tools leave it alone.
+// opacity, Layer > Reference Opacity sets it, and tools leave it alone
+// (moving and resizing it: test_app_reference_transform.cpp).
 
 #include "canvas_view.h"
 #include "document.h"
@@ -226,7 +227,7 @@ TEST_CASE("Layer > Reference Opacity sets the active reference layer's, as an un
     CHECK(act(w, "referenceOpacity50")->isChecked());
 }
 
-TEST_CASE("tools and Alt+drag leave a reference layer alone", "[reference]") {
+TEST_CASE("paint tools leave a reference layer alone; Alt+drag refuses a hidden one", "[reference]") {
     MainWindow w;
     Document* d = w.document();
     CanvasView* v = w.canvasView();
@@ -242,13 +243,19 @@ TEST_CASE("tools and Alt+drag leave a reference layer alone", "[reference]") {
     CHECK(d->project().layers == before);
     CHECK(d->undoStack()->count() == steps);
 
+    // moving one is test_app_reference_transform.cpp's
+    LayerProperties props = d->layers().find(id)->props;
+    props.visible = false;
+    REQUIRE(d->setLayerProperties(id, props, QStringLiteral("Hide")));
+    const auto hidden = d->project().layers;
+    const int hiddenSteps = d->undoStack()->count();
     mouse(v, QEvent::MouseButtonPress, {1, 1}, Qt::AltModifier);
-    CHECK(w.statusBar()->currentMessage() == QStringLiteral("Cannot move a reference layer yet"));
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("Cannot move layer: hidden"));
     mouse(v, QEvent::MouseMove, {6, 3}, Qt::AltModifier);
     mouse(v, QEvent::MouseButtonRelease, {6, 3}, Qt::AltModifier);
     CHECK(w.statusBar()->currentMessage().isEmpty());
-    CHECK(d->project().layers == before);
-    CHECK(d->undoStack()->count() == steps);
+    CHECK(d->project().layers == hidden);
+    CHECK(d->undoStack()->count() == hiddenSteps);
 }
 
 TEST_CASE("reference pictures are decoded once and scaled within one shared cap", "[reference]") {

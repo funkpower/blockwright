@@ -181,6 +181,7 @@ add_executable(blockwright-app-tests
   test_app_lint.cpp
   test_app_select.cpp
   test_app_reference_layers.cpp
+  test_app_reference_transform.cpp
   test_app_shading.cpp
   test_app_gradient.cpp
   test_app_perf.cpp

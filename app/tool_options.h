@@ -11,7 +11,9 @@
 // the select tool's paste mode, sample merged for the eyedropper and
 // fill, the clone stamp's Aligned, the rim light's Keep the lint clean,
 // the glyph spray's kind, density and seed, and the Text tool's face,
-// case, spacing, alignment, wrap width and colour (text_options.h). Each
+// case, spacing, alignment, wrap width and colour (text_options.h), and
+// the Move/Transform tool's place and size of a reference layer
+// (transform_options.h). Each
 // row is shown while the active tool reads it (optionsFor). It edits the
 // view's settings and the tools' and follows them, so the menus and the
 // dock stay in step. Under the tool's name, a panel that can be folded
@@ -41,6 +43,7 @@ class CanvasView;
 class CloneTool;
 class SprayTool;
 class TextOptions;
+class TransformOptions;
 class GlyphTool;
 class GradientTool;
 class RimLightTool;
@@ -75,6 +78,7 @@ public:
         RimLint = 1 << 19,       // the rim light keeps the ladder lint clean
         Spray = 1 << 20,         // the glyph spray's kind, density and seed
         Text = 1 << 21,          // the text tool's face, case, spacing, alignment, wrap and colour
+        Transform = 1 << 22,     // the Move/Transform tool's place, size and scale of a reference layer
     };
     Q_DECLARE_FLAGS(Options, Option)
 
@@ -129,6 +133,7 @@ public:
     QSpinBox* spraySeedBox() const { return spraySeed_; }
     QCheckBox* rimLintBox() const { return rimLint_; }
     TextOptions* textOptions() const { return text_; }
+    TransformOptions* transformOptions() const { return transform_; }
 
 signals:
     // The help panel's link to Help > Keyboard Shortcuts was clicked.
@@ -161,6 +166,7 @@ private:
     QFormLayout* form_layout_;
     QLabel* title_;
     TextOptions* text_ = nullptr;
+    TransformOptions* transform_;
     QLabel* none_;
     QToolButton* helpToggle_;
     QLabel* help_;

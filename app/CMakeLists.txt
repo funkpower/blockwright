@@ -67,6 +67,8 @@ add_library(blockwright_app STATIC
   tool_options.h
   toolbox.cpp
   toolbox.h
+  transform_options.cpp
+  transform_options.h
 )
 set_target_properties(blockwright_app PROPERTIES AUTOMOC ON)
 # The help text (help_text.h): a Markdown file a tool and a layer kind.
@@ -88,6 +90,7 @@ qt_add_resources(blockwright_app "help" PREFIX "/help" BASE help FILES
   help/tools/halfBlock.md
   help/tools/keyboard.md
   help/tools/line.md
+  help/tools/move.md
   help/tools/outline.md
   help/tools/rampShade.md
   help/tools/rectangle.md
