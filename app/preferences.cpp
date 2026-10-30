@@ -13,6 +13,7 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 #include <filesystem>
@@ -78,15 +79,22 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
     list_->setLineWrapMode(QPlainTextEdit::NoWrap);
     buttons_ = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
 
+    auto* fonts = new QWidget(this);
+    fonts->setObjectName(QStringLiteral("fontsPage"));
     auto* form = new QFormLayout;
     form->addRow(tr("&Fonts folder:"), row);
+    auto* page = new QVBoxLayout(fonts);
+    page->addLayout(form);
+    page->addWidget(default_);
+    page->addWidget(summary_);
+    page->addWidget(list_, 1);
+    pages_ = new QTabWidget(this);
+    pages_->setObjectName(QStringLiteral("preferencesPages"));
+    pages_->addTab(fonts, tr("Fonts"));
     auto* layout = new QVBoxLayout(this);
-    layout->addLayout(form);
-    layout->addWidget(default_);
-    layout->addWidget(summary_);
-    layout->addWidget(list_, 1);
+    layout->addWidget(pages_, 1);
     layout->addWidget(buttons_);
-    resize(560, 420);
+    resize(560, 480);
 
     connect(folder_, &QLineEdit::editingFinished, this, [this] { rescan(); });
     connect(browse_, &QPushButton::clicked, this, [this] {
@@ -121,6 +129,8 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
         rescan(true);
     }
 }
+
+void PreferencesDialog::addPage(QWidget* page, const QString& title) { pages_->addTab(page, title); }
 
 QString PreferencesDialog::fontsFolder() const { return folder_->text().trimmed(); }
 

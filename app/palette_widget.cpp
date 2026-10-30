@@ -1,6 +1,7 @@
 #include "palette_widget.h"
 
 #include <QHelpEvent>
+#include <QAction>
 #include <QKeySequence>
 #include <QMouseEvent>
 #include <QPainter>
@@ -28,6 +29,11 @@ PaletteWidget::PaletteWidget(QWidget* parent) : QWidget(parent) {
     // Keep every swatch visible, but let the column grow for the other docks.
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     setToolTip(tr("Left click: foreground. Right click: background."));
+}
+
+void PaletteWidget::setKeyActions(QAction* swap, QAction* reset) {
+    swap_ = swap;
+    reset_ = reset;
 }
 
 void PaletteWidget::setPen(const Pen& pen) {
@@ -137,10 +143,16 @@ bool PaletteWidget::event(QEvent* e) {
     if (e->type() == QEvent::ToolTip) {
         const QPoint at = static_cast<QHelpEvent*>(e)->pos();
         QString tip;
+        // with the key of the Colours menu's item, if it has one
+        const auto key = [](const QString& text, const QAction* a) {
+            return a && !a->shortcut().isEmpty()
+                       ? tr("%1 (%2)").arg(text, a->shortcut().toString(QKeySequence::NativeText))
+                       : text;
+        };
         if (swapRect().contains(at))
-            tip = tr("Swap the foreground and background");
+            tip = key(tr("Swap the foreground and background"), swap_);
         else if (resetRect().contains(at))
-            tip = tr("Default colours (%1)").arg(QKeySequence(Qt::CTRL | Qt::Key_D).toString(QKeySequence::NativeText));
+            tip = key(tr("Default colours"), reset_);
         else if (foregroundRect().contains(at))
             tip = tr("The foreground colour");
         else if (backgroundRect().contains(at))

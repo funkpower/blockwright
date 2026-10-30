@@ -7,7 +7,10 @@
 
 #include "blockwright/edit.h"
 
+#include <QPointer>
 #include <QWidget>
+
+class QAction;
 
 namespace bw {
 
@@ -32,6 +35,10 @@ public:
     QRect swapRect() const;
     QRect resetRect() const;
 
+    // The Colours menu's Swap Colours and Default Colours, whose keys the
+    // swap arrow's and reset corner's tooltips show.
+    void setKeyActions(QAction* swap, QAction* reset);
+
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override { return sizeHint(); }
 
@@ -48,6 +55,8 @@ protected:
 
 private:
     Pen pen_;
+    QPointer<QAction> swap_;
+    QPointer<QAction> reset_;
 };
 
 } // namespace bw

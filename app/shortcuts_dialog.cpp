@@ -25,9 +25,11 @@ QString keyText(const QAction* a) {
     QStringList keys;
     for (const QKeySequence& k : a->shortcuts())
         keys << k.toString(QKeySequence::NativeText);
+    // the hint can repeat the action's own keys (Edit > Delete's names them)
     if (const qsizetype tab = a->text().indexOf(QLatin1Char('\t')); tab >= 0)
-        if (const QString hint = a->text().mid(tab + 1).trimmed(); !hint.isEmpty() && !keys.contains(hint))
-            keys << hint;
+        for (const QString& part : a->text().mid(tab + 1).split(QStringLiteral(", ")))
+            if (const QString hint = part.trimmed(); !hint.isEmpty() && !keys.contains(hint))
+                keys << hint;
     return keys.join(QStringLiteral(", "));
 }
 
@@ -101,14 +103,14 @@ QList<QAction*> windowActions(QWidget* window) {
     return out;
 }
 
-QList<ShortcutEntry> shortcutEntries(QWidget* window) {
+QList<ShortcutEntry> shortcutEntries(QWidget* window, bool keyedOnly) {
     QList<ShortcutEntry> out;
     QSet<const QAction*> seen;
     const auto take = [&](QAction* a, const QString& group) {
         if (a->isSeparator() || !a->isVisible() || seen.contains(a))
             return;
         const QString keys = keyText(a);
-        if (keys.isEmpty())
+        if (keys.isEmpty() && keyedOnly)
             return;
         seen.insert(a);
         out.push_back({group, shortcutName(a->text()), keys, a});

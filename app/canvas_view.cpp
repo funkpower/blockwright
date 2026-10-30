@@ -10,6 +10,7 @@
 #include "blockwright/glyph_sets.h"
 #include "blockwright/selection.h"
 
+#include <QAbstractScrollArea>
 #include <QApplication>
 #include <QBuffer>
 #include <QGuiApplication>
@@ -23,6 +24,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPointingDevice>
+#include <QScrollBar>
 #include <QScopedValueRollback>
 #include <QTimer>
 #include <QUndoStack>
@@ -375,7 +377,8 @@ void CanvasView::setTool(Tool* tool) {
         tool_->deactivate();
     }
     tool_ = tool;
-    setDrag(Pointer::None);
+    if (!pan_)  // a pan goes on under the new tool, and keeps its owner
+        setDrag(Pointer::None);
     if (tool_) {
         connect(tool_, &Tool::changed, this, qOverload<>(&QWidget::update));
         // A drag can end in the tool, from a menu action or the document:
@@ -417,13 +420,15 @@ void CanvasView::setSelection(const Selection& selection) {
 
 void CanvasView::cancelTool() {
     endLayerMove(false);
-    setDrag(Pointer::None);
+    if (!pan_)
+        setDrag(Pointer::None);
     if (tool_)
         tool_->cancel();
 }
 
 void CanvasView::cancelDrag() {
     endLayerMove(false);
+    endPan();
     if (!tool_ || !tool_->dragging()) {
         syncDrag();
         return;
@@ -869,18 +874,22 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
         return;
     }
     const Canvas& cv = doc_->layerCanvas();
-    switch (e->key()) {
-    case Qt::Key_Left: setCellCursor(moveCursor(cv, cursor_, -1, 0)); return;
-    case Qt::Key_Right: setCellCursor(moveCursor(cv, cursor_, 1, 0)); return;
-    case Qt::Key_Up: setCellCursor(moveCursor(cv, cursor_, 0, -1)); return;
-    case Qt::Key_Down: setCellCursor(moveCursor(cv, cursor_, 0, 1)); return;
-    case Qt::Key_Home: setCellCursor({0, cursor_.y}); return;
-    case Qt::Key_End: setCellCursor({cv.width() - 1, cursor_.y}); return;
-    case Qt::Key_Return:
-    case Qt::Key_Enter: setCellCursor(moveCursor(cv, {0, cursor_.y}, 0, 1)); return;
-    case Qt::Key_Backspace: finishTool(); commit(backspace(cv, cursor_, doc_->blankCell())); return;
-    case Qt::Key_Delete: finishTool(); commit(deleteCell(cv, cursor_, doc_->blankCell())); return;
-    default: break;
+    // With Ctrl or Meta held these are chords an action can have (PLAN §3),
+    // as Ctrl+arrows step the pen, so keyboard mode leaves them alone.
+    if (!(e->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))) {
+        switch (e->key()) {
+        case Qt::Key_Left: setCellCursor(moveCursor(cv, cursor_, -1, 0)); return;
+        case Qt::Key_Right: setCellCursor(moveCursor(cv, cursor_, 1, 0)); return;
+        case Qt::Key_Up: setCellCursor(moveCursor(cv, cursor_, 0, -1)); return;
+        case Qt::Key_Down: setCellCursor(moveCursor(cv, cursor_, 0, 1)); return;
+        case Qt::Key_Home: setCellCursor({0, cursor_.y}); return;
+        case Qt::Key_End: setCellCursor({cv.width() - 1, cursor_.y}); return;
+        case Qt::Key_Return:
+        case Qt::Key_Enter: setCellCursor(moveCursor(cv, {0, cursor_.y}, 0, 1)); return;
+        case Qt::Key_Backspace: finishTool(); commit(backspace(cv, cursor_, doc_->blankCell())); return;
+        case Qt::Key_Delete: finishTool(); commit(deleteCell(cv, cursor_, doc_->blankCell())); return;
+        default: break;
+        }
     }
     if (e->key() >= Qt::Key_F1 && e->key() < Qt::Key_F1 + kGlyphSetKeys &&
         !(e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
@@ -1014,7 +1023,9 @@ void CanvasView::syncDrag() {
         setDrag(Pointer::None);
 }
 
-bool CanvasView::dragging() const { return layerMove_.has_value() || (tool_ && tool_->dragging()); }
+bool CanvasView::dragging() const {
+    return layerMove_.has_value() || pan_.has_value() || (tool_ && tool_->dragging());
+}
 
 QPoint CanvasView::canvasPixelAt(QPoint p) const {
     return {clampInt(floorDiv(p.x(), zoom_)), clampInt(floorDiv(p.y(), zoom_))};
@@ -1203,9 +1214,41 @@ bool CanvasView::othersDrag(Pointer p) {
     return drag_ != Pointer::None && drag_ != p;
 }
 
+namespace {
+
+// The scroll area `w` is in, if any.
+QAbstractScrollArea* scrollAreaOf(const QWidget* w) {
+    for (QWidget* p = w->parentWidget(); p; p = p->parentWidget())
+        if (auto* s = qobject_cast<QAbstractScrollArea*>(p))
+            return s;
+    return nullptr;
+}
+
+} // namespace
+
+void CanvasView::panTo(QPointF global) {
+    if (QAbstractScrollArea* s = scrollAreaOf(this)) {
+        const QPoint by = (global - pan_->start).toPoint();
+        s->horizontalScrollBar()->setValue(pan_->scroll.x() - by.x());
+        s->verticalScrollBar()->setValue(pan_->scroll.y() - by.y());
+    }
+}
+
+void CanvasView::endPan() {
+    if (!pan_)
+        return;
+    pan_.reset();
+    unsetCursor();
+    syncDrag();
+}
+
 void CanvasView::mouseMoveEvent(QMouseEvent* e) {
     if (othersDrag(pointerOf(e)))
         return;
+    if (pan_) {
+        panTo(e->globalPosition());
+        return;
+    }
     if (layerMove_) {
         moveLayerTo(toView(e->position()), e->modifiers());
         return;
@@ -1217,6 +1260,13 @@ void CanvasView::mouseMoveEvent(QMouseEvent* e) {
 void CanvasView::mouseReleaseEvent(QMouseEvent* e) {
     if (othersDrag(pointerOf(e)))
         return;
+    if (pan_) {
+        if (e->button() == Qt::MiddleButton) {
+            panTo(e->globalPosition());
+            endPan();
+        }
+        return;
+    }
     if (layerMove_) {
         if (e->button() == Qt::LeftButton) {
             moveLayerTo(toView(e->position()), e->modifiers());
@@ -1375,7 +1425,7 @@ void CanvasView::focusOutEvent(QFocusEvent* e) {
     // goes on and its own release ends it, through a menu opened from the
     // keyboard too (Alt+F takes the focus for the popup, then for the menu
     // bar; Alt tapped alone, for the menu bar). The window then watches the
-    // undo key for the view (eventFilter).
+    // undo key for the view (eventFilter). A pan ends where it is.
     const bool menu = e->reason() == Qt::PopupFocusReason || e->reason() == Qt::MenuBarFocusReason;
     if (layerMove_ || !menu || drag_ != Pointer::Stylus)
         cancelDrag();
@@ -1385,10 +1435,19 @@ void CanvasView::focusOutEvent(QFocusEvent* e) {
 }
 
 void CanvasView::mousePressEvent(QMouseEvent* e) {
+    if (pan_)
+        return;
     if (othersDrag(pointerOf(e)))
         return;
     if (layerMove_)
         return;
+    if (QAbstractScrollArea* s = scrollAreaOf(this);
+        s && e->button() == Qt::MiddleButton && e->buttons() == Qt::MiddleButton && !dragging()) {
+        pan_ = Pan{e->globalPosition(), {s->horizontalScrollBar()->value(), s->verticalScrollBar()->value()}};
+        setCursor(Qt::ClosedHandCursor);
+        setDrag(pointerOf(e));
+        return;
+    }
     if (e->button() == Qt::LeftButton && ((e->modifiers() & Qt::AltModifier) || (tool_ && tool_->movesLayer()))) {
         beginLayerMove(toView(e->position()));
         setDrag(pointerOf(e));

@@ -36,8 +36,8 @@ QList<QAction*> windowActions(QWidget* window);
 // The windowActions() that have a key and are visible: the menu bar's
 // grouped by menu, the rest by dock or under "Other". A key shown after a
 // tab in an action's text (Edit > Delete's, which the canvas handles)
-// counts as one.
-QList<ShortcutEntry> shortcutEntries(QWidget* window);
+// counts as one, and a list of them there as each. With `keyedOnly` false, those without a key too.
+QList<ShortcutEntry> shortcutEntries(QWidget* window, bool keyedOnly = true);
 
 struct ShortcutClash {
     QKeySequence key;

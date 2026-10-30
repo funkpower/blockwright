@@ -181,9 +181,19 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
                          [selecting] { selecting()->copy(); });
     QAction* paste = add(edit, tr("&Paste"), "paste", QKeySequence(Qt::CTRL | Qt::Key_V),
                          [selecting] { selecting()->paste(); });
-    needSelection << add(edit, tr("&Delete") + QStringLiteral("\t") + QKeySequence(Qt::Key_Delete).toString(
-                                                                          QKeySequence::NativeText),
-                         "deleteSelection", QKeySequence(), [selecting] { selecting()->clear(); });
+    // Del is no key of the action's but the tool's, so the menu names it
+    // after any key Preferences > Shortcuts gives the action.
+    QAction* del = add(edit, tr("&Delete"), "deleteSelection", QKeySequence(), [selecting] { selecting()->clear(); });
+    const auto delText = [del] {
+        QStringList keys;
+        for (const QKeySequence& k : del->shortcuts())
+            keys << k.toString(QKeySequence::NativeText);
+        keys << QKeySequence(Qt::Key_Delete).toString(QKeySequence::NativeText);
+        del->setText(tr("&Delete") + QLatin1Char('\t') + keys.join(QStringLiteral(", ")));
+    };
+    delText();
+    connect(del, &QAction::changed, del, delText);
+    needSelection << del;
     edit->addSeparator();
     QAction* mirror = check(add(edit, tr("&Mirror Mode"), "mirrorMode", QKeySequence(Qt::CTRL | Qt::Key_M), [] {}),
                             nullptr, view_->mirror());
@@ -267,12 +277,20 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         a->setObjectName(t->id() + QStringLiteral("Tool"));
         a->setIcon(toolIcon(t->id()));
         const QString name = QString(t->name()).remove(QLatin1Char('&'));
-        // the name and key, then what the tool does (help_text.h)
-        QString tip = key.isEmpty() ? name : tr("%1 (%2)").arg(name, key.toString(QKeySequence::NativeText));
         const QString summary = help::toolSummary(t->id());
-        if (!summary.isEmpty())
-            tip += QLatin1Char('\n') + summary;
-        a->setToolTip(tip);
+        // the name and key, then what the tool does (help_text.h); the first
+        // line again when the key changes (Preferences > Shortcuts), keeping
+        // the lines after it (the toolbox adds one to a group's tools), which
+        // setToolTip's own changed() leaves alone, the tip being the same
+        a->setToolTip(summary.isEmpty() ? name : name + QLatin1Char('\n') + summary);
+        const auto setTip = [a, name] {
+            const QKeySequence k = a->shortcut();
+            QStringList lines = a->toolTip().split(QLatin1Char('\n'));
+            lines[0] = k.isEmpty() ? name : tr("%1 (%2)").arg(name, k.toString(QKeySequence::NativeText));
+            a->setToolTip(lines.join(QLatin1Char('\n')));
+        };
+        setTip();
+        connect(a, &QAction::changed, a, setTip);
         a->setStatusTip(summary);
         // and all of it for What's This (whats_this.h)
         a->setWhatsThis(toolWhatsThis(t->id()));

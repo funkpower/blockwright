@@ -7,6 +7,7 @@
 #include "canvas_view.h"
 #include "library_dock.h"
 #include "preferences.h"
+#include "shortcut_settings.h"
 #include "sauce_dialog.h"
 
 #include <QAction>
@@ -52,8 +53,11 @@ void MainWindow::editSauce() {
 void MainWindow::editPreferences() {
     // scanned afresh, so OK on the same folder picks up fonts added since
     PreferencesDialog dialog(fontsFolderSetting(), nullptr, this);
+    auto* keys = new ShortcutsEditor(this);
+    dialog.addPage(keys, tr("Shortcuts"));
     if (dialog.exec() != QDialog::Accepted)
         return;
+    keys->apply();
     if (dialog.fontsFolderChanged())
         setFontsFolderSetting(dialog.fontsFolder());
     doc_.scanFontsFolder(dialog.fontsFolder());

@@ -59,6 +59,8 @@ public:
 
     int zoom() const { return zoom_; }
     void setZoom(int zoom);  // clamped to kMinZoom-kMaxZoom
+    // Whether a middle drag is panning the view in its scroll area (mousePressEvent).
+    bool panning() const { return pan_.has_value(); }
 
     Cursor cellCursor() const { return cursor_; }
     void setCellCursor(Cursor c);  // kept on the canvas
@@ -286,7 +288,7 @@ private:
     const QImage& referencePicture(const ReferenceImage& picture);
     // The document changed under the tool: it drops what it has in progress.
     void cancelTool();
-    // Ends a drag the tool has going, if any, without an edit.
+    // Ends a drag the tool has going, if any, without an edit, and a pan.
     void cancelDrag();
     bool dragging() const;
     // A layer move from view point `p`: an art layer moves by whole cells,
@@ -324,6 +326,19 @@ private:
         QPoint at{};  // the pointer's last view point
     };
     std::optional<LayerMove> layerMove_;
+    // A middle drag pans the scroll area the view is in, keeping the point
+    // grabbed under the pointer (#149). It is no tool's and makes no edit,
+    // so it starts only with no other button held and no drag going on.
+    // It is a drag of the device that pressed it (setDrag, dragging()), so
+    // other presses, the other device's and a pen's included, wait for it
+    // to end; the undo key or a lost focus ends it where it is (cancelDrag).
+    struct Pan {
+        QPointF start;  // global
+        QPoint scroll;  // the scroll bars' values at the start
+    };
+    std::optional<Pan> pan_;
+    void panTo(QPointF global);
+    void endPan();
     // The device whose press started the tool's drag: it owns the drag, and
     // the other device's events are ignored while the drag goes on. The
     // ownership ends with the drag, however it ends (a release, Esc, a lost

@@ -1,5 +1,7 @@
 #include "tool_options.h"
 
+#include "shortcut_settings.h"
+
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
@@ -52,6 +54,11 @@ const QString kShowHelpKey = QStringLiteral("toolOptions/showHelp");
 
 QString keyText(const QKeySequence& key) { return key.toString(QKeySequence::NativeText); }
 
+// `text` with ", <key>" for its %1, or nothing when `a` has no key.
+QString withKey(const QString& text, const QAction* a) {
+    return text.arg(a->shortcut().isEmpty() ? QString() : QStringLiteral(", ") + keyText(a->shortcut()));
+}
+
 using O = ToolOptions::Option;
 
 } // namespace
@@ -101,6 +108,18 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
            O::Spray;
 }
 
+void ToolOptions::followKeys(QAction* smaller, QAction* larger, QAction* mirror) {
+    keepToolTip(size_, {smaller, larger}, [smaller, larger] {
+        if (smaller->shortcut().isEmpty() || larger->shortcut().isEmpty())
+            return tr("Brush width in cells (Tools > Smaller Brush and Larger Brush step it)");
+        return tr("Brush width in cells (%1 and %2 step it)")
+            .arg(keyText(smaller->shortcut()), keyText(larger->shortcut()));
+    });
+    keepToolTip(symmetry_, {mirror}, [mirror] {
+        return withKey(tr("What every brush repeats a stroke as (mirror mode%1)"), mirror);
+    });
+}
+
 ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* select, QAction* filledShapes,
                          QWidget* parent)
     : QWidget(parent), view_(view), select_(select),
@@ -135,9 +154,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     size_ = new QSpinBox;
     size_->setObjectName(QStringLiteral("brushSize"));
     size_->setRange(1, kMaxBrushSize);
-    size_->setToolTip(tr("Brush width in cells (%1 and %2 step it)")
-                          .arg(keyText(QKeySequence(Qt::CTRL | Qt::Key_BracketLeft)),
-                               keyText(QKeySequence(Qt::CTRL | Qt::Key_BracketRight))));
+    size_->setToolTip(tr("Brush width in cells"));  // and its keys, from followKeys
 
     tip_ = new QComboBox;
     tip_->setObjectName(QStringLiteral("brushTip"));
@@ -234,8 +251,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     symmetry_->addItem(tr("Mirror Y"), int(SymmetryMode::MirrorY));
     symmetry_->addItem(tr("Mirror X and Y"), int(SymmetryMode::MirrorXY));
     symmetry_->addItem(tr("Radial"), int(SymmetryMode::Radial));
-    symmetry_->setToolTip(tr("What every brush repeats a stroke as (mirror mode, %1)")
-                              .arg(keyText(QKeySequence(Qt::CTRL | Qt::Key_M))));
+    symmetry_->setToolTip(tr("What every brush repeats a stroke as (mirror mode)"));
 
     folds_ = new QSpinBox;
     folds_->setObjectName(QStringLiteral("brushSymmetryFolds"));
@@ -266,8 +282,9 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
 
     filled_ = new QCheckBox(tr("Filled"));
     filled_->setObjectName(QStringLiteral("shapeFilled"));
-    filled_->setToolTip(tr("Rectangles and ellipses are filled, not outlines (Filled Shapes, %1)")
-                            .arg(keyText(filledShapes->shortcut())));
+    keepToolTip(filled_, {filledShapes}, [filledShapes] {
+        return withKey(tr("Rectangles and ellipses are filled, not outlines (Filled Shapes%1)"), filledShapes);
+    });
 
     pasteMode_ = new QComboBox;
     pasteMode_->setObjectName(QStringLiteral("selectPasteMode"));

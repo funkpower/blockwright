@@ -77,6 +77,9 @@ void MainWindow::createDocks() {
     toolbox_ = new Toolbox(tools_, toolActions_);
     toolboxDock_ = dock(tr("Toolbox"), "toolboxDock", toolbox_);
     toolOptions_ = new ToolOptions(view_, tools_, selectTool_, findChild<QAction*>(QStringLiteral("filledShapes")));
+    toolOptions_->followKeys(findChild<QAction*>(QStringLiteral("brushSmaller")),
+                             findChild<QAction*>(QStringLiteral("brushLarger")),
+                             findChild<QAction*>(QStringLiteral("mirrorMode")));
     connect(toolOptions_, &ToolOptions::shortcutsRequested, this, [this] { showShortcuts(this); });
     auto* optionsScroll = new QScrollArea;
     optionsScroll->setWidget(toolOptions_);
@@ -152,6 +155,7 @@ void MainWindow::createDocks() {
     connect(palette_, &PaletteWidget::swapRequested, swap, &QAction::trigger);
     QAction* reset = findChild<QAction*>(QStringLiteral("defaultColours"));
     connect(palette_, &PaletteWidget::resetRequested, reset, &QAction::trigger);
+    palette_->setKeyActions(swap, reset);
 
     // Window: every dock, then the reset. A dock that can't close (the
     // preview, the palette, the Library) is always shown: Qt lists it

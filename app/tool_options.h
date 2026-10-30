@@ -92,6 +92,10 @@ public:
     ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* select, QAction* filledShapes,
                 QWidget* parent = nullptr);
 
+    // Shows the keys of the Tools menu's Smaller and Larger Brush on the size
+    // and Edit > Mirror Mode's on the symmetry, following a rebinding.
+    void followKeys(QAction* smaller, QAction* larger, QAction* mirror);
+
     // The options the dock shows now, for the active tool.
     Options shown() const { return shown_; }
 

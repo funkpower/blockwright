@@ -1,6 +1,7 @@
 #pragma once
-// Edit > Preferences...: the fonts folder (PLAN §15), where TheDraw fonts
-// for text layers are read from. The local collection is the default; the folder is
+// Edit > Preferences...: a tab per page. Fonts is the fonts folder (PLAN
+// §15), where TheDraw fonts for text layers are read from; the window adds
+// Shortcuts (shortcut_settings.h). The local collection is the default; the folder is
 // kept in the settings (appSettings) under kFontsFolderKey, and the dialog
 // lists what a background scan of it finds: each font, and each .tdf file it couldn't
 // read with the reason.
@@ -17,6 +18,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QTabWidget;
 
 namespace bw {
 
@@ -54,6 +56,9 @@ public:
     QLabel* fontsSummary() const { return summary_; }
     QPlainTextEdit* fontsList() const { return list_; }
     QDialogButtonBox* buttons() const { return buttons_; }
+    // The tabs, Fonts first; addPage puts another after them.
+    QTabWidget* pages() const { return pages_; }
+    void addPage(QWidget* page, const QString& title);
 
 private:
     // Scans the folder entered when it isn't the one last scanned, or
@@ -73,6 +78,7 @@ private:
     QLabel* summary_;
     QPlainTextEdit* list_;
     QDialogButtonBox* buttons_;
+    QTabWidget* pages_;
 };
 
 } // namespace bw

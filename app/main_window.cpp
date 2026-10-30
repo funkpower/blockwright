@@ -6,6 +6,7 @@
 #include "select_tool.h"
 #include "palette_widget.h"
 #include "preferences.h"
+#include "shortcut_settings.h"
 #include "publish.h"
 #include "shortcuts_dialog.h"
 
@@ -30,6 +31,7 @@
 #include <QWhatsThis>
 
 #include <algorithm>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -188,6 +190,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createDocks();
     createGenerators();
     createReferenceActions();
+    applyShortcutSettings(this);
+    // The glyph-set line's tooltip names the sets' keys.
+    for (const char* name : {"previousGlyphSet", "nextGlyphSet", "defaultGlyphSet"})
+        connect(findChild<QAction*>(QString::fromLatin1(name)), &QAction::changed, this, &MainWindow::updateGlyphSet);
+    for (QAction* set : std::as_const(glyphSetActions_))
+        connect(set, &QAction::changed, this, &MainWindow::updateGlyphSet);
     updateTitle();
     updateStatus();
     updateGlyphSet();
@@ -199,14 +207,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 void MainWindow::createActions() {
     QMenu* file = menuBar()->addMenu(tr("&File"));
     QAction* a = file->addAction(tr("&New"), this, &MainWindow::newFile);
+    a->setObjectName(QStringLiteral("newFile"));
     a->setShortcut(QKeySequence::New);
     a = file->addAction(tr("&Open..."), this, &MainWindow::open);
+    a->setObjectName(QStringLiteral("open"));
     a->setShortcut(QKeySequence::Open);
     a = file->addAction(tr("Open Project Di&rectory..."), this, &MainWindow::openDirectory);
     a->setObjectName(QStringLiteral("openDirectory"));
     a = file->addAction(tr("&Save"), this, &MainWindow::save);
+    a->setObjectName(QStringLiteral("save"));
     a->setShortcut(QKeySequence::Save);
     a = file->addAction(tr("Save &As..."), this, &MainWindow::saveAs);
+    a->setObjectName(QStringLiteral("saveAs"));
     a->setShortcut(QKeySequence::SaveAs);
     createProjectActions(file);
     file->addSeparator();
@@ -216,6 +228,7 @@ void MainWindow::createActions() {
     (new Publisher(this))->addActions(file);
     file->addSeparator();
     a = file->addAction(tr("&Quit"), this, &QWidget::close);
+    a->setObjectName(QStringLiteral("quit"));
     a->setShortcut(QKeySequence::Quit);
 
     QMenu* edit = menuBar()->addMenu(tr("&Edit"));
@@ -321,14 +334,16 @@ void MainWindow::createActions() {
     a = help->addAction(tr("&Manual..."), this, [this] { showManual(*tools_, this); });
     a->setObjectName(QStringLiteral("manual"));
     a->setStatusTip(tr("What each tool, its options and each kind of layer do"));
-    help->addAction(tr("&About Blockwright"), this, [this] {
+    a = help->addAction(tr("&About Blockwright"), this, [this] {
         QMessageBox::about(this, tr("About Blockwright"),
                            tr("<p><b>Blockwright</b> %1 (%2)</p><p>ANSI and IRC art editor. GPL-3.0-or-later.</p>"
                               "<p>%3</p>")
                                .arg(QStringLiteral(BLOCKWRIGHT_VERSION), QStringLiteral(BLOCKWRIGHT_GIT_COMMIT),
                                     QString::fromUtf8(kFontCredit).toHtmlEscaped().replace('\n', ' ')));
     });
-    help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
+    a->setObjectName(QStringLiteral("about"));
+    a = help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
+    a->setObjectName(QStringLiteral("aboutQt"));
 }
 
 void MainWindow::updateGlyphSet() {
@@ -340,15 +355,55 @@ void MainWindow::updateGlyphSet() {
         tips << tr("F%1 %2").arg(k + 1).arg(glyphs.back());
     }
     glyphSetLabel_->setText(tr("F-keys set %1: %2").arg(set + 1).arg(glyphs.join(QLatin1Char(' '))));
-    const auto keys = [this](const char* name) {
-        return findChild<QAction*>(QString::fromLatin1(name))->shortcut().toString(QKeySequence::NativeText);
+    const auto key = [](const QAction* a) { return a->shortcut().toString(QKeySequence::NativeText); };
+    const auto named = [this, &key](const char* name) { return key(findChild<QAction*>(QString::fromLatin1(name))); };
+    // Only the keys the actions have: each line reads right with any of them gone.
+    const QString previous = named("previousGlyphSet"), next = named("nextGlyphSet"), back = named("defaultGlyphSet");
+    QStringList steps;
+    if (!previous.isEmpty() && !next.isEmpty())
+        steps << tr("%1 and %2 step through the sets").arg(previous, next);
+    else if (!next.isEmpty())
+        steps << tr("%1 steps through the sets").arg(next);
+    else if (!previous.isEmpty())
+        steps << tr("%1 steps back through the sets").arg(previous);
+    if (!back.isEmpty())
+        steps << tr("%1 goes back to the default").arg(back);
+    // The sets' own keys, a run of F-keys under the same modifiers (the
+    // default Ctrl+Shift+F1 to F10) as one range.
+    const auto fkey = [](const QAction* a) -> std::optional<QKeyCombination> {
+        const QKeySequence k = a->shortcut();
+        if (k.count() != 1 || k[0].key() < Qt::Key_F1 || k[0].key() > Qt::Key_F35)
+            return std::nullopt;
+        return k[0];
     };
-    tips << QString()
-         << tr("%1 and %2 step through the sets, %3 goes back to the default")
-                .arg(keys("previousGlyphSet"), keys("nextGlyphSet"), keys("defaultGlyphSet"))
-         << tr("%1 to %2 pick sets 1-%3; every set is in the Glyphs menu")
-                .arg(keys("glyphSet1"), keys("glyphSet10"))
-                .arg(kGlyphSetKeys);
+    QStringList picks;
+    for (qsizetype i = 0; i < glyphSetActions_.size(); ++i) {
+        const QAction* first = glyphSetActions_[i];
+        if (first->shortcut().isEmpty())
+            continue;
+        qsizetype last = i;
+        if (const auto from = fkey(first))
+            while (last + 1 < glyphSetActions_.size()) {
+                const auto to = fkey(glyphSetActions_[last + 1]);
+                if (!to || to->keyboardModifiers() != from->keyboardModifiers() ||
+                    to->key() != from->key() + int(last + 1 - i))
+                    break;
+                ++last;
+            }
+        if (last == i)
+            picks << tr("%1 picks set %2").arg(key(first)).arg(i + 1);
+        else
+            picks << tr("%1 to %2 pick sets %3-%4")
+                         .arg(key(first), key(glyphSetActions_[last]))
+                         .arg(i + 1)
+                         .arg(last + 1);
+        i = last;
+    }
+    tips << QString();
+    if (!steps.isEmpty())
+        tips << steps.join(QStringLiteral(", "));
+    tips << (picks.isEmpty() ? tr("Every set is in the Glyphs menu")
+                             : tr("%1; every set is in the Glyphs menu").arg(picks.join(QStringLiteral(", "))));
     glyphSetLabel_->setToolTip(tips.join(QLatin1Char('\n')));
     if (set < glyphSetActions_.size())
         glyphSetActions_[set]->setChecked(true);
