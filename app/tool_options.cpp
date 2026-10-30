@@ -10,6 +10,7 @@
 #include "text_tool.h"
 #include "tool.h"
 #include "transform_options.h"
+#include "whats_this.h"
 
 #include "blockwright/palette.h"
 
@@ -340,6 +341,8 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     transform_->setObjectName(QStringLiteral("transformOptions"));
 
     auto* form = form_layout_ = new QFormLayout(this);
+    // What's This on a setting shows its tooltip (whats_this.h).
+    whatsThisFromToolTips(this);
     form->addRow(title_);
     form->addRow(helpToggle_);
     form->addRow(help_);

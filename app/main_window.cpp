@@ -27,6 +27,7 @@
 #include <QScrollArea>
 #include <QScreen>
 #include <QStatusBar>
+#include <QWhatsThis>
 
 #include <algorithm>
 #include <stdexcept>
@@ -307,6 +308,13 @@ void MainWindow::createActions() {
     windowMenu_ = menuBar()->addMenu(tr("&Window"));
 
     QMenu* help = menuBar()->addMenu(tr("&Help"));
+    // Shift+F1, the standard What's This key: a click then says what the
+    // part clicked does (whats_this.h). It takes Shift+F1 from keyboard
+    // mode, which typed F1's glyph with it; Shift+F2 to F10 still type.
+    a = help->addAction(tr("&What's This?"), this, [] { QWhatsThis::enterWhatsThisMode(); });
+    a->setObjectName(QStringLiteral("whatsThis"));
+    a->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F1));
+    a->setStatusTip(tr("Click a toolbox button, a menu item or a tool option to see what it does"));
     // No shortcut: F1, the standard help key, types a glyph in keyboard mode.
     a = help->addAction(tr("&Keyboard Shortcuts..."), this, [this] { showShortcuts(this); });
     a->setObjectName(QStringLiteral("keyboardShortcuts"));

@@ -6,6 +6,7 @@
 #include "canvas_view.h"
 #include "draw_tools.h"
 #include "help_text.h"
+#include "whats_this.h"
 #include "reference_scale.h"
 #include "select_tool.h"
 #include "text_tool.h"
@@ -273,6 +274,8 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
             tip += QLatin1Char('\n') + summary;
         a->setToolTip(tip);
         a->setStatusTip(summary);
+        // and all of it for What's This (whats_this.h)
+        a->setWhatsThis(toolWhatsThis(t->id()));
         check(a, toolGroup, t == tools_->active());
         toolActions.insert(t, a);
         toolActions_.insert(t->id(), a);

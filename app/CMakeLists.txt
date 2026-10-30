@@ -69,6 +69,8 @@ add_library(blockwright_app STATIC
   toolbox.h
   transform_options.cpp
   transform_options.h
+  whats_this.cpp
+  whats_this.h
 )
 set_target_properties(blockwright_app PROPERTIES AUTOMOC ON)
 # The help text (help_text.h): a Markdown file a tool and a layer kind.

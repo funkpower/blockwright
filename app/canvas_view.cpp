@@ -25,6 +25,7 @@
 #include <QScopedValueRollback>
 #include <QTimer>
 #include <QUndoStack>
+#include <QWhatsThis>
 #include <QWindow>
 
 #include <algorithm>
@@ -752,11 +753,16 @@ bool CanvasView::event(QEvent* e) {
 #endif
     // The undo key during a drag is the view's (keyPressEvent), not the
     // Undo action's: it must not undo a step the drag can't see, and works
-    // with nothing to undo.
-    if (e->type() == QEvent::ShortcutOverride && dragging() &&
-        static_cast<QKeyEvent*>(e)->matches(QKeySequence::Undo)) {
-        e->accept();
-        return true;
+    // with nothing to undo. So is Shift+F1, What's This's key: the mode
+    // would take the drag's release and leave it stuck. It is F1 with Shift
+    // held, as Shift+F2 to F10 are (the glyph brush re-picks its glyph).
+    if (e->type() == QEvent::ShortcutOverride && dragging()) {
+        const auto* k = static_cast<QKeyEvent*>(e);
+        if (k->matches(QKeySequence::Undo) ||
+            QKeySequence(k->keyCombination()) == QKeySequence(Qt::SHIFT | Qt::Key_F1)) {
+            e->accept();
+            return true;
+        }
     }
     return QWidget::event(e);
 }
@@ -1177,7 +1183,10 @@ void CanvasView::tabletEvent(QTabletEvent* e) {
         stylusGrab_ = true;
     else if (e->type() == QEvent::TabletRelease && e->buttons() == Qt::NoButton)
         stylusGrab_ = false;
-    const bool taken = stylusEvent(e);
+    // What's This mode takes mouse clicks only: a pen not already drawing
+    // leaves its events to Qt, which makes the click the mode takes.
+    const bool whatsThis = QWhatsThis::inWhatsThisMode() && drag_ != Pointer::Stylus;
+    const bool taken = !whatsThis && stylusEvent(e);
     // Qt records the buttons of every event but one a widget takes through
     // a popup. One no widget takes there it passes again, through the view's
     // own window and so here, and records: the view sees it twice, and the

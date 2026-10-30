@@ -33,6 +33,7 @@ TextOptions::TextOptions(CanvasView* view, TextTool* tool, QWidget* parent)
     : QWidget(parent), view_(view), tool_(tool) {
     picker_ = new FacePicker;
     picker_->setObjectName(QStringLiteral("textFace"));
+    picker_->setToolTip(tr("The face the text is set in"));
 
     case_ = new QComboBox;
     case_->setObjectName(QStringLiteral("textCase"));
