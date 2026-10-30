@@ -471,9 +471,12 @@ TEST_CASE("a reader refuses another major version and reads a newer minor", "[pr
     Entries e = project::encode(p);
     QJsonObject m = object(e.at("manifest.json"));
 
-    m["version"] = "3.0";
+    m["version"] = "4.0";
     e["manifest.json"] = json(m);
     CHECK_THROWS_AS(project::decode(e), ProjectError);
+    m["version"] = "3.0";
+    e["manifest.json"] = json(m);
+    CHECK(project::decode(e).layers == p.layers);
 
     m["version"] = "1.8";
     m["mask"] = "nick!user@host";  // a key 1.8 added: ignored

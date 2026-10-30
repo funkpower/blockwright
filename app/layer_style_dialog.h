@@ -118,6 +118,7 @@ private:
         QComboBox* compass = nullptr;
         QComboBox* form = nullptr;
         QSpinBox* amount = nullptr;
+        QSpinBox* level = nullptr;  // Glow's brightness
     };
 
     QWidget* makePage(EffectKind kind);

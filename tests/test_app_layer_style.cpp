@@ -124,14 +124,14 @@ TEST_CASE("the dialog's rows are one effect of each kind, the style's own or a d
 
     // the style's effects keep their order (and a switched-off one stays);
     // a new one goes after them
-    const TextStyle original{{Effect{true, GlowEffect{"fire", 2}}, Effect{false, PlateEffect{Red, 4}}}};
+    const TextStyle original{{Effect{true, GlowEffect{"fire", 2, 2}}, Effect{false, PlateEffect{Red, 4}}}};
     rows = styleRows(original);
     CHECK(rows[std::size_t(EffectKind::Glow)] == original.effects[0]);
     CHECK(rows[std::size_t(EffectKind::Plate)] == original.effects[1]);
     CHECK(styleFromRows(original, rows) == original);
     rows[std::size_t(EffectKind::Plate)].enabled = true;
     rows[std::size_t(EffectKind::Shadow)].enabled = true;
-    CHECK(*styleFromRows(original, rows) == TextStyle{{Effect{true, GlowEffect{"fire", 2}},
+    CHECK(*styleFromRows(original, rows) == TextStyle{{Effect{true, GlowEffect{"fire", 2, 2}},
                                                         Effect{true, PlateEffect{Red, 4}},
                                                         Effect{true, ShadowEffect{}}}});
     // an empty style stays a style
@@ -230,6 +230,17 @@ TEST_CASE("changing an effect's settings switches it on, and the widgets follow 
     mode->setCurrentIndex(mode->findData(int(FillMode::Rows)));
     CHECK_FALSE(colour->isEnabled());
     CHECK(ramp->isEnabled());
+
+    // a glow's brightness has its own box beside the width
+    d.setRow(Effect{false, GlowEffect{"toxic", 2, 7}});
+    auto* width = d.findChild<QSpinBox*>(QStringLiteral("glowWidth"));
+    auto* brightness = d.findChild<QSpinBox*>(QStringLiteral("glowBrightness"));
+    REQUIRE(width);
+    REQUIRE(brightness);
+    CHECK(width->value() == 2);
+    CHECK(brightness->value() == 7);
+    brightness->setValue(5);
+    CHECK(d.rows()[std::size_t(EffectKind::Glow)] == Effect{true, GlowEffect{"toxic", 2, 5}});
 }
 
 TEST_CASE("the dialog previews the layer with the style, its IRC bytes and its lint, before OK", "[style]") {
@@ -328,14 +339,14 @@ TEST_CASE("a style the layer can't draw is named and OK is off", "[style]") {
     const LayerId id = open(w, artLayer(LayerKind::Cells));
     LayerStyleDialog d(w.document(), id);
     CHECK(d.problem().isEmpty());
-    d.setRow(Effect{true, GlowEffect{small->name, small->topRung() + 1}});
+    d.setRow(Effect{true, GlowEffect{small->name, small->topRung() + 1, small->topRung() + 1}});
     CHECK_FALSE(d.problem().isEmpty());
     CHECK(d.problemLabel()->text() == d.problem());
     CHECK_FALSE(d.buttons()->button(QDialogButtonBox::Ok)->isEnabled());
     const int steps = w.document()->undoStack()->count();
     CHECK_FALSE(d.apply());
     CHECK(w.document()->undoStack()->count() == steps);
-    d.setRow(Effect{true, GlowEffect{small->name, small->topRung()}});
+    d.setRow(Effect{true, GlowEffect{small->name, small->topRung(), small->topRung()}});
     CHECK(d.problem().isEmpty());
     CHECK(d.buttons()->button(QDialogButtonBox::Ok)->isEnabled());
 }
@@ -507,7 +518,7 @@ TEST_CASE("Bake Layer bakes a styled cells or pixels layer's styled cells, one s
 
             // a glow differs with iCE on and off: the document's setting is used
             LayerProperties p = layerOf(doc, id).props;
-            p.style = TextStyle{{Effect{true, GlowEffect{"fire", 12}}}};
+            p.style = TextStyle{{Effect{true, GlowEffect{"fire", 12, 12}}}};
             REQUIRE(doc->setLayerProperties(id, p, QStringLiteral("Style")));
             REQUIRE(bake->isEnabled());
             const Layer styled = layerOf(doc, id);

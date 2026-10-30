@@ -603,6 +603,7 @@ QJsonObject textStyleJson(const TextStyle& style) {
                 } else if constexpr (std::is_same_v<T, GlowEffect>) {
                     o["ramp"] = qstr(s.ramp);
                     o["width"] = s.width;
+                    o["brightness"] = s.brightness;
                 } else if constexpr (std::is_same_v<T, ShadowEffect>) {
                     o["form"] = qstr(shadowFormName(s.form));
                     o["direction"] = qstr(compassPointName(s.direction));
@@ -644,9 +645,14 @@ TextStyle textStyleFromJson(const QJsonObject& o, const std::string& what) {
         case EffectKind::Plate:
             effect.settings = PlateEffect{colour(), int(e.integer("padding", 0, TextStyle::kMaxPadding))};
             break;
-        case EffectKind::Glow:
-            effect.settings = GlowEffect{e.string("ramp"), int(e.integer("width", 1, TextStyle::kMaxGlow))};
+        case EffectKind::Glow: {
+            // before 1.8 / 2.4 the ring next to the letters was rung `width`
+            const int width = int(e.integer("width", 1, TextStyle::kMaxGlow));
+            effect.settings = GlowEffect{e.string("ramp"), width,
+                                         e.has("brightness") ? int(e.integer("brightness", 1, TextStyle::kMaxGlow))
+                                                             : width};
             break;
+        }
         case EffectKind::Shadow:
             effect.settings = ShadowEffect{named(e, "form", shadowFormFromName),
                                            named(e, "direction", compassPointFromName),
@@ -865,6 +871,15 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
         if (!p.text && major < kStyledFormatMajor)
             fail(what + ": a styled " + std::string(layerKindName(p.kind)) + " layer in a " +
                  std::to_string(major) + ".x project");
+        // a 2.x reader would drop a Glow's brightness here, so only 3.x has
+        // one; a 2.x Glow without one (from before 3.0) still opens, its
+        // counters now held at the inner ring's rung
+        if (!p.text && major < kGlowCellsFormatMajor)
+            for (const Effect& e : p.style->effects)  // switched off too
+                if (const auto* g = std::get_if<GlowEffect>(&e.settings); g && g->brightness != g->width)
+                    fail(what + ": a " + std::string(layerKindName(p.kind)) + " layer's Glow has a brightness (" +
+                         std::to_string(g->brightness) + ") apart from its width (" + std::to_string(g->width) +
+                         ") in a " + std::to_string(major) + ".x project");
     }
     // a reference layer's picture (1.5), its file under refs/
     if (r.has("reference")) {
@@ -1728,6 +1743,8 @@ Entries encode(const Project& project) {
     bool rainbow = false;  // a live Big rainbow source (1.6, 2.2)
     bool referenced = false;  // a reference layer with a picture (1.5, 2.1)
     bool dithered = false;  // a layer with dither marks (1.7, 2.3)
+    bool glowLit = false;  // a live text layer's Glow whose brightness isn't its width (1.8, 2.4)
+    bool glowCells = false;  // any Glow on a cells or pixels layer (3.0)
     std::set<std::string> writtenReferences;
     for (const Layer& l : stack.layers()) {
         order.append(qint64(l.props.id));
@@ -1752,6 +1769,15 @@ Entries encode(const Project& project) {
             fail(layerPath(l.props.id, false) + ": " + *problem);
         styled = styled || (l.props.style && !l.props.text);
         dithered = dithered || ditherMarks(l.cells).has_value();
+        // the compositor draws a cells or pixels layer's Glow, and draws a
+        // counter differently from a 2.x reader whatever the brightness;
+        // live text's saved cells already show it
+        if (l.props.style)
+            for (const Effect& e : l.props.style->effects)  // switched off too
+                if (const auto* g = std::get_if<GlowEffect>(&e.settings)) {
+                    glowCells = glowCells || !l.props.text;
+                    glowLit = glowLit || g->brightness != g->width;
+                }
         if (const auto problem = referenceProblem(l.props))
             fail(layerPath(l.props.id, false) + ": " + *problem);
         if (l.props.reference) {
@@ -1769,13 +1795,16 @@ Entries encode(const Project& project) {
     }
     const QJsonObject manifest{
         {"format", "blockwright"},
-        {"version", qstr(styled ? std::to_string(kStyledFormatMajor) + "." +
-                                      std::to_string(dithered     ? kDitherStyledFormatMinor
+        {"version", qstr(glowCells ? std::to_string(kGlowCellsFormatMajor) + "." + std::to_string(kGlowCellsFormatMinor)
+                         : styled  ? std::to_string(kStyledFormatMajor) + "." +
+                                      std::to_string(glowLit      ? kGlowStyledFormatMinor
+                                                     : dithered   ? kDitherStyledFormatMinor
                                                      : rainbow    ? kRainbowStyledFormatMinor
                                                      : referenced ? kReferenceStyledFormatMinor
                                                                   : kStyledFormatMinor)
                                 : std::to_string(kFormatMajor) + "." +
-                                      std::to_string(dithered     ? kDitherFormatMinor
+                                      std::to_string(glowLit      ? kGlowFormatMinor
+                                                     : dithered   ? kDitherFormatMinor
                                                      : rainbow    ? kRainbowFormatMinor
                                                      : referenced ? kReferenceFormatMinor
                                                      : bigText  ? kBigTextFormatMinor
@@ -1817,9 +1846,9 @@ Project decode(const Entries& entries) {
         fail("manifest.json: not a blockwright project");
     const std::string version = m.string("version");
     const int major = parseVersion(version).first;
-    if (major != kFormatMajor && major != kStyledFormatMajor)
-        fail("a project in format " + version + ": this build reads " + std::to_string(kFormatMajor) + ".x and " +
-             std::to_string(kStyledFormatMajor) + ".x");
+    if (major != kFormatMajor && major != kStyledFormatMajor && major != kGlowCellsFormatMajor)
+        fail("a project in format " + version + ": this build reads " + std::to_string(kFormatMajor) + ".x, " +
+             std::to_string(kStyledFormatMajor) + ".x and " + std::to_string(kGlowCellsFormatMajor) + ".x");
 
     Project p;
     const int w = int(m.integer("width", 1, kMaxColumns));

@@ -303,8 +303,11 @@ QWidget* LayerStyleDialog::makePage(EffectKind kind) {
     case EffectKind::Glow:
         p.ramp = rampBox(base + QStringLiteral("Ramp"));
         p.amount = spin(base + QStringLiteral("Width"), 1, TextStyle::kMaxGlow);
+        p.level = spin(base + QStringLiteral("Brightness"), 1, TextStyle::kMaxGlow);
+        p.level->setToolTip(tr("The ramp's rung the ring next to the letters takes; each ring out is a rung darker"));
         form->addRow(tr("Ramp"), p.ramp);
         form->addRow(tr("Width (cells)"), p.amount);
+        form->addRow(tr("Brightness (rung)"), p.level);
         break;
     case EffectKind::Shadow:
         p.form = new QComboBox;
@@ -357,13 +360,14 @@ QWidget* LayerStyleDialog::makePage(EffectKind kind) {
                     changed();
                 }
             });
-    if (p.amount)
-        connect(p.amount, &QSpinBox::valueChanged, this, [this, kind] {
-            if (!filling_) {
-                readPage(kind);
-                changed();
-            }
-        });
+    for (QSpinBox* box : {p.amount, p.level})
+        if (box)
+            connect(box, &QSpinBox::valueChanged, this, [this, kind] {
+                if (!filling_) {
+                    readPage(kind);
+                    changed();
+                }
+            });
     return page;
 }
 
@@ -379,6 +383,7 @@ void LayerStyleDialog::fillPage(EffectKind kind) {
             } else if constexpr (std::is_same_v<T, GlowEffect>) {
                 pick(p.ramp, QString::fromStdString(s.ramp));
                 p.amount->setValue(s.width);
+                p.level->setValue(s.brightness);
             } else if constexpr (std::is_same_v<T, ShadowEffect>) {
                 pick(p.form, int(s.form));
                 pick(p.compass, int(s.direction));
@@ -415,6 +420,7 @@ void LayerStyleDialog::readPage(EffectKind kind) {
             } else if constexpr (std::is_same_v<T, GlowEffect>) {
                 s.ramp = ramp(p.ramp);
                 s.width = p.amount->value();
+                s.brightness = p.level->value();
             } else if constexpr (std::is_same_v<T, ShadowEffect>) {
                 s.form = ShadowForm(p.form->currentData().toInt());
                 s.direction = compass(p.compass);

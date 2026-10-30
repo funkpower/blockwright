@@ -124,11 +124,13 @@ std::optional<std::string> textStyleProblem(const TextStyle& style) {
                         problem = within("plate padding", s.padding, 0, TextStyle::kMaxPadding);
                 } else if constexpr (std::is_same_v<T, GlowEffect>) {
                     if (!(problem = ramp("glow", s.ramp)) &&
-                        !(problem = within("glow width", s.width, 1, TextStyle::kMaxGlow))) {
+                        !(problem = within("glow width", s.width, 1, TextStyle::kMaxGlow)) &&
+                        !(problem = within("glow brightness", s.brightness, 1, TextStyle::kMaxGlow))) {
                         const int top = findRamp(s.ramp)->topRung();
-                        if (s.width > top)
-                            problem = "glow width " + std::to_string(s.width) + " is over ramp \"" + s.ramp +
-                                      "\"'s " + std::to_string(top) + " rungs";
+                        for (const auto& [what, v] : {std::pair{"width", s.width}, {"brightness", s.brightness}})
+                            if (!problem && v > top)
+                                problem = "glow " + std::string(what) + " " + std::to_string(v) + " is over ramp \"" +
+                                          s.ramp + "\"'s " + std::to_string(top) + " rungs";
                     }
                 } else if constexpr (std::is_same_v<T, ShadowEffect>) {
                     if (!(problem = colour("shadow", s.colour)))
@@ -471,14 +473,41 @@ private:
                     queue.emplace_back(nx, ny);
                 }
         }
+        // A ring past the first that can't reach the halo's edge (a cell
+        // past the width, or the canvas edge) without crossing the inner
+        // ring, as in a counter the halo fills or where it meets itself
+        // between letters and lines, would sit darker inside the inner ring
+        // (#184): it holds the inner ring's rung.
+        std::vector<char> open(dist.size(), 0);
+        const auto fades = [&](int x, int y) { return dist[cell(x, y)] < 0 || dist[cell(x, y)] >= 2; };
+        for (int y = 0; y < h_; ++y)
+            for (int x = 0; x < w_; ++x)
+                if (dist[cell(x, y)] < 0 || (fades(x, y) && (x == 0 || y == 0 || x == w_ - 1 || y == h_ - 1))) {
+                    open[cell(x, y)] = 1;
+                    queue.emplace_back(x, y);
+                }
+        while (!queue.empty()) {
+            const auto [x, y] = queue.front();
+            queue.pop_front();
+            for (const auto [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+                const int nx = x + dx, ny = y + dy;
+                if (nx < 0 || ny < 0 || nx >= w_ || ny >= h_ || open[cell(nx, ny)] || !fades(nx, ny))
+                    continue;
+                open[cell(nx, ny)] = 1;
+                queue.emplace_back(nx, ny);
+            }
+        }
         std::vector<int> targets;
         for (int d = 0; d <= g.width; ++d)
-            targets.push_back(d == 0 ? g.width : g.width - d + 1);
+            targets.push_back(d == 0 ? g.brightness : std::max(1, g.brightness - d + 1));
         const std::vector<int> rungs = walkRungs(*ramp, targets, ice_);
         for (int y = 0; y < h_; ++y)
             for (int x = 0; x < w_; ++x)
-                if (const int d = dist[cell(x, y)]; d >= 0)
+                if (int d = dist[cell(x, y)]; d >= 0) {
+                    if (d >= 2 && !open[cell(x, y)])
+                        d = 1;
                     l.cells.at(x, y) = rungAt(*ramp, rungs[static_cast<std::size_t>(d)]);
+                }
         return l;
     }
 

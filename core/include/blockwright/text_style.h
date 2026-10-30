@@ -34,11 +34,14 @@ struct PlateEffect {
 };
 
 // A halo round the letters (grown by the outline when it is on), `width`
-// cells wide: the ring next to the letters is the ramp's rung `width`, and
-// each ring out one rung darker, down to the ramp's darkest colour.
+// cells wide: the ring next to the letters is the ramp's rung `brightness`,
+// and each ring out one rung darker, down to rung 1 (#184). A ring the
+// halo's edge can't be reached from without crossing the first, as in a
+// counter, holds the first ring's rung.
 struct GlowEffect {
     std::string ramp = "fire";
     int width = 3;
+    int brightness = 3;
     bool operator==(const GlowEffect&) const = default;
 };
 

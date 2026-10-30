@@ -913,6 +913,27 @@ TEST_CASE("a text style preset gets the lowest free <slug>.style.json and never 
     CHECK_FALSE(fs::exists(inside / "bad.style.json"));
 }
 
+TEST_CASE("a text style preset keeps a Glow brightness, and one written without it reads at the width's rung") {
+    const fs::path dir = scratch("presets-glow");
+    TextStyleEntry entry;
+    entry.name = "Halo";
+    entry.category = "glow";
+    entry.style = TextStyle{{Effect{true, GlowEffect{"toxic", 2, 7}}}};
+    const fs::path written = writeTextStyle(dir, entry);
+    CHECK(readTextStyleEntry(written).style == entry.style);
+
+    put(dir / "old.style.json", R"({
+  "kind": "text-style",
+  "name": "Old",
+  "category": "glow",
+  "tags": [],
+  "effects": [
+    {"kind": "glow", "enabled": true, "ramp": "fire", "width": 3}
+  ]
+})");
+    CHECK(readTextStyleEntry(dir / "old.style.json").style == TextStyle{{Effect{true, GlowEffect{"fire", 3, 3}}}});
+}
+
 #ifndef _WIN32
 TEST_CASE("a text style preset published by the hard-link fallback leaves no temporary, even when unlink fails") {
     const fs::path dir = scratch("presets-link");

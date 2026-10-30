@@ -101,6 +101,20 @@ inline constexpr int kRainbowStyledFormatMinor = 2;
 // specks again.
 inline constexpr int kDitherFormatMinor = 7;
 inline constexpr int kDitherStyledFormatMinor = 3;
+// A Glow whose brightness isn't its width (the effect's "brightness", #184)
+// on a live text layer, whose saved cells already show it: 1.8, or 2.4 when
+// styled as well. Each implies the minors before it. An older reader drops
+// the key and lights the ring next to the letters at the width's rung.
+inline constexpr int kGlowFormatMinor = 8;
+inline constexpr int kGlowStyledFormatMinor = 4;
+// Any Glow on a cells or pixels layer, which the compositor draws, switched
+// off too and whatever its brightness: a 2.x reader would drop the key and
+// show the ring next to the letters at the width's rung, and leave a counter
+// to fade darker inside the inner ring. 3.0, which a 2.x reader refuses. It
+// implies every 2.x minor. A 2.x file from before 3.0 with a Glow there and
+// no brightness (or the width's) still opens, its counters now filled.
+inline constexpr int kGlowCellsFormatMajor = 3;
+inline constexpr int kGlowCellsFormatMinor = 0;
 
 // Limits a reader holds a file to, and a writer checks before it writes
 // anything: no more than kMaxEntries entries, none over kMaxEntryBytes, all

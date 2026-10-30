@@ -20,14 +20,17 @@
 #include <QJsonObject>
 
 #include <catch2/catch_test_macros.hpp>
+#include <zip.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -166,7 +169,7 @@ bool brightBackground(const Canvas& c) {
 
 // A stack of every effect, as an app would offer it.
 TextStyle everyEffect() {
-    return styleOf({PlateEffect{Blue, 1}, GlowEffect{"steel", 2}, ShadowEffect{ShadowForm::Drop, Compass::SE, 1, DarkGrey},
+    return styleOf({PlateEffect{Blue, 1}, GlowEffect{"steel", 2, 2}, ShadowEffect{ShadowForm::Drop, Compass::SE, 1, DarkGrey},
                     OutlineEffect{OutlineForm::Pixels, Cyan}, FillEffect{FillMode::Rows, Grey, "steel"},
                     ShadeEffect{"steel", Compass::N}, BevelEffect{"steel", Compass::NW}});
 }
@@ -207,6 +210,128 @@ QJsonObject object(const std::string& text) {
 }
 
 std::string layerPath(const Layer& l) { return "layers/" + std::to_string(l.props.id) + ".json"; }
+
+// The cells 04dac94's Glow draws round a cells layer's ink, as that build
+// drew them: each cell `d` cells (Chebyshev) from the nearest ink lights
+// rung d of the ring, counters included, the ring next to the ink at the
+// width's rung. Its rungs are the ones the current Glow walks with the
+// brightness at the width, so each is read off a dot whose rings all reach
+// the halo's edge, where the two builds draw alike.
+Canvas olderGlow(const Canvas& source, const GlowEffect& g, bool ice) {
+    const int n = 2 * g.width + 3, c = g.width + 1;
+    LayerStack dotStack(n, n);
+    Layer dot = makeLayer(LayerKind::Cells, n, n, "dot", 0, 0);
+    dot.cells.at(c, c) = Cell{kFullBlock, Color::indexed(White), Color::indexed(Black), 0, false};
+    const LayerId dotId = dotStack.add(dot);
+    dotStack.find(dotId)->props.style = styleOf({GlowEffect{g.ramp, g.width, g.width}});
+    const Canvas rings = composite(dotStack, CompositeOptions{ice, Cell{}});
+
+    Canvas out = source;
+    for (int y = 0; y < source.height(); ++y)
+        for (int x = 0; x < source.width(); ++x) {
+            if (!source.at(x, y).transparent)
+                continue;
+            int d = g.width + 1;
+            for (int sy = 0; sy < source.height(); ++sy)
+                for (int sx = 0; sx < source.width(); ++sx)
+                    if (!source.at(sx, sy).transparent)
+                        d = std::min(d, std::max(std::abs(sx - x), std::abs(sy - y)));
+            if (d <= g.width)
+                out.at(x, y) = rings.at(c + d, c);
+        }
+    return out;
+}
+
+// What 04dac94's reader, the last before 3.0, shows of a file: nothing when
+// its version gate refuses it (it reads 1.x and 2.x), else the file read as
+// that reader reads it, each Glow's "brightness" dropped so the ring next to
+// the letters lights at the width's rung, and a cells layer's Glow drawn as
+// olderGlow draws it. Live text's saved cells already show its Glow. It
+// simulates a Glow alone on a cells layer of full blocks and transparent
+// cells, and fails the test on anything else.
+std::optional<Canvas> olderReaderShows(Entries e, bool ice) {
+    const int major = object(e.at("manifest.json")).value("version").toString().section('.', 0, 0).toInt();
+    if (major != 1 && major != 2)
+        return std::nullopt;
+    const auto strip = [](QJsonObject style) {
+        QJsonArray effects = style.value("effects").toArray();
+        for (auto&& v : effects) {
+            QJsonObject effect = v.toObject();
+            effect.remove("brightness");
+            v = effect;
+        }
+        style["effects"] = effects;
+        return style;
+    };
+    for (auto& [path, bytes] : e) {
+        if (!path.starts_with("layers/") || !path.ends_with(".json"))
+            continue;
+        QJsonObject layer = object(bytes);
+        if (layer.contains("style"))
+            layer["style"] = strip(layer.value("style").toObject());
+        for (const char* key : {"bigSource", "bigRainbowSource"})
+            if (QJsonObject big = layer.value(key).toObject(); big.contains("style")) {
+                big["style"] = strip(big.value("style").toObject());
+                layer[key] = big;
+            }
+        bytes = json(layer);
+    }
+    Project q = project::decode(e);
+    std::vector<LayerId> ids;
+    for (const Layer& l : q.layers.layers())
+        ids.push_back(l.props.id);
+    for (const LayerId id : ids) {
+        Layer& l = *q.layers.find(id);
+        if (!l.props.style || l.props.text)
+            continue;
+        const auto* g = l.props.style->get<GlowEffect>();  // the enabled one
+        if (!g)
+            continue;
+        const auto enabled = std::count_if(l.props.style->effects.begin(), l.props.style->effects.end(),
+                                           [](const Effect& x) { return x.enabled; });
+        REQUIRE(enabled == 1);
+        REQUIRE(l.props.kind == LayerKind::Cells);
+        for (int y = 0; y < l.cells.height(); ++y)
+            for (int x = 0; x < l.cells.width(); ++x) {
+                const Cell& cell = l.cells.at(x, y);
+                REQUIRE((cell.transparent || (cell.ch == kFullBlock && cell.fg != Color::indexed(Black))));
+            }
+        l.cells = olderGlow(l.cells, *g, ice);
+        l.props.style.reset();
+    }
+    return composite(q.layers, CompositeOptions{ice, Cell{}});
+}
+
+// The entries a zip or directory save wrote.
+Entries savedEntries(const fs::path& path) {
+    Entries out;
+    if (fs::is_directory(path)) {
+        for (const auto& f : fs::recursive_directory_iterator(path))
+            if (f.is_regular_file())
+                out[fs::relative(f.path(), path).generic_string()] = bwtest::readFile(f.path());
+        return out;
+    }
+    int err = 0;
+    zip_t* z = zip_open(path.c_str(), ZIP_RDONLY, &err);
+    REQUIRE(z);
+    bool ok = true;
+    for (zip_int64_t i = 0; ok && i < zip_get_num_entries(z, 0); ++i) {
+        zip_stat_t st;
+        zip_stat_init(&st);
+        ok = zip_stat_index(z, zip_uint64_t(i), 0, &st) == 0;
+        if (!ok || std::string_view(st.name).ends_with('/'))
+            continue;
+        std::string bytes(static_cast<std::size_t>(st.size), '\0');
+        zip_file_t* f = zip_fopen_index(z, zip_uint64_t(i), 0);
+        ok = f && zip_fread(f, bytes.data(), st.size) == zip_int64_t(st.size);
+        if (f)
+            zip_fclose(f);
+        out[st.name] = std::move(bytes);
+    }
+    zip_discard(z);
+    REQUIRE(ok);
+    return out;
+}
 
 fs::path scratch(const std::string& name) {
     const fs::path dir = fs::path(BW_TEST_TMP) / "text_style" / name;
@@ -317,7 +442,7 @@ TEST_CASE("Plate: the text's box and its padding in one colour", "[style][mask]"
 TEST_CASE("Glow: rings of the ramp a rung darker each, out to its width", "[style][mask]") {
     const TextSource s = word(U"funk", "block");
     const Pixels ink = pixelsOf(plain(s));
-    const TextStyle glow = styleOf({GlowEffect{"fire", 3}});
+    const TextStyle glow = styleOf({GlowEffect{"fire", 3, 3}});
     CHECK(styleMargins(glow) == StyleMargins{3, 3, 3, 3});
     const Canvas out = styled(s, glow);
     int checked = 0;
@@ -352,6 +477,252 @@ TEST_CASE("Glow: rings of the ramp a rung darker each, out to its width", "[styl
                 CHECK((top ? h->top : h->bottom) == White);
                 CHECK((top ? h->bottom : h->top) == (top ? under.bottom : under.top));
             }
+}
+
+namespace {
+
+// The faces the glow's counters are checked in: the pixel faces and the
+// TheDraw test fonts.
+struct GlowFace {
+    std::string name;
+    std::unique_ptr<Face> owned;
+    const Face* face;
+};
+std::vector<GlowFace> glowFaces() {
+    std::vector<GlowFace> out;
+    for (const char* name : {"block", "vga", "mini"})
+        out.push_back({name, nullptr, bundledFace(name)});
+    for (const char* file : {"bw-outline.tdf", "bw-block.tdf", "bw-colour.tdf"}) {
+        std::unique_ptr<Face> f = tdf(file);
+        const Face* p = f.get();
+        out.push_back({file, std::move(f), p});
+    }
+    return out;
+}
+
+// The fixture words (tests/data/text/words.txt) in `face`, the sentence
+// wrapped at 80 columns.
+std::vector<TextSource> fixtureWords(const std::string& face) {
+    std::vector<TextSource> out;
+    const std::string text = bwtest::readFile(bwtest::dataDir() / "text" / "words.txt");
+    std::size_t at = 0;
+    while (at < text.size()) {
+        const std::size_t end = std::min(text.find('\n', at), text.size());
+        if (end > at) {
+            const std::u32string w(text.begin() + long(at), text.begin() + long(end));
+            out.push_back(word(w, face));
+            out.back().wrapWidth = w.find(U' ') == std::u32string::npos ? 0 : 80;
+        }
+        at = end + 1;
+    }
+    REQUIRE(out.size() == 5);
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("Glow: a counter narrower than the halo holds the inner ring", "[style][mask][glow]") {
+    // #184 Q4 (a): in a counter the rings from either side meet, so a ring
+    // past the first would sit darker inside it (a ░ inside ▒ in a counter
+    // three cells wide). A counter the halo fills holds the inner ring.
+    const Ramp violet = *findRamp("violet");
+    std::map<std::string, int> held_by;
+    for (const GlowFace& f : glowFaces())
+        for (const int width : {2, 3})
+            for (const bool ice : {true, false}) {
+                const TextSource s = word(U"OAB8R0e", f.name);
+                const StyleInput in = textStyleInput(s, *f.face);
+                const int iw = in.mask.width, ih = in.mask.height / 2;
+                const auto ink = [&](int x, int y) {
+                    return x >= 0 && y >= 0 && x < iw && y < ih && (in.mask.at(x, 2 * y) || in.mask.at(x, 2 * y + 1));
+                };
+                // the counters: cells without ink that no path of such cells
+                // (across a row or down a column) joins to the edge
+                std::vector<int> region(static_cast<std::size_t>(iw) * ih, -1);
+                std::vector<std::vector<std::pair<int, int>>> counters;
+                for (int y0 = 0; y0 < ih; ++y0)
+                    for (int x0 = 0; x0 < iw; ++x0) {
+                        if (ink(x0, y0) || region[static_cast<std::size_t>(y0) * iw + x0] >= 0)
+                            continue;
+                        std::vector<std::pair<int, int>> cells{{x0, y0}};
+                        region[static_cast<std::size_t>(y0) * iw + x0] = int(counters.size());
+                        bool edge = false;
+                        for (std::size_t i = 0; i < cells.size(); ++i) {
+                            const auto [x, y] = cells[i];
+                            for (const auto [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+                                const int nx = x + dx, ny = y + dy;
+                                if (nx < 0 || ny < 0 || nx >= iw || ny >= ih) {
+                                    edge = true;
+                                    continue;
+                                }
+                                if (ink(nx, ny) || region[static_cast<std::size_t>(ny) * iw + nx] >= 0)
+                                    continue;
+                                region[static_cast<std::size_t>(ny) * iw + nx] = int(counters.size());
+                                cells.emplace_back(nx, ny);
+                            }
+                        }
+                        counters.push_back(edge ? std::vector<std::pair<int, int>>{} : std::move(cells));
+                    }
+                const Canvas out = styled(s, styleOf({GlowEffect{"violet", width, width}}), *f.face, ice);
+                // a source cell (a TDF letter's black space) hides the glow
+                const auto shows = [&](int x, int y) {
+                    return x >= in.source.width() || y >= in.source.height() || in.source.at(x, y).transparent;
+                };
+                int held = 0;
+                for (const auto& counter : counters) {
+                    // narrower than the halo: every cell within its width
+                    bool narrow = !counter.empty();
+                    for (const auto [x, y] : counter) {
+                        int d = 99;
+                        for (int iy = y - width; iy <= y + width; ++iy)
+                            for (int ix = x - width; ix <= x + width; ++ix)
+                                if (ink(ix, iy))
+                                    d = std::min(d, std::max(std::abs(x - ix), std::abs(y - iy)));
+                        narrow = narrow && d <= width;
+                    }
+                    if (!narrow)
+                        continue;
+                    for (const auto [x, y] : counter) {
+                        if (!shows(x, y))
+                            continue;
+                        INFO(f.name << " width " << width << " iCE " << ice << " cell " << x + width << ","
+                                    << y + width);
+                        CHECK(rungOf(violet, out.at(x + width, y + width)) == std::optional<int>(width));
+                        ++held;
+                    }
+                }
+                held_by[f.name] += held;
+            }
+    // bw-block's and bw-colour's counters are black source cells, which
+    // hide the glow; the other four show it through theirs
+    for (const char* name : {"block", "vga", "mini", "bw-outline.tdf"}) {
+        INFO(name);
+        CHECK(held_by[name] > 0);
+    }
+}
+
+TEST_CASE("Glow: no ring is a speck inside a lighter one", "[style][mask][glow]") {
+    // #184 Q4 (a): where the halo meets itself, in a counter or between
+    // letters and lines, a ring past the first that the halo's edge can't be
+    // reached from would be one cell darker than all four of its neighbours.
+    // The case of the issue: a glow under flat letters off its ramp, linted
+    // on the glow's ramp, in every face and fixture word, iCE on and off.
+    for (const GlowFace& f : glowFaces())
+        for (const TextSource& s : fixtureWords(f.name))
+            for (const char* ramp : {"violet", "fire"})
+                for (const int width : {2, 3})
+                    for (const bool ice : {true, false}) {
+                        const Canvas out = styled(
+                            s, styleOf({GlowEffect{ramp, width, width}, FillEffect{FillMode::Flat, LightGreen, ramp}}),
+                            *f.face, ice);
+                        lint::LadderOptions options;
+                        options.ice = ice;
+                        const lint::LadderReport r = lint::checkLadder(out, *findRamp(ramp), std::nullopt, options);
+                        int specks = 0;
+                        for (const lint::LadderFinding& sp : r.findings)
+                            if (sp.kind == lint::LadderFinding::Kind::Speckle) {
+                                UNSCOPED_INFO(sp.x << "," << sp.y << ": " << sp.message);
+                                ++specks;
+                            }
+                        INFO(f.name << " / " << std::string(s.text.begin(), s.text.end()) << " / " << ramp
+                                    << " width " << width << " iCE " << ice);
+                        CHECK(specks == 0);
+                    }
+}
+
+TEST_CASE("Glow: the brightness lights the ring next to the letters, the width how far the halo reaches",
+          "[style][mask][glow]") {
+    // #184 Q4 (b): the ring next to the letters is rung `brightness`, each
+    // ring out a rung darker down to rung 1, which the rest keep
+    const TextSource s = word(U"funk", "block");
+    const Pixels ink = pixelsOf(plain(s));
+    struct Want {
+        int width, brightness;
+        bool ice;
+        std::vector<int> rings;  // the rung of each ring, the first next to the letters
+    };
+    // with iCE off the walk stops at LightRed (rung 8): Yellow over it is a
+    // bright background
+    for (const Want& want : {Want{3, 6, true, {6, 5, 4}}, Want{3, 2, true, {2, 1, 1}}, Want{1, 8, true, {8}},
+                             Want{2, 10, true, {10, 9}}, Want{2, 10, false, {8, 8}}}) {
+        const TextStyle glow = styleOf({GlowEffect{"fire", want.width, want.brightness}});
+        REQUIRE_FALSE(textStyleProblem(glow));
+        const int m = want.width;
+        CHECK(styleMargins(glow) == StyleMargins{m, m, m, m});
+        const Canvas out = styled(s, glow, want.ice);
+        int checked = 0;
+        for (int y = 0; y < out.height(); ++y)
+            for (int x = 0; x < out.width(); ++x) {
+                int d = 99;
+                for (int iy = 0; iy < ink.height / 2; ++iy)
+                    for (int ix = 0; ix < ink.width; ++ix)
+                        if (ink.cellInk(ix, iy))
+                            d = std::min(d, std::max(std::abs(x - m - ix), std::abs(y - m - iy)));
+                if (d == 0)
+                    continue;
+                INFO("width " << want.width << " brightness " << want.brightness << " iCE " << want.ice << " cell "
+                              << x << "," << y << " ring " << d);
+                if (d > m)
+                    CHECK(out.at(x, y).transparent);
+                else
+                    CHECK(out.at(x, y) == rungCell(fire(), want.rings[std::size_t(d - 1)]));
+                ++checked;
+            }
+        CHECK(checked > 0);
+    }
+}
+
+TEST_CASE("Glow: a brightness apart from the width keeps a same-ramp halo on the ladder", "[style][mask][glow]") {
+    // #184 Q4 (b): a toxic glow round letters of the ramp's LightGreen (rung
+    // 8). Tied to its width, a halo of width 1 is a ring of ░ alone (one
+    // glyph) and one of width 2 puts ▒ (rung 2) beside rung 8 (a skip).
+    // Lit apart from the width, width 1 at Green (rung 4) and width 2 at
+    // LightGreen ▓ Green (rung 7, then 6) do neither, and the ring next to
+    // the letters stays a rung below them, so the letters still read.
+    const Ramp toxic = *findRamp("toxic");
+    for (const GlowFace& f : glowFaces())
+        for (const TextSource& s : fixtureWords(f.name))
+            for (const auto [width, brightness] : {std::pair{1, 4}, {2, 7}})
+                for (const bool ice : {true, false}) {
+                    const Canvas out =
+                        styled(s,
+                               styleOf({GlowEffect{"toxic", width, brightness},
+                                        FillEffect{FillMode::Flat, LightGreen, "toxic"}}),
+                               *f.face, ice);
+                    INFO(f.name << " / " << std::string(s.text.begin(), s.text.end()) << " / width " << width
+                                << " brightness " << brightness << " iCE " << ice);
+                    lint::LadderOptions options;
+                    options.ice = ice;
+                    for (const lint::LadderFinding& l : lint::checkLadder(out, toxic, std::nullopt, options).findings) {
+                        INFO(l.x << "," << l.y << ": " << l.message);
+                        CHECK(l.kind != lint::LadderFinding::Kind::RungSkip);
+                        CHECK(l.kind != lint::LadderFinding::Kind::OneGlyph);
+                    }
+                    // the first ring, where a TDF letter's black space doesn't hide it
+                    const StyleInput in = textStyleInput(s, *f.face);
+                    const auto inked = [&](int x, int y) {
+                        return x >= 0 && y >= 0 && x < in.mask.width && 2 * y + 1 < in.mask.height &&
+                               (in.mask.at(x, 2 * y) || in.mask.at(x, 2 * y + 1));
+                    };
+                    int ring = 0;
+                    for (int y = -1; y <= in.mask.height / 2; ++y)
+                        for (int x = -1; x <= in.mask.width; ++x) {
+                            if (inked(x, y) ||
+                                (x >= 0 && y >= 0 && x < in.source.width() && y < in.source.height() &&
+                                 !in.source.at(x, y).transparent))
+                                continue;
+                            bool next = false;
+                            for (int dy = -1; dy <= 1; ++dy)
+                                for (int dx = -1; dx <= 1; ++dx)
+                                    next = next || inked(x + dx, y + dy);
+                            if (!next)
+                                continue;
+                            INFO("cell " << x + width << "," << y + width);
+                            CHECK(rungOf(toxic, out.at(x + width, y + width)) == std::optional<int>(brightness));
+                            ++ring;
+                        }
+                    CHECK(ring > 0);
+                }
 }
 
 TEST_CASE("Fill flat: every ink pixel in its colour", "[style][mask]") {
@@ -857,18 +1228,18 @@ TEST_CASE("with iCE off no effect needs a bright background, and a letter on top
 
     // the glow, fill and shade walk their rungs by stepRung with iCE off
     for (const TextStyle& style :
-         {styleOf({GlowEffect{"fire", 12}}), styleOf({FillEffect{FillMode::Rows, Grey, "fire"}}),
+         {styleOf({GlowEffect{"fire", 12, 12}}), styleOf({FillEffect{FillMode::Rows, Grey, "fire"}}),
           styleOf({FillEffect{FillMode::Columns, Grey, "fire"}, ShadeEffect{"fire", Compass::W}}),
           styleOf({FillEffect{FillMode::Flat, Yellow, "fire"}, BevelEffect{"fire", Compass::NW}}),
           styleOf({FillEffect{FillMode::Rows, Grey, "fire"}, BevelEffect{"fire", Compass::NW}})}) {
         INFO(effectKindName(style.effects.back().kind()));
         CHECK_FALSE(brightBackground(styled(s, style, false)));
     }
-    CHECK(brightBackground(styled(s, styleOf({GlowEffect{"fire", 12}}), true)));
+    CHECK(brightBackground(styled(s, styleOf({GlowEffect{"fire", 12, 12}}), true)));
     CHECK(brightBackground(styled(s, styleOf({FillEffect{FillMode::Rows, Grey, "fire"}}), true)));
 
     // iCE off, the glow's rings still go dark outward, all on the ramp
-    const Canvas glow = styled(s, styleOf({GlowEffect{"fire", 12}}), false);
+    const Canvas glow = styled(s, styleOf({GlowEffect{"fire", 12, 12}}), false);
     const Pixels ink = pixelsOf(plain(s));
     std::vector<int> byRing(13, -1);
     for (int y = 0; y < glow.height(); ++y)
@@ -948,7 +1319,7 @@ TEST_CASE("with iCE off the glow and fill gradients skip no ladder rung", "[styl
 
     // Codex's repro: one white cell's glow, its rings 12 and 8 side by side
     const Layer dot = solid(1, 1);
-    const TextStyle glow = styleOf({GlowEffect{"fire", 12}});
+    const TextStyle glow = styleOf({GlowEffect{"fire", 12, 12}});
     const Canvas halo = drawStyle(styleInputOf(dot), glow, false, styleMargins(glow));
     REQUIRE(halo.width() == 25);
     int pairs = 0;
@@ -1005,9 +1376,12 @@ TEST_CASE("a stack that can't be drawn says why", "[style][refuse]") {
     CHECK_FALSE(textStyleProblem(everyEffect()));
     const auto problem = [](std::vector<EffectSettings> e) { return textStyleProblem(styleOf(std::move(e))).value_or(""); };
     CHECK(problem({PlateEffect{}, PlateEffect{}}).find("two plate effects") != std::string::npos);
-    CHECK(problem({GlowEffect{"neon", 2}}).find("\"neon\" is not a named ramp") != std::string::npos);
-    CHECK(problem({GlowEffect{"steel", 13}}).find("over ramp \"steel\"'s 12 rungs") != std::string::npos);
-    CHECK(problem({GlowEffect{"fire", 0}}).find("glow width 0") != std::string::npos);
+    CHECK(problem({GlowEffect{"neon", 2, 2}}).find("\"neon\" is not a named ramp") != std::string::npos);
+    CHECK(problem({GlowEffect{"steel", 13, 13}}).find("over ramp \"steel\"'s 12 rungs") != std::string::npos);
+    CHECK(problem({GlowEffect{"fire", 0, 0}}).find("glow width 0") != std::string::npos);
+    CHECK(problem({GlowEffect{"steel", 2, 13}}).find("glow brightness 13 is over ramp \"steel\"'s 12 rungs") !=
+          std::string::npos);
+    CHECK(problem({GlowEffect{"fire", 2, 0}}).find("glow brightness 0") != std::string::npos);
     CHECK(problem({PlateEffect{16, 1}}).find("plate colour 16") != std::string::npos);
     CHECK(problem({PlateEffect{Blue, TextStyle::kMaxPadding + 1}}).find("plate padding") != std::string::npos);
     CHECK(problem({ShadowEffect{ShadowForm::Drop, Compass::S, 0, Black}}).find("shadow distance 0") != std::string::npos);
@@ -1019,7 +1393,7 @@ TEST_CASE("a stack that can't be drawn says why", "[style][refuse]") {
     CHECK(problem({ShadeEffect{"neon", Compass::N}}) != "");
     CHECK(problem({BevelEffect{"neon", Compass::N}}) != "");
     // switched off is checked too
-    TextStyle off = styleOf({GlowEffect{"neon", 2}});
+    TextStyle off = styleOf({GlowEffect{"neon", 2, 2}});
     off.effects[0].enabled = false;
     CHECK(textStyleProblem(off));
     TextStyle many = everyEffect();
@@ -1053,7 +1427,7 @@ TEST_CASE("a style goes only on a cells, pixels or live text layer, and a bad on
     CHECK_THROWS_AS(applyLayerProperties(g, onGenerator), TextError);
     // an edit is checked when it is applied, as a text edit is
     Layer edited = before;
-    CHECK_THROWS_AS(applyEdit(edited, styleEdit(before, styleOf({GlowEffect{"neon", 2}}))), TextError);
+    CHECK_THROWS_AS(applyEdit(edited, styleEdit(before, styleOf({GlowEffect{"neon", 2, 2}}))), TextError);
     CHECK(edited == before);
 }
 
@@ -1122,10 +1496,10 @@ TEST_CASE("a style change is one step that undoes and redoes", "[style][undo]") 
     CHECK(*stack.find(id) == after);
 
     // a step drawn with iCE off draws its colours so
-    const LayerPropsEdit off = styleEdit(before, styleOf({GlowEffect{"fire", 12}}), false);
+    const LayerPropsEdit off = styleEdit(before, styleOf({GlowEffect{"fire", 12, 12}}), false);
     Layer l = before;
     applyEdit(l, off);
-    CHECK(l.cells == styled(s, styleOf({GlowEffect{"fire", 12}}), false));
+    CHECK(l.cells == styled(s, styleOf({GlowEffect{"fire", 12, 12}}), false));
 
     // a style step never merges with typing
     LayerPropsEdit typed = textEdit(before, word(U"funky", "block"), 7);
@@ -1448,7 +1822,7 @@ TEST_CASE("the stack is saved in the layer file and reopens to the same cells", 
     const LayerId cellsId = p.layers.add(blockLayer(40, 10));
     p.layers.find(cellsId)->props.style = styleOf({OutlineEffect{OutlineForm::Cells, Blue}, ShadeEffect{"steel", Compass::N}});
     const LayerId pixelsId = p.layers.add(pixelLayer());
-    p.layers.find(pixelsId)->props.style = styleOf({GlowEffect{"steel", 2}});
+    p.layers.find(pixelsId)->props.style = styleOf({ShadowEffect{ShadowForm::Drop, Compass::SE, 1, DarkGrey}});
     const Entries v2 = project::encode(p);
     CHECK(object(v2.at("manifest.json")).value("version").toString() == "2.0");
     const Project back = project::decode(v2);
@@ -1461,6 +1835,234 @@ TEST_CASE("the stack is saved in the layer file and reopens to the same cells", 
     CHECK(project::read(dir / "piece.bwp") == p);
     project::writeDirectory(p, dir / "piece");
     CHECK(project::read(dir / "piece") == p);
+}
+
+TEST_CASE("a Glow brightness apart from its width is saved, and a file without one reads as before", "[style][project][glow]") {
+    Project p;
+    p.layers = LayerStack(80, 25);
+    const LayerId textId = p.layers.add(liveStyled(word(U"funk", "block"), styleOf({GlowEffect{"steel", 2, 6}})));
+    const auto version = [](const Entries& e) { return object(e.at("manifest.json")).value("version").toString(); };
+    const auto firstEffect = [&](const Entries& e, LayerId id) {
+        return object(e.at(layerPath(*p.layers.find(id)))).value("style").toObject().value("effects").toArray()[0].toObject();
+    };
+
+    Entries e = project::encode(p);
+    CHECK(version(e) == "1.8");
+    CHECK(firstEffect(e, textId).value("width").toInt() == 2);
+    CHECK(firstEffect(e, textId).value("brightness").toInt() == 6);
+    CHECK(project::decode(e) == p);
+    const fs::path dir = scratch("glow-brightness");
+    project::writeZip(p, dir / "piece.bwp");
+    CHECK(project::read(dir / "piece.bwp") == p);
+    project::writeDirectory(p, dir / "piece");
+    CHECK(project::read(dir / "piece") == p);
+
+    // a file written before the key existed lights the ring next to the
+    // letters at the width's rung, as it did then
+    QJsonObject layer = object(e.at(layerPath(*p.layers.find(textId))));
+    QJsonObject style = layer.value("style").toObject();
+    QJsonArray effects = style.value("effects").toArray();
+    QJsonObject glow = effects[0].toObject();
+    glow.remove("brightness");
+    effects[0] = glow;
+    style["effects"] = effects;
+    layer["style"] = style;
+    e[layerPath(*p.layers.find(textId))] = json(layer);
+    const Project old = project::decode(e);
+    REQUIRE(old.layers.find(textId)->props.style);
+    const auto* read = old.layers.find(textId)->props.style->get<GlowEffect>();
+    REQUIRE(read);
+    CHECK(*read == GlowEffect{"steel", 2, 2});
+
+    // the same brightness as the width keeps the older version and still writes the key
+    p.layers.find(textId)->props.style = styleOf({GlowEffect{"steel", 2, 2}});
+    const Entries same = project::encode(p);
+    CHECK(version(same) == "1.3");
+    CHECK(firstEffect(same, textId).value("brightness").toInt() == 2);
+    CHECK(project::decode(same) == p);
+    for (const bool ice : {true, false})
+        CHECK(composite(old.layers, CompositeOptions{ice, Cell{}}) == composite(p.layers, CompositeOptions{ice, Cell{}}));
+
+    // a switched-off glow is saved too, so it counts
+    TextStyle off = styleOf({GlowEffect{"steel", 2, 6}});
+    off.effects[0].enabled = false;
+    p.layers.find(textId)->props.style = off;
+    const Entries offE = project::encode(p);
+    CHECK(version(offE) == "1.8");
+    CHECK(project::decode(offE) == p);
+
+    // with a styled cells or pixels layer and no Glow on it, the text
+    // layer's makes it 2.4
+    p.layers.find(textId)->props.style = styleOf({GlowEffect{"steel", 2, 6}});
+    const LayerId pixelsId = p.layers.add(pixelLayer());
+    p.layers.find(pixelsId)->props.style = styleOf({OutlineEffect{OutlineForm::Pixels, Cyan}});
+    const Entries v2 = project::encode(p);
+    CHECK(version(v2) == "2.4");
+    CHECK(project::decode(v2) == p);
+
+    // any Glow on the cells or pixels layer makes it 3.0, its brightness
+    // the width's or not
+    p.layers.find(pixelsId)->props.style = styleOf({GlowEffect{"steel", 3, 3}});
+    CHECK(version(project::encode(p)) == "3.0");
+    p.layers.find(pixelsId)->props.style = styleOf({GlowEffect{"steel", 3, 9}});
+    const Entries v3 = project::encode(p);
+    CHECK(version(v3) == "3.0");
+    CHECK(firstEffect(v3, pixelsId).value("brightness").toInt() == 9);
+    CHECK(project::decode(v3) == p);
+    project::writeZip(p, dir / "styled.bwp");
+    CHECK(project::read(dir / "styled.bwp") == p);
+    project::writeDirectory(p, dir / "styled");
+    CHECK(project::read(dir / "styled") == p);
+}
+
+TEST_CASE("an older reader refuses a file whose Glow it would draw differently, or shows the same cells",
+          "[style][project][glow][version]") {
+    // a transparent 7x7 cells layer, a white full block at (3, 3)
+    Project p;
+    p.ice = true;
+    p.layers = LayerStack(7, 7);
+    Layer dot = makeLayer(LayerKind::Cells, 7, 7, "dot", 0, 0);
+    dot.cells.at(3, 3) = Cell{kFullBlock, Color::indexed(White), Color::indexed(Black), 0, false};
+    const LayerId dotId = p.layers.add(dot);
+    p.layers.find(dotId)->props.style = styleOf({GlowEffect{"steel", 2, 6}});
+    const auto version = [](const Entries& e) { return object(e.at("manifest.json")).value("version").toString(); };
+    const auto shows = [&](const Project& q, bool ice) { return composite(q.layers, CompositeOptions{ice, Cell{}}); };
+
+    // the compositor draws the brightness, so the key changes what the file shows
+    const Entries e = project::encode(p);
+    Project dropped = p;
+    dropped.layers.find(dotId)->props.style = styleOf({GlowEffect{"steel", 2, 2}});
+    CHECK(shows(p, true).at(4, 3) != shows(dropped, true).at(4, 3));
+    CHECK(version(e) == "3.0");
+    for (const bool ice : {true, false}) {
+        INFO("ice " << ice);
+        const std::optional<Canvas> older = olderReaderShows(e, ice);
+        CHECK((!older || *older == shows(p, ice)));
+    }
+
+    // switched off it draws nothing, but it is saved and still counts
+    TextStyle off = styleOf({GlowEffect{"steel", 2, 6}});
+    off.effects[0].enabled = false;
+    p.layers.find(dotId)->props.style = off;
+    CHECK(version(project::encode(p)) == "3.0");
+
+    // a Glow on live text is drawn into the layer's saved cells, so 1.8 and
+    // 2.4 files show the same cells to an older reader
+    p.layers.find(dotId)->props.style = styleOf({OutlineEffect{OutlineForm::Cells, Cyan}});
+    p.layers.add(liveStyled(word(U"f", "block"), styleOf({GlowEffect{"steel", 1, 5}}), 0, 0));
+    const Entries v24 = project::encode(p);
+    CHECK(version(v24) == "2.4");
+    p.layers.find(dotId)->props.style.reset();
+    const Entries v18 = project::encode(p);
+    CHECK(version(v18) == "1.8");
+    for (const bool ice : {true, false}) {
+        INFO("ice " << ice);
+        for (const Entries* f : {&v18, &v24}) {
+            const Project q = project::decode(*f);
+            const std::optional<Canvas> older = olderReaderShows(*f, ice);
+            REQUIRE(older);
+            CHECK(*older == shows(q, ice));
+        }
+    }
+
+    // a 2.x file with one on a cells layer is refused: no writer makes one
+    p.layers.find(dotId)->props.style = styleOf({GlowEffect{"steel", 2, 6}});
+    Entries as24 = project::encode(p);
+    QJsonObject m = object(as24.at("manifest.json"));
+    m["version"] = "2.4";
+    as24["manifest.json"] = json(m);
+    CHECK_THROWS_AS(project::decode(as24), ProjectError);
+}
+
+TEST_CASE("a Glow round a counter on a cells layer saves as 3.0, which an older reader refuses",
+          "[style][project][glow][version]") {
+    // a transparent 7x7 cells layer, white full blocks round the square
+    // (1,1)-(5,5) and its inside transparent: (3, 3) is two cells from the
+    // ink and can't reach the halo's edge without crossing the inner ring
+    Project p;
+    p.ice = true;
+    p.layers = LayerStack(7, 7);
+    Layer square = makeLayer(LayerKind::Cells, 7, 7, "square", 0, 0);
+    for (int i = 1; i <= 5; ++i)
+        for (const auto [x, y] : {std::pair{i, 1}, {i, 5}, {1, i}, {5, i}})
+            square.cells.at(x, y) = Cell{kFullBlock, Color::indexed(White), Color::indexed(Black), 0, false};
+    const LayerId squareId = p.layers.add(square);
+    p.layers.find(squareId)->props.style = styleOf({GlowEffect{"steel", 2, 2}});
+    const auto version = [](const Entries& e) { return object(e.at("manifest.json")).value("version").toString(); };
+    const auto shows = [&](const Project& q, bool ice) { return composite(q.layers, CompositeOptions{ice, Cell{}}); };
+
+    // the counter holds the inner ring's rung, which 04dac94 drew a rung
+    // darker; elsewhere the two draw alike
+    for (const bool ice : {true, false}) {
+        INFO("ice " << ice);
+        Entries as20 = project::encode(p);
+        QJsonObject m = object(as20.at("manifest.json"));
+        m["version"] = "2.0";
+        as20["manifest.json"] = json(m);
+        const Project read = project::decode(as20);  // a 2.0 file from before 3.0 still opens
+        CHECK(shows(read, ice) == shows(p, ice));
+        const std::optional<Canvas> older = olderReaderShows(as20, ice);
+        REQUIRE(older);
+        const Canvas now = shows(p, ice);
+        CHECK(now.at(3, 3) == now.at(2, 2));
+        CHECK(older->at(3, 3) != now.at(3, 3));
+        Canvas same = *older;
+        same.at(3, 3) = now.at(3, 3);
+        CHECK(same == now);
+    }
+
+    const fs::path dir = scratch("glow-counter");
+    project::writeZip(p, dir / "square.bwp");
+    project::writeDirectory(p, dir / "square");
+    for (const fs::path& saved : {dir / "square.bwp", dir / "square"}) {
+        INFO(saved.filename().string());
+        const Entries e = savedEntries(saved);
+        CHECK(version(e) == "3.0");
+        CHECK(project::read(saved) == p);
+        for (const bool ice : {true, false}) {
+            INFO("ice " << ice);
+            const std::optional<Canvas> older = olderReaderShows(e, ice);
+            CHECK((!older || *older == shows(p, ice)));
+        }
+    }
+
+    // switched off it draws nothing, but it is saved and still counts
+    TextStyle off = styleOf({GlowEffect{"steel", 2, 2}});
+    off.effects[0].enabled = false;
+    p.layers.find(squareId)->props.style = off;
+    CHECK(version(project::encode(p)) == "3.0");
+
+    // 2.x files from before 3.0 with a Glow there open, the brightness
+    // absent or the width's, but not one apart from it
+    p.layers.find(squareId)->props.style = styleOf({GlowEffect{"steel", 2, 2}});
+    Entries e = project::encode(p);
+    QJsonObject m = object(e.at("manifest.json"));
+    m["version"] = "2.3";
+    e["manifest.json"] = json(m);
+    CHECK(project::decode(e) == p);
+    const std::string path = layerPath(*p.layers.find(squareId));
+    QJsonObject layer = object(e.at(path));
+    QJsonObject style = layer.value("style").toObject();
+    QJsonArray effects = style.value("effects").toArray();
+    QJsonObject glow = effects[0].toObject();
+    const auto withBrightness = [&](std::optional<int> b) {
+        QJsonObject g = glow;
+        g.remove("brightness");
+        if (b)
+            g["brightness"] = *b;
+        QJsonArray fx = effects;
+        fx[0] = g;
+        QJsonObject st = style;
+        st["effects"] = fx;
+        QJsonObject l = layer;
+        l["style"] = st;
+        Entries out = e;
+        out[path] = json(l);
+        return out;
+    };
+    CHECK(project::decode(withBrightness(std::nullopt)) == p);
+    CHECK(project::decode(withBrightness(2)) == p);
+    CHECK_THROWS_AS(project::decode(withBrightness(1)), ProjectError);
 }
 
 TEST_CASE("a reader refuses a malformed or misplaced stack with a clear error", "[style][project][refuse]") {
@@ -1529,6 +2131,8 @@ TEST_CASE("a reader refuses a malformed or misplaced stack with a clear error", 
     CHECK(has(inEffect(1, [](QJsonObject& e) { e["ramp"] = "neon"; }), "\"neon\" is not a named ramp"));
     CHECK(has(inEffect(1, [](QJsonObject& e) { e["width"] = 13; }), "over ramp \"steel\"'s 12 rungs"));
     CHECK(has(inEffect(1, [](QJsonObject& e) { e["width"] = 0; }), "\"width\""));
+    CHECK(has(inEffect(1, [](QJsonObject& e) { e["brightness"] = 13; }), "over ramp \"steel\"'s 12 rungs"));
+    CHECK(has(inEffect(1, [](QJsonObject& e) { e["brightness"] = 0; }), "\"brightness\""));
     CHECK(has(inEffect(2, [](QJsonObject& e) { e["direction"] = "north"; }), "unknown direction \"north\""));
     CHECK(has(inEffect(2, [](QJsonObject& e) { e["form"] = "soft"; }), "unknown form \"soft\""));
     CHECK(has(inEffect(2, [](QJsonObject& e) { e["distance"] = 17; }), "\"distance\""));
@@ -1551,10 +2155,10 @@ TEST_CASE("a reader refuses a malformed or misplaced stack with a clear error", 
               o["kind"] = "cells";
           }),
           "a styled cells layer in a 1.x project"));
-    // a 3.x project: refused before any layer is read
+    // a 4.x project: refused before any layer is read
     Entries newer = good;
     QJsonObject m = object(newer.at("manifest.json"));
-    m["version"] = "3.0";
+    m["version"] = "4.0";
     newer["manifest.json"] = json(m);
     CHECK_THROWS_AS(project::decode(newer), ProjectError);
 }
@@ -1577,7 +2181,7 @@ TEST_CASE("a writer refuses a stack the reader refuses", "[style][project][refus
     Layer cells = blockLayer();
     cells.props.style = styleOf({PlateEffect{}, PlateEffect{}});
     CHECK(writes(cells).find("two plate effects") != std::string::npos);
-    cells.props.style = styleOf({GlowEffect{"neon", 1}});
+    cells.props.style = styleOf({GlowEffect{"neon", 1, 1}});
     CHECK(writes(cells).find("\"neon\"") != std::string::npos);
     cells.props.style = everyEffect();
     CHECK(writes(cells) == "(written)");

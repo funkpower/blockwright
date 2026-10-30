@@ -1418,7 +1418,7 @@ TEST_CASE("a styled layer's composite stays fresh through painting and preview a
     p.style = TextStyle{};
     p.style->effects = {Effect{true, OutlineEffect{OutlineForm::Cells, Blue}},
                         Effect{true, FillEffect{FillMode::Flat, Yellow, "fire"}},
-                        Effect{true, GlowEffect{"fire", 3}}};
+                        Effect{true, GlowEffect{"fire", 3, 3}}};
     REQUIRE(doc->setLayerProperties(id, p, QStringLiteral("Style")));
     CHECK(doc->canvas().at(1, 2).bg.paletteIndex() == Blue);
     CHECK(fresh() == 0);
@@ -1477,7 +1477,7 @@ TEST_CASE("live style edits use the document's iCE setting", "[layers][style][te
     doc->replace(p, QStringLiteral("style.bwp"), FileForm::ProjectZip);
     REQUIRE_FALSE(doc->format().ice);
     LayerProperties props = doc->layers().find(id)->props;
-    props.style = TextStyle{{Effect{true, GlowEffect{"fire", 12}}}};
+    props.style = TextStyle{{Effect{true, GlowEffect{"fire", 12, 12}}}};
     REQUIRE(doc->setLayerProperties(id, props, QStringLiteral("Style")));
 
     const Canvas expected = renderStyledText(source, *props.style, *findFace(source.face), false).cells;
