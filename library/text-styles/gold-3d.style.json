@@ -4,7 +4,7 @@
   "category": "classic",
   "tags": ["gold", "3d", "extrude"],
   "effects": [
-    {"kind": "shadow", "enabled": true, "colour": 8, "direction": "se", "distance": 1, "form": "extrude"},
+    {"kind": "shadow", "enabled": true, "colour": 6, "direction": "se", "distance": 1, "form": "extrude"},
     {"kind": "outline", "enabled": true, "colour": 8, "form": "pixels"},
     {"kind": "fill", "enabled": true, "colour": 6, "mode": "flat", "ramp": "wood"}
   ]

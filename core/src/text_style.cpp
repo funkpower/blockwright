@@ -399,7 +399,10 @@ private:
     }
 
     // The outline's layer, growing the mask Glow and Shadow read by its
-    // ring; empty when it is off.
+    // ring; empty when it is off. The ring stays out of source cells: the
+    // letters cover them (a TheDraw glyph's blank cells, an open notch or a
+    // counter), so a ring there would show nothing and cast a shadow from
+    // nothing.
     std::optional<Layer> outlineLayer() {
         const OutlineEffect* o = style_.get<OutlineEffect>();
         if (!o)
@@ -408,7 +411,7 @@ private:
         if (o->form == OutlineForm::Pixels) {
             for (int py = 0; py < 2 * h_; ++py)
                 for (int px = 0; px < w_; ++px) {
-                    if (ink(px, py))
+                    if (ink(px, py) || source(px, py / 2))
                         continue;
                     bool near = false;
                     for (int dy = -1; dy <= 1 && !near; ++dy)
@@ -422,7 +425,7 @@ private:
         } else {
             for (int y = 0; y < h_; ++y)
                 for (int x = 0; x < w_; ++x) {
-                    if (cellInk(x, y))
+                    if (cellInk(x, y) || source(x, y))
                         continue;
                     bool near = false;
                     for (int dy = -1; dy <= 1 && !near; ++dy)

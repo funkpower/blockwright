@@ -375,6 +375,88 @@ TEST_CASE("a ramp Fill on every named ramp lints clean on the TheDraw test fonts
     CHECK(cases == 10 * 3 * 3 * 5 * 2);
 }
 
+// Gold 3D (#184 Q5): a brown extrusion one pixel south-east of a dark grey
+// outline, round flat brown letters. An extrusion falls from the outlined
+// letters as they are drawn: where a TheDraw glyph's blank cells cover the
+// outline's ring (an open notch, a counter), the ring hidden there casts
+// nothing. Swept from there, it showed under the notch as a lone brown cell
+// between black, which the lint read as a speck (`skin speckle` in
+// `bw-block` and `bw-colour`).
+TEST_CASE("Gold 3D's brown extrusion falls from the outline as drawn and leaves no speck", "[presets]") {
+    const std::vector<TextStyleEntry> all = presets();
+    const auto gold = std::find_if(all.begin(), all.end(), [](const TextStyleEntry& p) { return p.name == "Gold 3D"; });
+    REQUIRE(gold != all.end());
+    REQUIRE(gold->style.get<ShadowEffect>());
+    CHECK(*gold->style.get<ShadowEffect>() == ShadowEffect{ShadowForm::Extrude, Compass::SE, 1, Brown});
+    REQUIRE(gold->style.get<OutlineEffect>());
+    CHECK(*gold->style.get<OutlineEffect>() == OutlineEffect{OutlineForm::Pixels, DarkGrey});
+    REQUIRE(gold->style.get<FillEffect>());
+    CHECK(*gold->style.get<FillEffect>() == FillEffect{FillMode::Flat, Brown, "wood"});
+
+    // the stack with a brown extrusion, whatever the file says, and the
+    // same in colours of its own, so the extrusion's pixels can be told
+    // from the letters', with each form of outline
+    TextStyle brown = gold->style, marked = gold->style;
+    for (Effect& e : brown.effects)
+        if (auto* s = std::get_if<ShadowEffect>(&e.settings))
+            s->colour = Brown;
+    for (Effect& e : marked.effects) {
+        if (auto* s = std::get_if<ShadowEffect>(&e.settings))
+            s->colour = Red;
+        if (auto* f = std::get_if<FillEffect>(&e.settings))
+            f->colour = Yellow;
+    }
+    const StyleMargins m = styleMargins(marked);
+    lint::LintOptions options;
+    options.ramps = namedRamps();
+    options.craftPairs = true;
+    int drawings = 0;
+    for (const MatrixFace& f : faces()) {
+        if (!f.file)
+            continue;
+        for (const TextSource& w : words())
+            for (const bool ice : {true, false}) {
+                INFO(f.name << " / " << utf8(w.text) << " / iCE " << (ice ? "on" : "off"));
+                ++drawings;
+                // no speck, nor any other ladder finding
+                options.ice = ice;
+                std::string found;
+                for (const lint::Finding& l : lint::lintCanvas(renderStyledText(w, brown, *f.face, ice).cells, options).findings)
+                    if (lint::ladderKind(l.kind))
+                        found += l.ramp + " " + std::string(lint::kindName(l.kind)) + " " + std::to_string(l.x) + "," +
+                                 std::to_string(l.y) + "\n";
+                CHECK(found == "");
+
+                // each extrusion pixel that shows is one step south-east of
+                // a letter's ink pixel or of an outline pixel that shows
+                for (const OutlineForm form : {OutlineForm::Pixels, OutlineForm::Cells}) {
+                    INFO("outline " << outlineFormName(form));
+                    for (Effect& e : marked.effects)
+                        if (auto* o = std::get_if<OutlineEffect>(&e.settings))
+                            o->form = form;
+                    const Canvas drawn = renderStyledText(w, marked, *f.face, ice).cells;
+                    const InkMask ink = textStyleInput(w, *f.face).mask;
+                    const auto pixel = [&](int px, int py) -> std::optional<std::uint8_t> {
+                        if (px < 0 || py < 0 || px >= drawn.width() || py >= 2 * drawn.height())
+                            return std::nullopt;
+                        const auto h = halves(drawn.at(px, py / 2));
+                        if (!h)
+                            return std::nullopt;
+                        return (py & 1 ? h->second : h->first).paletteIndex();
+                    };
+                    std::string orphans;
+                    for (int py = 0; py < 2 * drawn.height(); ++py)
+                        for (int px = 0; px < drawn.width(); ++px)
+                            if (pixel(px, py) == Red && !ink.at(px - 1 - m.left, py - 1 - 2 * m.top) &&
+                                pixel(px - 1, py - 1) != DarkGrey)
+                                orphans += std::to_string(px) + "," + std::to_string(py) + " ";
+                    CHECK(orphans == "");
+                }
+            }
+    }
+    CHECK(drawings == 3 * 5 * 2);
+}
+
 // The comparison sheets: for each face and iCE setting, each fixture word
 // unstyled and then in each preset, each drawing under its name, written as
 // <face>-ice-<on|off>.ans in the directory BW_PRESET_SHEETS names. Run with
