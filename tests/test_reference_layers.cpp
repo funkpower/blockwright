@@ -310,3 +310,22 @@ TEST_CASE("a kept file cannot silently replace a reference picture",
     CHECK(saved.at(path) == kPng);
     CHECK_NOTHROW(project::decode(saved));
 }
+
+TEST_CASE("a project with Big rainbow is 1.6, or 2.2 when styled", "[project][reference][version][big-text]") {
+    // 1.6 is a live Big rainbow source, and implies 1.5 and 1.4
+    TextSource rainbow;
+    rainbow.text = U"BLAZE";
+    rainbow.bigStyle = BigTextStyle::Rainbow;
+    Project p = withReferences();
+    p.layers.add(makeTextLayer(rainbow, "Title"));
+    Entries e = project::encode(p);
+    CHECK(object(e.at("manifest.json")).value("version").toString() == "1.6");
+    CHECK(project::decode(e) == p);
+
+    TextStyle style;
+    style.effects.push_back(Effect{true, OutlineEffect{}});
+    p.layers[3].props.style = style;
+    e = project::encode(p);
+    CHECK(object(e.at("manifest.json")).value("version").toString() == "2.2");
+    CHECK(project::decode(e) == p);
+}

@@ -1,5 +1,6 @@
 #pragma once
-// Whole-cell big text, compatible with /ascii big's four lint-clean pixel styles.
+// Whole-cell big text, compatible with /ascii big's pixel styles (Rainbow
+// thinned so it passes the lint).
 // The existing block font supplies the bits; bigTextFace adapts the
 // glyph differences of the reference's 8x8 variant and doubles pixel rows.
 #include "blockwright/text.h"

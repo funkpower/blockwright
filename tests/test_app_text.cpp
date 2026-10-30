@@ -16,6 +16,7 @@
 #include "toolbox.h"
 
 #include "blockwright/font_store.h"
+#include "blockwright/irc.h"
 #include "blockwright/big_text.h"
 #include "blockwright/layer.h"
 #include "blockwright/text.h"
@@ -1528,10 +1529,10 @@ TEST_CASE("big text options create each style and undo colours and modes", "[tex
     auto* d = w.document();
     auto* o = w.toolOptions()->textOptions();
     auto* tool = textTool(w);
-    REQUIRE(o->bigStyleBox()->count() == 5);
+    REQUIRE(o->bigStyleBox()->count() == 6);
     click(w.canvasView(), 2, 2);
-    for (const auto style :
-         {BigTextStyle::Shadow, BigTextStyle::ThreeD, BigTextStyle::Outline, BigTextStyle::Block}) {
+    for (const auto style : {BigTextStyle::Shadow, BigTextStyle::ThreeD, BigTextStyle::Outline,
+                             BigTextStyle::Rainbow, BigTextStyle::Block}) {
         o->bigStyleBox()->setCurrentIndex(o->bigStyleBox()->findData(int(style)));
         CHECK(tool->defaults().bigStyle == style);
         CHECK_FALSE(o->facePicker()->isEnabled());
@@ -1563,6 +1564,33 @@ TEST_CASE("big text options create each style and undo colours and modes", "[tex
     CHECK_FALSE(o->bigColoursBox()->isEnabled());
     d->undoStack()->undo();
     CHECK(*d->active() == beforeBad);
+}
+
+TEST_CASE("Big rainbow types its default walk, one colour a letter", "[text][big-text]") {
+    MainWindow w;
+    use(w, "text");
+    auto* d = w.document();
+    auto* o = w.toolOptions()->textOptions();
+    o->bigStyleBox()->setCurrentIndex(o->bigStyleBox()->findData(int(BigTextStyle::Rainbow)));
+    CHECK(o->bigStyleBox()->currentText() == QStringLiteral("Big rainbow"));
+    CHECK(o->bigColoursBox()->text() == QStringLiteral("4,7,8,9,11,12,13"));
+    click(w.canvasView(), 2, 2);
+    type(w.canvasView(), QStringLiteral("III"));
+    REQUIRE(d->active());
+    REQUIRE(sourceOf(d).bigStyle == BigTextStyle::Rainbow);
+    CHECK(sourceOf(d).bigColours == std::vector<std::uint8_t>{4, 7, 8, 9, 11, 12, 13});
+    CHECK(d->active()->cells == renderText(sourceOf(d), blockFace()).cells);
+    // the three I's, left to right, in the walk's first three colours
+    std::vector<int> seen;
+    const auto& cells = d->active()->cells;
+    for (int x = 0; x < cells.width(); ++x)
+        for (int y = 0; y < cells.height(); ++y)
+            if (const auto& c = cells.at(x, y); !c.transparent) {
+                const int m = irc::mircColor(c.fg);
+                if (std::find(seen.begin(), seen.end(), m) == seen.end())
+                    seen.push_back(m);
+            }
+    CHECK(seen == std::vector<int>{4, 7, 8});
 }
 
 TEST_CASE("big text clicks stay on the first line above a low glyph", "[text][big-text][line-hit]") {

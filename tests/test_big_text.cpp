@@ -1,7 +1,8 @@
 // Cell oracles: ascii.py 1.32.1 render_pixel, run headlessly from a scratch
 // copy with grid_to_irc replaced by a cell capture (after strip_rows), width
 // 78. Each hex digit is the reference background's mIRC colour; dot is CLEAR.
-// The bundled cases use the thinned colours listed in PLAN §15. The glyph
+// The bundled cases use the thinned colours listed in PLAN §15; Rainbow keeps
+// the reference colours and is thinned by thinRainbow below. The glyph
 // oracle is that copy's PIXEL_FONT; mini-reference uses render_mini/parse_irc.
 #include "blockwright/big_text.h"
 #include "blockwright/irc.h"
@@ -74,6 +75,44 @@ std::vector<std::string> expected(const QJsonObject& o) {
         rows.push_back(row.toString().toStdString());
     return tight(rows);
 }
+// Big rainbow's thinning: a pixel with no edge-neighbour of its own colour
+// shows white (mIRC 0).
+std::vector<std::string> thinRainbow(std::vector<std::string> rows) {
+    const auto at = [&](int x, int y) {
+        return y < 0 || y >= int(rows.size()) || x < 0 || x >= int(rows[y].size()) ? '.' : rows[y][x];
+    };
+    auto out = rows;
+    for (int y = 0; y < int(rows.size()); ++y)
+        for (int x = 0; x < int(rows[y].size()); ++x)
+            if (const char c = at(x, y);
+                c != '.' && at(x - 1, y) != c && at(x + 1, y) != c && at(x, y - 1) != c && at(x, y + 1) != c)
+                out[y][x] = '0';
+    return out;
+}
+std::vector<std::string> expectedShipped(const QJsonObject& o) {
+    return o.value("style").toString() == "rainbow" ? thinRainbow(expected(o)) : expected(o);
+}
+// The ladder findings the bundled matrix forbids: any from lintCanvas with
+// the named ramps and craft pairs, and any but Noise from each ramp's ladder.
+std::vector<std::string> ladderFailures(const Canvas& c, bool ice) {
+    std::vector<std::string> out;
+    lint::LintOptions options;
+    options.ramps = namedRamps();
+    options.craftPairs = true;
+    options.ice = ice;
+    for (const auto& f : lint::lintCanvas(c, options).findings)
+        if (lint::ladderKind(f.kind))
+            out.push_back(f.message + " at " + std::to_string(f.x) + "," + std::to_string(f.y) + " on " + f.ramp);
+    for (const auto& ramp : namedRamps()) {
+        lint::LadderOptions ladder;
+        ladder.fallback = true;
+        ladder.ice = ice;
+        for (const auto& f : lint::checkLadder(c, ramp, {}, ladder).findings)
+            if (f.kind != lint::LadderFinding::Kind::Noise)
+                out.push_back("ladder " + ramp.name + " at " + std::to_string(f.x) + "," + std::to_string(f.y));
+    }
+    return out;
+}
 TextSource source(const QJsonObject& o) {
     TextSource s;
     s.text = o.value("text").toString().toStdU32String();
@@ -92,14 +131,12 @@ TEST_CASE("big styles match reference cells for fixture words and custom colours
     int drawings = 0;
     for (const auto value : fixtures("big-styles.json")) {
         const auto o = value.toObject();
-        if (o.value("style").toString() == "rainbow")
-            continue;
         const auto s = source(o);
         INFO(bigTextStyleName(s.bigStyle) << " / " << o.value("text").toString().toStdString());
         REQUIRE_FALSE(textSourceProblem(s));
         const auto result = renderText(s, blockFace());
         CHECK(result.missing.empty());
-        CHECK(tight(visible(result.cells)) == expected(o));
+        CHECK(tight(visible(result.cells)) == expectedShipped(o));
         // Full foreground blocks preserve bright colours without iCE.
         for (int y = 0; y < result.cells.height(); ++y)
             for (int x = 0; x < result.cells.width(); ++x) {
@@ -112,7 +149,7 @@ TEST_CASE("big styles match reference cells for fixture words and custom colours
             }
         ++drawings;
     }
-    CHECK(drawings == 76);
+    CHECK(drawings == 86);
 }
 
 TEST_CASE("the big font adapter matches all reference printable glyphs", "[big-text][oracle]") {
@@ -153,39 +190,22 @@ TEST_CASE("each big style passes the fixture lint and IRC budget with iCE on and
     int drawings = 0;
     for (const auto v : fixtures("big-styles.json")) {
         const auto o = v.toObject();
-        if (o.value("style").toString() == "rainbow")
-            continue;
-        if (!o.value("bundled").toBool())
+        if (!o.value("bundled").toBool() && o.value("style").toString() != "rainbow")
             continue;
         const auto s = source(o);
         for (const bool ice : {true, false}) {
             INFO(bigTextStyleName(s.bigStyle)
                  << " / " << o.value("text").toString().toStdString() << " / " << ice);
             const auto c = renderStyledText(s, {}, blockFace(), ice).cells;
-            CHECK(tight(visible(c)) == expected(o));
+            CHECK(tight(visible(c)) == expectedShipped(o));
             CHECK(c.width() <= 80);
-            lint::LintOptions options;
-            options.ramps = namedRamps();
-            options.craftPairs = true;
-            options.ice = ice;
-            for (const auto& f : lint::lintCanvas(c, options).findings)
-                if (lint::ladderKind(f.kind)) {
-                    INFO(f.message << " at " << f.x << "," << f.y << " on " << f.ramp);
-                    CHECK_FALSE(lint::ladderKind(f.kind));
-                }
-            for (const auto& ramp : namedRamps()) {
-                lint::LadderOptions ladder;
-                ladder.fallback = true;
-                ladder.ice = ice;
-                for (const auto& f : lint::checkLadder(c, ramp, {}, ladder).findings)
-                    CHECK(f.kind == lint::LadderFinding::Kind::Noise);
-            }
+            CHECK(ladderFailures(c, ice).empty());
             for (const auto& line : irc::encodeCanvas(c))
                 CHECK(line.size() <= irc::kEfnetWeechatBudget);
             ++drawings;
         }
     }
-    CHECK(drawings == 72);
+    CHECK(drawings == 92);
 }
 
 TEST_CASE("big text project round trips edits undo redo and bake", "[big-text][project]") {
@@ -195,8 +215,6 @@ TEST_CASE("big text project round trips edits undo redo and bake", "[big-text][p
     fs::create_directories(root);
     int cases = 0;
     for (const auto v : fixtures("big-styles.json")) {
-        if (v.toObject().value("style").toString() == "rainbow")
-            continue;
         const auto s = source(v.toObject());
         for (const bool ice : {true, false}) {
             project::Project p;
@@ -235,7 +253,7 @@ TEST_CASE("big text project round trips edits undo redo and bake", "[big-text][p
             ++cases;
         }
     }
-    CHECK(cases == 152);
+    CHECK(cases == 172);
     fs::remove_all(root);
 }
 
@@ -269,6 +287,7 @@ TEST_CASE("big styles validate colours modes faces and allocation bounds", "[big
 }
 
 TEST_CASE("unthinned reference colours and Rainbow retain their lint failures", "[big-text][matrix]") {
+    // the reference's own cells: Big rainbow ships thinned (thinRainbow)
     std::set<std::string> failing;
     for (const auto v : fixtures("big-styles.json")) {
         const auto o = v.toObject();
@@ -307,7 +326,68 @@ TEST_CASE("unthinned reference colours and Rainbow retain their lint failures", 
         }
     }
     CHECK(failing == std::set<std::string>{"shadow", "3d", "block", "rainbow"});
-    CHECK_FALSE(bigTextStyleFromName("rainbow"));
+    CHECK(bigTextStyleFromName("rainbow") == BigTextStyle::Rainbow);
+}
+
+TEST_CASE("Big rainbow walks its colours a character at a time and thins every glyph clean",
+          "[big-text][matrix][rainbow]") {
+    TextSource s;
+    s.bigStyle = BigTextStyle::Rainbow;
+    CHECK(bigTextDefaultColours(BigTextStyle::Rainbow) == std::vector<std::uint8_t>{4, 7, 8, 9, 11, 12, 13});
+    // the defaults are the reference walk
+    s.text = U"BLAZE 420";
+    s.wrapWidth = 80;
+    const auto defaults = renderText(s, blockFace()).cells;
+    s.bigColours = bigTextDefaultColours(BigTextStyle::Rainbow);
+    CHECK(renderText(s, blockFace()).cells == defaults);
+    // each character takes the next colour, spaces and missing glyphs too,
+    // and each line starts the walk again
+    s.wrapWidth = 0;
+    s.bigColours = {4, 9, 12};
+    s.text = U"II I\nIλI";
+    const auto drawn = renderBigText(s);
+    REQUIRE(drawn.lines.size() == 2);
+    const auto colourAt = [&](int x, int y) {
+        const auto& c = drawn.drawing.cells.at(x, y);
+        return c.transparent ? -1 : irc::mircColor(c.fg);
+    };
+    // an I's stem is columns 3 and 4 of its 8, rows 1 to 5
+    const auto stem = [&](const BigTextLine& line, int k) { return colourAt(line.left + 8 * k + 3, line.top + 3); };
+    CHECK(stem(drawn.lines[0], 0) == 4);
+    CHECK(stem(drawn.lines[0], 1) == 9);
+    CHECK(stem(drawn.lines[0], 3) == 4);  // after the space, the walk wraps
+    CHECK(stem(drawn.lines[1], 0) == 4);
+    CHECK(stem(drawn.lines[1], 2) == 12);  // λ is missing and still takes 9
+    s.letterSpacing = 3;
+    s.text = U"II";
+    const auto spaced = renderBigText(s);
+    const auto& sc = spaced.drawing.cells.at(spaced.lines[0].left + 8 + 3 + 3, spaced.lines[0].top + 3);
+    REQUIRE_FALSE(sc.transparent);
+    CHECK(irc::mircColor(sc.fg) == 9);
+    // every printable glyph in every colour slot, and every pair of glyphs
+    // side by side, passes the lint with iCE on and off
+    s.letterSpacing = 0;
+    s.bigColours.clear();
+    std::u32string all;
+    for (char32_t ch = 0x21; ch < 0x7f; ++ch)
+        all += ch;
+    std::vector<std::u32string> texts;
+    for (int slot = 0; slot < 7; ++slot)
+        texts.push_back(std::u32string(std::size_t(slot), U' ') + all);
+    for (const char32_t a : all) {
+        std::u32string pairs;
+        for (const char32_t b : all)
+            pairs += std::u32string{a, b};
+        texts.push_back(pairs);
+    }
+    for (const auto& text : texts) {
+        s.text = text;
+        const auto c = renderText(s, blockFace()).cells;
+        for (const bool ice : {true, false}) {
+            INFO(QString::fromStdU32String(text).toStdString() << " / " << ice);
+            CHECK(ladderFailures(c, ice).empty());
+        }
+    }
 }
 
 TEST_CASE("big sources use the compatible project key and reject malformed settings", "[big-text][project]") {
@@ -379,6 +459,56 @@ TEST_CASE("big sources use the compatible project key and reject malformed setti
     CHECK(dropped.layers[0].cells == p.layers[0].cells);
 }
 
+TEST_CASE("Big rainbow saves under its own key so a 1.4 reader shows the cells", "[big-text][project][rainbow]") {
+    project::Project p;
+    p.layers = LayerStack(80, 25);
+    TextSource s;
+    s.text = U"BLAZE";
+    s.bigStyle = BigTextStyle::Rainbow;
+    const auto id = p.layers.add(makeTextLayer(s, "Title"));
+    const auto entries = project::encode(p);
+    CHECK(project::decode(entries) == p);
+    const auto key = "layers/" + std::to_string(id) + ".json";
+    const auto original = QJsonDocument::fromJson(QByteArray::fromStdString(entries.at(key))).object();
+    CHECK(QJsonDocument::fromJson(QByteArray::fromStdString(entries.at("manifest.json")))
+              .object()
+              .value("version")
+              .toString() == "1.6");
+    REQUIRE(original.contains("bigRainbowSource"));
+    for (const auto other : {"source", "tdfSource", "bigSource"})
+        CHECK_FALSE(original.contains(other));
+    const auto sourceObject = original.value("bigRainbowSource").toObject();
+    CHECK(sourceObject.value("bigStyle").toString() == "rainbow");
+    const auto decoded = [&](const QJsonObject& o) {
+        auto e = entries;
+        e[key] = QJsonDocument(o).toJson().toStdString();
+        return project::decode(e);
+    };
+    // under any other key, or beside another source, it is refused
+    for (const auto other : {"source", "tdfSource", "bigSource"}) {
+        INFO(other);
+        auto moved = original;
+        moved.remove("bigRainbowSource");
+        moved[other] = sourceObject;
+        CHECK_THROWS_AS(decoded(moved), project::ProjectError);
+        auto both = original;
+        both[other] = sourceObject;
+        CHECK_THROWS_AS(decoded(both), project::ProjectError);
+    }
+    // a non-rainbow big style under bigRainbowSource is refused too
+    auto outline = sourceObject;
+    outline["bigStyle"] = "outline";
+    auto wrong = original;
+    wrong["bigRainbowSource"] = outline;
+    CHECK_THROWS_AS(decoded(wrong), project::ProjectError);
+    // a 1.4 reader skips the key it doesn't know and shows the saved cells
+    auto older = original;
+    older.remove("bigRainbowSource");
+    const auto dropped = decoded(older);
+    CHECK_FALSE(dropped.layers[0].props.text);
+    CHECK(dropped.layers[0].cells == p.layers[0].cells);
+}
+
 TEST_CASE("big text spacing alignment wrapping missing glyphs and effect margins", "[big-text]") {
     TextSource s;
     s.bigStyle = BigTextStyle::Outline;
@@ -439,9 +569,10 @@ TEST_CASE("big sources keep effects with the source for older reader fallback", 
     const auto root = std::filesystem::path(BW_TEST_TMP) / "big-effects";
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root);
-    for (const auto mode :
-         {BigTextStyle::Shadow, BigTextStyle::ThreeD, BigTextStyle::Outline, BigTextStyle::Block})
+    for (const auto mode : {BigTextStyle::Shadow, BigTextStyle::ThreeD, BigTextStyle::Outline, BigTextStyle::Block,
+                            BigTextStyle::Rainbow})
         for (const bool ice : {true, false}) {
+            const QString bigKey = mode == BigTextStyle::Rainbow ? "bigRainbowSource" : "bigSource";
             project::Project p;
             p.layers = LayerStack(80, 25);
             p.ice = ice;
@@ -457,14 +588,14 @@ TEST_CASE("big sources keep effects with the source for older reader fallback", 
             const auto key = "layers/" + std::to_string(id) + ".json";
             auto object = QJsonDocument::fromJson(QByteArray::fromStdString(entries.at(key))).object();
             REQUIRE_FALSE(object.contains("style"));
-            REQUIRE(object.value("bigSource").toObject().contains("style"));
+            REQUIRE(object.value(bigKey).toObject().contains("style"));
             auto invalid = entries;
             auto misplaced = object;
-            misplaced["style"] = object.value("bigSource").toObject().value("style");
+            misplaced["style"] = object.value(bigKey).toObject().value("style");
             invalid[key] = QJsonDocument(misplaced).toJson().toStdString();
             CHECK_THROWS_AS(project::decode(invalid), project::ProjectError);
             // Model the old reader's unknown-key skip for both properties.
-            object.remove("bigSource");
+            object.remove(bigKey);
             auto older = entries;
             older[key] = QJsonDocument(object).toJson().toStdString();
             const auto dropped = project::decode(older);

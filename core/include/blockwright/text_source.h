@@ -34,7 +34,7 @@ enum class TextCase : std::uint8_t { AsTyped, Capitals };
 enum class TextAlign : std::uint8_t { Left, Centre, Right };
 
 // Whole-cell big lettering; None keeps the selected face at its native size.
-enum class BigTextStyle : std::uint8_t { None, Shadow, ThreeD, Outline, Block };
+enum class BigTextStyle : std::uint8_t { None, Shadow, ThreeD, Outline, Block, Rainbow };
 std::string_view bigTextStyleName(BigTextStyle style);
 std::optional<BigTextStyle> bigTextStyleFromName(std::string_view name);
 
@@ -54,7 +54,8 @@ struct TextSource {
     std::uint8_t colour = 7;
 
     BigTextStyle bigStyle = BigTextStyle::None;
-    // mIRC colour numbers (0–15), face then edge.
+    // mIRC colour numbers (0–15), face then edge; Rainbow walks them a
+    // character at a time.
     // Empty uses the selected big style's defaults.
     std::vector<std::uint8_t> bigColours;
     static constexpr std::size_t kMaxBigColours = 16;

@@ -11,7 +11,7 @@
 
 namespace bw {
 namespace {
-constexpr std::array<std::string_view, 5> names{"none", "shadow", "3d", "outline", "block"};
+constexpr std::array<std::string_view, 6> names{"none", "shadow", "3d", "outline", "block", "rainbow"};
 class BigFace final : public Face {
   public:
     std::string_view name() const override { return "big-block"; }
@@ -102,6 +102,8 @@ std::vector<std::uint8_t> bigTextDefaultColours(BigTextStyle style) {
         return {0, 12};
     case BigTextStyle::Block:
         return {0};
+    case BigTextStyle::Rainbow:
+        return {4, 7, 8, 9, 11, 12, 13};
     case BigTextStyle::None:
         return {};
     }
@@ -202,6 +204,24 @@ BigTextRender renderBigText(const TextSource& s) {
             return x >= 1 && x <= line.width && y >= 1 && y <= 8 &&
                    layout.mask.at(x - 1, int(l) * 16 + 2 * (y - 1));
         };
+        // Rainbow walks the colours a character at a time, spaces included,
+        // from each line's first character: the colour slot of every column.
+        std::vector<std::size_t> slot;
+        if (s.bigStyle == BigTextStyle::Rainbow) {
+            slot.assign(std::size_t(line.width + 2), 0);
+            const auto& face = bigTextFace();
+            const auto text = cased(s);
+            int x = 1;
+            for (std::size_t k = 0; k < line.count; ++k) {
+                auto g = face.glyph(text[line.first + k]);
+                if (!g)
+                    g = face.glyph(U' ');
+                const int w = g ? g->mask.width : 0;
+                for (int i = 0; i < w && x + i < int(slot.size()); ++i)
+                    slot[std::size_t(x + i)] = k;
+                x += w + s.letterSpacing;
+            }
+        }
         // Record colour rather than glyph: a full foreground block gives
         // the reference's background-colour pixel with iCE on AND off.
         std::vector<int> pixels(std::size_t(line.width + 2) * 10, -1);
@@ -210,7 +230,7 @@ BigTextRender renderBigText(const TextSource& s) {
             for (int x = 0; x < line.width + 2; ++x) {
                 int c = -1;
                 if (on(x, y))
-                    c = colours[0];
+                    c = slot.empty() ? colours[0] : colours[slot[std::size_t(x)] % colours.size()];
                 else if ((s.bigStyle == BigTextStyle::Shadow && on(x + 1, y)) ||
                          (s.bigStyle == BigTextStyle::ThreeD && on(x - 1, y - 1)))
                     c = colours.size() > 1 ? colours[1] : defaults.back();
@@ -226,6 +246,23 @@ BigTextRender renderBigText(const TextSource& s) {
                     lastRow = std::max(lastRow, y);
                 }
             }
+        // Thinned Rainbow: a pixel with no edge-neighbour of its own colour
+        // is a speck to the ladder lint unless it is white, the top rung of
+        // every ramp, so it is drawn white.
+        if (!slot.empty()) {
+            const int w = line.width + 2;
+            const auto at = [&](int x, int y) {
+                return x < 0 || y < 0 || x >= w || y >= 10 ? -1 : pixels[std::size_t(y) * w + x];
+            };
+            std::vector<std::size_t> lone;
+            for (int y = 0; y < 10; ++y)
+                for (int x = 0; x < w; ++x)
+                    if (const int c = at(x, y); c >= 0 && at(x - 1, y) != c && at(x + 1, y) != c &&
+                                                at(x, y - 1) != c && at(x, y + 1) != c)
+                        lone.push_back(std::size_t(y) * w + x);
+            for (const auto i : lone)
+                pixels[i] = 0;
+        }
         // An empty editor line keeps its height so Enter remains editable.
         if (lastRow < 0) {
             firstRow = 1;

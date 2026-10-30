@@ -91,6 +91,10 @@ inline constexpr int kStyledFormatMinor = 0;
 // 2.1 when it is styled as well. 1.5 implies 1.4's big text sources.
 inline constexpr int kReferenceFormatMinor = 5;
 inline constexpr int kReferenceStyledFormatMinor = 1;
+// A live Big rainbow source (the layer's "bigRainbowSource"): 1.6, or 2.2
+// when styled as well. Each implies the minors before it.
+inline constexpr int kRainbowFormatMinor = 6;
+inline constexpr int kRainbowStyledFormatMinor = 2;
 
 // Limits a reader holds a file to, and a writer checks before it writes
 // anything: no more than kMaxEntries entries, none over kMaxEntryBytes, all

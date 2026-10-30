@@ -479,8 +479,12 @@ Sauce normalSauce(const Sauce& from, int width, int height, bool ice) {
 // a pixel face is the layer's "source"; one in a TheDraw font (1.2) is its
 // "tdfSource", the same shape, so a 1.1 reader, which refuses a face kind
 // it doesn't know, drops the key instead and shows the saved cells.
-// Whole-cell big text uses bigSource (1.4) for the same fallback.
+// Whole-cell big text uses bigSource (1.4) for the same fallback, and Big
+// rainbow bigRainbowSource (1.6), since a 1.4 reader refuses a big style it
+// doesn't know under bigSource.
 const char* sourceKey(const TextSource& t) {
+    if (t.bigStyle == BigTextStyle::Rainbow)
+        return "bigRainbowSource";
     if (t.bigStyle != BigTextStyle::None)
         return "bigSource";
     return t.face.kind == FaceRef::Kind::Tdf ? "tdfSource" : "source";
@@ -798,9 +802,10 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     // a live text layer's source; the cells are its drawn text as saved
     if (r.has("source") && r.has("tdfSource"))
         fail(what + " has both a \"source\" and a \"tdfSource\"");
-    if (r.has("bigSource") && (r.has("source") || r.has("tdfSource")))
+    constexpr const char* sourceKeys[] = {"source", "tdfSource", "bigSource", "bigRainbowSource"};
+    if (std::count_if(std::begin(sourceKeys), std::end(sourceKeys), [&](const char* k) { return r.has(k); }) > 1)
         fail(what + " has more than one text source");
-    for (const char* key : {"source", "tdfSource", "bigSource"})
+    for (const char* key : sourceKeys)
         if (r.has(key)) {
             if (p.kind != LayerKind::Text)
                 fail(what + ": a " + std::string(layerKindName(p.kind)) + " layer has a text source");
@@ -811,13 +816,15 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     // drop, so only a 2.x project has one
     if (r.has("style")) {
         if (p.text && p.text->bigStyle != BigTextStyle::None)
-            fail(what + ": big text effects belong inside bigSource");
+            fail(what + ": big text effects belong inside " + sourceKey(*p.text));
         p.style = textStyleFromJson(r.object("style"), what);
-    } else if (r.has("bigSource")) {
-        const Reader big(r.object("bigSource"), what + " bigSource");
-        if (big.has("style"))
-            p.style = textStyleFromJson(big.object("style"), big.what());
-    }
+    } else
+        for (const char* key : {"bigSource", "bigRainbowSource"})
+            if (r.has(key)) {
+                const Reader big(r.object(key), what + " " + key);
+                if (big.has("style"))
+                    p.style = textStyleFromJson(big.object("style"), big.what());
+            }
     if (p.style) {
         if (const auto problem = layerStyleProblem(p, {&fonts, nullptr}))
             fail(what + ": " + *problem);
@@ -1682,12 +1689,14 @@ Entries encode(const Project& project) {
     QJsonArray order;
     bool styled = false;  // a layer whose style a 1.x reader would drop
     bool bigText = false;  // a live big text source (1.4)
+    bool rainbow = false;  // a live Big rainbow source (1.6, 2.2)
     bool referenced = false;  // a reference layer with a picture (1.5, 2.1)
     std::set<std::string> writtenReferences;
     for (const Layer& l : stack.layers()) {
         order.append(qint64(l.props.id));
         if (l.props.text) {
             bigText = bigText || l.props.text->bigStyle != BigTextStyle::None;
+            rainbow = rainbow || l.props.text->bigStyle == BigTextStyle::Rainbow;
             const std::string what = layerPath(l.props.id, false);
             if (l.props.kind != LayerKind::Text)
                 fail(what + ": a " + std::string(layerKindName(l.props.kind)) + " layer has a text source");
@@ -1723,9 +1732,12 @@ Entries encode(const Project& project) {
     const QJsonObject manifest{
         {"format", "blockwright"},
         {"version", qstr(styled ? std::to_string(kStyledFormatMajor) + "." +
-                                      std::to_string(referenced ? kReferenceStyledFormatMinor : kStyledFormatMinor)
+                                      std::to_string(rainbow      ? kRainbowStyledFormatMinor
+                                                     : referenced ? kReferenceStyledFormatMinor
+                                                                  : kStyledFormatMinor)
                                 : std::to_string(kFormatMajor) + "." +
-                                      std::to_string(referenced ? kReferenceFormatMinor
+                                      std::to_string(rainbow      ? kRainbowFormatMinor
+                                                     : referenced ? kReferenceFormatMinor
                                                      : bigText  ? kBigTextFormatMinor
                                                                 : kFormatMinor))},
         {"width", stack.width()},

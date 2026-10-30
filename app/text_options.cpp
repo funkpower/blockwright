@@ -92,11 +92,13 @@ TextOptions::TextOptions(CanvasView* view, TextTool* tool, QWidget* parent)
     bigStyle_->addItem(tr("Big 3D"), int(BigTextStyle::ThreeD));
     bigStyle_->addItem(tr("Big outline"), int(BigTextStyle::Outline));
     bigStyle_->addItem(tr("Big block"), int(BigTextStyle::Block));
+    bigStyle_->addItem(tr("Big rainbow"), int(BigTextStyle::Rainbow));
     bigStyle_->setToolTip(tr("Whole-cell IBM 8×8 lettering, matching /ascii big"));
     bigColours_ = new QLineEdit;
     bigColours_->setObjectName(QStringLiteral("textBigColours"));
     bigColours_->setMaxLength(256);
-    bigColours_->setToolTip(tr("mIRC colours 0–15 or names, separated by commas: face, then shadow or border. "
+    bigColours_->setToolTip(tr("mIRC colours 0–15 or names, separated by commas: face, then shadow or border; "
+                               "Big rainbow walks them a letter at a time. "
                                "Palette names: fire, ice, neon, sea, forest, candy, steel, rainbow."));
 
     auto* form = new QFormLayout(this);
