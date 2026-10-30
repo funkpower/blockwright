@@ -76,7 +76,7 @@ struct Fixture {
 TEST_CASE("every bundled text style is in the Library dock with a thumbnail of its sample rendered at 1x") {
     Fixture f;
     const std::vector<library::TextStyleEntry> want = presets();
-    REQUIRE(want.size() == 8);
+    REQUIRE(want.size() == 10);
     CHECK(f.dock.styles().size() == want.size());
     CHECK(f.dock.problems().empty());
     const QStringList shown = f.dock.shownNames();
