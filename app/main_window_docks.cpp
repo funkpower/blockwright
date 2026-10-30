@@ -97,15 +97,23 @@ void MainWindow::createDocks() {
     layerMenu_->addSeparator();
     layerMenu_->addAction(layers_->raiseAction());
     layerMenu_->addAction(layers_->lowerAction());
-    // Bake Text: a live text layer's cells kept, its source dropped (PLAN
-    // §15), one undo step.
+    // Layer Style…: the style dialog for a cells, pixels or live text layer
+    // (PLAN §15). Bake: a live text layer's cells kept, its source dropped,
+    // or a styled layer's styled cells kept, its style dropped; one undo step.
     layerMenu_->addSeparator();
-    QAction* bake = layerMenu_->addAction(tr("&Bake Text"), this, [this] { doc_.bakeTextLayer(doc_.activeLayer()); });
-    bake->setObjectName(QStringLiteral("bakeText"));
-    bake->setToolTip(tr("Make the text layer a cells layer of what it shows; its text can't be edited after"));
-    const auto canBake = [this, bake] {
+    QAction* style = layerMenu_->addAction(tr("Layer &Style…"), this, [this] { editLayerStyle(doc_.activeLayer()); });
+    style->setObjectName(QStringLiteral("layerStyle"));
+    style->setToolTip(tr("Edit the active layer's style: plate, glow, shadow, outline, fill, shade and bevel"));
+    connect(layers_, &LayersDock::styleRequested, this, &MainWindow::editLayerStyle);
+    QAction* bake = layerMenu_->addAction(tr("&Bake Layer"), this, [this] { doc_.bakeLayer(doc_.activeLayer()); });
+    bake->setObjectName(QStringLiteral("bakeLayer"));
+    bake->setToolTip(tr("Make the layer a cells layer of what it shows: a text layer's text, or a layer's style, "
+                        "can't be edited after"));
+    const auto canBake = [this, bake, style] {
         const Layer* l = doc_.active();
-        bake->setEnabled(l && l->props.text);
+        bake->setEnabled(Document::canBake(l));
+        style->setEnabled(l && (l->props.kind == LayerKind::Cells || l->props.kind == LayerKind::Pixels ||
+                                (l->props.kind == LayerKind::Text && l->props.text)));
     };
     connect(&doc_, &Document::layersChanged, bake, canBake);
     connect(&doc_, &Document::activeLayerChanged, bake, canBake);

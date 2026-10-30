@@ -257,10 +257,14 @@ public:
     // copied as above.
     bool setTextSource(LayerId id, TextSource source, const QString& text, std::uint64_t typingRun = 0,
                        const FontStore* held = nullptr);
-    // Bakes a live text layer into a cells layer of the cells it shows
-    // (bakeEdit), one undo step "Bake Text"; undo gives back the live
-    // layer. False if the layer isn't a live text layer.
-    bool bakeTextLayer(LayerId id);
+    // Bakes the layer into a cells layer of the cells it shows (bakeEdit,
+    // the document's iCE setting), one undo step: "Bake Text" for a live
+    // text layer, "Bake Layer Style" for a cells or pixels layer with a
+    // style (its styled cells; a style with every effect off only goes).
+    // Undo gives back the layer as it was. False for any other layer.
+    bool bakeLayer(LayerId id);
+    // Whether bakeLayer bakes the layer.
+    static bool canBake(const Layer* layer);
     // Deletes the layer; the one below it (or, for the bottom one, the new
     // bottom) becomes active if it was. The last layer can't be deleted.
     bool removeLayer(LayerId id);

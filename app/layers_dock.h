@@ -6,7 +6,10 @@
 // list, New Cells Layer, New Pixels Layer, Delete, Raise and Lower, the same
 // actions as the Layer menu. Every change but the active layer is an undo
 // command on the document (Document::addLayer and the rest). Under those, the
-// active generator layer's parameters (GeneratorForm).
+// active generator layer's parameters (GeneratorForm). The Style column
+// shows "fx" for a layer with a layer style (PLAN §15), its effects in the
+// tooltip; a double-click there on a layer that can hold one asks for the
+// Layer Style dialog (styleRequested).
 
 #include "blockwright/layer.h"
 
@@ -24,7 +27,7 @@ class GeneratorForm;
 class LayersDock : public QWidget {
     Q_OBJECT
 public:
-    enum Column { NameColumn, AlphaLockColumn, KindColumn };
+    enum Column { NameColumn, AlphaLockColumn, KindColumn, StyleColumn };
 
     explicit LayersDock(Document* doc, QWidget* parent = nullptr);
 
@@ -39,6 +42,10 @@ public:
 
     // The layer a row shows; 0 for none.
     static LayerId layerOf(const QTreeWidgetItem* item);
+
+signals:
+    // A double-click on the Style cell of a layer that can hold a style.
+    void styleRequested(LayerId id);
 
 private:
     // Brings the rows up to the document: in place when the same layers are

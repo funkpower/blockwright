@@ -23,6 +23,7 @@ add_library(blockwright_app STATIC
   irc_meter.cpp
   irc_meter.h
   document.h
+  layer_style_dialog.cpp
   layers_dock.cpp
   layers_dock.h
   library_dock.cpp

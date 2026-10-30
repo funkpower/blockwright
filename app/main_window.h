@@ -191,6 +191,9 @@ public slots:
     void setNinePx(bool on);
     // Selection > Save to Library...: asks for the name, category and tags.
     void saveToLibrary();
+    // Layer > Layer Style…: opens the Layer Style dialog on the layer, if it
+    // can hold a style (window-modal; OK sets the style, one undo step).
+    void editLayerStyle(LayerId id);
     // Window > Reset Layout: every dock shown, docked where it starts.
     void resetLayout();
     // File > Export IRC Text..., asking before writing lines over the

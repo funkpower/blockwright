@@ -145,6 +145,14 @@ namespace testing {
 // art's rename) and "restore" (before putting the old sidecar back); a hook
 // that throws LibraryError makes that step fail. Tests only.
 inline std::function<void(std::string_view step)> writeStampFault;
+// Called by writeTextStyle with the preset's path once its temporary is
+// written, just before it is moved into place. Tests only.
+inline std::function<void(const std::filesystem::path&)> beforeTextStylePublish;
+// Called by writeTextStyle as it moves the preset into place, at "rename"
+// (a throw is taken as the exclusive rename failing with EINVAL, so the
+// hard-link fallback runs) and "unlink" (a throw is taken as removing the
+// temporary's name after the link failing with EIO). POSIX only. Tests only.
+inline std::function<void(std::string_view step)> textStylePublishFault;
 } // namespace testing
 
 // A file name for a stamp called `name` (CP437 bytes): lower-case ASCII
@@ -195,6 +203,22 @@ TextStyleEntry readTextStyleEntry(const std::filesystem::path& p);
 // The text a style's thumbnail shows, "Aa" in the block face, drawn with
 // `style` and iCE colours `ice` (renderStyledText).
 Canvas textStyleSample(const TextStyle& style, bool ice);
+
+// Where Save as Preset writes a text style called `name` (UTF-8) in `dir`:
+// the lowest of <slug>.style.json, <slug>-2.style.json, … that nothing sits
+// on, compared with ASCII case folded. A preset never replaces another file.
+// A `dir` that doesn't exist is empty; one that can't be listed throws
+// LibraryError.
+std::filesystem::path textStylePathFor(const std::filesystem::path& dir, const std::string& name);
+
+// Writes the entry (its path ignored) to textStylePathFor(dir, entry.name),
+// making the folder if need be, through a temporary file moved into place
+// only if nothing sits there (an exclusive rename, or a hard link), and
+// returns the path. Throws LibraryError for an entry parseTextStyleEntry
+// would refuse (the bytes are read back before anything is written), a file
+// made at the path meanwhile ("already exists"; it is left as it was) or a
+// write that fails.
+std::filesystem::path writeTextStyle(const std::filesystem::path& dir, const TextStyleEntry& entry);
 
 struct Problem {
     std::filesystem::path path;

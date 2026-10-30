@@ -41,15 +41,6 @@ private:
     int extra_;
 };
 
-std::u32string casedText(const TextSource& s) {
-    std::u32string text = s.text;
-    if (s.textCase == TextCase::Capitals)
-        for (char32_t& ch : text)
-            if (ch >= U'a' && ch <= U'z')
-                ch = ch - U'a' + U'A';
-    return text;
-}
-
 // The source laid out as renderText draws it: each line's place in the
 // box, and the column of each character's left edge within its line.
 struct Laid {

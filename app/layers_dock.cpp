@@ -9,6 +9,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QScopedValueRollback>
+#include <QStyledItemDelegate>
 #include <QSignalBlocker>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -36,12 +37,34 @@ QString kindToolTip(LayerKind kind) { return help::plainText(help::layerText(kin
 
 Qt::CheckState checkState(bool on) { return on ? Qt::Checked : Qt::Unchecked; }
 
+// The Style column has nothing to edit in place: a double-click there opens
+// the Layer Style dialog instead.
+class NoEditor : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QWidget* createEditor(QWidget*, const QStyleOptionViewItem&, const QModelIndex&) const override { return nullptr; }
+};
+
+bool canHoldStyle(const Layer& layer) {
+    const LayerKind k = layer.props.kind;
+    return k == LayerKind::Cells || k == LayerKind::Pixels || (k == LayerKind::Text && layer.props.text);
+}
+
+QString effectsLabel(const TextStyle& style) {
+    QStringList on;
+    for (const Effect& e : style.effects)
+        if (e.enabled)
+            on << QString::fromLatin1(effectKindName(e.kind()));
+    return on.isEmpty() ? LayersDock::tr("every effect off") : on.join(QStringLiteral(", "));
+}
+
 } // namespace
 
 LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(doc), tree_(new QTreeWidget) {
     tree_->setObjectName(QStringLiteral("layerList"));
-    tree_->setColumnCount(3);
-    tree_->setHeaderLabels({tr("Layer"), tr("Alpha Lock"), tr("Kind")});
+    tree_->setColumnCount(4);
+    tree_->setHeaderLabels({tr("Layer"), tr("Alpha Lock"), tr("Kind"), tr("Style")});
+    tree_->setItemDelegateForColumn(StyleColumn, new NoEditor(tree_));
     tree_->setRootIsDecorated(false);
     tree_->setUniformRowHeights(true);
     tree_->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -50,6 +73,7 @@ LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(d
     tree_->header()->setSectionResizeMode(NameColumn, QHeaderView::Stretch);
     tree_->header()->setSectionResizeMode(AlphaLockColumn, QHeaderView::ResizeToContents);
     tree_->header()->setSectionResizeMode(KindColumn, QHeaderView::ResizeToContents);
+    tree_->header()->setSectionResizeMode(StyleColumn, QHeaderView::ResizeToContents);
     tree_->setToolTip(tr("The layers, top first. The current row is the layer the tools edit; "
                          "its box shows or hides it, double-click its name to rename it"));
 
@@ -116,6 +140,13 @@ LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(d
             doc_->setActiveLayer(id);
     });
     connect(tree_, &QTreeWidget::itemChanged, this, &LayersDock::itemChanged);
+    connect(tree_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int column) {
+        const LayerId id = layerOf(item);
+        if (column != StyleColumn)
+            return;
+        if (const Layer* l = doc_->layers().find(id); l && canHoldStyle(*l))
+            emit styleRequested(id);
+    });
     connect(doc_, &Document::layersChanged, this, &LayersDock::sync);
     connect(doc_, &Document::activeLayerChanged, this, &LayersDock::sync);
     sync();
@@ -173,6 +204,10 @@ void LayersDock::fill(QTreeWidgetItem* item, const Layer& layer) {
     item->setCheckState(AlphaLockColumn, checkState(p.alphaLocked));
     item->setText(KindColumn, kindLabel(p.kind));
     item->setToolTip(KindColumn, kindToolTip(p.kind));
+    item->setText(StyleColumn, p.style ? QStringLiteral("fx") : QString());
+    item->setToolTip(StyleColumn, p.style ? tr("Layer style: %1; double-click to edit it").arg(effectsLabel(*p.style))
+                                  : canHoldStyle(layer) ? tr("No layer style; double-click to add one")
+                                                        : tr("This layer can't have a layer style"));
     item->setToolTip(NameColumn, tr("Shown or hidden; double-click to rename"));
     item->setToolTip(AlphaLockColumn, p.kind == LayerKind::Pixels
                                           ? tr("Alpha lock: the tools paint only the layer's opaque pixels")

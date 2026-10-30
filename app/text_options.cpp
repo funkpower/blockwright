@@ -27,15 +27,6 @@ QIcon swatch(int index) {
     return QIcon(pm);
 }
 
-std::u32string casedText(const TextSource& s) {
-    std::u32string text = s.text;
-    if (s.textCase == TextCase::Capitals)
-        for (char32_t& ch : text)
-            if (ch >= U'a' && ch <= U'z')
-                ch = ch - U'a' + U'A';
-    return text;
-}
-
 } // namespace
 
 TextOptions::TextOptions(CanvasView* view, TextTool* tool, QWidget* parent)

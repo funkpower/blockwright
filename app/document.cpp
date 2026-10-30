@@ -773,13 +773,22 @@ bool Document::setTextSource(LayerId id, TextSource source, const QString& text,
     return true;
 }
 
-bool Document::bakeTextLayer(LayerId id) {
+bool Document::canBake(const Layer* l) {
+    if (!l)
+        return false;
+    if (l->props.kind == LayerKind::Text)
+        return bool(l->props.text);
+    return (l->props.kind == LayerKind::Cells || l->props.kind == LayerKind::Pixels) && l->props.style;
+}
+
+bool Document::bakeLayer(LayerId id) {
     emit commandAboutToPush();
     const Layer* l = stack_.find(id);
-    if (!l || l->props.kind != LayerKind::Text || !l->props.text)
+    if (!canBake(l))
         return false;
+    const bool text = l->props.kind == LayerKind::Text;
     emit layersAboutToChange();
-    undo_.push(new LayerPropsCommand(this, bakeEdit(*l), tr("Bake Text")));
+    undo_.push(new LayerPropsCommand(this, bakeEdit(*l, doc_.ice), text ? tr("Bake Text") : tr("Bake Layer Style")));
     return true;
 }
 

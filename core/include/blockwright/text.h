@@ -76,6 +76,10 @@ struct TextRender {
 // The source drawn in `face` (see above). Throws TextError when its box is
 // larger than a layer the project file holds (project.h's limits), found by
 // measuring the text (measureText) before anything its size is allocated.
+// The source's text in its case (Capitals turns a-z to A-Z), as it is laid
+// out and drawn.
+std::u32string casedText(const TextSource& source);
+
 TextRender renderText(const TextSource& source, const Face& face);
 
 // The source drawn in `face` with `style` (see above), with iCE colours

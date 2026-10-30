@@ -518,7 +518,7 @@ TEST_CASE("the face list paints each row with its missing and confusable marks",
 TEST_CASE("Bake Text makes the text layer a cells layer, one undo step", "[text]") {
     MainWindow w;
     Document* d = w.document();
-    QAction* bake = act(w, QStringLiteral("bakeText"));
+    QAction* bake = act(w, QStringLiteral("bakeLayer"));
     CHECK_FALSE(bake->isEnabled());  // the background isn't a text layer
     makeText(w, QStringLiteral("Hi"));
     REQUIRE(bake->isEnabled());
@@ -1015,7 +1015,7 @@ TEST_CASE("a command from elsewhere takes back the empty layer the edit made bef
         CHECK_FALSE(d->renameLayer(made, QStringLiteral("Named")));
     }
     SECTION("Bake Text") {
-        act(w, QStringLiteral("bakeText"))->trigger();
+        act(w, QStringLiteral("bakeLayer"))->trigger();
     }
     SECTION("SAUCE") {
         Sauce fields = Sauce::fresh(80, 25);

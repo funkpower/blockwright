@@ -60,15 +60,6 @@ private:
     int extra_;
 };
 
-std::u32string casedText(const TextSource& source) {
-    std::u32string text = source.text;
-    if (source.textCase == TextCase::Capitals)
-        for (char32_t& ch : text)
-            if (ch >= U'a' && ch <= U'z')
-                ch = ch - U'a' + U'A';
-    return text;
-}
-
 // The size of the source's box in cells, measured without drawing it
 // (measureText), in 64 bits.
 struct Box {
@@ -107,6 +98,15 @@ std::optional<std::string> boxProblem(const Box& box) {
 }
 
 } // namespace
+
+std::u32string casedText(const TextSource& source) {
+    std::u32string text = source.text;
+    if (source.textCase == TextCase::Capitals)
+        for (char32_t& ch : text)
+            if (ch >= U'a' && ch <= U'z')
+                ch = ch - U'a' + U'A';
+    return text;
+}
 
 std::string_view faceKindName(FaceRef::Kind kind) { return nameOf(kFaceKindNames, kind); }
 std::optional<FaceRef::Kind> faceKindFromName(std::string_view name) { return fromName(kFaceKindNames, name); }

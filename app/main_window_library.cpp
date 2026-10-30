@@ -4,6 +4,7 @@
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "layer_style_dialog.h"
 #include "library_dock.h"
 #include "sauce_dialog.h"
 #include "select_tool.h"
@@ -194,6 +195,21 @@ void MainWindow::saveToLibrary() {
         QMessageBox::warning(this, tr("Save to Library"), tr("Could not save the stamp:\n%1").arg(error));
     else
         statusBar()->showMessage(tr("Saved %1 to the library").arg(written), 3000);
+}
+
+void MainWindow::editLayerStyle(LayerId id) {
+    const Layer* l = doc_.layers().find(id);
+    if (!l || !(l->props.kind == LayerKind::Cells || l->props.kind == LayerKind::Pixels ||
+                (l->props.kind == LayerKind::Text && l->props.text)))
+        return;
+    auto* dialog = new LayerStyleDialog(&doc_, id, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setPresetDir(library_->userDir(), library_->categories());
+    connect(dialog, &LayerStyleDialog::presetSaved, this, [this](const QString& path) {
+        library_->rescan();
+        statusBar()->showMessage(tr("Saved %1 to the library").arg(path), 3000);
+    });
+    dialog->open();
 }
 
 } // namespace bw

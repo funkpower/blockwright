@@ -156,18 +156,21 @@ LintDock::LintDock(Document* doc, QWidget* parent) :
     });
 }
 
-FollowsDocument::Work LintDock::snapshot() {
+lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick) {
     lint::LintOptions o;
-    const int pick = ramps_->currentIndex();
-    if (pick <= 0) {
+    if (rampPick <= 0) {
         o.ramps = namedRamps();
         o.craftPairs = true;
     } else {
-        o.ramps = {namedRamps()[std::size_t(pick - 1)]};
+        o.ramps = {namedRamps()[std::size_t(rampPick - 1)]};
     }
-    o.ice = doc_->ansi().ice;
-    return [this, canvas = doc_->canvas(), o]() -> Show {
-        auto report = std::make_shared<lint::LintReport>(lint::lintCanvas(canvas, o));
+    o.ice = ice;
+    return lint::lintCanvas(canvas, o);
+}
+
+FollowsDocument::Work LintDock::snapshot() {
+    return [this, canvas = doc_->canvas(), ice = doc_->ansi().ice, pick = ramps_->currentIndex()]() -> Show {
+        auto report = std::make_shared<lint::LintReport>(dockLint(canvas, ice, pick));
         return [this, report] { showReport(std::move(*report)); };
     };
 }

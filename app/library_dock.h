@@ -186,7 +186,11 @@ private:
 class StampDialog : public QDialog {
     Q_OBJECT
 public:
-    StampDialog(const QStringList& categories, QWidget* parent = nullptr);
+    // What the fields name: a stamp (Save to Library: a CP437 name of at
+    // most a SAUCE title) or a text style preset (Save as Preset: any name).
+    enum class Purpose { Stamp, Preset };
+
+    StampDialog(const QStringList& categories, QWidget* parent = nullptr, Purpose purpose = Purpose::Stamp);
 
     QString name() const;
     QString category() const;
@@ -207,6 +211,7 @@ private:
     QLineEdit* tags_;
     QLabel* problem_;
     QDialogButtonBox* buttons_;
+    Purpose purpose_;
 };
 
 } // namespace bw

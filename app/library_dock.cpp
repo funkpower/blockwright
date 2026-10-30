@@ -431,11 +431,13 @@ bool StampDropFilter::eventFilter(QObject* watched, QEvent* e) {
     }
 }
 
-StampDialog::StampDialog(const QStringList& categories, QWidget* parent) : QDialog(parent) {
-    setWindowTitle(tr("Save to Library"));
+StampDialog::StampDialog(const QStringList& categories, QWidget* parent, Purpose purpose)
+    : QDialog(parent), purpose_(purpose) {
+    setWindowTitle(purpose == Purpose::Stamp ? tr("Save to Library") : tr("Save as Preset"));
     name_ = new QLineEdit;
     name_->setObjectName(QStringLiteral("stampName"));
-    name_->setMaxLength(int(Sauce::kTitleLen));
+    if (purpose == Purpose::Stamp)
+        name_->setMaxLength(int(Sauce::kTitleLen));
     category_ = new QComboBox;
     category_->setObjectName(QStringLiteral("stampCategory"));
     category_->setEditable(true);
@@ -479,8 +481,11 @@ QStringList StampDialog::tags() const {
 }
 
 QString StampDialog::problem() const {
+    const bool stamp = purpose_ == Purpose::Stamp;
     if (name().isEmpty())
-        return tr("The stamp needs a name.");
+        return stamp ? tr("The stamp needs a name.") : tr("The preset needs a name.");
+    if (!stamp)
+        return category().isEmpty() ? tr("The preset needs a category.") : QString();
     const std::optional<std::string> b = toCp437(name());
     if (!b)
         return tr("The name holds a character CP437 has no glyph for.");

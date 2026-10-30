@@ -39,6 +39,10 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#define BW_LIBRARY_POSIX 0
+#define NOMINMAX
+#include <windows.h>
 #else
 #define BW_LIBRARY_POSIX 0
 #endif
@@ -211,10 +215,82 @@ public:
         fs::rename(temp_, target_, ec);
         if (ec)
             throw LibraryError(target_.string() + ": write failed: " + ec.message());
-        committed_ = true;
+        moved();
+    }
+
+    // Moves the temporary to the target only if nothing sits there, as one
+    // step: a file made there at any moment is never replaced. Throws
+    // LibraryError ("already exists") when one is; the temporary is then
+    // removed with the Staged.
+    void commitNoReplace() {
+#if BW_LIBRARY_POSIX
+        int err = 0;
+        if (fault("rename")) {
+            err = EINVAL;
+        } else {
+#if defined(__linux__) && defined(RENAME_NOREPLACE)
+            if (::renameat2(AT_FDCWD, temp_.c_str(), AT_FDCWD, target_.c_str(), RENAME_NOREPLACE) == 0) {
+                moved();
+                return;
+            }
+            err = errno;
+#elif defined(__APPLE__)
+            if (::renamex_np(temp_.c_str(), target_.c_str(), RENAME_EXCL) == 0) {
+                moved();
+                return;
+            }
+            err = errno;
+#else
+            err = ENOSYS;
+#endif
+        }
+        // A file system without the exclusive rename: a hard link fails
+        // with EEXIST as atomically, then the temporary's name goes.
+        if (err == EINVAL || err == ENOSYS || err == ENOTSUP) {
+            if (::link(temp_.c_str(), target_.c_str()) == 0) {
+                // Published. The temporary's name is a second link to the
+                // preset now; if it won't go, discard() tries again, as for
+                // any temporary left over.
+                if (!fault("unlink") && ::unlink(temp_.c_str()) == 0)
+                    moved();
+                return;
+            }
+            err = errno;
+        }
+        if (err == EEXIST)
+            throw LibraryError(target_.string() + " already exists; nothing was written over it");
+        throw LibraryError(target_.string() + ": write failed: " + std::strerror(err));
+#elif defined(_WIN32)
+        // MoveFileExW without MOVEFILE_REPLACE_EXISTING refuses a target
+        // that exists. (The Windows port, #139, builds this branch.)
+        if (::MoveFileExW(temp_.c_str(), target_.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            moved();
+            return;
+        }
+        const DWORD e = ::GetLastError();
+        if (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS)
+            throw LibraryError(target_.string() + " already exists; nothing was written over it");
+        throw LibraryError(target_.string() + ": write failed");
+#else
+#error "Staged::commitNoReplace needs an exclusive rename on this platform"
+#endif
     }
 
 private:
+#if BW_LIBRARY_POSIX
+    // Whether testing::textStylePublishFault fails `step`.
+    static bool fault(std::string_view step) {
+        if (!testing::textStylePublishFault)
+            return false;
+        try {
+            testing::textStylePublishFault(step);
+        } catch (const LibraryError&) {
+            return true;
+        }
+        return false;
+    }
+#endif
+
     void write(const std::string& bytes) {
         static unsigned counter = 0;
         const fs::path dir = target_.parent_path();
@@ -287,13 +363,20 @@ private:
         }
     }
 
-    // Closes the descriptor and removes the temporary, unless committed.
+    // The temporary's name is gone: renamed to the target, or unlinked.
+    void moved() {
+        temp_.clear();
+        created_ = false;
+    }
+
+    // Closes the descriptor and removes the temporary, if its name is still
+    // there.
     void discard() noexcept {
 #if BW_LIBRARY_POSIX
         if (fd_ >= 0)
             ::close(std::exchange(fd_, -1));
 #endif
-        if (created_ && !committed_) {
+        if (created_) {
             std::error_code ec;
             fs::remove(temp_, ec);
             temp_.clear();
@@ -312,7 +395,6 @@ private:
     fs::path target_, temp_;
     int fd_ = -1;
     bool created_ = false;  // temp_ exists (and is ours to remove)
-    bool committed_ = false;
 };
 
 fs::path envPath(const char* name) {
@@ -573,6 +655,44 @@ Canvas textStyleSample(const TextStyle& style, bool ice) {
     TextSource source;
     source.text = U"Aa";
     return renderStyledText(source, style, blockFace(), ice).cells;
+}
+
+fs::path textStylePathFor(const fs::path& dir, const std::string& name) {
+    const std::string base = slug(name);
+    constexpr std::string_view suffix = ".style.json";
+    const auto nameOf = [&base, suffix](long n) {
+        return base + (n > 1 ? "-" + std::to_string(n) : std::string()) + std::string(suffix);
+    };
+    std::set<std::string> taken;  // lowered file names
+    std::error_code ec;
+    fs::directory_iterator it(dir, ec);
+    if (ec == std::errc::no_such_file_or_directory)
+        return dir / nameOf(1);
+    for (const fs::directory_iterator end; !ec && it != end; it.increment(ec))
+        taken.insert(lowered(it->path().filename().string()));
+    if (ec)
+        throw LibraryError(dir.string() + " can't be listed: " + ec.message());
+    for (long n = 1;; ++n) {
+        const std::string file = nameOf(n);
+        if (taken.count(lowered(file)) || present(dir / file))
+            continue;
+        return dir / file;
+    }
+}
+
+fs::path writeTextStyle(const fs::path& dir, const TextStyleEntry& entry) {
+    const std::string json = textStyleEntryJson(entry);
+    parseTextStyleEntry(json);
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec)
+        throw LibraryError(dir.string() + ": " + ec.message());
+    const fs::path p = textStylePathFor(dir, entry.name);
+    Staged staged(p, json);
+    if (testing::beforeTextStylePublish)
+        testing::beforeTextStylePublish(p);
+    staged.commitNoReplace();
+    return p;
 }
 
 Stamp readStamp(const fs::path& ans) {

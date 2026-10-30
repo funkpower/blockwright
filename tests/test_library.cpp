@@ -881,3 +881,93 @@ TEST_CASE("an art file whose extension is in another case is scanned, read and r
     CHECK(isSidecarName("x.JSON"));
     CHECK_FALSE(isArtName("x.ans.bak"));
 }
+
+TEST_CASE("a text style preset gets the lowest free <slug>.style.json and never replaces a file") {
+    const fs::path dir = scratch("presets");
+    TextStyleEntry entry;
+    entry.name = "Neon Sign";
+    entry.category = "neon";
+    entry.style = TextStyle{{Effect{true, OutlineEffect{}}}};
+
+    // a folder that doesn't exist yet is made
+    const fs::path inside = dir / "user";
+    CHECK(textStylePathFor(inside, entry.name) == inside / "neon-sign.style.json");
+    const fs::path first = writeTextStyle(inside, entry);
+    CHECK(first == inside / "neon-sign.style.json");
+    CHECK(readTextStyleEntry(first).style == entry.style);
+
+    // a file in any case, of any kind, holds its slot
+    put(inside / "NEON-SIGN-2.STYLE.JSON", "not mine");
+    entry.tags = {"second"};
+    const fs::path third = writeTextStyle(inside, entry);
+    CHECK(third == inside / "neon-sign-3.style.json");
+    CHECK(bwtest::readFile(inside / "NEON-SIGN-2.STYLE.JSON") == "not mine");
+    CHECK(readTextStyleEntry(first).tags.empty());
+    CHECK(readTextStyleEntry(third).tags == std::vector<std::string>{"second"});
+
+    // an entry the parser would refuse is refused before anything is written
+    TextStyleEntry bad = entry;
+    bad.name = "Bad";
+    bad.category = "";
+    CHECK_THROWS_AS(writeTextStyle(inside, bad), LibraryError);
+    CHECK_FALSE(fs::exists(inside / "bad.style.json"));
+}
+
+#ifndef _WIN32
+TEST_CASE("a text style preset published by the hard-link fallback leaves no temporary, even when unlink fails") {
+    const fs::path dir = scratch("presets-link");
+    TextStyleEntry entry;
+    entry.name = "Neon";
+    entry.category = "neon";
+    entry.style = TextStyle{{Effect{true, OutlineEffect{}}}};
+    struct Reset {
+        ~Reset() { testing::textStylePublishFault = nullptr; }
+    } reset;
+    // a file system without the exclusive rename, and the temporary's name
+    // failing to go once the preset is linked into place
+    std::vector<std::string> steps;
+    testing::textStylePublishFault = [&steps](std::string_view step) {
+        steps.emplace_back(step);
+        throw LibraryError(std::string(step));
+    };
+    const fs::path p = writeTextStyle(dir, entry);
+    CHECK(steps == std::vector<std::string>{"rename", "unlink"});
+    CHECK(p == dir / "neon.style.json");
+    CHECK(readTextStyleEntry(p).name == "Neon");
+    std::vector<std::string> names;
+    for (const fs::directory_entry& f : fs::directory_iterator(dir))
+        names.push_back(f.path().filename().string());
+    CHECK(names == std::vector<std::string>{"neon.style.json"});
+}
+#endif
+
+TEST_CASE("a text style preset never replaces a file made at its path while it is written") {
+    const fs::path dir = scratch("presets-race");
+    TextStyleEntry entry;
+    entry.name = "Neon";
+    entry.category = "neon";
+    entry.style = TextStyle{{Effect{true, OutlineEffect{}}}};
+    struct Reset {
+        ~Reset() { testing::beforeTextStylePublish = nullptr; }
+    } reset;
+    // another editor saves there between the slot being picked and the
+    // preset being moved into place
+    testing::beforeTextStylePublish = [](const fs::path& p) { put(p, "sentinel"); };
+    try {
+        writeTextStyle(dir, entry);
+        FAIL("no error");
+    } catch (const LibraryError& e) {
+        CHECK(std::string(e.what()).find("already exists") != std::string::npos);
+    }
+    CHECK(bwtest::readFile(dir / "neon.style.json") == "sentinel");
+    // the temporary is gone: the sentinel is all the folder holds
+    std::vector<std::string> names;
+    for (const fs::directory_entry& f : fs::directory_iterator(dir))
+        names.push_back(f.path().filename().string());
+    CHECK(names == std::vector<std::string>{"neon.style.json"});
+
+    // with the hook off the next save takes the next slot
+    testing::beforeTextStylePublish = nullptr;
+    CHECK(writeTextStyle(dir, entry) == dir / "neon-2.style.json");
+    CHECK(bwtest::readFile(dir / "neon.style.json") == "sentinel");
+}
