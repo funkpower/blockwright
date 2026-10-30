@@ -284,8 +284,8 @@ TEST_CASE("colour glyphs keep their shades and attributes; a space on blue is in
     CHECK(rowText(*h->cells, 3) == U"░░    ░░");
     CHECK(rowText(*h->cells, 4) == U"        ");
     CHECK(rowText(*h->cells, 5) == U"........");
-    CHECK(h->cells->at(0, 0) == cell(U'█', White, Black));
-    CHECK(h->cells->at(0, 1) == cell(U'▓', LightCyan, Blue));
+    CHECK(h->cells->at(0, 0) == cell(U'█', Cyan, Black));
+    CHECK(h->cells->at(0, 1) == cell(U'▓', Cyan, Blue));
     CHECK(h->cells->at(0, 3) == cell(U'░', Cyan, Blue));
     CHECK(h->cells->at(0, 4) == cell(U' ', Black, Blue));
     CHECK(h->cells->at(2, 4) == cell(U' ', Black, Black));
@@ -296,8 +296,8 @@ TEST_CASE("colour glyphs keep their shades and attributes; a space on blue is in
     // A descender row ends in the '&' marker, not drawn.
     const auto g = face->glyph(U'g');
     REQUIRE(g);
-    CHECK(rowText(*g->cells, 5) == U"░░░░░░..");
-    CHECK(g->cells->at(0, 5) == cell(U'░', Blue, Black));
+    CHECK(rowText(*g->cells, 5) == U"      ..");
+    CHECK(g->cells->at(0, 5) == cell(U' ', Black, Blue));
     // What a "█ only" rule needs: the █ cells are the top row of every
     // capital that has one, and nothing else is █.
     int solid = 0;

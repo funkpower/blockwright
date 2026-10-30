@@ -10,7 +10,7 @@ for descenders. Each font is made from the master:
   bw-block.tdf    block (type 1): each master pixel 2 columns, two master
                   rows a cell row as half blocks (█ ▀ ▄).
   bw-colour.tdf   colour (type 2): each master pixel 2 columns, one row a
-                  cell row, shaded ░▒▓█ and coloured by row.
+                  cell row, shaded by row from █ down to ░ in cyan on blue.
   bw-all.tdf      the three, in that order, in one file.
 
 A master column is 2 cells wide, except the counters of the 5-pixel M, W,
@@ -186,16 +186,19 @@ def block_glyph(ch):
 
 # -- colour ----------------------------------------------------------------
 # Per master row: (CP437 character, attribute), the attribute background
-# in the high nibble and foreground in the low one. Row 4, the baseline, is
-# a space on blue: ink, as a space on any background but black is.
+# in the high nibble and foreground in the low one. The shade climbs the sea
+# ladder one step at a time, cyan █ at the top through ▓ ▒ ░ cyan on blue to
+# a space on blue at the baseline and below: ink, as a space on any
+# background but black is. Every inked cell but the top row keeps a blue
+# background, so a flat Fill of a blue-neighbour colour stays on its ladder.
 
 SHADE = [
-    (0xDB, 0x0F),  # █ white
-    (0xB2, 0x1B),  # ▓ light cyan on blue
-    (0xB1, 0x1B),  # ▒ light cyan on blue
+    (0xDB, 0x03),  # █ cyan
+    (0xB2, 0x13),  # ▓ cyan on blue
+    (0xB1, 0x13),  # ▒ cyan on blue
     (0xB0, 0x13),  # ░ cyan on blue
     (0x20, 0x10),  # space on blue
-    (0xB0, 0x01),  # ░ blue on black
+    (0x20, 0x10),  # space on blue
 ]
 
 

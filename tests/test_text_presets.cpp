@@ -6,6 +6,7 @@
 
 #include "blockwright/library.h"
 
+#include "blockwright/ansi.h"
 #include "blockwright/face.h"
 #include "blockwright/font_store.h"
 #include "blockwright/irc.h"
@@ -22,6 +23,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -309,6 +311,75 @@ TEST_CASE("every preset on every fixture word and face lints clean and fits 80 c
     CHECK(cases == 8 * 2 * 6 * 5);
 }
 
+TEST_CASE("the TheDraw test fonts unstyled lint clean and fit 80 columns and the budget", "[presets][matrix]") {
+    // The baseline row: what each preset starts from. A preset's finding on
+    // a test font is its own, not the font's. The bundled pixel faces aren't
+    // held to it: their grey specks lint (steel speckle) with no style at all.
+    TextStyleEntry none;
+    none.name = "unstyled";
+    const std::vector<MatrixFace> fs = faces();
+    const std::vector<TextSource> ws = words();
+    int cases = 0;
+    for (const MatrixFace& f : fs) {
+        if (!f.file)
+            continue;
+        for (const TextSource& w : ws)
+            for (const bool ice : {true, false}) {
+                INFO(f.name << " / " << utf8(w.text) << " / iCE " << (ice ? "on" : "off"));
+                CHECK(faults({&none, &f, &w, ice}) == "");
+                ++cases;
+            }
+    }
+    // 3 test fonts, 5 words, iCE on and off
+    CHECK(cases == 3 * 5 * 2);
+}
+
+// The comparison sheets: for each face and iCE setting, each fixture word
+// unstyled and then in each preset, each drawing under its name, written as
+// <face>-ice-<on|off>.ans in the directory BW_PRESET_SHEETS names. Run with
+// "[.sheets]"; `blockwright-cli render` turns a sheet into a PNG.
+TEST_CASE("comparison sheets of the presets", "[.sheets]") {
+    const char* dir = std::getenv("BW_PRESET_SHEETS");
+    REQUIRE(dir);
+    fs::create_directories(dir);
+    TextStyleEntry none;
+    none.name = "unstyled";
+    std::vector<TextStyleEntry> looks{none};
+    for (TextStyleEntry& p : presets())
+        looks.push_back(std::move(p));
+    const std::vector<TextSource> ws = words();
+    for (const MatrixFace& f : faces())
+        for (const bool ice : {true, false}) {
+            std::vector<Canvas> parts;
+            for (const TextSource& w : ws)
+                for (const TextStyleEntry& p : looks) {
+                    Canvas label(kColumns, 1);
+                    const std::string name = p.name + " / " + utf8(w.text);
+                    for (std::size_t i = 0; i < name.size() && int(i) < kColumns; ++i)
+                        label.at(int(i), 0).ch = char32_t(name[i]);
+                    parts.push_back(label);
+                    parts.push_back(renderStyledText(w, p.style, *f.face, ice).cells);
+                    parts.push_back(Canvas(kColumns, 1));
+                }
+            int height = 0;
+            for (const Canvas& c : parts)
+                height += c.height();
+            AnsiDocument doc;
+            doc.ice = ice;
+            doc.canvas = Canvas(kColumns, height);
+            int y = 0;
+            for (const Canvas& c : parts) {
+                for (int cy = 0; cy < c.height(); ++cy)
+                    for (int cx = 0; cx < c.width() && cx < kColumns; ++cx)
+                        if (!c.at(cx, cy).transparent)
+                            doc.canvas.at(cx, y + cy) = c.at(cx, cy);
+                y += c.height();
+            }
+            std::ofstream out(fs::path(dir) / (slug(f.name) + "-ice-" + (ice ? "on" : "off") + ".ans"), std::ios::binary);
+            out << writeAnsi(doc).bytes;
+        }
+}
+
 TEST_CASE("an entry refuses a key given twice at any depth, and a flat Fill's unknown ramp", "[presets]") {
     const auto refusal = [](const std::string& json) -> std::string {
         try {
@@ -364,8 +435,8 @@ TEST_CASE("preset matrix rejects a preset whose letters don't show", "[presets][
     TextStyleEntry p = readTextStyleEntry(kPresets / "outline.style.json");
     p.style.effects = {Effect{true, FillEffect{FillMode::Flat, 0, "sea"}}};
     REQUIRE_FALSE(textStyleProblem(p.style));
-    // bw-colour's ░▒▓ source cells keep their blue background under a flat
-    // Fill, which sets only the foreground, so its letters show
+    // bw-colour's ▓▒░ and space source cells keep their blue background
+    // under a flat Fill, which sets only the foreground, so its letters show
     const std::vector<MatrixFace> faceList = faces();
     for (const MatrixFace& f : faceList)
         for (const TextSource& w : words())
