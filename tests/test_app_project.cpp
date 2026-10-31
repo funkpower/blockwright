@@ -615,6 +615,9 @@ TEST_CASE("a project saved and opened in the app keeps every layer property and 
 }
 
 TEST_CASE("a failed save over a project directory leaves it readable as it was (#114)") {
+#ifdef _WIN32
+    SKIP("no POSIX file modes on Windows");
+#else
     if (::geteuid() == 0)
         SKIP("root writes into a read-only directory");
     QTemporaryDir tmp;
@@ -638,6 +641,7 @@ TEST_CASE("a failed save over a project directory leaves it readable as it was (
 
     REQUIRE(w.save());
     CHECK(project::read(fpath(dir)) == d.project());
+#endif
 }
 
 TEST_CASE("a failed project save keeps the snapshot pending and the project unsaved") {
@@ -650,10 +654,19 @@ TEST_CASE("a failed project save keeps the snapshot pending and the project unsa
     Document& d = *w.document();
     REQUIRE(w.snapshot(&error) == 2);
     const QString ro = tmp.filePath(QStringLiteral("ro"));
+#ifdef _WIN32
+    // A read-only folder still takes new files on Windows; a file can't be a folder.
+    {
+        QFile file(ro);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+    }
+    const bool saved = w.saveFile(ro + QStringLiteral("/x.bwp"), &error);
+#else
     REQUIRE(QDir().mkpath(ro));
     REQUIRE(::chmod(QFile::encodeName(ro).constData(), 0555) == 0);
     const bool saved = w.saveFile(ro + QStringLiteral("/x.bwp"), &error);
     ::chmod(QFile::encodeName(ro).constData(), 0755);
+#endif
     CHECK_FALSE(saved);
     CHECK_FALSE(error.isEmpty());
     CHECK(d.path() == zip);

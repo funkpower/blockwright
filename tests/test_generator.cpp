@@ -10,6 +10,7 @@
 
 #include "generators.h"
 #include "read_file.h"
+#include "fs_quirks.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -17,10 +18,12 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 
+#ifndef _WIN32
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -78,12 +81,14 @@ void writeFile(const fs::path& p, const std::string& bytes) {
     std::ofstream(p, std::ios::binary | std::ios::trunc) << bytes;
 }
 
+#ifndef _WIN32
 // The most memory the process has held, in bytes (Linux reports KiB).
 long long peakRss() {
     rusage u{};
     getrusage(RUSAGE_SELF, &u);
     return (long long)u.ru_maxrss * 1024;
 }
+#endif
 
 } // namespace
 
@@ -414,6 +419,8 @@ TEST_CASE("a generator's output is read as an .ans; the key colour's blank cells
     CHECK(gen::cellsFromOutput("A", 0, std::nullopt).width() == 1);
 }
 
+// The runs below use sh; test_generator_win.cpp runs generators on Windows.
+#ifndef _WIN32
 TEST_CASE("running a generator makes the layer's cells from its stdout", "[generator][run]") {
     project::Project p = dotsProject();
     const project::Project before = p;
@@ -622,6 +629,8 @@ TEST_CASE("a generator layer saves with its files and runs again after reopening
     CHECK(again == back);
 }
 
+#endif
+
 TEST_CASE("the CLI reads a generator's directory, skipping hidden entries and refusing links", "[generator][cli]") {
     const fs::path dir = scratch("read");
     writeFile(dir / "generator.json", R"({"command": ["sh", "gen.sh"]})");
@@ -638,6 +647,8 @@ TEST_CASE("the CLI reads a generator's directory, skipping hidden entries and re
     CHECK_THROWS_AS(bwcli::readGeneratorDir(dir / "gen.sh"), bwcli::Failure);
     CHECK_THROWS_AS(bwcli::readGeneratorDir(dir / "missing"), bwcli::Failure);
     const fs::path link = scratch("link");
+    if (!bwtest::symlinksWork())
+        SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
     fs::create_directory_symlink(dir, link / "to-dir");
     CHECK_THROWS_AS(bwcli::readGeneratorDir(link / "to-dir"), bwcli::Failure);
     fs::create_symlink(dir / "gen.sh", dir / "lib" / "link.sh");
@@ -662,6 +673,7 @@ TEST_CASE("the CLI runs the generators asked for, bottom first, or every one", "
     CHECK(bwcli::generatorsToRun(LayerStack(4, 2), {}).empty());
 }
 
+#ifndef _WIN32
 TEST_CASE("a run leaves nothing it started running whichever way it ends", "[generator][run][process]") {
     // Each script starts a background child that writes its marker a second
     // later; by then the run is over, whichever way it ended, and the child
@@ -945,3 +957,4 @@ TEST_CASE("the CLI refuses a generator directory it can't read all of", "[genera
     fs::permissions(dir / "assets", fs::perms::owner_all);
     CHECK(bwcli::readGeneratorDir(dir).size() == 2);
 }
+#endif

@@ -3,6 +3,10 @@
 # add-generator and run-generators on .bwp and directory projects.
 set -uo pipefail
 cli=$1 data=$2 tmp=$3
+if [[ -n ${BW_CLI_WINDOWS:-} ]]; then
+  echo "skip: the generators here are sh scripts (test_generator_win.cpp runs generators on Windows)"
+  exit 77
+fi
 rm -rf "$tmp" && mkdir -p "$tmp"
 fails=0
 ok() { echo "ok   $1"; }

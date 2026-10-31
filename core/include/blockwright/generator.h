@@ -57,6 +57,15 @@
 // - nothing else waits for a child it didn't start (waitpid(-1) or
 //   waitpid(0), wait()). This can't be checked; neither the CLI nor the app
 //   does it (Qt's QProcess waits only for its own children).
+//
+// On Windows the program runs in a job object of its own instead, created
+// suspended, put in the job and then resumed, and the job is closed with
+// KILL_ON_JOB_CLOSE, so everything it started goes with it (the job does
+// not allow breaking away). The first word
+// is looked up on PATH unless it holds a '/', '\\' or ':': only as an .exe
+// or .com (a script runs through its interpreter: ["python", "scene.py"]),
+// and never in the working directory. It is absolute with a drive or as a
+// UNC path. Nothing about SIGCHLD applies.
 
 #include "blockwright/canvas.h"
 #include "blockwright/layer.h"

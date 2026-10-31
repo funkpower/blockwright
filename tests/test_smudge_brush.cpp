@@ -2,6 +2,7 @@
 // stops it, mirrors, and that no stamp adds a ladder lint finding.
 
 #include "blockwright/ansi.h"
+#include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/smudge.h"
@@ -274,7 +275,7 @@ TEST_CASE("under a mirror a smudge keeps a symmetric canvas symmetric whatever o
     // a sweep: symmetric canvases, each mirror, strengths in thirds, sixths,
     // sevenths, ninths and twelfths, set or reached through pressure
     std::mt19937 rng(2026102403);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     int broken = 0;
     for (int k = 0; k < 10000; ++k) {
         const int w = pick(4, 8), h = pick(1, 4);
@@ -372,7 +373,7 @@ private:
 
 TEST_CASE("no stamp of a random smudge adds a lint finding", "[smudge][lint]") {
     std::mt19937 rng(2026102402);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const std::array<const char*, 5> ramps{"steel", "fire", "ice", "toxic", "sunset"};
     int painted = 0;
     for (int k = 0; k < 200; ++k) {

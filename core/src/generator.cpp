@@ -6,6 +6,8 @@
 
 #include <QByteArray>
 #include <QDeadlineTimer>
+#include <QDir>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -16,6 +18,9 @@
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -24,6 +29,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -38,7 +44,9 @@
 #include <thread>
 #include <utility>
 
+#ifndef _WIN32
 extern char** environ;
+#endif
 
 namespace fs = std::filesystem;
 
@@ -48,6 +56,25 @@ namespace {
 [[noreturn]] void fail(const std::string& what) { throw GeneratorError(what); }
 
 std::string utf8(const QString& s) { return s.toStdString(); }
+
+// Whether a command's program is an absolute path (on Windows a drive's,
+// C:\…, or a share's, \\server\…), and whether it names a directory at
+// all; one that doesn't is looked up on PATH.
+bool absoluteProgram(const std::string& program) {
+#ifdef _WIN32
+    return fs::path(QString::fromStdString(program).toStdWString()).is_absolute();
+#else
+    return program.starts_with('/');
+#endif
+}
+
+bool inDirectory(const std::string& program) {
+#ifdef _WIN32
+    return program.find_first_of("/\\:") != std::string::npos;
+#else
+    return program.find('/') != std::string::npos;
+#endif
+}
 
 // A key some object in `json` holds twice, or nothing; `json` is valid JSON.
 // QJsonDocument keeps only the last of a repeated key, so repeats are found
@@ -113,6 +140,7 @@ const std::string* file(const project::Project& project, const std::string& path
     return it == project.files.end() ? nullptr : &it->second;
 }
 
+#ifndef _WIN32
 // The process group of the generator running now (its program's pid), 0
 // when none is, or kStarting while one is being started.
 constexpr pid_t kStarting = -1;
@@ -305,6 +333,263 @@ bool sigchldIgnored() noexcept {
     return ::sigaction(SIGCHLD, nullptr, &sa) == 0 && (sa.sa_handler == SIG_IGN || (sa.sa_flags & SA_NOCLDWAIT));
 }
 
+#else
+// The job object holding the generator running now and everything it
+// started, null when none is, or kStarting while one is being started; and
+// its program's process id, for the test hooks.
+const HANDLE kStarting = INVALID_HANDLE_VALUE;  // never a job's handle
+std::atomic<HANDLE> runningJob{nullptr};
+std::atomic<pid_t> runningPid{0};
+// How many killRunning calls have read runningJob and not yet terminated
+// the job they read.
+std::atomic<int> killers{0};
+// Set for good by the first killRunning: no run starts after it.
+std::atomic<bool> stopping{false};
+static_assert(std::atomic<HANDLE>::is_always_lock_free && std::atomic<pid_t>::is_always_lock_free &&
+                  std::atomic<int>::is_always_lock_free && std::atomic<bool>::is_always_lock_free,
+              "read and written in a console control handler");
+
+// Ends every process in `job`, whose program was `pid`; nothing for none.
+void killJob(HANDLE job, pid_t pid) noexcept {
+    if (job && job != kStarting) {
+        if (testing::killing)
+            testing::killing(pid);
+        ::TerminateJobObject(job, 1);
+    }
+}
+
+// A handle, closed with it.
+struct Handle {
+    HANDLE h = nullptr;
+    Handle() = default;
+    explicit Handle(HANDLE x) noexcept : h(x == INVALID_HANDLE_VALUE ? nullptr : x) {}
+    Handle(Handle&& o) noexcept : h(std::exchange(o.h, nullptr)) {}
+    Handle(const Handle&) = delete;
+    Handle& operator=(const Handle&) = delete;
+    ~Handle() { close(); }
+    void close() noexcept {
+        if (h)
+            ::CloseHandle(h);
+        h = nullptr;
+    }
+};
+
+std::wstring wide(const std::string& s) { return QString::fromStdString(s).toStdWString(); }
+
+// What Windows says about the error `code`.
+std::string windowsError(DWORD code) {
+    wchar_t* text = nullptr;
+    const DWORD n = ::FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                         FORMAT_MESSAGE_IGNORE_INSERTS,
+                                     nullptr, code, 0, reinterpret_cast<wchar_t*>(&text), 0, nullptr);
+    const QString s = n ? QString::fromWCharArray(text, qsizetype(n)).trimmed() : QStringLiteral("error %1").arg(code);
+    if (text)
+        ::LocalFree(text);
+    return utf8(s);
+}
+
+// `arg` as one word of a command line, quoted as the C runtime and
+// CommandLineToArgvW split one.
+std::wstring quoted(const std::wstring& arg) {
+    if (!arg.empty() && arg.find_first_of(L" \t\n\v\"") == std::wstring::npos)
+        return arg;
+    std::wstring q = L"\"";
+    for (auto it = arg.begin();; ++it) {
+        std::size_t slashes = 0;
+        while (it != arg.end() && *it == L'\\') {
+            ++it;
+            ++slashes;
+        }
+        if (it == arg.end()) {
+            q.append(slashes * 2, L'\\');
+            break;
+        }
+        if (*it == L'"')
+            q.append(slashes * 2 + 1, L'\\');
+        else
+            q.append(slashes, L'\\');
+        q.push_back(*it);
+    }
+    q.push_back(L'"');
+    return q;
+}
+
+bool endsWithNoCase(const std::wstring& s, std::wstring_view end) {
+    return s.size() >= end.size() &&
+           QString::fromStdWString(s.substr(s.size() - end.size()))
+                   .compare(QString::fromWCharArray(end.data(), qsizetype(end.size())), Qt::CaseInsensitive) == 0;
+}
+
+// The program `name` (no directory in it) names on PATH: `name` itself when
+// it ends in .exe or .com, otherwise `name` with .exe, then .com, added; in
+// the first directory PATH names by an absolute path that holds it. Never
+// the working directory (which holds the project's files) nor the one this
+// program is in, as CreateProcess's own search would. Empty for none.
+std::wstring onPath(const std::wstring& name) {
+    if (name.empty() || name.find(L':') != std::wstring::npos)
+        return {};
+    std::vector<std::wstring> names;
+    if (endsWithNoCase(name, L".exe") || endsWithNoCase(name, L".com"))
+        names = {name};
+    else
+        names = {name + L".exe", name + L".com"};
+    for (QString dir : qEnvironmentVariable("PATH").split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+        dir = dir.trimmed();
+        if (dir.size() >= 2 && dir.startsWith(QLatin1Char('"')) && dir.endsWith(QLatin1Char('"')))
+            dir = dir.mid(1, dir.size() - 2);
+        const fs::path d(dir.toStdWString());
+        if (!d.is_absolute())
+            continue;
+        for (const std::wstring& n : names) {
+            const fs::path p = d / n;
+            const DWORD a = ::GetFileAttributesW(p.c_str());
+            if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY))
+                return p.wstring();
+        }
+    }
+    return {};
+}
+
+// The running program, in a job of its own that everything it starts
+// joins (the job allows no breaking away): however the run ends, the job
+// is terminated, so nothing the program started outlives it. The job's
+// handle is closed only once it is retired (no longer running, and a
+// killRunning that read it let finish), so nothing terminates a closed
+// handle.
+class Job {
+public:
+    Job(Handle job, Handle process, pid_t pid) noexcept
+        : job_(std::move(job)), process_(std::move(process)), pid_(pid) {}
+    Job(const Job&) = delete;
+    Job& operator=(const Job&) = delete;
+    ~Job() { end(); }
+
+    HANDLE process() const noexcept { return process_.h; }
+    bool ended() const noexcept { return ::WaitForSingleObject(process_.h, 0) == WAIT_OBJECT_0; }
+    DWORD exitCode() const noexcept {
+        DWORD code = 0;
+        ::GetExitCodeProcess(process_.h, &code);
+        return code;
+    }
+
+    // Terminates the job and waits until nothing in it runs, so no process
+    // that could write to the run's pipes is left.
+    void end() noexcept {
+        if (done_)
+            return;
+        killJob(job_.h, pid_);
+        retire();
+        ::WaitForSingleObject(process_.h, INFINITE);
+        for (int i = 0; i < 500; ++i) {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info{};
+            if (!::QueryInformationJobObject(job_.h, JobObjectBasicAccountingInformation, &info, sizeof info,
+                                             nullptr) ||
+                info.ActiveProcesses == 0)
+                break;
+            ::Sleep(10);
+        }
+        job_.close();
+        done_ = true;
+        if (testing::reaped)
+            testing::reaped(pid_);
+    }
+
+private:
+    void retire() noexcept {
+        HANDLE running = job_.h;
+        runningJob.compare_exchange_strong(running, nullptr);
+        while (killers.load() != 0)
+            std::this_thread::yield();
+    }
+
+    Handle job_;
+    Handle process_;
+    pid_t pid_;
+    bool done_ = false;
+};
+
+// Starts `program` (a full path) with `argv` as its command line in `dir`,
+// with `in`, `out` and `err` as its standard streams and no other handle
+// of this process, suspended, puts it in a new job, publishes the job as
+// the running one, and lets it run. A killRunning that read runningJob
+// before kStarting was stored is met as on POSIX: one of the two sees the
+// other, and this starts nothing and sets `cancelled` when it sees it.
+// Sets `started`, or `error` when it can't start.
+void start(const std::wstring& program, const std::vector<std::string>& argv, const std::wstring& dir, HANDLE in,
+           HANDLE out, HANDLE err, std::optional<Job>& started, std::string& error, bool& cancelled) {
+    Handle job(::CreateJobObjectW(nullptr, nullptr));
+    if (!job.h) {
+        error = windowsError(::GetLastError());
+        return;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    HANDLE handles[] = {in, out, err};
+    SIZE_T size = 0;
+    ::InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+    std::vector<char> list(size);
+    const auto attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(list.data());
+    bool ok = ::SetInformationJobObject(job.h, JobObjectExtendedLimitInformation, &limits, sizeof limits) &&
+              ::InitializeProcThreadAttributeList(attrs, 1, 0, &size);
+    if (!ok) {
+        error = windowsError(::GetLastError());
+        return;
+    }
+    struct DeleteList {
+        LPPROC_THREAD_ATTRIBUTE_LIST l;
+        ~DeleteList() { ::DeleteProcThreadAttributeList(l); }
+    } deleteList{attrs};
+    for (HANDLE h : handles)
+        ok = ok && ::SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    ok = ok && ::UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, sizeof handles,
+                                           nullptr, nullptr);
+    if (!ok) {
+        error = windowsError(::GetLastError());
+        return;
+    }
+    STARTUPINFOEXW si{};
+    si.StartupInfo.cb = sizeof si;
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = in;
+    si.StartupInfo.hStdOutput = out;
+    si.StartupInfo.hStdError = err;
+    si.lpAttributeList = attrs;
+    std::wstring line;
+    for (const std::string& a : argv)
+        line += (line.empty() ? L"" : L" ") + quoted(wide(a));
+    PROCESS_INFORMATION pi{};
+    runningJob = kStarting;
+    if (stopping.load()) {
+        runningJob = nullptr;
+        cancelled = true;
+        return;
+    }
+    if (!::CreateProcessW(program.c_str(), line.data(), nullptr, nullptr, TRUE,
+                          CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT |
+                              EXTENDED_STARTUPINFO_PRESENT,
+                          nullptr, dir.c_str(), &si.StartupInfo, &pi)) {
+        error = windowsError(::GetLastError());
+        runningJob = nullptr;
+        return;
+    }
+    Handle process(pi.hProcess), thread(pi.hThread);
+    if (!::AssignProcessToJobObject(job.h, process.h)) {
+        error = windowsError(::GetLastError());
+        ::TerminateProcess(process.h, 1);
+        ::WaitForSingleObject(process.h, INFINITE);
+        runningJob = nullptr;
+        return;
+    }
+    const pid_t pid = pid_t(pi.dwProcessId);
+    if (testing::started)
+        testing::started(pid);
+    runningPid = pid;
+    runningJob = job.h;
+    started.emplace(std::move(job), std::move(process), pid);
+    ::ResumeThread(thread.h);
+}
+#endif
+
 // The last `n` bytes of `s`, from a line start where there is one.
 std::string tail(const QByteArray& s, qsizetype n) {
     QByteArray t = s.size() > n ? s.right(n) : s;
@@ -320,6 +605,7 @@ std::string directory(LayerId id) { return "scripts/" + std::to_string(id) + "/"
 
 void testing::allowRuns() noexcept { stopping = false; }
 
+#ifndef _WIN32
 void killRunning() noexcept {
     ++killers;
     stopping = true;  // before runningGroup is read (start)
@@ -331,6 +617,18 @@ void killRunning() noexcept {
     killGroup(group);
     --killers;
 }
+#else
+void killRunning() noexcept {
+    ++killers;
+    stopping = true;  // before runningJob is read (start)
+    HANDLE job;
+    // a run starting on another thread publishes its job in a moment
+    while ((job = runningJob.load()) == kStarting) {
+    }
+    killJob(job, runningPid.load());
+    --killers;
+}
+#endif
 
 namespace {
 
@@ -698,6 +996,7 @@ Canvas cellsFromOutput(std::string_view ans, int width, std::optional<std::uint8
 
 namespace {
 
+#ifndef _WIN32
 // Runs `argv` in `dir` with `stdinData` on stdin and returns what it wrote
 // to stdout; `program` names it in messages, `name` leads them. The group,
 // the deadline, the cap and the errors are run's.
@@ -800,6 +1099,112 @@ std::string execute(const std::vector<std::string>& argv, const std::string& dir
         fail(name + ": " + program + " exited with status " + std::to_string(ended->si_status) + stderrNote);
     return out.toStdString();
 }
+#else
+// Windows reaps nothing behind the run's back: a process handle keeps the
+// program's exit code and its id until the run closes it.
+void refuseIgnoredSigchld(const std::string&) {}
+
+std::string execute(const std::vector<std::string>& argv, const std::string& dir, std::string_view stdinData,
+                    const std::string& name, const std::string& program, const RunOptions& options) {
+    // the program: a full path as given, or looked up on PATH (onPath)
+    const std::wstring first = wide(argv[0]);
+    std::wstring path;
+    if (fs::path(first).is_absolute())
+        path = first;
+    else if (first.find_first_of(L"/\\") == std::wstring::npos)
+        path = onPath(first);
+    if (path.empty())
+        fail(name + ": could not run " + program + ": no such program (an .exe or .com) on PATH");
+
+    QTemporaryFile inFile;
+    if (!inFile.open() || inFile.write(stdinData.data(), qint64(stdinData.size())) != qint64(stdinData.size()) ||
+        !inFile.flush())
+        fail(name + ": could not write the generator's input: " + utf8(inFile.errorString()));
+    // opened again, so the program reads it from the start
+    Handle in(::CreateFileW(QDir::toNativeSeparators(inFile.fileName()).toStdWString().c_str(), GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr));
+    Handle outR, outW, errR, errW;
+    if (!in.h || !::CreatePipe(&outR.h, &outW.h, nullptr, 64 * 1024) ||
+        !::CreatePipe(&errR.h, &errW.h, nullptr, 64 * 1024))
+        fail(name + ": could not set up the run: " + windowsError(::GetLastError()));
+
+    std::string error;
+    bool cancelled = false;
+    std::optional<Job> job;
+    start(path, argv, QDir::toNativeSeparators(QString::fromStdString(dir)).toStdWString(), in.h, outW.h, errW.h, job,
+          error, cancelled);
+    if (cancelled)
+        fail(name + ": not run: generators are being stopped");
+    if (!job)
+        fail(name + ": could not run " + program + ": " + error);
+    in.close();
+    outW.close();
+    errW.close();
+    const QDeadlineTimer deadline(options.timeout);
+    QByteArray out, err;
+    std::string stopped;  // why the job was terminated
+    std::vector<char> buf(64 * 1024);
+    // Takes what `pipe` holds now, up to one buffer; false once it holds
+    // nothing now or is closed.
+    const auto take = [&](Handle& pipe) {
+        if (!pipe.h)
+            return false;
+        DWORD avail = 0;
+        if (!::PeekNamedPipe(pipe.h, nullptr, 0, nullptr, &avail, nullptr)) {
+            pipe.close();
+            return false;
+        }
+        if (avail == 0)
+            return false;
+        DWORD n = 0;
+        if (!::ReadFile(pipe.h, buf.data(), std::min<DWORD>(avail, DWORD(buf.size())), &n, nullptr) || n == 0) {
+            pipe.close();
+            return false;
+        }
+        if (&pipe == &errR) {
+            err.append(buf.data(), qsizetype(n));
+            if (err.size() > 8192)
+                err = err.right(4096);
+        } else if (std::size_t(out.size()) + std::size_t(n) > kMaxOutputBytes) {
+            stopped = program + " wrote more than " + std::to_string(kMaxOutputBytes) + " bytes; stopped";
+        } else {
+            out.append(buf.data(), qsizetype(n));
+        }
+        return true;
+    };
+    bool ended = false;
+    while (stopped.empty() && !(ended = job->ended())) {
+        if (deadline.hasExpired()) {
+            stopped = program + " took longer than " + std::to_string(options.timeout.count()) + " ms; stopped";
+            break;
+        }
+        const bool tookOut = take(outR);  // both pipes, every pass
+        const bool tookErr = take(errR);
+        if (!tookOut && !tookErr)
+            ::WaitForSingleObject(job->process(), DWORD(std::clamp<qint64>(deadline.remainingTime(), 1, 10)));
+    }
+    if (!stopped.empty())
+        fail(name + ": " + stopped);  // ~Job terminates the job
+    // What it left running ends with it; what was written by then is read.
+    const DWORD code = job->exitCode();
+    job->end();
+    while (stopped.empty() && take(outR)) {
+    }
+    while (take(errR)) {
+    }
+    if (!stopped.empty())
+        fail(name + ": " + stopped);
+    const std::string said = tail(err, 2000);
+    const std::string stderrNote = said.empty() ? "" : ":\n" + said;
+    // an exception's NTSTATUS (0xC…), as an access violation leaves
+    if ((code & 0xC0000000u) == 0xC0000000u)
+        fail(name + ": " + program + " crashed" + stderrNote);
+    if (code != 0)
+        fail(name + ": " + program + " exited with status " + std::to_string(code) + stderrNote);
+    return out.toStdString();
+}
+#endif
 
 } // namespace
 
@@ -813,7 +1218,7 @@ Canvas run(const project::Project& project, LayerId id, const RunOptions& option
     QTemporaryDir tmp;
     if (!tmp.isValid())
         fail(name + ": no temporary directory to run the generator in: " + utf8(tmp.errorString()));
-    const fs::path root = tmp.path().toStdString();
+    const fs::path root(QFile::encodeName(tmp.path()).toStdString());
     const std::string dir = directory(id);
     for (auto it = project.files.lower_bound(dir); it != project.files.end() && it->first.starts_with(dir); ++it) {
         const fs::path to = root / it->first.substr(dir.size());
@@ -828,13 +1233,13 @@ Canvas run(const project::Project& project, LayerId id, const RunOptions& option
     }
 
     std::vector<std::string> argv = spec.command;
-    if (!argv[0].starts_with('/') && argv[0].find('/') != std::string::npos) {
+    if (!absoluteProgram(argv[0]) && inDirectory(argv[0])) {
         std::string_view rel = spec.command[0];
         while (rel.starts_with("./"))
             rel.remove_prefix(2);
         if (!project::safeEntryPath(rel))
             fail(name + ": the program " + spec.command[0] + " is not a file in " + dir);
-        argv[0] = (root / rel).string();
+        argv[0] = (root / rel).make_preferred().string();
     }
 
     const std::string out = execute(argv, utf8(tmp.path()), stdinJson, name, spec.command[0], options);
@@ -853,7 +1258,7 @@ std::string runCommand(const std::vector<std::string>& command, std::string_view
     for (const std::string& arg : command)
         if (arg.find('\0') != std::string::npos)
             fail(name + ": an argument holds a NUL");
-    if (!command[0].starts_with('/') && command[0].find('/') != std::string::npos)
+    if (!absoluteProgram(command[0]) && inDirectory(command[0]))
         fail(name + ": the program " + command[0] + " is neither a name on PATH nor an absolute path");
     refuseIgnoredSigchld(name);
     QTemporaryDir tmp;

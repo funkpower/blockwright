@@ -2,6 +2,7 @@
 // the ramp shade brush, dab by dab, that has to pass them.
 
 #include "blockwright/ansi.h"
+#include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/shading.h"
@@ -837,7 +838,7 @@ std::set<FindingKey> keysOf(const std::vector<lint::LadderFinding>& findings) {
 // cells off the ramp (red, a blinking shade) and some shades of two colours
 // that aren't neighbours.
 Canvas randomLadder(const Ramp& r, int w, int h, std::mt19937& rng) {
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int top = r.topRung();
     std::vector<int> walk(size_t(std::max(w, h)));
     int g = pick(0, top);
@@ -872,7 +873,7 @@ Canvas randomLadder(const Ramp& r, int w, int h, std::mt19937& rng) {
 // a square is a wide step across its rows, down its columns, both or
 // neither, and one cell's change swaps one for the other at a corner.
 Canvas randomSquares(const Ramp& r, int w, int h, std::mt19937& rng) {
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int top = r.topRung();
     Canvas c(w, h);
     auto put = [&](int x, int y, int g) {
@@ -921,7 +922,7 @@ std::optional<int> outlineRung(const Ramp& r, int rung) {
 // blocks), so outlines, wide steps hiding others and the global rules all
 // turn up.
 Canvas randomShapes(const Ramp& r, int w, int h, std::mt19937& rng) {
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int top = r.topRung();
     Canvas c(w, h);
     for (int n = pick(1, 3); n > 0; --n) {
@@ -955,7 +956,7 @@ Canvas randomShapes(const Ramp& r, int w, int h, std::mt19937& rng) {
 // staircase two cells to a row along its diagonals, as the outline brush
 // leaves it.
 Canvas randomEllipse(const Ramp& r, int w, int h, std::mt19937& rng) {
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int top = r.topRung();
     const double cx = pick(0, w - 1), cy = pick(0, h - 1), rx = pick(3, 16), ry = rx / 2 + pick(0, 2);
     const double ringWidth = pick(1, 4) * 0.5;
@@ -992,7 +993,7 @@ Canvas randomEllipse(const Ramp& r, int w, int h, std::mt19937& rng) {
 // place in its step) in every step of the ramp, a few cells of another
 // glyph or solid, so a change can leave the shading one glyph or end that.
 Canvas randomShadeField(const Ramp& r, int w, int h, std::mt19937& rng) {
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int steps = r.topRung() / kRungsPerStep, glyph = pick(1, 3);
     Canvas c(w, h);
     for (int y = 0; y < h; ++y)
@@ -1007,7 +1008,7 @@ Canvas randomShadeField(const Ramp& r, int w, int h, std::mt19937& rng) {
 // cells wide, the lines shifted a cell now and then: the wide steps a shade
 // brush narrows and widens.
 Canvas randomBands(const Ramp& r, int w, int h, std::mt19937& rng) {
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int top = r.topRung();
     const bool across = pick(0, 1);
     const int n = across ? w : h;
@@ -1154,7 +1155,7 @@ std::string showDiff(const Ramp& r, const Canvas& before, const Canvas& after, c
 // changes; one in 25 takes 200-400, some of them undoing the one before.
 TEST_CASE("a change adds exactly the findings linting both whole canvases does", "[lint][ladder]") {
     std::mt19937 rng(2026102303);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const Ramp r = steel();
     int cases = 0, swaps = 0, oneGlyph = 0, noisy = 0, lines = 0, longRuns = 0, reverts = 0, measured = 0,
         continued = 0, moved = 0, fallback = 0;
@@ -1874,7 +1875,7 @@ TEST_CASE("ladder index timings", "[.][bench]") {
     using Clock = std::chrono::steady_clock;
     const Ramp r = steel();
     std::mt19937 rng(7);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     for (const auto& [w, h] : {std::pair{160, 100}, {400, 160}}) {
         const Canvas canvas = randomLadder(r, w, h, rng);
         auto t0 = Clock::now();
@@ -2110,7 +2111,7 @@ TEST_CASE("detail skips windows that are cut short or mostly black", "[lint][det
 // both ways).
 TEST_CASE("an index's wide rungs along a line are checkLadder's on that line", "[lint][ladder]") {
     std::mt19937 rng(2026102321);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const Ramp r = steel();
     int lines = 0, found = 0;
     for (int k = 0; k < 300; ++k) {

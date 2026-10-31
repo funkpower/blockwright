@@ -32,6 +32,9 @@ std::map<std::string, std::string> readGeneratorDir(const std::filesystem::path&
 // (generator::killRunning) before they end this program as they would have.
 // A generator leads a process group of its own, so the terminal's ^C no
 // longer reaches it.
+// On Windows a console's Ctrl+C, Ctrl+Break and close, a logoff and a
+// shutdown kill it before the default handler ends this program; the
+// generator's job object goes with this program however it ends.
 void prepareToRunGenerators();
 
 // The ids `wanted` names, each a generator layer of the stack, or every

@@ -2,6 +2,7 @@
 
 #include "blockwright/cp437.h"
 #include "blockwright/irc.h"
+#include "blockwright/links.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/text.h"
@@ -41,7 +42,9 @@
 #include <unistd.h>
 #elif defined(_WIN32)
 #define BW_LIBRARY_POSIX 0
-#define NOMINMAX
+#include <cerrno>
+#include <cstring>
+#include <system_error>
 #include <windows.h>
 #else
 #define BW_LIBRARY_POSIX 0
@@ -162,10 +165,8 @@ bool allBlank(const Canvas& cv) {
     return true;
 }
 
-bool isLink(const fs::path& p) {
-    std::error_code ec;
-    return fs::is_symlink(fs::symlink_status(p, ec));
-}
+// A junction is a link too (links.h).
+bool isLink(const fs::path& p) { return bw::isLink(p); }
 
 bool present(const fs::path& p) {
     std::error_code ec;
@@ -182,7 +183,7 @@ bool regular(const fs::path& p) {
 // Refuses a path something other than a regular file (or nothing) sits on.
 void checkWritable(const fs::path& p) {
     std::error_code ec;
-    const fs::file_status st = fs::symlink_status(p, ec);
+    const fs::file_status st = linkStatus(p, ec);
     if (fs::is_symlink(st))
         throw LibraryError(p.string() + " is a symbolic link; a stamp is never written through one");
     if (fs::exists(st) && !fs::is_regular_file(st))
@@ -342,6 +343,44 @@ private:
                 err = errno;
             if (err)
                 throw LibraryError(target_.string() + ": write failed: " + std::strerror(err));
+#elif defined(_WIN32)
+            // CREATE_NEW takes the name only if nothing has it, as O_EXCL
+            // does; the file is flushed to the disk before it is renamed.
+            const HANDLE h = ::CreateFileW(temp_.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+                                           nullptr);
+            if (h == INVALID_HANDLE_VALUE) {
+                const DWORD e = ::GetLastError();
+                if ((e == ERROR_FILE_EXISTS || e == ERROR_ALREADY_EXISTS) && attempt < 100)
+                    continue;
+                temp_.clear();
+                throw LibraryError(target_.string() + ": " + std::system_category().message(int(e)));
+            }
+            created_ = true;
+            const auto failed = [&](std::string why) {
+                ::CloseHandle(h);
+                throw LibraryError(target_.string() + ": write failed: " + why);
+            };
+            const char* data = bytes.data();
+            std::size_t left = bytes.size();
+            while (left) {
+                DWORD n = 0;
+                if (!::WriteFile(h, data, DWORD(std::min<std::size_t>(left, 1u << 30)), &n, nullptr) || n == 0)
+                    failed(std::system_category().message(int(::GetLastError())));
+                data += n;
+                left -= n;
+            }
+            if (!::FlushFileBuffers(h))
+                failed(std::system_category().message(int(::GetLastError())));
+            if (testing::writeStampFault) {
+                try {
+                    testing::writeStampFault("fsync");
+                } catch (const LibraryError&) {
+                    failed(std::strerror(ENOSPC));
+                }
+            }
+            if (!::CloseHandle(h))
+                throw LibraryError(target_.string() + ": write failed: " +
+                                   std::system_category().message(int(::GetLastError())));
 #else
             std::error_code ec;
             if (fs::exists(fs::symlink_status(temp_, ec))) {
@@ -387,13 +426,17 @@ private:
     static long processId() {
 #if BW_LIBRARY_POSIX
         return long(::getpid());
+#elif defined(_WIN32)
+        return long(::GetCurrentProcessId());
 #else
         return 0;
 #endif
     }
 
     fs::path target_, temp_;
+#if BW_LIBRARY_POSIX
     int fd_ = -1;
+#endif
     bool created_ = false;  // temp_ exists (and is ours to remove)
 };
 
@@ -991,7 +1034,7 @@ ScanResult scan(const fs::path& dir) {
             const fs::path& p = it->path();
             const bool stampFile = isArtName(p) || isSidecarName(p);
             std::error_code e2;
-            const fs::file_status own = it->symlink_status(e2);
+            const fs::file_status own = linkStatus(*it, e2);  // a junction is a link (links.h)
             if (e2) {
                 // In a folder that can be listed but not searched.
                 if (stampFile)

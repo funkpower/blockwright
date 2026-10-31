@@ -3,6 +3,7 @@
 // transparent paste mode; and Selection > Save to Library.... main() is in
 // test_app.cpp, which points the libraries at empty scratch directories.
 
+#include "fs_quirks.h"
 #include "util.h"
 
 #include "canvas_view.h"
@@ -259,7 +260,7 @@ TEST_CASE("a stamp saved from a selection appears in the dock and drops onto the
                                                     {QStringLiteral("dots")}, &error);
     INFO(error.toStdString());
     REQUIRE(!path.isEmpty());
-    CHECK(path == QDir(f.user.path()).filePath(QStringLiteral("two-dots.ans")));
+    CHECK(QDir::cleanPath(path) == QDir(f.user.path()).filePath(QStringLiteral("two-dots.ans")));
     CHECK(QFileInfo::exists(QDir(f.user.path()).filePath(QStringLiteral("two-dots.json"))));
     const library::Stamp read = library::readStamp(fspath(path));
     CHECK(read.name == "Two Dots");
@@ -453,14 +454,14 @@ TEST_CASE("names that share a slug don't replace each other") {
     QString error;
     const QString heart = f.w.saveSelectionToLibrary(QStringLiteral("♥"), QStringLiteral("test"), {}, &error);
     const QString smile = f.w.saveSelectionToLibrary(QStringLiteral("☺"), QStringLiteral("test"), {}, &error);
-    CHECK(heart == QDir(f.user.path()).filePath(QStringLiteral("u2665.ans")));
-    CHECK(smile == QDir(f.user.path()).filePath(QStringLiteral("u263a.ans")));
+    CHECK(QDir::cleanPath(heart) == QDir(f.user.path()).filePath(QStringLiteral("u2665.ans")));
+    CHECK(QDir::cleanPath(smile) == QDir(f.user.path()).filePath(QStringLiteral("u263a.ans")));
     CHECK(f.dock->shownNames().contains(QStringLiteral("♥")));
     CHECK(f.dock->shownNames().contains(QStringLiteral("☺")));
     const QString oak = f.w.saveSelectionToLibrary(QStringLiteral("Oak Tree"), QStringLiteral("test"), {}, &error);
     const QString oak2 = f.w.saveSelectionToLibrary(QStringLiteral("oak-tree"), QStringLiteral("test"), {}, &error);
-    CHECK(oak == QDir(f.user.path()).filePath(QStringLiteral("oak-tree.ans")));
-    CHECK(oak2 == QDir(f.user.path()).filePath(QStringLiteral("oak-tree-2.ans")));
+    CHECK(QDir::cleanPath(oak) == QDir(f.user.path()).filePath(QStringLiteral("oak-tree.ans")));
+    CHECK(QDir::cleanPath(oak2) == QDir(f.user.path()).filePath(QStringLiteral("oak-tree-2.ans")));
     // The same name again is the one that asks to be replaced.
     bool exists = false;
     CHECK(f.w.libraryPathFor(QStringLiteral("♥"), &exists) == heart);
@@ -481,6 +482,9 @@ TEST_CASE("an all-blank selection is not saved as a stamp") {
 }
 
 TEST_CASE("the dock reports links it skipped") {
+#ifdef _WIN32
+    SKIP("QFile::link makes .lnk shortcuts on Windows, not symbolic links");
+#endif
     Fixture f;
     QTemporaryDir shared;
     REQUIRE(QFile::link(shared.path(), QDir(f.user.path()).filePath(QStringLiteral("linked"))));
@@ -605,6 +609,9 @@ TEST_CASE("a stamp's icon is its 1x render, or that render averaged down, whatev
 }
 
 TEST_CASE("a drop naming something that isn't a regular file is refused at once") {
+#ifdef _WIN32
+    SKIP("no FIFOs or POSIX file modes on Windows");
+#else
     Fixture f;
     QTemporaryDir dir;
     const QString fifo = dir.filePath(QStringLiteral("pipe.ans"));
@@ -616,9 +623,13 @@ TEST_CASE("a drop naming something that isn't a regular file is refused at once"
     mime.setData(QString::fromLatin1(kStampMimeType), fifo.toUtf8());
     CHECK(drop(f.w.canvasView(), &mime, {2, 2}));
     CHECK_FALSE(f.w.selectTool()->floating());
+#endif
 }
 
 TEST_CASE("the dock reports a folder it can't read") {
+#ifdef _WIN32
+    SKIP("no FIFOs or POSIX file modes on Windows");
+#else
     if (::geteuid() == 0)
         SKIP("root reads every folder");
     Fixture f;
@@ -629,9 +640,13 @@ TEST_CASE("the dock reports a folder it can't read") {
     QFile::setPermissions(locked, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
     CHECK(f.dock->problemLabel()->text() == QStringLiteral("1 file(s) skipped"));
     CHECK(f.dock->problemLabel()->toolTip().contains(QStringLiteral("folder can't be read")));
+#endif
 }
 
 TEST_CASE("Save to Library refuses a library folder it can't list") {
+#ifdef _WIN32
+    SKIP("no FIFOs or POSIX file modes on Windows");
+#else
     if (::geteuid() == 0)
         SKIP("root lists every folder");
     // The Codex P1 repro: Oak Tree saved, the folder set to 0300, then a
@@ -654,6 +669,7 @@ TEST_CASE("Save to Library refuses a library folder it can't list") {
     CHECK(shown.isEmpty());
     CHECK(shownError.contains(QStringLiteral("can't be listed")));
     CHECK(library::readStamp(user / "oak-tree.ans").name == "Oak Tree");
+#endif
 }
 
 TEST_CASE("stamps whose file names aren't UTF-8 are told apart") {
@@ -731,6 +747,8 @@ TEST_CASE("a stamp replaced under an upper-case extension stays in the dock") {
     REQUIRE(!f.w.saveSelectionToLibrary(QStringLiteral("Oak Tree"), QStringLiteral("test"), {}, &error).isEmpty());
     const fs::path user = fspath(f.user.path());
     fs::rename(user / "oak-tree.ans", user / "oak-tree.ANS");
+    if (!bwtest::caseRenamed(user / "oak-tree.ANS"))
+        SKIP("this file system keeps a file's old case through a rename");
     f.dock->rescan();
     REQUIRE(f.dock->shownNames().contains(QStringLiteral("Oak Tree")));
     write(f.w, 0, 0, QStringLiteral("cde"));

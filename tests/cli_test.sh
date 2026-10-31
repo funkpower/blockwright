@@ -67,18 +67,21 @@ expect "directory" 1 'dir\.ans: is a directory' -- "$cli" info "$tmp/dir.ans"
 expect "unwritable output" 1 'no/such/dir/out\.ans' -- "$cli" convert "$piece" "$tmp/no/such/dir/out.ans"
 # A write that fails partway (the file size limit stops it) leaves no partial
 # output: no new file, an existing one untouched, and no temporary file.
-small() { (trap '' XFSZ; ulimit -f 1; "$@"); }  # 1 KiB limit; tux.ans is 2 KiB
+# (Windows has no file size limit to set.)
 fsz=$tmp/fsz && mkdir -p "$fsz"
-expect "short write fails" 1 'fsz/fresh\.ans: write failed: File too large' -- small "$cli" convert "$piece" "$fsz/fresh.ans"
-if [[ -e $fsz/fresh.ans ]]; then bad "short write left a partial file"; else ok "short write leaves no file"; fi
-printf 'old contents\n' > "$fsz/existing.ans"
-expect "short write over a file fails" 1 'existing\.ans' -- small "$cli" convert "$piece" "$fsz/existing.ans"
-if [[ $(<"$fsz/existing.ans") == "old contents" ]]; then ok "short write leaves the existing file"; else bad "short write changed the existing file"; fi
-cp "$piece" "$fsz/inplace.ans"
-expect "short in-place convert fails" 1 'inplace\.ans' -- small "$cli" convert "$fsz/inplace.ans" "$fsz/inplace.ans"
-if cmp -s "$piece" "$fsz/inplace.ans"; then ok "short in-place convert leaves the source"; else bad "short in-place convert damaged the source"; fi
-left=$(ls -A "$fsz" | grep -vxE 'existing\.ans|inplace\.ans')
-if [[ -z $left ]]; then ok "short writes leave no temporary file"; else bad "short writes left: $left"; fi
+if [[ -z ${BW_CLI_WINDOWS:-} ]]; then
+  small() { (trap '' XFSZ; ulimit -f 1; "$@"); }  # 1 KiB limit; tux.ans is 2 KiB
+  expect "short write fails" 1 'fsz/fresh\.ans: write failed: File too large' -- small "$cli" convert "$piece" "$fsz/fresh.ans"
+  if [[ -e $fsz/fresh.ans ]]; then bad "short write left a partial file"; else ok "short write leaves no file"; fi
+  printf 'old contents\n' > "$fsz/existing.ans"
+  expect "short write over a file fails" 1 'existing\.ans' -- small "$cli" convert "$piece" "$fsz/existing.ans"
+  if [[ $(<"$fsz/existing.ans") == "old contents" ]]; then ok "short write leaves the existing file"; else bad "short write changed the existing file"; fi
+  cp "$piece" "$fsz/inplace.ans"
+  expect "short in-place convert fails" 1 'inplace\.ans' -- small "$cli" convert "$fsz/inplace.ans" "$fsz/inplace.ans"
+  if cmp -s "$piece" "$fsz/inplace.ans"; then ok "short in-place convert leaves the source"; else bad "short in-place convert damaged the source"; fi
+  left=$(ls -A "$fsz" | grep -vxE 'existing\.ans|inplace\.ans')
+  if [[ -z $left ]]; then ok "short writes leave no temporary file"; else bad "short writes left: $left"; fi
+fi
 cp "$piece" "$fsz/ok.ans"
 expect "in-place convert" 0 '^$' -- "$cli" convert "$fsz/ok.ans" "$fsz/ok.ans"
 if cmp -s "$piece" "$fsz/ok.ans"; then ok "in-place convert output is byte-identical"; else bad "in-place convert output differs"; fi
@@ -476,11 +479,14 @@ expect "export unwritable output" 1 'no/such/dir/out\.txt' -- "$cli" export --ir
 
 # Out of memory is a one-line error and exit 1, not std::terminate: a 4 GiB
 # sparse input read under a 512 MiB address-space limit
-truncate -s 4G "$tmp/huge.ans"
-expect "out of memory" 1 '^blockwright-cli: out of memory$' -- bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans"
-out=$(bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans" 2>&1)
-if [[ $(wc -l <<<"$out") -eq 1 ]]; then ok "out of memory prints one line"; else bad "out of memory printed: $out"; fi
-rm -f "$tmp/huge.ans"
+# (ulimit -v would limit wine, not a Windows program's memory.)
+if [[ -z ${BW_CLI_WINDOWS:-} ]]; then
+  truncate -s 4G "$tmp/huge.ans"
+  expect "out of memory" 1 '^blockwright-cli: out of memory$' -- bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans"
+  out=$(bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans" 2>&1)
+  if [[ $(wc -l <<<"$out") -eq 1 ]]; then ok "out of memory prints one line"; else bad "out of memory printed: $out"; fi
+  rm -f "$tmp/huge.ans"
+fi
 
 expect "no command" 2 'no command' -- "$cli"
 expect "unknown command" 2 "unknown command 'frobnicate'" -- "$cli" frobnicate
@@ -491,7 +497,7 @@ expect "unknown option" 2 'Unknown option' -- "$cli" --bogus
 # library list / check
 lib=$data/library
 expect "library check: a good library" 0 '^2 stamp\(s\), 0 text style\(s\), 0 problem\(s\)$' -- "$cli" library check "$lib"
-expect "library list: tab-separated" 0 $'^stamp\tsky\tSmall star\t5x3\t16\t-\tstar,night\t.*/sky/small-star\\.ans$' -- "$cli" library list "$lib"
+expect "library list: tab-separated" 0 $'^stamp\tsky\tSmall star\t5x3\t16\t-\tstar,night\t.*[/\\\\]sky[/\\\\]small-star\\.ans$' -- "$cli" library list "$lib"
 expect "library list: sorted by path" 0 $'^stamp\tfigures\tTux\t30x17\t80\t-\tpenguin,linux\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$lib"
 expect "library list: no dir lists the bundled and user libraries" 0 $'^stamp\tsky\tSmall star\t' -- env BLOCKWRIGHT_BUNDLED_LIBRARY="$lib" BLOCKWRIGHT_USER_LIBRARY="$tmp/no-user-lib" "$cli" library list
 expect "library check: missing dir" 1 'nope: not a directory' -- "$cli" library check "$tmp/nope"
@@ -518,13 +524,19 @@ sed 's/"night"/"night,day"/' "$lib/sky/small-star.json" > "$bl/comma.json"; cp "
   printf '%022d' 0 | tr 0 '\0'
 } > "$bl/blank.ans"
 printf '{"category": "x", "tags": [], "ircBytes": 0}\n' > "$bl/blank.json"
-mkdir -p "$tmp/shared"; ln -s "$tmp/shared" "$bl/linked"; ln -s "$bl/gone.ans" "$bl/dangling.ans"
+problems=7
+if [[ -z ${BW_CLI_WINDOWS:-} ]]; then  # (a Windows program sees no Linux link)
+  mkdir -p "$tmp/shared"; ln -s "$tmp/shared" "$bl/linked"; ln -s "$bl/gone.ans" "$bl/dangling.ans"
+  problems=9
+fi
 expect "library check: a comma in a tag" 1 'comma\.ans: a sidecar tag holds a comma' -- "$cli" library check "$bl"
 expect "library check: an all-blank stamp" 1 'blank\.ans: \.ans has no drawn cell' -- "$cli" library check "$bl"
-expect "library check: a linked folder" 1 'linked: symbolic link to a folder, not followed' -- "$cli" library check "$bl"
-expect "library check: a broken link" 1 'dangling\.ans: broken symbolic link, skipped' -- "$cli" library check "$bl"
-expect "library list: a linked folder is a warning" 0 'warning: .*linked: symbolic link to a folder' -- "$cli" library list "$bl"
-expect "library check: counts" 1 '^0 stamp\(s\), 0 text style\(s\), 9 problem\(s\)$' -- "$cli" library check "$bl"
+if [[ $problems == 9 ]]; then
+  expect "library check: a linked folder" 1 'linked: symbolic link to a folder, not followed' -- "$cli" library check "$bl"
+  expect "library check: a broken link" 1 'dangling\.ans: broken symbolic link, skipped' -- "$cli" library check "$bl"
+  expect "library list: a linked folder is a warning" 0 'warning: .*linked: symbolic link to a folder' -- "$cli" library list "$bl"
+fi
+expect "library check: counts" 1 "^0 stamp\\(s\\), 0 text style\\(s\\), $problems problem\\(s\\)\$" -- "$cli" library check "$bl"
 expect "library list: problems are warnings" 0 'warning: .*orphan\.json: sidecar with no orphan\.ans' -- "$cli" library list "$bl"
 b2=$tmp/badlib2; mkdir -p "$b2"
 cp "$lib/sky/small-star.ans" "$b2/dup.ans"
@@ -552,7 +564,7 @@ cat > "$sl/text/hot.style.json" <<'JSON'
  "effects": [{"kind": "fill", "enabled": true, "colour": 7, "mode": "rows", "ramp": "fire"}]}
 JSON
 expect "library check: text styles" 0 '^1 stamp\(s\), 2 text style\(s\), 0 problem\(s\)$' -- "$cli" library check "$sl"
-expect "library list: a text style's kind and sample" 0 $'^text-style\tclassic\tGold\t[0-9]+x[0-9]+\t[0-9]+\t-\tgold,3d\t.*/text/gold\\.style\\.json$' -- "$cli" library list "$sl"
+expect "library list: a text style's kind and sample" 0 $'^text-style\tclassic\tGold\t[0-9]+x[0-9]+\t[0-9]+\t-\tgold,3d\t.*[/\\\\]text[/\\\\]gold\\.style\\.json$' -- "$cli" library list "$sl"
 expect "library list: a text style that needs iCE colours" 0 $'^text-style\tclassic\tHot\t[0-9]+x[0-9]+\t[0-9]+\tice\tfire\t' -- "$cli" library list "$sl"
 expect "library list: stamps first" 0 $'^stamp\tsky\tSmall star\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$sl"
 s2=$tmp/stylelib2; mkdir -p "$s2"

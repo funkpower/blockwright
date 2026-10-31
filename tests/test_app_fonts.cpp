@@ -123,7 +123,7 @@ TEST_CASE("Preferences lists the fonts folder's fonts and the files it couldn't 
     CHECK(d.fontsSummary()->text() == QStringLiteral("4 TheDraw fonts; 1 file not read"));
     const QString list = d.fontsList()->toPlainText();
     CHECK(list.contains(QStringLiteral("BW Colour\tbw-all.tdf")));
-    CHECK(list.contains(QStringLiteral("BW Block\tmore/bw-block.tdf")));
+    CHECK(list.contains(QStringLiteral("BW Block\t") + QDir::toNativeSeparators(QStringLiteral("more/bw-block.tdf"))));
     CHECK(list.contains(QStringLiteral("Not read: broken.tdf: ")));
 
     d.clearButton()->click();

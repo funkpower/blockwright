@@ -1,7 +1,7 @@
 # bw_add_app_guard_test() adds app_tests_all_guarded: every test binary built on
 # the app (linked to blockwright_app) in this directory or one below it is in
 # BW_APP_TEST_BINARIES, so app_tests_leave_profile_alone runs it, and runs under
-# CROSSCOMPILING_EMULATOR ${BW_APP_TEST_ENV}, the scratch profile. A binary
+# CROSSCOMPILING_EMULATOR ${BW_APP_TEST_RUNNER}, the scratch profile. A binary
 # that needs an X server can't run offscreen; its tests run it through
 # ${BW_APP_XCB_TEST_ENV} instead (xcb_test.sh), which runs it under an empty
 # profile of its own and fails the run that leaves anything in it, so that
@@ -27,7 +27,7 @@ function(_bw_add_app_guard_test guarded)
     if(libs AND "blockwright_app" IN_LIST libs)
       list(APPEND bw_app_linked ${t})
       get_target_property(emulator ${t} CROSSCOMPILING_EMULATOR)
-      if(emulator STREQUAL "${BW_APP_TEST_ENV}")
+      if(emulator STREQUAL "${BW_APP_TEST_RUNNER}")
         list(APPEND bw_app_profiled ${t})
       else()
         list(APPEND bw_app_xcb ${t})

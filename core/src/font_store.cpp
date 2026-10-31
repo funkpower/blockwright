@@ -1,5 +1,7 @@
 #include "blockwright/font_store.h"
 
+#include "blockwright/links.h"
+
 #include <QByteArray>
 #include <QCryptographicHash>
 
@@ -156,6 +158,10 @@ FontCatalogue scanFontsFolder(const std::filesystem::path& folder, const std::fu
             break;
         }
         std::error_code fileEc;
+        // a link to a folder is not walked into; std::filesystem would walk
+        // into a junction on Windows (links.h)
+        if (isLink(*it))
+            it.disable_recursion_pending();
         if (isTdfName(it->path()) && it->is_regular_file(fileEc))
             files.push_back(it->path());
     }

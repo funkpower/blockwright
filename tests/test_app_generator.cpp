@@ -68,6 +68,9 @@ bool waitFor(F done, int ms = 10000) {
 // The bars generator's files; with `sleep`, it sleeps that many seconds
 // before it draws, so a test can act while its run is in flight.
 std::map<std::string, std::string> barsFiles(int sleep = 0) {
+#ifdef _WIN32
+    SKIP("the bars generator is a shell script; test_generator_win.cpp runs generators on Windows");
+#endif
     const fs::path dir = bwtest::dataDir() / "generators" / "bars";
     std::string script = bwtest::readFile(dir / "gen.sh");
     if (sleep > 0)

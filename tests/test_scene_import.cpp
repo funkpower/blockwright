@@ -115,6 +115,9 @@ TEST_CASE("a scene layer's command names the scene, the layer and its key", "[sc
 }
 
 TEST_CASE("runCommand returns a program's stdout and refuses as run does", "[scene]") {
+#ifdef _WIN32
+    SKIP("runs sh and cat; test_generator_win.cpp runs programs on Windows");
+#endif
     CHECK(gen::runCommand({"cat"}, "hello", "echo") == "hello");
     // a new empty directory to run in
     CHECK(gen::runCommand({"sh", "-c", "ls -A | wc -l | tr -d ' '"}, {}, "ls") == "0\n");
@@ -218,7 +221,7 @@ TEST_CASE("a scene opens as one generator layer per scene layer", "[scene]") {
 TEST_CASE("a scene's imports write no bytecode beside it", "[scene]") {
     if (const std::string why = bwtest::sceneSkipReason(); !why.empty())
         SKIP(why);
-    ::unsetenv("PYTHONDONTWRITEBYTECODE");
+    qunsetenv("PYTHONDONTWRITEBYTECODE");
     const fs::path dir = lighthouse("bytecode");
     // the scene draws its beam from a module beside it, imported fresh
     writeFile(dir / "helper.py", "BEAM = '~fp~'\n");

@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QString>
+#include <QtGlobal>
 
 #include <cstdlib>
 #include <string>
@@ -21,7 +22,7 @@ inline std::string sceneSkipReason() {
     const QString dir = QStringLiteral(BW_ANSIDRAW_DIR);
     if (dir.isEmpty() || !QFileInfo(dir + QStringLiteral("/ansidraw.py")).isFile())
         return "no ansidraw.py in BW_ANSIDRAW_DIR (" BW_ANSIDRAW_DIR ")";
-    ::setenv("ANSIDRAW_DIR", BW_ANSIDRAW_DIR, 1);
+    qputenv("ANSIDRAW_DIR", BW_ANSIDRAW_DIR);
     return {};
 }
 

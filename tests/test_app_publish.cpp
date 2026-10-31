@@ -91,11 +91,20 @@ struct Fixture {
 // it fails without running anything; with `forward` it passes only that
 // many bytes of its input to the remote command, as a dropped connection
 // would, then exits with `exitCode` (or the command's status for -1).
+// A file in the library as the core names it, with the system's separator
+// before the file's name.
+QString inLibrary(const QString& lib, const char* name) {
+    return QString::fromStdString((std::filesystem::path(lib.toStdString()) / name).string());
+}
+
 struct FakeSsh {
     QTemporaryDir dir;
     QString script, log, home, run, fifo;
 
     explicit FakeSsh(int exitCode = 0, int forward = -1) {
+#ifdef _WIN32
+        SKIP("the stand-in ssh is a shell script");
+#endif
         REQUIRE(dir.isValid());
         script = dir.filePath(QStringLiteral("ssh"));
         log = dir.filePath(QStringLiteral("args"));
@@ -123,7 +132,13 @@ struct FakeSsh {
         chmod(QFile::encodeName(bin + QStringLiteral("/pgrep")).constData(), 0755);
     }
     QString wip(const QString& name) const { return home + QStringLiteral("/ascii/wip/") + name; }
-    void makeFifo() const { REQUIRE(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0); }
+    void makeFifo() const {
+#ifdef _WIN32
+        SKIP("no FIFOs on Windows");
+#else
+        REQUIRE(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0);
+#endif
+    }
 };
 
 // Moves the piece's first row one cell right and leaves it floating, not yet
@@ -259,7 +274,7 @@ TEST_CASE("Publish to Library through its dialogs asks before writing") {
 
     run(QMessageBox::No);
     CHECK(question.contains(QStringLiteral("Publish funkpower/neon-skull, tagged funkpower, lrh")));
-    CHECK(question.contains(lib + QStringLiteral("/.tags.json")));
+    CHECK(question.contains(inLibrary(lib, ".tags.json")));
     CHECK_FALSE(QFile::exists(lib + QStringLiteral("/funkpower/neon-skull.ans")));
 
     run(QMessageBox::Yes);
@@ -298,8 +313,8 @@ TEST_CASE("Publish to Library through its dialogs refuses a library that changed
     CHECK(confirmed);
     REQUIRE(warned);
     INFO(warning.toStdString());
-    CHECK(warning.startsWith(QStringLiteral("Could not publish:\n") + lib +
-                             QStringLiteral("/.tags.json changed after the publish was worked out")));
+    CHECK(warning.startsWith(QStringLiteral("Could not publish:\n") + inLibrary(lib, ".tags.json") +
+                             QStringLiteral(" changed after the publish was worked out")));
     CHECK(readAll(lib + QStringLiteral("/.tags.json")) == other);
     CHECK_FALSE(QFile::exists(lib + QStringLiteral("/funkpower/neon-skull.ans")));
     CHECK_FALSE(QFile::exists(lib + QStringLiteral("/.dates.json")));

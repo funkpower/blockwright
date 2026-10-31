@@ -3,6 +3,7 @@
 
 #include "blockwright/composite.h"
 #include "blockwright/cp437.h"
+#include "blockwright/links.h"
 #include "blockwright/style_draw.h"
 #include "blockwright/text.h"
 
@@ -43,6 +44,9 @@
 #include <unistd.h>
 #else
 #define BW_PROJECT_POSIX 0
+#endif
+#ifdef _WIN32
+#include <windows.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -918,6 +922,17 @@ std::pair<int, int> parseVersion(const std::string& v) {
 
 // ---- files ----
 
+// `path` as zip_open takes it: UTF-8 on Windows, the path's own bytes
+// elsewhere.
+std::string zipName(const fs::path& path) {
+#ifdef _WIN32
+    const std::u8string u = path.u8string();
+    return std::string(u.begin(), u.end());
+#else
+    return path.native();
+#endif
+}
+
 #if BW_PROJECT_POSIX
 // A descriptor, closed when this goes unless it is let go. Every one the
 // save and the read open is taken into one as the call returns it, before
@@ -969,6 +984,72 @@ std::string readOpened(Descriptor fd, const fs::path& p, std::size_t size) {
 }
 #endif
 
+#ifdef _WIN32
+// A handle, closed when this goes.
+class FileHandle {
+public:
+    explicit FileHandle(HANDLE h) noexcept : h_(h) {}
+    FileHandle(const FileHandle&) = delete;
+    FileHandle& operator=(const FileHandle&) = delete;
+    ~FileHandle() {
+        if (h_ != INVALID_HANDLE_VALUE)
+            ::CloseHandle(h_);
+    }
+    HANDLE get() const noexcept { return h_; }
+
+private:
+    HANDLE h_;
+};
+
+// What Windows says about the error `code`.
+std::string windowsError(DWORD code) {
+    wchar_t* text = nullptr;
+    const DWORD n = ::FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                         FORMAT_MESSAGE_IGNORE_INSERTS,
+                                     nullptr, code, 0, reinterpret_cast<wchar_t*>(&text), 0, nullptr);
+    const QString s = n ? QString::fromWCharArray(text, qsizetype(n)).trimmed() : QStringLiteral("error %1").arg(code);
+    if (text)
+        ::LocalFree(text);
+    return s.toStdString();
+}
+
+// Opens `p` to read, sharing it as a POSIX open would; with `reparse`, the
+// reparse point (a symbolic link, a junction) at `p` itself rather than
+// what it leads to.
+HANDLE openToRead(const fs::path& p, bool reparse) {
+    return ::CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN | (reparse ? FILE_FLAG_OPEN_REPARSE_POINT : 0),
+                         nullptr);
+}
+
+// Reads the `size` bytes of `p`, opened as `h`, if it is a plain file of
+// that size.
+std::string readOpened(const FileHandle& h, const fs::path& p, std::size_t size) {
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (::GetFileType(h.get()) != FILE_TYPE_DISK || !::GetFileInformationByHandle(h.get(), &info) ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE)))
+        fail(p.string() + " is not a file");
+    if ((std::uint64_t(info.nFileSizeHigh) << 32 | info.nFileSizeLow) != size)
+        fail(p.string() + " changed while it was read");
+    std::string out(size, '\0');
+    if (testing::directoryStep)
+        testing::directoryStep("reading", p);
+    std::size_t got = 0;
+    while (got < size) {
+        DWORD n = 0;
+        const DWORD want = DWORD(std::min<std::size_t>(size - got, std::size_t(1) << 30));
+        if (!::ReadFile(h.get(), out.data() + got, want, &n, nullptr) || n == 0)
+            break;
+        got += n;
+    }
+    char extra;
+    DWORD more = 0;
+    if (got != size || !::ReadFile(h.get(), &extra, 1, &more, nullptr) || more != 0)
+        fail(p.string() + " changed while it was read");
+    return out;
+}
+#endif
+
 // Reads the `size` bytes of the file a directory walk found at `p`. What is
 // there now may not be what the walk saw, so it is opened without following
 // a link or waiting on a FIFO, and read only if it is a plain file of that
@@ -979,6 +1060,31 @@ std::string readWhole(const fs::path& p, std::size_t size) {
     if (fd.get() < 0)
         fail(errno == ELOOP ? p.string() + " is a symbolic link" : "can't read " + p.string() + ": " + std::strerror(errno));
     return readOpened(std::move(fd), p, size);
+#elif defined(_WIN32)
+    // Windows: the reparse point itself is opened, never what it leads to. A
+    // name surrogate (a symbolic link, a junction) is refused as a link; any
+    // other reparse point is a file a filter driver stands in front of (a
+    // cloud placeholder, a deduplicated file), opened again through the
+    // driver and read only if that open reached the same file.
+    const FileHandle at(openToRead(p, true));
+    if (at.get() == INVALID_HANDLE_VALUE)
+        fail("can't read " + p.string() + ": " + windowsError(::GetLastError()));
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (!::GetFileInformationByHandleEx(at.get(), FileAttributeTagInfo, &tag, sizeof tag))
+        fail("can't read " + p.string() + ": " + windowsError(::GetLastError()));
+    if (!(tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+        return readOpened(at, p, size);
+    if (IsReparseTagNameSurrogate(tag.ReparseTag))
+        fail(p.string() + " is a symbolic link");
+    const FileHandle through(openToRead(p, false));
+    BY_HANDLE_FILE_INFORMATION a{}, b{};
+    if (through.get() == INVALID_HANDLE_VALUE)
+        fail("can't read " + p.string() + ": " + windowsError(::GetLastError()));
+    if (!::GetFileInformationByHandle(at.get(), &a) || !::GetFileInformationByHandle(through.get(), &b) ||
+        a.dwVolumeSerialNumber != b.dwVolumeSerialNumber || a.nFileIndexHigh != b.nFileIndexHigh ||
+        a.nFileIndexLow != b.nFileIndexLow)
+        fail(p.string() + " changed while it was read");
+    return readOpened(through, p, size);
 #else
     std::string out(size, '\0');
     std::ifstream in(p, std::ios::binary);
@@ -1068,7 +1174,7 @@ std::string zipErrorText(int code) {
 
 Entries readZip(const fs::path& path) {
     int err = 0;
-    zip_t* z = zip_open(path.c_str(), ZIP_RDONLY | ZIP_CHECKCONS, &err);
+    zip_t* z = zip_open(zipName(path).c_str(), ZIP_RDONLY | ZIP_CHECKCONS, &err);
     if (!z)
         fail(path.string() + " is not a project zip: " + zipErrorText(err));
     struct Closer {
@@ -1136,7 +1242,7 @@ Entries readDirectory(const fs::path& root) {
             it.disable_recursion_pending();
             continue;
         }
-        if (e.is_symlink(ec))
+        if (fs::is_symlink(linkStatus(e, ec)))  // a junction too (links.h)
             fail(root.string() + ": " + name + " is a symbolic link");
         if (e.is_directory(ec))
             continue;
@@ -1155,9 +1261,30 @@ Entries readDirectory(const fs::path& root) {
     return out;
 }
 
+#ifdef _WIN32
+// The longest path, in UTF-16 units with its terminator, this process
+// opens: MAX_PATH, or about 32767 where long paths are on (the programs'
+// manifest asks for them; the system's LongPathsEnabled setting decides).
+std::size_t maxPathChars() {
+    if (testing::pathLimit)
+        return testing::pathLimit;
+    using Query = BOOLEAN(WINAPI*)();
+    static const std::size_t limit = [] {
+        const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+        const auto query =
+            ntdll ? reinterpret_cast<Query>(reinterpret_cast<void*>(::GetProcAddress(ntdll, "RtlAreLongPathsEnabled")))
+                  : nullptr;
+        return query && query() ? std::size_t(32767) : std::size_t(MAX_PATH);
+    }();
+    return limit;
+}
+#endif
+
 long processId() {
 #if BW_PROJECT_POSIX
     return long(::getpid());
+#elif defined(_WIN32)
+    return long(::GetCurrentProcessId());
 #else
     return 0;
 #endif
@@ -1225,8 +1352,9 @@ Kind kindAt(const Folder& in, const std::string& name) {
            : S_ISREG(st.st_mode) ? Kind::File
                                  : Kind::Other;
 #else
+    // a junction is a link here too (links.h)
     std::error_code ec;
-    const fs::file_status st = fs::symlink_status(in / name, ec);
+    const fs::file_status st = linkStatus(in / name, ec);
     return !fs::exists(st)           ? Kind::None
            : fs::is_symlink(st)      ? Kind::Link
            : fs::is_directory(st)    ? Kind::Directory
@@ -1458,6 +1586,15 @@ Renamed renameFresh(const Folder& in, const std::string& from, const std::string
     if (const std::error_code e = removeIn(in, from, false))
         return {e, bool(removeIn(in, to, false))};
     return {};
+#elif defined(_WIN32)
+    // MoveFileEx without MOVEFILE_REPLACE_EXISTING refuses, as one step,
+    // where anything is at `to`
+    if (::MoveFileExW((in / from).c_str(), (in / to).c_str(), 0))
+        return {};
+    const DWORD err = ::GetLastError();
+    if (err == ERROR_ALREADY_EXISTS || err == ERROR_FILE_EXISTS)
+        return {std::make_error_code(std::errc::file_exists)};
+    return {{int(err), std::system_category()}};
 #else
     if (kindAt(in, to) != Kind::None)
         return {std::make_error_code(std::errc::file_exists)};
@@ -1528,6 +1665,34 @@ void writeTemporary(const Folder& in, const std::string& name, const std::string
             err = errno;
         if (err)
             give_up(std::strerror(err));
+#elif defined(_WIN32)
+        // CREATE_NEW: made here, or refused where anything is at the name (a
+        // link too, which is never written through)
+        const HANDLE h = ::CreateFileW((in / tmp.name).c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                                       nullptr, CREATE_NEW,
+                                       FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            const DWORD err = ::GetLastError();
+            if ((err == ERROR_FILE_EXISTS || err == ERROR_ALREADY_EXISTS) && attempt < 100)
+                continue;
+            give_up(windowsError(err));
+        }
+        const FileHandle file(h);
+        tmp.created = true;
+        const char* data = bytes.data();
+        std::size_t left = bytes.size();
+        while (left) {
+            DWORD n = 0;
+            if (!::WriteFile(h, data, DWORD(std::min<std::size_t>(left, std::size_t(1) << 30)), &n, nullptr) || n == 0)
+                give_up(windowsError(::GetLastError()));
+            data += n;
+            left -= n;
+        }
+        BY_HANDLE_FILE_INFORMATION info{};
+        if (!::GetFileInformationByHandle(h, &info))
+            give_up(windowsError(::GetLastError()));
+        tmp.id = {std::uint64_t(info.dwVolumeSerialNumber),
+                  std::uint64_t(info.nFileIndexHigh) << 32 | info.nFileIndexLow};
 #else
         if (kindAt(in, tmp.name) != Kind::None) {
             if (attempt < 100)
@@ -1967,7 +2132,7 @@ void writeZip(const Project& project, const fs::path& path) {
     if (fs::is_directory(path, ec))
         fail(path.string() + " is a directory");
     int err = 0;
-    zip_t* z = zip_open(path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
+    zip_t* z = zip_open(zipName(path).c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
     if (!z)
         fail("can't write " + path.string() + ": " + zipErrorText(err));
     // discarded however the save leaves, unless it is closed
@@ -2012,9 +2177,18 @@ void writeDirectory(const Project& project, const fs::path& path) {
     const ProjectError unnameable("can't write " + path.string() +
                                   ": the save failed, and some of what it changed couldn't be put back as it was "
                                   "and couldn't be named (it ran out of memory)");
-#ifdef PATH_MAX
     // each file, and the temporary one beside it, as long a path as the
     // system opens
+#ifdef _WIN32
+    {
+        std::error_code ec;
+        const fs::path full = fs::absolute(path, ec);
+        const std::size_t limit = maxPathChars();
+        for (const auto& [name, bytes] : entries)
+            if ((full / fs::path(name)).native().size() + kTmpNameBytes >= limit)
+                fail("can't write " + (path / fs::path(name)).string() + ": the path is too long");
+    }
+#elif defined(PATH_MAX)
     for (const auto& [name, bytes] : entries)
         if ((path / fs::path(name)).native().size() + kTmpNameBytes >= PATH_MAX)
             fail("can't write " + (path / fs::path(name)).string() + ": the path is too long");

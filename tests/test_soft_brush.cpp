@@ -3,6 +3,7 @@
 // to 41 (PLAN §10, "Soft").
 
 #include "blockwright/ansi.h"
+#include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/form.h"
@@ -179,7 +180,7 @@ private:
 enum class Start { Flat, Gradient, Plateaus };
 
 Canvas startCanvas(Start kind, const Ramp& r, int w, int h, std::mt19937& rng) {
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int top = r.topRung();
     switch (kind) {
     case Start::Flat:
@@ -245,7 +246,7 @@ TEST_CASE("soft brush: dabs within four cells of each other, in one order and in
     // twice; 49 under round 7's guard, 46 under round 6's), 25 of them with
     // the dabs together.
     std::mt19937 rng(2026102401);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     int differ = 0, close = 0, painted = 0;
     std::string first, wrong;
     for (int k = 0; k < 300; ++k) {
@@ -342,7 +343,7 @@ TEST_CASE("soft brush: dabs of one size within four cells of each other, in a ra
     // guard, 52 under round 6's). Both orders add no finding and take no paint back
     // (CheckedSoft).
     std::mt19937 rng(2026102501);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     int differ = 0, painted = 0;
     std::string first, wrong;
     for (int k = 0; k < 300; ++k) {
@@ -376,7 +377,7 @@ TEST_CASE("soft brush: dabs of one size within four cells of each other, in a ra
             return st.preview();
         };
         std::vector<Dab> shuffled = dabs;
-        std::shuffle(shuffled.begin(), shuffled.end(), rng);
+        bwtest::shuffle(shuffled.begin(), shuffled.end(), rng);
         const Canvas a = play(dabs), b = play(shuffled);
         painted += !(a == start);
         if (a == b)
@@ -471,7 +472,7 @@ TEST_CASE("soft brush: mirror strokes on symmetric canvases stay symmetric", "[s
     // Mirror X, Y and both, about a cell (odd sides) and between two (even
     // sides), with dabs joined and not.
     std::mt19937 rng(2026102502);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     constexpr SymmetryMode kModes[3] = {SymmetryMode::MirrorX, SymmetryMode::MirrorY, SymmetryMode::MirrorXY};
     int failed = 0, painted = 0;
     std::string first;
@@ -617,7 +618,7 @@ struct Tally {
 // nothing, strength and size, under no selection, a rectangle or a disc.
 Tally bigStrokes(Start kind, int strokes, unsigned seed) {
     std::mt19937 rng(seed);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int w = 160, h = 60;
     Tally t;
     for (int k = 0; k < strokes; ++k) {
@@ -707,7 +708,7 @@ TEST_CASE("soft strokes on a canvas past the lint window add no finding, dab by 
 TEST_CASE("soft brush on a canvas past the lint window: re-shading near the dab equals re-shading the whole stroke",
           "[shading][soft]") {
     std::mt19937 rng(2026102414);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int w = 160, h = 60;
     int differ = 0, painted = 0;
     std::string first;
@@ -876,7 +877,7 @@ TEST_CASE("soft brush: random scrubs and replays take no paint off", "[shading][
     // changes nothing, and no dab leaves a cell further back than an
     // earlier one had it (CheckedSoft).
     std::mt19937 rng(2026102301);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     int differ = 0, failed = 0, painted = 0;
     std::string first;
     for (int k = 0; k < 120; ++k) {
@@ -908,7 +909,7 @@ TEST_CASE("soft brush: random scrubs and replays take no paint off", "[shading][
         const Canvas once = st.preview();
         if (replay) {
             std::vector<Dab> again = dabs;
-            std::shuffle(again.begin(), again.end(), rng);
+            bwtest::shuffle(again.begin(), again.end(), rng);
             for (Dab& d : again)
                 d.pressure *= 0.25 * pick(1, 4);
             for (const Dab& d : again)
@@ -1026,7 +1027,7 @@ TEST_CASE("soft brush: Codex round 6, finding 2; Claude round 6, N3: a dab's wor
 TEST_CASE("soft brush timings", "[.timing]") {
     const Ramp r = steel();
     std::mt19937 rng(2026102504);
-    auto pick = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(rng); };
+    auto pick = [&](int a, int b) { return bwtest::uniformInt(rng, a, b); };
     for (const auto& [w, h] : {std::pair{160, 100}, std::pair{400, 160}}) {
         std::vector<double> dabMs, lintMs;
         for (int i = 0; i < 12; ++i) {
@@ -1260,7 +1261,7 @@ TEST_CASE("shading brush timings", "[.timing]") {
                 }
             }
             std::mt19937 rng(2026102508);
-            auto pick = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(rng); };
+            auto pick = [&](int a, int b) { return bwtest::uniformInt(rng, a, b); };
             for (int i = 0; i < 12; ++i) {
                 const Canvas start = startCanvas(i % 2 ? Start::Plateaus : Start::Gradient, r, w, h, rng);
                 BrushSettings s;

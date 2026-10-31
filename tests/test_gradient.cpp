@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -259,7 +260,7 @@ Gradient aimed(GradientShape shape, int x0, int y0, int deg, double len, int fro
     Gradient g;
     g.shape = shape;
     g.x0 = x0, g.y0 = y0;
-    const double a = deg * M_PI / 180.0;
+    const double a = deg * std::numbers::pi / 180.0;
     g.x1 = x0 + int(std::lround(len * std::cos(a)));
     g.y1 = y0 + int(std::lround(len * std::sin(a) / 2.0));
     g.fromRung = from, g.toRung = to;

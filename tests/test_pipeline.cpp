@@ -3,6 +3,7 @@
 // ssh command. The command is run for real by test_app_publish.cpp, and here
 // under each shell installed for a connection that drops.
 
+#include "fs_quirks.h"
 #include "util.h"
 
 #include "blockwright/ansi.h"
@@ -19,11 +20,14 @@
 #include <fstream>
 #include <string>
 #include <string_view>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+
 extern char** environ;
+#endif
 
 using namespace bw;
 using namespace bw::pipeline;
@@ -339,6 +343,8 @@ TEST_CASE("Publish to Library refuses what it can't publish cleanly", "[pipeline
         writeFile(lib.root / "sentinel", "keep me");
         fs::path temp = plan.ansPath;
         temp += ".bw-" + std::to_string(::getpid()) + "-0.tmp";
+        if (!bwtest::symlinksWork())
+            SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
         fs::create_symlink(lib.root / "sentinel", temp);
         publish(plan);
         CHECK(bwtest::readFile(lib.root / "sentinel") == "keep me");
@@ -347,6 +353,8 @@ TEST_CASE("Publish to Library refuses what it can't publish cleanly", "[pipeline
     }
     SECTION("a link in place of a file") {
         const PublishPlan plan = planPublish(request(lib));
+        if (!bwtest::symlinksWork())
+            SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
         fs::create_symlink(lib.root / "elsewhere.txt", plan.txtPath);
         CHECK_THROWS_AS(publish(plan), PipelineError);
         CHECK_FALSE(fs::exists(lib.root / "elsewhere.txt"));
@@ -484,6 +492,8 @@ TEST_CASE("Send to WeeChat's ssh arguments never prompt and carry one command", 
     CHECK_THROWS_AS(sshArguments({"h", "~/w"}, "a", 0, 1), PipelineError);
 }
 
+// Send to WeeChat runs its command in a POSIX sh on the far side.
+#ifndef _WIN32
 namespace {
 
 // `name` as found on PATH, or empty.
@@ -580,3 +590,4 @@ TEST_CASE("Send to WeeChat's command removes its temporary file when the connect
     CHECK(ran > 0);
     fs::remove_all(root);
 }
+#endif

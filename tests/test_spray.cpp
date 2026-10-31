@@ -2,6 +2,7 @@
 // field over the canvas that the brush uncovers.
 
 #include "blockwright/ansi.h"
+#include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/spray.h"
 #include "blockwright/cp437.h"
@@ -94,7 +95,7 @@ std::string joined(const std::vector<std::string>& v) {
 // A start for the lint sweeps: flat, a gradient one of four ways at one to
 // five cells a rung, or a gradient with cells nudged a rung at random.
 Canvas startCanvas(int kind, const Ramp& r, int w, int h, std::mt19937& rng) {
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int top = r.topRung();
     if (kind == 0) {
         const int v = pick(0, top);
@@ -387,7 +388,7 @@ TEST_CASE("on a flat canvas a mirrored spray paints the exact mirror image", "[s
 
 TEST_CASE("stars, haze and smoke add no ladder lint finding", "[spray][brush][lint]") {
     std::mt19937 rng(1234);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     int painted = 0, runs = 0;
     for (const char* name : {"steel", "fire", "ice", "toxic", "sunset"}) {
         const Ramp r = *findRamp(name);
@@ -477,7 +478,7 @@ TEST_CASE("a second stroke the same as the first moves only held cells, toward t
     // its own start, so a repeat can take a cell the first had to hold
     // back).
     std::mt19937 rng(77);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     int changed = 0, repeated = 0, runs = 0;
     for (const char* name : {"steel", "fire", "ice"})
         for (const SymmetryMode mode : {SymmetryMode::None, SymmetryMode::MirrorX, SymmetryMode::MirrorXY})

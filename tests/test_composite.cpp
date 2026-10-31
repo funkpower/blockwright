@@ -3,6 +3,7 @@
 // composites with no specks) and timings.
 
 #include "blockwright/composite.h"
+#include "portable_random.h"
 #include "blockwright/ansi.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/lint.h"
@@ -52,7 +53,7 @@ LayerStack stackOf(int w, int h, std::vector<Layer> layers) {
 struct Rng {
     std::mt19937 g;
     explicit Rng(unsigned seed) : g(seed) {}
-    int range(int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(g); }
+    int range(int lo, int hi) { return bwtest::uniformInt(g, lo, hi); }
     bool chance(int percent) { return range(0, 99) < percent; }
 };
 

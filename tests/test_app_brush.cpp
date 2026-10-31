@@ -4,6 +4,7 @@
 // Pixels layer, and a stylus's pressure through QTabletEvent.
 
 #include "tool_options.h"
+#include "portable_random.h"
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
@@ -2130,8 +2131,8 @@ TEST_CASE("mirror mode: random stylus strokes leave a mirror-symmetric canvas") 
         act(w, QStringLiteral("mirrorMode"))->trigger();
         REQUIRE(v->mirror());
         std::mt19937 rng(20261022);
-        const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
-        const auto pressure = [&] { return std::uniform_real_distribution<double>(0.02, 1.0)(rng); };
+        const auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
+        const auto pressure = [&] { return bwtest::uniformReal(rng, 0.02, 1.0); };
         for (int stroke = 0; stroke < 60; ++stroke) {
             v->setBrushSettings(BrushSettings{pick(1, 5), pick(0, 1) ? Tip::Round : Tip::Square, pick(10, 100) / 100.0,
                                               pick(0, 1) ? PressureTo::Strength : PressureTo::Size});

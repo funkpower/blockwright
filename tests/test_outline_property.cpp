@@ -3,6 +3,7 @@
 // every one of them.
 
 #include "blockwright/ansi.h"
+#include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/detail.h"
 #include "blockwright/lint.h"
@@ -31,8 +32,8 @@ using Point = std::pair<int, int>;
 struct Rng {
     std::mt19937 g;
     explicit Rng(unsigned seed) : g(seed) {}
-    int uni(int a, int b) { return std::uniform_int_distribution<int>(a, b)(g); }
-    bool chance(double p) { return std::uniform_real_distribution<double>(0, 1)(g) < p; }
+    int uni(int a, int b) { return bwtest::uniformInt(g, a, b); }
+    bool chance(double p) { return bwtest::uniformReal(g, 0, 1) < p; }
 };
 
 enum class Form { Rect, Ellipse, LShape, Blob, Stair45, StairSteep, Count };
@@ -699,7 +700,7 @@ TEST_CASE("an outline stroke's line depends only on the cells it covers", "[deta
             if (std::none_of(p.dabs.begin(), p.dabs.end(), [](const auto& d) { return d.second; }))
                 for (int s = 0; s < 3; ++s) {
                     auto order = p.dabs;
-                    std::shuffle(order.begin(), order.end(), rng.g);
+                    bwtest::shuffle(order.begin(), order.end(), rng.g);
                     others.push_back(order);
                 }
             bool same = true;

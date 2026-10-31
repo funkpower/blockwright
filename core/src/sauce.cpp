@@ -47,7 +47,11 @@ Sauce Sauce::fresh(int width, int height) {
     std::time_t now = std::time(nullptr);
     char buf[9] = {};
     std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &now);
+#else
     localtime_r(&now, &tm);
+#endif
     std::strftime(buf, sizeof buf, "%Y%m%d", &tm);
     s.date = buf;
     s.tinfo1 = static_cast<std::uint16_t>(width);

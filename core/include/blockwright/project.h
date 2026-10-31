@@ -341,9 +341,10 @@ namespace testing {
 // Called at each step below with the path it is about. Tests only.
 // - "read", every platform: a directory read has taken the size of the file
 //   `at` from its walk and is about to open it.
-// - "reading", POSIX systems only: the read has opened `at`, found it a
-//   plain file of the size the walk saw, and is about to read it. The other
-//   systems' reader checks the size only as it reads, and has no such step.
+// - "reading", POSIX systems and Windows: the read has opened `at`, found it
+//   a plain file of the size the walk saw, and is about to read it. The
+//   other systems' reader checks the size only as it reads, and has no such
+//   step.
 // - "wrote", every platform: inside a directory save's write of the file
 //   `at`, straight after the rename that puts it in place, before the save
 //   looks at `at` again.
@@ -368,6 +369,9 @@ inline std::function<void(std::string_view step, const std::filesystem::path& at
 // - "openat": creating the temporary file `at`, the save's or, on a
 //   failure, the one holding a replaced file's old bytes.
 inline std::function<int(std::string_view call, const std::filesystem::path& at)> systemCall;
+// Windows only: the longest path, in UTF-16 units with its terminator, a
+// directory save writes; 0 for the system's own. Tests only.
+inline std::size_t pathLimit = 0;
 } // namespace testing
 
 } // namespace bw::project

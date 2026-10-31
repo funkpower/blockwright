@@ -1,0 +1,27 @@
+Third-party software in the Windows package
+
+Beyond what NOTICE lists, the Windows package carries the following. The
+licence texts are in this directory.
+
+- Qt 6.8.3 (Core, Gui, Widgets, Network, Svg, Pdf and the
+  plugins in bin\ platforms, styles, imageformats and iconengines), The Qt
+  Company Ltd and other contributors, https://www.qt.io/, used under the GNU
+  Lesser General Public License v3 (LGPL-3.0-only.txt, with the GNU GPL v3
+  in ..\LICENSE).
+  The Qt libraries are unmodified and loaded from separate DLLs, which can be
+  replaced with other builds of the same Qt version. Their source:
+  https://download.qt.io/official_releases/qt/6.8/6.8.3/submodules/
+  Qt includes third-party code under its own licences; the qt-sbom directory
+  lists each component, its version and its licence.
+
+- libc++ and libunwind (libc++.dll, libunwind.dll) from llvm-mingw,
+  https://github.com/mstorsjo/llvm-mingw, the LLVM Project, under the Apache
+  License v2.0 with LLVM Exceptions (llvm-mingw-LICENSE.TXT). The programs
+  are statically linked with the mingw-w64 runtime, whose notices are in
+  COPYING.MinGW-w64-runtime.txt.
+
+- libzip 1.11.4, Dieter Baron and Thomas Klausner, https://libzip.org/, BSD
+  3-clause licence (libzip.txt); zlib 1.3.1, Jean-loup Gailly and Mark Adler,
+  https://zlib.net/, zlib licence (zlib.txt); Zstandard 1.5.7, Meta Platforms,
+  Inc. and affiliates, https://facebook.github.io/zstd/, BSD licence
+  (zstd.txt). All three are linked into the programs.

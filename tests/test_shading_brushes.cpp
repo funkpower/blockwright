@@ -4,6 +4,7 @@
 // lint.
 
 #include "blockwright/ansi.h"
+#include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/distance.h"
@@ -1357,7 +1358,7 @@ void randomJoined(int from, int to) {
     // the middle and high on the ramp.
     const Ramp r = steel();
     std::mt19937 rng(20261022);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int w = 40, h = 22, strokes = to - from;
     int dirty = 0, blank = 0;
     std::string first;
@@ -1467,7 +1468,7 @@ TEST_CASE("form brush is lint-clean: random shapes", "[shading][form]") {
     // 3-40 by 3-20, under every light, with and without the glint and iCE,
     // on five ramps.
     std::mt19937 rng(20261023);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const std::array<const char*, 5> ramps{"steel", "fire", "ice", "toxic", "sunset"};
     const int cases = 1200;
     int dirty = 0;
@@ -1902,7 +1903,7 @@ namespace {
 enum class Start { Flat, Gradient, Dome };
 
 Canvas startCanvas(Start kind, const Ramp& r, int w, int h, std::mt19937& rng) {
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int top = r.topRung();
     switch (kind) {
     case Start::Flat:
@@ -1941,7 +1942,7 @@ struct SpeckTally {
 
 SpeckTally speckCorpus(int fields, unsigned seed) {
     std::mt19937 rng(seed);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const auto& ramps = namedRamps();
     SpeckTally t;
     auto speckAt = [](const Canvas& c, const Ramp& r, int x, int y) {
@@ -2038,7 +2039,7 @@ struct Tally {
 // of the cells transparent.
 Tally softStrokes(Start kind, int strokes, unsigned seed) {
     std::mt19937 rng(seed);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int w = 28, h = 14;
     Tally t;
     for (int k = 0; k < strokes; ++k) {
@@ -2135,7 +2136,7 @@ TEST_CASE("soft strokes add no lint finding, dab by dab: a form dome", "[shading
 // lint's one-glyph finding, which the brush refuses.)
 TEST_CASE("soft dab on a flat field paints when its footprint can take a clean change", "[shading][soft]") {
     std::mt19937 rng(77);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int w = 28, h = 14;
     int can = 0, blank = 0;
     std::string first;
@@ -2272,7 +2273,7 @@ struct NearWholeRun {
 // or holds it.
 NearWholeRun nearWhole(unsigned seed, const std::set<int>& only = {}) {
     std::mt19937 rng(seed);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int w = 40, h = 24;
     NearWholeRun run;
     for (int k = 0; k < 400; ++k) {
@@ -2405,7 +2406,7 @@ struct FormTally {
 // which forms it is out of reach for.
 std::map<std::string, FormTally> formSweep(int count, unsigned seed) {
     std::mt19937 rng(seed);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     std::map<std::string, FormTally> out;
     for (int k = 0; k < count; ++k) {
         const Ramp r = *findRamp(kRamps[size_t(pick(0, 4))]);
@@ -2660,7 +2661,7 @@ TEST_CASE("despeckle brush: Codex round 5, finding 3: a mirror stroke on a symme
 TEST_CASE("despeckle brush: mirror strokes on symmetric canvases stay symmetric", "[shading][despeckle][symmetry]") {
     const Ramp r = steel();
     std::mt19937 rng(2026102503);
-    auto pick = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(rng); };
+    auto pick = [&](int a, int b) { return bwtest::uniformInt(rng, a, b); };
     const SymmetryMode modes[3] = {SymmetryMode::MirrorX, SymmetryMode::MirrorY, SymmetryMode::MirrorXY};
     int failed = 0, cleaned = 0;
     std::string first;
@@ -2724,7 +2725,7 @@ TEST_CASE("shading brushes: random strokes add nothing to the start, checked aft
     // read against the stroke's start by the lint's own rule: nothing added,
     // the one glyph and noise readings included.
     std::mt19937 rng(2026102307);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const int w = 36, h = 18;
     const SymmetryMode modes[4] = {SymmetryMode::None, SymmetryMode::MirrorX, SymmetryMode::MirrorY,
                                    SymmetryMode::MirrorXY};

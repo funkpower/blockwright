@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Windows installer (wixl, msitools): scripts/package-windows builds it
+     with files.wxs, which lists the staged install tree under INSTALLDIR.
+     The UpgradeCode stays the same for every release, and every build has a
+     new ProductCode, so the MajorUpgrade removes what an MSI of the same
+     UpgradeCode installed before it: an older version, or another build of
+     the same version (AllowSameVersionUpgrades; a rebuild of main before
+     the version is bumped). A newer version already installed is refused. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Blockwright" Language="1033" Version="$(var.Version)" Manufacturer="funkpower"
+           UpgradeCode="4844BEF3-DC55-4186-A9B8-D858DECB36A8">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
+             Description="Blockwright $(var.Version), an ANSI and IRC art editor" Manufacturer="funkpower"/>
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Blockwright is already installed."/>
+    <Media Id="1" Cabinet="blockwright.cab" EmbedCab="yes"/>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="Blockwright"/>
+      </Directory>
+      <Directory Id="ProgramMenuFolder"/>
+    </Directory>
+
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="4A1563DF-F1DE-48B1-8E05-7C80A6E514AC">
+        <Shortcut Id="BlockwrightShortcut" Name="Blockwright" Description="ANSI and IRC art editor"
+                  Target="[INSTALLDIR]bin\blockwright.exe"/>
+        <RegistryValue Root="HKLM" Key="Software\funkpower\Blockwright" Name="StartMenuShortcut" Type="integer"
+                       Value="1" KeyPath="yes"/>
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="Blockwright" Level="1">
+      <ComponentGroupRef Id="InstallFiles"/>
+      <ComponentRef Id="StartMenuShortcut"/>
+    </Feature>
+  </Product>
+</Wix>

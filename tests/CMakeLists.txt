@@ -16,6 +16,31 @@ if(NOT Catch2_FOUND)
 endif()
 include(Catch)
 
+# The shell-script tests run the CLI as $BW_CLI_COMMAND: the program, or in a
+# cross build a script running it under the emulator, with the CR of each
+# CRLF its text-mode stdout and stderr write taken out.
+set(BW_CLI_COMMAND $<TARGET_FILE:blockwright-cli>)
+set(BW_GUI_COMMAND $<TARGET_FILE:blockwright>)
+if(CMAKE_CROSSCOMPILING)
+  set(bw_run_template [[#!/usr/bin/env bash
+set -o pipefail
+{ "$<TARGET_PROPERTY:PROGRAM,CROSSCOMPILING_EMULATOR>" "$<TARGET_FILE:PROGRAM>" "$@" 2>&1 1>&3 3>&- | tr -d '\r' >&2; } 3>&1 | tr -d '\r'
+]])
+  foreach(program blockwright-cli blockwright)
+    string(REPLACE PROGRAM ${program} bw_run "${bw_run_template}")
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/run-${program} CONTENT "${bw_run}"
+      FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+  endforeach()
+  set(BW_CLI_COMMAND ${CMAKE_CURRENT_BINARY_DIR}/run-blockwright-cli)
+  set(BW_GUI_COMMAND ${CMAKE_CURRENT_BINARY_DIR}/run-blockwright)
+endif()
+# The scripts skip what a Windows CLI can't do: run sh or python3 generators,
+# or be stopped by a file size limit; and take its error texts.
+set(BW_CLI_ENV QT_QPA_PLATFORM=offscreen)
+if(WIN32)
+  list(APPEND BW_CLI_ENV BW_CLI_WINDOWS=1)
+endif()
+
 add_executable(blockwright-tests
   test_ansi_parse.cpp
   test_ansi_write.cpp
@@ -49,6 +74,7 @@ add_executable(blockwright-tests
   test_outline.cpp
   test_outline_property.cpp
   test_pipeline.cpp
+  test_portable_random.cpp
   test_project.cpp
   test_reference_layers.cpp
   test_shading_brushes.cpp
@@ -66,6 +92,14 @@ add_executable(blockwright-tests
   test_text_style.cpp
   util.h
 )
+if(WIN32)
+  # Running generators without sh: bw-gen-helper stands in for one, beside
+  # the tests, needing no DLLs in a generator's copy of its files.
+  target_sources(blockwright-tests PRIVATE test_generator_win.cpp test_junction_win.cpp)
+  add_executable(bw-gen-helper gen_helper_win.cpp)
+  target_link_options(bw-gen-helper PRIVATE -static)
+  add_dependencies(blockwright-tests bw-gen-helper)
+endif()
 # libzip and zstd to write the broken files test_project.cpp reads
 target_link_libraries(blockwright-tests PRIVATE blockwright::core blockwright_cli_io libzip::zip ${BW_ZSTD}
                                                 Qt6::Core Catch2::Catch2WithMain)
@@ -77,39 +111,45 @@ catch_discover_tests(blockwright-tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=of
 
 add_test(NAME cli
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_test.sh
-          $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-tmp)
-set_tests_properties(cli PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+          ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-tmp)
+set_tests_properties(cli PROPERTIES ENVIRONMENT "${BW_CLI_ENV}")
+if(CMAKE_CROSSCOMPILING)
+  set_tests_properties(cli PROPERTIES TIMEOUT 900)  # some hundred programs under an emulator
+endif()
 add_test(NAME cli_generators
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_generators_test.sh
-          $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-generators-tmp)
-set_tests_properties(cli_generators PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+          ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-generators-tmp)
+set_tests_properties(cli_generators PROPERTIES ENVIRONMENT "${BW_CLI_ENV}" SKIP_RETURN_CODE 77)
 add_test(NAME cli_scene
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_scene_test.sh
-          $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-scene-tmp
+          ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-scene-tmp
           "${BW_ANSIDRAW_DIR}")
-set_tests_properties(cli_scene PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen SKIP_RETURN_CODE 77)
+set_tests_properties(cli_scene PROPERTIES ENVIRONMENT "${BW_CLI_ENV}" SKIP_RETURN_CODE 77)
 add_test(NAME casefold
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/casefold_test.sh
-          $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/casefold-tmp)
+          ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/casefold-tmp)
 set_tests_properties(casefold PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen SKIP_RETURN_CODE 77)
 
 # The bundled Library passes its own check, and installs where the installed
 # CLI finds it.
 add_test(NAME library_bundled_check
-  COMMAND $<TARGET_FILE:blockwright-cli> library check ${PROJECT_SOURCE_DIR}/library)
+  COMMAND ${BW_CLI_COMMAND} library check ${PROJECT_SOURCE_DIR}/library)
 set_tests_properties(library_bundled_check PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+if(NOT CMAKE_CROSSCOMPILING)  # builds and installs on the host
 add_test(NAME library_install
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/library_install_test.sh
           ${PROJECT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/library-install-tmp
           ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR} "$<CONFIG>"
           ${PROJECT_SOURCE_DIR}/library)
 set_tests_properties(library_install PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+endif()
 
 add_test(NAME irc_oracle
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/irc_oracle_test.sh
-          $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/irc-oracle-tmp)
+          ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/irc-oracle-tmp)
 set_tests_properties(irc_oracle PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
+if(NOT CMAKE_CROSSCOMPILING)  # host tools, and builds on the host
 add_test(NAME install_dev_paths
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_dev_test.sh
           ${PROJECT_SOURCE_DIR}/scripts/install-dev ${CMAKE_CURRENT_BINARY_DIR}/install-dev-tmp)
@@ -151,6 +191,7 @@ add_test(NAME forge_merge
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/forge_merge_test.sh
           ${PROJECT_SOURCE_DIR}/scripts/forge ${CMAKE_CURRENT_BINARY_DIR}/forge-merge-tmp)
 set_tests_properties(forge_merge PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 
 add_executable(blockwright-render-tests
   test_canvas_renderer.cpp
@@ -165,8 +206,8 @@ catch_discover_tests(blockwright-render-tests PROPERTIES ENVIRONMENT QT_QPA_PLAT
 
 add_test(NAME cli_render
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_render_test.sh
-          $<TARGET_FILE:blockwright-cli> ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-render-tmp)
-set_tests_properties(cli_render PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+          ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-render-tmp)
+set_tests_properties(cli_render PROPERTIES ENVIRONMENT "${BW_CLI_ENV}")
 
 # The app tests run with HOME and the XDG directories in the build tree, so on
 # Linux nothing a test writes past its scratch directory reaches the user's
@@ -179,6 +220,7 @@ set(BW_APP_TEST_ENV ${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen
   HOME=${BW_APP_TEST_HOME}/home XDG_CONFIG_HOME=${BW_APP_TEST_HOME}/config
   XDG_DATA_HOME=${BW_APP_TEST_HOME}/data XDG_CACHE_HOME=${BW_APP_TEST_HOME}/cache
   XDG_STATE_HOME=${BW_APP_TEST_HOME}/state)
+set(BW_APP_TEST_RUNNER ${BW_APP_TEST_ENV} ${CMAKE_CROSSCOMPILING_EMULATOR})
 
 add_executable(blockwright-app-tests
   test_app.cpp
@@ -231,7 +273,7 @@ target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_C
                                                         BW_HELP_SOURCE="${PROJECT_SOURCE_DIR}/app/help"
                                                         BW_ANSIDRAW_DIR="${BW_ANSIDRAW_DIR}"
                                                         BW_CLI="$<TARGET_FILE:blockwright-cli>")
-set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
+set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_RUNNER}")
 catch_discover_tests(blockwright-app-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
@@ -239,7 +281,8 @@ catch_discover_tests(blockwright-app-tests
 # target is in whole device pixels there.
 foreach(scale 1.25 1.5)
   add_test(NAME "dock heights at scale ${scale}"
-    COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} $<TARGET_FILE:blockwright-app-tests> "[dock-height]")
+    COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} ${CMAKE_CROSSCOMPILING_EMULATOR}
+            $<TARGET_FILE:blockwright-app-tests> "[dock-height]")
 endforeach()
 # A layout test that runs after a closed window in the same process still starts
 # from the default layout (#249); ctest otherwise runs each test case alone.
@@ -252,7 +295,8 @@ endif()
 # appears with the shorter or narrower window, at every scale.
 foreach(scale 1.25 1.5 1.75 2)
   add_test(NAME "canvas floor after a shrink at scale ${scale}"
-    COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} $<TARGET_FILE:blockwright-app-tests> "[canvas-floor-shrink]")
+    COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} ${CMAKE_CROSSCOMPILING_EMULATOR}
+            $<TARGET_FILE:blockwright-app-tests> "[canvas-floor-shrink]")
 endforeach()
 # The dock column widths at fractional device pixel ratios. Some of these
 # tests size the window from the screen (the first-run size, restoreGeometry
@@ -271,7 +315,7 @@ foreach(screen "1.25 1000 750" "1.5 1200 900" "1.75 1400 1050" "2 1600 1200")
     " \"logicalDpi\": 96, \"logicalBaseDpi\": 96, \"dpr\": 1}]}\n")
   add_test(NAME "dock widths at scale ${scale}"
     COMMAND ${BW_APP_TEST_ENV} QT_QPA_PLATFORM=offscreen:configfile=${config} QT_SCALE_FACTOR=${scale}
-            $<TARGET_FILE:blockwright-app-tests> "[dock-width]")
+            ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:blockwright-app-tests> "[dock-width]")
 endforeach()
 
 # File > Publish to Library and Send to WeeChat: its main points the settings
@@ -283,7 +327,7 @@ add_executable(blockwright-publish-tests
 )
 target_link_libraries(blockwright-publish-tests PRIVATE blockwright_app Catch2::Catch2)
 target_compile_definitions(blockwright-publish-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
-set_target_properties(blockwright-publish-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
+set_target_properties(blockwright-publish-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_RUNNER}")
 catch_discover_tests(blockwright-publish-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
@@ -297,10 +341,10 @@ catch_discover_tests(blockwright-publish-tests
 # command under either setting.
 set(BW_APP_XCB_TEST_ENV bash ${CMAKE_CURRENT_SOURCE_DIR}/xcb_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-xcb-profile)
 find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
+if(PkgConfig_FOUND AND NOT WIN32)
   pkg_check_modules(XCB_TEST IMPORTED_TARGET xcb xcb-xtest)
 endif()
-if(XCB_TEST_FOUND)
+if(XCB_TEST_FOUND AND NOT WIN32)
   add_executable(blockwright-app-xcb-tests test_app_xcb.cpp scratch_settings.h)
   target_link_libraries(blockwright-app-xcb-tests PRIVATE blockwright_app Catch2::Catch2 PkgConfig::XCB_TEST)
   add_test(NAME app_xcb COMMAND ${BW_APP_XCB_TEST_ENV} $<TARGET_FILE:blockwright-app-xcb-tests>)
@@ -308,10 +352,12 @@ if(XCB_TEST_FOUND)
 endif()
 # xcb_test.sh keeps a run out of the caller's profile and fails one that
 # writes into its own.
+if(NOT CMAKE_CROSSCOMPILING)  # X on the host
 add_test(NAME xcb_runner
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/xcb_runner_test.sh ${CMAKE_CURRENT_SOURCE_DIR}/xcb_test.sh
           ${CMAKE_CURRENT_BINARY_DIR}/xcb-runner-check)
 set_tests_properties(xcb_runner PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 
 # At a fractional device pixel ratio: its main sets QT_SCALE_FACTOR before the
 # QApplication exists.
@@ -320,7 +366,7 @@ add_executable(blockwright-app-scale-tests
   scratch_settings.h
 )
 target_link_libraries(blockwright-app-scale-tests PRIVATE blockwright_app Catch2::Catch2)
-set_target_properties(blockwright-app-scale-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_ENV}")
+set_target_properties(blockwright-app-scale-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_RUNNER}")
 catch_discover_tests(blockwright-app-scale-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
@@ -344,6 +390,9 @@ add_test(NAME app_settings_factory
 add_test(NAME app_settings_guard_fixtures
   COMMAND bw-settings-guard --fixtures ${CMAKE_CURRENT_SOURCE_DIR}/data/settings-guard)
 
+# The profile checks below run on the host's X11/XDG profile and build
+# projects with the host compiler: a cross build leaves them out.
+if(NOT CMAKE_CROSSCOMPILING)
 # Run whole under a fresh HOME and XDG profile, the app test binaries leave it
 # empty: Blockwright's settings go to the factory's scratch INI file and Qt's
 # own (the QtProject store QFileDialog keeps its history in) to the scratch
@@ -389,6 +438,15 @@ if(CMAKE_GENERATOR MATCHES "^Ninja")
   set_tests_properties(app_guard_fixtures_multi_config_debug_env PROPERTIES
     ENVIRONMENT CMAKE_CONFIGURATION_TYPES=Debug)
 endif()
+endif()
 
 add_test(NAME gui_version
-  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh $<TARGET_FILE:blockwright>)
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh ${BW_GUI_COMMAND})
+
+if(WIN32)
+  # the UTF-8 code page and long paths, as the shipped programs have
+  foreach(t blockwright-tests blockwright-render-tests blockwright-app-tests blockwright-publish-tests
+            blockwright-app-scale-tests bw-settings-guard bw-gen-helper)
+    bw_windows_resources(${t})
+  endforeach()
+endif()

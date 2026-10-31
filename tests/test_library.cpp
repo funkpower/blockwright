@@ -2,6 +2,7 @@
 // checking it, scanning a library, categories, search and where the
 // libraries are.
 
+#include "fs_quirks.h"
 #include "util.h"
 
 #include "blockwright/irc.h"
@@ -21,11 +22,16 @@
 
 #include <csignal>
 
+#include <QByteArray>
+#include <QtGlobal>
+
 #include <fcntl.h>
-#include <sys/resource.h>
-#include <sys/wait.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifndef _WIN32
+#include <sys/resource.h>
+#include <sys/wait.h>
+#endif
 
 using namespace bw;
 using namespace bw::library;
@@ -67,8 +73,10 @@ std::string sidecar(const std::string& body) { return "{" + body + "}"; }
 
 struct EnvGuard {
     const char* name;
-    explicit EnvGuard(const char* n, const std::string& value) : name(n) { ::setenv(n, value.c_str(), 1); }
-    ~EnvGuard() { ::unsetenv(name); }
+    explicit EnvGuard(const char* n, const std::string& value) : name(n) {
+        qputenv(n, QByteArray::fromStdString(value));
+    }
+    ~EnvGuard() { qunsetenv(name); }
 };
 
 } // namespace
@@ -232,6 +240,8 @@ TEST_CASE("writeStamp leaves the old stamp intact when a file can't be written")
         CHECK(readStamp(dir / "pine.ans").art.canvas.width() == 5);
     }
     SECTION("a symbolic link is never written through") {
+        if (!bwtest::symlinksWork())
+            SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
         const fs::path outside = scratch("atomic-outside") / "target.ans";
         put(outside, "outside");
         fs::create_symlink(outside, dir / "pine.ans");
@@ -357,6 +367,8 @@ TEST_CASE("scanning a library finds stamps recursively, sorted, and lists what i
     CHECK(categories(r.stamps) == std::vector<std::string>{"plants", "trees"});
 
     SECTION("symbolic links: files are read through, folders and broken links are reported") {
+        if (!bwtest::symlinksWork())
+            SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
         const fs::path shared = scratch("scan-shared");
         writeStamp(shared / "oak.ans", encodeStamp("Oak", "trees", {}, tree(), true));
         fs::create_directory_symlink(shared, dir / "linked");
@@ -420,8 +432,8 @@ TEST_CASE("slug makes a file name") {
 }
 
 TEST_CASE("the library directories follow the install layout, or the environment") {
-    ::unsetenv("BLOCKWRIGHT_BUNDLED_LIBRARY");
-    ::unsetenv("BLOCKWRIGHT_USER_LIBRARY");
+    qunsetenv("BLOCKWRIGHT_BUNDLED_LIBRARY");
+    qunsetenv("BLOCKWRIGHT_USER_LIBRARY");
     const fs::path bundled = bundledLibraryDir("/opt/bw/bin");
     CHECK(bundled.filename() == "library");
     CHECK(bundled.parent_path().filename() == "blockwright");
@@ -440,6 +452,8 @@ TEST_CASE("the bundled library is found from the real executable, or where it wa
     fs::create_directories(dir / "prefix/bin");
     fs::create_directories(dir / "links");
     { std::ofstream(dir / "prefix/bin/blockwright-cli") << "x"; }
+    if (!bwtest::symlinksWork())
+        SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
     fs::create_symlink(dir / "prefix/bin/blockwright-cli", dir / "links/blockwright-cli-dev");
     const fs::path real = fs::canonical(dir / "prefix/bin");
     // through a link in another directory: the link's target's directory
@@ -572,6 +586,9 @@ TEST_CASE("writeStamp says when the old sidecar can't be put back") {
 }
 
 TEST_CASE("files that aren't regular are never opened") {
+#ifdef _WIN32
+    SKIP("no FIFOs or POSIX file modes on Windows");
+#else
     const fs::path dir = scratch("fifo");
     writeStamp(dir / "pine.ans", encodeStamp("Pine", "trees", {}, tree(), true));
     // The Codex repro: a FIFO with no writer at a stamp's path.
@@ -605,9 +622,13 @@ TEST_CASE("files that aren't regular are never opened") {
         if (p.path == dir / "fir.ans")
             fifoListed = p.message == "not a regular file, skipped";
     CHECK(fifoListed);
+#endif
 }
 
 TEST_CASE("a folder that can't be read is a problem, not a silent skip") {
+#ifdef _WIN32
+    SKIP("no FIFOs or POSIX file modes on Windows");
+#else
     if (::geteuid() == 0)
         SKIP("root reads every folder");
     const fs::path dir = scratch("unreadable");
@@ -620,9 +641,13 @@ TEST_CASE("a folder that can't be read is a problem, not a silent skip") {
     REQUIRE(r.problems.size() == 1);
     CHECK(r.problems[0].path == dir / "locked");
     CHECK(r.problems[0].message.rfind("folder can't be read (", 0) == 0);
+#endif
 }
 
 TEST_CASE("a library folder that can't be listed is refused, not taken as empty") {
+#ifdef _WIN32
+    SKIP("no FIFOs or POSIX file modes on Windows");
+#else
     if (::geteuid() == 0)
         SKIP("root lists every folder");
     // The Codex/Claude repro: a write-and-search-only (0300) folder holding
@@ -641,9 +666,13 @@ TEST_CASE("a library folder that can't be listed is refused, not taken as empty"
     CHECK(readStamp(dir / "oak-tree.ans").name == "Oak Tree");
     // A folder that doesn't exist yet is empty.
     CHECK(stampPathFor(dir / "new", "Oak").path == dir / "new" / "oak.ans");
+#endif
 }
 
 TEST_CASE("a FIFO is refused by the opened handle, without blocking") {
+#ifdef _WIN32
+    SKIP("no FIFOs or POSIX file modes on Windows");
+#else
     const fs::path dir = scratch("fifo-handle");
     const fs::path fifo = dir / "pipe.ans";
     REQUIRE(::mkfifo(fifo.c_str(), 0600) == 0);
@@ -671,6 +700,7 @@ TEST_CASE("a FIFO is refused by the opened handle, without blocking") {
     put(dir / "x.ans", "hello");
     CHECK(readRegularFile(dir / "x.ans") == "hello");
     CHECK_THROWS_AS(readRegularFile(dir / "missing.ans"), LibraryError);
+#endif
 }
 
 TEST_CASE("a stamp is written under its exact native name") {
@@ -695,6 +725,9 @@ TEST_CASE("a stamp is written under its exact native name") {
 }
 
 TEST_CASE("files in a folder that can be listed but not searched can't be read") {
+#ifdef _WIN32
+    SKIP("no FIFOs or POSIX file modes on Windows");
+#else
     if (::geteuid() == 0)
         SKIP("root searches every folder");
     const fs::path dir = scratch("unsearchable");
@@ -707,6 +740,7 @@ TEST_CASE("files in a folder that can be listed but not searched can't be read")
         INFO(p.path.string() << ": " << p.message);
         CHECK(p.message == "can't be read (Permission denied), skipped");
     }
+#endif
 }
 
 namespace {
@@ -758,6 +792,7 @@ TEST_CASE("a failed write leaves no temporary file, no open descriptor, and the 
     const std::vector<std::string> before = namesIn(dir);
     REQUIRE(before == std::vector<std::string>{"pine.ans", "pine.json"});
 
+#ifndef _WIN32
     SECTION("a write that runs out of room part way (RLIMIT_FSIZE, in a child)") {
         const pid_t child = ::fork();
         REQUIRE(child >= 0);
@@ -781,6 +816,7 @@ TEST_CASE("a failed write leaves no temporary file, no open descriptor, and the 
         CHECK(bwtest::readFile(dir / "pine.ans") == old.ans);
         CHECK(bwtest::readFile(dir / "pine.json") == old.json);
     }
+#endif
     SECTION("fsync fails") {
         struct Reset {
             ~Reset() { testing::writeStampFault = nullptr; }
@@ -808,6 +844,9 @@ TEST_CASE("a failed write leaves no temporary file, no open descriptor, and the 
 }
 
 TEST_CASE("replacing a stamp keeps its files' permissions") {
+#ifdef _WIN32
+    SKIP("Windows files have no POSIX permission bits");
+#endif
     const fs::path dir = scratch("mode");
     const StampFiles old = encodeStamp("Pine", "trees", {"old"}, tree(), true);
     const StampFiles next = encodeStamp("Pine", "trees", {"new"}, tree(), true);
@@ -857,6 +896,8 @@ TEST_CASE("an art file whose extension is in another case is scanned, read and r
     const fs::path dir = scratch("ext-case");
     writeStamp(dir / "oak-tree.ans", encodeStamp("Oak Tree", "test", {"old"}, tree(), true));
     fs::rename(dir / "oak-tree.ans", dir / "oak-tree.ANS");
+    if (!bwtest::caseRenamed(dir / "oak-tree.ANS"))
+        SKIP("this file system keeps a file's old case through a rename");
     const StampTarget t = stampPathFor(dir, "Oak Tree");
     REQUIRE(t.path == dir / "oak-tree.ANS");
     REQUIRE(t.exists);

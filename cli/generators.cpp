@@ -2,7 +2,13 @@
 
 #include "read_file.h"
 
+#include "blockwright/links.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <signal.h>
+#endif
 
 #include <algorithm>
 #include <system_error>
@@ -13,7 +19,8 @@ namespace bwcli {
 
 std::map<std::string, std::string> readGeneratorDir(const fs::path& dir) {
     std::error_code ec;
-    if (!fs::is_directory(fs::symlink_status(dir, ec)))
+    // a junction is a link here too (links.h)
+    if (!fs::is_directory(bw::linkStatus(dir, ec)))
         throw Failure{dir.string() + ": not a directory"};
     std::map<std::string, std::string> files;
     std::size_t total = 0;
@@ -26,11 +33,10 @@ std::map<std::string, std::string> readGeneratorDir(const fs::path& dir) {
         const fs::path& p = it->path();
         std::error_code entryEc;  // ec is the step's alone, checked after the loop too
         if (p.filename().string().starts_with(".")) {
-            if (it->is_directory(entryEc) && !it->is_symlink(entryEc))
-                it.disable_recursion_pending();
+            it.disable_recursion_pending();  // never walked into, whatever it is
             continue;
         }
-        const fs::file_status st = it->symlink_status(entryEc);
+        const fs::file_status st = bw::linkStatus(*it, entryEc);
         if (fs::is_directory(st))
             continue;
         if (!fs::is_regular_file(st))
@@ -50,15 +56,28 @@ std::map<std::string, std::string> readGeneratorDir(const fs::path& dir) {
 
 namespace {
 
+#ifdef _WIN32
+// A console's Ctrl+C, Ctrl+Break or close, a logoff or a shutdown: the
+// running generator is stopped, and the next handler (the default one ends
+// this program) runs.
+BOOL WINAPI endOnControl(DWORD) {
+    bw::generator::killRunning();
+    return FALSE;
+}
+#else
 void endOnSignal(int sig) {
     bw::generator::killRunning();
     ::signal(sig, SIG_DFL);
     ::raise(sig);
 }
+#endif
 
 } // namespace
 
 void prepareToRunGenerators() {
+#ifdef _WIN32
+    ::SetConsoleCtrlHandler(endOnControl, TRUE);
+#else
     struct sigaction dfl {};
     dfl.sa_handler = SIG_DFL;
     sigemptyset(&dfl.sa_mask);
@@ -72,6 +91,7 @@ void prepareToRunGenerators() {
         sigemptyset(&sa.sa_mask);
         ::sigaction(sig, &sa, nullptr);
     }
+#endif
 }
 
 std::vector<bw::LayerId> generatorsToRun(const bw::LayerStack& stack, const std::vector<bw::LayerId>& wanted) {

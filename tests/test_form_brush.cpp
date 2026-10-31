@@ -6,6 +6,7 @@
 // a dab that can't lay anything keeping what the stroke has laid.
 
 #include "blockwright/ansi.h"
+#include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/form.h"
 #include "blockwright/brushes/guard.h"
@@ -277,7 +278,7 @@ namespace {
 // order can change what is painted: fewer than half the strokes differ.
 void checkFootprint(SymmetryMode mode, int strokes, unsigned seed) {
     std::mt19937 rng(seed);
-    auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     int replayed = 0, reordered = 0, painted = 0, added = 0;
     std::string first;
     for (int k = 0; k < strokes; ++k) {
@@ -314,7 +315,7 @@ void checkFootprint(SymmetryMode mode, int strokes, unsigned seed) {
             st.addDab(d, false);
         const bool replay = st.preview() == once;
         std::vector<Dab> shuffled = dabs;
-        std::shuffle(shuffled.begin(), shuffled.end(), rng);
+        bwtest::shuffle(shuffled.begin(), shuffled.end(), rng);
         Stroke other(start, brush, s, o);
         for (const Dab& d : shuffled)
             other.addDab(d, false);

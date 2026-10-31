@@ -2,6 +2,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/library.h"
+#include "blockwright/links.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -14,6 +15,10 @@
 #include <system_error>
 #include <unistd.h>
 #include <utility>
+#ifdef _WIN32
+#include <io.h>
+#include <sys/stat.h>
+#endif
 #include <variant>
 
 #include <QString>
@@ -338,7 +343,7 @@ template <class T, class Write> std::string indexJson(const std::map<std::string
 // is never written over.
 void checkTarget(const fs::path& p) {
     std::error_code ec;
-    const fs::file_status st = fs::symlink_status(p, ec);
+    const fs::file_status st = linkStatus(p, ec);
     if (ec && st.type() != fs::file_type::not_found)
         throw PipelineError(p.string() + ": " + ec.message());
     if (st.type() != fs::file_type::not_found && st.type() != fs::file_type::regular)
@@ -368,7 +373,13 @@ public:
             fs::path temp = target;
             temp += ".bw-" + std::to_string(::getpid()) + "-" + std::to_string(n) + ".tmp";
             do
+#ifdef _WIN32
+                // _O_EXCL is CREATE_NEW, which no link at the name is followed through
+                fd = ::_wopen(temp.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT,
+                              _S_IREAD | _S_IWRITE);
+#else
                 fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
+#endif
             while (fd < 0 && errno == EINTR);
             if (fd >= 0)
                 temp_ = temp;

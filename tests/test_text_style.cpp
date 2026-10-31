@@ -313,7 +313,7 @@ Entries savedEntries(const fs::path& path) {
         return out;
     }
     int err = 0;
-    zip_t* z = zip_open(path.c_str(), ZIP_RDONLY, &err);
+    zip_t* z = zip_open(path.string().c_str(), ZIP_RDONLY, &err);
     REQUIRE(z);
     bool ok = true;
     for (zip_int64_t i = 0; ok && i < zip_get_num_entries(z, 0); ++i) {

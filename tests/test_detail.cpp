@@ -3,6 +3,7 @@
 // mode; the rim-light brush.
 
 #include "blockwright/ansi.h"
+#include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/drawing.h"
@@ -923,7 +924,7 @@ TEST_CASE("the rim light on random half-block shapes faces the light and mirrors
     // the mirrored cells
     constexpr int W = 20, H = 10;
     std::mt19937 rng(50);
-    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const auto box = [&](auto shape) {
         int x0 = pick(-3, W + 2), x1 = pick(-3, W + 2), y0 = pick(-3, 2 * H + 2), y1 = pick(-3, 2 * H + 2);
         return shape(std::min(x0, x1), std::min(y0, y1), std::max(x0, x1), std::max(y0, y1));
@@ -1537,7 +1538,7 @@ TEST_CASE("the rim light needs outside beside the cell on the light's side", "[d
     }
     // and over 3000 random pairs of a filled ellipse and a filled rectangle
     std::mt19937 rng(54);
-    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     std::vector<std::string> bad;
     for (int n = 0; n < 3000; ++n) {
         const int a0 = pick(0, 10), a1 = pick(a0 + 1, 12), b0 = pick(0, 11), b1 = pick(b0 + 2, 13);
@@ -1757,7 +1758,7 @@ TEST_CASE("full cells and ▀/▄ fringes keep their half-block pixel normals", 
     // cell's centre to the outside pixels in the window, a pixel a column
     // square, two to a cell
     std::mt19937 rng(8);
-    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const Ramp r = steel();
     int compared = 0;
     for (int n = 0; n < 200; ++n) {
@@ -1837,7 +1838,7 @@ TEST_CASE("the rim light on random ▌/▐ shapes faces the light and mirrors", 
     // mirrored canvas lights the mirrored cells
     constexpr int W = 20, H = 10, SW = 2 * W;
     std::mt19937 rng(80);
-    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     // shapes drawn H wide and SW tall, then transposed
     const auto box = [&](auto shape) {
         int x0 = pick(-3, H + 2), x1 = pick(-3, H + 2), y0 = pick(-3, SW + 2), y1 = pick(-3, SW + 2);
@@ -2366,7 +2367,7 @@ Cell brightBackground(Cell c) {
 // bottom, and the shapes kept four columns and a row in from the canvas's
 // edges, where the rim light lights a shape differently (its known limit).
 Canvas rimShapes(std::mt19937& rng, int W, int H, bool mx = false, bool my = false) {
-    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const bool in = mx || my;
     const int lx = in ? 4 : -2, hx = in ? W - 5 : W + 1, ly = in ? 2 : -2, hy = in ? 2 * H - 3 : 2 * H + 1;
     Pixels px;
@@ -2529,7 +2530,7 @@ TEST_CASE("the lint-aware rim light adds nothing to the start and lights what ea
     // cell for cell
     constexpr int W = 24, H = 12;
     std::mt19937 rng(2026102454);
-    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const SymmetryMode modes[4] = {SymmetryMode::None, SymmetryMode::MirrorX, SymmetryMode::MirrorY,
                                    SymmetryMode::MirrorXY};
     int failed = 0, dabs = 0, accentLit[2] = {}, keptLit[2] = {}, refusing = 0, mirrored = 0, iced = 0, odd[2] = {},
@@ -2629,7 +2630,7 @@ TEST_CASE("the lint-aware rim light keeps a symmetric canvas symmetric under a m
     // mirror makes (both axes under mirror X and Y) lit, at its rung, though
     // the light may not face an image the way it faces the cell
     std::mt19937 rng(2026102455);
-    const auto pick = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    const auto pick = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const SymmetryMode modes[3] = {SymmetryMode::MirrorX, SymmetryMode::MirrorY, SymmetryMode::MirrorXY};
     int failed = 0, lit = 0, held = 0, accentAsymmetric = 0, kept[8] = {};
     std::string first;

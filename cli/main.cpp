@@ -937,8 +937,12 @@ int main(int argc, char** argv) {
         std::cout << bw::kFontCredit;
         return kOk;
     }
-    if (parser.isSet(helpOpt))
-        parser.showHelp(kOk);
+    // Printed here rather than by showHelp(), which on Windows puts the text
+    // in a message box when it finds no console, as under a pipe it may not.
+    if (parser.isSet(helpOpt)) {
+        std::cout << parser.helpText().toStdString();
+        return kOk;
+    }
 
     const QStringList args = parser.positionalArguments();
     auto usage = [](const char* msg) {

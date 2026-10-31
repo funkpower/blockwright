@@ -25,6 +25,12 @@ else()
   set(BW_ZSTD zstd::libzstd_static)
 endif()
 
+if(WIN32)
+  enable_language(RC)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+  include(cmake/Windows.cmake)
+endif()
+
 # The short commit reported by --version. Empty means ask git on every build,
 # so the binary never reports a stale commit; scripts/install-dev sets it
 # because it builds from an exported tree with no .git.

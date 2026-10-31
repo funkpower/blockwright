@@ -1,6 +1,7 @@
 // Outline brush (PLAN §10, "Detail").
 
 #include "blockwright/ansi.h"
+#include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/drawing.h"
@@ -987,7 +988,7 @@ TEST_CASE("an outline stroke leaves no one-cell fragments", "[detail][lint]") {
     CHECK(lone(e).empty());
     // nor any short stroke over it, of any size, a click included
     std::mt19937 g(1010);
-    const auto uni = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(g); };
+    const auto uni = [&](int a, int b) { return bwtest::uniformInt(g, a, b); };
     for (int i = 0; i < 150; ++i) {
         s.size = uni(1, 5);
         s.tip = uni(0, 1) ? Tip::Round : Tip::Square;
@@ -1196,7 +1197,7 @@ TEST_CASE("an outline stroke's dabs again in the same stroke change nothing", "[
     // stroke keeps every cell it has written, dab to dab, and its dabs
     // again, in the same stroke, leave the edit as it was
     std::mt19937 g(5501);
-    const auto uni = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(g); };
+    const auto uni = [&](int a, int b) { return bwtest::uniformInt(g, a, b); };
     for (int i = 0; i < 60; ++i) {
         Canvas c(40, 20);
         const Ramp r = uni(0, 1) ? fire() : steel();
@@ -1285,7 +1286,7 @@ bool addsNothing(const Canvas& c, const CellEdit& e, const Ramp& r) {
 }
 // A shaded ellipse or two on black, lint clean or not.
 Canvas randomShaded(std::mt19937& g, int w, int h, const Ramp& r) {
-    const auto uni = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(g); };
+    const auto uni = [&](int a, int b) { return bwtest::uniformInt(g, a, b); };
     Canvas c(w, h);
     const int top = r.topRung();
     for (int n = uni(1, 2); n > 0; --n) {
@@ -1352,7 +1353,7 @@ TEST_CASE("an outline image writes what a stroke along it alone does", "[detail]
     // only where that union is itself lint clean and no two images write
     // one cell; everywhere it adds no finding.
     std::mt19937 g(5503);
-    const auto uni = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(g); };
+    const auto uni = [&](int a, int b) { return bwtest::uniformInt(g, a, b); };
     int unions = 0, same = 0;
     for (int i = 0; i < 60; ++i) {
         const int w = uni(12, 24), h = uni(8, 14);
@@ -1447,7 +1448,7 @@ TEST_CASE("an outline symmetry stroke adds no finding where its images meet", "[
     // the guard counts them, nor on a lint-clean canvas as the whole lint
     // compared by kind and cell does
     std::mt19937 g(5528);
-    const auto uni = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(g); };
+    const auto uni = [&](int a, int b) { return bwtest::uniformInt(g, a, b); };
     int clean = 0, wrote = 0;
     for (int i = 0; i < 400; ++i) {
         const Ramp r = uni(0, 1) ? fire() : steel();
@@ -1534,7 +1535,7 @@ TEST_CASE("a mirror stroke on a mirrored canvas draws a mirrored line", "[detail
     // even and odd widths: the stroke stamps point k of every image, then
     // k + 1, so each point's images are judged together.
     std::mt19937 g(5529);
-    const auto uni = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(g); };
+    const auto uni = [&](int a, int b) { return bwtest::uniformInt(g, a, b); };
     int wrote = 0, joined = 0;
     for (int i = 0; i < 300; ++i) {
         const Ramp r = uni(0, 1) ? fire() : steel();
@@ -2445,7 +2446,7 @@ TEST_CASE("Outline dab permutations check independence and its documented limits
             std::reverse(order.begin(), order.end());
             check();
             for (int sample = 0; sample < 64; ++sample) {
-                std::shuffle(order.begin(), order.end(), rng);
+                bwtest::shuffle(order.begin(), order.end(), rng);
                 check();
             }
         }

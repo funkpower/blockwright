@@ -64,22 +64,27 @@ expect "--font-width 7 refused" 2 '--font-width must be 8-9' -- "$cli" render --
 expect "render needs two files" 2 'render takes an input' -- "$cli" render "$piece"
 if [[ -e $tmp/bad.png ]]; then bad "a refused render left a file"; else ok "a refused render writes nothing"; fi
 expect "missing input" 1 'nope\.ans: No such file' -- "$cli" render "$tmp/nope.ans" "$tmp/bad.png"
-expect "unwritable output says why" 1 '^blockwright-cli: .*/no-dir/out\.png: No such file or directory$' -- "$cli" render "$piece" "$tmp/no-dir/out.png"
+nodir='No such file or directory'
+[[ -n ${BW_CLI_WINDOWS:-} ]] && nodir='Path not found\.'  # Windows' own text
+expect "unwritable output says why" 1 "^blockwright-cli: .*/no-dir/out\\.png: $nodir\$" -- "$cli" render "$piece" "$tmp/no-dir/out.png"
 out=$("$cli" render "$piece" "$tmp/no-dir/out.png" 2>&1)
 if [[ $(wc -l <<<"$out") -eq 1 && $out != *"Unknown error"* ]]; then ok "unwritable output is one line with a reason"; else bad "unwritable output printed: $out"; fi
 if [[ -e $tmp/no-dir ]]; then bad "unwritable output made a directory"; else ok "unwritable output writes nothing"; fi
 # A PNG write that fails partway (a 1 KiB file size limit) names the system's
 # reason, not libpng's "Unknown error", and leaves no file: at 1x the PNG
 # fits Qt's write buffer, at 8x libpng writes while it encodes
-small() { (trap '' XFSZ; ulimit -f 1; "$@"); }
-fsz=$tmp/fsz && mkdir -p "$fsz"
-for sc in 1 8; do
-  expect "short PNG write at ${sc}x says why" 1 '^blockwright-cli: .*/fsz/out\.png: write failed: File too large$' -- \
-    small "$cli" render --scale "$sc" "$piece" "$fsz/out.png"
-done
-out=$(small "$cli" render --scale 8 "$piece" "$fsz/out.png" 2>&1)
-if [[ $(wc -l <<<"$out") -eq 1 && $out != *"Unknown error"* && $out != *libpng* ]]; then ok "short PNG write is one line"; else bad "short PNG write printed: $out"; fi
-if [[ -z $(ls -A "$fsz") ]]; then ok "short PNG write leaves no file"; else bad "short PNG write left: $(ls -A "$fsz")"; fi
+# (Windows has no file size limit to set.)
+if [[ -z ${BW_CLI_WINDOWS:-} ]]; then
+  small() { (trap '' XFSZ; ulimit -f 1; "$@"); }
+  fsz=$tmp/fsz && mkdir -p "$fsz"
+  for sc in 1 8; do
+    expect "short PNG write at ${sc}x says why" 1 '^blockwright-cli: .*/fsz/out\.png: write failed: File too large$' -- \
+      small "$cli" render --scale "$sc" "$piece" "$fsz/out.png"
+  done
+  out=$(small "$cli" render --scale 8 "$piece" "$fsz/out.png" 2>&1)
+  if [[ $(wc -l <<<"$out") -eq 1 && $out != *"Unknown error"* && $out != *libpng* ]]; then ok "short PNG write is one line"; else bad "short PNG write printed: $out"; fi
+  if [[ -z $(ls -A "$fsz") ]]; then ok "short PNG write leaves no file"; else bad "short PNG write left: $(ls -A "$fsz")"; fi
+fi
 
 
 # render --irc: the IRC view, the mIRC palette and each line cut at the budget

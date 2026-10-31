@@ -9,6 +9,7 @@
 #include "blockwright/lint.h"
 #include "blockwright/ramp.h"
 #include "blockwright/shapes.h"
+#include "fs_quirks.h"
 #include "util.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -625,7 +626,7 @@ TEST_CASE("a zip with an unsafe path is refused", "[project][io]") {
     const Entries good = project::encode(everything());
     const auto zipWith = [&](const fs::path& path, const std::string& extra) {
         int err = 0;
-        zip_t* z = zip_open(path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
+        zip_t* z = zip_open(path.string().c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
         REQUIRE(z);
         const auto add = [&](const std::string& name, const std::string& bytes) {
             zip_source_t* src = zip_source_buffer(z, bytes.data(), bytes.size(), 0);
@@ -634,7 +635,8 @@ TEST_CASE("a zip with an unsafe path is refused", "[project][io]") {
         };
         for (const auto& [name, bytes] : good)
             add(name, bytes);
-        add(extra, "x");
+        const std::string x = "x";  // zip_close reads it, so it must outlive the call
+        add(extra, x);
         REQUIRE(zip_close(z) == 0);
     };
     zipWith(dir / "ok.bwp", "refs/fine.txt");
@@ -695,7 +697,7 @@ constexpr zip_uint64_t kZerosSize = zip_uint64_t{256} << 20;
 // deflated, under the names given.
 void writeZipWith(const fs::path& path, const Entries& entries, const std::vector<std::string>& zeros) {
     int err = 0;
-    zip_t* z = zip_open(path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
+    zip_t* z = zip_open(path.string().c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
     REQUIRE(z);
     for (const auto& [name, bytes] : entries) {
         zip_source_t* src = zip_source_buffer(z, bytes.data(), bytes.size(), 0);
@@ -863,7 +865,9 @@ TEST_CASE("a directory save refuses an empty path before writing anything", "[pr
 TEST_CASE("a directory with a symbolic link is refused", "[project][io]") {
     const fs::path dir = scratch("symlink") / "piece";
     project::writeDirectory(everything(), dir);
-    fs::create_symlink("/etc/hostname", dir / "refs" / "link.txt");
+    if (!bwtest::symlinksWork())
+        SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
+    fs::create_symlink(fs::temp_directory_path(), dir / "refs" / "link.txt");
     CHECK_THROWS_AS(project::read(dir), ProjectError);
 }
 
@@ -981,7 +985,7 @@ using project::kMaxEntries, project::kMaxLayers, project::kMaxTotalCells;
 // (file type and permissions) in its external attributes.
 void zipEntries(const fs::path& path, const Entries& entries, const std::map<std::string, zip_uint32_t>& modes = {}) {
     int err = 0;
-    zip_t* z = zip_open(path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
+    zip_t* z = zip_open(path.string().c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
     REQUIRE(z);
     for (const auto& [name, bytes] : entries) {
         zip_source_t* src = zip_source_buffer(z, bytes.data(), bytes.size(), 0);
@@ -1025,6 +1029,8 @@ TEST_CASE("a directory save doesn't follow symbolic links", "[project][io][safet
     const Project p = everything();
     project::writeDirectory(p, dir);
     writeBytes(root / "victim", "precious");
+    if (!bwtest::symlinksWork())
+        SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
 
     // a hidden link where a predictable temporary file would go
     fs::create_symlink("../victim", dir / ".manifest.json.bw-tmp");
@@ -3072,6 +3078,37 @@ TEST_CASE("a directory save refuses a path the system can't open before writing"
 #endif
 #endif
 
+#ifdef _WIN32
+TEST_CASE("a directory save refuses a path longer than Windows opens before writing", "[project][io][paths]") {
+    const fs::path dir = fs::absolute(scratch("longpath")) / "p";
+    const Project p = everything();
+    project::writeDirectory(p, dir);
+    struct Reset {
+        ~Reset() { project::testing::pathLimit = 0; }
+    } reset;
+    // the save's longest path, with a temporary name beside it, is one unit
+    // too long, then fits
+    Project q = p;
+    q.notes = "saved again";
+    const std::string ref = "refs/" + std::string(200, 'r');
+    q.files[ref] = "x";
+    const std::size_t longest = (dir / fs::path(ref)).native().size() + 64;
+    project::testing::pathLimit = longest;
+    std::string error;
+    try {
+        project::writeDirectory(q, dir);
+    } catch (const ProjectError& e) {
+        error = e.what();
+    }
+    CHECK(error.find("the path is too long") != std::string::npos);
+    CHECK(project::read(dir) == p);
+    CHECK_FALSE(fs::exists(dir / fs::path(ref)));
+    project::testing::pathLimit = longest + 1;
+    project::writeDirectory(q, dir);
+    CHECK(project::read(dir) == q);
+}
+#endif
+
 TEST_CASE("a directory read refuses a file that changed size after the walk saw it", "[project][io][safety]") {
     const fs::path dir = scratch("grown") / "piece";
     Project p = everything();
@@ -3114,7 +3151,7 @@ TEST_CASE("a directory read refuses a file that changed size after the walk saw 
     CHECK(project::read(dir) == p);
     // "reading" fires only where the read checks the opened file's size
     // before reading it
-#if defined(__unix__) || defined(__APPLE__)
+#if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
     CHECK(reading);
 #endif
 }

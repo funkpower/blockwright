@@ -160,7 +160,7 @@ foreach(bin IN LISTS LINKED)
     math(EXPR fails "${fails} + 1")
   endif()
   if(NOT bin IN_LIST PROFILED)
-    message("FAIL ${bin} runs under the user's own HOME: give it CROSSCOMPILING_EMULATOR \${BW_APP_TEST_ENV}, "
+    message("FAIL ${bin} runs under the user's own HOME: give it CROSSCOMPILING_EMULATOR \${BW_APP_TEST_RUNNER}, "
             "or if it needs an X server run it with add_test(COMMAND \${BW_APP_XCB_TEST_ENV} $<TARGET_FILE:...>)")
     math(EXPR fails "${fails} + 1")
   endif()

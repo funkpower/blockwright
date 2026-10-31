@@ -136,6 +136,12 @@ target_compile_options(blockwright_app PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)
 
 add_executable(blockwright main.cpp)
+if(WIN32)
+  # a GUI program: no console window opens with it (main.cpp writes
+  # --version and --help to the one it was started from)
+  set_target_properties(blockwright PROPERTIES WIN32_EXECUTABLE ON)
+  bw_windows_resources(blockwright "Blockwright, an ANSI and IRC art editor")
+endif()
 target_link_libraries(blockwright PRIVATE blockwright_app)
 target_compile_options(blockwright PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)

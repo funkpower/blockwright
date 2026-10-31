@@ -3,6 +3,7 @@
 // half-block pencil, on odd and even canvases.
 
 #include "blockwright/brush.h"
+#include "portable_random.h"
 #include "blockwright/brushes/drawing.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/halfblock.h"
@@ -198,7 +199,7 @@ TEST_CASE("random drags under every symmetry are cell-exact where the images are
     // brush, and the same whole cell (glyph and both colours) on a cell and
     // its reflections.
     std::mt19937 rng(20261024);
-    auto in = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto in = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const GlyphBrush pen(hash());
     const RampShadeBrush shade(*findRamp("steel"), ShadeDirection::Lighten);
     int exact = 0, turned = 0, parity[4] = {};
@@ -268,7 +269,7 @@ TEST_CASE("a mirrored half-block drag paints the exact image of its pixels", "[s
     // a mirror walks the reflection of the stroke's own line: 4- and
     // 8-connected, on odd and even canvases
     std::mt19937 rng(20261025);
-    auto in = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
+    auto in = [&](int lo, int hi) { return bwtest::uniformInt(rng, lo, hi); };
     const SymmetryMode modes[3] = {SymmetryMode::MirrorX, SymmetryMode::MirrorY, SymmetryMode::MirrorXY};
     for (int n = 0; n < 1500; ++n) {
         const int w = in(1, 30), h = in(1, 15);

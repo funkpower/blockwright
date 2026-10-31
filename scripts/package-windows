@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Cross-builds Blockwright for 64-bit Windows and packages it as an MSI.
+#
+#   scripts/package-windows [--llvm-mingw DIR] [--qt DIR] [--qt-host DIR]
+#                           [--wixl PROGRAM] [--build-dir DIR] [--dist DIR]
+#
+#   --llvm-mingw  llvm-mingw toolchain (env LLVM_MINGW)
+#   --qt          Qt for Windows, win64_llvm_mingw (env QT_WIN)
+#   --qt-host     Qt for this machine, the same version (env QT_HOST)
+#   --wixl        msitools' wixl (env WIXL, default: wixl on PATH)
+#   --build-dir   deps, build tree and staged install
+#                 (env BUILD_DIR, default: ~/.cache/dw/blockwright-win-build)
+#   --dist        where the MSI goes (default: dist/ in the source tree)
+#
+# Builds zlib, zstd and libzip first if the build dir lacks them
+# (packaging/windows/build-deps), then a Release build of the programs
+# without the tests, installs it into <build-dir>/stage with the Qt DLLs and
+# plugins, the runtime DLLs and the licences (packaging/windows/stage.py),
+# and makes dist/blockwright-<version>-x86_64.msi from
+# packaging/windows/blockwright.wxs. packaging/windows/README.md sets the
+# toolchain up.
+set -euo pipefail
+
+src=$(cd "$(dirname "$0")/.." && pwd)
+llvm_mingw=${LLVM_MINGW:-}
+qt_win=${QT_WIN:-}
+qt_host=${QT_HOST:-}
+wixl=${WIXL:-wixl}
+build_dir=${BUILD_DIR:-$HOME/.cache/dw/blockwright-win-build}
+dist=$src/dist
+jobs=${JOBS:-8}
+
+usage() { sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit "${1:-0}"; }
+while (($#)); do
+  case $1 in
+    --llvm-mingw) llvm_mingw=$2; shift 2 ;;
+    --qt) qt_win=$2; shift 2 ;;
+    --qt-host) qt_host=$2; shift 2 ;;
+    --wixl) wixl=$2; shift 2 ;;
+    --build-dir) build_dir=$2; shift 2 ;;
+    --dist) dist=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "package-windows: unknown option $1" >&2; usage 2 >&2 ;;
+  esac
+done
+die() { echo "package-windows: $*" >&2; exit 1; }
+[[ -n $llvm_mingw && -x $llvm_mingw/bin/x86_64-w64-mingw32-clang++ ]] || die "set --llvm-mingw (or LLVM_MINGW) to llvm-mingw"
+[[ -n $qt_win && -f $qt_win/lib/cmake/Qt6/Qt6Config.cmake && -d $qt_win/plugins ]] || die "set --qt (or QT_WIN) to Qt for Windows (win64_llvm_mingw)"
+# PDF references load through Qt PDF's image plugin; without it they would fail
+[[ -f $qt_win/plugins/imageformats/qpdf.dll ]] || die "no Qt PDF in $qt_win: install the qtpdf module"
+[[ -n $qt_host && -f $qt_host/lib/cmake/Qt6/Qt6Config.cmake ]] || die "set --qt-host (or QT_HOST) to the host Qt"
+command -v "$wixl" >/dev/null || die "no wixl: set --wixl (or WIXL)"
+llvm_mingw=$(cd "$llvm_mingw" && pwd)
+qt_win=$(cd "$qt_win" && pwd)
+qt_host=$(cd "$qt_host" && pwd)
+mkdir -p "$build_dir"
+build_dir=$(cd "$build_dir" && pwd)
+
+deps=$build_dir/deps
+LLVM_MINGW=$llvm_mingw JOBS=$jobs "$src/packaging/windows/build-deps" "$deps" "$build_dir/deps-work"
+
+build=$build_dir/build
+cmake -S "$src" -B "$build" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$src/cmake/toolchains/llvm-mingw-x86_64.cmake" \
+  -DLLVM_MINGW="$llvm_mingw" -DCMAKE_PREFIX_PATH="$qt_win;$deps" -DQT_HOST_PATH="$qt_host" \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF >/dev/null
+nice -n 10 cmake --build "$build" -j "$jobs"
+version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$build/CMakeCache.txt")
+[[ -n $version ]] || die "no project version in $build/CMakeCache.txt"
+
+stage=$build_dir/stage
+rm -rf "$stage"
+cmake --install "$build" --prefix "$stage" --strip >/dev/null
+
+mingw_licences=$llvm_mingw/x86_64-w64-mingw32/share/mingw32
+sboms=()
+for m in qtbase qtsvg qtimageformats qtpdf; do
+  for f in "$qt_win/sbom/$m-"*[0-9].spdx; do [[ -f $f ]] && sboms+=(--sbom "$f"); done
+done
+cp "$llvm_mingw/LICENSE.TXT" "$build_dir/llvm-mingw-LICENSE.TXT"
+python3 -I "$src/packaging/windows/stage.py" "$stage" "$build_dir/files.wxs" \
+  --qt "$qt_win" --runtime "$llvm_mingw/x86_64-w64-mingw32/bin" \
+  --readobj "$llvm_mingw/bin/llvm-readobj" \
+  --licence "$src/packaging/windows/THIRD-PARTY.txt" \
+  --licence "$src/packaging/windows/licenses/LGPL-3.0-only.txt" \
+  --licence "$build_dir/llvm-mingw-LICENSE.TXT" \
+  --licence "$mingw_licences/COPYING.MinGW-w64-runtime.txt" \
+  --licence "$deps/licenses/zlib.txt" --licence "$deps/licenses/zstd.txt" --licence "$deps/licenses/libzip.txt" \
+  "${sboms[@]}"
+
+mkdir -p "$dist"
+msi=$dist/blockwright-$version-x86_64.msi
+"$wixl" -a x64 -D Version="$version" -o "$msi" "$src/packaging/windows/blockwright.wxs" "$build_dir/files.wxs"
+echo "package-windows: $msi ($(du -h "$msi" | cut -f1))"

@@ -53,7 +53,12 @@ struct ResetFolder {
 struct ScratchHome {
     QByteArray old = qgetenv("HOME");
     bool had = qEnvironmentVariableIsSet("HOME");
-    explicit ScratchHome(const QString& home) { qputenv("HOME", QFile::encodeName(home)); }
+    explicit ScratchHome(const QString& home) {
+#ifdef _WIN32
+        SKIP("Windows takes the home folder from the user's profile, not HOME");
+#endif
+        qputenv("HOME", QFile::encodeName(home));
+    }
     ~ScratchHome() { if (had) qputenv("HOME", old); else qunsetenv("HOME"); }
 };
 int facesMade(const FontCatalogue& c) {

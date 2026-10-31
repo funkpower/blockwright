@@ -5,6 +5,10 @@
 # (77) without python3 or ansidraw.py.
 set -uo pipefail
 cli=$1 data=$2 tmp=$3 ansidraw=${4:-}
+if [[ -n ${BW_CLI_WINDOWS:-} ]]; then
+  echo "skip: a Windows CLI runs the scene with a Windows python3"
+  exit 77
+fi
 if ! command -v python3 >/dev/null || [[ ! -f $ansidraw/ansidraw.py ]]; then
   echo "skip: no python3, or no ansidraw.py in $ansidraw"
   exit 77
