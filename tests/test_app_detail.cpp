@@ -222,7 +222,7 @@ TEST_CASE("the clone stamp: Ctrl+click sets the source and paints nothing; a dra
     FreshCloneSettings fresh;
     MainWindow w;
     // Keep the system-input targets visible, independent of the screen-sized default.
-    w.resize(1400, 900);
+    w.resize(1500, 900);
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
     REQUIRE(v->visibleRegion().contains(pixel(v, 41, 12).toPoint()));

@@ -6,16 +6,22 @@
 #include <QAccessibleWidget>
 #include <QAction>
 #include <QEvent>
-#include <QGridLayout>
 #include <QMenu>
+#include <QResizeEvent>
 #include <QSet>
 #include <QToolButton>
+
+#include <algorithm>
 
 namespace bw {
 
 namespace {
 
-constexpr int kColumns = 2;
+// The fewest columns the grid narrows to; it takes as many more as the
+// dock's width holds.
+constexpr int kMinColumns = 2;
+constexpr int kSpacing = 2;
+constexpr int kMargin = 4;
 constexpr int kIcon = 24;
 
 // The hint a group's tools carry in their tooltips.
@@ -148,11 +154,8 @@ Toolbox::Toolbox(ToolRegistry* tools, const QHash<QString, QAction*>& actions, Q
         if (!placed.contains(t->id()) && actions.contains(t->id()))
             layout << QStringList{t->id()};
 
-    auto* grid = new QGridLayout(this);
-    grid->setSpacing(2);
-    grid->setContentsMargins(4, 4, 4, 4);
     for (const QStringList& group : layout) {
-        auto* b = new QToolButton;
+        auto* b = new QToolButton(this);
         // before anything asks for its accessible interface, which Qt caches
         b->setProperty(kGroupButton, group.size() > 1);
         b->setObjectName(QStringLiteral("toolbox_") + group.front());
@@ -175,8 +178,6 @@ Toolbox::Toolbox(ToolRegistry* tools, const QHash<QString, QAction*>& actions, Q
             b->setContextMenuPolicy(Qt::CustomContextMenu);
             connect(b, &QWidget::customContextMenuRequested, b, &QToolButton::showMenu);
         }
-        const int i = int(buttons_.size());
-        grid->addWidget(b, i / kColumns, i % kColumns);
         buttons_ << b;
         for (const QString& id : group) {
             byTool_.insert(id, b);
@@ -191,8 +192,9 @@ Toolbox::Toolbox(ToolRegistry* tools, const QHash<QString, QAction*>& actions, Q
         }
         showIcon(b);
     }
-    grid->setRowStretch(int((buttons_.size() + kColumns - 1) / kColumns), 1);
-    grid->setColumnStretch(kColumns, 1);
+    for (QToolButton* b : std::as_const(buttons_))
+        cell_ = cell_.expandedTo(b->sizeHint());
+    place();
 
     if (tools->active())
         follow(tools->active());
@@ -212,6 +214,46 @@ void Toolbox::changeEvent(QEvent* e) {
             it.value()->setIcon(toolIcon(it.key()));
         for (QToolButton* b : std::as_const(buttons_))
             showIcon(b);
+    }
+}
+
+int Toolbox::columnsFor(int width) const {
+    const int fit = (width - 2 * kMargin + kSpacing) / (cell_.width() + kSpacing);
+    return std::clamp(fit, std::min(kMinColumns, int(buttons_.size())), std::max(1, int(buttons_.size())));
+}
+
+int Toolbox::heightFor(int columns) const {
+    const int rows = int((buttons_.size() + columns - 1) / columns);
+    return 2 * kMargin + rows * cell_.height() + std::max(0, rows - 1) * kSpacing;
+}
+
+QSize Toolbox::sizeHint() const {
+    // As high as the buttons need at the width the dock gives, and no more:
+    // the rest of the column is Tool Options' (PLAN §11).
+    const int narrowest = std::min(kMinColumns, int(buttons_.size()));
+    return {2 * kMargin + narrowest * cell_.width() + std::max(0, narrowest - 1) * kSpacing,
+            heightFor(columns_)};
+}
+
+QSize Toolbox::minimumSizeHint() const { return sizeHint(); }
+
+void Toolbox::resizeEvent(QResizeEvent* e) {
+    QWidget::resizeEvent(e);
+    place();
+}
+
+void Toolbox::place() {
+    const int columns = columnsFor(width());
+    for (int i = 0; i < buttons_.size(); ++i)
+        buttons_[i]->setGeometry(kMargin + (i % columns) * (cell_.width() + kSpacing),
+                                 kMargin + (i / columns) * (cell_.height() + kSpacing), cell_.width(), cell_.height());
+    if (columns != columns_) {
+        const bool reflowed = columns_ == 0 || heightFor(columns) != heightFor(columns_);
+        columns_ = columns;
+        if (reflowed) {
+            updateGeometry();
+            emit rowsChanged();
+        }
     }
 }
 

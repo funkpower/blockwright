@@ -3,6 +3,7 @@
 #include "document.h"
 #include "generator_form.h"
 #include "help_text.h"
+#include "row_tree.h"
 
 #include <QAction>
 #include <QHBoxLayout>
@@ -60,7 +61,7 @@ QString effectsLabel(const TextStyle& style) {
 
 } // namespace
 
-LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(doc), tree_(new QTreeWidget) {
+LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(doc), tree_(new RowTree(6)) {
     tree_->setObjectName(QStringLiteral("layerList"));
     tree_->setColumnCount(4);
     tree_->setHeaderLabels({tr("Layer"), tr("Alpha Lock"), tr("Kind"), tr("Style")});

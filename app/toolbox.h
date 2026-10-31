@@ -34,18 +34,35 @@ public:
     // The button that holds the tool with this id, or null.
     QToolButton* buttonFor(const QString& toolId) const { return byTool_.value(toolId); }
 
+    // The buttons fill the width in rows, at least two columns wide; the
+    // hint is as high as those rows, so the toolbox takes no spare height.
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
+
+signals:
+    // The width changed how many rows the buttons take.
+    void rowsChanged();
+
 protected:
     void changeEvent(QEvent* e) override;
+    void resizeEvent(QResizeEvent* e) override;
 
 private:
     void follow(Tool* tool);
     // Gives `b` the icon of its current tool, in its own palette.
     void showIcon(QToolButton* b);
+    // How many columns of buttons `width` holds, and how high their rows are.
+    int columnsFor(int width) const;
+    int heightFor(int columns) const;
+    // Lays the buttons out in the columns the width holds.
+    void place();
 
     QList<QToolButton*> buttons_;
     QHash<QString, QToolButton*> byTool_;
     QHash<QString, QAction*> actions_;
     QHash<QString, QIcon> icons_; // by tool id, each drawn in its button's palette
+    QSize cell_;       // every button's size: the largest button's hint
+    int columns_ = 0;  // as last placed
 };
 
 } // namespace bw

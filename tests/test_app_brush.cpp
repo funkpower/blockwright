@@ -1205,7 +1205,7 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
     // once it has had one Qt sends the drag's release to the canvas no more.
     MainWindow w;
     // Keep the system-input targets visible, independent of the screen-sized default.
-    w.resize(1400, 900);
+    w.resize(1500, 900);
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
     REQUIRE(v->visibleRegion().contains(pixel(v, 40, 4).toPoint()));
@@ -1870,7 +1870,7 @@ TEST_CASE("another device's click mid-drag leaves the owner's drag to finish (#4
     // device's events from Qt for the drag, and takes no mouse grab.
     MainWindow w;
     // Keep the system-input targets visible, independent of the screen-sized default.
-    w.resize(1400, 900);
+    w.resize(1500, 900);
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
     REQUIRE(v->visibleRegion().contains(pixel(v, 30, 4).toPoint()));

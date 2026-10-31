@@ -49,6 +49,7 @@ add_library(blockwright_app STATIC
   publish.h
   reference_scale.cpp
   reference_scale.h
+  row_tree.h
   sauce_dialog.cpp
   sauce_dialog.h
   select_tool.cpp

@@ -235,6 +235,12 @@ set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "
 catch_discover_tests(blockwright-app-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
+# The default dock heights at fractional device pixel ratios: the preview's
+# target is in whole device pixels there.
+foreach(scale 1.25 1.5)
+  add_test(NAME "dock heights at scale ${scale}"
+    COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} $<TARGET_FILE:blockwright-app-tests> "[dock-height]")
+endforeach()
 
 # File > Publish to Library and Send to WeeChat: its main points the settings
 # and the Library at scratch folders before the QApplication exists.

@@ -230,8 +230,9 @@ public slots:
     void exportIrc();
     void editIrcBudget();
 
-    // QMainWindow's, as the user's own column widths: a horizontal resize
-    // of a side dock ends the default sizing, as dragging its separator does.
+    // QMainWindow's, as the user's own sizes: a horizontal resize of a side
+    // dock ends the default widths, and a vertical one the default heights
+    // of its dock area, as dragging a separator does.
     void resizeDocks(const QList<QDockWidget*>& docks, const QList<int>& sizes, Qt::Orientation orientation);
 
 protected:
@@ -284,9 +285,25 @@ private:
     // The window's size and dock layout, kept in the settings between runs.
     void saveLayout() const;
     void restoreLayout();
+    // The default widths and heights, followed from now on (PLAN §11).
+    void applyDefaultDockSizes();
     void applyDefaultDockWidths();
+    // Each followed dock area's default heights: in a side column the
+    // Toolbox, palette, preview, Layers and Lint at their targets and Tool
+    // Options or the Library taking the rest; the glyph bar at its hint.
+    void applyDefaultDockHeights();
     // The user sized a column: the defaults stop following the window.
     void keepDockWidths();
+    // Applies the followed defaults again once the layout has caught up
+    // with a dock opening or closing.
+    void queueDefaultDockSizes();
+    // The open, docked docks in `area` that aren't a tab behind another,
+    // top first.
+    QList<QDockWidget*> dockStack(Qt::DockWidgetArea area) const;
+    QList<int> dockHeights(Qt::DockWidgetArea area) const;
+    // The dock area whose heights a separator at `pos` moves: a side column
+    // for one between two of its docks, the bottom for the glyph bar's.
+    Qt::DockWidgetArea heightSeparatorArea(QPoint pos) const;
     // A side column's measure: its first open, docked dock that isn't a tab
     // behind another, or null when it has none. A closed dock, or a tab
     // behind another, keeps a stale width Qt no longer lays out.
@@ -300,8 +317,14 @@ private:
     // until the user sizes a column (PLAN §11).
     bool followDefaultDockWidths_ = false;
     bool dockColumnChangePending_ = false;
-    // A left press on a separator, until its release.
+    // The dock areas whose default heights follow the window and docks
+    // opening and closing, until the user sizes a dock in them.
+    Qt::DockWidgetAreas followDefaultDockHeights_;
+    bool dockHeightChangePending_ = false;
+    // A left press on a separator, until its release, and the dock area
+    // whose heights it moves.
     bool separatorDrag_ = false;
+    Qt::DockWidgetArea separatorArea_ = Qt::NoDockWidgetArea;
     // Generator runs, after the trust check (main_window_generators.cpp).
     void createGenerators();
     // Asks, the first time in the session for a project, whether its

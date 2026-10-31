@@ -193,7 +193,7 @@ TEST_CASE("form brush in mirror mode shades both halves") {
 TEST_CASE("soft brush: a stylus stroke lightens the middle most, one undo step") {
     MainWindow w;
     // Keep the system-input targets visible, independent of the screen-sized default.
-    w.resize(1400, 900);
+    w.resize(1500, 900);
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
     REQUIRE(v->visibleRegion().contains(centre(v, 30, 10).toPoint()));
@@ -218,7 +218,7 @@ TEST_CASE("soft brush: a stylus stroke lightens the middle most, one undo step")
 TEST_CASE("despeckle brush: a mouse stroke clears a speck") {
     MainWindow w;
     // Keep the system-input targets visible, independent of the screen-sized default.
-    w.resize(1400, 900);
+    w.resize(1500, 900);
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();
     REQUIRE(v->visibleRegion().contains(centre(v, 40, 8).toPoint()));

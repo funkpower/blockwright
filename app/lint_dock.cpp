@@ -1,6 +1,7 @@
 #include "lint_dock.h"
 
 #include "document.h"
+#include "row_tree.h"
 
 #include "blockwright/irc_render.h"
 #include "blockwright/ramp.h"
@@ -127,7 +128,7 @@ void FollowsDocument::hideEvent(QHideEvent* e) {
 }
 
 LintDock::LintDock(Document* doc, QWidget* parent) :
-    FollowsDocument(doc, tr("Linting…"), parent), ramps_(new QComboBox(this)), list_(new QTreeWidget(this)), summary_(new QLabel(this)) {
+    FollowsDocument(doc, tr("Linting…"), parent), ramps_(new QComboBox(this)), list_(new RowTree(8, this)), summary_(new QLabel(this)) {
     ramps_->addItem(tr("All named ramps"));
     for (const Ramp& r : namedRamps())
         ramps_->addItem(QString::fromStdString(r.name));

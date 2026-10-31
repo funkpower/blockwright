@@ -4,6 +4,7 @@
 #include "blockwright/glyph_sets.h"
 
 #include "canvas_view.h"
+#include "device_grid.h"
 #include "document.h"
 #include "draw_tools.h"
 #include "glyph_bar.h"
@@ -44,6 +45,7 @@
 #include <QToolTip>
 
 #include <algorithm>
+#include <cstdlib>
 
 using namespace bw;
 
@@ -119,6 +121,36 @@ void dragColumn(MainWindow& w, QDockWidget* d, int width) {
     QApplication::processEvents();
 }
 
+// The side columns' height: they span the canvas's rows.
+int columnHeight(MainWindow& w) { return w.centralWidget()->height(); }
+
+int separatorExtent(MainWindow& w) { return w.style()->pixelMetric(QStyle::PM_DockWidgetSeparatorExtent, nullptr, &w); }
+
+// The height a scrolling panel shows all of its content in, title bar
+// included: Layers and Lint ask for a set number of list rows.
+int panelTarget(QDockWidget* d) {
+    auto* scroll = qobject_cast<QScrollArea*>(d->widget());
+    REQUIRE(scroll);
+    QWidget* content = scroll->widget();
+    const int inner = d->width() - 2 * scroll->frameWidth();
+    const int height = content->hasHeightForWidth() ? content->heightForWidth(inner) : content->sizeHint().height();
+    return d->height() - scroll->height() + 2 * scroll->frameWidth() + height;
+}
+
+// Drags the separator under `upper` with the mouse by `dy`, as the user does.
+void dragSeparatorBelow(MainWindow& w, QDockWidget* upper, int dy) {
+    const QPoint from(upper->geometry().center().x(), upper->geometry().bottom() + 1 + separatorExtent(w) / 2);
+    const auto send = [&w](QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent e(type, QPointF(at), w.mapToGlobal(QPointF(at)), button, buttons, Qt::NoModifier);
+        QApplication::sendEvent(&w, &e);
+    };
+    send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    send(QEvent::MouseMove, from + QPoint(0, dy), Qt::NoButton, Qt::LeftButton);
+    QApplication::processEvents(); // Qt moves the separator on a timer
+    send(QEvent::MouseButtonRelease, from + QPoint(0, dy), Qt::LeftButton, Qt::NoButton);
+    QApplication::processEvents();
+}
+
 // The scratch directory the run's settings file is in.
 QString scratchDir() { return QFileInfo(bwtest::scratchSettingsFile()).absolutePath(); }
 
@@ -130,6 +162,27 @@ struct ClearLayout {
             bw::appSettings()->clear();
     }
 };
+
+// The left column's default where the canvas has room, and what it keeps
+// before the right column gives up any width (PLAN §11).
+constexpr int kDefaultLeft = 360;
+constexpr int kNarrowLeft = 256;
+
+// The default widths at a window wide enough for both columns' defaults
+// less the left's give-back: the right column is 360, and the left is 360
+// or, when that would leave the canvas under 640, what leaves it 640.
+void checkDefaultWidths(MainWindow& w) {
+    const int left = w.toolboxDock()->isVisible() ? w.toolboxDock()->width() : w.toolOptionsDock()->width();
+    const int viewport = qobject_cast<QScrollArea*>(w.centralWidget())->viewport()->width();
+    CAPTURE(left, viewport);
+    CHECK(w.libraryDock()->width() == 360);
+    CHECK(left >= kNarrowLeft);
+    CHECK(left <= kDefaultLeft);
+    if (left < kDefaultLeft)
+        CHECK(viewport == 640);
+    else
+        CHECK(viewport >= 640);
+}
 
 } // namespace
 
@@ -265,37 +318,60 @@ TEST_CASE("clicking each toolbox group's icon picks its current tool without ope
     CHECK(button->isChecked());
 }
 
-TEST_CASE("the toolbox keeps two columns and stays within 240 pixels") {
+TEST_CASE("the toolbox lays its buttons in rows as wide as its dock fits") {
+    ClearLayout clear;
     MainWindow w;
+    w.resize(1366, 708);
     w.show();
     QApplication::processEvents();
-    const auto checkFits = [](Toolbox* box) {
+    // The number of buttons in each full row, checked to be a grid.
+    const auto columnsOf = [](Toolbox* box) {
         const auto buttons = box->buttons();
+        int columns = 0;
+        while (columns < buttons.size() && buttons[columns]->y() == buttons[0]->y())
+            ++columns;
         for (int i = 0; i < buttons.size(); ++i) {
             INFO(buttons[i]->objectName().toStdString());
             CHECK(box->rect().contains(buttons[i]->geometry()));
             CHECK(buttons[i]->width() >= buttons[i]->sizeHint().width());
-            if (i % 2 == 1) {
+            if (i % columns > 0) {
                 CHECK(buttons[i]->y() == buttons[i - 1]->y());
                 CHECK(buttons[i]->x() > buttons[i - 1]->geometry().right());
-            } else if (i >= 2) {
-                CHECK(buttons[i]->x() == buttons[i - 2]->x());
-                CHECK(buttons[i]->y() > buttons[i - 2]->geometry().bottom());
+            } else if (i >= columns) {
+                CHECK(buttons[i]->x() == buttons[i - columns]->x());
+                CHECK(buttons[i]->y() > buttons[i - columns]->geometry().bottom());
             }
         }
+        return columns;
     };
-    checkFits(w.toolbox());
+    const int columns = columnsOf(w.toolbox());
+    CHECK(columns >= 4);
+    CHECK(columns <= 6);
+    // Its height is its rows, with nothing to spare.
+    CHECK(w.toolbox()->height() == w.toolbox()->sizeHint().height());
+    CHECK(w.toolbox()->buttons().back()->geometry().bottom() < w.toolbox()->height());
+
     QHash<QString, QAction*> actions;
     for (Tool* tool : w.tools()->tools())
         actions.insert(tool->id(), toolAction(w, tool->id()));
     Toolbox narrow(w.tools(), actions);
     CHECK(narrow.minimumSizeHint().width() <= 240);
     CHECK(narrow.sizeHint().width() <= 240);
-    narrow.resize(240, narrow.sizeHint().height());
+    narrow.resize(narrow.minimumSizeHint().width(), 600);
     narrow.show();
     QApplication::processEvents();
-    REQUIRE(narrow.width() == 240);
-    checkFits(&narrow);
+    // At its narrowest it is two buttons wide, as tall as its rows ask.
+    narrow.resize(narrow.width(), narrow.sizeHint().height());
+    QApplication::processEvents();
+    CHECK(columnsOf(&narrow) == 2);
+    // Widening it takes the rows up, and its hint follows.
+    int rowsChanged = 0;
+    QObject::connect(&narrow, &Toolbox::rowsChanged, [&rowsChanged] { ++rowsChanged; });
+    narrow.resize(240, narrow.height());
+    QApplication::processEvents();
+    CHECK(columnsOf(&narrow) > 2);
+    CHECK(rowsChanged == 1);
+    CHECK(narrow.sizeHint().height() < narrow.height());
 }
 
 TEST_CASE("a right click on a group's toolbox button opens the group") {
@@ -752,16 +828,15 @@ TEST_CASE("Reset Layout restores the default dock column widths", "[dock-width]"
     w.resize(1920, 1080);
     w.show();
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.libraryDock()->width() == 360);
+    checkDefaultWidths(w);
     w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {320, 480}, Qt::Horizontal);
     QApplication::processEvents();
     REQUIRE(w.toolboxDock()->width() == 320);
     REQUIRE(w.libraryDock()->width() == 480);
     act(w, QStringLiteral("resetLayout"))->trigger();
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.toolOptionsDock()->width() == 256);
+    CHECK(w.toolboxDock()->width() == kDefaultLeft);
+    CHECK(w.toolOptionsDock()->width() == kDefaultLeft);
     CHECK(w.previewDock()->width() == 360);
     CHECK(w.paletteDock()->width() == 360);
     CHECK(w.layersDock()->width() == 360);
@@ -800,14 +875,19 @@ TEST_CASE("default dock widths preserve room for the canvas", "[dock-width][dock
     } else {
         CHECK(viewport >= 640);
     }
-    if (size.width() >= 1366) {
+    if (size.width() >= 1920) {
         CHECK(viewport >= 640);
-        CHECK(w.toolboxDock()->width() == 256);
+        CHECK(w.toolboxDock()->width() == kDefaultLeft);
         CHECK(w.libraryDock()->width() == 360);
+    } else if (size.width() == 1366) {
+        // The left column gives back part of its width above 256.
+        checkDefaultWidths(w);
+        CHECK(w.toolboxDock()->width() < kDefaultLeft);
     } else if (size.width() == 1280) {
-        // The right column alone can surrender enough space for the floor.
+        // The left column's width above 256, then the right column's, can
+        // surrender enough space for the floor.
         CHECK(viewport >= 640);
-        CHECK(w.toolboxDock()->width() == 256);
+        CHECK(w.toolboxDock()->width() == kNarrowLeft);
         CHECK(w.libraryDock()->width() < 360);
     }
 }
@@ -846,7 +926,10 @@ TEST_CASE("first-run dock widths follow window sizing until a column is resized"
         w.resize(size);
         QApplication::processEvents();
         CHECK(scroll->viewport()->width() >= 640);
-        CHECK(w.toolboxDock()->width() == 256);
+        if (size.width() == 1280)
+            CHECK(w.toolboxDock()->width() == kNarrowLeft);
+        else
+            checkDefaultWidths(w);
         CHECK(w.libraryDock()->width() >= w.paletteDock()->minimumSizeHint().width());
     }
     // Manual widths take precedence, even if the canvas then falls below
@@ -871,7 +954,7 @@ TEST_CASE("first-run dock widths recover after a one-step window squeeze", "[doc
     w.resize(1920, 1080);
     w.show();
     QApplication::processEvents();
-    REQUIRE(w.toolboxDock()->width() == 256);
+    REQUIRE(w.toolboxDock()->width() == kDefaultLeft);
     REQUIRE(w.libraryDock()->width() == 360);
 
     struct ResizeCounter : QObject {
@@ -891,8 +974,7 @@ TEST_CASE("first-run dock widths recover after a one-step window squeeze", "[doc
         CHECK(w.width() == size.width());
         CHECK(counter.count == 1);
     }
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.libraryDock()->width() == 360);
+    checkDefaultWidths(w);
     toolAction(w, QStringLiteral("text"))->trigger();
     QApplication::processEvents();
     auto* scroll = qobject_cast<QScrollArea*>(w.toolOptionsDock()->widget());
@@ -979,8 +1061,8 @@ TEST_CASE("a legacy narrow dock layout gives way to the default widths", "[dock-
     w.resize(1920, 1080);
     w.show();
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.toolOptionsDock()->width() == 256);
+    CHECK(w.toolboxDock()->width() == kDefaultLeft);
+    CHECK(w.toolOptionsDock()->width() == kDefaultLeft);
     CHECK(w.previewDock()->width() == 360);
     CHECK(w.paletteDock()->width() == 360);
     CHECK(w.layersDock()->width() == 360);
@@ -1033,8 +1115,7 @@ TEST_CASE("closing and reopening a dock re-applies the default widths", "[dock-w
     CHECK(w.libraryDock()->width() == withLayers);
     w.resize(1366, 708);
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.libraryDock()->width() == 360);
+    checkDefaultWidths(w);
     w.resize(1024, 708);
     QApplication::processEvents();
     CHECK(w.libraryDock()->width() == withLayers);
@@ -1092,7 +1173,7 @@ TEST_CASE("closing Toolbox preserves the space-aware Tool Options width",
     auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
     REQUIRE(scroll);
     const int left = w.toolOptionsDock()->width();
-    REQUIRE(left < 256);
+    REQUIRE(left < kNarrowLeft);
     REQUIRE(left > std::max(w.toolOptionsDock()->minimumWidth(),
                            w.toolOptionsDock()->minimumSizeHint().width()));
     REQUIRE(w.libraryDock()->width() == rightColumnMinimum(w));
@@ -1146,8 +1227,7 @@ TEST_CASE("reopening Toolbox keeps following the window", "[dock-width][dock-clo
     CHECK(w.toolOptionsDock()->width() == left);
     w.resize(1366, 708);
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.libraryDock()->width() == 360);
+    checkDefaultWidths(w);
 }
 
 TEST_CASE("resizing the left column with Toolbox closed keeps its width", "[dock-width][dock-closed]") {
@@ -1158,7 +1238,7 @@ TEST_CASE("resizing the left column with Toolbox closed keeps its width", "[dock
     QApplication::processEvents();
     REQUIRE(w.toolboxDock()->close());
     QApplication::processEvents();
-    REQUIRE(w.toolOptionsDock()->width() == 256);
+    REQUIRE(w.toolOptionsDock()->width() >= kNarrowLeft);
     w.resizeDocks({w.toolOptionsDock()}, {230}, Qt::Horizontal);
     QApplication::processEvents();
     REQUIRE(w.toolOptionsDock()->width() == 230);
@@ -1217,8 +1297,7 @@ TEST_CASE("dragging a column's separator keeps its width as the window changes",
     w.resize(1366, 708);
     w.show();
     QApplication::processEvents();
-    REQUIRE(w.toolboxDock()->width() == 256);
-    REQUIRE(w.libraryDock()->width() == 360);
+    checkDefaultWidths(w);
     const bool left = GENERATE(true, false);
     CAPTURE(left);
     QDockWidget* const d = left ? w.toolboxDock() : w.libraryDock();
@@ -1242,6 +1321,7 @@ TEST_CASE("a separator drag that leaves the column widths is no column resize", 
     // the separator between the Toolbox and Tool Options moves heights only
     const QRect box = w.toolboxDock()->geometry();
     const QRect options = w.toolOptionsDock()->geometry();
+    const int leftWidth = box.width();
     const QPoint between(box.center().x(), (box.bottom() + options.top()) / 2 + 1);
     const QPoint lower = between + QPoint(0, 40);
     const auto send = [&w](QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons buttons) {
@@ -1254,13 +1334,12 @@ TEST_CASE("a separator drag that leaves the column widths is no column resize", 
     send(QEvent::MouseButtonRelease, lower, Qt::LeftButton, Qt::NoButton);
     QApplication::processEvents();
     REQUIRE(w.toolboxDock()->height() == box.height() + 40);
-    REQUIRE(w.toolboxDock()->width() == 256);
+    REQUIRE(w.toolboxDock()->width() == leftWidth);
     w.resize(1024, 708);
     QApplication::processEvents();
     w.resize(1400, 708);
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.libraryDock()->width() == 360);
+    checkDefaultWidths(w);
 }
 
 TEST_CASE("a column's displayed tab measures it, not one behind it", "[dock-width][dock-tabs]") {
@@ -1297,14 +1376,13 @@ TEST_CASE("choosing a tab is no column resize", "[dock-width][dock-tabs]") {
     w.resize(1100, 708);
     QApplication::processEvents();
     const int narrowed = w.toolOptionsDock()->width();
-    REQUIRE(narrowed < 256);
+    REQUIRE(narrowed < kNarrowLeft);
     w.toolboxDock()->raise();
     QApplication::processEvents();
     CHECK(w.toolboxDock()->width() == narrowed);
     w.resize(1366, 708);
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.libraryDock()->width() == 360);
+    checkDefaultWidths(w);
 }
 
 TEST_CASE("a window resize before queued defaults keeps following them", "[dock-width][dock-closed]") {
@@ -1320,8 +1398,7 @@ TEST_CASE("a window resize before queued defaults keeps following them", "[dock-
     w.layout()->activate();
     w.resize(1366, 708);
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.libraryDock()->width() == 360);
+    checkDefaultWidths(w);
     w.resize(1024, 708);
     QApplication::processEvents();
     CHECK(w.libraryDock()->width() == withLayers);
@@ -1362,8 +1439,7 @@ TEST_CASE("opening and closing a dock in one turn gives its width back", "[dock-
     CHECK(w.libraryDock()->width() == withoutLayers);
     w.resize(1366, 708);
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
-    CHECK(w.libraryDock()->width() == 360);
+    checkDefaultWidths(w);
 }
 
 TEST_CASE("Qt narrowing the other column for a wide dock is no column resize", "[dock-width][dock-closed]") {
@@ -1379,7 +1455,10 @@ TEST_CASE("Qt narrowing the other column for a wide dock is no column resize", "
     QApplication::processEvents();
     w.resize(2048, 708);
     QApplication::processEvents();
-    CHECK(w.toolboxDock()->width() == 256);
+    // The left column gives back its width above 256 for the canvas floor.
+    CHECK(w.toolboxDock()->width() >= kNarrowLeft);
+    CHECK(w.toolboxDock()->width() < kDefaultLeft);
+    CHECK(qobject_cast<QScrollArea*>(w.centralWidget())->viewport()->width() == 640);
     CHECK(w.libraryDock()->width() == 1050);
 }
 
@@ -1401,6 +1480,253 @@ TEST_CASE("a column set to exactly a reopened dock's minimum is the user's", "[d
     w.resize(1366, 708);
     QApplication::processEvents();
     CHECK(w.libraryDock()->width() == minimum);
+}
+
+// A window as large as a screen leaves after its frame and the desktop's
+// panel, as the window-height tests reserve.
+QSize windowOn(QSize screen) { return {screen.width(), screen.height() - 60}; }
+
+TEST_CASE("Tool Options takes the left column below the Toolbox's rows", "[dock-height]") {
+    ClearLayout clear;
+    MainWindow w;
+    const QSize screen = GENERATE(QSize(1920, 1080), QSize(2560, 1440));
+    CAPTURE(screen.width(), screen.height());
+    w.resize(windowOn(screen));
+    w.show();
+    QApplication::processEvents();
+    act(w, QStringLiteral("resetLayout"))->trigger();
+    QApplication::processEvents();
+    QDockWidget* const toolbox = w.toolboxDock();
+    QDockWidget* const options = w.toolOptionsDock();
+    const int title = toolbox->height() - toolbox->widget()->height();
+    CHECK(toolbox->height() == w.toolbox()->sizeHint().height() + title);
+    CHECK(options->y() == toolbox->geometry().bottom() + 1 + separatorExtent(w));
+    CHECK(options->geometry().bottom() == w.centralWidget()->geometry().bottom());
+    CAPTURE(options->height(), columnHeight(w));
+    CHECK(options->height() * 4 >= columnHeight(w) * 3);
+
+    // A taller window gives all of its height to Tool Options.
+    const int toolboxHeight = toolbox->height();
+    const int optionsHeight = options->height();
+    w.resize(w.width(), w.height() + 200);
+    QApplication::processEvents();
+    CHECK(toolbox->height() == toolboxHeight);
+    CHECK(options->height() == optionsHeight + 200);
+}
+
+TEST_CASE("on a 768-high screen every Toolbox button shows above Tool Options at its minimum", "[dock-height]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(windowOn({1366, 768}));
+    w.show();
+    QApplication::processEvents();
+    const bool reset = GENERATE(false, true);
+    CAPTURE(reset);
+    if (reset) {
+        act(w, QStringLiteral("resetLayout"))->trigger();
+        QApplication::processEvents();
+    }
+    Toolbox* const box = w.toolbox();
+    CHECK(box->height() >= box->sizeHint().height());
+    for (QToolButton* b : box->buttons()) {
+        INFO(b->objectName().toStdString());
+        CHECK(b->isVisible());
+        CHECK(box->rect().contains(b->geometry()));
+    }
+    QDockWidget* const options = w.toolOptionsDock();
+    CHECK(options->height() >= std::max(options->minimumHeight(), options->minimumSizeHint().height()));
+    CHECK(options->height() > w.toolboxDock()->height());
+}
+
+TEST_CASE("a narrower left column gives the Toolbox the rows it needs", "[dock-height]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(windowOn({1920, 1080}));
+    w.show();
+    QApplication::processEvents();
+    const int rows = w.toolbox()->sizeHint().height();
+    w.resizeDocks({w.toolboxDock()}, {w.toolbox()->minimumSizeHint().width()}, Qt::Horizontal);
+    QApplication::processEvents();
+    QApplication::processEvents();
+    REQUIRE(w.toolbox()->sizeHint().height() > rows);
+    CHECK(w.toolbox()->height() == w.toolbox()->sizeHint().height());
+    CHECK(w.toolboxDock()->geometry().bottom() + 1 + separatorExtent(w) == w.toolOptionsDock()->y());
+    for (QToolButton* b : w.toolbox()->buttons())
+        CHECK(w.toolbox()->rect().contains(b->geometry()));
+}
+
+TEST_CASE("the right column's docks open at their default heights", "[dock-height]") {
+    ClearLayout clear;
+    MainWindow w;
+    const QSize screen = GENERATE(QSize(1366, 768), QSize(1920, 1080), QSize(2560, 1440));
+    const bool reset = GENERATE(false, true);
+    CAPTURE(screen.width(), screen.height(), reset);
+    w.resize(windowOn(screen));
+    w.show();
+    QApplication::processEvents();
+    if (reset) {
+        act(w, QStringLiteral("resetLayout"))->trigger();
+        QApplication::processEvents();
+    }
+    QDockWidget* const preview = w.previewDock();
+    QDockWidget* const palette = w.paletteDock();
+    QDockWidget* const layers = w.layersDock();
+    QDockWidget* const library = w.libraryDock();
+    QDockWidget* const lint = w.lintDock();
+    const auto minimum = [](QDockWidget* d) { return std::max(d->minimumHeight(), d->minimumSizeHint().height()); };
+    constexpr int tolerance = 2;
+
+    // Top to bottom, filling the column's height with nothing between.
+    const int separator = separatorExtent(w);
+    const QRect band = w.centralWidget()->geometry();
+    CHECK(preview->y() == band.top());
+    CHECK(palette->y() == preview->geometry().bottom() + 1 + separator);
+    CHECK(layers->y() == palette->geometry().bottom() + 1 + separator);
+    CHECK(library->y() == layers->geometry().bottom() + 1 + separator);
+    CHECK(lint->y() == library->geometry().bottom() + 1 + separator);
+    // Lint shares its slot with the IRC View's tab.
+    const int tabs = band.bottom() - lint->geometry().bottom();
+    CHECK(tabs > 0);
+
+    // The palette and the glyph bar take their hints, no more.
+    CHECK(palette->height() == palette->sizeHint().height());
+    CHECK(w.glyphBarDock()->height() == w.glyphBarDock()->sizeHint().height());
+
+    // The preview shows an 80x25 piece at 1x in up to a third of the column;
+    // Layers its rows and buttons; Lint its rows.
+    const int available = band.height() - 4 * separator;
+    // The piece's height in whole device pixels, as the preview draws it
+    // (DeviceGrid), so the target holds at a fractional device pixel ratio.
+    const QSize cell = w.renderer().cellSize();
+    const QSize piece = DeviceGrid::of(w.preview()).widgetSize({80 * cell.width(), 25 * cell.height()});
+    const auto* previewScroll = static_cast<QScrollArea*>(preview->widget());
+    const int frame = 2 * previewScroll->frameWidth();
+    const int previewTitle = preview->height() - previewScroll->height();
+    const int previewScrollBar =
+        piece.width() + frame > preview->width() ? previewScroll->horizontalScrollBar()->sizeHint().height() : 0;
+    const int previewTarget = std::min(previewTitle + piece.height() + frame + previewScrollBar, available / 3);
+    const int layersTarget = panelTarget(layers);
+    const int lintTarget = panelTarget(lint);
+    CAPTURE(available, previewTarget, layersTarget, lintTarget);
+    CAPTURE(preview->height(), layers->height(), library->height(), lint->height());
+    const int others = palette->height() + previewTarget + layersTarget + lintTarget + tabs;
+    if (available - others >= minimum(library)) {
+        // Room for every target: the Library takes the rest.
+        CHECK(std::abs(preview->height() - previewTarget) <= tolerance);
+        CHECK(std::abs(layers->height() - layersTarget) <= tolerance);
+        CHECK(std::abs(lint->height() - lintTarget) <= tolerance);
+        CHECK(std::abs(library->height() - (available - others)) <= tolerance);
+        CHECK(layers->widget()->findChild<QScrollBar*>()->maximum() == 0);
+    } else {
+        // Short of room, the Library gives way first, then Lint, then the
+        // preview, each down to its minimum; Layers only when they all have.
+        CHECK(library->height() == minimum(library));
+        const int lintRoom = available - palette->height() - previewTarget - layersTarget - tabs - minimum(library);
+        if (lintRoom >= minimum(lint)) {
+            CHECK(std::abs(lint->height() - lintRoom) <= tolerance);
+            CHECK(std::abs(preview->height() - previewTarget) <= tolerance);
+            CHECK(std::abs(layers->height() - layersTarget) <= tolerance);
+        } else {
+            CHECK(lint->height() == minimum(lint));
+            CHECK(preview->height() <= previewTarget);
+            CHECK(preview->height() >= minimum(preview));
+            CHECK(layers->height() >= minimum(layers));
+            if (preview->height() > minimum(preview))
+                CHECK(std::abs(layers->height() - layersTarget) <= tolerance);
+        }
+    }
+    if (screen == QSize(1920, 1080)) {
+        // The audit's numbers at 1080p: Library and Lint give way.
+        CHECK(std::abs(preview->height() - previewTarget) <= tolerance);
+        CHECK(library->height() == minimum(library));
+        CHECK(lint->height() < lintTarget);
+    } else if (screen == QSize(2560, 1440)) {
+        CHECK(library->height() > minimum(library));
+    }
+}
+
+TEST_CASE("a separator drag in a column keeps its heights until Reset Layout", "[dock-height]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(windowOn({2560, 1440}));
+    w.show();
+    QApplication::processEvents();
+    const bool left = GENERATE(true, false);
+    CAPTURE(left);
+    QDockWidget* const upper = left ? w.toolboxDock() : w.layersDock();
+    QDockWidget* const other = left ? w.layersDock() : w.toolboxDock();
+    const int defaultHeight = upper->height();
+    const int otherHeight = other->height();
+    dragSeparatorBelow(w, upper, 60);
+    const int dragged = upper->height();
+    CAPTURE(defaultHeight, dragged);
+    REQUIRE(dragged >= defaultHeight + 50);
+
+    // The dragged column isn't set back to its defaults as the window
+    // changes; the other column keeps following them.
+    for (const int dy : {-100, 100}) {
+        w.resize(w.width(), w.height() + dy);
+        QApplication::processEvents();
+        CHECK(upper->height() > defaultHeight + 20);
+        if (left)
+            CHECK(upper->height() == dragged);
+        CHECK(other->height() == otherHeight);
+    }
+    act(w, QStringLiteral("resetLayout"))->trigger();
+    QApplication::processEvents();
+    CHECK(upper->height() == defaultHeight);
+    w.resize(w.width(), w.height() + 100);
+    QApplication::processEvents();
+    CHECK(upper->height() == defaultHeight);
+}
+
+TEST_CASE("a vertical resizeDocks call is the user's height for that column", "[dock-height]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(windowOn({2560, 1440}));
+    w.show();
+    QApplication::processEvents();
+    const int defaultHeight = w.layersDock()->height();
+    w.resizeDocks({w.layersDock()}, {defaultHeight + 60}, Qt::Vertical);
+    QApplication::processEvents();
+    const int set = w.layersDock()->height();
+    REQUIRE(set > defaultHeight + 30);
+    w.resize(w.width(), w.height() + 100);
+    QApplication::processEvents();
+    CHECK(w.layersDock()->height() >= set);
+    // Closing and opening a dock re-applies the heights only where they
+    // are still followed.
+    const int options = w.toolOptionsDock()->height();
+    w.lintDock()->close();
+    QApplication::processEvents();
+    QApplication::processEvents();
+    CHECK(w.layersDock()->height() >= set);
+    CHECK(w.toolOptionsDock()->height() == options);
+}
+
+TEST_CASE("closing and reopening a right dock re-applies the default heights", "[dock-height][dock-closed]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(windowOn({2560, 1440}));
+    w.show();
+    QApplication::processEvents();
+    const int preview = w.previewDock()->height();
+    const int lint = w.lintDock()->height();
+    const int library = w.libraryDock()->height();
+    w.layersDock()->close();
+    QApplication::processEvents();
+    QApplication::processEvents();
+    // Layers' height goes to the Library; the others keep theirs, the
+    // preview's third of a column with one separator fewer.
+    CHECK(std::abs(w.previewDock()->height() - preview) <= 2);
+    CHECK(w.lintDock()->height() == lint);
+    CHECK(w.libraryDock()->height() > library);
+    w.layersDock()->show();
+    QApplication::processEvents();
+    QApplication::processEvents();
+    CHECK(w.previewDock()->height() == preview);
+    CHECK(w.lintDock()->height() == lint);
+    CHECK(w.libraryDock()->height() == library);
 }
 
 TEST_CASE("the app's settings are an INI file in the test's scratch directory") {
@@ -1472,4 +1798,28 @@ TEST_CASE("a saved layout that hid a dock that can't close still shows it") {
     MainWindow w;
     CHECK(w.previewDock()->isVisibleTo(&w));
     CHECK(w.paletteDock()->isVisibleTo(&w));
+}
+
+TEST_CASE("Tool Options shows each tool's settings and help without scrolling where the column is tall enough",
+          "[tool-options-height]") {
+    ClearLayout clear;
+    MainWindow w;
+    const QSize screen = GENERATE(QSize(1920, 1080), QSize(2560, 1440));
+    w.resize(windowOn(screen));
+    w.show();
+    QApplication::processEvents();
+    QApplication::processEvents();
+    auto* scroll = qobject_cast<QScrollArea*>(w.toolOptionsDock()->widget());
+    REQUIRE(scroll);
+    // At 1080 these panels are taller than the column on their own (#236).
+    const QStringList tallest{QStringLiteral("text"), QStringLiteral("form"), QStringLiteral("spray"),
+                              QStringLiteral("texture"), QStringLiteral("outline")};
+    for (Tool* t : w.tools()->tools()) {
+        w.tools()->setActive(t);
+        QApplication::processEvents();
+        const int overflow = scroll->verticalScrollBar()->maximum();
+        CAPTURE(screen.width(), t->id().toStdString(), overflow);
+        if (screen.height() == 1080 && tallest.contains(t->id())) continue;
+        CHECK(overflow == 0);
+    }
 }

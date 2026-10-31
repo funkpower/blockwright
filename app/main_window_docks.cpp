@@ -5,6 +5,7 @@
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "device_grid.h"
 #include "glyph_bar.h"
 #include "irc_meter.h"
 #include "layers_dock.h"
@@ -26,19 +27,38 @@
 #include <QScrollBar>
 #include <QResizeEvent>
 #include <QShowEvent>
+#include <QStyle>
 
 #include <algorithm>
+#include <utility>
 
 namespace bw {
 
 namespace {
 
 // Bumped when the docks change, so an older saved layout is dropped.
-constexpr int kLayoutVersion = 4;
-constexpr int kLeftColumnWidth = 256;
+constexpr int kLayoutVersion = 5;
+// The left column is as wide as the right where the canvas has room, so the
+// tallest tools' help wraps in fewer lines; where it hasn't, it gives that
+// back before the right column shrinks.
+constexpr int kLeftColumnWidth = 360;
+constexpr int kLeftColumnNarrow = 256;
 constexpr int kRightColumnWidth = 360;
 // An 80-column piece at 1x, excluding the frame, scrollbar and IRC gutter.
 constexpr int kCanvasViewportFloor = 640;
+// The preview's default shows an 80x25 piece at 1x, in at most a third of
+// the column.
+constexpr QSize kPreviewPiece{80, 25};
+constexpr int kPreviewColumnShare = 3;
+
+// The height a scrolling panel's content asks for at `width`: Layers and
+// Lint ask for a set number of list rows (RowTree).
+int panelHeight(const QScrollArea* scroll, int width) {
+    const QWidget* content = scroll->widget();
+    const int inner = width - 2 * scroll->frameWidth();
+    return 2 * scroll->frameWidth() +
+           (content->hasHeightForWidth() ? content->heightForWidth(inner) : content->sizeHint().height());
+}
 
 // A panel that scrolls up and down only: at least as wide as its content
 // and the vertical scrollbar, so the column's minimum width shows it all.
@@ -76,6 +96,9 @@ void MainWindow::createDocks() {
     };
     toolbox_ = new Toolbox(tools_, toolActions_);
     toolboxDock_ = dock(tr("Toolbox"), "toolboxDock", toolbox_);
+    // Taller than its buttons only if the user drags it so: a taller window
+    // gives its height to Tool Options.
+    toolboxDock_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     toolOptions_ = new ToolOptions(view_, tools_, selectTool_, findChild<QAction*>(QStringLiteral("filledShapes")));
     toolOptions_->followKeys(findChild<QAction*>(QStringLiteral("brushSmaller")),
                              findChild<QAction*>(QStringLiteral("brushLarger")),
@@ -173,6 +196,11 @@ void MainWindow::createDocks() {
 
     for (QDockWidget* d : docks())
         d->installEventFilter(this);
+    // Narrowing the left column can give the toolbox another row.
+    connect(toolbox_, &Toolbox::rowsChanged, this, [this] {
+        if (followDefaultDockHeights_.testFlag(Qt::LeftDockWidgetArea))
+            queueDefaultDockSizes();
+    });
     resetLayout();
 }
 
@@ -209,13 +237,13 @@ void MainWindow::resetLayout() {
     layout()->activate();
     defaultDockWidthsPending_ = true;
     if (isVisible())
-        applyDefaultDockWidths();
+        applyDefaultDockSizes();
 }
 
 void MainWindow::showEvent(QShowEvent* e) {
     QMainWindow::showEvent(e);
     if (defaultDockWidthsPending_)
-        applyDefaultDockWidths();
+        applyDefaultDockSizes();
 }
 
 bool MainWindow::event(QEvent* e) {
@@ -223,36 +251,58 @@ bool MainWindow::event(QEvent* e) {
     // then is the user's.
     const bool moving = separatorDrag_ && e->type() == QEvent::Timer;
     const QSize columns = moving ? dockColumnWidths() : QSize();
+    const QList<int> heights = moving ? dockHeights(separatorArea_) : QList<int>();
     const bool handled = QMainWindow::event(e);
     if (e->type() == QEvent::MouseButtonPress) {
         // QMainWindow takes a left press on a separator, beside the canvas or
         // between docks; QWidget ignores a press anywhere else.
-        separatorDrag_ =
-            handled && e->isAccepted() && static_cast<QMouseEvent*>(e)->button() == Qt::LeftButton;
+        auto* press = static_cast<QMouseEvent*>(e);
+        separatorDrag_ = handled && e->isAccepted() && press->button() == Qt::LeftButton;
+        separatorArea_ =
+            separatorDrag_ ? heightSeparatorArea(press->position().toPoint()) : Qt::NoDockWidgetArea;
     } else if (e->type() == QEvent::MouseButtonRelease) {
-        separatorDrag_ = false;
-    } else if (moving && dockColumnWidths() != columns) {
-        keepDockWidths();
+        // A drag moves the other areas' docks too (the glyph bar's shortens
+        // both columns): the ones still following go back to their defaults.
+        if (std::exchange(separatorDrag_, false) && followDefaultDockHeights_)
+            applyDefaultDockHeights();
+        separatorArea_ = Qt::NoDockWidgetArea;
+    } else if (moving) {
+        if (dockColumnWidths() != columns)
+            keepDockWidths();
+        if (separatorArea_ != Qt::NoDockWidgetArea && dockHeights(separatorArea_) != heights)
+            followDefaultDockHeights_.setFlag(separatorArea_, false);
     }
     return handled;
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
-    // A dock opening or closing changes its column's minimum: apply the
-    // defaults again once the layout has caught up.
-    if ((e->type() == QEvent::ShowToParent || e->type() == QEvent::HideToParent) && followDefaultDockWidths_ &&
-        isVisible() && !dockColumnChangePending_ && docks().contains(qobject_cast<QDockWidget*>(watched))) {
-        dockColumnChangePending_ = true;
-        QMetaObject::invokeMethod(
-            this,
-            [this] {
-                if (dockColumnChangePending_ && followDefaultDockWidths_ && isVisible())
-                    applyDefaultDockWidths();
-                dockColumnChangePending_ = false;
-            },
-            Qt::QueuedConnection);
-    }
+    // A dock opening or closing changes its column's minimum and the room
+    // the others share: apply the defaults again once the layout has caught up.
+    if ((e->type() == QEvent::ShowToParent || e->type() == QEvent::HideToParent) &&
+        docks().contains(qobject_cast<QDockWidget*>(watched)))
+        queueDefaultDockSizes();
     return QMainWindow::eventFilter(watched, e);
+}
+
+void MainWindow::queueDefaultDockSizes() {
+    if (!isVisible() || (!followDefaultDockWidths_ && !followDefaultDockHeights_))
+        return;
+    const bool queued = dockColumnChangePending_ || dockHeightChangePending_;
+    dockColumnChangePending_ = dockColumnChangePending_ || followDefaultDockWidths_;
+    dockHeightChangePending_ = dockHeightChangePending_ || followDefaultDockHeights_;
+    if (queued)
+        return;
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            if (dockColumnChangePending_ && followDefaultDockWidths_ && isVisible())
+                applyDefaultDockWidths();
+            dockColumnChangePending_ = false;
+            if (dockHeightChangePending_ && followDefaultDockHeights_ && isVisible())
+                applyDefaultDockHeights();
+            dockHeightChangePending_ = false;
+        },
+        Qt::QueuedConnection);
 }
 
 void MainWindow::resizeEvent(QResizeEvent* e) {
@@ -261,6 +311,8 @@ void MainWindow::resizeEvent(QResizeEvent* e) {
     // sizing a column ends this; Qt squeezing or widening one doesn't.
     if (followDefaultDockWidths_ && isVisible())
         applyDefaultDockWidths();
+    if (followDefaultDockHeights_ && isVisible())
+        applyDefaultDockHeights();
 }
 
 void MainWindow::resizeDocks(const QList<QDockWidget*>& docks, const QList<int>& sizes, Qt::Orientation orientation) {
@@ -269,7 +321,17 @@ void MainWindow::resizeDocks(const QList<QDockWidget*>& docks, const QList<int>&
             return area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea;
         }))
         keepDockWidths();
+    if (orientation == Qt::Vertical)
+        for (QDockWidget* d : docks)
+            if (!d->isFloating())
+                followDefaultDockHeights_.setFlag(dockWidgetArea(d), false);
     QMainWindow::resizeDocks(docks, sizes, orientation);
+}
+
+void MainWindow::applyDefaultDockSizes() {
+    applyDefaultDockWidths();
+    followDefaultDockHeights_ = Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea;
+    applyDefaultDockHeights();
 }
 
 void MainWindow::keepDockWidths() {
@@ -302,16 +364,122 @@ void MainWindow::applyDefaultDockWidths() {
     const int deficit = kCanvasViewportFloor - scroll_->viewport()->width();
     if (deficit > 0) {
         const QSize columns = dockColumnWidths();
-        const int leftRoom = std::max(0, columns.width() - columnMinimum(Qt::LeftDockWidgetArea));
+        const int leftMinimum = columnMinimum(Qt::LeftDockWidgetArea);
+        const int leftRoom = std::max(0, columns.width() - leftMinimum);
         const int rightRoom = std::max(0, columns.height() - columnMinimum(Qt::RightDockWidgetArea));
-        // Keep the options readable while the right column has room to give.
-        // When even the minimums can't leave 640px, give the canvas all we can.
-        const int rightShrink = std::min(deficit, rightRoom);
-        const int leftShrink = std::min(deficit - rightShrink, leftRoom);
+        // The left column's width above 256 goes first, then the right column
+        // shrinks while it has room, which keeps the options readable. When
+        // even the minimums can't leave 640px, give the canvas all we can.
+        const int leftExtra = std::max(0, columns.width() - std::max(kLeftColumnNarrow, leftMinimum));
+        const int leftGive = std::min(deficit, leftExtra);
+        const int rightShrink = std::min(deficit - leftGive, rightRoom);
+        const int leftShrink = leftGive + std::min(deficit - leftGive - rightShrink, leftRoom - leftGive);
         resizeColumns(columns.width() - leftShrink, columns.height() - rightShrink);
     }
     followDefaultDockWidths_ = true;
     dockColumnChangePending_ = false;
+}
+
+void MainWindow::applyDefaultDockHeights() {
+    dockHeightChangePending_ = false;
+    // The glyph bar first: its height sets the side columns'.
+    if (followDefaultDockHeights_.testFlag(Qt::BottomDockWidgetArea) &&
+        dockStack(Qt::BottomDockWidgetArea).contains(glyphBarDock_)) {
+        QMainWindow::resizeDocks({glyphBarDock_}, {glyphBarDock_->sizeHint().height()}, Qt::Vertical);
+        layout()->activate();
+    }
+    const int separator = style()->pixelMetric(QStyle::PM_DockWidgetSeparatorExtent, nullptr, this);
+    // The side columns share the canvas's rows.
+    const QRect band = centralWidget()->geometry();
+    for (const Qt::DockWidgetArea area : {Qt::LeftDockWidgetArea, Qt::RightDockWidgetArea}) {
+        const QList<QDockWidget*> stack = dockStack(area);
+        if (!followDefaultDockHeights_.testFlag(area) || stack.size() < 2)
+            continue;
+        const int available = band.height() - int(stack.size() - 1) * separator;
+        // The dock that takes what the others leave, and the ones that give
+        // up height first when the column is short (PLAN §11).
+        QDockWidget* const rest = area == Qt::LeftDockWidgetArea ? toolOptionsDock_ : libraryDock_;
+        const QDockWidget* const shrinkOrder[] = {lintDock_, ircViewDock_, previewDock_, layersDock_};
+        QList<int> sizes;
+        QList<int> minimums;
+        for (int i = 0; i < stack.size(); ++i) {
+            QDockWidget* const d = stack[i];
+            // A tabbed group's tab bar is under its front dock, in its slot.
+            const int end = i + 1 < stack.size() ? stack[i + 1]->y() - separator : band.bottom() + 1;
+            const int tabs = std::max(0, end - d->geometry().bottom() - 1);
+            const int title = d->height() - d->widget()->height();
+            int target = d->height();
+            if (d == toolboxDock_ || d == paletteDock_) {
+                target = d->sizeHint().height();
+            } else if (d == previewDock_) {
+                const QSize cell = renderer_.cellSize();
+                const QSize piece = DeviceGrid::of(preview_).widgetSize(
+                    {kPreviewPiece.width() * cell.width(), kPreviewPiece.height() * cell.height()});
+                const auto* scroll = static_cast<QScrollArea*>(previewDock_->widget());
+                int content = piece.height() + 2 * scroll->frameWidth();
+                if (piece.width() + 2 * scroll->frameWidth() > d->width())
+                    content += scroll->horizontalScrollBar()->sizeHint().height();
+                target = std::min(title + content, available / kPreviewColumnShare);
+            } else if (d == layersDock_ || d == lintDock_ || d == ircViewDock_) {
+                // The IRC View shares Lint's tab and its height.
+                const QDockWidget* panel = d == ircViewDock_ ? lintDock_ : d;
+                target = title + panelHeight(static_cast<const QScrollArea*>(panel->widget()), d->width());
+            }
+            minimums << tabs + std::max(d->minimumHeight(), d->minimumSizeHint().height());
+            sizes << std::max(tabs + target, minimums.back());
+        }
+        if (const int r = int(stack.indexOf(rest)); r >= 0) {
+            int others = 0;
+            for (int i = 0; i < stack.size(); ++i)
+                if (i != r)
+                    others += sizes[i];
+            sizes[r] = available - others;
+            int deficit = minimums[r] - sizes[r];
+            sizes[r] = std::max(sizes[r], minimums[r]);
+            for (const QDockWidget* d : shrinkOrder) {
+                const int i = int(stack.indexOf(d));
+                if (deficit <= 0 || i < 0)
+                    continue;
+                const int give = std::min(deficit, sizes[i] - minimums[i]);
+                sizes[i] -= give;
+                deficit -= give;
+            }
+        }
+        QMainWindow::resizeDocks(stack, sizes, Qt::Vertical);
+        layout()->activate();
+    }
+}
+
+QList<QDockWidget*> MainWindow::dockStack(Qt::DockWidgetArea area) const {
+    QList<QDockWidget*> stack;
+    for (QDockWidget* d : docks())
+        if (!d->isHidden() && !d->isFloating() && dockWidgetArea(d) == area && d->geometry().intersects(rect()))
+            stack << d;
+    std::stable_sort(stack.begin(), stack.end(), [](const QDockWidget* a, const QDockWidget* b) {
+        return a->y() != b->y() ? a->y() < b->y() : a->x() < b->x();
+    });
+    return stack;
+}
+
+QList<int> MainWindow::dockHeights(Qt::DockWidgetArea area) const {
+    QList<int> heights;
+    if (area != Qt::NoDockWidgetArea)
+        for (const QDockWidget* d : dockStack(area))
+            heights << d->height();
+    return heights;
+}
+
+Qt::DockWidgetArea MainWindow::heightSeparatorArea(QPoint pos) const {
+    for (const Qt::DockWidgetArea area : {Qt::LeftDockWidgetArea, Qt::RightDockWidgetArea}) {
+        QRect column;
+        for (const QDockWidget* d : dockStack(area))
+            column |= d->geometry();
+        if (column.contains(pos))
+            return area;
+    }
+    if (pos.y() > centralWidget()->geometry().bottom())
+        return Qt::BottomDockWidgetArea;
+    return Qt::NoDockWidgetArea;
 }
 
 QDockWidget* MainWindow::columnDock(Qt::DockWidgetArea area) const {
