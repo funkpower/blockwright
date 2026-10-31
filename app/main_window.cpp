@@ -493,6 +493,11 @@ void MainWindow::open() {
         openInteractive(path);
 }
 
+void MainWindow::openRequested(const QString& path) {
+    if (maybeSave())
+        openInteractive(path);
+}
+
 void MainWindow::openInteractive(const QString& path) {
     QString error;
     if (!openFile(path, &error))

@@ -142,9 +142,9 @@ expect "run-generators usage" 2 'run-generators takes one project' -- "$cli" run
 # a project with no generators runs none and isn't rewritten
 "$cli" pack "$piece" "$tmp/plain.bwp" >/dev/null
 cp "$tmp/plain.bwp" "$tmp/plain-before.bwp"
-touch -d '2001-01-01' "$tmp/plain.bwp"
+touch -t 200101010000 "$tmp/plain.bwp" && touch -t 200101020000 "$tmp/a-day-later"
 expect "no generators" 0 '^0 generators run$' -- "$cli" run-generators "$tmp/plain.bwp"
-if [[ $(stat -c %Y "$tmp/plain.bwp") -lt 1000000000 ]]; then ok "a project with none isn't rewritten"; else bad "a project with none was rewritten"; fi
+if [[ $tmp/plain.bwp -ot $tmp/a-day-later ]]; then ok "a project with none isn't rewritten"; else bad "a project with none was rewritten"; fi
 
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]

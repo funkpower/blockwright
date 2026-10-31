@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # blockwright --version, --help and usage errors, with no display: gui_version_test.sh <blockwright>
+# BW_NOTICES_DIR names where --version says the notices are (default share/doc/blockwright/).
 set -uo pipefail
 bin=$1
+notices_dir=${BW_NOTICES_DIR:-share/doc/blockwright/}
 fails=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fails=$((fails + 1)); }
@@ -14,7 +16,7 @@ if [[ $st -eq 0 && $first =~ ^blockwright\ 0\.1\.0\ \([0-9a-f]{7,}(-dirty)?\)$|^
 else
   bad "--version (exit $st): $out"
 fi
-if grep -q 'IBM VGA 8x16 and IBM PC BIOS 8x8 fonts, (c) 2016-2020 VileR,' <<<"$out" && grep -q 'CC BY-SA 4.0, https://int10h.org/oldschool-pc-fonts/' <<<"$out" && grep -q 'share/doc/blockwright/' <<<"$out"; then
+if grep -q 'IBM VGA 8x16 and IBM PC BIOS 8x8 fonts, (c) 2016-2020 VileR,' <<<"$out" && grep -q 'CC BY-SA 4.0, https://int10h.org/oldschool-pc-fonts/' <<<"$out" && grep -qF "notices in $notices_dir" <<<"$out"; then
   ok "--version credits the font"
 else
   bad "--version has no font credit: $out"

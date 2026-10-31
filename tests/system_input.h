@@ -13,6 +13,10 @@
 
 #include <qpa/qwindowsysteminterface.h>
 
+#ifdef Q_OS_MACOS
+Q_GUI_EXPORT void qt_set_sequence_auto_mnemonic(bool b);
+#endif
+
 namespace bwtest {
 
 // Shows the top-level widget and waits until its window is exposed.
@@ -87,12 +91,36 @@ inline void systemTablet(QWidget* w, QPointF at, Qt::MouseButtons held, double p
 inline void systemKey(QWidget* w, int key, Qt::KeyboardModifiers mods = Qt::NoModifier,
                       const QString& text = QString()) {
     QWindow* win = w->window()->windowHandle();
+#ifdef Q_OS_MACOS
+    // Qt on macOS leaves shortcuts out of a key event's delivery: the Cocoa
+    // platform offers the press as a shortcut first, and sends the key only
+    // when nothing took it.
+    if (QWindowSystemInterface::handleShortcutEvent(win, 0, key, mods, 0, 0, 0, text)) {
+        QApplication::processEvents();
+        return;
+    }
+#endif
     QWindowSystemInterface::handleKeyEvent<QWindowSystemInterface::SynchronousDelivery>(win, QEvent::KeyPress, key,
                                                                                          mods, text);
     QWindowSystemInterface::handleKeyEvent<QWindowSystemInterface::SynchronousDelivery>(win, QEvent::KeyRelease, key,
                                                                                          mods, text);
     QApplication::processEvents();
 }
+
+// Alt+letter opens a menu from the menu bar for as long as this lives. macOS
+// turns Qt's mnemonics off (its own menu bar has none), but the widget menu
+// bar the offscreen platform shows still handles them, so tests of a menu
+// opened from the keyboard run there too.
+#ifdef Q_OS_MACOS
+struct KeyboardMenus {
+    KeyboardMenus() { qt_set_sequence_auto_mnemonic(true); }
+    ~KeyboardMenus() { qt_set_sequence_auto_mnemonic(false); }
+    KeyboardMenus(const KeyboardMenus&) = delete;
+    KeyboardMenus& operator=(const KeyboardMenus&) = delete;
+};
+#else
+struct KeyboardMenus {};
+#endif
 
 // A menu pops up over w mid-drag. If `takeRelease`, `button` comes up over
 // the menu, which gets the release (`held` still down after it); then the

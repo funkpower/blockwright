@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # The notices test stays inside its staging dir when an install dir is absolute:
-#   install_notices_outside_test.sh <source dir> <scratch dir> <generator> <Qt6_DIR>
+#   install_notices_outside_test.sh <source dir> <scratch dir> <generator> <Qt6_DIR> [<prefix path>]
+#
+# <prefix path> is the outer build's CMAKE_PREFIX_PATH with ':' between
+# entries, so the nested build finds libraries the outer one was pointed at
+# (on a Mac, scripts/macos-deps's libzip and zstd).
 #
 # Configures a build of <source dir> (the two binaries, no tests) whose prefix and
 # CMAKE_INSTALL_DOCDIR are absolute paths outside the staging dir (which
@@ -11,12 +15,12 @@
 # only one in CMAKE_CONFIGURATION_TYPES, which the environment may set to a list
 # without it.
 set -uo pipefail
-src=$1 tmp=$2 gen=$3 qt=$4
+src=$1 tmp=$2 gen=$3 qt=$4 prefixes=${5:-}
 rm -rf "$tmp" && mkdir -p "$tmp"
 tmp=$(cd "$tmp" && pwd)
 build=$tmp/build prefix=$tmp/outside-prefix docs=$tmp/outside-docs config=Release
 
-cmake -S "$src" -B "$build" -G "$gen" -DQt6_DIR="$qt" -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE="$config" \
+cmake -S "$src" -B "$build" -G "$gen" -DQt6_DIR="$qt" -DCMAKE_PREFIX_PATH="${prefixes//:/;}" -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE="$config" \
   -DCMAKE_CONFIGURATION_TYPES="$config" -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_DOCDIR="$docs" >/dev/null || exit 1
 nice -n 10 cmake --build "$build" --config "$config" -j 8 --target blockwright-cli --target blockwright >/dev/null || exit 1
 

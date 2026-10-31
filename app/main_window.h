@@ -195,6 +195,9 @@ public slots:
     void open();
     // Opens `path`, reporting a failure in a message box.
     void openInteractive(const QString& path);
+    // Opens a file the system asks for (FileOpenForwarder): asks to save
+    // unsaved edits first, as File > Open does.
+    void openRequested(const QString& path);
     // File > Open Project Directory...: a directory picker.
     void openDirectory();
     // File > Open Scene...: a file picker, then the question whether to run

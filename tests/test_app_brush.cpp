@@ -1710,6 +1710,7 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
 }
 
 TEST_CASE("a menu opened from the keyboard ends a mouse drag; a stylus stroke goes on (#47)") {
+    const bwtest::KeyboardMenus keyboardMenus;
     // Alt+F takes the focus from the canvas twice, for the popup and then for
     // the menu bar; a click on the menu bar takes it only for the popup.
     MainWindow w;
@@ -1783,6 +1784,7 @@ TEST_CASE("a menu opened from the keyboard ends a mouse drag; a stylus stroke go
 }
 
 TEST_CASE("a window switch ends a stylus stroke a menu opened from the keyboard kept (#47)") {
+    const bwtest::KeyboardMenus keyboardMenus;
     // The menu bar has the focus, not the canvas, so the canvas sees no
     // focus-out when the window goes inactive.
     MainWindow w;
@@ -1844,6 +1846,7 @@ TEST_CASE("a window switch ends a stylus stroke a menu opened from the keyboard 
 }
 
 TEST_CASE("the undo key during a stylus stroke undoes nothing while the menu bar has the focus (#47)") {
+    const bwtest::KeyboardMenus keyboardMenus;
     MainWindow w;
     REQUIRE(bwtest::showExposed(&w));
     CanvasView* v = w.canvasView();

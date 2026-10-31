@@ -718,10 +718,12 @@ std::string remoteCommand(std::string_view dir, std::string_view name, std::size
     // whether the round is renamed into place. It gets the mode `cat >`
     // would have given it. PIPE is trapped because the client gone leaves
     // the "only N bytes" message no reader, and dash, zsh and busybox ash
-    // run no EXIT trap for a signal that kills them.
+    // run no EXIT trap for a signal that kills them. The signal trap removes
+    // the file itself: bash 5.3 on macOS runs no EXIT trap for the `exit` in
+    // it. BSD wc pads the count with spaces, which $(( )) drops.
     return "set -e; d=" + d + "; mkdir -p \"$d\"; t=; trap '[ -z \"$t\" ] || rm -f \"$t\"' EXIT; "
-           "trap 'exit 1' HUP INT TERM PIPE; t=$(mktemp \"$d/." + n + ".XXXXXX\"); cat > \"$t\"; "
-           "got=$(wc -c < \"$t\"); [ $got -eq " + z + " ] || { echo \"only $got of " + z + " bytes arrived, so $d/" + n +
+           "trap '[ -z \"$t\" ] || rm -f \"$t\"; exit 1' HUP INT TERM PIPE; t=$(mktemp \"$d/." + n + ".XXXXXX\"); cat > \"$t\"; "
+           "got=$(($(wc -c < \"$t\"))); [ $got -eq " + z + " ] || { echo \"only $got of " + z + " bytes arrived, so $d/" + n +
            " was left as it was\" >&2; exit 1; }; "
            "chmod \"$(umask -S | tr -d x)\" \"$t\"; mv -f \"$t\" \"$d/" + n + "\"; t=; "
            "f=\"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/weechat/weechat_fifo_$(pgrep -x weechat | head -n 1)\"; "

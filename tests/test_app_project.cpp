@@ -3,7 +3,9 @@
 // snapshots and kept files; saving it back in its form; a flat .ans save
 // through project::toAnsi; snapshots from the GUI.
 
+#include "canvas_view.h"
 #include "document.h"
+#include "file_open.h"
 #include "main_window.h"
 
 #include "blockwright/composite.h"
@@ -23,6 +25,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileOpenEvent>
+#include <QKeyEvent>
 #include <QMessageBox>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -115,6 +119,46 @@ void answer(QWidget* context, QMessageBox::StandardButton button, bool* asked, Q
 }
 
 } // namespace
+
+// On macOS a document opened from the Finder or dropped on the Dock icon comes
+// as a QFileOpenEvent sent to the application.
+TEST_CASE("a file the system hands the app opens in the window, asking first about unsaved edits") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    MainWindow w;
+    w.show();
+    QApplication::instance()->installEventFilter(new FileOpenForwarder(&w));
+    const QString tux = tuxAt(tmp.filePath(QStringLiteral("tux.ans")));
+    const QString other = tuxAt(tmp.filePath(QStringLiteral("other.ans")));
+    const auto systemOpens = [](const QString& path) {
+        QFileOpenEvent e(path);
+        return QApplication::sendEvent(QApplication::instance(), &e);
+    };
+
+    CHECK(systemOpens(tux));
+    CHECK(w.document()->path() == tux);
+    CHECK_FALSE(w.document()->isModified());
+
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier, QStringLiteral("x"));
+    QApplication::sendEvent(w.canvasView(), &press);
+    REQUIRE(w.document()->isModified());
+    bool asked = false;
+    answer(&w, QMessageBox::Cancel, &asked);
+    systemOpens(other);
+    CHECK(asked);
+    CHECK(w.document()->path() == tux);
+    CHECK(w.document()->isModified());
+
+    answer(&w, QMessageBox::Discard, &asked);
+    systemOpens(other);
+    CHECK(asked);
+    CHECK(w.document()->path() == other);
+    CHECK_FALSE(w.document()->isModified());
+
+    // an empty request is not taken
+    CHECK_FALSE(systemOpens(QString()));
+    CHECK(w.document()->path() == other);
+}
 
 TEST_CASE("a .bwp project opens with everything it holds and saves back as a zip") {
     QTemporaryDir tmp;

@@ -64,15 +64,25 @@ real_root() {
   done
 }
 
+# resolve <path>: the absolute path, symlinks resolved, that need not exist
+# (GNU realpath -m; macOS's realpath has no -m)
+resolve() {
+  if realpath -m / >/dev/null 2>&1; then
+    realpath -m -- "$1"
+  else
+    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+  fi
+}
+
 # below <name> <path> <root>: print <path> resolved, or refuse unless it is
 # strictly below <root>
 below() {
   local name=$1 path=$2 root
-  root=$(realpath -m -- "$3")
+  root=$(resolve "$3")
   if [[ -z $path ]]; then
     echo "install-dev: refusing an empty $name" >&2; exit 2
   fi
-  path=$(realpath -m -- "$path")
+  path=$(resolve "$path")
   if [[ $path != "$root"/?* ]]; then
     echo "install-dev: refusing $name $path: it must be below $root/" >&2; exit 2
   fi

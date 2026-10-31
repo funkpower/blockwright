@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
+# The oldest macOS Qt 6.8 runs on; read only when building for a Mac. A
+# MACOSX_DEPLOYMENT_TARGET in the environment, or -D, names another.
+if(NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
+  set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0 CACHE STRING "Oldest macOS the build runs on")
+endif()
 project(blockwright VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -8,10 +13,43 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
+# macOS: with BLOCKWRIGHT_MACOS_BUNDLE the GUI is an app bundle and everything
+# installs inside it: the CLI beside the GUI in Contents/MacOS, the Library and
+# the notices in Contents/Resources (packaging/README.md). Without it a
+# Mac build installs bin/ and share/ as on Linux.
+if(APPLE)
+  option(BLOCKWRIGHT_MACOS_BUNDLE "Build the GUI as an app bundle holding the CLI, the Library and the notices" OFF)
+  # Installed, the binaries load Qt from where they were linked against it
+  # (Qt's frameworks are @rpath ones, and no Qt install is on dyld's default
+  # path); a bundle's look in Contents/Frameworks first.
+  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+endif()
+if(BLOCKWRIGHT_MACOS_BUNDLE)
+  set(BW_BUNDLE_ID online.pumpin.funkpower.blockwright)
+  set(CMAKE_INSTALL_BINDIR Blockwright.app/Contents/MacOS)
+  set(CMAKE_INSTALL_DATADIR Blockwright.app/Contents/Resources)
+  set(CMAKE_INSTALL_DOCDIR Blockwright.app/Contents/Resources/doc)
+  # where macdeployqt puts Qt
+  set(CMAKE_INSTALL_RPATH @executable_path/../Frameworks)
+  # Where --version and the About box send the reader for the notices
+  # (blockwright/credits.h).
+  set(BW_NOTICES_DIR "Contents/Resources/doc/ in the app bundle")
+  add_compile_definitions(BW_NOTICES_DIR="${BW_NOTICES_DIR}")
+endif()
+
 include(GNUInstallDirs)
 include(CTest)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg)
+# Older Qt releases (6.8.3 among them) link the AGL framework, which the
+# macOS 26 SDK no longer has; Qt uses nothing in it.
+if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
+  get_target_property(bw_gl_libs WrapOpenGL::WrapOpenGL INTERFACE_LINK_LIBRARIES)
+  if(bw_gl_libs)
+    list(FILTER bw_gl_libs EXCLUDE REGEX "AGL")
+    set_property(TARGET WrapOpenGL::WrapOpenGL PROPERTY INTERFACE_LINK_LIBRARIES "${bw_gl_libs}")
+  endif()
+endif()
 # Project files (PLAN §6): zip containers, zstd layer cells. zstd 1.5.6 and
 # later name the library zstd::libzstd; earlier configs only the shared and
 # static targets.

@@ -10,6 +10,8 @@ add_library(blockwright_app STATIC
   draw_tools.h
   face_picker.cpp
   face_picker.h
+  file_open.cpp
+  file_open.h
   font_scanner.cpp
   flow_row.cpp
   flow_row.h
@@ -145,4 +147,19 @@ endif()
 target_link_libraries(blockwright PRIVATE blockwright_app)
 target_compile_options(blockwright PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)
-install(TARGETS blockwright RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(BLOCKWRIGHT_MACOS_BUNDLE)
+  # Blockwright.app/Contents/MacOS/Blockwright, its icon made from the PNG
+  # packaging/macos/make-art.py draws
+  set(bw_icns ${CMAKE_CURRENT_BINARY_DIR}/blockwright.icns)
+  add_custom_command(OUTPUT ${bw_icns}
+    COMMAND ${PROJECT_SOURCE_DIR}/packaging/macos/make-icns ${PROJECT_SOURCE_DIR}/packaging/macos/icon-1024.png ${bw_icns}
+    DEPENDS ${PROJECT_SOURCE_DIR}/packaging/macos/icon-1024.png ${PROJECT_SOURCE_DIR}/packaging/macos/make-icns
+    VERBATIM)
+  target_sources(blockwright PRIVATE ${bw_icns})
+  set_source_files_properties(${bw_icns} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  set_target_properties(blockwright PROPERTIES
+    OUTPUT_NAME Blockwright
+    MACOSX_BUNDLE ON
+    MACOSX_BUNDLE_INFO_PLIST ${PROJECT_SOURCE_DIR}/packaging/macos/Info.plist.in)
+endif()
+install(TARGETS blockwright RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} BUNDLE DESTINATION .)

@@ -158,16 +158,18 @@ add_test(NAME install_notices
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_notices_test.sh
           ${PROJECT_BINARY_DIR} ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/install-notices-tmp
           ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DOCDIR} "$<CONFIG>")
+# the nested builds look where this one does, its list joined with ':'
+string(REPLACE ";" ":" bw_prefix_path "${CMAKE_PREFIX_PATH}")
 add_test(NAME install_notices_absolute_docdir
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_notices_outside_test.sh
           ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/install-notices-outside-tmp
-          ${CMAKE_GENERATOR} ${Qt6_DIR})
+          ${CMAKE_GENERATOR} ${Qt6_DIR} "${bw_prefix_path}")
 # The same with a space in every scratch path, so an unquoted path in either
 # script splits and the install escapes the staging dir
 add_test(NAME install_notices_space_path
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_notices_outside_test.sh
           ${PROJECT_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/install notices space-tmp"
-          ${CMAKE_GENERATOR} ${Qt6_DIR})
+          ${CMAKE_GENERATOR} ${Qt6_DIR} "${bw_prefix_path}")
 set_tests_properties(install_notices install_notices_absolute_docdir install_notices_space_path
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 # And under a multi-config generator, where CMAKE_BUILD_TYPE is ignored and
@@ -176,12 +178,12 @@ if(CMAKE_GENERATOR MATCHES "^Ninja")
   add_test(NAME install_notices_multi_config
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_notices_outside_test.sh
             ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/install-notices-multi-tmp
-            "Ninja Multi-Config" ${Qt6_DIR})
+            "Ninja Multi-Config" ${Qt6_DIR} "${bw_prefix_path}")
   # with CMAKE_CONFIGURATION_TYPES in the environment naming only another one
   add_test(NAME install_notices_multi_config_debug_env
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_notices_outside_test.sh
             ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/install-notices-multi-debug-tmp
-            "Ninja Multi-Config" ${Qt6_DIR})
+            "Ninja Multi-Config" ${Qt6_DIR} "${bw_prefix_path}")
   set_tests_properties(install_notices_multi_config PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
   set_tests_properties(install_notices_multi_config_debug_env PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CMAKE_CONFIGURATION_TYPES=Debug")
@@ -304,15 +306,23 @@ endforeach()
 # scale factor shrinks in logical pixels (400x300 at 2). So each scale gets a
 # screen of 800x600 logical pixels, the one the unscaled run has: the run
 # checks the same layout in fractional device pixels, not a smaller screen.
-foreach(screen "1.25 1000 750" "1.5 1200 900" "1.75 1400 1050" "2 1600 1200")
+# On a Mac the unscaled run has test_app.cpp's Mac screen, 800x800 at 72 dpi.
+if(APPLE)
+  set(dock_screens "1.25 1000 1000" "1.5 1200 1200" "1.75 1400 1400" "2 1600 1600")
+  set(dock_dpi 72)
+else()
+  set(dock_screens "1.25 1000 750" "1.5 1200 900" "1.75 1400 1050" "2 1600 1200")
+  set(dock_dpi 96)
+endif()
+foreach(screen IN LISTS dock_screens)
   separate_arguments(screen)
   list(GET screen 0 scale)
   list(GET screen 1 width)
   list(GET screen 2 height)
-  set(config "${CMAKE_CURRENT_BINARY_DIR}/offscreen-800x600-at-${scale}.json")
+  set(config "${CMAKE_CURRENT_BINARY_DIR}/offscreen-unscaled-at-${scale}.json")
   file(WRITE "${config}"
     "{\"screens\": [{\"name\": \"offscreen\", \"x\": 0, \"y\": 0, \"width\": ${width}, \"height\": ${height},"
-    " \"logicalDpi\": 96, \"logicalBaseDpi\": 96, \"dpr\": 1}]}\n")
+    " \"logicalDpi\": ${dock_dpi}, \"logicalBaseDpi\": ${dock_dpi}, \"dpr\": 1}]}\n")
   add_test(NAME "dock widths at scale ${scale}"
     COMMAND ${BW_APP_TEST_ENV} QT_QPA_PLATFORM=offscreen:configfile=${config} QT_SCALE_FACTOR=${scale}
             ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:blockwright-app-tests> "[dock-width]")
@@ -442,6 +452,15 @@ endif()
 
 add_test(NAME gui_version
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh ${BW_GUI_COMMAND})
+
+# The app bundle (macOS, BLOCKWRIGHT_MACOS_BUNDLE): its Info.plist, and the
+# notices --version names inside it.
+if(BLOCKWRIGHT_MACOS_BUNDLE)
+  add_test(NAME macos_bundle
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/macos_bundle_test.sh $<TARGET_BUNDLE_DIR:blockwright>
+            ${PROJECT_VERSION} ${BW_BUNDLE_ID} ${CMAKE_OSX_DEPLOYMENT_TARGET})
+  set_property(TEST gui_version install_notices APPEND PROPERTY ENVIRONMENT "BW_NOTICES_DIR=${BW_NOTICES_DIR}")
+endif()
 
 if(WIN32)
   # the UTF-8 code page and long paths, as the shipped programs have

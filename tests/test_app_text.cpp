@@ -323,6 +323,20 @@ TEST_CASE("a click on a text layer edits it, at the character clicked", "[text]"
     CHECK(d->layers().find(id)->props.text->text == U"aXbc");
 }
 
+TEST_CASE("the Text tool's colour list narrows below its longest name, which it cuts short", "[text][tool-options-width]") {
+    MainWindow w;
+    TextOptions* o = w.toolOptions()->textOptions();
+    REQUIRE(o);
+    QComboBox* colour = o->colourBox();
+    // a list as wide as its names, the same names and swatches
+    QComboBox full;
+    for (int i = 0; i < colour->count(); ++i)
+        full.addItem(colour->itemIcon(i), colour->itemText(i));
+    CHECK(colour->minimumSizeHint().width() < full.minimumSizeHint().width());
+    // the list still names every colour in full
+    CHECK(colour->findText(QStringLiteral("Light magenta")) == 13);
+}
+
 TEST_CASE("each Text tool option sets the text layer's source, one undo step each", "[text]") {
     MainWindow w;
     Document* d = w.document();
@@ -1908,25 +1922,29 @@ TEST_CASE("an Alt-drag of the text layer with the pointer at the view's edge doe
 
     // pressed on the letter, then held two pixels inside the viewport's
     // right edge, where the cursor after the letter is out of sight: the
-    // view stays put, so the pointer stays over the same cell
+    // view stays put, so the layer follows the pointer and nothing else (the
+    // two pixels may straddle a cell boundary, depending on the viewport's
+    // width)
     altMouse(QEvent::MouseButtonPress, v->toWidget(v->cellRect(QPoint(2, 1))).center());
     REQUIRE(v->shownOffset(id));
     const QWidget* vp = scroll->viewport();
     QPointF at;
-    std::vector<int> bars, cells;
+    std::vector<int> bars, cells, unders;
     for (int i = 0; i < 6; ++i) {
         at = v->mapFrom(vp, QPointF(vp->width() - 2 - i % 2, 40));
         altMouse(QEvent::MouseMove, at);
         bars.push_back(h->value());
         cells.push_back(v->shownOffset(id).value_or(QPoint(-1, -1)).x());
+        unders.push_back(v->cellAt(v->toView(at)).x());
     }
-    const int under = v->cellAt(v->toView(at)).x();
     INFO("horizontal bar after each move: " << bars[0] << " " << bars[1] << " " << bars[2] << " " << bars[3] << " "
                                             << bars[4] << " " << bars[5] << "; layer shown at x " << cells[0] << " "
                                             << cells[1] << " " << cells[2] << " " << cells[3] << " " << cells[4] << " "
-                                            << cells[5] << "; pointer over cell " << under);
+                                            << cells[5] << "; pointer over cells " << unders[0] << " " << unders[1]
+                                            << " " << unders[2] << " " << unders[3] << " " << unders[4] << " "
+                                            << unders[5]);
     CHECK(bars == std::vector<int>(6, h0));
-    CHECK(cells == std::vector<int>(6, under));
+    CHECK(cells == unders);
     CHECK(vert->value() == v0);
     {
         // the cursor after the letter is left past the viewport's right edge
@@ -1939,7 +1957,7 @@ TEST_CASE("an Alt-drag of the text layer with the pointer at the view's edge doe
         // the release lands it where the pointer's cell says, and the view
         // doesn't go after the cursor there either
         altMouse(QEvent::MouseButtonRelease, at);
-        CHECK(d->layers().find(id)->props.x == under);
+        CHECK(d->layers().find(id)->props.x == unders.back());
     } else {
         key(v, Qt::Key_Escape);
         altMouse(QEvent::MouseButtonRelease, at);

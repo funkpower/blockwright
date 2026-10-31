@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Builds the static libzip and zstd a macOS build links, into a prefix:
+#
+#   scripts/macos-deps <prefix> [<work dir>]
+#
+# The tarballs are pinned by SHA-256 and built for MACOSX_DEPLOYMENT_TARGET
+# (default 12.0, the oldest macOS Qt 6.8 supports) and CMAKE_OSX_ARCHITECTURES
+# (default this Mac's), so the app carries no Homebrew library built for a
+# newer macOS. libzip uses the system zlib and CommonCrypto; bzip2, lzma, zstd
+# compression in zips and TLS libraries are off (projects only store and
+# deflate). Point CMAKE_PREFIX_PATH at <prefix> to build against them.
+# A prefix that already holds both is left as it is.
+set -euo pipefail
+
+[[ $(uname -s) == Darwin ]] || { echo "macos-deps: run this on a Mac" >&2; exit 1; }
+[[ $# -ge 1 ]] || { echo "usage: macos-deps <prefix> [<work dir>]" >&2; exit 2; }
+mkdir -p "$1"
+prefix=$(cd "$1" && pwd)
+work=${2:-$prefix/.work}
+target=${MACOSX_DEPLOYMENT_TARGET:-12.0}
+archs=${CMAKE_OSX_ARCHITECTURES:-$(uname -m)}
+jobs=${JOBS:-8}
+
+zstd_ver=1.5.7
+zstd_url=https://github.com/facebook/zstd/releases/download/v$zstd_ver/zstd-$zstd_ver.tar.gz
+zstd_sha=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+libzip_ver=1.11.4
+libzip_url=https://github.com/nih-at/libzip/releases/download/v$libzip_ver/libzip-$libzip_ver.tar.xz
+libzip_sha=8a247f57d1e3e6f6d11413b12a6f28a9d388de110adc0ec608d893180ed7097b
+
+if [[ -f $prefix/lib/libzstd.a && -f $prefix/lib/libzip.a && -f $prefix/.macos-deps ]] \
+   && [[ $(<"$prefix/.macos-deps") == "zstd $zstd_ver libzip $libzip_ver $target $archs" ]]; then
+  echo "macos-deps: $prefix is up to date"
+  exit 0
+fi
+
+# fetch <url> <sha256> -> the tarball's path in the work dir
+fetch() {
+  local f=$work/${1##*/}
+  if [[ ! -f $f ]] || [[ $(shasum -a 256 "$f" | cut -d' ' -f1) != "$2" ]]; then
+    curl -fsSL --retry 3 -o "$f.part" "$1"
+    mv "$f.part" "$f"
+  fi
+  if [[ $(shasum -a 256 "$f" | cut -d' ' -f1) != "$2" ]]; then
+    echo "macos-deps: $f does not match its SHA-256" >&2
+    exit 1
+  fi
+  printf '%s\n' "$f"
+}
+
+common=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_LIBDIR=lib
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="$target" -DCMAKE_OSX_ARCHITECTURES="$archs"
+        -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON)
+
+rm -rf "$work/src" "$work/build"
+mkdir -p "$work/src" "$work/build"
+
+f=$(fetch "$zstd_url" "$zstd_sha")
+tar -xzf "$f" -C "$work/src"
+cmake -S "$work/src/zstd-$zstd_ver/build/cmake" -B "$work/build/zstd" "${common[@]}" \
+  -DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_STATIC=ON -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF >/dev/null
+nice -n 10 cmake --build "$work/build/zstd" -j "$jobs" >/dev/null
+cmake --install "$work/build/zstd" >/dev/null
+
+f=$(fetch "$libzip_url" "$libzip_sha")
+tar -xJf "$f" -C "$work/src"
+cmake -S "$work/src/libzip-$libzip_ver" -B "$work/build/libzip" "${common[@]}" \
+  -DENABLE_COMMONCRYPTO=ON -DENABLE_GNUTLS=OFF -DENABLE_MBEDTLS=OFF -DENABLE_OPENSSL=OFF \
+  -DENABLE_BZIP2=OFF -DENABLE_LZMA=OFF -DENABLE_ZSTD=OFF \
+  -DBUILD_TOOLS=OFF -DBUILD_REGRESS=OFF -DBUILD_OSSFUZZ=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOC=OFF >/dev/null
+nice -n 10 cmake --build "$work/build/libzip" -j "$jobs" >/dev/null
+cmake --install "$work/build/libzip" >/dev/null
+
+rm -rf "$work/src" "$work/build"
+printf '%s\n' "zstd $zstd_ver libzip $libzip_ver $target $archs" > "$prefix/.macos-deps"
+echo "macos-deps: zstd $zstd_ver and libzip $libzip_ver ($archs, macOS $target) in $prefix"

@@ -1427,8 +1427,24 @@ TEST_CASE("a path longer than a directory save can write is refused", "[project]
     CHECK(project::safeEntryPath(deep));
     Project p = everything();
     p.files[deep] = "deep";
-    project::writeDirectory(p, dir / "piece");
-    CHECK(project::read(dir / "piece") == p);
+#ifdef PATH_MAX
+    // (with room for the 64-byte temporary name beside it)
+    if ((dir / "piece" / deep).native().size() + 64 >= PATH_MAX) {
+        // macOS opens no path of PATH_MAX (1024) bytes or more, so there a
+        // directory save refuses it before making anything
+        try {
+            project::writeDirectory(p, dir / "piece");
+            FAIL("a path past PATH_MAX was written");
+        } catch (const ProjectError& e) {
+            CHECK(std::string(e.what()).find("the path is too long") != std::string::npos);
+        }
+        CHECK_FALSE(fs::exists(dir / "piece"));
+    } else
+#endif
+    {
+        project::writeDirectory(p, dir / "piece");
+        CHECK(project::read(dir / "piece") == p);
+    }
 
     // a byte more, or a path no disk takes, is refused everywhere
     std::string past = "refs";
@@ -2570,10 +2586,10 @@ TEST_CASE("a directory save that runs out of descriptors puts back every file it
 }
 
 TEST_CASE("a directory read that fails part way leaves no descriptor open", "[project][io]") {
-    if (!fs::is_directory("/proc/self/fd"))
-        SKIP("no /proc/self/fd to count descriptors in");
+    if (!fs::is_directory("/dev/fd"))
+        SKIP("no /dev/fd to count descriptors in");
     const auto open = [] {
-        return std::distance(fs::directory_iterator("/proc/self/fd"), fs::directory_iterator());
+        return std::distance(fs::directory_iterator("/dev/fd"), fs::directory_iterator());
     };
     const fs::path dir = scratch("readleak") / "piece";
     project::writeDirectory(everything(), dir);
@@ -2594,7 +2610,7 @@ namespace {
 
 // The descriptors this process holds open.
 long openDescriptors() {
-    return long(std::distance(fs::directory_iterator("/proc/self/fd"), fs::directory_iterator()));
+    return long(std::distance(fs::directory_iterator("/dev/fd"), fs::directory_iterator()));
 }
 
 // Stops counting allocations; how many were counted.
@@ -2620,8 +2636,8 @@ TEST_CASE("a directory save that runs out of memory opening a directory it made 
           "[project][io][safety]") {
     // refs/new is made and looked at; the next allocation, the opened
     // directory's path, fails
-    if (!fs::is_directory("/proc/self/fd"))
-        SKIP("no /proc/self/fd to count descriptors in");
+    if (!fs::is_directory("/dev/fd"))
+        SKIP("no /dev/fd to count descriptors in");
     const fs::path dir = scratch("alloc-open") / "piece";
     const Project p = everything();
     project::writeDirectory(p, dir);
@@ -2744,8 +2760,8 @@ TEST_CASE("a rollback that can't allocate at all still takes every step and says
     // the save fails at the scan, from where every allocation fails, and
     // zz-added is a directory with a file in it by then, which the rollback
     // can't remove as the file it added
-    if (!fs::is_directory("/proc/self/fd"))
-        SKIP("no /proc/self/fd to count descriptors in");
+    if (!fs::is_directory("/dev/fd"))
+        SKIP("no /dev/fd to count descriptors in");
     const fs::path dir = scratch("alloc-never") / "piece";
     Project p = everything();
     p.files["refs/old/gone"] = "dropped";
@@ -2821,8 +2837,8 @@ TEST_CASE("a directory save that runs out of memory at any allocation leaves the
     // found it, or (the failure falling after it is done, or caught where
     // the save gives nothing up) succeeds; and either way it leaves no
     // descriptor open.
-    if (!fs::is_directory("/proc/self/fd"))
-        SKIP("no /proc/self/fd to count descriptors in");
+    if (!fs::is_directory("/dev/fd"))
+        SKIP("no /dev/fd to count descriptors in");
     // `root` is made anew for each run, holding `old` saved at `dir`, or
     // where `there` says an empty directory at `dir`, which a failed save
     // leaves
@@ -2902,8 +2918,8 @@ TEST_CASE("a rollback that runs out of memory at any allocation still takes ever
     // fails with a ProjectError; every path left otherwise than the save
     // found it is named in it, or it says some couldn't be; and no
     // descriptor is left open.
-    if (!fs::is_directory("/proc/self/fd"))
-        SKIP("no /proc/self/fd to count descriptors in");
+    if (!fs::is_directory("/dev/fd"))
+        SKIP("no /dev/fd to count descriptors in");
     const fs::path dir = scratch("alloc-every-rollback") / "piece";
     Project p = everything();
     p.files["refs/old/gone"] = "dropped";

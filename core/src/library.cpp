@@ -545,24 +545,34 @@ fs::path sidecarPath(const fs::path& ans) {
 bool isArtName(const fs::path& p) { return lowered(p.extension().string()) == ".ans"; }
 bool isSidecarName(const fs::path& p) { return lowered(p.extension().string()) == ".json"; }
 
-fs::path pairedSidecar(const fs::path& ans) {
+namespace {
+
+// The sidecar `ans` pairs with among `listed`, the sidecar names (sorted)
+// beside it with its stem: the exact <stem>.json, else the first case
+// variant. Pairing goes by what the folder lists, not by a lookup: on a
+// case-insensitive file system (macOS's and Windows's default) a lookup of
+// <stem>.json finds <stem>.JSON too, under a name the folder doesn't have.
+fs::path chooseSidecar(const fs::path& ans, const std::vector<fs::path>& listed) {
     const fs::path exact = sidecarPath(ans);
-    if (present(exact))
-        return exact;
-    // A case variant of the extension (X.JSON beside X.ANS), the first by
-    // name if there are several.
+    for (const fs::path& p : listed)
+        if (p.filename() == exact.filename())
+            return p;
+    return listed.empty() ? exact : listed.front();
+}
+
+} // namespace
+
+fs::path pairedSidecar(const fs::path& ans) {
     std::vector<fs::path> found;
     std::error_code ec;
     const fs::path dir = ans.has_parent_path() ? ans.parent_path() : fs::path(".");
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
         const fs::path& p = it->path();
         if (p.stem() == ans.stem() && isSidecarName(p))
-            found.push_back(p);
+            found.push_back(ans.has_parent_path() ? p : p.filename());
     }
-    if (found.empty())
-        return exact;
     std::sort(found.begin(), found.end());
-    return found.front();
+    return chooseSidecar(ans, found);
 }
 
 // ---- Text styles ----
@@ -1072,6 +1082,10 @@ ScanResult scan(const fs::path& dir) {
     }
 
     std::sort(ans.begin(), ans.end());
+    // pairs as pairedSidecar does, from this listing
+    std::map<std::pair<fs::path, fs::path>, std::vector<fs::path>> sidecars;
+    for (const fs::path& j : jsons)
+        sidecars[{j.parent_path(), j.stem()}].push_back(j);
     for (const fs::path& p : ans) {
         // Its sidecar's name would be a text style's, which is read as one.
         if (isTextStyleName(sidecarPath(p))) {
@@ -1079,7 +1093,8 @@ ScanResult scan(const fs::path& dir) {
                                          sidecarPath(p).filename().string() + " would be a text style's file"});
             continue;
         }
-        jsons.erase(pairedSidecar(p));
+        if (const auto it = sidecars.find({p.parent_path(), p.stem()}); it != sidecars.end())
+            jsons.erase(chooseSidecar(p, it->second));
         try {
             r.stamps.push_back(readStamp(p));
         } catch (const LibraryError& e) {
@@ -1142,6 +1157,10 @@ bool matches(const TextStyleEntry& style, std::string_view query) {
 }
 
 fs::path realBinDir(const fs::path& exe, const fs::path& fallback) {
+    // libc++ resolves an empty path to the working directory; it names no
+    // executable
+    if (exe.empty())
+        return fallback;
     std::error_code ec;
     const fs::path real = fs::canonical(exe, ec);
     if (ec || !real.has_parent_path())

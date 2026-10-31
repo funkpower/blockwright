@@ -36,6 +36,11 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QTemporaryDir>
+#ifdef Q_OS_MACOS
+#include <QFont>
+#include <QWindow>
+#include <qpa/qwindowsysteminterface_p.h>
+#endif
 
 #include <algorithm>
 #include <map>
@@ -1145,6 +1150,27 @@ TEST_CASE("Ctrl+arrows cycle the pen's colours and Ctrl+D resets them") {
     CHECK(p->pen().fg == Color::indexed(Grey));
 }
 
+#ifdef Q_OS_MACOS
+// Cocoa never makes a popup the key window: a menu or a combo box's list opens
+// over the window that stays active. The offscreen platform activates every
+// window it shows, popups too, and Qt on macOS acts on an activation even
+// while a popup is open, so closing the popup would deactivate the main
+// window and end a stroke a real Mac keeps. These tests see the Mac's order:
+// a popup never takes the focus window.
+namespace {
+struct PopupsStayInactive : QWindowSystemEventHandler {
+    bool sendEvent(QWindowSystemInterfacePrivate::WindowSystemEvent* e) override {
+        if (e->type == QWindowSystemInterfacePrivate::FocusWindow) {
+            const auto* focus = static_cast<QWindowSystemInterfacePrivate::FocusWindowEvent*>(e);
+            if (focus->focused && focus->focused->type() == Qt::Popup)
+                return true;
+        }
+        return QWindowSystemEventHandler::sendEvent(e);
+    }
+};
+}
+#endif
+
 // Each test case starts from the settings a fresh run has, as it does when
 // ctest runs it in a process of its own, so a window an earlier case closed
 // (saving its layout) or a setting it changed can't reach the next one (#249).
@@ -1168,6 +1194,33 @@ int main(int argc, char** argv) {
     qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("bundled"))));
     qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(libraries.filePath(QStringLiteral("user"))));
     bwtest::useScratchSettings(libraries);
+#ifdef Q_OS_MACOS
+    // A Mac's screens are 72 dpi to Qt, and its styles scale their metrics
+    // from that base, but the offscreen platform's screen says 96, which
+    // makes every scroll bar, frame and margin a third larger than a Mac
+    // draws them. So the screen here is a Mac's, and the font Cocoa gives
+    // an application, the 13 pt system font, is set below in place of the
+    // offscreen platform's.
+    if (qgetenv("QT_QPA_PLATFORM") == "offscreen") {
+        QFile config(libraries.filePath(QStringLiteral("offscreen.json")));
+        if (!config.open(QIODevice::WriteOnly) ||
+            config.write(R"({"screens": [{"name": "Mac", "x": 0, "y": 0, "width": 800, "height": 800,)"
+                         R"( "logicalDpi": 72, "logicalBaseDpi": 72, "dpr": 1}]})") < 0)
+            return 1;
+        config.close();
+        qputenv("QT_QPA_PLATFORM", "offscreen:configfile=" + QFile::encodeName(config.fileName()));
+    }
+#endif
     QApplication app(argc, argv);
+#ifdef Q_OS_MACOS
+    if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
+        QApplication::setFont(QFont(QStringLiteral(".AppleSystemUIFont"), 13));
+    PopupsStayInactive popupsStayInactive;
+    QWindowSystemInterfacePrivate::installWindowSystemEventHandler(&popupsStayInactive);
+    const int failed = Catch::Session().run(argc, argv);
+    QWindowSystemInterfacePrivate::removeWindowSystemEventhandler(&popupsStayInactive);
+    return failed;
+#else
     return Catch::Session().run(argc, argv);
+#endif
 }

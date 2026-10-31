@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Builds Blockwright.app and the disk image people drag it from (run on a Mac).
+#
+#   scripts/package-macos [--qt DIR] [--deps DIR] [--work DIR] [--out DIR]
+#
+#   --qt    Qt 6 for macOS: the directory holding bin/macdeployqt and
+#           lib/cmake/Qt6 (default: $BW_QT_PREFIX)
+#   --deps  static libzip and zstd, built there by scripts/macos-deps if they
+#           aren't yet (default: $BW_MACOS_DEPS, else <work>/deps)
+#   --work  build tree, staging and tools (default: $BW_PACKAGE_WORK, else
+#           ~/.cache/dw/blockwright-macos-build)
+#   --out   where the dmg goes (default: dist/ in the repo)
+#
+# Environment: CMAKE_OSX_ARCHITECTURES (default this Mac's; "arm64;x86_64"
+# makes a universal app, with a universal Qt), MACOSX_DEPLOYMENT_TARGET
+# (default the project's, 12.0), JOBS (default 8).
+#
+# Writes <out>/Blockwright-<version>.dmg, its .sha256, and blockwright.rb, the
+# Homebrew cask for it (packaging/README.md says how to publish). The app is
+# signed ad hoc: from a download, Gatekeeper blocks the first run of the app
+# and of the CLI inside it until the quarantine flag is removed.
+set -euo pipefail
+
+die() { echo "package-macos: $*" >&2; exit 1; }
+[[ $(uname -s) == Darwin ]] || die "run this on a Mac"
+root=$(cd "$(dirname "$0")/.." && pwd)
+
+qt=${BW_QT_PREFIX:-}
+deps=${BW_MACOS_DEPS:-}
+work=${BW_PACKAGE_WORK:-$HOME/.cache/dw/blockwright-macos-build}
+out=$root/dist
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --qt) qt=$2; shift 2 ;;
+    --deps) deps=$2; shift 2 ;;
+    --work) work=$2; shift 2 ;;
+    --out) out=$2; shift 2 ;;
+    -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument $1 (see --help)" ;;
+  esac
+done
+[[ -n $qt ]] || die "say where Qt is: --qt DIR or BW_QT_PREFIX"
+[[ -x $qt/bin/macdeployqt && -d $qt/lib/cmake/Qt6 ]] || die "$qt has no bin/macdeployqt and lib/cmake/Qt6"
+qt=$(cd "$qt" && pwd)
+mkdir -p "$work" "$out"
+work=$(cd "$work" && pwd)
+out=$(cd "$out" && pwd)
+deps=${deps:-$work/deps}
+jobs=${JOBS:-8}
+archs=${CMAKE_OSX_ARCHITECTURES:-$(uname -m)}
+target=${MACOSX_DEPLOYMENT_TARGET:-12.0}
+for tool in cmake ninja python3 codesign hdiutil otool install_name_tool; do
+  command -v "$tool" >/dev/null || die "$tool is not on PATH"
+done
+
+echo "== libzip and zstd ($archs, macOS $target)"
+CMAKE_OSX_ARCHITECTURES=$archs MACOSX_DEPLOYMENT_TARGET=$target JOBS=$jobs "$root/scripts/macos-deps" "$deps"
+deps=$(cd "$deps" && pwd)
+
+echo "== build"
+build=$work/build stage=$work/stage
+cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+  -DBLOCKWRIGHT_MACOS_BUNDLE=ON -DCMAKE_OSX_ARCHITECTURES="$archs" -DCMAKE_OSX_DEPLOYMENT_TARGET="$target" \
+  -DCMAKE_PREFIX_PATH="$qt;$deps" -DCMAKE_INSTALL_PREFIX="$stage" >/dev/null
+nice -n 10 cmake --build "$build" -j "$jobs"
+version=$(sed -n 's/^CMAKE_PROJECT_VERSION:[A-Z]*=//p' "$build/CMakeCache.txt")
+[[ -n $version ]] || die "no project version in $build/CMakeCache.txt"
+rm -rf "$stage"
+cmake --install "$build" >/dev/null
+app=$stage/Blockwright.app
+[[ -x $app/Contents/MacOS/Blockwright && -x $app/Contents/MacOS/blockwright-cli ]] || die "the install left no $app"
+
+echo "== Qt into the bundle"
+"$qt/bin/macdeployqt" "$app" -executable="$app/Contents/MacOS/blockwright-cli" -always-overwrite
+# Qt's build is universal; an app for one architecture carries only that
+# architecture's slice of it.
+if [[ $archs != *";"* ]]; then
+  find "$app/Contents/Frameworks" "$app/Contents/PlugIns" -type f | while read -r f; do
+    file -b "$f" | grep -q '^Mach-O universal' || continue
+    lipo "$f" -thin "$archs" -output "$f.thin" && cat "$f.thin" > "$f" && rm "$f.thin"
+  done
+fi
+# The build's own search paths into the Qt install go: the bundle loads Qt
+# from Contents/Frameworks.
+for bin in "$app/Contents/MacOS/Blockwright" "$app/Contents/MacOS/blockwright-cli"; do
+  otool -l "$bin" | awk '/cmd LC_RPATH/ { r = 1 } r && /^ *path / { print $2; r = 0 }' | while read -r rp; do
+    [[ $rp == @* ]] || install_name_tool -delete_rpath "$rp" "$bin"
+  done
+done
+# Nothing in the bundle may load a library from outside it but the system's
+# (/usr/lib, /System): not the Qt install, the build, or a Homebrew prefix.
+leaks=$(find "$app" -type f -perm -u+x -o -type f -name '*.dylib' | while read -r f; do
+  file -b "$f" | grep -q Mach-O || continue
+  otool -L "$f" | awk -F'\t' 'NF > 1 { sub(/ \(compatibility.*/, "", $2); print $2 }' |
+    grep -E '^/' | grep -vE '^/(usr/lib|System)/' | sed "s|^|$f: |" || true
+  otool -l "$f" | awk '/cmd LC_RPATH/ { r = 1 } r && /^ *path / { print $2; r = 0 }' | grep -E "^/" | sed "s|^|$f: rpath |" || true
+done)
+[[ -z $leaks ]] || die "the bundle loads libraries from outside it:"$'\n'"$leaks"
+
+echo "== sign (ad hoc)"
+# Inside out: libraries and frameworks, then the CLI, then the app.
+find "$app/Contents/Frameworks" "$app/Contents/PlugIns" -name '*.dylib' -type f -print0 |
+  xargs -0 -n 1 codesign --force --sign - --timestamp=none
+find "$app/Contents/Frameworks" -maxdepth 1 -name '*.framework' -print0 |
+  xargs -0 -n 1 codesign --force --sign - --timestamp=none
+codesign --force --sign - --timestamp=none "$app/Contents/MacOS/blockwright-cli"
+codesign --force --sign - --timestamp=none "$app"
+codesign --verify --deep --strict "$app"
+
+echo "== disk image"
+venv=$work/dmgbuild-venv
+if [[ ! -x $venv/bin/dmgbuild ]]; then
+  python3 -m venv "$venv"
+  "$venv/bin/pip" install --quiet "dmgbuild==1.6.7"
+fi
+dmg=$out/Blockwright-$version.dmg
+rm -f "$dmg" "$dmg.sha256"
+"$venv/bin/dmgbuild" -s "$root/packaging/macos/dmg-settings.py" -D app="$app" \
+  -D background="$root/packaging/macos/dmg-background.png" "Blockwright $version" "$dmg"
+hdiutil verify "$dmg" >/dev/null
+sha=$(shasum -a 256 "$dmg" | cut -d' ' -f1)
+printf '%s  %s\n' "$sha" "$(basename "$dmg")" > "$dmg.sha256"
+
+# The cask: one architecture's dmg says so; a universal one runs on either.
+case ${target%%.*} in
+  11) macos=big_sur ;; 12) macos=monterey ;; 13) macos=ventura ;; 14) macos=sonoma ;;
+  15) macos=sequoia ;; 26) macos=tahoe ;; *) die "no Homebrew name for macOS $target" ;;
+esac
+case $archs in
+  arm64) arch_line='  depends_on arch: :arm64' ;;
+  x86_64) arch_line='  depends_on arch: :x86_64' ;;
+  *) arch_line= ;;
+esac
+sed -e "s/@VERSION@/$version/" -e "s/@SHA256@/$sha/" \
+  -e "s/@MACOS@/$macos/" \
+  -e "s/@ARCH@/$arch_line/" "$root/packaging/homebrew/blockwright.rb.in" | cat -s > "$out/blockwright.rb"
+
+echo "== done"
+echo "$dmg ($(du -h "$dmg" | cut -f1 | tr -d ' '), sha256 $sha)"
+echo "$out/blockwright.rb"

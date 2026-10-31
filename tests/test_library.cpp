@@ -753,10 +753,12 @@ std::vector<std::string> namesIn(const fs::path& dir) {
     return out;
 }
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
+// The descriptors this process holds open, as /dev/fd lists them (Linux's
+// links to /proc/self/fd; macOS's is the fdesc file system)
 std::size_t openDescriptors() {
     std::size_t n = 0;
-    for ([[maybe_unused]] const auto& e : fs::directory_iterator("/proc/self/fd"))
+    for ([[maybe_unused]] const auto& e : fs::directory_iterator("/dev/fd"))
         ++n;
     return n;
 }
@@ -825,7 +827,7 @@ TEST_CASE("a failed write leaves no temporary file, no open descriptor, and the 
             if (step == "fsync")
                 throw LibraryError("fsync: injected");
         };
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
         const std::size_t fds = openDescriptors();
 #endif
         try {
@@ -834,8 +836,8 @@ TEST_CASE("a failed write leaves no temporary file, no open descriptor, and the 
         } catch (const LibraryError& e) {
             CHECK(std::string(e.what()).find("write failed: No space left on device") != std::string::npos);
         }
-#ifdef __linux__
-        CHECK(openDescriptors() == fds);  // /proc/self/fd is Linux's
+#if defined(__linux__) || defined(__APPLE__)
+        CHECK(openDescriptors() == fds);
 #endif
         CHECK(namesIn(dir) == before);
         CHECK(bwtest::readFile(dir / "pine.ans") == old.ans);

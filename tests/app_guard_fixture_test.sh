@@ -36,7 +36,7 @@ mkdir -p "$tmp"
 fails=0
 fail() { echo "FAIL $*"; fails=$((fails + 1)); }
 
-min=$(grep -oP '^cmake_minimum_required\(VERSION \K[0-9.]+' "$src/CMakeLists.txt")
+min=$(sed -n 's/^cmake_minimum_required(VERSION \([0-9.]*\).*/\1/p' "$src/CMakeLists.txt")
 first=$(grep -vE '^[[:space:]]*(#|$)' "$src/tests/app_guard_check.cmake" | head -n1)
 if [[ $first == "cmake_minimum_required(VERSION $min)" ]]; then
   echo "ok   app_guard_check.cmake sets the policies of CMake $min"

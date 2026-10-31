@@ -1,0 +1,31 @@
+cask "blockwright" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://git.pumpin.online/funkpower/blockwright/releases/download/v#{version}/Blockwright-#{version}.dmg"
+  name "Blockwright"
+  desc "ANSI and IRC art editor"
+  homepage "https://git.pumpin.online/funkpower/blockwright"
+
+@ARCH@
+  depends_on macos: :@MACOS@
+
+  app "Blockwright.app"
+  binary "#{appdir}/Blockwright.app/Contents/MacOS/blockwright-cli"
+
+  zap trash: [
+    "~/Library/Application Support/Blockwright",
+    "~/Library/Caches/Blockwright",
+    "~/Library/Preferences/com.blockwright.Blockwright.plist",
+    "~/Library/Saved Application State/online.pumpin.funkpower.blockwright.savedState",
+  ]
+
+  caveats <<~EOS
+    Blockwright is signed ad hoc, not notarized, so macOS blocks the first
+    run of the app and of blockwright-cli, which is inside it. Before using
+    either, remove the quarantine flag from the app; that clears both:
+      xattr -dr com.apple.quarantine "#{appdir}/Blockwright.app"
+    Until then, blockwright-cli stops at a Gatekeeper prompt (and over ssh,
+    where nothing can answer it, never returns).
+  EOS
+end

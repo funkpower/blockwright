@@ -92,9 +92,9 @@ std::filesystem::path sidecarPath(const std::filesystem::path& ans);
 // X.Json a sidecar), the same rule stampPathFor uses for its slots.
 bool isArtName(const std::filesystem::path& p);
 bool isSidecarName(const std::filesystem::path& p);
-// The sidecar an .ans pairs with: <stem>.json if it exists, else the first
-// existing <stem>.<json in any case>, else <stem>.json. readStamp reads it,
-// writeStamp writes over it and scan pairs by it.
+// The sidecar an .ans pairs with, as its folder lists it: <stem>.json if
+// listed, else the first listed <stem>.<json in any case>, else <stem>.json.
+// readStamp reads it, writeStamp writes over it and scan pairs by it.
 std::filesystem::path pairedSidecar(const std::filesystem::path& ans);
 
 // The whole of the regular file at `p` (through a link). On POSIX the

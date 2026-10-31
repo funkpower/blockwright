@@ -17,6 +17,9 @@ expect() {
   ok "$name"
 }
 
+# stock macOS has no timeout(1)
+command -v timeout >/dev/null || timeout() { perl -e 'alarm shift; exec @ARGV or die "$ARGV[0]: $!\n"' "$@"; }
+
 piece=$data/golden/tux.ans
 
 expect "--version prints version and short commit" 0 '^blockwright-cli [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]{7,}(-dirty)?|unknown)\)$' -- "$cli" --version
@@ -33,7 +36,7 @@ if cmp -s "$piece" "$tmp/tux.ans"; then ok "convert output is byte-identical"; e
 
 # sauce <file> <iCE 0|1>: append a SAUCE record (80 wide, 1 high) to a body under 256 bytes
 sauce() {
-  local size; size=$(stat -c %s "$1")
+  local size; size=$(($(wc -c < "$1")))
   {
     printf '\x1aSAUCE00%-35s%-20s%-20s20261021' '' '' ''
     printf "\\x$(printf %02x "$size")\\x00\\x00\\x00"
@@ -478,14 +481,17 @@ expect "export bad input" 1 'nope\.ans: No such file' -- "$cli" export --irc "$t
 expect "export unwritable output" 1 'no/such/dir/out\.txt' -- "$cli" export --irc "$piece" "$tmp/no/such/dir/out.txt"
 
 # Out of memory is a one-line error and exit 1, not std::terminate: a 4 GiB
-# sparse input read under a 512 MiB address-space limit
-# (ulimit -v would limit wine, not a Windows program's memory.)
-if [[ -z ${BW_CLI_WINDOWS:-} ]]; then
+# sparse input read under a 512 MiB address-space limit. Skipped for a
+# Windows build (ulimit -v would limit wine, not a Windows program's memory)
+# and on macOS, whose kernel refuses RLIMIT_AS, RLIMIT_DATA and RLIMIT_RSS.
+if [[ -z ${BW_CLI_WINDOWS:-} ]] && bash -c 'ulimit -v 524288' 2>/dev/null; then
   truncate -s 4G "$tmp/huge.ans"
   expect "out of memory" 1 '^blockwright-cli: out of memory$' -- bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans"
   out=$(bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans" 2>&1)
   if [[ $(wc -l <<<"$out") -eq 1 ]]; then ok "out of memory prints one line"; else bad "out of memory printed: $out"; fi
   rm -f "$tmp/huge.ans"
+else
+  echo "skip out of memory: no address-space limit can be set here"
 fi
 
 expect "no command" 2 'no command' -- "$cli"
@@ -622,7 +628,8 @@ expect "export reads a project" 0 ' 0 over$' -- "$cli" export --irc "$proj/tux" 
 if cmp -s "$proj/ans.txt" "$proj/proj.txt"; then ok "export of a project matches its .ans"; else bad "export of a project differs"; fi
 # a project's own byte budget is the default; --budget overrides it
 cp -r "$proj/tux" "$proj/tight"
-sed -i 's/"bytes": 407/"bytes": 60/' "$proj/tight/manifest.json"
+sed 's/"bytes": 407/"bytes": 60/' "$proj/tight/manifest.json" > "$proj/tight/manifest.json.new" &&
+  mv "$proj/tight/manifest.json.new" "$proj/tight/manifest.json"
 expect "export takes the project's budget" 3 '^17 lines, longest 80 bytes, budget 60: 6 over$' -- "$cli" export --irc "$proj/tight" "$proj/tight.txt"
 expect "--budget overrides the project's" 0 '^17 lines, longest 80 bytes, budget 407: 0 over$' -- "$cli" export --irc --budget 407 "$proj/tight" "$proj/tight.txt"
 expect "render reads a project" 0 '^$' -- "$cli" render "$proj/tux.bwp" "$proj/tux.png"

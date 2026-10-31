@@ -527,6 +527,7 @@ TEST_CASE("A stylus tap in What's This mode paints nothing and leaves the mode",
 }
 
 TEST_CASE("A stylus stroke under way when What's This starts goes on and ends on its release", "[help]") {
+    const bwtest::KeyboardMenus keyboardMenus;
     // A stroke kept through a menu opened from the keyboard leaves the focus
     // on the menu bar, so Shift+F1 there is the action's, and the mode starts
     // mid-stroke. The pen already drawing keeps its tablet events: without

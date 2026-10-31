@@ -3,6 +3,7 @@
 //   blockwright [file.ans | file.xb | file.bin | project.bwp | project-directory]
 //   blockwright --version | --help
 
+#include "file_open.h"
 #include "generator_runner.h"
 #include "main_window.h"
 
@@ -90,6 +91,8 @@ int main(int argc, char** argv) {
     bw::killGeneratorsOnQuit(&app);
 
     bw::MainWindow w;
+    // A document opened from the Finder or the Dock (macOS) arrives as an event.
+    app.installEventFilter(new bw::FileOpenForwarder(&w));
     w.show();
     if (!files.empty())
         w.openInteractive(QString::fromLocal8Bit(files.front()));

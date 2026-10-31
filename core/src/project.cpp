@@ -1557,18 +1557,27 @@ struct Renamed {
 
 // Renames `from` to `to` in `in` unless something is at `to`
 // (`file_exists` if so), never replacing what is there however it got
-// there. On POSIX systems that takes renameat2's RENAME_NOREPLACE or a hard
-// link; a disk with neither refuses the rename. Elsewhere `to` is looked at
+// there. On POSIX systems that takes renameat2's RENAME_NOREPLACE (on macOS
+// renameatx_np's RENAME_EXCL) or a hard link; a disk with neither refuses
+// the rename. Elsewhere `to` is looked at
 // first. Not for a directory.
 Renamed renameFresh(const Folder& in, const std::string& from, const std::string& to) {
-#if BW_PROJECT_POSIX && defined(RENAME_NOREPLACE)
+#if BW_PROJECT_POSIX && (defined(RENAME_NOREPLACE) || defined(RENAME_EXCL))
     {
+        // Linux's renameat2 with RENAME_NOREPLACE or macOS's renameatx_np
+        // with RENAME_EXCL (a test's "renameat2" either way); a disk that
+        // can't refuse says EINVAL, or ENOTSUP on macOS
         int err = injected("renameat2", in, to);
+#if defined(RENAME_NOREPLACE)
         if (!err && ::renameat2(in.fd, from.c_str(), in.fd, to.c_str(), RENAME_NOREPLACE) != 0)
             err = errno;
+#else
+        if (!err && ::renameatx_np(in.fd, from.c_str(), in.fd, to.c_str(), RENAME_EXCL) != 0)
+            err = errno;
+#endif
         if (!err)
             return {};
-        if (err != EINVAL && err != ENOSYS)
+        if (err != EINVAL && err != ENOSYS && err != ENOTSUP)
             return {{err, std::generic_category()}};
     }
 #endif

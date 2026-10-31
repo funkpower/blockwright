@@ -45,7 +45,7 @@ size_is "--font-width 9 --scale 3" "$tmp/tux93.png" 810x816
 
 # A SAUCE with 9 px letter spacing (TFlags 0x04) renders 9 px wide unless told otherwise
 cp "$piece" "$tmp/tux-9px.ans"
-printf '\x05' | dd of="$tmp/tux-9px.ans" bs=1 seek=$(( $(stat -c %s "$piece") - 128 + 105 )) conv=notrunc status=none
+printf '\x05' | dd of="$tmp/tux-9px.ans" bs=1 seek=$(( $(wc -c < "$piece") - 128 + 105 )) conv=notrunc status=none
 expect "SAUCE 9 px flag" 0 'letter spacing 9 px' -- "$cli" info "$tmp/tux-9px.ans"
 expect "render follows SAUCE 9 px" 0 '^$' -- "$cli" render "$tmp/tux-9px.ans" "$tmp/sauce9.png"
 size_is "SAUCE 9 px renders 9 px wide" "$tmp/sauce9.png" 270x272
@@ -53,7 +53,7 @@ expect "--font-width 8 overrides SAUCE" 0 '^$' -- "$cli" render --font-width 8 "
 size_is "--font-width 8 renders 8 px wide" "$tmp/sauce8.png" 240x272
 
 # Legacy aspect (TFlags bits 3-4 = 1) is noted, not applied
-printf '\x09' | dd of="$tmp/tux-9px.ans" bs=1 seek=$(( $(stat -c %s "$piece") - 128 + 105 )) conv=notrunc status=none
+printf '\x09' | dd of="$tmp/tux-9px.ans" bs=1 seek=$(( $(wc -c < "$piece") - 128 + 105 )) conv=notrunc status=none
 expect "legacy aspect is noted" 0 'note: .*legacy \(stretched\) aspect ratio; the PNG has square pixels' -- "$cli" render "$tmp/tux-9px.ans" "$tmp/aspect.png"
 size_is "legacy aspect keeps square pixels" "$tmp/aspect.png" 240x272
 

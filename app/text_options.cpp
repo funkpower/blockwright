@@ -78,6 +78,11 @@ TextOptions::TextOptions(CanvasView* view, TextTool* tool, QWidget* parent)
     for (int i = 0; i < 16; ++i)
         colour_->addItem(swatch(i), names[i], i);
     colour_->setToolTip(tr("The letters' colour"));
+    // It narrows with the column, its name cut short, rather than make the
+    // options scroll sideways: "Light magenta" alone is wider than the rest
+    // of a field in some fonts (a Mac's).
+    colour_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    colour_->setMinimumContentsLength(8);
 
     bigStyle_ = new QComboBox;
     bigStyle_->setObjectName(QStringLiteral("textBigStyle"));

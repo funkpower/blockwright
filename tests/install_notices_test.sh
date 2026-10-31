@@ -11,9 +11,11 @@
 # throwaway HOME with git, tar and the build stubbed out (its install step is
 # the real `cmake --install` of this build, staged the same way) to check the
 # dev install carries them and refuses an install without them, and that it
-# installs blockwright-dev and its launcher entry.
+# installs blockwright-dev and its launcher entry. BW_NOTICES_DIR names where
+# --version says the notices are (default share/doc/blockwright/).
 set -uo pipefail
 build=$1 src=$2 tmp=$3 bindir=$4 docdir=$5 config=${6:-}
+notices_dir=${BW_NOTICES_DIR:-share/doc/blockwright/}
 rm -rf "$tmp" && mkdir -p "$tmp"
 tmp=$(cd "$tmp" && pwd)
 fails=0
@@ -83,7 +85,7 @@ credits() {
   local out; out=$("$2" --version 2>&1)
   if grep -q 'IBM VGA 8x16 and IBM PC BIOS 8x8 fonts, (c) 2016-2020 VileR,' <<<"$out" \
      && grep -q 'CC BY-SA 4.0, https://int10h.org/oldschool-pc-fonts/' <<<"$out" \
-     && grep -q 'share/doc/blockwright/' <<<"$out"; then
+     && grep -qF "notices in $notices_dir" <<<"$out"; then
     ok "$1"
   else
     bad "$1: $out"

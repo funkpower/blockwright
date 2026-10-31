@@ -86,7 +86,11 @@ void writeFile(const fs::path& p, const std::string& bytes) {
 long long peakRss() {
     rusage u{};
     getrusage(RUSAGE_SELF, &u);
-    return (long long)u.ru_maxrss * 1024;
+#ifdef __APPLE__
+    return (long long)u.ru_maxrss; // bytes on macOS
+#else
+    return (long long)u.ru_maxrss * 1024; // KiB on Linux
+#endif
 }
 #endif
 
