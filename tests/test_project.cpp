@@ -3096,7 +3096,7 @@ TEST_CASE("a directory save refuses a path the system can't open before writing"
 
 #ifdef _WIN32
 TEST_CASE("a directory save refuses a path longer than Windows opens before writing", "[project][io][paths]") {
-    const fs::path dir = fs::absolute(scratch("longpath")) / "p";
+    const fs::path dir = fs::absolute(scratch("longpath-win")) / "p";
     const Project p = everything();
     project::writeDirectory(p, dir);
     struct Reset {

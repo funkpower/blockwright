@@ -472,3 +472,8 @@ if(WIN32)
     bw_windows_resources(${t})
   endforeach()
 endif()
+
+# no two test cases in a file share a scratch directory, which ctest -j would
+# let them empty under each other
+add_test(NAME scratch_names
+  COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/scratch_names_check.cmake)
