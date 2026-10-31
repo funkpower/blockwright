@@ -794,6 +794,9 @@ TEST_CASE("wrapped right panels need no horizontal scroll at the column's minimu
 TEST_CASE("the right dock column can grow and shrink", "[dock-width]") {
     ClearLayout clear;
     MainWindow w;
+    // Room for a 480-pixel column beside the left one and the canvas,
+    // whatever size the screen gives the window.
+    w.resize(1920, 1080);
     w.show();
     QApplication::processEvents();
     for (int width : {480, 300}) {
@@ -813,6 +816,7 @@ TEST_CASE("the right dock column can grow and shrink", "[dock-width]") {
 TEST_CASE("the left dock column can grow and shrink", "[dock-width]") {
     ClearLayout clear;
     MainWindow w;
+    w.resize(1920, 1080);
     w.show();
     QApplication::processEvents();
     for (int width : {320, 200}) {

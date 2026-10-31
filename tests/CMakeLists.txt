@@ -247,6 +247,25 @@ foreach(scale 1.25 1.5 1.75 2)
   add_test(NAME "canvas floor after a shrink at scale ${scale}"
     COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} $<TARGET_FILE:blockwright-app-tests> "[canvas-floor-shrink]")
 endforeach()
+# The dock column widths at fractional device pixel ratios. Some of these
+# tests size the window from the screen (the first-run size, restoreGeometry
+# fitting it), and the offscreen screen is 800x600 device pixels, which a
+# scale factor shrinks in logical pixels (400x300 at 2). So each scale gets a
+# screen of 800x600 logical pixels, the one the unscaled run has: the run
+# checks the same layout in fractional device pixels, not a smaller screen.
+foreach(screen "1.25 1000 750" "1.5 1200 900" "1.75 1400 1050" "2 1600 1200")
+  separate_arguments(screen)
+  list(GET screen 0 scale)
+  list(GET screen 1 width)
+  list(GET screen 2 height)
+  set(config "${CMAKE_CURRENT_BINARY_DIR}/offscreen-800x600-at-${scale}.json")
+  file(WRITE "${config}"
+    "{\"screens\": [{\"name\": \"offscreen\", \"x\": 0, \"y\": 0, \"width\": ${width}, \"height\": ${height},"
+    " \"logicalDpi\": 96, \"logicalBaseDpi\": 96, \"dpr\": 1}]}\n")
+  add_test(NAME "dock widths at scale ${scale}"
+    COMMAND ${BW_APP_TEST_ENV} QT_QPA_PLATFORM=offscreen:configfile=${config} QT_SCALE_FACTOR=${scale}
+            $<TARGET_FILE:blockwright-app-tests> "[dock-width]")
+endforeach()
 
 # File > Publish to Library and Send to WeeChat: its main points the settings
 # and the Library at scratch folders before the QApplication exists.
