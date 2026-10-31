@@ -161,6 +161,7 @@ Laid laidOut(const TextSource& source, const Face& face, const TextStyle* style)
     Laid out;
     out.missing = layout.missing;
     out.in.mask = InkMask(width, 2 * height);
+    out.in.letters.assign(out.in.mask.ink.size(), 0);
     out.in.pixels = makeLayer(LayerKind::Pixels, width, height).cells;
     out.in.source = out.in.pixels;
     out.in.box = CellRect{0, 0, width, height};
@@ -177,10 +178,16 @@ Laid laidOut(const TextSource& source, const Face& face, const TextStyle* style)
                 const int py = l * face.height() + 2 * r;
                 const int cx = x + shift, cy = top + r;
                 const bool upper = layout.mask.at(x, py), lower = layout.mask.at(x, py + 1);
-                if (upper)
+                if (upper) {
                     out.in.mask.set(cx, 2 * cy);
-                if (lower)
+                    out.in.letters[static_cast<std::size_t>(2 * cy) * width + cx] =
+                        layout.glyphs[static_cast<std::size_t>(py) * layout.mask.width + x];
+                }
+                if (lower) {
                     out.in.mask.set(cx, 2 * cy + 1);
+                    out.in.letters[static_cast<std::size_t>(2 * cy + 1) * width + cx] =
+                        layout.glyphs[static_cast<std::size_t>(py + 1) * layout.mask.width + x];
+                }
                 if (layout.cells) {
                     const Cell& sc = layout.cells->at(x, py / 2);
                     if (!sc.transparent) {

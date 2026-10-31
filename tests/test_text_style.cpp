@@ -23,6 +23,7 @@
 #include <zip.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <map>
@@ -805,7 +806,7 @@ TEST_CASE("Shade: full ink cells a rung darker a cell from the lit side", "[styl
                     INFO(x << "," << y);
                     if (!ink.fullCell(x, y)) {
                         if (ink.cellInk(x, y))
-                            CHECK(halfBlocks(out.at(x, y)));  // a fringe keeps its flat fill
+                            CHECK(halfBlocks(out.at(x, y)));  // a fringe stays a half block
                         continue;
                     }
                     const int kx = light == Compass::W ? x - l.x0 : light == Compass::SE ? l.x1 - x : 0;
@@ -814,6 +815,348 @@ TEST_CASE("Shade: full ink cells a rung darker a cell from the lit side", "[styl
                     CHECK(rungOf(steel(), out.at(x, y)) == std::max(kRungsPerStep, steel().topRung() - k));
                 }
     }
+}
+
+// What checkFringes saw: fringes that took the step of the cell they face,
+// took a faced fringe's along their edge, kept their colour on an edge
+// facing no stepped cell, or cut an edge.
+struct FringeCount {
+    int taken = 0, spread = 0, kept = 0, cut = 0;
+};
+
+// Checks every ▀/▄ fringe of `s` in `face` (a letter cell with one ink
+// pixel, not a TheDraw source cell), drawn in `flat` plus Shade on `ramp`
+// lit from `light`, against `flat` alone:
+// - A fringe's ink faces the pixel beside it in the next cell (a ▀'s the
+//   cell above, a ▄'s below). When Shade stepped that cell and it is the
+//   fringe's own letter, the ink takes the solid ramp colour of its rung:
+//   ░ its darker colour, ▓ its lighter, ▒ the lighter only when the fringe
+//   lies on the lit side of the cell.
+// - Side-by-side fringes of one half, one cell (as Fill drew it) and one
+//   letter are an edge, cut at a fringe facing ink Shade left alone or another letter's
+//   ink. A fringe on an edge facing background takes the nearest faced
+//   fringe's colour, the lighter on a tie.
+// - A fringe that cuts an edge, and an edge facing no stepped cell, keep
+//   their colour. The other half (an outline, black) is never touched.
+FringeCount checkFringes(const TextSource& s, const Face& face, const TextStyle& flat, const Ramp& ramp, Compass light) {
+    const StyleInput in = textStyleInput(s, face);
+    const int w = in.mask.width;
+    REQUIRE(in.letters.size() == in.mask.ink.size());
+    const auto letter = [&](int px, int py) { return in.mask.at(px, py) ? in.letters[static_cast<std::size_t>(py) * w + px] : 0u; };
+    const auto lightFrom = [](Compass l, bool north) {
+        const auto [vx, vy] = compassVector(l);
+        return north ? vy < -0.1 : vy > 0.1;
+    };
+    const auto rank = [&](std::uint8_t c) { return ramp.indexOf(c); };
+    TextStyle shade = flat;
+    shade.effects.push_back(on(ShadeEffect{ramp.name, light}));
+    const Canvas before = styled(s, flat, face), after = styled(s, shade, face);
+    const Pixels b = pixelsOf(before), a = pixelsOf(after);
+    // the drawing's margins put the input this far in
+    const int m = styleMargins(shade).left;
+    REQUIRE(styleMargins(shade).top == m);
+    REQUIRE(styleMargins(flat) == styleMargins(shade));
+    // 1 a ▀ fringe, 2 a ▄, 0 anything else
+    const auto half = [&](int x, int y) {
+        const bool top = in.mask.at(x, 2 * y), bottom = in.mask.at(x, 2 * y + 1);
+        const bool source = x < in.source.width() && y < in.source.height() && !in.source.at(x, y).transparent;
+        return top == bottom || source ? 0 : top ? 1 : 2;
+    };
+    FringeCount n;
+    for (int y = 0; y < in.mask.height / 2; ++y) {
+        // each fringe's role: what it takes from the pixel it faces, and
+        // whether it cuts an edge
+        struct Fringe {
+            int kind = 0;
+            bool cuts = false;
+            std::optional<std::uint8_t> faced;
+        };
+        std::vector<Fringe> row(static_cast<std::size_t>(w));
+        for (int x = 0; x < w; ++x) {
+            Fringe& f = row[static_cast<std::size_t>(x)];
+            f.kind = half(x, y);
+            if (!f.kind)
+                continue;
+            const bool top = f.kind == 1;
+            const int iy = top ? 2 * y : 2 * y + 1, fy = top ? iy - 1 : iy + 1;
+            if (!in.mask.at(x, fy))
+                continue;
+            const int ox = x + m, ocy = fy / 2 + m;
+            const bool stepped = after.at(ox, ocy) != before.at(ox, ocy);
+            if (!stepped || letter(x, fy) != letter(x, iy)) {
+                f.cuts = true;
+                continue;
+            }
+            const std::optional<int> g = rungOf(ramp, after.at(ox, ocy));
+            REQUIRE(g);
+            const std::size_t i = static_cast<std::size_t>(*g / kRungsPerStep);
+            const int q = *g % kRungsPerStep;
+            // a ▄ lies north of the cell it faces, a ▀ south
+            const bool lit = lightFrom(light, !top);
+            f.faced = q == 3 || (q == 2 && lit) ? ramp.colours[i + 1] : ramp.colours[i];
+        }
+        for (int x0 = 0, x1; x0 < w; x0 = x1) {
+            const Fringe& f0 = row[static_cast<std::size_t>(x0)];
+            const bool top = f0.kind == 1;
+            const int inkRow = 2 * (y + m) + (top ? 0 : 1), otherRow = 2 * (y + m) + (top ? 1 : 0);
+            const auto same = [&](int x) {
+                const Fringe& f = row[static_cast<std::size_t>(x)];
+                const int iy = top ? 2 * y : 2 * y + 1;
+                return f.kind == f0.kind && !f.cuts && before.at(x + m, y + m) == before.at(x0 + m, y + m) &&
+                       letter(x, iy) == letter(x0, iy);
+            };
+            x1 = x0 + 1;
+            if (!f0.kind)
+                continue;
+            INFO("fringe " << x0 << "," << y);
+            if (f0.cuts) {
+                CHECK(a.at(x0 + m, inkRow) == b.at(x0 + m, inkRow));
+                CHECK(a.at(x0 + m, otherRow) == b.at(x0 + m, otherRow));
+                ++n.cut;
+                continue;
+            }
+            while (x1 < w && same(x1))
+                ++x1;
+            const bool any = std::any_of(row.begin() + x0, row.begin() + x1, [](const Fringe& f) { return f.faced.has_value(); });
+            for (int x = x0; x < x1; ++x) {
+                const int ox = x + m;
+                INFO("on the edge at " << x << "," << y);
+                CHECK(a.at(ox, otherRow) == b.at(ox, otherRow));
+                if (!any) {
+                    CHECK(a.at(ox, inkRow) == b.at(ox, inkRow));
+                    ++n.kept;
+                    continue;
+                }
+                std::optional<std::uint8_t> want = row[static_cast<std::size_t>(x)].faced;
+                ++(want ? n.taken : n.spread);
+                for (int d = 1; !want; ++d) {
+                    const auto at = [&](int j) { return j >= x0 && j < x1 ? row[static_cast<std::size_t>(j)].faced : std::nullopt; };
+                    const auto l = at(x - d), r = at(x + d);
+                    want = l && r ? (rank(*l) >= rank(*r) ? l : r) : l ? l : r;
+                }
+                CHECK(a.at(ox, inkRow) == *want);
+            }
+        }
+    }
+    return n;
+}
+
+TEST_CASE("Shade: a fringe takes the colour step of the shaded cell its ink faces", "[style][mask]") {
+    // the rule as checkFringes states it, on the outlined flat Fill
+    const TextSource s = word(U"funk", "block");
+    for (const Compass light : {Compass::N, Compass::S, Compass::W, Compass::SE, Compass::NW}) {
+        INFO(compassPointName(light));
+        const FringeCount n = checkFringes(
+            s, *findFace(s.face), styleOf({OutlineEffect{OutlineForm::Pixels, Cyan}, FillEffect{FillMode::Flat, White, "steel"}}),
+            steel(), light);
+        CHECK(n.taken > 0);
+        CHECK(n.kept > 0);
+        if (light == Compass::N)
+            CHECK(n.spread > 0);
+    }
+}
+
+TEST_CASE("Shade: a fringe's edge follows a ramp Fill's colours", "[style][mask]") {
+    // a Fill down the rows or across the columns gives side-by-side fringes
+    // colours of their own, so an edge is as long as one Fill colour; in a
+    // TheDraw face the Fill maps the source cells' colours onto the ramp
+    // (consecutive steps from its top) and the fringes are the pixels
+    // outside them
+    const std::unique_ptr<Face> colour = tdf("bw-colour.tdf");
+    struct Case {
+        const Face* face;
+        std::u32string text;
+    };
+    const std::vector<Case> cases = {{findFace(FaceRef{FaceRef::Kind::Pixel, "block"}), U"funk"},
+                                     {findFace(FaceRef{FaceRef::Kind::Pixel, "vga"}), U"ZB8S5O0I1"},
+                                     {colour.get(), U"funk"}};
+    FringeCount all;
+    for (const Case& c : cases)
+        for (const FillMode mode : {FillMode::Rows, FillMode::Columns})
+            for (const Compass light : {Compass::N, Compass::W, Compass::SE, Compass::NW}) {
+                INFO(c.face->name() << " " << fillModeName(mode) << " " << compassPointName(light));
+                const TextSource s = word(c.text);
+                const FringeCount n = checkFringes(
+                    s, *c.face, styleOf({OutlineEffect{OutlineForm::Pixels, Cyan}, FillEffect{mode, Grey, "steel"}}), steel(), light);
+                all.taken += n.taken;
+                all.spread += n.spread;
+                all.kept += n.kept;
+                all.cut += n.cut;
+            }
+    CHECK(all.taken > 0);
+    CHECK(all.spread > 0);
+    CHECK(all.kept > 0);
+}
+
+TEST_CASE("a text's style input numbers each ink pixel by the character whose glyph drew it", "[style][mask]") {
+    // block's glyphs are 8 columns, with no spacing: "*c" has the '*' touch
+    // the 'c', one run of inked columns that is two letters
+    const TextSource s = word(U"*c funk", "block");
+    const StyleInput in = textStyleInput(s, *findFace(s.face));
+    REQUIRE(in.letters.size() == in.mask.ink.size());
+    int inked = 0;
+    for (int py = 0; py < in.mask.height; ++py)
+        for (int px = 0; px < in.mask.width; ++px) {
+            INFO(px << "," << py);
+            const std::uint32_t l = in.letters[static_cast<std::size_t>(py) * in.mask.width + px];
+            CHECK(l == (in.mask.at(px, py) ? static_cast<std::uint32_t>(px / 8 + 1) : 0u));
+            inked += in.mask.at(px, py);
+        }
+    CHECK(inked > 0);
+    // and on two lines, by the character in the text
+    TextSource two = word(U"ab\ncd", "block");
+    const StyleInput in2 = textStyleInput(two, *findFace(two.face));
+    std::set<std::uint32_t> seen;
+    for (std::size_t i = 0; i < in2.letters.size(); ++i)
+        if (in2.mask.ink[i])
+            seen.insert(in2.letters[i]);
+    CHECK(seen == std::set<std::uint32_t>{1, 2, 4, 5});
+}
+
+TEST_CASE("Shade: a fringe's edge stops at the end of its letter", "[style][mask]") {
+    // block's '*' touches a 'c' after it: their ▄ fringes on one row were
+    // one edge, and the '*' took a colour from under the 'c'. Lit from the
+    // north or west Shade steps the '*' the same either way, so the '*'
+    // draws the same whatever follows it. (With a light from the east or
+    // south Shade's own step still counts a letter as a run of inked
+    // columns, which the 'c' widens.)
+    const TextSource alone = word(U"* "), followed = word(U"*c");
+    const Pixels ink = pixelsOf(plain(alone));
+    for (const Compass light : {Compass::N, Compass::W, Compass::NW}) {
+        INFO(compassPointName(light));
+        const TextStyle st = styleOf({OutlineEffect{OutlineForm::Pixels, Cyan}, FillEffect{FillMode::Flat, White, "steel"},
+                                      ShadeEffect{"steel", light}});
+        const int m = styleMargins(st).left;
+        const Pixels a = pixelsOf(styled(alone, st)), b = pixelsOf(styled(followed, st));
+        std::string changed;
+        for (int y = 0; y < ink.height; ++y)
+            for (int x = 0; x < 8; ++x)
+                if (ink.ink(x, y) && a.at(x + m, y + 2 * m) != b.at(x + m, y + 2 * m))
+                    changed += std::to_string(x + m) + "," + std::to_string(y + 2 * m) + " ";
+        CHECK(changed == "");
+    }
+}
+
+// A pixels layer drawn from rows of text, one row a pixel row: '#' a
+// pixel in `colour`, anything else none.
+Layer pixelArt(const std::vector<std::string>& rows, std::uint8_t colour = White) {
+    Layer l = makeLayer(LayerKind::Pixels, static_cast<int>(rows[0].size()), static_cast<int>(rows.size() + 1) / 2, "art", 0, 0);
+    for (int py = 0; py < static_cast<int>(rows.size()); ++py)
+        for (int px = 0; px < static_cast<int>(rows[static_cast<std::size_t>(py)].size()); ++px)
+            if (rows[static_cast<std::size_t>(py)][static_cast<std::size_t>(px)] == '#')
+                l.cells.at(px, py / 2) = setLayerPixel(l.cells.at(px, py / 2), py & 1, colour);
+    return l;
+}
+
+TEST_CASE("Shade: a fringe's edge stops at ink Shade left alone and runs on past background", "[style][mask]") {
+    // two stems three cells tall on a foot of ▀ fringes, one letter, lit
+    // from the north: Shade steps the stems' lower two cells, and the foot's
+    // ends face them
+    const TextStyle st = styleOf({FillEffect{FillMode::Flat, White, "steel"}, ShadeEffect{"steel", Compass::N}});
+    const auto foot = [&](const Layer& l) {
+        const Pixels p = pixelsOf(drawStyle(styleInputOf(l), st, true));
+        return std::vector<int>{p.at(0, 6), p.at(1, 6), p.at(2, 6), p.at(3, 6)};
+    };
+    // between the stems the foot faces ▄ fringes, ink Shade leaves alone:
+    // the edge stops at them and they keep the Fill colour
+    const std::vector<int> faced = foot(pixelArt({"#..#", "#..#", "#..#", "#..#", "#..#", "####", "####"}));
+    CHECK(faced[0] != White);
+    CHECK(faced[3] == faced[0]);
+    CHECK(faced[1] == White);
+    CHECK(faced[2] == White);
+    // between the stems the foot faces background: the edge runs on, and
+    // the whole foot takes the stems' step
+    const std::vector<int> open = foot(pixelArt({"#..#", "#..#", "#..#", "#..#", "#..#", "#..#", "####"}));
+    CHECK(open[0] != White);
+    CHECK(open == std::vector<int>(4, open[0]));
+}
+
+TEST_CASE("Shade: with no outline, a '*' draws the same whatever letter follows it", "[style][mask]") {
+    // the case the edge-stops-at-its-letter test covers with an outline:
+    // flat White on steel, nothing else, where lit from the west or
+    // north-west the '*' took its pixels (6,3) and (7,3) from under the 'c'
+    const TextSource alone = word(U"* "), followed = word(U"*c");
+    const Pixels ink = pixelsOf(plain(alone));
+    for (const Compass light : {Compass::N, Compass::W, Compass::NW}) {
+        INFO(compassPointName(light));
+        const TextStyle st = styleOf({FillEffect{FillMode::Flat, White, "steel"}, ShadeEffect{"steel", light}});
+        const int m = styleMargins(st).left;
+        const Pixels a = pixelsOf(styled(alone, st)), b = pixelsOf(styled(followed, st));
+        std::string changed;
+        for (int y = 0; y < ink.height; ++y)
+            for (int x = 0; x < 8; ++x)
+                if (ink.ink(x, y) && a.at(x + m, y + 2 * m) != b.at(x + m, y + 2 * m))
+                    changed += std::to_string(x) + "," + std::to_string(y) + " ";
+        CHECK(changed == "");
+    }
+}
+
+TEST_CASE("Shade: a fringe under a full cell Shade left alone keeps its colour", "[style][mask]") {
+    // █··█ over ▀▀▀▀, lit from the west: (0,0) stays White, (3,0) steps to
+    // rung 9; the fringe under (0,0) cuts the edge and stays White, the
+    // other three take (3,0)'s step
+    const Layer l = pixelArt({"#..#", "#..#", "####"});
+    const TextStyle st = styleOf({FillEffect{FillMode::Flat, White, "steel"}, ShadeEffect{"steel", Compass::W}});
+    const Canvas out = drawStyle(styleInputOf(l), st, true);
+    const Pixels p = pixelsOf(out);
+    CHECK(p.at(0, 0) == White);
+    CHECK(rungOf(steel(), out.at(3, 0)) == std::optional<int>(9));
+    CHECK(p.at(0, 2) == White);
+    CHECK(p.at(3, 2) != White);
+    CHECK(p.at(1, 2) == p.at(3, 2));
+    CHECK(p.at(2, 2) == p.at(3, 2));
+}
+
+TEST_CASE("Shade: the fringes of a row cost its width", "[style][mask]") {
+    // a stem four cells tall at the left end of a foot of ▀ fringes as wide
+    // as a layer may be: every fringe takes the step of the stem's lowest
+    // cell (░, so its darker colour), and finding the nearest faced fringe
+    // is two sweeps, not a search outwards from each
+    constexpr int kWide = 65535;
+    std::vector<std::string> rows(8, "#");
+    rows.push_back(std::string(kWide, '#'));
+    for (int i = 0; i < 8; ++i)
+        rows[static_cast<std::size_t>(i)].resize(kWide, '.');
+    const Layer l = pixelArt(rows);
+    const TextStyle st = styleOf({FillEffect{FillMode::Flat, White, "steel"}, ShadeEffect{"steel", Compass::N}});
+    const auto t0 = std::chrono::steady_clock::now();
+    const Canvas out = drawStyle(styleInputOf(l), st, true);
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const Pixels p = pixelsOf(out);
+    REQUIRE(p.at(0, 8) != White);
+    int taken = 0;
+    for (int x = 0; x < kWide; ++x)
+        taken += p.at(x, 8) == p.at(0, 8);
+    CHECK(taken == kWide);
+    // a search outwards took billions of steps here (seconds); the sweeps
+    // take milliseconds
+    CHECK(seconds < 1.0);
+}
+
+TEST_CASE("Shade: no fringe beside the shading is a fallback speck", "[style][lint]") {
+    // vga's letters end in ▀ fringes under their stems: with the fringe in
+    // the Fill colour the lint read each as a speck cut from the shading
+    for (const Compass light : {Compass::N, Compass::NW, Compass::W, Compass::SE})
+        for (const char* face : {"vga", "block"})
+            for (const bool ice : {true, false}) {
+                INFO(compassPointName(light) << " " << face << " iCE " << ice);
+                const Canvas out = styled(word(U"ZB8S5O0I1", face),
+                                          styleOf({OutlineEffect{OutlineForm::Pixels, LightCyan},
+                                                   FillEffect{FillMode::Flat, Grey, "steel"}, ShadeEffect{"steel", light}}),
+                                          ice);
+                lint::LadderOptions options;
+                options.ice = ice;
+                options.fallback = true;
+                const lint::LadderReport r = lint::checkLadder(out, steel(), std::nullopt, options);
+                int specks = 0;
+                for (const lint::LadderFinding& f : r.findings)
+                    if (f.kind == lint::LadderFinding::Kind::FallbackSpeck) {
+                        UNSCOPED_INFO(f.x << "," << f.y << ": " << f.message);
+                        ++specks;
+                    }
+                CHECK(specks == 0);
+                CHECK(r.ladderCells > 0);
+            }
 }
 
 TEST_CASE("Bevel: the full edge cells facing the light a rung lighter", "[style][mask]") {

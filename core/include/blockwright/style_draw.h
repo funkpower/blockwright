@@ -48,7 +48,15 @@
 // - Shade: the full ink cells (a source cell only when it is █) as Fill
 //   left them, if they are on the ramp, stepped down `k` rungs (stepRung),
 //   `k` the cells from the letter's side facing the light (a diagonal light:
-//   half the sum of both axes' distances), never below rung 4.
+//   half the sum of both axes' distances), never below rung 4. A ▀/▄
+//   fringe takes the step of the cell its ink faces (a ▀ the cell above, a
+//   ▄ the cell below) when Shade stepped it: the solid nearest that cell's
+//   rung, on a ▒ rung the lighter when the fringe is on the cell's lit
+//   side. Side-by-side fringes of one half, one colour and one letter
+//   (`letters`) are an edge, cut at a fringe facing ink Shade left alone or
+//   another letter's ink: a fringe on it facing background takes the
+//   nearest faced fringe's colour, the lighter on a tie. An edge facing no
+//   stepped cell, and a fringe that cuts one, keep their colour.
 // - Bevel: the full ink cells (a source cell only when it is █) the rim
 //   light brush (brushes/detail.h) lights with the effect's light direction,
 //   one rung up, judged on the letters as Fill and Shade left them on black.
@@ -65,6 +73,7 @@
 #include "blockwright/layer.h"
 #include "blockwright/text_style.h"
 
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -83,6 +92,11 @@ struct StyleInput {
     CellRect box;
     // The lines, as ranges of pixel rows [first, end).
     std::vector<std::pair<int, int>> bands;
+    // Each mask pixel's letter, numbered from 1 (0 where the mask has no
+    // ink), the mask's size: the character whose glyph drew it. Empty when
+    // the input doesn't know its letters (a layer, big text), when each
+    // line's runs of inked columns are its letters.
+    std::vector<std::uint32_t> letters;
 };
 
 // What a style reads from a layer it draws at composite time (a cells or

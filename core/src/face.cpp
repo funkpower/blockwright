@@ -178,6 +178,7 @@ TextLayout layoutText(const Face& face, std::u32string_view text, const LayoutOp
     for (const auto& line : out.lines)
         width = std::max(width, line.width);
     out.mask = InkMask(width, static_cast<int>(out.lines.size()) * height);
+    out.glyphs.assign(out.mask.ink.size(), 0);
     const bool anyCells = std::any_of(glyphs.begin(), glyphs.end(), [](const auto& g) { return g && g->cells; });
     if (anyCells) {
         out.cells = CellBlock(width, static_cast<int>(out.lines.size()) * height / 2);
@@ -190,8 +191,10 @@ TextLayout layoutText(const Face& face, std::u32string_view text, const LayoutOp
             if (const auto& g = glyphs[k]) {
                 for (int y = 0; y < std::min(g->mask.height, height); ++y)
                     for (int gx = 0; gx < g->mask.width; ++gx)
-                        if (g->mask.at(gx, y))
+                        if (g->mask.at(gx, y)) {
                             out.mask.set(x + gx, top + y);
+                            out.glyphs[static_cast<size_t>(top + y) * width + x + gx] = static_cast<std::uint32_t>(k + 1);
+                        }
                 if (g->cells)
                     for (int y = 0; y < std::min(g->cells->height, height / 2); ++y)
                         for (int gx = 0; gx < g->cells->width; ++gx)

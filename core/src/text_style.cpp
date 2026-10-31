@@ -333,6 +333,24 @@ public:
                     src_[cell(x + ox_, y + oy_)] = 1;
         for (const auto& [first, end] : in.bands)
             bands_.emplace_back(std::max(0, first) + 2 * oy_, std::min(2 * ih, end) + 2 * oy_);
+        // each ink pixel's letter: the input's, or else each line's runs of
+        // inked columns
+        letter_.assign(ink_.size(), 0);
+        if (in.letters.size() == in.mask.ink.size()) {
+            for (int py = 0; py < 2 * ih; ++py)
+                for (int px = 0; px < iw; ++px)
+                    letter_[pix(px + ox_, py + 2 * oy_)] = in.letters[static_cast<std::size_t>(py) * iw + px];
+        } else {
+            std::uint32_t n = 0;
+            for (const auto& band : bands_)
+                for (const Letter& letter : letters(band)) {
+                    ++n;
+                    for (int py = band.first; py < band.second; ++py)
+                        for (int px = letter.x0; px <= letter.x1; ++px)
+                            if (ink(px, py))
+                                letter_[pix(px, py)] = n;
+                }
+        }
     }
 
     Canvas draw() {
@@ -350,8 +368,8 @@ public:
         // the letters as Fill leaves them, which Shade and Bevel read
         std::vector<Layer> letters = fillLayers();
         if (const ShadeEffect* s = style_.get<ShadeEffect>())
-            if (auto l = shadeLayer(*s, letters))
-                letters.push_back(std::move(*l));
+            for (Layer& l : shadeLayers(*s, letters))
+                letters.push_back(std::move(l));
         if (const BevelEffect* b = style_.get<BevelEffect>())
             if (auto l = bevelLayer(*b, letters))
                 letters.push_back(std::move(*l));
@@ -376,6 +394,8 @@ private:
     bool ink(int px, int py) const { return inPix(px, py) && ink_[pix(px, py)]; }
     bool cellInk(int x, int y) const { return ink(x, 2 * y) || ink(x, 2 * y + 1); }
     bool source(int x, int y) const { return src_[cell(x, y)]; }
+    // The letter an ink pixel belongs to, from 1; 0 off the ink.
+    std::uint32_t letterOf(int px, int py) const { return inPix(px, py) ? letter_[pix(px, py)] : 0; }
     const Cell& sourceCell(int x, int y) const { return in_.source.at(x - ox_, y - oy_); }
     // A full ink cell Shade and Bevel read: both pixels ink, and a source
     // cell only when it is █.
@@ -774,15 +794,20 @@ private:
         return composite(s, CompositeOptions{ice_, Cell{}});
     }
 
-    std::optional<Layer> shadeLayer(const ShadeEffect& s, const std::vector<Layer>& below) const {
+    // The shaded full cells (a cells layer) and the fringes facing them (a
+    // pixels layer); none when the ramp isn't known.
+    std::vector<Layer> shadeLayers(const ShadeEffect& s, const std::vector<Layer>& below) const {
         const std::optional<Ramp> ramp = findRamp(s.ramp);
         if (!ramp)
-            return std::nullopt;
+            return {};
         const Canvas sofar = lettersOnBlack(below, 0, 0);
         Layer l = effectLayer(LayerKind::Cells, w_, h_);
+        Layer fringes = effectLayer(LayerKind::Pixels, w_, h_);
         const auto [lx, ly] = step(s.light);
+        // the rung each cell Shade stepped took
+        std::vector<int> shaded(static_cast<std::size_t>(w_) * h_, -1);
         for (const auto& band : bands_)
-            for (const Letter& letter : letters(band))
+            for (const Letter& letter : letters(band)) {
                 for (int y = letter.y0; y <= letter.y1; ++y)
                     for (int x = letter.x0; x <= letter.x1; ++x) {
                         if (!fullInk(x, y))
@@ -798,10 +823,82 @@ private:
                         const int steps = std::min(k, *rung - kRungsPerStep);
                         if (steps <= 0)
                             continue;
-                        if (const auto stepped = stepRung(*ramp, c, -steps, ice_))
+                        if (const auto stepped = stepRung(*ramp, c, -steps, ice_)) {
                             l.cells.at(x, y) = *stepped;
+                            if (const auto r = rungOf(*ramp, *stepped))
+                                shaded[cell(x, y)] = *r;
+                        }
                     }
-        return l;
+            }
+        // a ▀/▄ fringe takes the colour step of the cell its ink faces (a
+        // ▀'s the cell above, a ▄'s below) when that cell was stepped: the
+        // solid nearest its rung, and on a ▒ rung the lighter when the
+        // fringe is on the cell's lit side. Side-by-side fringes of one
+        // half, one colour and one letter are an edge, cut wherever a fringe
+        // faces ink that Shade left alone or that is another letter's: a
+        // fringe on it facing background takes the nearest faced fringe's
+        // colour, the lighter on a tie, so no end of the edge is left a lone
+        // pixel of the old colour. An edge facing no stepped cell, and a
+        // fringe that cuts one, keep their colour. Two sweeps an edge find
+        // the nearest faced fringe each side, so a row costs its width.
+        auto half = [&](int x, int y) {
+            const bool top = ink(x, 2 * y), bottom = ink(x, 2 * y + 1);
+            return top == bottom || source(x, y) ? 0 : top ? 1 : 2;
+        };
+        auto rank = [&](std::uint8_t c) { return std::find(ramp->colours.begin(), ramp->colours.end(), c) - ramp->colours.begin(); };
+        std::vector<std::optional<std::uint8_t>> faced;
+        std::vector<int> before, after;
+        for (int y = 0; y < h_; ++y)
+            for (int x0 = 0, x1; x0 < w_; x0 = x1) {
+                const int kind = half(x0, y);
+                const bool top = kind == 1;
+                // the fringe's ink pixel and the pixel it faces
+                const int iy = top ? 2 * y : 2 * y + 1, fy = top ? iy - 1 : iy + 1;
+                // a fringe on an edge: it faces background, or a stepped
+                // cell of its own letter
+                const auto open = [&](int x) {
+                    return !ink(x, fy) || (shaded[cell(x, fy / 2)] >= 0 && letterOf(x, fy) == letterOf(x, iy));
+                };
+                const Cell& first = sofar.at(x0, y);
+                const bool edge = kind && open(x0);
+                for (x1 = x0 + 1; edge && x1 < w_ && half(x1, y) == kind && sofar.at(x1, y) == first &&
+                                  letterOf(x1, iy) == letterOf(x0, iy) && open(x1);
+                     ++x1) {
+                }
+                if (!edge)
+                    continue;
+                const bool lit = top ? ly > 0 : ly < 0;
+                const int n = x1 - x0;
+                faced.assign(static_cast<std::size_t>(n), std::nullopt);
+                for (int i = 0; i < n; ++i)
+                    if (ink(x0 + i, fy))
+                        faced[static_cast<std::size_t>(i)] = nearestSolid(*ramp, shaded[cell(x0 + i, fy / 2)] * 4, lit);
+                // the nearest faced fringe before and after each
+                before.assign(static_cast<std::size_t>(n), -1);
+                after.assign(static_cast<std::size_t>(n), -1);
+                for (int i = 0, last = -1; i < n; ++i)
+                    before[static_cast<std::size_t>(i)] = last = faced[static_cast<std::size_t>(i)] ? i : last;
+                for (int i = n - 1, next = -1; i >= 0; --i)
+                    after[static_cast<std::size_t>(i)] = next = faced[static_cast<std::size_t>(i)] ? i : next;
+                for (int i = 0; i < n; ++i) {
+                    const int b = before[static_cast<std::size_t>(i)], a = after[static_cast<std::size_t>(i)];
+                    if (b < 0 && a < 0)
+                        continue;
+                    const auto colour = [&](int j) { return *faced[static_cast<std::size_t>(j)]; };
+                    std::uint8_t c;
+                    if (b < 0 || (a >= 0 && a - i < i - b))
+                        c = colour(a);
+                    else if (a < 0 || i - b < a - i)
+                        c = colour(b);
+                    else
+                        c = rank(colour(b)) >= rank(colour(a)) ? colour(b) : colour(a);
+                    setPixel(fringes, x0 + i, iy, c);
+                }
+            }
+        std::vector<Layer> out;
+        out.push_back(std::move(l));
+        out.push_back(std::move(fringes));
+        return out;
     }
 
     std::optional<Layer> bevelLayer(const BevelEffect& b, const std::vector<Layer>& below) const {
@@ -831,6 +928,7 @@ private:
     int ox_, oy_;
     int w_ = 0, h_ = 0;
     std::vector<std::uint8_t> ink_, grown_, src_;
+    std::vector<std::uint32_t> letter_;
     std::vector<std::pair<int, int>> bands_;
 };
 

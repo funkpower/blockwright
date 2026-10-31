@@ -457,6 +457,49 @@ TEST_CASE("Gold 3D's brown extrusion falls from the outline as drawn and leaves 
     CHECK(drawings == 3 * 5 * 2);
 }
 
+TEST_CASE("Shade on a flat Fill leaves no fallback speck in any face of the matrix", "[presets][matrix]") {
+    // Chrome and Ice as they were drawn with Shade, from four lights. A ▀/▄
+    // fringe left in the Fill colour beside the shading read as a fallback
+    // speck (vga, block); each fringe now takes the colour step of the
+    // shaded cell its ink faces. The stacks still don't ship: their other
+    // ladder findings (one-glyph where a letter is too short for a second
+    // rung, speckle on bw-block.tdf's half-block cells) are not fringes.
+    const std::vector<MatrixFace> fs = faces();
+    const std::vector<TextSource> ws = words();
+    struct Stack {
+        const char* name;
+        std::uint8_t outline, fill;
+        const char* ramp;
+    };
+    int cases = 0;
+    for (const Stack& st : {Stack{"chrome", LightCyan, Grey, "steel"}, Stack{"ice", Cyan, LightBlue, "ice"}})
+        for (const Compass light : {Compass::N, Compass::NW, Compass::W, Compass::SE}) {
+            TextStyle style;
+            style.effects = {Effect{true, OutlineEffect{OutlineForm::Pixels, st.outline}},
+                             Effect{true, FillEffect{FillMode::Flat, st.fill, st.ramp}},
+                             Effect{true, ShadeEffect{st.ramp, light}}};
+            for (const MatrixFace& f : fs)
+                for (const TextSource& w : ws)
+                    for (const bool ice : {true, false}) {
+                        INFO(st.name << " shade " << compassPointName(light) << " / " << f.name << " / "
+                                     << utf8(w.text) << " / iCE " << (ice ? "on" : "off"));
+                        lint::LintOptions options;
+                        options.ramps = namedRamps();
+                        options.craftPairs = true;
+                        options.ice = ice;
+                        std::string specks;
+                        const Canvas drawn = renderStyledText(w, style, *f.face, ice).cells;
+                        for (const lint::Finding& fd : lint::lintCanvas(drawn, options).findings)
+                            if (fd.kind == lint::Finding::Kind::FallbackSpeck)
+                                specks += fd.ramp + " " + std::to_string(fd.x) + "," + std::to_string(fd.y) + "\n";
+                        CHECK(specks == "");
+                        ++cases;
+                    }
+        }
+    // 2 stacks, 4 lights, 6 faces, 5 words, iCE on and off
+    CHECK(cases == 2 * 4 * 6 * 5 * 2);
+}
+
 // The comparison sheets: for each face and iCE setting, each fixture word
 // unstyled and then in each preset, each drawing under its name, written as
 // <face>-ice-<on|off>.ans in the directory BW_PRESET_SHEETS names. Run with

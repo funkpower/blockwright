@@ -112,6 +112,9 @@ struct TextLayout {
         int width = 0;                // columns, without trailing letter spacing
     };
     InkMask mask;  // as wide as the widest line
+    // Each mask pixel's character: its index in the text plus one, 0 where
+    // no glyph has ink (where two glyphs' ink overlaps, the later one's).
+    std::vector<std::uint32_t> glyphs;
     // The source cells, transparentCell() where no glyph has any; only when
     // a glyph laid out has them.
     std::optional<CellBlock> cells;
