@@ -78,6 +78,9 @@ add_executable(blockwright-tests
   test_project.cpp
   test_reference_layers.cpp
   test_shading_brushes.cpp
+  cpu_time.cpp
+  cpu_time.h
+  test_cpu_time.cpp
   test_smudge_brush.cpp
   test_soft_brush.cpp
   test_sauce.cpp

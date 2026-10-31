@@ -4,6 +4,7 @@
 // lint.
 
 #include "blockwright/ansi.h"
+#include "cpu_time.h"
 #include "portable_random.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/despeckle.h"
@@ -20,7 +21,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <ctime>
 #include <limits>
 #include <map>
 #include <memory>
@@ -160,10 +160,6 @@ void checkClean(const lint::LadderReport& report) {
     CHECK(count(report, Kind::Speckle) == 0);
     CHECK(count(report, Kind::NonNeighbourShade) == 0);
 }
-
-// The process's CPU time, so a timing bound doesn't depend on what else the
-// machine is running.
-double cpuSeconds() { return double(std::clock()) / CLOCKS_PER_SEC; }
 
 } // namespace
 
@@ -580,9 +576,9 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
     Canvas c = black(w, h);
     SECTION("everything selected") {
         // on the lit side: the middle of the ball is past the turn, black
-        const double t0 = cpuSeconds();
+        const double t0 = bwtest::cpuSeconds();
         const auto edit = paintStroke(c, brush, s, {{40, 250}}, o);
-        const double t = cpuSeconds() - t0;
+        const double t = bwtest::cpuSeconds() - t0;
         INFO(t << " s");
         CHECK(t < 0.3);
         CHECK(!edit.empty());
@@ -592,9 +588,9 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
             for (int x = 0; x < w; ++x)
                 c.at(x, y).transparent = (x + y) % 2 != 0;
         o.lockTransparent = true;
-        const double t0 = cpuSeconds();
+        const double t0 = bwtest::cpuSeconds();
         const auto edit = paintStroke(c, brush, s, {{80, 500}}, o);
-        const double t = cpuSeconds() - t0;
+        const double t = bwtest::cpuSeconds() - t0;
         INFO(t << " s");
         CHECK(t < 0.3);
         // every cell alone among black: no form on it is lint-clean, so
@@ -602,9 +598,9 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
         CHECK(edit.empty());
     }
     SECTION("a dab off the canvas does no form work") {
-        const double t0 = cpuSeconds();
+        const double t0 = bwtest::cpuSeconds();
         const auto edit = paintStroke(c, brush, s, {{-50, -50}}, o);
-        const double t = cpuSeconds() - t0;
+        const double t = bwtest::cpuSeconds() - t0;
         INFO(t << " s");
         CHECK(t < 0.05);
         CHECK(edit.empty());
@@ -1362,7 +1358,7 @@ void randomJoined(int from, int to) {
     const int w = 40, h = 22, strokes = to - from;
     int dirty = 0, blank = 0;
     std::string first;
-    const double start = cpuSeconds();
+    const double start = bwtest::cpuSeconds();
     for (int k = 0; k < to; ++k) {
         const int field = std::array{2, 6, 10}[size_t(pick(0, 2))];
         const auto dir = pick(0, 1) ? ShadeDirection::Lighten : ShadeDirection::Darken;
@@ -1402,7 +1398,7 @@ void randomJoined(int from, int to) {
             first = o.str();
         }
     }
-    const double took = cpuSeconds() - start;
+    const double took = bwtest::cpuSeconds() - start;
     INFO(dirty << " of " << strokes << " strokes with findings; " << blank << " left the canvas as it was; " << took
                << " s\n"
                << first);
