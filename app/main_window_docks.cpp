@@ -19,6 +19,7 @@
 #include "toolbox.h"
 
 #include <QAction>
+#include <QCoreApplication>
 #include <QDockWidget>
 #include <QMenu>
 #include <QLayout>
@@ -359,6 +360,9 @@ void MainWindow::applyDefaultDockWidths() {
         }
         QMainWindow::resizeDocks(columns, widths, Qt::Horizontal);
         layout()->activate();
+        // The canvas's scroll bars show or hide in a slot queued on their new
+        // range (#238): run it now, so a bar the new size brings is measured.
+        QCoreApplication::sendPostedEvents(scroll_, QEvent::MetaCall);
     };
     resizeColumns(kLeftColumnWidth, kRightColumnWidth);
     const int deficit = kCanvasViewportFloor - scroll_->viewport()->width();

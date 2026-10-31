@@ -241,6 +241,12 @@ foreach(scale 1.25 1.5)
   add_test(NAME "dock heights at scale ${scale}"
     COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} $<TARGET_FILE:blockwright-app-tests> "[dock-height]")
 endforeach()
+# The canvas keeps its floor after the window shrinks (#238): a scroll bar
+# appears with the shorter or narrower window, at every scale.
+foreach(scale 1.25 1.5 1.75 2)
+  add_test(NAME "canvas floor after a shrink at scale ${scale}"
+    COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} $<TARGET_FILE:blockwright-app-tests> "[canvas-floor-shrink]")
+endforeach()
 
 # File > Publish to Library and Send to WeeChat: its main points the settings
 # and the Library at scratch folders before the QApplication exists.

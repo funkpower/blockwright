@@ -33,6 +33,7 @@
 #include <QMouseEvent>
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QSettings>
 #include <QScreen>
 #include <QScrollArea>
@@ -1811,15 +1812,71 @@ TEST_CASE("Tool Options shows each tool's settings and help without scrolling wh
     QApplication::processEvents();
     auto* scroll = qobject_cast<QScrollArea*>(w.toolOptionsDock()->widget());
     REQUIRE(scroll);
-    // At 1080 these panels are taller than the column on their own (#236).
-    const QStringList tallest{QStringLiteral("text"), QStringLiteral("form"), QStringLiteral("spray"),
-                              QStringLiteral("texture"), QStringLiteral("outline")};
+    // At 1080 these panels are taller than the column on their own (#236):
+    // they may scroll, but no further than they do now.
+    const QHash<QString, int> tallest{{QStringLiteral("text"), 221},   {QStringLiteral("form"), 137},
+                                      {QStringLiteral("spray"), 110},  {QStringLiteral("texture"), 90},
+                                      {QStringLiteral("outline"), 65}};
     for (Tool* t : w.tools()->tools()) {
         w.tools()->setActive(t);
         QApplication::processEvents();
         const int overflow = scroll->verticalScrollBar()->maximum();
         CAPTURE(screen.width(), t->id().toStdString(), overflow);
-        if (screen.height() == 1080 && tallest.contains(t->id())) continue;
-        CHECK(overflow == 0);
+        CHECK(overflow <= (screen.height() == 1080 ? tallest.value(t->id(), 0) : 0));
     }
+}
+
+// #238: shrinking a full-size window leaves the canvas at its floor, as a
+// fresh window of the shrunk size gets, without waiting for another resize.
+// tests/CMakeLists.txt runs it at fractional scales too, where the canvas's
+// vertical scroll bar used to appear only after the columns were sized.
+TEST_CASE("shrinking a full-size window keeps the canvas at its floor", "[canvas-floor-shrink]") {
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1920, 1020);
+    w.show();
+    QApplication::processEvents();
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(scroll);
+    const int width = GENERATE(1280, 1300, 1366, 1400, 1440);
+    const QSize shrunk(width, 708);
+    CAPTURE(shrunk.width(), shrunk.height());
+    w.resize(shrunk);
+    QApplication::processEvents();
+    CAPTURE(w.toolboxDock()->width(), w.libraryDock()->width());
+    CHECK(scroll->viewport()->width() >= 640);
+    // The same columns and canvas as a window opened at that size.
+    MainWindow fresh;
+    fresh.resize(shrunk);
+    fresh.show();
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == fresh.toolboxDock()->width());
+    CHECK(w.libraryDock()->width() == fresh.libraryDock()->width());
+    CHECK(scroll->viewport()->width() == qobject_cast<QScrollArea*>(fresh.centralWidget())->viewport()->width());
+}
+
+TEST_CASE("narrowing a full-size window keeps the canvas at its floor", "[canvas-floor-shrink]") {
+    // Only the width changes: the narrower canvas brings the horizontal bar,
+    // and that bar's height then brings the vertical one (#238, at scale 1.25).
+    ClearLayout clear;
+    MainWindow w;
+    w.resize(1920, 1160);
+    w.show();
+    QApplication::processEvents();
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(scroll);
+    const int width = GENERATE(1280, 1366, 1440);
+    const QSize narrowed(width, 1160);
+    CAPTURE(narrowed.width(), narrowed.height());
+    w.resize(narrowed);
+    QApplication::processEvents();
+    CAPTURE(w.toolboxDock()->width(), w.libraryDock()->width());
+    CHECK(scroll->viewport()->width() >= 640);
+    MainWindow fresh;
+    fresh.resize(narrowed);
+    fresh.show();
+    QApplication::processEvents();
+    CHECK(w.toolboxDock()->width() == fresh.toolboxDock()->width());
+    CHECK(w.libraryDock()->width() == fresh.libraryDock()->width());
+    CHECK(scroll->viewport()->width() == qobject_cast<QScrollArea*>(fresh.centralWidget())->viewport()->width());
 }
