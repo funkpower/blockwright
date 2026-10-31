@@ -110,6 +110,13 @@ bool MainWindow::askToRun(const QString& question, const QString& why, const QSt
 }
 
 void MainWindow::openScene() {
+    // Refused before anything is asked or run, the Python probe included:
+    // openSceneFile would refuse it anyway (generator::killRunning knows
+    // one generator run's group).
+    if (runner_->busy()) {
+        QMessageBox::warning(this, tr("Open Scene"), tr("A generator is running; open the scene when it ends."));
+        return;
+    }
     if (!maybeSave())
         return;
     const QString dir = doc_.path().isEmpty() ? QString() : QFileInfo(doc_.path()).absolutePath();
@@ -120,8 +127,17 @@ void MainWindow::openScene() {
     const QFileInfo fi(path);
     const QString scene =
         QDir::toNativeSeparators(fi.canonicalFilePath().isEmpty() ? fi.absoluteFilePath() : fi.canonicalFilePath());
-    const QString python = QString::fromUtf8(scene::kPython.data(), qsizetype(scene::kPython.size())) +
-                           QLatin1Char(' ') +
+    // Which Python runs it, found before asking so the question names it;
+    // on Windows that runs each candidate's --version (scene::findPython).
+    scene::PythonCommand pythonCommand;
+    try {
+        pythonCommand = scene::findPython();
+    } catch (const std::exception& e) {
+        QMessageBox::warning(this, tr("Open Scene"),
+                             tr("Could not open %1:\n%2").arg(path, QString::fromStdString(e.what())));
+        return;
+    }
+    const QString python = QString::fromStdString(scene::pythonText(pythonCommand)) + QLatin1Char(' ') +
                            QString::fromUtf8(scene::kNoBytecode.data(), qsizetype(scene::kNoBytecode.size()));
     if (!askToRun(tr("Run the scene %1?").arg(scene),
                   tr("Opening a scene runs it, a Python program, on this computer with your permissions, once "
@@ -130,11 +146,11 @@ void MainWindow::openScene() {
                   tr("%1 %2 --list-layers, then --layer-ans for each layer").arg(python, scene)))
         return;
     QString error;
-    if (!openSceneFile(path, &error))
+    if (!openSceneFile(path, &error, pythonCommand))
         QMessageBox::warning(this, tr("Open Scene"), tr("Could not open %1:\n%2").arg(path, error));
 }
 
-bool MainWindow::openSceneFile(const QString& path, QString* error) {
+bool MainWindow::openSceneFile(const QString& path, QString* error, const std::vector<std::string>& python) {
     // generator::killRunning knows one run's group: wait for the runner's.
     if (runner_->busy()) {
         *error = tr("a generator is running; open the scene when it ends");
@@ -156,7 +172,7 @@ bool MainWindow::openSceneFile(const QString& path, QString* error) {
     QFutureWatcher<Imported> watcher;
     QEventLoop loop;
     connect(&watcher, &QFutureWatcher<Imported>::finished, &loop, &QEventLoop::quit);
-    watcher.setFuture(QtConcurrent::run([scenePath, dialog] {
+    watcher.setFuture(QtConcurrent::run([scenePath, dialog, python] {
         Imported out;
         try {
             out.project = scene::importScene(
@@ -171,7 +187,8 @@ bool MainWindow::openSceneFile(const QString& path, QString* error) {
                                 MainWindow::tr("Running layer %1 of %2 (%3)...").arg(index + 1).arg(count).arg(name));
                         },
                         Qt::QueuedConnection);
-                });
+                },
+                python);
         } catch (const std::exception& e) {
             out.error = QString::fromStdString(e.what());
         }

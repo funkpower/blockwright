@@ -184,7 +184,10 @@ TEST_CASE("File > Open Scene asks before it runs the scene", "[scene]") {
         open->trigger();
         CHECK(answers.picked);
         CHECK(answers.question == QStringLiteral("Run the scene %1?").arg(canonical));
-        CHECK(answers.informative.contains(QStringLiteral("python3 -B %1 --list-layers").arg(canonical)));
+        // the Python found (python3 on Linux and macOS) named before it runs
+        CHECK(answers.informative.contains(
+            QStringLiteral("%1 -B %2 --list-layers")
+                .arg(QString::fromStdString(scene::pythonText(scene::findPython())), canonical)));
         REQUIRE(waitFor([&] { return w.document()->layers().size() == 4; }));
         CHECK(names(*w.document()) == std::vector<std::string>{"sky", "sea", "tower", "beam"});
         CHECK(w.document()->isModified());

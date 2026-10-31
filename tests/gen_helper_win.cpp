@@ -14,12 +14,25 @@
 //   spawn <marker>          start "late-touch <marker>" detached from the
 //                           console, print "ok" and exit at once
 //   late-touch <marker>     sleep 1.5 s, then write <marker>
+//
+// Copied as NAME.exe beside a NAME.mode file, it stands in for a Python
+// for the scene import tests (test_scene_import.cpp) and does what the
+// file says:
+//
+//   python3   --version prints "Python 3.12.1"; -B <scene> --list-layers
+//             prints a one-layer listing, -B <scene> --layer-ans=bg "ab"
+//   py3       the same after a first argument -3, which it requires
+//   alias     the WindowsApps alias with no Store Python: a message on
+//             stderr, exit 9009
+//   python2   "Python 2.7.18" on stderr, exit 0
+//   hang      sleep 10 s, then exit 0 with nothing printed
 
 #include <windows.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -45,11 +58,67 @@ int cat(const char* file) {
 
 void touch(const char* file, const char* text) { std::ofstream(file, std::ios::binary) << text; }
 
+// A Python stand-in (above) doing what `modeFile` says.
+int python(const std::filesystem::path& modeFile, int argc, char** argv) {
+    std::ifstream in(modeFile, std::ios::binary);
+    const std::string mode = slurp(in);
+    if (mode == "alias") {
+        std::cerr << "Python was not found; run without arguments to install from the Microsoft Store.\n";
+        return 9009;
+    }
+    if (mode == "hang") {
+        Sleep(10000);
+        return 0;
+    }
+    if (mode == "python2") {
+        std::cerr << "Python 2.7.18\n";
+        return 0;
+    }
+    int i = 1;
+    if (mode == "py3") {
+        if (argc < 2 || std::string(argv[1]) != "-3") {
+            std::cerr << "no -3\n";
+            return 64;
+        }
+        i = 2;
+    } else if (mode != "python3") {
+        std::cerr << "no mode in " << modeFile.string() << "\n";
+        return 64;
+    }
+    const int left = argc - i;
+    if (left == 1 && std::string(argv[i]) == "--version") {
+        std::cout << "Python 3.12.1\n";
+        return 0;
+    }
+    if (left == 3 && std::string(argv[i]) == "-B") {
+        const std::string what = argv[i + 2];
+        if (what == "--list-layers") {
+            std::cout << R"({"width": 2, "rows": 1, "title": "t", "layers": [{"name": "bg"}]})" << "\n";
+            return 0;
+        }
+        if (what == "--layer-ans=bg") {
+            std::cout << "ab";
+            return 0;
+        }
+    }
+    std::cerr << "unexpected arguments\n";
+    return 64;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stdin), _O_BINARY);
+    {
+        wchar_t self[MAX_PATH];
+        const DWORD n = GetModuleFileNameW(nullptr, self, MAX_PATH);
+        std::filesystem::path modeFile(std::wstring(self, n < MAX_PATH ? n : 0));
+        modeFile.replace_extension(".mode");
+        std::error_code ec;
+        if (n > 0 && n < MAX_PATH && std::filesystem::is_regular_file(modeFile, ec))
+            return python(modeFile, argc, argv);
+    }
     const std::string mode = argc > 1 ? argv[1] : "";
     if (mode == "cat" && argc == 3)
         return cat(argv[2]);

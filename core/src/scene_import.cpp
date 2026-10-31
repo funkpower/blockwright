@@ -13,6 +13,8 @@
 
 #include <cmath>
 #include <filesystem>
+#include <mutex>
+#include <optional>
 #include <set>
 
 namespace fs = std::filesystem;
@@ -95,18 +97,88 @@ Listing parseListing(std::string_view json) {
     return l;
 }
 
-std::vector<std::string> layerCommand(const std::string& scene, const SceneLayer& layer) {
-    std::vector<std::string> command{std::string(kPython), std::string(kNoBytecode), scene, "--layer-ans=" + layer.name};
+std::vector<PythonCommand> pythonCandidates(bool windows) {
+    if (windows)
+        return {{"py", "-3"}, {"python"}, {"python3"}};
+    return {{"python3"}};
+}
+
+std::string pythonText(const PythonCommand& python) {
+    std::string out;
+    for (const std::string& word : python)
+        out += (out.empty() ? "" : " ") + word;
+    return out;
+}
+
+std::optional<std::string> probePython(const PythonCommand& python, const generator::RunOptions& options) {
+    PythonCommand command = python;
+    command.push_back("--version");
+    std::string out;
+    try {
+        out = generator::probeCommand(command, pythonText(command), options);
+    } catch (const generator::GeneratorError& e) {
+        return std::string(e.what());
+    }
+    if (!out.starts_with("Python 3.")) {
+        const std::string line = out.substr(0, out.find_first_of("\r\n"));
+        return pythonText(command) + ": " +
+               (line.empty() ? std::string("printed nothing on stdout")
+                             : "printed \"" + line.substr(0, 80) + "\" on stdout") +
+               ", where a Python 3.4 or later prints \"Python 3.\" and its version";
+    }
+    return {};
+}
+
+PythonCommand choosePython(const std::vector<PythonCommand>& candidates, const PythonProbe& probe) {
+    std::string tried;
+    for (const PythonCommand& python : candidates) {
+        const std::optional<std::string> why = probe(python);
+        if (!why)
+            return python;
+        tried += "\n- " + *why;
+    }
+    fail("no Python 3 to run the scene with; tried:" + tried +
+         "\nInstall Python 3 from python.org, which puts py and python on PATH.");
+}
+
+namespace {
+
+std::mutex foundLock;
+std::optional<PythonCommand> found;  // findPython's, once it has found one
+
+} // namespace
+
+PythonCommand findPython() {
+#ifdef _WIN32
+    const std::lock_guard lock(foundLock);
+    if (!found)
+        found = choosePython(pythonCandidates(true), [](const PythonCommand& python) { return probePython(python); });
+    return *found;
+#else
+    return pythonCandidates(false).front();
+#endif
+}
+
+void testing::forgetPython() {
+    const std::lock_guard lock(foundLock);
+    found.reset();
+}
+
+std::vector<std::string> layerCommand(const PythonCommand& python, const std::string& scene,
+                                      const SceneLayer& layer) {
+    std::vector<std::string> command = python;
+    command.insert(command.end(), {std::string(kNoBytecode), scene, "--layer-ans=" + layer.name});
     if (layer.key)
         command.push_back("--key=" + std::to_string(*layer.key));
     return command;
 }
 
-Listing list(const std::string& scene, const generator::RunOptions& options) {
+Listing list(const PythonCommand& python, const std::string& scene, const generator::RunOptions& options) {
+    std::vector<std::string> command = python;
+    command.insert(command.end(), {std::string(kNoBytecode), scene, "--list-layers"});
     std::string out;
     try {
-        out = generator::runCommand({std::string(kPython), std::string(kNoBytecode), scene, "--list-layers"}, {},
-                                    "scene " + scene + " (listing its layers)", options);
+        out = generator::runCommand(command, {}, "scene " + scene + " (listing its layers)", options);
     } catch (const generator::GeneratorError& e) {
         fail(e.what());
     }
@@ -114,12 +186,13 @@ Listing list(const std::string& scene, const generator::RunOptions& options) {
 }
 
 project::Project importScene(const std::string& path, const generator::RunOptions& options,
-                             const Progress& progress) {
+                             const Progress& progress, const PythonCommand& given) {
     std::error_code ec;
     const fs::path scene = fs::weakly_canonical(fs::absolute(path, ec), ec);
     if (ec || !fs::is_regular_file(scene, ec))
         fail(path + " is not a file");
-    const Listing listing = list(scene.string(), options);
+    const PythonCommand python = given.empty() ? findPython() : given;
+    const Listing listing = list(python, scene.string(), options);
     project::Project p;
     p.layers = LayerStack(listing.width, listing.rows);
     p.ice = true;
@@ -132,7 +205,7 @@ project::Project importScene(const std::string& path, const generator::RunOption
         if (progress)
             progress(i, listing.layers.size(), layer.name);
         generator::Spec spec;
-        spec.command = layerCommand(scene.string(), layer);
+        spec.command = layerCommand(python, scene.string(), layer);
         spec.key = layer.key;
         try {
             generator::add(p, {{std::string(generator::kSpecFile), generator::specJson(spec)}}, layer.name, options);

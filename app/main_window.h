@@ -20,6 +20,8 @@
 #include <QMainWindow>
 
 #include <filesystem>
+#include <string>
+#include <vector>
 
 class QAction;
 class QDockWidget;
@@ -168,8 +170,9 @@ public:
     // for each scene layer (scene_import.h), running the scene once for
     // each layer's cells, without asking anything; false and `error` on
     // failure. The project is untitled and unsaved, its generators trusted
-    // (main_window_generators.cpp).
-    bool openSceneFile(const QString& path, QString* error);
+    // (main_window_generators.cpp). The scene runs with `python`, or with
+    // scene::findPython()'s when it is empty.
+    bool openSceneFile(const QString& path, QString* error, const std::vector<std::string>& python = {});
     // Saves to `path` without asking anything, in the document's form if
     // `path` is its file, else in the form the path asks for (fileFormFor):
     // a flat .ans (the layers flattened, project::toAnsi), a .bwp zip or a

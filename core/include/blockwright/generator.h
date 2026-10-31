@@ -231,8 +231,18 @@ Canvas run(const project::Project& project, LayerId id, const RunOptions& option
 std::string runCommand(const std::vector<std::string>& command, std::string_view stdinData, const std::string& name,
                        const RunOptions& options = {});
 
-// Kills the process group of the generator running now, if one is, and
-// stops any run from starting after: from the first call on, run refuses
+// Runs `command` as runCommand does, with nothing on stdin, as a probe (a
+// quick question such as `python --version`) that may run while a
+// generator runs on another thread: the probe is recorded apart from the
+// generator, so it never hides the generator's group from killRunning, and
+// killRunning kills both. Probes run one at a time; a second waits for the
+// first.
+std::string probeCommand(const std::vector<std::string>& command, const std::string& name,
+                         const RunOptions& options = {});
+
+// Kills the process group of the generator running now and of the probe
+// running now (probeCommand), where one is, and stops any run or probe
+// from starting after: from the first call on, run refuses
 // before it starts its program ("not run: generators are being stopped").
 // Safe in a signal handler on any thread, for a program that is ending on
 // a signal. A signal that comes while a run is starting its program is
@@ -241,8 +251,8 @@ std::string runCommand(const std::vector<std::string>& command, std::string_view
 // it. A call that found nothing running, and a run that was about to start
 // its program, can't both go on: either the call sees the run starting and
 // kills its group, or the run sees the call and starts nothing. A group the
-// run has retired is never signalled. (One run at a time: it knows the
-// latest run's group.)
+// run has retired is never signalled. (One generator run at a time: it
+// knows the latest run's group, and the probe's.)
 void killRunning() noexcept;
 
 namespace testing {

@@ -6,7 +6,7 @@
 set -uo pipefail
 cli=$1 data=$2 tmp=$3 ansidraw=${4:-}
 if [[ -n ${BW_CLI_WINDOWS:-} ]]; then
-  echo "skip: a Windows CLI runs the scene with a Windows python3"
+  echo "skip: a Windows CLI runs the scene with a Windows Python (py -3, python or python3)"
   exit 77
 fi
 if ! command -v python3 >/dev/null || [[ ! -f $ansidraw/ansidraw.py ]]; then

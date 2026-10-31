@@ -40,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <set>
 #include <thread>
 #include <utility>
@@ -142,11 +143,15 @@ const std::string* file(const project::Project& project, const std::string& path
 
 #ifndef _WIN32
 // The process group of the generator running now (its program's pid), 0
-// when none is, or kStarting while one is being started.
+// when none is, or kStarting while one is being started; and the same for
+// the probe running now (probeCommand), kept apart so a probe never hides
+// a generator's group from killRunning.
 constexpr pid_t kStarting = -1;
-std::atomic<pid_t> runningGroup{0};
-// How many killRunning calls have read runningGroup and not yet signalled
-// the group they read.
+using Slot = std::atomic<pid_t>;
+Slot runningSlot{0};
+Slot probingSlot{0};
+// How many killRunning calls have read a slot and not yet signalled the
+// group they read.
 std::atomic<int> killers{0};
 // Set for good by the first killRunning: no run starts after it.
 std::atomic<bool> stopping{false};
@@ -207,11 +212,11 @@ bool outputPipe(Fd& read, Fd& write) {
 
 // Starts `argv` (argv[0] looked up as posix_spawnp does) in `dir` with
 // `in`, `out` and `err` as its standard streams, leading a process group of
-// its own, and publishes that group as the running one; returns its pid,
+// its own, and publishes that group in `slot`; returns its pid,
 // the group's id. Every signal is blocked on this thread from before the
 // start until the group is published, and a killRunning on another thread
 // waits out kStarting, so a signal that comes meanwhile is handled with the
-// group known. A killRunning that read runningGroup before kStarting was
+// group known. A killRunning that read the slot before kStarting was
 // stored is met from this side: it set `stopping` before that read, and
 // this stores kStarting before it reads `stopping` (each sequentially
 // consistent), so one of the two sees the other: killRunning sees
@@ -219,7 +224,8 @@ bool outputPipe(Fd& read, Fd& write) {
 // nothing, setting `error` to ECANCELED. The program gets the thread's
 // signal mask as it was and SIGPIPE's default action (exec resets what has
 // a handler). Returns 0 and sets `error` when it can't start.
-pid_t start(const std::vector<std::string>& argv, const std::string& dir, int in, int out, int err, int& error) {
+pid_t start(Slot& slot, const std::vector<std::string>& argv, const std::string& dir, int in, int out, int err,
+            int& error) {
     std::vector<char*> args;
     for (const std::string& a : argv)
         args.push_back(const_cast<char*>(a.c_str()));
@@ -252,14 +258,14 @@ pid_t start(const std::vector<std::string>& argv, const std::string& dir, int in
     pid_t pid = 0;
     if (!error) {
         pthread_sigmask(SIG_BLOCK, &all, nullptr);
-        runningGroup = kStarting;
+        slot = kStarting;
         if (stopping.load())
             error = ECANCELED;
         else
             error = posix_spawnp(&pid, args[0], &actions, &attr, args.data(), environ);
         if (!error && testing::started)
             testing::started(pid);
-        runningGroup = error ? 0 : pid;
+        slot = error ? 0 : pid;
         pthread_sigmask(SIG_SETMASK, &old, nullptr);  // what came meanwhile is handled here
     }
     posix_spawnattr_destroy(&attr);
@@ -275,7 +281,7 @@ pid_t start(const std::vector<std::string>& argv, const std::string& dir, int in
 // number after. Made only for a program that started (`leader` > 0).
 class Group {
 public:
-    explicit Group(pid_t leader) noexcept : leader_(leader), reaped_(leader <= 0) {}
+    Group(Slot& slot, pid_t leader) noexcept : slot_(slot), leader_(leader), reaped_(leader <= 0) {}
     Group(const Group&) = delete;
     Group& operator=(const Group&) = delete;
     ~Group() { end(); }
@@ -317,11 +323,12 @@ public:
 private:
     void retire() noexcept {
         pid_t running = leader_;
-        runningGroup.compare_exchange_strong(running, 0);
+        slot_.compare_exchange_strong(running, 0);
         while (killers.load() != 0)
             std::this_thread::yield();
     }
 
+    Slot& slot_;
     pid_t leader_;
     bool reaped_;
 };
@@ -336,12 +343,17 @@ bool sigchldIgnored() noexcept {
 #else
 // The job object holding the generator running now and everything it
 // started, null when none is, or kStarting while one is being started; and
-// its program's process id, for the test hooks.
+// its program's process id, for the test hooks. The probe running now
+// (probeCommand) has a slot of its own, so a probe never hides a
+// generator's job from killRunning.
 const HANDLE kStarting = INVALID_HANDLE_VALUE;  // never a job's handle
-std::atomic<HANDLE> runningJob{nullptr};
-std::atomic<pid_t> runningPid{0};
-// How many killRunning calls have read runningJob and not yet terminated
-// the job they read.
+struct Slot {
+    std::atomic<HANDLE> job{nullptr};
+    std::atomic<pid_t> pid{0};
+};
+Slot runningSlot, probingSlot;
+// How many killRunning calls have read a slot and not yet terminated the
+// job they read.
 std::atomic<int> killers{0};
 // Set for good by the first killRunning: no run starts after it.
 std::atomic<bool> stopping{false};
@@ -458,8 +470,8 @@ std::wstring onPath(const std::wstring& name) {
 // handle.
 class Job {
 public:
-    Job(Handle job, Handle process, pid_t pid) noexcept
-        : job_(std::move(job)), process_(std::move(process)), pid_(pid) {}
+    Job(Slot& slot, Handle job, Handle process, pid_t pid) noexcept
+        : slot_(slot), job_(std::move(job)), process_(std::move(process)), pid_(pid) {}
     Job(const Job&) = delete;
     Job& operator=(const Job&) = delete;
     ~Job() { end(); }
@@ -497,11 +509,12 @@ public:
 private:
     void retire() noexcept {
         HANDLE running = job_.h;
-        runningJob.compare_exchange_strong(running, nullptr);
+        slot_.job.compare_exchange_strong(running, nullptr);
         while (killers.load() != 0)
             std::this_thread::yield();
     }
 
+    Slot& slot_;
     Handle job_;
     Handle process_;
     pid_t pid_;
@@ -510,13 +523,13 @@ private:
 
 // Starts `program` (a full path) with `argv` as its command line in `dir`,
 // with `in`, `out` and `err` as its standard streams and no other handle
-// of this process, suspended, puts it in a new job, publishes the job as
-// the running one, and lets it run. A killRunning that read runningJob
+// of this process, suspended, puts it in a new job, publishes the job in
+// `slot`, and lets it run. A killRunning that read the slot
 // before kStarting was stored is met as on POSIX: one of the two sees the
 // other, and this starts nothing and sets `cancelled` when it sees it.
 // Sets `started`, or `error` when it can't start.
-void start(const std::wstring& program, const std::vector<std::string>& argv, const std::wstring& dir, HANDLE in,
-           HANDLE out, HANDLE err, std::optional<Job>& started, std::string& error, bool& cancelled) {
+void start(Slot& slot, const std::wstring& program, const std::vector<std::string>& argv, const std::wstring& dir,
+           HANDLE in, HANDLE out, HANDLE err, std::optional<Job>& started, std::string& error, bool& cancelled) {
     Handle job(::CreateJobObjectW(nullptr, nullptr));
     if (!job.h) {
         error = windowsError(::GetLastError());
@@ -558,9 +571,9 @@ void start(const std::wstring& program, const std::vector<std::string>& argv, co
     for (const std::string& a : argv)
         line += (line.empty() ? L"" : L" ") + quoted(wide(a));
     PROCESS_INFORMATION pi{};
-    runningJob = kStarting;
+    slot.job = kStarting;
     if (stopping.load()) {
-        runningJob = nullptr;
+        slot.job = nullptr;
         cancelled = true;
         return;
     }
@@ -569,7 +582,7 @@ void start(const std::wstring& program, const std::vector<std::string>& argv, co
                               EXTENDED_STARTUPINFO_PRESENT,
                           nullptr, dir.c_str(), &si.StartupInfo, &pi)) {
         error = windowsError(::GetLastError());
-        runningJob = nullptr;
+        slot.job = nullptr;
         return;
     }
     Handle process(pi.hProcess), thread(pi.hThread);
@@ -577,15 +590,15 @@ void start(const std::wstring& program, const std::vector<std::string>& argv, co
         error = windowsError(::GetLastError());
         ::TerminateProcess(process.h, 1);
         ::WaitForSingleObject(process.h, INFINITE);
-        runningJob = nullptr;
+        slot.job = nullptr;
         return;
     }
     const pid_t pid = pid_t(pi.dwProcessId);
     if (testing::started)
         testing::started(pid);
-    runningPid = pid;
-    runningJob = job.h;
-    started.emplace(std::move(job), std::move(process), pid);
+    slot.pid = pid;
+    slot.job = job.h;
+    started.emplace(slot, std::move(job), std::move(process), pid);
     ::ResumeThread(thread.h);
 }
 #endif
@@ -608,24 +621,30 @@ void testing::allowRuns() noexcept { stopping = false; }
 #ifndef _WIN32
 void killRunning() noexcept {
     ++killers;
-    stopping = true;  // before runningGroup is read (start)
-    pid_t group;
-    // a run starting on another thread, with every signal blocked there,
-    // publishes its group in a moment
-    while ((group = runningGroup.load()) == kStarting) {
+    stopping = true;  // before the slots are read (start)
+    Slot* const each[] = {&runningSlot, &probingSlot};
+    for (Slot* slot : each) {
+        pid_t group;
+        // a run starting on another thread, with every signal blocked
+        // there, publishes its group in a moment
+        while ((group = slot->load()) == kStarting) {
+        }
+        killGroup(group);
     }
-    killGroup(group);
     --killers;
 }
 #else
 void killRunning() noexcept {
     ++killers;
-    stopping = true;  // before runningJob is read (start)
-    HANDLE job;
-    // a run starting on another thread publishes its job in a moment
-    while ((job = runningJob.load()) == kStarting) {
+    stopping = true;  // before the slots are read (start)
+    Slot* const each[] = {&runningSlot, &probingSlot};
+    for (Slot* slot : each) {
+        HANDLE job;
+        // a run starting on another thread publishes its job in a moment
+        while ((job = slot->job.load()) == kStarting) {
+        }
+        killJob(job, slot->pid.load());
     }
-    killJob(job, runningPid.load());
     --killers;
 }
 #endif
@@ -1009,8 +1028,9 @@ void refuseIgnoredSigchld(const std::string& name) {
                     "would be reaped as it exits and what it left running could not be stopped");
 }
 
-std::string execute(const std::vector<std::string>& argv, const std::string& dir, std::string_view stdinData,
-                    const std::string& name, const std::string& program, const RunOptions& options) {
+std::string execute(Slot& slot, const std::vector<std::string>& argv, const std::string& dir,
+                    std::string_view stdinData, const std::string& name, const std::string& program,
+                    const RunOptions& options) {
     refuseIgnoredSigchld(name);
 
     // stdin is a file holding the input, so a program that doesn't read it
@@ -1032,12 +1052,12 @@ std::string execute(const std::vector<std::string>& argv, const std::string& dir
     // between looks at the clock and at the program, so the cap and the
     // deadline hold against a flood and what is held stays near the cap.
     int error = 0;
-    const pid_t leader = start(argv, dir, in.fd, outW.fd, errW.fd, error);
+    const pid_t leader = start(slot, argv, dir, in.fd, outW.fd, errW.fd, error);
     if (error == ECANCELED)
         fail(name + ": not run: generators are being stopped");
     if (error)
         fail(name + ": could not run " + program + ": " + std::strerror(error));
-    Group group(leader);
+    Group group(slot, leader);
     in.close();
     outW.close();
     errW.close();
@@ -1104,8 +1124,9 @@ std::string execute(const std::vector<std::string>& argv, const std::string& dir
 // program's exit code and its id until the run closes it.
 void refuseIgnoredSigchld(const std::string&) {}
 
-std::string execute(const std::vector<std::string>& argv, const std::string& dir, std::string_view stdinData,
-                    const std::string& name, const std::string& program, const RunOptions& options) {
+std::string execute(Slot& slot, const std::vector<std::string>& argv, const std::string& dir,
+                    std::string_view stdinData, const std::string& name, const std::string& program,
+                    const RunOptions& options) {
     // the program: a full path as given, or looked up on PATH (onPath)
     const std::wstring first = wide(argv[0]);
     std::wstring path;
@@ -1132,7 +1153,7 @@ std::string execute(const std::vector<std::string>& argv, const std::string& dir
     std::string error;
     bool cancelled = false;
     std::optional<Job> job;
-    start(path, argv, QDir::toNativeSeparators(QString::fromStdString(dir)).toStdWString(), in.h, outW.h, errW.h, job,
+    start(slot, path, argv, QDir::toNativeSeparators(QString::fromStdString(dir)).toStdWString(), in.h, outW.h, errW.h, job,
           error, cancelled);
     if (cancelled)
         fail(name + ": not run: generators are being stopped");
@@ -1242,7 +1263,7 @@ Canvas run(const project::Project& project, LayerId id, const RunOptions& option
         argv[0] = (root / rel).make_preferred().string();
     }
 
-    const std::string out = execute(argv, utf8(tmp.path()), stdinJson, name, spec.command[0], options);
+    const std::string out = execute(runningSlot, argv, utf8(tmp.path()), stdinJson, name, spec.command[0], options);
     const int width = layer.width() > 0 ? layer.width() : project.layers.width();
     try {
         return cellsFromOutput(out, width, spec.key);
@@ -1251,8 +1272,10 @@ Canvas run(const project::Project& project, LayerId id, const RunOptions& option
     }
 }
 
-std::string runCommand(const std::vector<std::string>& command, std::string_view stdinData, const std::string& name,
-                       const RunOptions& options) {
+namespace {
+
+std::string runIn(Slot& slot, const std::vector<std::string>& command, std::string_view stdinData,
+                  const std::string& name, const RunOptions& options) {
     if (command.empty() || command[0].empty())
         fail(name + ": no program to run");
     for (const std::string& arg : command)
@@ -1264,7 +1287,21 @@ std::string runCommand(const std::vector<std::string>& command, std::string_view
     QTemporaryDir tmp;
     if (!tmp.isValid())
         fail(name + ": no temporary directory to run " + command[0] + " in: " + utf8(tmp.errorString()));
-    return execute(command, utf8(tmp.path()), stdinData, name, command[0], options);
+    return execute(slot, command, utf8(tmp.path()), stdinData, name, command[0], options);
+}
+
+} // namespace
+
+std::string runCommand(const std::vector<std::string>& command, std::string_view stdinData, const std::string& name,
+                       const RunOptions& options) {
+    return runIn(runningSlot, command, stdinData, name, options);
+}
+
+std::string probeCommand(const std::vector<std::string>& command, const std::string& name, const RunOptions& options) {
+    // one probe at a time, so the probe slot holds every probe running
+    static std::mutex one;
+    const std::lock_guard lock(one);
+    return runIn(probingSlot, command, {}, name, options);
 }
 
 void refresh(project::Project& project, LayerId id, const RunOptions& options) {

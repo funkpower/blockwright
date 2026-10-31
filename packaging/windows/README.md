@@ -70,10 +70,13 @@ cd ~/.cache/dw/bw-win-build/build && QT_QPA_PLATFORM=offscreen ctest -j 8
 
 The build directory's `wine-run` runs each program with its own wine prefix
 (`BW_WINEPREFIX` names another). The tests skip what a Windows program can't
-do (POSIX permissions, sh and python3 generators, and for now the symbolic-link
-tests, #251); `test_generator_win.cpp` runs generators the Windows way and
-`test_junction_win.cpp` checks junctions are refused as symbolic links
-are. Qt's offscreen platform finds no font under wine, so the configure step
+do (POSIX permissions, sh generators, Python scenes when the prefix has
+no Python, and for now the symbolic-link tests, #251);
+`test_generator_win.cpp` runs generators the Windows way,
+`test_junction_win.cpp` checks junctions are refused as symbolic links are,
+and `test_scene_import.cpp` finds a scene's Python (`py -3`, `python`,
+`python3`) among stand-ins built from `bw-gen-helper.exe`. Qt's offscreen
+platform finds no font under wine, so the configure step
 copies one sans family from `/usr/share/fonts` (Noto Sans, else DejaVu Sans;
 `-DBW_WINE_FONTS=<files>` names others) into the build's `wine-fonts` and
 `wine-run` points `QT_QPA_FONTDIR` there. Wine's FreeType hints them a

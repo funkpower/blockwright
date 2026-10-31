@@ -22,9 +22,11 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <QAbstractButton>
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
@@ -39,6 +41,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QThreadPool>
 #include <QTimer>
@@ -763,6 +766,52 @@ TEST_CASE("quitting the app kills a running generator rather than waiting for it
     CHECK(t.elapsed() < 10000);
     CHECK_FALSE(failure.isEmpty());
     CHECK(row(*o.w.document(), o.id) == "###");
+    generator::testing::allowRuns();
+}
+
+TEST_CASE("File > Open Scene while a generator runs refuses before it asks or runs anything") {
+    // On Windows the Python lookup runs programs, so it waits for the
+    // runner as the import does; the refusal is the first thing shown,
+    // before the unsaved-changes question, the file dialog or the trust
+    // question.
+    BarsWindow o(20);
+    Truster trust(QMessageBox::Yes);
+    GeneratorRunner* runner = o.w.generatorRunner();
+    countSpin(o.w.layersWidget()->generatorForm())->setValue(4);
+    REQUIRE(waitFor([&] { return runner->started() == 1; }));
+    REQUIRE(runner->busy());
+    REQUIRE(o.w.document()->isModified());
+    auto* open = o.w.findChild<QAction*>(QStringLiteral("openScene"));
+    REQUIRE(open);
+
+    QStringList shown;  // each modal window, by title and text
+    QTimer answer;
+    answer.setInterval(10);
+    QObject::connect(&answer, &QTimer::timeout, [&] {
+        QWidget* modal = QApplication::activeModalWidget();
+        if (!modal || !modal->isVisible())
+            return;
+        if (auto* box = qobject_cast<QMessageBox*>(modal)) {
+            if (box->objectName() == QStringLiteral("trustGenerators"))
+                return;  // the Truster's
+            shown << box->windowTitle() + QStringLiteral(": ") + box->text();
+            box->reject();
+        } else if (auto* dialog = qobject_cast<QDialog*>(modal)) {
+            shown << dialog->windowTitle();
+            dialog->reject();
+        }
+    });
+    answer.start();
+    const int starts = runner->started();
+    open->trigger();
+    answer.stop();
+    REQUIRE_FALSE(shown.isEmpty());
+    CHECK(shown.front() == QStringLiteral("Open Scene: A generator is running; open the scene when it ends."));
+    CHECK(shown.size() == 1);
+    CHECK(runner->started() == starts);
+
+    generator::killRunning();
+    REQUIRE(waitFor([&] { return idle(o.w); }, 10000));
     generator::testing::allowRuns();
 }
 

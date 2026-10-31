@@ -5,10 +5,10 @@
 //
 // The scene answers for itself (ansidraw's layer modes):
 //
-//   python3 -B scene.py --list-layers
+//   <python> -B scene.py --list-layers
 //       {"width": 80, "rows": 40, "title": "…",
 //        "layers": [{"name": "sky"}, {"name": "figure", "key": 13}, …]}
-//   python3 -B scene.py --layer-ans=NAME [--key=K]
+//   <python> -B scene.py --layer-ans=NAME [--key=K]
 //       the layer's .ans: the layers below it drawn first, the cells it
 //       changed kept, every other cell a blank on palette colour K
 //
@@ -23,8 +23,16 @@
 // and what it reads beside itself (locked layers, reference pictures) is
 // found, because ansidraw finds those from the script's own path. The cost
 // is that running the layers again needs the scene at that path, with
-// python3 and the ansidraw it imports; a project moved elsewhere still
-// opens, composites and exports its cached cells.
+// the Python it was opened with and the ansidraw it imports; a project
+// moved elsewhere still opens, composites and exports its cached cells.
+//
+// The Python is python3 on Linux and macOS. Windows has no one name for
+// it: python.org's installer puts py.exe (the launcher) and python.exe on
+// PATH but no python3.exe, and stock Windows has App Execution Aliases,
+// python.exe and python3.exe in WindowsApps, that stand in for a Store
+// Python and, with none installed, exit 9009. So on Windows the first of
+// py -3, python and python3 that answers --version with "Python 3." is
+// used, and the layers' generator.json run it the same way.
 //
 // A key is chosen when the scene is opened. If the scene changes so that a
 // layer now has a blank cell on its key, that layer's run fails and says
@@ -33,6 +41,7 @@
 #include "blockwright/generator.h"
 #include "blockwright/project.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -50,7 +59,46 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-inline constexpr std::string_view kPython = "python3";
+// A command that runs Python 3: the program and the arguments before the
+// script's, e.g. {"python3"} or {"py", "-3"}.
+using PythonCommand = std::vector<std::string>;
+
+// The commands to try, in order: on Windows py -3, python, python3; on
+// Linux and macOS python3 alone.
+std::vector<PythonCommand> pythonCandidates(bool windows);
+
+// Runs `python --version` (generator::probeCommand, so the program is
+// looked up on PATH as a layer's run looks it up, and a generator running
+// on another thread stays killable) and returns why it won't do: it
+// couldn't start, exited with a status other than 0 (the WindowsApps
+// alias's 9009), took longer than `options` allow, or printed no
+// "Python 3." on stdout (Python 2 and 3.0-3.3 print their version on
+// stderr). Nothing when it is a Python 3.
+std::optional<std::string> probePython(const PythonCommand& python,
+                                       const generator::RunOptions& options = {std::chrono::seconds(5)});
+
+// Why a command isn't a Python 3, or nothing when it is (probePython).
+using PythonProbe = std::function<std::optional<std::string>(const PythonCommand&)>;
+
+// The first candidate `probe` accepts. Throws SceneError naming each one
+// tried and why it was passed over, and what to install.
+PythonCommand choosePython(const std::vector<PythonCommand>& candidates, const PythonProbe& probe);
+
+// The Python scenes run with here: on Windows choosePython over
+// pythonCandidates(true) with probePython, the one found kept for the
+// rest of the process (a failure is not kept: the next call looks again);
+// on Linux and macOS python3, unprobed (a missing one fails the run that
+// needs it, as before).
+PythonCommand findPython();
+
+namespace testing {
+// Tests only: forgets the Python findPython found, so it looks again.
+void forgetPython();
+} // namespace testing
+
+// The command as words joined by spaces, for messages: "py -3".
+std::string pythonText(const PythonCommand& python);
+
 // Both commands run Python with -B: the scene's imports (a helper beside
 // it, ansidraw itself) write no __pycache__ there. ansidraw's layer modes
 // keep the scene's own writes off its files, but Python's import machinery
@@ -79,12 +127,14 @@ struct Listing {
 // 0-15. Throws SceneError.
 Listing parseListing(std::string_view json);
 
-// The command a layer's generator runs: python3 -B, the scene, --layer-ans=
-// the name and, with a key, --key=K.
-std::vector<std::string> layerCommand(const std::string& scene, const SceneLayer& layer);
+// The command a layer's generator runs: `python`, -B, the scene,
+// --layer-ans= the name and, with a key, --key=K.
+std::vector<std::string> layerCommand(const PythonCommand& python, const std::string& scene,
+                                      const SceneLayer& layer);
 
-// Asks the scene (an absolute path) for its layers. Throws SceneError.
-Listing list(const std::string& scene, const generator::RunOptions& options = {});
+// Asks the scene (an absolute path) for its layers, running it with
+// `python`. Throws SceneError.
+Listing list(const PythonCommand& python, const std::string& scene, const generator::RunOptions& options = {});
 
 // Called before each layer runs: its index (bottom 0), how many there are,
 // its name.
@@ -92,9 +142,11 @@ using Progress = std::function<void(std::size_t index, std::size_t count, const 
 
 // The scene at `path` as a new project: the listing's size, iCE on, its
 // title in SAUCE when CP437 can hold it, and a generator layer for each
-// scene layer (generator::add), run once for its cells. Throws SceneError
-// for a path that isn't a file, and for what list and the runs refuse.
+// scene layer (generator::add), run once for its cells. The scene runs
+// with `python`, or findPython()'s when it is empty. Throws SceneError for
+// a path that isn't a file, no Python found, and what list and the runs
+// refuse.
 project::Project importScene(const std::string& path, const generator::RunOptions& options = {},
-                             const Progress& progress = {});
+                             const Progress& progress = {}, const PythonCommand& python = {});
 
 } // namespace bw::scene
