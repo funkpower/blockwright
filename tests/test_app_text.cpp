@@ -24,6 +24,7 @@
 #include "util.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAction>
 #include <QApplication>
@@ -40,6 +41,8 @@
 #include <QMenuBar>
 #include <QMouseEvent>
 #include <QProxyStyle>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSpinBox>
 #include <QStyleOptionViewItem>
 #include <QTemporaryDir>
@@ -50,6 +53,7 @@
 #include <cstdlib>
 #include <new>
 #include <utility>
+#include <vector>
 
 using namespace bw;
 
@@ -1732,4 +1736,215 @@ TEST_CASE("TheDraw text line clicks retain native boundaries with and without wr
             type(v, QStringLiteral("B"));
             CHECK(sourceOf(d).text == (wrapped ? U"BA_" : U"BA\n_"));
         }
+}
+
+TEST_CASE("the view scrolls to keep the text cursor in sight as it moves, and only then", "[text]") {
+    MainWindow w;
+    w.resize(900, 700);
+    w.show();
+    CanvasView* v = w.canvasView();
+    v->setZoom(4);
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(scroll);
+    QScrollBar* h = scroll->horizontalScrollBar();
+    QScrollBar* vert = scroll->verticalScrollBar();
+    REQUIRE(h->maximum() > 0);  // the canvas is wider and taller than the view
+    REQUIRE(vert->maximum() > 0);
+    REQUIRE(h->value() == 0);
+    REQUIRE(vert->value() == 0);
+    // the drawn text cursor, all of it inside the scroll area's viewport
+    const auto inSight = [&] {
+        const std::optional<QRect> c = textTool(w)->drawnCaret();
+        REQUIRE(c);
+        const QRect r = v->cellRect(c->topLeft()).united(v->cellRect(c->bottomRight()));
+        return scroll->viewport()->rect().contains(v->toWidget(r).translated(v->pos()));
+    };
+
+    makeText(w, QStringLiteral("A"));
+    REQUIRE(inSight());
+    // typing on past the right edge: the view follows, a letter at a time
+    for (int i = 0; i < 6; ++i) {
+        type(v, QStringLiteral("A"));
+        INFO(i);
+        CHECK(inSight());
+    }
+    REQUIRE(textTool(w)->caretCell().x() < 80);
+    CHECK(h->value() > 0);
+    // Enter takes it down past the bottom edge, and back to the left
+    for (int i = 0; i < 3; ++i) {
+        key(v, Qt::Key_Return, QStringLiteral("\r"));
+        INFO(i);
+        CHECK(inSight());
+    }
+    CHECK(vert->value() > 0);
+    CHECK(h->value() < v->cellRect(QPoint(2, 0)).left() + 1);
+
+    // scrolled away by hand: a change that leaves the text cursor where it
+    // is doesn't take the view back, at this zoom or another
+    h->setValue(h->maximum());
+    vert->setValue(vert->maximum());
+    REQUIRE_FALSE(inSight());
+    emit textTool(w)->changed();
+    CHECK(h->value() == h->maximum());
+    CHECK(vert->value() == vert->maximum());
+    v->setZoom(3);
+    const int hAt = h->value(), vAt = vert->value();
+    REQUIRE_FALSE(inSight());
+    emit textTool(w)->changed();
+    CHECK(h->value() == hAt);
+    CHECK(vert->value() == vAt);
+    v->setZoom(4);
+
+    // ending the edit leaves no text cursor drawn, and doesn't scroll to
+    // the end of the text a key would resume at
+    for (int i = 0; i < 4; ++i)
+        key(v, Qt::Key_Up);
+    key(v, Qt::Key_Home);
+    REQUIRE(textTool(w)->caret() == 0);
+    h->setValue(0);
+    vert->setValue(0);
+    REQUIRE(inSight());
+    key(v, Qt::Key_Escape);
+    REQUIRE_FALSE(textTool(w)->drawnCaret());
+    CHECK(h->value() == 0);
+    CHECK(vert->value() == 0);
+    // typing again resumes at the end, and the view goes there
+    type(v, QStringLiteral("A"));
+    CHECK(inSight());
+    CHECK(vert->value() > 0);
+}
+
+TEST_CASE("a text cursor taller than the view shows its top, and typing on one line doesn't move the view", "[text]") {
+    MainWindow w;
+    w.resize(900, 700);
+    w.show();
+    CanvasView* v = w.canvasView();
+    v->setZoom(8);
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(scroll);
+    QScrollBar* vert = scroll->verticalScrollBar();
+    makeText(w, QStringLiteral("A"));
+    const auto caretPx = [&] {
+        const std::optional<QRect> c = textTool(w)->drawnCaret();
+        REQUIRE(c);
+        return v->toWidget(v->cellRect(c->topLeft()).united(v->cellRect(c->bottomRight()))).translated(v->pos());
+    };
+    // the window made short enough that the caret is taller than the view
+    const int vh = scroll->viewport()->height();
+    const int ch = caretPx().height();
+    w.resize(900, 700 - (vh - ch / 2));
+    QApplication::processEvents();
+    INFO("caret " << caretPx().height() << " px, viewport " << scroll->viewport()->height() << " px");
+    REQUIRE(caretPx().height() > scroll->viewport()->height());
+    REQUIRE(vert->maximum() > 0);
+    // Enter takes the caret down below the view; its top shows
+    key(v, Qt::Key_Return, QStringLiteral("\r"));
+    {
+        const QRect r = caretPx();
+        INFO("caret top " << r.top() << " bottom " << r.bottom() << ", viewport 0.." << scroll->viewport()->height() - 1
+                          << ", bar " << vert->value());
+        CHECK(r.top() >= 0);
+        CHECK(r.top() < scroll->viewport()->height());
+    }
+    // letters typed on the same line: the caret stays on the same rows, so
+    // the view doesn't move up and down
+    std::vector<int> at;
+    for (int i = 0; i < 4; ++i) {
+        type(v, QStringLiteral("A"));
+        at.push_back(vert->value());
+    }
+    INFO("vertical bar after each letter: " << at[0] << " " << at[1] << " " << at[2] << " " << at[3]);
+    CHECK(at[1] == at[0]);
+    CHECK(at[2] == at[1]);
+    CHECK(at[3] == at[2]);
+}
+
+TEST_CASE("the view following the text cursor leftwards keeps the whole drawn cursor in sight", "[text]") {
+    MainWindow w;
+    w.resize(900, 700);
+    w.show();
+    CanvasView* v = w.canvasView();
+    v->setZoom(4);
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(scroll);
+    QScrollBar* h = scroll->horizontalScrollBar();
+    makeText(w, QStringLiteral("AAAAAAA"));
+    REQUIRE(h->value() > 0);
+    key(v, Qt::Key_Home);
+    // the bar paint() draws: centred on the cell's left edge, w wide plus a
+    // 1 px black rim each side
+    const std::optional<QRect> c = textTool(w)->drawnCaret();
+    REQUIRE(c);
+    const QRect first = v->cellRect(c->topLeft());
+    const int bw = std::max(2, first.width() / 4);
+    const QRect bar = v->toWidget(QRect(first.left() - bw / 2 - 1, first.top(), bw + 2, first.height())).translated(v->pos());
+    INFO("drawn caret x " << bar.left() << ".." << bar.right() << ", viewport 0.." << scroll->viewport()->width() - 1
+                          << ", bar " << h->value());
+    CHECK(bar.left() >= 0);
+}
+
+TEST_CASE("an Alt-drag of the text layer with the pointer at the view's edge doesn't scroll the view after its cursor",
+          "[text][layer-move]") {
+    MainWindow w;
+    w.resize(900, 700);
+    w.show();
+    CanvasView* v = w.canvasView();
+    v->setZoom(4);
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    REQUIRE(scroll);
+    QScrollBar* h = scroll->horizontalScrollBar();
+    QScrollBar* vert = scroll->verticalScrollBar();
+    makeText(w, QStringLiteral("A"));
+    Document* d = w.document();
+    const LayerId id = d->activeLayer();
+    REQUIRE(d->active()->props.x == 2);
+    const int h0 = h->value(), v0 = vert->value();
+    const bool commit = GENERATE(false, true);
+    const auto altMouse = [&](QEvent::Type type, QPointF at) {
+        QMouseEvent e(type, at, v->mapToGlobal(at), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+                      type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::AltModifier);
+        QApplication::sendEvent(v, &e);
+    };
+
+    // pressed on the letter, then held two pixels inside the viewport's
+    // right edge, where the cursor after the letter is out of sight: the
+    // view stays put, so the pointer stays over the same cell
+    altMouse(QEvent::MouseButtonPress, v->toWidget(v->cellRect(QPoint(2, 1))).center());
+    REQUIRE(v->shownOffset(id));
+    const QWidget* vp = scroll->viewport();
+    QPointF at;
+    std::vector<int> bars, cells;
+    for (int i = 0; i < 6; ++i) {
+        at = v->mapFrom(vp, QPointF(vp->width() - 2 - i % 2, 40));
+        altMouse(QEvent::MouseMove, at);
+        bars.push_back(h->value());
+        cells.push_back(v->shownOffset(id).value_or(QPoint(-1, -1)).x());
+    }
+    const int under = v->cellAt(v->toView(at)).x();
+    INFO("horizontal bar after each move: " << bars[0] << " " << bars[1] << " " << bars[2] << " " << bars[3] << " "
+                                            << bars[4] << " " << bars[5] << "; layer shown at x " << cells[0] << " "
+                                            << cells[1] << " " << cells[2] << " " << cells[3] << " " << cells[4] << " "
+                                            << cells[5] << "; pointer over cell " << under);
+    CHECK(bars == std::vector<int>(6, h0));
+    CHECK(cells == std::vector<int>(6, under));
+    CHECK(vert->value() == v0);
+    {
+        // the cursor after the letter is left past the viewport's right edge
+        const std::optional<QRect> c = textTool(w)->drawnCaret();
+        REQUIRE(c);
+        CHECK(v->toWidget(v->cellRect(c->topLeft())).translated(v->pos()).right() >= vp->width());
+    }
+
+    if (commit) {
+        // the release lands it where the pointer's cell says, and the view
+        // doesn't go after the cursor there either
+        altMouse(QEvent::MouseButtonRelease, at);
+        CHECK(d->layers().find(id)->props.x == under);
+    } else {
+        key(v, Qt::Key_Escape);
+        altMouse(QEvent::MouseButtonRelease, at);
+        CHECK(d->layers().find(id)->props.x == 2);
+    }
+    CHECK(h->value() == h0);
+    CHECK(vert->value() == v0);
 }

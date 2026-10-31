@@ -118,6 +118,13 @@ public:
     // (QWidget::inputMethodQuery); unset for the view's cell cursor. The
     // tool emits changed() when it moves.
     virtual std::optional<QRect> caretRect() const { return {}; }
+    // The canvas cells of the text cursor paint() draws: the view keeps it
+    // in sight when it moves. Unset when none is drawn.
+    virtual std::optional<QRect> drawnCaret() const { return {}; }
+    // The bar a text cursor is drawn as over `cells`, its cells' view
+    // pixels: centred on their left edge, a quarter of a cell wide (2 px at
+    // least), with a 1 px rim each side.
+    static QRect caretBar(const QRect& cells);
     // A word on the tool's settings for the status bar (the glyph brush's
     // glyph); empty for none.
     virtual QString status() const { return {}; }

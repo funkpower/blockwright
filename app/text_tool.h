@@ -82,6 +82,8 @@ public:
     // The text cursor's cells, or with no edit and no text cursor waiting
     // the end of the active text layer a key would edit (resume()).
     std::optional<QRect> caretRect() const override;
+    // The text cursor of an edit or of a click waiting for a new layer.
+    std::optional<QRect> drawnCaret() const override;
     void cancel() override;
     void paint(QPainter& p) const override;
     QString status() const override;
@@ -111,6 +113,9 @@ private:
     // letters: the edited layer's (inside its style's margins), or the
     // settings a new layer starts with at spot(); null for neither.
     const TextSource* shown(QPoint* origin) const;
+    // The cells of a text cursor before character `at` of `s`, its letters'
+    // top-left cell at `origin`; unset when the face is missing.
+    std::optional<QRect> caretCellsAt(const TextSource& s, QPoint origin, int at, bool after) const;
     void setSpot(std::optional<QPoint> spot);
     // Starts editing `id` with the cursor at `caret`, a new run of typing.
     void begin(LayerId id, int caret, bool after = false);

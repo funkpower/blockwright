@@ -390,7 +390,10 @@ void CanvasView::setTool(Tool* tool) {
         // its text cursor may have moved
         connect(tool_, &Tool::changed, this, &CanvasView::tellInputMethod);
         tool_->activate(this);
+        connect(tool_, &Tool::changed, this, &CanvasView::followCaret);
     }
+    // a tool picked up doesn't scroll to a text cursor it has
+    caret_ = tool_ ? tool_->drawnCaret() : std::nullopt;
     update();
     tellInputMethod();
     emit toolChanged();
@@ -524,6 +527,20 @@ QVariant CanvasView::inputMethodQuery(Qt::InputMethodQuery query) const {
 void CanvasView::tellInputMethod() {
     if (hasFocus())
         QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle);
+}
+
+void CanvasView::followCaret() {
+    // only a move: a change that leaves the text cursor where it was
+    // doesn't take the view back from where it was scrolled to. During an
+    // Alt+drag it rides with the letters unfollowed: the view scrolling
+    // under a held pointer would move the layer again. It is kept, so the
+    // move landing where the drag showed it doesn't scroll either.
+    const std::optional<QRect> at = tool_->drawnCaret();
+    if (at == caret_)
+        return;
+    caret_ = at;
+    if (at && !layerMove_)
+        emit caretMoved(*at);
 }
 
 void CanvasView::canvasReset() {

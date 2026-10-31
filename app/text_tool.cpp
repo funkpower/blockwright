@@ -695,22 +695,26 @@ QPoint TextTool::caretCell() const {
 }
 
 std::optional<QRect> TextTool::caretRect() const {
+    const Layer* l = resumable();
+    const std::optional<QRect> cells =
+        l ? caretCellsAt(*l->props.text, lettersAt(*l, view()), int(l->props.text->text.size()), false) : drawnCaret();
+    if (!cells || !view())
+        return {};
+    return view()->cellRect(cells->topLeft()).united(view()->cellRect(cells->bottomRight()));
+}
+
+std::optional<QRect> TextTool::drawnCaret() const {
     QPoint origin;
     const TextSource* s = shown(&origin);
-    int at = caret_;
-    bool after = after_;
-    if (const Layer* l = resumable()) {
-        origin = lettersAt(*l, view());
-        s = &*l->props.text;
-        at = int(s->text.size());
-        after = false;
-    }
-    const Face* face = s ? findFace(s->face, fonts()) : nullptr;
-    if (!face || !view())
+    return s ? caretCellsAt(*s, origin, caret_, after_) : std::nullopt;
+}
+
+std::optional<QRect> TextTool::caretCellsAt(const TextSource& s, QPoint origin, int at, bool after) const {
+    const Face* face = findFace(s.face, fonts());
+    if (!face)
         return {};
-    const Laid laid = lay(*s, *face);
-    const QPoint cell = origin + laid.place(at, after);
-    return view()->cellRect(cell).united(view()->cellRect(cell + QPoint(0, std::max(1, laid.rows) - 1)));
+    const Laid laid = lay(s, *face);
+    return QRect(origin + laid.place(at, after), QSize(1, std::max(1, laid.rows)));
 }
 
 void TextTool::paint(QPainter& p) const {
@@ -733,12 +737,9 @@ void TextTool::paint(QPainter& p) const {
     p.drawRect(box.adjusted(0, 0, -1, -1));
 
     const QPoint at = origin + laid.place(caret_, after_);
-    const QRect first = view()->cellRect(at);
-    const QRect last = view()->cellRect(at + QPoint(0, laid.rows - 1));
-    const int w = std::max(2, first.width() / 4);
-    const QRect caret(first.left() - w / 2, first.top(), w, last.bottom() - first.top() + 1);
-    p.fillRect(caret.adjusted(-1, 0, 1, 0), Qt::black);
-    p.fillRect(caret, Qt::white);
+    const QRect bar = caretBar(view()->cellRect(at).united(view()->cellRect(at + QPoint(0, laid.rows - 1))));
+    p.fillRect(bar, Qt::black);
+    p.fillRect(bar.adjusted(1, 0, -1, 0), Qt::white);
     p.restore();
 }
 

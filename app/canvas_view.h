@@ -229,6 +229,9 @@ public:
 
 signals:
     void cursorMoved(bw::Cursor cursor);
+    // The text cursor the tool draws (Tool::drawnCaret) moved to these
+    // cells, or one appeared there; not while an Alt+drag moves a layer.
+    void caretMoved(const QRect& cells);
     void zoomChanged(int zoom);
     void penChanged(const bw::Pen& pen);
     void glyphSetChanged(int set);
@@ -319,6 +322,7 @@ private:
     Pen pen_;
     int glyphSet_;
     Tool* tool_ = nullptr;  // owned by the tool registry
+    std::optional<QRect> caret_;  // the tool's drawn text cursor (cells)
     bool ownEdit_ = false;  // the view is pushing an edit
     struct LayerMove {
         std::uint64_t id;  // 0: consume a refused gesture without a tool edit
@@ -367,6 +371,9 @@ private:
     // Has the input method ask again where the text goes
     // (inputMethodQuery), if the view has the focus.
     void tellInputMethod();
+    // Emits caretMoved when the drawn text cursor is somewhere new, but not
+    // while an Alt+drag moves a layer; runs on every Tool::changed.
+    void followCaret();
     // Whether the tool's drag is going on and another device than `p` owns
     // it; clears the owner of a drag that has ended.
     bool othersDrag(Pointer p);

@@ -16,6 +16,11 @@ namespace bw {
 
 Tool::Tool(const QString& id, const QString& name, QObject* parent) : QObject(parent), id_(id), name_(name) {}
 
+QRect Tool::caretBar(const QRect& cells) {
+    const int w = std::max(2, cells.width() / 4);
+    return QRect(cells.left() - w / 2 - 1, cells.top(), w + 2, cells.height());
+}
+
 const CellEdit& Tool::pending() const {
     static const CellEdit none;
     return none;

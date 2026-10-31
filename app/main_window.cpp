@@ -173,6 +173,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         scroll_->ensureVisible(r.center().x(), r.center().y(), r.width(), r.height());
         updateStatus();
     });
+    // the text cursor's cells and the bar drawn over their left edge, which
+    // a big face makes taller than the view: its top shows then, and stays
+    // put while it stays on those rows. ensureVisible keeps x ± xm in view
+    // and tests the near side first, so a margin over half the viewport
+    // would line up the top on one move and the bottom on the next.
+    connect(view_, &CanvasView::caretMoved, this, [this](const QRect& cells) {
+        const QRect px = view_->cellRect(cells.topLeft()).united(view_->cellRect(cells.bottomRight()));
+        const QRect r = view_->toWidget(px.united(Tool::caretBar(px)));
+        const QWidget* vp = scroll_->viewport();
+        const int xm = std::min((r.width() + 1) / 2, vp->width() / 2);
+        const int ym = std::min((r.height() + 1) / 2, vp->height() / 2);
+        scroll_->ensureVisible(r.left() + xm, r.top() + ym, xm, ym);
+    });
     connect(view_, &CanvasView::zoomChanged, this, &MainWindow::updateStatus);
     connect(palette_, &PaletteWidget::foregroundPicked, view_, &CanvasView::setForeground);
     connect(palette_, &PaletteWidget::backgroundPicked, view_, &CanvasView::setBackground);
