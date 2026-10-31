@@ -11,6 +11,8 @@ add_library(blockwright_app STATIC
   face_picker.cpp
   face_picker.h
   font_scanner.cpp
+  flow_row.cpp
+  flow_row.h
   font_scanner.h
   generator_form.cpp
   generator_form.h

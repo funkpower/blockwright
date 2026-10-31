@@ -7,6 +7,7 @@
 #include "device_grid.h"
 #include "document.h"
 #include "draw_tools.h"
+#include "flow_row.h"
 #include "glyph_bar.h"
 #include "lint_dock.h"
 #include "main_window.h"
@@ -16,6 +17,7 @@
 #include "tool.h"
 #include "tool_options.h"
 #include "toolbox.h"
+#include "util.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -25,9 +27,11 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QFontDatabase>
 #include <QHelpEvent>
 #include <QLabel>
 #include <QLayout>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
@@ -162,6 +166,35 @@ struct ClearLayout {
         if (bwtest::settingsInScratch(scratchDir()))
             bw::appSettings()->clear();
     }
+};
+
+// Sets the application's font for a test and puts the old one back: Noto
+// Sans at `pointSize`, from tests/data/fonts, so the layout tests measure
+// the same font on every machine (#236). 10 pt is the desktop default the
+// panels are sized for; 9 pt is the test platform's own size.
+struct UiFont {
+    const QFont saved = QApplication::font();
+    explicit UiFont(int pointSize) {
+        static const QString family = [] {
+            QString name;
+            for (const char* file : {"NotoSans-Regular.ttf", "NotoSans-Bold.ttf"}) {
+                const QString path = QString::fromStdString((bwtest::dataDir() / "fonts" / file).string());
+                const QStringList families = QFontDatabase::applicationFontFamilies(QFontDatabase::addApplicationFont(path));
+                if (!families.isEmpty())
+                    name = families.first();
+            }
+            return name;
+        }();
+        REQUIRE(family == QStringLiteral("Noto Sans"));
+        QFont f = saved;
+        f.setFamily(family);
+        f.setPointSize(pointSize);
+        QApplication::setFont(f);
+        REQUIRE(QFontInfo(QApplication::font()).family() == family);
+    }
+    ~UiFont() { QApplication::setFont(saved); }
+    UiFont(const UiFont&) = delete;
+    UiFont& operator=(const UiFont&) = delete;
 };
 
 // The left column's default where the canvas has room, and what it keeps
@@ -990,14 +1023,21 @@ TEST_CASE("first-run dock widths recover after a one-step window squeeze", "[doc
 
 TEST_CASE("every tool's options fit the default left column without horizontal scrolling", "[dock-width][tool-options-width]") {
     ClearLayout clear;
-    const QSize size = GENERATE(QSize(1280, 720), QSize(1920, 1080));
-    CAPTURE(size.width(), size.height());
+    const QSize size = GENERATE(QSize(1280, 720), QSize(1366, 768), QSize(1920, 1080));
+    const int points = GENERATE(9, 10);
+    // With the help folded away the title and its toggle share a line.
+    const bool help = GENERATE(true, false);
+    UiFont font(points);
+    CAPTURE(size.width(), size.height(), points, help);
     MainWindow w;
     w.resize(size);
     w.show();
     QApplication::processEvents();
     auto* scroll = qobject_cast<QScrollArea*>(w.toolOptionsDock()->widget());
     REQUIRE(scroll);
+    auto* toggle = w.findChild<QToolButton*>(QStringLiteral("toolHelpToggle"));
+    REQUIRE(toggle);
+    toggle->setChecked(help);
     // A short options panel also covers the vertical scrollbar taking space.
     w.resizeDocks({w.toolOptionsDock()}, {200}, Qt::Vertical);
     for (Tool* tool : w.tools()->tools()) {
@@ -1791,6 +1831,206 @@ TEST_CASE("the dock layout survives closing the window") {
     }
 }
 
+TEST_CASE("FlowRow puts settings side by side while they fit and wraps them when they don't", "[flow-row]") {
+    QWidget host;
+    auto* row = new FlowRow(&host);
+    row->setSpacing(6);
+    auto* first = new QLineEdit;
+    auto* second = new QLineEdit;
+    auto* firstLabel = new QLabel(QStringLiteral("First"));
+    auto* secondLabel = new QLabel(QStringLiteral("Second"));
+    row->addPair(firstLabel, first);
+    row->addPair(secondLabel, second);
+    CHECK(firstLabel->buddy() == first);
+    CHECK(secondLabel->buddy() == second);
+    host.show();
+    QApplication::processEvents();
+
+    const int line = row->heightForWidth(row->sizeHint().width());
+    CHECK(line == row->sizeHint().height());
+    host.resize(row->sizeHint().width() + 100, line);
+    QApplication::processEvents();
+    CHECK(first->y() == second->y());
+    CHECK(second->x() > first->x() + first->width());
+    // the spare width goes to the fields
+    CHECK(second->geometry().right() == host.width() - 1);
+
+    const int narrow = row->minimumSize().width();
+    CHECK(narrow < row->sizeHint().width());
+    CHECK(row->heightForWidth(narrow) == 2 * line + 6);
+    host.resize(narrow, 2 * line + 6);
+    QApplication::processEvents();
+    CHECK(second->y() >= first->y() + first->height());
+    // each fills the row
+    CHECK(first->geometry().right() == host.width() - 1);
+    CHECK(second->geometry().right() == host.width() - 1);
+
+    // a hidden setting takes no room
+    secondLabel->hide();
+    second->hide();
+    CHECK(row->heightForWidth(narrow) == line);
+}
+
+TEST_CASE("FlowRow keeps an item at its minimum width when the row is narrower", "[flow-row]") {
+    QWidget host;
+    auto* row = new FlowRow(&host);
+    auto* wide = new QLineEdit;
+    wide->setMinimumWidth(200);
+    row->addWidget(wide);
+    host.show();
+    // Narrower than the item's minimum: the item keeps it rather than being
+    // squeezed to the row.
+    row->setGeometry(QRect(0, 0, 120, 40));
+    CHECK(wide->width() == 200);
+    row->setGeometry(QRect(0, 0, 400, 40));
+    CHECK(wide->width() == 400);
+}
+
+TEST_CASE("Tool Options pairs settings on a line where the column is wide enough", "[tool-options-height]") {
+    ClearLayout clear;
+    const int points = GENERATE(9, 10);
+    UiFont font(points);
+    CAPTURE(points);
+    MainWindow w;
+    w.resize(windowOn({1920, 1080}));
+    w.show();
+    QApplication::processEvents();
+    const auto sameLine = [&w](const char* tool, const char* a, const char* b) {
+        w.tools()->setActive(QString::fromLatin1(tool));
+        QApplication::processEvents();
+        auto* first = w.findChild<QWidget*>(QString::fromLatin1(a));
+        auto* second = w.findChild<QWidget*>(QString::fromLatin1(b));
+        REQUIRE(first);
+        REQUIRE(second);
+        CAPTURE(tool, a, b);
+        CHECK(first->isVisible());
+        CHECK(second->isVisible());
+        // On one line: each one's middle is within the other's height (a
+        // line centres its settings, which can round a pixel apart).
+        const QRect ra(first->mapTo(&w, QPoint()), first->size()), rb(second->mapTo(&w, QPoint()), second->size());
+        CAPTURE(ra.top(), ra.bottom(), rb.top(), rb.bottom());
+        CHECK((ra.top() <= rb.center().y() && rb.center().y() <= ra.bottom()));
+        CHECK((rb.top() <= ra.center().y() && ra.center().y() <= rb.bottom()));
+    };
+    sameLine("form", "brushSize", "brushTip");
+    sameLine("form", "brushLightDirection", "brushForm");
+    sameLine("form", "brushRim", "brushSpecular");
+    sameLine("texture", "brushTextureDensity", "brushTextureSeed");
+    sameLine("spray", "sprayDensity", "spraySeed");
+    sameLine("gradient", "gradientShape", "gradientBanding");
+    sameLine("gradient", "gradientFrom", "gradientTo");
+    sameLine("outline", "brushOutlineSelection", "brushAlphaLock");
+    sameLine("text", "textBigStyle", "textBigColours");
+    sameLine("text", "textColour", "textCase");
+    sameLine("text", "textWrapWidth", "textAlign");
+    sameLine("text", "textLetterSpacing", "textLineSpacing");
+    sameLine("text", "faceSearch", "faceType");
+
+    // A setting a tool doesn't have hides with its label, wherever it sits.
+    for (Tool* t : w.tools()->tools()) {
+        w.tools()->setActive(t);
+        QApplication::processEvents();
+        for (QLabel* label : w.toolOptionsDock()->findChildren<QLabel*>())
+            if (label->buddy() && label->buddy()->window() == &w) {
+                CAPTURE(t->id().toStdString(), label->text().toStdString());
+                CHECK(label->isVisible() == label->buddy()->isVisible());
+            }
+    }
+}
+
+// The rows Tool Options shows for the active tool, after any other tool:
+// each FlowRow gets at least its height for its width, and no two settings
+// on the same panel overlap (#236: the Text tool's pairs drew over each
+// other after another tool at the 1366×768 column). Returns what's wrong.
+QStringList optionsLaidOutWrong(MainWindow& w) {
+    QStringList wrong;
+    auto* options = w.findChild<ToolOptions*>();
+    QList<QWidget*> panels{options};
+    for (QWidget* page : options->findChildren<QWidget*>())
+        if (page->layout() && page->isVisible())
+            panels.append(page);
+    for (QWidget* panel : panels) {
+        const QString name = panel->objectName();
+        for (QLayout* any : panel->layout()->findChildren<QLayout*>()) {
+            auto* row = dynamic_cast<FlowRow*>(any);
+            if (!row || row->isEmpty())
+                continue;
+            const QRect g = row->geometry();
+            if (g.height() < row->heightForWidth(g.width()))
+                wrong << QStringLiteral("%1: row at y %2 is %3 tall, needs %4 at width %5")
+                             .arg(name).arg(g.y()).arg(g.height()).arg(row->heightForWidth(g.width())).arg(g.width());
+        }
+        QList<QWidget*> shown;
+        for (QWidget* child : panel->findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
+            if (child->isVisible() && !child->isWindow())
+                shown.append(child);
+        for (int i = 0; i < shown.size(); ++i)
+            for (int j = i + 1; j < shown.size(); ++j)
+                if (shown[i]->geometry().intersects(shown[j]->geometry()))
+                    wrong << QStringLiteral("%1: %2 (y %3) overlaps %4 (y %5)")
+                                 .arg(name, shown[i]->objectName()).arg(shown[i]->y())
+                                 .arg(shown[j]->objectName()).arg(shown[j]->y());
+    }
+    return wrong;
+}
+
+// Counts the layout passes asked of a widget and the widgets in it.
+struct LayoutRequests : QObject {
+    QWidget* within;
+    int count = 0;
+    explicit LayoutRequests(QWidget* w) : within(w) { qApp->installEventFilter(this); }
+    bool eventFilter(QObject* o, QEvent* e) override {
+        if (e->type() == QEvent::LayoutRequest && o->isWidgetType()
+            && (o == within || within->isAncestorOf(static_cast<QWidget*>(o))))
+            ++count;
+        return false;
+    }
+};
+
+TEST_CASE("every tool's settings lie out without overlapping after any other tool", "[tool-options-height]") {
+    ClearLayout clear;
+    const QSize size = GENERATE(QSize(1280, 720), QSize(1366, 768));
+    const int points = GENERATE(9, 10);
+    UiFont font(points);
+    CAPTURE(size.width(), points);
+    MainWindow w;
+    w.resize(size);
+    w.show();
+    QApplication::processEvents();
+    auto* options = w.findChild<ToolOptions*>();
+    REQUIRE(options);
+    const auto open = [&w](Tool* t) {
+        w.tools()->setActive(t);
+        QApplication::processEvents();
+        QApplication::processEvents();
+    };
+    // Each tool opened first, then after every other tool.
+    const QList<Tool*> tools = w.tools()->tools();
+    for (Tool* t : tools) {
+        open(t);
+        CAPTURE(t->id().toStdString());
+        CHECK(optionsLaidOutWrong(w).join(QLatin1Char('\n')).toStdString() == "");
+    }
+    for (Tool* before : tools)
+        for (Tool* after : tools) {
+            if (before == after)
+                continue;
+            open(before);
+            open(after);
+            CAPTURE(before->id().toStdString(), after->id().toStdString());
+            CHECK(optionsLaidOutWrong(w).join(QLatin1Char('\n')).toStdString() == "");
+            // Laid out, the panel settles: within a few rounds of events a
+            // round asks for no more layout passes.
+            LayoutRequests requests(options);
+            int rounds = 0;
+            for (int asked = -1; asked != requests.count && rounds < 5; ++rounds) {
+                asked = requests.count;
+                QApplication::processEvents();
+            }
+            CHECK(rounds < 5);
+        }
+}
+
 TEST_CASE("a saved layout that hid a dock that can't close still shows it") {
     ClearLayout clear;
     {
@@ -1808,26 +2048,36 @@ TEST_CASE("a saved layout that hid a dock that can't close still shows it") {
 TEST_CASE("Tool Options shows each tool's settings and help without scrolling where the column is tall enough",
           "[tool-options-height]") {
     ClearLayout clear;
-    MainWindow w;
     const QSize screen = GENERATE(QSize(1920, 1080), QSize(2560, 1440));
+    // The test platform's 9 pt, and the 10 pt a desktop gives by default.
+    const int points = GENERATE(9, 10);
+    UiFont font(points);
+    MainWindow w;
     w.resize(windowOn(screen));
     w.show();
     QApplication::processEvents();
     QApplication::processEvents();
     auto* scroll = qobject_cast<QScrollArea*>(w.toolOptionsDock()->widget());
     REQUIRE(scroll);
-    // At 1080 these panels are taller than the column on their own (#236):
-    // they may scroll, but no further than they do now.
-    const QHash<QString, int> tallest{{QStringLiteral("text"), 221},   {QStringLiteral("form"), 137},
-                                      {QStringLiteral("spray"), 110},  {QStringLiteral("texture"), 90},
-                                      {QStringLiteral("outline"), 65}};
-    for (Tool* t : w.tools()->tools()) {
+    auto* help = w.findChild<QLabel*>(QStringLiteral("toolHelp"));
+    REQUIRE(help);
+    const auto check = [&](Tool* t) {
         w.tools()->setActive(t);
         QApplication::processEvents();
         const int overflow = scroll->verticalScrollBar()->maximum();
-        CAPTURE(screen.width(), t->id().toStdString(), overflow);
-        CHECK(overflow <= (screen.height() == 1080 ? tallest.value(t->id(), 0) : 0));
-    }
+        CAPTURE(screen.width(), points, t->id().toStdString(), overflow);
+        CHECK(overflow == 0);
+        // The help is laid out at its height for the column's width, not cut
+        // off at its preferred height.
+        if (help->isVisible())
+            CHECK(help->height() >= help->heightForWidth(help->width()));
+    };
+    // Every panel fits from 1080 up, the longest help included (#236).
+    for (Tool* t : w.tools()->tools())
+        check(t);
+    // From the Text tool's tall settings to the Gradient's long help.
+    check(w.tools()->find(QStringLiteral("text")));
+    check(w.tools()->find(QStringLiteral("gradient")));
 }
 
 // #238: shrinking a full-size window leaves the canvas at its floor, as a
@@ -1884,3 +2134,5 @@ TEST_CASE("narrowing a full-size window keeps the canvas at its floor", "[canvas
     CHECK(w.libraryDock()->width() == fresh.libraryDock()->width());
     CHECK(scroll->viewport()->width() == qobject_cast<QScrollArea*>(fresh.centralWidget())->viewport()->width());
 }
+
+

@@ -3,6 +3,7 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "face_picker.h"
+#include "flow_row.h"
 #include "text_tool.h"
 
 #include "blockwright/big_text.h"
@@ -11,6 +12,7 @@
 
 #include <QComboBox>
 #include <QFormLayout>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPixmap>
 #include <QScopedValueRollback>
@@ -89,21 +91,44 @@ TextOptions::TextOptions(CanvasView* view, TextTool* tool, QWidget* parent)
     bigColours_ = new QLineEdit;
     bigColours_->setObjectName(QStringLiteral("textBigColours"));
     bigColours_->setMaxLength(256);
+    // As narrow as a few colours (and the edit's frame and margins) rather
+    // than a line edit's usual width, so it fits beside the big style; it
+    // takes what the row has to spare.
+    bigColours_->setSizePolicy(QSizePolicy::Ignored, bigColours_->sizePolicy().verticalPolicy());
+    bigColours_->setMinimumWidth(bigColours_->fontMetrics().horizontalAdvance(QStringLiteral("0,15,4,")) + 12);
     bigColours_->setToolTip(tr("mIRC colours 0–15 or names, separated by commas: face, then shadow or border; "
                                "Big rainbow walks them a letter at a time. "
                                "Palette names: fire, ice, neon, sea, forest, candy, steel, rainbow."));
 
-    auto* form = new QFormLayout(this);
+    letterSpacing_->setAccessibleName(tr("Letter spacing"));
+    lineSpacing_->setAccessibleName(tr("Line spacing"));
+
+    // Settings share a row while the column is wide enough and wrap under
+    // each other when it isn't (#236).
+    auto* form = new FlowForm(this);
     form->setContentsMargins(0, 0, 0, 0);
+    // As close as the rows of the Tool Options form it sits in.
+    form->setVerticalSpacing(4);
+    const auto pairRow = [form](const QString& text, QWidget* field, const QString& besideText, QWidget* beside) {
+        auto* label = new QLabel(text);
+        label->setBuddy(field);
+        auto* row = new FlowRow;
+        row->addWidget(field);
+        row->addPair(new QLabel(besideText), beside);
+        form->addRow(label, row);
+    };
     form->addRow(tr("Face"), picker_);
-    form->addRow(tr("Big style"), bigStyle_);
-    form->addRow(tr("Big colours"), bigColours_);
-    form->addRow(tr("Case"), case_);
-    form->addRow(tr("Letter spacing"), letterSpacing_);
-    form->addRow(tr("Line spacing"), lineSpacing_);
-    form->addRow(tr("Align"), align_);
-    form->addRow(tr("Wrap"), wrap_);
-    form->addRow(tr("Colour"), colour_);
+    pairRow(tr("Big style"), bigStyle_, tr("Colours"), bigColours_);
+    // The colour list and the wrap spin box are the widest fields, so each
+    // shares a row with a narrow one.
+    pairRow(tr("Colour"), colour_, tr("Case"), case_);
+    pairRow(tr("Wrap"), wrap_, tr("Align"), align_);
+    auto* spacingLabel = new QLabel(tr("Spacing"));
+    spacingLabel->setToolTip(tr("Blank columns between letters and blank cell rows between lines"));
+    auto* spacing = new FlowRow;
+    spacing->addPair(new QLabel(tr("Letters")), letterSpacing_);
+    spacing->addPair(new QLabel(tr("Lines")), lineSpacing_);
+    form->addRow(spacingLabel, spacing);
 
     connect(bigStyle_, &QComboBox::currentIndexChanged, this, [this] {
         if (syncing_)

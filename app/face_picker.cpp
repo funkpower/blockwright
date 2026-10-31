@@ -1,5 +1,6 @@
 #include "face_picker.h"
 
+#include "flow_row.h"
 #include "settings.h"
 
 #include "blockwright/render.h"
@@ -45,13 +46,15 @@ namespace {
 
 constexpr int kMarkedLabelRole = Qt::UserRole + 1;
 
+int faceRowHeight(const QFontMetrics& fm) { return std::max(40, fm.height() * 2 + 8); }
+
 // A fixed size avoids asking every row for decorations or glyph metrics
 // during layout. QStyledItemDelegate requests data only when painting.
 class FaceDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
     QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex&) const override {
-        return {240, std::max(40, option.fontMetrics.height() * 2 + 8)};
+        return {240, faceRowHeight(option.fontMetrics)};
     }
 protected:
     void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
@@ -60,6 +63,14 @@ protected:
     }
 };
 
+// Three faces tall unless the dock has room to spare, so the Text tool's
+// options fit the left column without scrolling (#236).
+class FaceList : public QListView {
+public:
+    QSize sizeHint() const override {
+        return {QListView::sizeHint().width(), 3 * faceRowHeight(fontMetrics()) + 2 * frameWidth()};
+    }
+};
 
 constexpr int kPreviewHeight = 32;
 constexpr int kPreviewWidth = 112;
@@ -123,7 +134,7 @@ FacePicker::FacePicker(std::vector<FaceEntry> entries, QWidget* parent) : QWidge
     scanning_ = new QLabel(tr("Scanning fonts…"));
     scanning_->setObjectName(QStringLiteral("fontsScanning"));
     scanning_->hide();
-    list_ = new QListView;
+    list_ = new FaceList;
     model_ = new FaceListModel(this);
     model_->value = [this](int row, int role) { return rowData(row, role); };
     list_->setModel(model_);
@@ -139,12 +150,14 @@ FacePicker::FacePicker(std::vector<FaceEntry> entries, QWidget* parent) : QWidge
     top->setContentsMargins(0, 0, 0, 0);
     top->addWidget(search_, 1);
     top->addWidget(favourite_);
+    // The type filter goes beside the search field while the column is wide
+    // enough and under it when it isn't.
+    auto* filters = new FlowRow;
+    filters->addLayout(top);
+    filters->addWidget(type_);
     auto* box = new QVBoxLayout(this);
     box->setContentsMargins(0, 0, 0, 0);
-    box->addLayout(top);
-    // The type filter has a row of its own: beside the search field it makes the Text tool's options wider than the
-    // default left column.
-    box->addWidget(type_);
+    box->addLayout(filters);
     box->addWidget(scanning_);
     box->addWidget(list_);
 

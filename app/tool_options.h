@@ -21,15 +21,18 @@
 // and follows the active tool.
 
 #include <QFlags>
+#include <QHash>
 #include <QWidget>
 
 class QAction;
+class QBoxLayout;
 class QCheckBox;
 class QIcon;
 class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
 class QLabel;
+class QLayout;
 class QSpinBox;
 class QToolButton;
 
@@ -151,6 +154,8 @@ private:
     // Shows or folds away the help panel, and keeps the choice in the
     // settings.
     void showHelp(bool shown);
+    // The title and help toggle stack beside the picture while it shows.
+    void stackTitle();
     // Shows the view's and the tools' settings.
     void sync();
     // Limits the centre spins to the canvas.
@@ -174,6 +179,14 @@ private:
     SprayTool* sprayTool_;
     RimLightTool* rimTool_;
     QFormLayout* form_layout_;
+    QBoxLayout* titleBlock_;
+    // Each setting that shares a form row with another: its label, if it
+    // has one, and the row.
+    struct Shared {
+        QLabel* label = nullptr;
+        QLayout* row = nullptr;
+    };
+    QHash<const QWidget*, Shared> shared_;
     QLabel* title_;
     TextOptions* text_ = nullptr;
     TransformOptions* transform_;

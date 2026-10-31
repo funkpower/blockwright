@@ -5,6 +5,7 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
+#include "flow_row.h"
 #include "help_text.h"
 #include "select_tool.h"
 #include "settings.h"
@@ -18,6 +19,7 @@
 #include "blockwright/palette.h"
 
 #include <QAction>
+#include <QBoxLayout>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -31,9 +33,12 @@
 #include <QScopedValueRollback>
 #include <QSpinBox>
 #include <QToolButton>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
+#include <utility>
 
 namespace bw {
 
@@ -133,6 +138,9 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     QFont bold = title_->font();
     bold.setBold(true);
     title_->setFont(bold);
+    // A long name wraps rather than push the help toggle past the narrowest
+    // column when the two share a line (#236).
+    title_->setWordWrap(true);
 
     none_ = new QLabel(tr("This tool has no options."));
     none_->setObjectName(QStringLiteral("toolOptionsNone"));
@@ -358,48 +366,89 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     transform_ = new TransformOptions(view);
     transform_->setObjectName(QStringLiteral("transformOptions"));
 
-    auto* form = form_layout_ = new QFormLayout(this);
+    // The heading and help sit above the settings' form rather than in it:
+    // a form row lays a word-wrapped label out at its preferred height, not
+    // its height for the column's width, and cuts the help off.
+    auto* box = new QVBoxLayout(this);
+    auto* form = form_layout_ = new FlowForm;
+    form->setContentsMargins(0, 0, 0, 0);
+    // Rows a little closer than the style's spacing: the column is short of
+    // height for the tools with the most settings (#236).
+    form->setVerticalSpacing(4);
     // What's This on a setting shows its tooltip (whats_this.h).
     whatsThisFromToolTips(this);
-    form->addRow(title_);
-    form->addRow(helpToggle_);
-    form->addRow(illustration_);
-    form->addRow(help_);
+    // Settings that belong together share a row while the column is wide
+    // enough and wrap under each other when it isn't (#236). The row's own
+    // label goes with its first field, which shows whenever any of the row
+    // does.
+    const auto pairRow = [this, form](const QString& text, QWidget* field,
+                                      std::initializer_list<std::pair<QString, QWidget*>> beside) {
+        auto* label = new QLabel(text);
+        label->setBuddy(field);
+        auto* row = new FlowRow;
+        shared_.insert(field, {label, row});
+        row->addWidget(field);
+        for (const auto& [besideText, besideField] : beside) {
+            auto* besideLabel = new QLabel(besideText);
+            shared_.insert(besideField, {besideLabel, row});
+            row->addPair(besideLabel, besideField);
+        }
+        form->addRow(label, row);
+    };
+    // The title and the help toggle sit side by side; while the picture
+    // shows they stack beside it, and the picture goes under them when the
+    // column is too narrow for both.
+    titleBlock_ = new QBoxLayout(QBoxLayout::LeftToRight);
+    titleBlock_->addWidget(title_, 1);
+    helpToggle_->setSizePolicy(QSizePolicy::Fixed, helpToggle_->sizePolicy().verticalPolicy());
+    titleBlock_->addWidget(helpToggle_);
+    illustration_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    auto* heading = new FlowRow;
+    heading->addLayout(titleBlock_);
+    heading->addWidget(illustration_);
+    box->setContentsMargins(6, 6, 6, 6);
+    box->addLayout(heading);
+    box->addWidget(help_);
+    // The form takes the height to spare: the rows stay at the top, and the
+    // Text tool's face list grows into it.
+    box->addLayout(form, 1);
     form->addRow(none_);
     form->addRow(tr("Glyph"), glyph_);
-    form->addRow(tr("Size"), size_);
-    form->addRow(tr("Tip"), tip_);
-    form->addRow(tr("Strength"), strength_);
-    form->addRow(tr("Pressure"), pressure_);
+    pairRow(tr("Size"), size_, {{tr("Tip"), tip_}});
+    pairRow(tr("Pressure"), pressure_, {{tr("Strength"), strength_}});
     form->addRow(tr("Ramp"), ramp_);
-    form->addRow(tr("Gradient"), gradientShape_);
-    form->addRow(tr("From rung"), gradientFrom_);
-    form->addRow(tr("To rung"), gradientTo_);
-    form->addRow(tr("Banding"), gradientBanding_);
-    form->addRow(tr("Light"), light_);
+    pairRow(tr("Gradient"), gradientShape_, {{tr("Banding"), gradientBanding_}});
+    pairRow(tr("From rung"), gradientFrom_, {{tr("To rung"), gradientTo_}});
+    pairRow(tr("Light"), light_, {{tr("Form"), form_}});
     form->addRow(rimLint_);
-    form->addRow(tr("Form"), form_);
-    form->addRow(rim_);
-    form->addRow(specular_);
+    auto* formChecks = new FlowRow;
+    formChecks->addWidget(rim_);
+    formChecks->addWidget(specular_);
+    shared_.insert(rim_, {nullptr, formChecks});
+    shared_.insert(specular_, {nullptr, formChecks});
+    form->addRow(formChecks);
     form->addRow(tr("Hardness"), hardness_);
-    form->addRow(outlineSelection_);
     form->addRow(tr("Texture"), textureKind_);
-    form->addRow(tr("Density"), textureDensity_);
-    form->addRow(tr("Seed"), textureSeed_);
+    pairRow(tr("Density"), textureDensity_, {{tr("Seed"), textureSeed_}});
     form->addRow(cloneAligned_);
     form->addRow(tr("Spray"), sprayKind_);
-    form->addRow(tr("Density"), sprayDensity_);
-    form->addRow(tr("Seed"), spraySeed_);
+    pairRow(tr("Density"), sprayDensity_, {{tr("Seed"), spraySeed_}});
     if (text_)
         form->addRow(text_);
     form->addRow(transform_);
     form->addRow(filled_);
     form->addRow(pencil4_);
     form->addRow(tr("Paste"), pasteMode_);
-    form->addRow(lock_);
-    form->addRow(merged_);
-    form->addRow(tr("Symmetry"), symmetry_);
-    form->addRow(tr("Folds"), folds_);
+    // The checkboxes every tool may have share a line with the outline
+    // brush's.
+    auto* checks = new FlowRow;
+    for (QWidget* check : {static_cast<QWidget*>(outlineSelection_), static_cast<QWidget*>(lock_),
+                           static_cast<QWidget*>(merged_)}) {
+        checks->addWidget(check);
+        shared_.insert(check, {nullptr, checks});
+    }
+    form->addRow(checks);
+    pairRow(tr("Symmetry"), symmetry_, {{tr("Folds"), folds_}});
     form->addRow(centreRow);
 
     fitCentre();
@@ -491,53 +540,79 @@ void ToolOptions::showFor(Tool* tool) {
     illustration_->setPixmap(picture ? QPixmap::fromImage(picture->image) : QPixmap());
     illustration_->setAccessibleName(picture ? tr("Picture of the %1 tool at work").arg(title_->text()) : QString());
     QFormLayout* f = form_layout_;
-    f->setRowVisible(helpToggle_, !help.isEmpty());
-    f->setRowVisible(illustration_, picture && !help.isEmpty() && helpToggle_->isChecked());
-    f->setRowVisible(help_, !help.isEmpty() && helpToggle_->isChecked());
+    // A setting in a row of its own shows with its row; one that shares a
+    // row shows with its label, and the row with any of them (a hidden
+    // row takes no spacing).
+    QList<std::pair<QWidget*, bool>> sharing;
+    QHash<QLayout*, bool> sharedRows;
+    const auto show = [this, f, &sharing, &sharedRows](QWidget* field, bool on) {
+        if (const auto it = shared_.constFind(field); it != shared_.cend()) {
+            sharing.append({field, on});
+            sharedRows[it->row] |= on;
+        } else {
+            f->setRowVisible(field, on);
+        }
+    };
+    helpToggle_->setVisible(!help.isEmpty());
+    illustration_->setVisible(picture && !help.isEmpty() && helpToggle_->isChecked());
+    help_->setVisible(!help.isEmpty() && helpToggle_->isChecked());
+    stackTitle();
     helpToggle_->setArrowType(helpToggle_->isChecked() ? Qt::DownArrow : Qt::RightArrow);
     f->setRowVisible(none_, !o);
-    f->setRowVisible(glyph_, o.testFlag(O::Glyph));
-    f->setRowVisible(size_, o.testFlag(O::Size));
-    f->setRowVisible(tip_, o.testFlag(O::Tip));
-    f->setRowVisible(strength_, o.testFlag(O::Strength));
-    f->setRowVisible(pressure_, o.testFlag(O::Pressure));
-    f->setRowVisible(ramp_, o.testFlag(O::Ramp));
-    f->setRowVisible(gradientShape_, o.testFlag(O::Gradient));
-    f->setRowVisible(gradientFrom_, o.testFlag(O::Gradient));
-    f->setRowVisible(gradientTo_, o.testFlag(O::Gradient));
-    f->setRowVisible(gradientBanding_, o.testFlag(O::Gradient));
-    f->setRowVisible(light_, o.testFlag(O::Light));
-    f->setRowVisible(form_, o.testFlag(O::Form));
-    f->setRowVisible(rim_, o.testFlag(O::Form));
-    f->setRowVisible(specular_, o.testFlag(O::Form));
-    f->setRowVisible(hardness_, o.testFlag(O::Hardness));
-    f->setRowVisible(outlineSelection_, o.testFlag(O::OutlineSelection));
-    f->setRowVisible(textureKind_, o.testFlag(O::Texture));
-    f->setRowVisible(textureDensity_, o.testFlag(O::Texture));
-    f->setRowVisible(textureSeed_, o.testFlag(O::Texture));
-    f->setRowVisible(cloneAligned_, o.testFlag(O::CloneAligned));
-    f->setRowVisible(sprayKind_, o.testFlag(O::Spray));
-    f->setRowVisible(sprayDensity_, o.testFlag(O::Spray));
-    f->setRowVisible(spraySeed_, o.testFlag(O::Spray));
-    f->setRowVisible(rimLint_, o.testFlag(O::RimLint));
+    show(glyph_, o.testFlag(O::Glyph));
+    show(size_, o.testFlag(O::Size));
+    show(tip_, o.testFlag(O::Tip));
+    show(strength_, o.testFlag(O::Strength));
+    show(pressure_, o.testFlag(O::Pressure));
+    show(ramp_, o.testFlag(O::Ramp));
+    show(gradientShape_, o.testFlag(O::Gradient));
+    show(gradientFrom_, o.testFlag(O::Gradient));
+    show(gradientTo_, o.testFlag(O::Gradient));
+    show(gradientBanding_, o.testFlag(O::Gradient));
+    show(light_, o.testFlag(O::Light));
+    show(form_, o.testFlag(O::Form));
+    show(rim_, o.testFlag(O::Form));
+    show(specular_, o.testFlag(O::Form));
+    show(hardness_, o.testFlag(O::Hardness));
+    show(outlineSelection_, o.testFlag(O::OutlineSelection));
+    show(textureKind_, o.testFlag(O::Texture));
+    show(textureDensity_, o.testFlag(O::Texture));
+    show(textureSeed_, o.testFlag(O::Texture));
+    show(cloneAligned_, o.testFlag(O::CloneAligned));
+    show(sprayKind_, o.testFlag(O::Spray));
+    show(sprayDensity_, o.testFlag(O::Spray));
+    show(spraySeed_, o.testFlag(O::Spray));
+    show(rimLint_, o.testFlag(O::RimLint));
     if (text_)
-        f->setRowVisible(text_, o.testFlag(O::Text));
-    f->setRowVisible(transform_, o.testFlag(O::Transform));
-    f->setRowVisible(filled_, o.testFlag(O::Filled));
-    f->setRowVisible(pencil4_, o.testFlag(O::Pencil));
-    f->setRowVisible(pasteMode_, o.testFlag(O::PasteMode));
-    f->setRowVisible(lock_, o.testFlag(O::AlphaLock));
-    f->setRowVisible(merged_, o.testFlag(O::SampleMerged));
-    f->setRowVisible(symmetry_, o.testFlag(O::Symmetry));
-    f->setRowVisible(folds_, o.testFlag(O::Symmetry));
+        show(text_, o.testFlag(O::Text));
+    show(transform_, o.testFlag(O::Transform));
+    show(filled_, o.testFlag(O::Filled));
+    show(pencil4_, o.testFlag(O::Pencil));
+    show(pasteMode_, o.testFlag(O::PasteMode));
+    show(lock_, o.testFlag(O::AlphaLock));
+    show(merged_, o.testFlag(O::SampleMerged));
+    show(symmetry_, o.testFlag(O::Symmetry));
+    show(folds_, o.testFlag(O::Symmetry));
     f->setRowVisible(f->rowCount() - 1, o.testFlag(O::Symmetry));  // the radial centre
+    for (auto it = sharedRows.cbegin(); it != sharedRows.cend(); ++it)
+        f->setRowVisible(it.key(), it.value());
+    for (const auto& [field, on] : sharing) {
+        field->setVisible(on);
+        if (QLabel* label = shared_.value(field).label)
+            label->setVisible(on);
+    }
 }
 
 void ToolOptions::showHelp(bool shown) {
-    form_layout_->setRowVisible(illustration_, shown && !help_->text().isEmpty() && !illustration_->pixmap().isNull());
-    form_layout_->setRowVisible(help_, shown && !help_->text().isEmpty());
+    illustration_->setVisible(shown && !help_->text().isEmpty() && !illustration_->pixmap().isNull());
+    help_->setVisible(shown && !help_->text().isEmpty());
+    stackTitle();
     helpToggle_->setArrowType(shown ? Qt::DownArrow : Qt::RightArrow);
     appSettings()->setValue(kShowHelpKey, shown);
+}
+
+void ToolOptions::stackTitle() {
+    titleBlock_->setDirection(illustration_->isVisibleTo(this) ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
 }
 
 void ToolOptions::fitCentre() {
