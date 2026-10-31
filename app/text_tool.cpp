@@ -25,10 +25,12 @@ const TextSource* liveText(const Layer* l) { return l && l->props.text ? &*l->pr
 
 bool editableText(const Layer* l) { return liveText(l) && l->props.visible && !l->props.locked; }
 
-// The top-left cell of a live text layer's letters: its offset, moved right
-// and down by its style's margins (renderStyledText draws them there).
-QPoint lettersAt(const Layer& l) {
-    QPoint at(l.props.x, l.props.y);
+// The top-left cell of a live text layer's letters: its offset, where an
+// Alt+drag in `view` shows it if one does (CanvasView::shownOffset), moved
+// right and down by its style's margins (renderStyledText draws them there).
+QPoint lettersAt(const Layer& l, const CanvasView* view) {
+    const std::optional<QPoint> shown = view ? view->shownOffset(l.props.id) : std::nullopt;
+    QPoint at = shown ? *shown : QPoint(l.props.x, l.props.y);
     if (l.props.style) {
         const StyleMargins m = styleMargins(*l.props.style);
         at += QPoint(m.left, m.top);
@@ -219,7 +221,7 @@ const TextSource* TextTool::shown(QPoint* origin) const {
     const Layer* l = edited();
     if (!l)
         return nullptr;
-    *origin = lettersAt(*l);
+    *origin = lettersAt(*l, view());
     return &*l->props.text;
 }
 
@@ -319,7 +321,18 @@ void TextTool::activate(CanvasView* view) {
         connect(d, &Document::reset, this, &TextTool::documentReset),
         connect(d, &Document::activeLayerAboutToChange, this, &TextTool::activeAboutToChange),
         connect(d, &Document::commandAboutToPush, this, &TextTool::commandAboutToPush),
+        // the caret and box are drawn where an Alt+drag shows the letters
+        connect(view, &CanvasView::layerShown, this, &TextTool::layerShown),
     };
+}
+
+void TextTool::layerShown(LayerId id) {
+    // only the layer the box, caret or input method's rectangle is on
+    const Layer* l = edited();
+    if (!l)
+        l = resumable();
+    if (l && l->props.id == id)
+        emit changed();
 }
 
 void TextTool::deactivate() {
@@ -409,7 +422,7 @@ bool TextTool::mousePress(const ToolEvent& e) {
         const Face* face = l ? findFace(l->props.text->face, d->fontSources()) : nullptr;
         if (!face)
             return true;
-        const Laid::Caret at = lay(*l->props.text, *face).caretAt(e.cell - lettersAt(*l));
+        const Laid::Caret at = lay(*l->props.text, *face).caretAt(e.cell - lettersAt(*l, view()));
         if (hit == editing_) {
             moveCaret(at.at, at.after);
         } else {
@@ -687,7 +700,7 @@ std::optional<QRect> TextTool::caretRect() const {
     int at = caret_;
     bool after = after_;
     if (const Layer* l = resumable()) {
-        origin = lettersAt(*l);
+        origin = lettersAt(*l, view());
         s = &*l->props.text;
         at = int(s->text.size());
         after = false;

@@ -122,6 +122,11 @@ public:
     QRect toWidget(const QRect& view) const;
     QPoint toView(const QPointF& widget) const;
 
+    // Where an Alt+drag's preview shows art layer `id` (its offset, which
+    // the document gets only when the drag lands); unset while no drag
+    // moves it. layerShown(id) tells when that moves the letters.
+    std::optional<QPoint> shownOffset(LayerId id) const;
+
     Document* document() const { return doc_; }
     CanvasRenderer* renderer() const { return renderer_; }
 
@@ -245,6 +250,9 @@ signals:
     void brushChanged();
     // Offset feedback for the canvas's Alt+drag, or why it was refused.
     void layerMoveStatus(const QString& text);
+    // Layer `id` shows somewhere else with no command telling: an Alt+drag's
+    // preview moved it, or the drag ended away from where it landed.
+    void layerShown(LayerId id);
 
 protected:
     bool event(QEvent* e) override;

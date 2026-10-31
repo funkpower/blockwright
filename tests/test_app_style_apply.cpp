@@ -31,10 +31,12 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
+#include <QImage>
 #include <QKeyEvent>
 #include <QListWidget>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPushButton>
 #include <QStandardItemModel>
 #include <QStatusBar>
@@ -490,6 +492,144 @@ TEST_CASE("a dropped style's caret is drawn after the letters, where the style p
     CHECK(t->editing() == f.doc()->activeLayer());
     CHECK(t->caret() == 0);
     CHECK(t->caretCell() == QPoint(5, 3));
+}
+
+// A left-button mouse event with Alt held in the middle of canvas cell
+// `cell`: an Alt-drag of the active layer.
+void altMouse(CanvasView* v, QEvent::Type type, QPoint cell) {
+    const QPointF at = v->toWidget(v->cellRect(cell)).center();
+    QMouseEvent e(type, at, v->mapToGlobal(at), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+                  type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::AltModifier);
+    QApplication::sendEvent(v, &e);
+}
+
+// What the tool draws over the canvas: the Text tool's dashed box and caret.
+QImage overlay(const Tool& t, const CanvasView& v) {
+    QImage image(v.size(), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter p(&image);
+    t.paint(p);
+    return image;
+}
+
+TEST_CASE("the Text tool's caret and box follow an Alt-drag of its live text layer, and its end",
+          "[style][library][text][layer-move]") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    const std::unique_ptr<QMimeData> mime = f.dragged(QStringLiteral("Neon"));
+    REQUIRE(drop(v, mime.get(), {4, 2}));
+    TextTool* t = textTool(f.w);
+    const LayerId id = f.doc()->activeLayer();
+    REQUIRE(t->editing() == id);
+    REQUIRE(t->caretCell() == QPoint(37, 3));
+    const QImage before = overlay(*t, *v);
+    const Canvas atRest = f.doc()->canvas();
+    const bool commit = GENERATE(false, true);
+    int changed = 0;
+    QObject::connect(t, &Tool::changed, &f.w, [&] { ++changed; });
+
+    // Ten columns right, not released: the letters show at x 14, the layer
+    // is still at 4, and the caret and box are drawn with the letters.
+    altMouse(v, QEvent::MouseButtonPress, {10, 4});
+    altMouse(v, QEvent::MouseMove, {20, 4});
+    REQUIRE(f.doc()->canvas() != atRest);
+    REQUIRE(layerOf(f.doc(), id).props.x == 4);
+    CHECK(changed > 0);  // the view repaints the tool's marks
+    CHECK(t->editing() == id);
+    CHECK(t->caretCell() == QPoint(47, 3));
+    REQUIRE(t->caretRect());
+    CHECK(t->caretRect()->topLeft() == v->cellRect(QPoint(47, 3)).topLeft());
+    CHECK(v->inputMethodQuery(Qt::ImCursorRectangle).toRect() == v->toWidget(*t->caretRect()));
+    const QImage dragged = overlay(*t, *v);
+    CHECK(dragged != before);
+
+    changed = 0;
+    if (commit) {
+        // The release lands the move where the preview showed it.
+        altMouse(v, QEvent::MouseButtonRelease, {20, 4});
+        REQUIRE(layerOf(f.doc(), id).props.x == 14);
+        CHECK(t->caretCell() == QPoint(47, 3));
+        CHECK(overlay(*t, *v) == dragged);
+    } else {
+        // Escape drops the preview, and the caret and box go back with it.
+        key(v, Qt::Key_Escape);
+        altMouse(v, QEvent::MouseButtonRelease, {20, 4});
+        REQUIRE(layerOf(f.doc(), id).props.x == 4);
+        CHECK(t->caretCell() == QPoint(37, 3));
+        CHECK(overlay(*t, *v) == before);
+    }
+    CHECK(changed > 0);
+    CHECK(t->editing() == id);
+    REQUIRE(t->caretRect());
+    CHECK(v->inputMethodQuery(Qt::ImCursorRectangle).toRect() == v->toWidget(*t->caretRect()));
+}
+
+TEST_CASE("with no edit open, the Text tool's caret rectangle follows an Alt-drag of the active live text layer",
+          "[style][library][text][layer-move]") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    const std::unique_ptr<QMimeData> mime = f.dragged(QStringLiteral("Neon"));
+    REQUIRE(drop(v, mime.get(), {4, 2}));
+    TextTool* t = textTool(f.w);
+    const LayerId id = f.doc()->activeLayer();
+    key(v, Qt::Key_Escape);  // ends the edit; the layer stays active
+    REQUIRE(t->editing() == 0);
+    REQUIRE(f.doc()->activeLayer() == id);
+    REQUIRE(t->caretRect());
+    REQUIRE(t->caretRect()->topLeft() == v->cellRect(QPoint(37, 3)).topLeft());
+
+    altMouse(v, QEvent::MouseButtonPress, {10, 4});
+    altMouse(v, QEvent::MouseMove, {20, 4});
+    REQUIRE(layerOf(f.doc(), id).props.x == 4);
+    REQUIRE(t->caretRect());
+    CHECK(t->caretRect()->topLeft() == v->cellRect(QPoint(47, 3)).topLeft());
+    CHECK(v->inputMethodQuery(Qt::ImCursorRectangle).toRect() == v->toWidget(*t->caretRect()));
+    key(v, Qt::Key_Escape);
+    altMouse(v, QEvent::MouseButtonRelease, {20, 4});
+    REQUIRE(t->caretRect());
+    CHECK(t->caretRect()->topLeft() == v->cellRect(QPoint(37, 3)).topLeft());
+}
+
+TEST_CASE("an Alt-drag repaints the Text tool's marks only for the layer they are on",
+          "[style][library][text][layer-move]") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    TextTool* t = textTool(f.w);
+    const bool text = GENERATE(false, true);
+    std::unique_ptr<QMimeData> mime;
+    if (text) {
+        mime = f.dragged(QStringLiteral("Neon"));
+        REQUIRE(drop(v, mime.get(), {4, 2}));
+        REQUIRE(t->editing() == f.doc()->activeLayer());
+    } else {
+        f.w.tools()->setActive(t);
+        REQUIRE(!f.doc()->active()->props.text);
+        REQUIRE(!t->caretRect());
+    }
+    REQUIRE(f.w.tools()->active() == t);
+    const LayerId id = f.doc()->activeLayer();
+    const int x = layerOf(f.doc(), id).props.x;
+    int changed = 0;
+    QObject::connect(t, &Tool::changed, &f.w, [&] { ++changed; });
+
+    // Twenty one-column steps: a repaint each for the edited layer's box and
+    // caret, none for a layer the tool draws nothing on.
+    altMouse(v, QEvent::MouseButtonPress, {10, 4});
+    for (int c = 11; c <= 30; ++c)
+        altMouse(v, QEvent::MouseMove, {c, 4});
+    CHECK(changed == (text ? 20 : 0));
+
+    // The release lands the move: a repaint for each signal its undo step
+    // sends the tool (the index, and the clean state if that changes), and
+    // none from the drag's end.
+    changed = 0;
+    int told = 0;
+    QObject::connect(f.doc()->undoStack(), &QUndoStack::indexChanged, &f.w, [&] { ++told; });
+    QObject::connect(f.doc()->undoStack(), &QUndoStack::cleanChanged, &f.w, [&] { ++told; });
+    altMouse(v, QEvent::MouseButtonRelease, {30, 4});
+    REQUIRE(layerOf(f.doc(), id).props.x == x + 20);
+    REQUIRE(told > 0);
+    CHECK(changed == told);
 }
 
 TEST_CASE("the Text tool's caret and clicks follow a live text layer's style margins, however it got its style",

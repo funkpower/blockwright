@@ -126,6 +126,8 @@ private:
     void undoChanged();
     void layersChanged();
     void documentReset();
+    // CanvasView::layerShown: an Alt+drag shows layer `id` somewhere else.
+    void layerShown(LayerId id);
     // Document::setActiveLayer is about to make `id` active.
     void activeAboutToChange(LayerId id);
     // A document command is about to be pushed: an empty layer the edit

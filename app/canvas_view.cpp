@@ -175,9 +175,12 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     connect(doc_, &Document::reset, this, [this] {
         // The new document already has its own composite, possibly with the
         // same layer ids. No preview from the old document belongs on it.
-        if (layerMove_)
+        const std::optional<LayerMove> m = layerMove_;
+        if (m)
             emit layerMoveStatus({});
         layerMove_.reset();
+        if (m)
+            emit layerShown(m->id);
         cancelTool();
         setSelection({});
         fitSymmetryCentre();
@@ -1100,6 +1103,12 @@ void CanvasView::beginLayerMove(QPoint p) {
     }
 }
 
+std::optional<QPoint> CanvasView::shownOffset(LayerId id) const {
+    if (layerMove_ && id && layerMove_->id == id && !layerMove_->reference)
+        return layerMove_->shown;
+    return std::nullopt;
+}
+
 void CanvasView::moveLayerTo(QPoint p, Qt::KeyboardModifiers modifiers) {
     if (!layerMove_ || !layerMove_->id)
         return;
@@ -1157,6 +1166,7 @@ void CanvasView::moveLayerTo(QPoint p, Qt::KeyboardModifiers modifiers) {
         ownChange([&] {
             doc_->previewLayerOffset(m.id, {from.x(), from.y(), m.size.width(), m.size.height()}, to);
         });
+        emit layerShown(m.id);
     }
     emit layerMoveStatus(tr("Move Layer: dx %1, dy %2 | x %3, y %4")
                              .arg((long long)to.x() - m.origin.x())
@@ -1207,6 +1217,10 @@ void CanvasView::endLayerMove(bool commit) {
             }
         }
     });
+    // A landed move shows the layer where the preview did, and its step tells.
+    const Layer* landed = doc_->layers().find(m.id);
+    if (!landed || QPoint(landed->props.x, landed->props.y) != m.shown)
+        emit layerShown(m.id);
 }
 
 bool CanvasView::othersDrag(Pointer p) {
