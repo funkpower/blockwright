@@ -217,6 +217,20 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     view_->setFocus();
 }
 
+MainWindow::~MainWindow() {
+    // Members go before the child widgets (the base class deletes those),
+    // renderer_ before doc_. Destroying doc_ clears its undo stack, whose
+    // signals would end a drag the view still shows and repaint through the
+    // dead renderer (#237); the view, the docks and this window's own slots
+    // all follow the document. So the drag ends now, while everything it
+    // touches is here, and nothing the document or the stack says once
+    // teardown starts reaches anyone. A focus-out the view gets later ends
+    // no drag, so it doesn't touch the document either.
+    view_->cancelDrag();
+    doc_.blockSignals(true);
+    doc_.undoStack()->blockSignals(true);
+}
+
 void MainWindow::createActions() {
     QMenu* file = menuBar()->addMenu(tr("&File"));
     QAction* a = file->addAction(tr("&New"), this, &MainWindow::newFile);

@@ -81,6 +81,8 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+    // Ends the view's drag and silences the document before teardown (#237).
+    ~MainWindow() override;
     // The size a new window opens at on a screen whose work area is
     // `available`, before any saved geometry is restored.
     static QSize initialSize(QSize available);
@@ -334,6 +336,9 @@ private:
     // `why` and the command that runs. True for Yes.
     bool askToRun(const QString& question, const QString& why, const QString& command);
 
+    // renderer_ points into doc_'s canvas, so it is declared after it and
+    // destroyed first; the child widgets that point to either are destroyed
+    // after both (~MainWindow).
     Document doc_;
     AtlasRenderer renderer_;
     QScrollArea* scroll_ = nullptr;

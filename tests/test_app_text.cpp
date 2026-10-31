@@ -1948,3 +1948,33 @@ TEST_CASE("an Alt-drag of the text layer with the pointer at the view's edge doe
     CHECK(h->value() == h0);
     CHECK(vert->value() == v0);
 }
+
+// #237: the window torn down while an Alt-drag of a text layer is shown.
+TEST_CASE("a window closed mid Alt-drag of a text layer tears down cleanly", "[text][layer-move]") {
+    auto* w = new MainWindow;
+    w->resize(900, 700);
+    w->show();
+    CanvasView* v = w->canvasView();
+    v->setZoom(4);
+    const bool focused = GENERATE(false, true);
+    CAPTURE(focused);
+    if (focused) {
+        w->activateWindow();
+        QApplication::processEvents();
+        v->setFocus();
+        REQUIRE(QApplication::focusWidget() == v);
+    }
+    makeText(*w, QStringLiteral("A"));
+    const LayerId id = w->document()->activeLayer();
+    const QWidget* vp = qobject_cast<QScrollArea*>(w->centralWidget())->viewport();
+    const auto altMouse = [&](QEvent::Type type, QPointF at) {
+        QMouseEvent e(type, at, v->mapToGlobal(at), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+                      type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::AltModifier);
+        QApplication::sendEvent(v, &e);
+    };
+    altMouse(QEvent::MouseButtonPress, v->toWidget(v->cellRect(QPoint(2, 1))).center());
+    altMouse(QEvent::MouseMove, v->mapFrom(vp, QPointF(200, 40)));
+    REQUIRE(v->shownOffset(id));
+    REQUIRE(*v->shownOffset(id) != QPoint(2, 1));
+    delete w;
+}

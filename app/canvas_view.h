@@ -126,6 +126,9 @@ public:
     // the document gets only when the drag lands); unset while no drag
     // moves it. layerShown(id) tells when that moves the letters.
     std::optional<QPoint> shownOffset(LayerId id) const;
+    // Ends a drag the tool has going, if any, without an edit, a pan, and
+    // an Alt+drag's preview.
+    void cancelDrag();
 
     Document* document() const { return doc_; }
     CanvasRenderer* renderer() const { return renderer_; }
@@ -299,8 +302,6 @@ private:
     const QImage& referencePicture(const ReferenceImage& picture);
     // The document changed under the tool: it drops what it has in progress.
     void cancelTool();
-    // Ends a drag the tool has going, if any, without an edit, and a pan.
-    void cancelDrag();
     bool dragging() const;
     // A layer move from view point `p`: an art layer moves by whole cells,
     // a reference layer by canvas pixels, or is resized from the corner

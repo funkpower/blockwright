@@ -397,3 +397,38 @@ TEST_CASE("a refused Alt move clears its status on release or cancel", "[layers]
     CHECK(offset(d) == QPoint(2, 2));
     CHECK(d->undoStack()->count() == 2);
 }
+
+// #237: the window torn down while an Alt-drag of a cell layer is shown.
+// Destroying the document clears its undo stack, which ends a drag; nothing
+// said on the way out may reach the renderer or a document already gone.
+TEST_CASE("a window closed mid Alt-drag of a cell layer tears down cleanly", "[layers][layer-move]") {
+    auto* w = new MainWindow;
+    w->show();
+    // focused, the view also loses the focus as the window goes
+    const bool focused = GENERATE(false, true);
+    CAPTURE(focused);
+    if (focused) {
+        w->activateWindow();
+        QApplication::processEvents();
+        w->canvasView()->setFocus();
+        REQUIRE(QApplication::focusWidget() == w->canvasView());
+    }
+    setup(*w);
+    // an edit on the undo stack, so that destroying the stack clears it
+    REQUIRE(w->document()->renameLayer(w->document()->activeLayer(), QStringLiteral("Moved")));
+    REQUIRE(w->document()->undoStack()->count() == 1);
+    start(*w);
+    REQUIRE(w->canvasView()->shownOffset(w->document()->activeLayer()));
+    // The drag ends first, a repaint with everything still there; then the
+    // undo stack clears as it goes, and neither it nor the document says
+    // so: no one following them is whole by then.
+    Document* d = w->document();
+    REQUIRE(d->isModified());
+    int heard = 0;
+    const auto count = [&heard] { ++heard; };
+    QObject::connect(d, &Document::modifiedChanged, count);
+    QObject::connect(d->undoStack(), &QUndoStack::indexChanged, count);
+    QObject::connect(d->undoStack(), &QUndoStack::cleanChanged, count);
+    delete w;
+    CHECK(heard == 0);
+}
