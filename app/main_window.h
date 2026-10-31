@@ -81,7 +81,8 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
-    // Ends the view's drag and silences the document before teardown (#237).
+    // Commits a focused dock edit, ends the view's drag and silences the
+    // document before teardown (#237, #241).
     ~MainWindow() override;
     // The size a new window opens at on a screen whose work area is
     // `available`, before any saved geometry is restored.
@@ -259,6 +260,10 @@ private:
     void updateGlyphSet();
     // Asks to save unsaved edits; false means cancel.
     bool maybeSave();
+    // A dock editor with the focus (the Layers dock's rename editor, a Tool
+    // Options line edit) writes its edit when it loses the focus. Takes the
+    // focus from it now, so the edit lands while the document is here (#241).
+    void commitFocusedEdit();
     bool saveInteractive(const QString& path, FileForm form);
     // Save As into the directory picked, or through the file dialog.
     bool saveAsDirectory();

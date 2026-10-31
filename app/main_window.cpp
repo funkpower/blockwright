@@ -225,7 +225,10 @@ MainWindow::~MainWindow() {
     // all follow the document. So the drag ends now, while everything it
     // touches is here, and nothing the document or the stack says once
     // teardown starts reaches anyone. A focus-out the view gets later ends
-    // no drag, so it doesn't touch the document either.
+    // no drag, so it doesn't touch the document either. A focused dock
+    // editor would write its edit into the document when the base class
+    // hides the window, after doc_ is gone (#241), so it writes it first.
+    commitFocusedEdit();
     view_->cancelDrag();
     doc_.blockSignals(true);
     doc_.undoStack()->blockSignals(true);
@@ -546,7 +549,24 @@ void MainWindow::zoomIn() { view_->setZoom(view_->zoom() + 1); }
 void MainWindow::zoomOut() { view_->setZoom(view_->zoom() - 1); }
 void MainWindow::zoomReset() { view_->setZoom(1); }
 
+void MainWindow::commitFocusedEdit() {
+    // The view's own focus-out ends a drag; finishTool and ~MainWindow see
+    // to that. A floating dock is a window of its own, so this walks the
+    // parents rather than asking isAncestorOf, which stops at a window.
+    QWidget* f = QApplication::focusWidget();
+    if (!f || f == view_ || view_->isAncestorOf(f))
+        return;
+    for (const QWidget* w = f; w; w = w->parentWidget())
+        if (w == this) {
+            f->clearFocus();
+            return;
+        }
+}
+
 bool MainWindow::maybeSave() {
+    // An edit still open in a dock is an unsaved change too: closing would
+    // otherwise commit it after this check, with nobody asked (#241).
+    commitFocusedEdit();
     // A floating selection is an unsaved change: stamped, it marks the
     // document modified and is saved with it.
     view_->finishTool();

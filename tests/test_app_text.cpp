@@ -1978,3 +1978,51 @@ TEST_CASE("a window closed mid Alt-drag of a text layer tears down cleanly", "[t
     REQUIRE(*v->shownOffset(id) != QPoint(2, 1));
     delete w;
 }
+
+TEST_CASE("a window deleted with an edit in the Big colours box applies it while the document is alive",
+          "[text][big-text][teardown]") {
+    auto* w = new MainWindow;
+    w->resize(900, 700);
+    w->show();
+    w->activateWindow();
+    QApplication::processEvents();
+    Document* d = w->document();
+    auto* o = w->toolOptions()->textOptions();
+    use(*w, "text");
+    o->bigStyleBox()->setCurrentIndex(o->bigStyleBox()->findData(int(BigTextStyle::Block)));
+    makeText(*w, QStringLiteral("A"));
+    REQUIRE(sourceOf(d).bigStyle == BigTextStyle::Block);
+    QLineEdit* box = o->bigColoursBox();
+    box->setFocus();
+    REQUIRE(QApplication::focusWidget() == box);
+    box->selectAll();
+    type(box, QStringLiteral("4"));
+    REQUIRE(box->text() == QStringLiteral("4"));
+    // An event filter sees each focus-out before the box's own handling
+    // finishes editing on it.
+    struct Probe : QObject {
+        bool eventFilter(QObject*, QEvent* e) override {
+            if (e->type() == QEvent::FocusOut)
+                ++(docGone ? late : early);
+            return false;
+        }
+        bool docGone = false;
+        int early = 0;
+        int late = 0;
+    } probe;
+    box->installEventFilter(&probe);
+    QObject::connect(d, &QObject::destroyed, &probe, [&] { probe.docGone = true; });
+    const LayerId id = d->activeLayer();
+    int applied = 0;
+    QObject::connect(d->undoStack(), &QUndoStack::indexChanged, &probe, [&] {
+        const Layer* l = d->layers().find(id);
+        if (l && l->props.text && l->props.text->bigColours == std::vector<std::uint8_t>{4})
+            ++applied;
+    });
+    // Before #241 the box lost the focus when ~QWidget hid the window, after
+    // doc_ was destroyed, and its editingFinished read the dead document.
+    delete w;
+    CHECK(probe.late == 0);
+    CHECK(probe.early == 1);
+    CHECK(applied == 1);
+}

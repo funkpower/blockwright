@@ -8,6 +8,7 @@
 #include "draw_tools.h"
 #include "layers_dock.h"
 #include "main_window.h"
+#include "scratch_settings.h"
 #include "select_tool.h"
 #include "tool.h"
 #include "tool_options.h"
@@ -22,6 +23,7 @@
 #include "blockwright/text_style.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAction>
 #include <QApplication>
@@ -33,11 +35,14 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QStatusBar>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
@@ -48,6 +53,78 @@
 using namespace bw;
 
 namespace {
+
+// Counts the focus-outs `watched` gets while `doc` is alive and after it
+// is gone. Installed after the item delegate's filter, it sees each one
+// before the delegate commits on it.
+struct FocusOutProbe : QObject {
+    FocusOutProbe(QWidget* watched, Document* doc) {
+        watched->installEventFilter(this);
+        connect(doc, &QObject::destroyed, this, [this] { docGone = true; });
+    }
+    bool eventFilter(QObject*, QEvent* e) override {
+        if (e->type() == QEvent::FocusOut)
+            ++(docGone ? late : early);
+        return false;
+    }
+    bool docGone = false;
+    int early = 0;
+    int late = 0;
+};
+
+// Opens the active layer's rename editor in a shown, active window (the
+// Layers dock's own when it floats) and types `text` over the name, as a
+// user would. The editor keeps the focus.
+QLineEdit* typeInRenameEditor(MainWindow& w, const QString& text) {
+    w.resize(900, 700);
+    w.show();
+    QWidget* active = w.layersDock()->isFloating() ? static_cast<QWidget*>(w.layersDock()) : &w;
+    active->activateWindow();
+    QApplication::processEvents();
+    REQUIRE(QApplication::activeWindow() == active);
+    QTreeWidget* tree = w.layersWidget()->tree();
+    QTreeWidgetItem* item = tree->currentItem() ? tree->currentItem() : tree->topLevelItem(0);
+    REQUIRE(item);
+    tree->editItem(item, LayersDock::NameColumn);
+    QApplication::processEvents();
+    auto* editor = qobject_cast<QLineEdit*>(QApplication::focusWidget());
+    REQUIRE(editor);
+    REQUIRE(tree->isAncestorOf(editor));
+    editor->selectAll();
+    for (QChar ch : text) {
+        QKeyEvent press(QEvent::KeyPress, ch.toUpper().unicode(), Qt::NoModifier, QString(ch));
+        QApplication::sendEvent(editor, &press);
+        QKeyEvent release(QEvent::KeyRelease, ch.toUpper().unicode(), Qt::NoModifier, QString(ch));
+        QApplication::sendEvent(editor, &release);
+    }
+    REQUIRE(editor->text() == text);
+    return editor;
+}
+
+// A window that closes saves its layout, and the next window opens with
+// it. Forgets that layout, from the scratch settings only.
+struct ForgetLayout {
+    static QString dir() { return QFileInfo(bwtest::scratchSettingsFile()).absolutePath(); }
+    ForgetLayout() { REQUIRE(bwtest::settingsInScratch(dir())); }
+    ~ForgetLayout() {
+        if (!bwtest::settingsInScratch(dir()))
+            return;
+        bw::appSettings()->remove(QStringLiteral("window/geometry"));
+        bw::appSettings()->remove(QStringLiteral("window/state"));
+    }
+};
+
+// Answers the next message box with `button`; `asked` says one came.
+void answer(QWidget* context, QMessageBox::StandardButton button, bool* asked) {
+    *asked = false;
+    QTimer::singleShot(0, context, [=] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!box)
+            return;
+        *asked = true;
+        box->button(button)->click();
+    });
+}
 
 QAction* act(MainWindow& w, const QString& name) {
     auto* a = w.findChild<QAction*>(name);
@@ -1543,4 +1620,69 @@ TEST_CASE("the document refuses a style it can't draw on the layer and leaves th
     CHECK(doc->canvas() == canvas);
     CHECK(doc->undoStack()->count() == steps);
     CHECK(doc->undoStack()->index() == index);
+}
+
+TEST_CASE("a window deleted with the Layers dock's rename editor open commits the rename while the document is "
+          "alive", "[layers][teardown]") {
+    auto* w = new MainWindow;
+    // A floating dock is a window of its own.
+    const bool floating = GENERATE(false, true);
+    CAPTURE(floating);
+    w->layersDock()->setFloating(floating);
+    Document* doc = w->document();
+    const LayerId id = doc->activeLayer();
+    QLineEdit* editor = typeInRenameEditor(*w, QStringLiteral("zz"));
+    FocusOutProbe probe(editor, doc);
+    int renamed = 0;
+    QObject::connect(doc->undoStack(), &QUndoStack::indexChanged, &probe, [&] {
+        if (const Layer* l = doc->layers().find(id); l && l->props.name == "zz")
+            ++renamed;
+    });
+    // Before #241 the editor lost the focus when ~QWidget hid the window,
+    // after doc_ was destroyed, and the delegate's commit renamed a layer
+    // of the dead document.
+    delete w;
+    CHECK(probe.late == 0);
+    CHECK(probe.early == 1);
+    CHECK(renamed == 1);
+}
+
+TEST_CASE("New and closing with the Layers dock's rename editor open ask about the rename", "[layers][teardown]") {
+    const ForgetLayout forget;
+    MainWindow w;
+    Document* doc = w.document();
+    const LayerId id = doc->activeLayer();
+    const std::string before = doc->layers().find(id)->props.name;
+    bool asked = false;
+    typeInRenameEditor(w, QStringLiteral("xx"));
+    REQUIRE_FALSE(doc->isModified());
+    answer(&w, QMessageBox::Cancel, &asked);
+    w.newFile();
+    CHECK(asked);
+    CHECK(doc->layers().find(id)->props.name == "xx");
+    CHECK(doc->isModified());
+    doc->undoStack()->undo();
+    REQUIRE_FALSE(doc->isModified());
+    typeInRenameEditor(w, QStringLiteral("zz"));
+    REQUIRE_FALSE(doc->isModified());
+    // The rename is committed before the unsaved-changes check, so the
+    // check sees it: Cancel keeps the window and the renamed layer.
+    answer(&w, QMessageBox::Cancel, &asked);
+    CHECK_FALSE(w.close());
+    CHECK(asked);
+    CHECK(doc->layers().find(id)->props.name == "zz");
+    CHECK(doc->isModified());
+    // With Discard too, the rename lands before the check and nothing lands
+    // after it.
+    doc->undoStack()->undo();
+    CHECK(doc->layers().find(id)->props.name == before);
+    CHECK_FALSE(doc->isModified());
+    typeInRenameEditor(w, QStringLiteral("yy"));
+    answer(&w, QMessageBox::Discard, &asked);
+    CHECK(w.close());
+    CHECK(asked);
+    const int steps = doc->undoStack()->count();
+    QApplication::processEvents();
+    CHECK(doc->undoStack()->count() == steps);
+    doc->undoStack()->setClean();
 }
