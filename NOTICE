@@ -11,3 +11,12 @@ It includes third-party material under its own licence:
   in an install, the oldschool-pc-fonts/ directory beside this file
   (share/doc/blockwright/oldschool-pc-fonts/); in the source tree,
   third_party/oldschool-pc-fonts/.
+
+- Eleven outline icons from Tabler Icons v3.50.0, https://tabler.io/icons,
+  licensed under the MIT licence: the Toolbox and Tools menu icons of the
+  keyboard, select, move, line, rectangle, ellipse, fill, eyedropper, text,
+  clone stamp and glyph spray tools. The SVG files are unchanged; the
+  program recolours them when it draws them. Source, version, copyright
+  notice and licence text: in an install, the tabler-icons/ directory beside
+  this file (share/doc/blockwright/tabler-icons/); in the source tree,
+  third_party/tabler-icons/.

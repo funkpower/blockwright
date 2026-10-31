@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The licence and font notices install with the binary:
+# The licence, font and icon notices install with the binary:
 #   install_notices_test.sh <build dir> <source dir> <scratch dir> <full bindir> <full docdir> [<config>]
 #
 # <full bindir> and <full docdir> are the build's CMAKE_INSTALL_FULL_BINDIR and
@@ -20,8 +20,10 @@ fails=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 
-notices=(LICENSE NOTICE oldschool-pc-fonts/LICENSE oldschool-pc-fonts/README.md)
-sources=(LICENSE NOTICE third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fonts/README.md)
+notices=(LICENSE NOTICE oldschool-pc-fonts/LICENSE oldschool-pc-fonts/README.md
+         tabler-icons/LICENSE tabler-icons/README.md)
+sources=(LICENSE NOTICE third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fonts/README.md
+         third_party/tabler-icons/LICENSE third_party/tabler-icons/README.md)
 
 # has_notices <name> <dir>: the notices are in <dir>, unchanged
 has_notices() {
@@ -48,6 +50,31 @@ finds_fonts() {
     bad "$1: the source tree has no third_party/oldschool-pc-fonts/"
   else
     ok "$1"
+  fi
+}
+
+# finds_icons <name> <dir>: <dir>/NOTICE sends the reader to the icons'
+# notices by a path that exists there, and to the source tree's copy
+finds_icons() {
+  local t; t=$(tr -s ' \n' ' ' < "$2/NOTICE")
+  if [[ $t != *"the tabler-icons/ directory beside this file (share/doc/blockwright/tabler-icons/)"* ]]; then
+    bad "$1: NOTICE does not name share/doc/blockwright/tabler-icons/"
+  elif [[ ! -f $2/tabler-icons/LICENSE || ! -f $2/tabler-icons/README.md ]]; then
+    bad "$1: no tabler-icons/ beside NOTICE in $2"
+  elif [[ $t != *"in the source tree, third_party/tabler-icons/."* ]]; then
+    bad "$1: NOTICE does not name third_party/tabler-icons/"
+  else
+    ok "$1"
+  fi
+}
+
+# icon_credit <name> <gui>: the GUI's --version credits the icons
+icon_credit() {
+  local out; out=$("$2" --version 2>&1)
+  if grep -q 'Includes icons from Tabler Icons, MIT licence, https://tabler.io/icons;' <<<"$out"; then
+    ok "$1"
+  else
+    bad "$1: $out"
   fi
 }
 
@@ -78,8 +105,10 @@ stage=$tmp/stage
 if staged "$build" "$stage"; then ok "cmake --install staged in $stage"; else bad "cmake --install failed or did not stage in $stage"; fi
 has_notices "staged install carries the notices" "$stage$docdir"
 finds_fonts "staged NOTICE points to the font notices" "$stage$docdir"
+finds_icons "staged NOTICE points to the icon notices" "$stage$docdir"
 credits "installed --version credits the font" "$stage$bindir/blockwright-cli"
 credits "installed GUI --version credits the font" "$stage$bindir/blockwright"
+icon_credit "installed GUI --version credits the icons" "$stage$bindir/blockwright"
 
 # install-dev, with everything but the install step stubbed
 home=$tmp/home stubs=$tmp/stubs
@@ -136,8 +165,10 @@ prefix=$home/.local/opt/blockwright-dev
 if out=$(dev); then ok "install-dev"; else bad "install-dev failed: $out"; fi
 has_notices "install-dev carries the notices" "$prefix/share/doc/blockwright"
 finds_fonts "install-dev NOTICE points to the font notices" "$prefix/share/doc/blockwright"
+finds_icons "install-dev NOTICE points to the icon notices" "$prefix/share/doc/blockwright"
 credits "blockwright-cli-dev --version credits the font" "$home/.local/bin/blockwright-cli-dev"
 credits "blockwright-dev --version credits the font" "$home/.local/bin/blockwright-dev"
+icon_credit "blockwright-dev --version credits the icons" "$home/.local/bin/blockwright-dev"
 if [[ $("$home/.local/bin/blockwright-dev" --version | head -n1) =~ ^blockwright\ [0-9.]+\ \(.+\)$ ]]; then
   ok "blockwright-dev --version names the commit"
 else

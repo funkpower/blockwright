@@ -11,7 +11,7 @@ endif()
 include(GNUInstallDirs)
 include(CTest)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Concurrent)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg)
 # Project files (PLAN §6): zip containers, zstd layer cells. zstd 1.5.6 and
 # later name the library zstd::libzstd; earlier configs only the shared and
 # static targets.
@@ -46,11 +46,13 @@ add_subdirectory(render)
 add_subdirectory(cli)
 add_subdirectory(app)
 
-# The licence and the bundled font's notices travel with the binaries
-# (CC BY-SA 4.0 section 3): <prefix>/share/doc/blockwright/.
+# The licence and the bundled font's and icons' notices travel with the
+# binaries (CC BY-SA 4.0 section 3, MIT): <prefix>/share/doc/blockwright/.
 install(FILES LICENSE NOTICE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fonts/README.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/oldschool-pc-fonts)
+install(FILES third_party/tabler-icons/LICENSE third_party/tabler-icons/README.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}/tabler-icons)
 
 # The bundled Library (PLAN §12): stamps the GUI and `blockwright-cli library
 # list` find from the binaries' directory, <prefix>/share/blockwright/library/.

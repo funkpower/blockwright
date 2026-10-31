@@ -203,6 +203,7 @@ add_executable(blockwright-app-tests
   test_app_detail.cpp
   test_app_workspace.cpp
   test_app_toolbox_access.cpp
+  test_app_tool_icons.cpp
   test_app_project.cpp
   test_app_text.cpp
   test_app_generator.cpp

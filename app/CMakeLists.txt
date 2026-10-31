@@ -65,6 +65,8 @@ add_library(blockwright_app STATIC
   text_tool.h
   tool.cpp
   tool.h
+  tool_icon.cpp
+  tool_icon.h
   tool_illustration.cpp
   tool_illustration.h
   tool_options.cpp
@@ -109,9 +111,24 @@ qt_add_resources(blockwright_app "help" PREFIX "/help" BASE help FILES
   help/tools/text.md
   help/tools/texture.md
 )
+# The Tabler icons the toolbox uses for the generic tools (tool_icon.h).
+set(BW_TABLER_ICONS ${PROJECT_SOURCE_DIR}/third_party/tabler-icons/icons)
+qt_add_resources(blockwright_app "tool_icons" PREFIX "/tool-icons" BASE ${BW_TABLER_ICONS} FILES
+  ${BW_TABLER_ICONS}/arrows-move.svg
+  ${BW_TABLER_ICONS}/bucket-droplet.svg
+  ${BW_TABLER_ICONS}/color-picker.svg
+  ${BW_TABLER_ICONS}/keyboard.svg
+  ${BW_TABLER_ICONS}/line.svg
+  ${BW_TABLER_ICONS}/marquee-2.svg
+  ${BW_TABLER_ICONS}/oval.svg
+  ${BW_TABLER_ICONS}/rubber-stamp.svg
+  ${BW_TABLER_ICONS}/spray.svg
+  ${BW_TABLER_ICONS}/square.svg
+  ${BW_TABLER_ICONS}/typography.svg
+)
 add_dependencies(blockwright_app bw_version)
 target_include_directories(blockwright_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
-target_link_libraries(blockwright_app PUBLIC blockwright::core blockwright::render Qt6::Widgets Qt6::Concurrent)
+target_link_libraries(blockwright_app PUBLIC blockwright::core blockwright::render Qt6::Widgets Qt6::Concurrent Qt6::Svg)
 target_compile_options(blockwright_app PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)
 

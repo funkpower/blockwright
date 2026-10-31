@@ -19,6 +19,11 @@ if grep -q 'IBM VGA 8x16 and IBM PC BIOS 8x8 fonts, (c) 2016-2020 VileR,' <<<"$o
 else
   bad "--version has no font credit: $out"
 fi
+if grep -q 'Includes icons from Tabler Icons, MIT licence, https://tabler.io/icons;' <<<"$out"; then
+  ok "--version credits the icons"
+else
+  bad "--version has no icon credit: $out"
+fi
 out=$(env -u DISPLAY -u WAYLAND_DISPLAY "$bin" --help 2>&1); st=$?
 if [[ $st -eq 0 ]] && grep -q 'Usage: blockwright' <<<"$out"; then ok "--help"; else bad "--help (exit $st): $out"; fi
 out=$(env -u DISPLAY -u WAYLAND_DISPLAY "$bin" --bogus 2>&1); st=$?

@@ -1,14 +1,13 @@
 #include "toolbox.h"
 
 #include "tool.h"
+#include "tool_icon.h"
 
 #include <QAccessibleWidget>
 #include <QAction>
+#include <QEvent>
 #include <QGridLayout>
 #include <QMenu>
-#include <QPainter>
-#include <QPainterPath>
-#include <QPixmap>
 #include <QSet>
 #include <QToolButton>
 
@@ -129,176 +128,6 @@ const QList<QStringList>& Toolbox::groups() {
     return g;
 }
 
-QIcon toolIcon(const QString& id) {
-    QPixmap pm(kIcon, kIcon);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    const QColor ink(40, 40, 40), mid(130, 130, 130), light(220, 220, 220);
-    p.setPen(QPen(ink, 1.5));
-    const QRectF box(3.5, 3.5, kIcon - 7, kIcon - 7);
-    const auto cells = [&](std::initializer_list<QColor> shades) {
-        // A row of cells, dark to light, like a ramp.
-        const qreal w = box.width() / qreal(shades.size());
-        qreal x = box.left();
-        for (const QColor& c : shades) {
-            p.fillRect(QRectF(x, box.top() + 4, w, box.height() - 8), c);
-            x += w;
-        }
-        p.setBrush(Qt::NoBrush);
-        p.drawRect(box.adjusted(0, 4, 0, -4));
-    };
-    if (id == QLatin1String("keyboard")) {
-        p.drawRoundedRect(box.adjusted(0, 4, 0, -4), 2, 2);
-        for (int i = 0; i < 4; ++i)
-            p.drawPoint(QPointF(box.left() + 3 + i * 4, box.center().y() - 1));
-        p.drawLine(QPointF(box.left() + 4, box.center().y() + 3), QPointF(box.right() - 4, box.center().y() + 3));
-    } else if (id == QLatin1String("select")) {
-        p.setPen(QPen(ink, 1.5, Qt::DashLine));
-        p.drawRect(box);
-    } else if (id == QLatin1String("move")) {
-        // a four-way arrow
-        const QPointF c = box.center();
-        const qreal r = box.width() / 2;
-        p.drawLine(QPointF(c.x() - r, c.y()), QPointF(c.x() + r, c.y()));
-        p.drawLine(QPointF(c.x(), c.y() - r), QPointF(c.x(), c.y() + r));
-        for (const QPointF d : {QPointF(1, 0), QPointF(-1, 0), QPointF(0, 1), QPointF(0, -1)}) {
-            const QPointF tip = c + d * r;
-            const QPointF side(d.y(), d.x());
-            p.drawLine(tip, tip - d * 3 + side * 3);
-            p.drawLine(tip, tip - d * 3 - side * 3);
-        }
-    } else if (id == QLatin1String("halfBlock")) {
-        p.fillRect(QRectF(box.left(), box.top(), box.width(), box.height() / 2), ink);
-        p.drawRect(box);
-    } else if (id == QLatin1String("shade")) {
-        for (int y = 0; y < 8; ++y)
-            for (int x = 0; x < 8; ++x)
-                if ((x + y) % 2 == 0)
-                    p.fillRect(QRectF(box.left() + x * box.width() / 8, box.top() + y * box.height() / 8,
-                                      box.width() / 8, box.height() / 8),
-                               ink);
-    } else if (id == QLatin1String("rampShade")) {
-        cells({ink, mid, light});
-    } else if (id == QLatin1String("form")) {
-        QRadialGradient g(box.center() - QPointF(4, 4), box.width() / 1.6);
-        g.setColorAt(0, light);
-        g.setColorAt(1, ink);
-        p.setBrush(g);
-        p.drawEllipse(box);
-    } else if (id == QLatin1String("soft")) {
-        QRadialGradient g(box.center(), box.width() / 2);
-        g.setColorAt(0, ink);
-        g.setColorAt(1, Qt::transparent);
-        p.setPen(Qt::NoPen);
-        p.setBrush(g);
-        p.drawEllipse(box);
-    } else if (id == QLatin1String("despeckle")) {
-        p.fillRect(box, mid);
-        p.fillRect(QRectF(box.center().x() - 2, box.center().y() - 2, 4, 4), light);
-        p.setPen(QPen(ink, 1.5));
-        p.drawLine(box.topRight(), box.bottomLeft());
-    } else if (id == QLatin1String("smudge")) {
-        // a dark cell and a light one, smeared across the edge
-        cells({ink, light});
-        p.setPen(QPen(mid, 4, Qt::SolidLine, Qt::RoundCap));
-        p.drawLine(QPointF(box.left() + 4, box.center().y()), QPointF(box.right() - 4, box.center().y()));
-    } else if (id == QLatin1String("glyph")) {
-        QFont f = p.font();
-        f.setPixelSize(kIcon - 6);
-        f.setBold(true);
-        p.setFont(f);
-        p.drawText(QRectF(0, 0, kIcon, kIcon), Qt::AlignCenter, QStringLiteral("A"));
-    } else if (id == QLatin1String("colorize")) {
-        p.setPen(Qt::NoPen);
-        const QColor hues[] = {QColor(200, 40, 40), QColor(40, 160, 40), QColor(40, 80, 200)};
-        for (int i = 0; i < 3; ++i) {
-            p.setBrush(hues[i]);
-            p.drawEllipse(QRectF(box.left() + i * 5, box.top() + (i % 2) * 6, 9, 9));
-        }
-        p.setPen(QPen(ink, 1.5));
-        p.drawLine(QPointF(box.left() + 2, box.bottom()), QPointF(box.right(), box.top() + 8));
-    } else if (id == QLatin1String("line")) {
-        p.drawLine(box.bottomLeft(), box.topRight());
-    } else if (id == QLatin1String("rectangle")) {
-        p.drawRect(box);
-    } else if (id == QLatin1String("ellipse")) {
-        p.drawEllipse(box);
-    } else if (id == QLatin1String("fill")) {
-        QPainterPath bucket;
-        bucket.moveTo(box.left() + 2, box.top() + 6);
-        bucket.lineTo(box.right() - 6, box.top() + 6);
-        bucket.lineTo(box.right() - 8, box.bottom());
-        bucket.lineTo(box.left() + 4, box.bottom());
-        bucket.closeSubpath();
-        p.setBrush(mid);
-        p.drawPath(bucket);
-        p.setBrush(ink);
-        p.drawEllipse(QRectF(box.right() - 4, box.top() + 8, 4, 6));
-    } else if (id == QLatin1String("gradient")) {
-        cells({ink, ink, mid, mid, light, light});
-        p.drawLine(QPointF(box.left() + 2, box.bottom()), QPointF(box.right() - 2, box.bottom()));
-        p.drawLine(QPointF(box.right() - 5, box.bottom() - 2), QPointF(box.right() - 2, box.bottom()));
-    } else if (id == QLatin1String("eyedropper")) {
-        p.drawLine(QPointF(box.left() + 1, box.bottom() - 1), QPointF(box.right() - 4, box.top() + 4));
-        p.setBrush(ink);
-        p.drawEllipse(QRectF(box.right() - 7, box.top(), 7, 7));
-    } else if (id == QLatin1String("outline")) {
-        p.fillRect(box.adjusted(3, 3, -3, -3), mid);
-        p.setPen(QPen(ink, 2.5));
-        p.drawRect(box.adjusted(2, 2, -2, -2));
-    } else if (id == QLatin1String("rimLight")) {
-        p.setBrush(mid);
-        p.drawEllipse(box);
-        p.setPen(QPen(light, 3));
-        p.drawArc(box.adjusted(1.5, 1.5, -1.5, -1.5), 30 * 16, 120 * 16);
-    } else if (id == QLatin1String("texture")) {
-        // overlapping scales, each lit at its top left, on a dark seam
-        p.fillRect(box, ink);
-        p.setPen(Qt::NoPen);
-        const qreal w = box.width() / 2, h = box.height() / 3;
-        for (int row = 0; row < 3; ++row)
-            for (int col = 0; col < 2 + (row & 1); ++col) {
-                const QRectF s(box.left() + col * w - (row & 1) * w / 2, box.top() + row * h, w - 1, h + 1);
-                p.setBrush(mid);
-                p.drawEllipse(s.intersected(box));
-                p.setBrush(light);
-                p.drawEllipse(QRectF(s.left() + 1.5, s.top() + 1, s.width() / 3, s.height() / 3).intersected(box));
-            }
-    } else if (id == QLatin1String("clone")) {
-        // the source cell, outlined, and its copy
-        const QRectF from(box.left(), box.top(), box.width() / 2 - 1, box.height() / 2 - 1);
-        const QRectF to = from.translated(box.width() / 2 + 1, box.height() / 2 + 1);
-        p.drawRect(from);
-        p.fillRect(to, mid);
-        p.drawRect(to);
-        p.drawLine(from.center(), to.center());
-    } else if (id == QLatin1String("spray")) {
-        // a soft haze below, stars scattered above it
-        p.fillRect(QRectF(box.left(), box.bottom() - 5, box.width(), 5), mid);
-        p.setPen(Qt::NoPen);
-        p.setBrush(light);
-        for (const QPointF at : {QPointF(0.15, 0.15), QPointF(0.6, 0.1), QPointF(0.85, 0.45), QPointF(0.35, 0.5)})
-            p.drawEllipse(QPointF(box.left() + at.x() * box.width(), box.top() + at.y() * box.height()), 1.4, 1.4);
-        p.setPen(QPen(ink, 1.2));
-        const QPointF star(box.left() + 0.55 * box.width(), box.top() + 0.32 * box.height());
-        p.drawLine(star - QPointF(2.5, 0), star + QPointF(2.5, 0));
-        p.drawLine(star - QPointF(0, 2.5), star + QPointF(0, 2.5));
-    } else if (id == QLatin1String("text")) {
-        // a capital T and a text cursor beside it
-        p.setPen(Qt::NoPen);
-        p.setBrush(ink);
-        p.drawRect(QRectF(box.left(), box.top(), box.width() * 0.7, 2.5));
-        p.drawRect(QRectF(box.left() + box.width() * 0.35 - 1.25, box.top(), 2.5, box.height()));
-        p.setPen(QPen(mid, 1.5));
-        p.drawLine(QPointF(box.right() - 1, box.top() + 4), QPointF(box.right() - 1, box.bottom()));
-    } else {
-        // A tool with no picture of its own: its name's first letter.
-        p.drawText(QRectF(0, 0, kIcon, kIcon), Qt::AlignCenter, id.left(1).toUpper());
-    }
-    return QIcon(pm);
-}
-
 Toolbox::Toolbox(ToolRegistry* tools, const QHash<QString, QAction*>& actions, QWidget* parent)
     : QWidget(parent), actions_(actions) {
     static const bool factoryInstalled = (QAccessible::installFactory(groupButtonAccessible), true);
@@ -349,8 +178,18 @@ Toolbox::Toolbox(ToolRegistry* tools, const QHash<QString, QAction*>& actions, Q
         const int i = int(buttons_.size());
         grid->addWidget(b, i / kColumns, i % kColumns);
         buttons_ << b;
-        for (const QString& id : group)
+        for (const QString& id : group) {
             byTool_.insert(id, b);
+            icons_.insert(id, toolIcon(id, b));
+            // A changed action (checked, a new icon) puts its own icon back on
+            // the button before this runs.
+            QAction* a = actions.value(id);
+            connect(a, &QAction::changed, b, [this, a, b] {
+                if (b->defaultAction() == a)
+                    showIcon(b);
+            });
+        }
+        showIcon(b);
     }
     grid->setRowStretch(int((buttons_.size() + kColumns - 1) / kColumns), 1);
     grid->setColumnStretch(kColumns, 1);
@@ -358,6 +197,22 @@ Toolbox::Toolbox(ToolRegistry* tools, const QHash<QString, QAction*>& actions, Q
     if (tools->active())
         follow(tools->active());
     connect(tools, &ToolRegistry::activeChanged, this, &Toolbox::follow);
+}
+
+void Toolbox::changeEvent(QEvent* e) {
+    QWidget::changeEvent(e);
+    // The icons are drawn in the palette's colours (tool_icon.h): new ones
+    // for the buttons, in theirs, and the Tools menu, in the application's,
+    // when the palette or scheme changes.
+    if (e->type() == QEvent::PaletteChange || e->type() == QEvent::ApplicationPaletteChange ||
+        e->type() == QEvent::ThemeChange) {
+        for (auto it = icons_.begin(); it != icons_.end(); ++it)
+            it.value() = toolIcon(it.key(), byTool_.value(it.key()));
+        for (auto it = actions_.cbegin(); it != actions_.cend(); ++it)
+            it.value()->setIcon(toolIcon(it.key()));
+        for (QToolButton* b : std::as_const(buttons_))
+            showIcon(b);
+    }
 }
 
 void Toolbox::follow(Tool* tool) {
@@ -370,10 +225,16 @@ void Toolbox::follow(Tool* tool) {
         QMenu* menu = b->menu();
         b->setDefaultAction(a);
         b->setMenu(menu);
+        showIcon(b);
         // The name follows the button's text; the description names the tool too.
         QAccessibleEvent changed(b, QAccessible::DescriptionChanged);
         QAccessible::updateAccessibility(&changed);
     }
+}
+
+void Toolbox::showIcon(QToolButton* b) {
+    if (QAction* a = b->defaultAction())
+        b->setIcon(icons_.value(actions_.key(a)));
 }
 
 } // namespace bw

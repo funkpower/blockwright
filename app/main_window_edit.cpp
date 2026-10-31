@@ -11,6 +11,7 @@
 #include "select_tool.h"
 #include "text_tool.h"
 #include "tool.h"
+#include "tool_icon.h"
 #include "toolbox.h"
 
 #include <QAction>

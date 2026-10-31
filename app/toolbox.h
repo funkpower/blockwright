@@ -4,7 +4,8 @@
 // or right-clicking it opens the rest of the group. Clicking the icon picks
 // the current tool. The buttons are the Tools menu's actions, so a button
 // has the tool's shortcut in its tooltip, shows the active tool pressed,
-// and adds no shortcut of its own.
+// and adds no shortcut of its own. A button's icon is its own, drawn in the
+// button's palette, so a palette set on the toolbox reaches it.
 
 #include <QHash>
 #include <QIcon>
@@ -33,15 +34,18 @@ public:
     // The button that holds the tool with this id, or null.
     QToolButton* buttonFor(const QString& toolId) const { return byTool_.value(toolId); }
 
+protected:
+    void changeEvent(QEvent* e) override;
+
 private:
     void follow(Tool* tool);
+    // Gives `b` the icon of its current tool, in its own palette.
+    void showIcon(QToolButton* b);
 
     QList<QToolButton*> buttons_;
     QHash<QString, QToolButton*> byTool_;
     QHash<QString, QAction*> actions_;
+    QHash<QString, QIcon> icons_; // by tool id, each drawn in its button's palette
 };
-
-// The icon the toolbox and the Tools menu show for a tool.
-QIcon toolIcon(const QString& toolId);
 
 } // namespace bw

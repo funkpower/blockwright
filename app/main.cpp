@@ -29,13 +29,13 @@ int main(int argc, char** argv) {
             dashdash = true;
         } else if (!std::strcmp(a, "--version") || !std::strcmp(a, "-v")) {
             std::cout << "blockwright " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n"
-                      << bw::kFontCredit;
+                      << bw::kFontCredit << bw::kIconCredit;
             return 0;
         } else if (!std::strcmp(a, "--help") || !std::strcmp(a, "-h")) {
             std::cout << "Usage: blockwright [file.ans | file.xb | file.bin | project.bwp | project-directory]\n\n"
                          "ANSI and IRC art editor.\n\n"
                          "  -h, --help     show this help\n"
-                         "  -v, --version  show the version and the font credit\n";
+                         "  -v, --version  show the version and the font and icon credits\n";
             return 0;
         } else {
             std::cerr << "blockwright: unknown option " << a << "\n";

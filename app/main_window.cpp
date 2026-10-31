@@ -339,9 +339,10 @@ void MainWindow::createActions() {
     a = help->addAction(tr("&About Blockwright"), this, [this] {
         QMessageBox::about(this, tr("About Blockwright"),
                            tr("<p><b>Blockwright</b> %1 (%2)</p><p>ANSI and IRC art editor. GPL-3.0-or-later.</p>"
-                              "<p>%3</p>")
+                              "<p>%3</p><p>%4</p>")
                                .arg(QStringLiteral(BLOCKWRIGHT_VERSION), QStringLiteral(BLOCKWRIGHT_GIT_COMMIT),
-                                    QString::fromUtf8(kFontCredit).toHtmlEscaped().replace('\n', ' ')));
+                                    QString::fromUtf8(kFontCredit).toHtmlEscaped().replace('\n', ' '),
+                                    QString::fromUtf8(kIconCredit).toHtmlEscaped().replace('\n', ' ')));
     });
     a->setObjectName(QStringLiteral("about"));
     a = help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
