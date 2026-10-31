@@ -21,6 +21,15 @@ inline QString& scratchSettingsFile() {
     return path;
 }
 
+// The scratch directory useScratchSettings() was given, kept apart from the
+// file name so that settingsInScratch() checks the file against the directory
+// the run created rather than against the file's own folder. Empty until a
+// valid directory is given.
+inline QString& scratchRoot() {
+    static QString path;
+    return path;
+}
+
 // Whether QSettings::setPath() moves the native settings Qt keeps for itself:
 // the QtProject store a QFileDialog reads and, on destruction, writes its
 // history and last directory to. On macOS they are CFPreferences and on
@@ -47,6 +56,10 @@ inline bool settingsInScratch(const QString& dir) {
            file == QFileInfo(scratchSettingsFile()).absoluteFilePath() && inDir(file, dir);
 }
 
+// Whether the settings the app uses are the injected INI file, inside the
+// scratch directory useScratchSettings() was given.
+inline bool settingsInScratch() { return !scratchRoot().isEmpty() && settingsInScratch(scratchRoot()); }
+
 // Whether Qt's own settings, the ones QFileDialog uses, are inside dir.
 inline bool qtSettingsInScratch(const QString& dir) {
     if (!kQtSettingsRedirectable)
@@ -55,26 +68,43 @@ inline bool qtSettingsInScratch(const QString& dir) {
     return inDir(qt.fileName(), dir);
 }
 
+// Empties the app's settings to what a fresh run starts with: nothing, except
+// that a test window must never discover the caller's local font collection.
+// Writes nothing, and returns false, unless the settings are the scratch file.
+inline bool resetScratchSettings() {
+    if (!settingsInScratch())
+        return false;
+    const auto s = bw::appSettings();
+    s->clear();
+    s->setValue(QStringLiteral("fonts/folder"), QString());
+    return true;
+}
+
+[[noreturn]] inline void refuseToRun() {
+    std::fprintf(stderr, "the app's settings or Qt's are not in the scratch directory; not running\n");
+    std::exit(1);
+}
+
 // Points the app's settings at settings.ini in dir and, where Qt allows it,
-// every native and INI settings path at dir/qt. Called before any window is
-// built or any setting cleared; the run stops if either would still use
-// another file.
+// every native and INI settings path at dir/qt, then empties the settings.
+// Called before any window is built; the run stops, having written nothing,
+// if dir couldn't be made or either kind of settings would still use another
+// file.
 inline void useScratchSettings(const QTemporaryDir& dir) {
+    if (!dir.isValid())
+        refuseToRun();
+    scratchRoot() = dir.path();
     scratchSettingsFile() = dir.filePath(QStringLiteral("settings.ini"));
     bw::setSettingsFile(scratchSettingsFile());
-    // A test window must never discover the caller's local font collection.
-    bw::appSettings()->setValue(QStringLiteral("fonts/folder"), QString());
     if (kQtSettingsRedirectable) {
         for (const auto format : {QSettings::NativeFormat, QSettings::IniFormat}) {
             QSettings::setPath(format, QSettings::UserScope, dir.filePath(QStringLiteral("qt/user")));
             QSettings::setPath(format, QSettings::SystemScope, dir.filePath(QStringLiteral("qt/system")));
         }
     }
-    if (!dir.isValid() || !settingsInScratch(dir.path()) ||
-        (kQtSettingsRedirectable && !qtSettingsInScratch(dir.path()))) {
-        std::fprintf(stderr, "the app's settings or Qt's are not in the scratch directory; not running\n");
-        std::exit(1);
-    }
+    if (!settingsInScratch() || (kQtSettingsRedirectable && !qtSettingsInScratch(dir.path())))
+        refuseToRun();
+    resetScratchSettings();
 }
 
 } // namespace bwtest

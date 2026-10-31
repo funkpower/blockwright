@@ -16,6 +16,8 @@
 
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/reporters/catch_reporter_event_listener.hpp>
+#include <catch2/reporters/catch_reporter_registrars.hpp>
 
 #include <QAction>
 #include <QApplication>
@@ -1142,6 +1144,21 @@ TEST_CASE("Ctrl+arrows cycle the pen's colours and Ctrl+D resets them") {
     CHECK(v->pen().bg == Color::indexed(Black));
     CHECK(p->pen().fg == Color::indexed(Grey));
 }
+
+// Each test case starts from the settings a fresh run has, as it does when
+// ctest runs it in a process of its own, so a window an earlier case closed
+// (saving its layout) or a setting it changed can't reach the next one (#249).
+class FreshSettings : public Catch::EventListenerBase {
+public:
+    using Catch::EventListenerBase::EventListenerBase;
+    void testCaseStarting(const Catch::TestCaseInfo&) override {
+        if (!bwtest::resetScratchSettings()) {
+            std::fprintf(stderr, "the app's settings are not in the scratch directory; not clearing them\n");
+            std::exit(1);
+        }
+    }
+};
+CATCH_REGISTER_LISTENER(FreshSettings)
 
 int main(int argc, char** argv) {
     // Every window here reads its Library from empty scratch directories,

@@ -159,13 +159,11 @@ void dragSeparatorBelow(MainWindow& w, QDockWidget* upper, int dy) {
 // The scratch directory the run's settings file is in.
 QString scratchDir() { return QFileInfo(bwtest::scratchSettingsFile()).absolutePath(); }
 
-// Forgets the layout the windows here saved, from the scratch settings only.
+// Starts from no saved layout and forgets the one the windows here saved, from
+// the scratch settings only.
 struct ClearLayout {
-    ClearLayout() { REQUIRE(bwtest::settingsInScratch(scratchDir())); }
-    ~ClearLayout() {
-        if (bwtest::settingsInScratch(scratchDir()))
-            bw::appSettings()->clear();
-    }
+    ClearLayout() { REQUIRE(bwtest::resetScratchSettings()); }
+    ~ClearLayout() { bwtest::resetScratchSettings(); }
 };
 
 // Sets the application's font for a test and puts the old one back: Noto

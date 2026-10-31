@@ -241,6 +241,13 @@ foreach(scale 1.25 1.5)
   add_test(NAME "dock heights at scale ${scale}"
     COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} $<TARGET_FILE:blockwright-app-tests> "[dock-height]")
 endforeach()
+# A layout test that runs after a closed window in the same process still starts
+# from the default layout (#249); ctest otherwise runs each test case alone.
+# The script runs the binary itself, so it runs on the build host only.
+if(NOT CMAKE_CROSSCOMPILING)
+  add_test(NAME app_tests_layout_after_a_close
+    COMMAND ${BW_APP_TEST_ENV} bash ${CMAKE_CURRENT_SOURCE_DIR}/app_order_test.sh $<TARGET_FILE:blockwright-app-tests>)
+endif()
 # The canvas keeps its floor after the window shrinks (#238): a scroll bar
 # appears with the shorter or narrower window, at every scale.
 foreach(scale 1.25 1.5 1.75 2)
@@ -347,6 +354,16 @@ list(TRANSFORM bw_app_test_files REPLACE "^(.+)$" "$<TARGET_FILE:\\1>")
 add_test(NAME app_tests_leave_profile_alone
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_profile_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-profile-check
           ${bw_app_test_files})
+# Each app test binary, when its scratch directory can't be made, refuses to
+# run and leaves a profile already holding Blockwright settings byte-identical:
+# the settings would otherwise be that profile's own. Linux paths, so host only.
+# The X tests' binary takes the same path through scratch_settings.h; only
+# xcb_test.sh may run it (app_tests_all_guarded), so it isn't run here.
+if(NOT CMAKE_CROSSCOMPILING)
+  add_test(NAME app_tests_refuse_without_scratch
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_refusal_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-refusal-check
+            ${bw_app_test_files})
+endif()
 
 # Every test binary built on the app is in that list and runs under the
 # scratch profile, or every test that runs it runs it on an X server through
