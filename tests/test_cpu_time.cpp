@@ -51,3 +51,17 @@ TEST_CASE("cpuSeconds counts work, not waiting", "[cpu_time]") {
         CHECK(c < 0.05);
     }
 }
+
+// #285: a CPU-time budget is set from an optimised build; a Debug build
+// (no NDEBUG) gets it 20 times over, an optimised one as written.
+TEST_CASE("cpuBudget scales a budget only without NDEBUG", "[cpu_time]") {
+#ifdef NDEBUG
+    STATIC_REQUIRE(bwtest::kUnoptimisedSlowdown == 1.0);
+    STATIC_REQUIRE(bwtest::cpuBudget(0.3) == 0.3);
+#else
+    STATIC_REQUIRE(bwtest::kUnoptimisedSlowdown == 20.0);
+    STATIC_REQUIRE(bwtest::cpuBudget(0.3) == 0.3 * 20.0);
+#endif
+    STATIC_REQUIRE(bwtest::cpuBudget(0.0) == 0.0);
+    CHECK(bwtest::cpuBudget(0.05) == 0.05 * bwtest::kUnoptimisedSlowdown);
+}
