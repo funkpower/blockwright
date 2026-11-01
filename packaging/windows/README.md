@@ -41,7 +41,12 @@ or the same as `--llvm-mingw`, `--qt`, `--qt-host` and `--wixl`. It builds
 Release without the tests in `--build-dir` (default
 `~/.cache/dw/blockwright-win-build`), stages the install with the Qt DLLs and
 plugins, the llvm-mingw runtime and the licences (`stage.py`), and writes
-`dist/blockwright-<version>-x86_64.msi`.
+`dist/blockwright-<version>-x86_64.msi`. `THIRD-PARTY.txt` names Qt as
+`@QT_VERSION@` and links its source as
+`https://download.qt.io/archive/qt/@QT_MINOR@/@QT_VERSION@/submodules/`;
+`third-party` fills in the version of the Qt in `--qt` (from its
+`Qt6ConfigVersion*.cmake`) when it stages the file, and fails if a
+placeholder is left.
 
 The MSI installs per machine into `Program Files\Blockwright` with a Start
 menu shortcut. Its UpgradeCode in `blockwright.wxs` never changes and each

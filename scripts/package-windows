@@ -15,7 +15,8 @@
 # Builds zlib, zstd and libzip first if the build dir lacks them
 # (packaging/windows/build-deps), then a Release build of the programs
 # without the tests, installs it into <build-dir>/stage with the Qt DLLs and
-# plugins, the runtime DLLs and the licences (packaging/windows/stage.py),
+# plugins, the runtime DLLs and the licences (packaging/windows/stage.py;
+# packaging/windows/third-party fills Qt's version into THIRD-PARTY.txt),
 # and makes dist/blockwright-<version>-x86_64.msi from
 # packaging/windows/blockwright.wxs. packaging/windows/README.md sets the
 # toolchain up.
@@ -78,10 +79,12 @@ for m in qtbase qtsvg qtimageformats qtpdf; do
   for f in "$qt_win/sbom/$m-"*[0-9].spdx; do [[ -f $f ]] && sboms+=(--sbom "$f"); done
 done
 cp "$llvm_mingw/LICENSE.TXT" "$build_dir/llvm-mingw-LICENSE.TXT"
+# Qt's notice and source link name the Qt in $qt_win
+"$src/packaging/windows/third-party" "$qt_win" "$build_dir/THIRD-PARTY.txt"
 python3 -I "$src/packaging/windows/stage.py" "$stage" "$build_dir/files.wxs" \
   --qt "$qt_win" --runtime "$llvm_mingw/x86_64-w64-mingw32/bin" \
   --readobj "$llvm_mingw/bin/llvm-readobj" \
-  --licence "$src/packaging/windows/THIRD-PARTY.txt" \
+  --licence "$build_dir/THIRD-PARTY.txt" \
   --licence "$src/packaging/windows/licenses/LGPL-3.0-only.txt" \
   --licence "$build_dir/llvm-mingw-LICENSE.TXT" \
   --licence "$mingw_licences/COPYING.MinGW-w64-runtime.txt" \

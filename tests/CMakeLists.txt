@@ -220,6 +220,58 @@ endif()
 add_test(NAME linux_packages
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/linux_packages_test.sh ${PROJECT_SOURCE_DIR})
 
+# Every packaging/*/THIRD-PARTY file links Qt's source under
+# download.qt.io/archive/qt/ through the @QT_MINOR@/@QT_VERSION@ template the
+# packaging scripts fill in, never official_releases (which drops old minors)
+# and never a fixed version that could drift from the bundled Qt
+add_test(NAME packaging_qt_links
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/packaging_qt_links_test.sh ${PROJECT_SOURCE_DIR})
+# The same check on trees written at configure time, one case each, in two
+# tests: packaging_qt_links_<case> wants the case's ok or FAIL line (ctest then
+# ignores the exit code) and packaging_qt_links_<case>_exit wants exit 0 for a
+# pass and non-zero for a fail (WILL_FAIL), so a check that prints FAIL but
+# exits 0 is red.
+set(bw_qt_links_cases ${CMAKE_CURRENT_BINARY_DIR}/packaging-qt-links)
+function(bw_qt_links_case name outcome file content expect)
+  set(tree ${bw_qt_links_cases}/${name})
+  file(REMOVE_RECURSE ${tree})
+  if(NOT file STREQUAL "")
+    file(WRITE ${tree}/packaging/${file} "${content}")
+  else()
+    file(MAKE_DIRECTORY ${tree}/packaging/linux)
+  endif()
+  add_test(NAME packaging_qt_links_${name}
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/packaging_qt_links_test.sh ${tree})
+  set_tests_properties(packaging_qt_links_${name} PROPERTIES PASS_REGULAR_EXPRESSION "${expect}")
+  add_test(NAME packaging_qt_links_${name}_exit
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/packaging_qt_links_test.sh ${tree})
+  if(outcome STREQUAL "fail")
+    set_tests_properties(packaging_qt_links_${name}_exit PROPERTIES WILL_FAIL TRUE)
+  endif()
+endfunction()
+set(bw_qt_tpl "https://download.qt.io/archive/qt/@QT_MINOR@/@QT_VERSION@/submodules/")
+bw_qt_links_case(template pass linux/THIRD-PARTY.txt "- Qt @QT_VERSION@\nSource:\n  ${bw_qt_tpl}\n"
+  "^ok   packaging/linux/THIRD-PARTY.txt links Qt's source under download.qt.io/archive/qt/ \\(1\\)\n$")
+bw_qt_links_case(dead fail windows/THIRD-PARTY.txt "Source:\n  https://download.qt.io/official_releases/qt/6.8/6.8.3/submodules/\n"
+  "FAIL packaging/windows/THIRD-PARTY.txt links under official_releases")
+bw_qt_links_case(fixed_link fail windows/THIRD-PARTY.txt "Source:\n  https://download.qt.io/archive/qt/6.8/6.8.3/submodules/\n"
+  "FAIL packaging/windows/THIRD-PARTY.txt has a Qt source link other than .* https://download.qt.io/archive/qt/6.8/6.8.3/submodules/")
+bw_qt_links_case(fixed_name fail windows/THIRD-PARTY.txt "- Qt 6.9.1 (Core)\nSource:\n  ${bw_qt_tpl}\n"
+  "FAIL packaging/windows/THIRD-PARTY.txt names a fixed Qt version instead of @QT_VERSION@: 1:- Qt 6.9.1")
+bw_qt_links_case(no_scheme fail macos/THIRD-PARTY.txt "Source:\n  download.qt.io/archive/qt/@QT_MINOR@/@QT_VERSION@/submodules/\n"
+  "FAIL packaging/macos/THIRD-PARTY.txt has a Qt source link other than .* download.qt.io/archive/qt/@QT_MINOR@/@QT_VERSION@/submodules/")
+bw_qt_links_case(upper_case fail macos/THIRD-PARTY.txt "Source:\n  HTTPS://DOWNLOAD.QT.IO/OFFICIAL/qt/6.8/6.8.3/submodules/\n"
+  "FAIL packaging/macos/THIRD-PARTY.txt has a Qt source link other than .* HTTPS://DOWNLOAD.QT.IO/OFFICIAL/qt/6.8/6.8.3/submodules/")
+bw_qt_links_case(upper_dead fail macos/THIRD-PARTY.txt "Source:\n  https://download.qt.io/OFFICIAL_RELEASES/qt/6.8/6.8.3/submodules/\n"
+  "FAIL packaging/macos/THIRD-PARTY.txt links under official_releases")
+bw_qt_links_case(none fail "" "" "FAIL no THIRD-PARTY file under packaging/")
+
+# packaging/windows/third-party fills the Windows Qt's version into the
+# Windows THIRD-PARTY.txt
+add_test(NAME windows_third_party
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/windows_third_party_test.sh ${PROJECT_SOURCE_DIR}
+          ${CMAKE_CURRENT_BINARY_DIR}/windows-third-party)
+
 # packaging/debian/copyright gives each file the licence its header or its
 # third_party/ README states (DEP-5, last match wins)
 find_program(BW_PYTHON3 NAMES python3)

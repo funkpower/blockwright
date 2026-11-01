@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Writes the Windows package's THIRD-PARTY.txt for the Qt it bundles.
+#
+#   packaging/windows/third-party <qt-dir> <out-file>
+#
+# <qt-dir> is Qt for Windows (win64_llvm_mingw). Its version comes from
+# lib/cmake/Qt6/Qt6ConfigVersion*.cmake and fills in @QT_VERSION@ and
+# @QT_MINOR@ in packaging/windows/THIRD-PARTY.txt, so the notice and its
+# source link name the Qt the package carries. Fails, writing nothing, when
+# the version can't be read or a placeholder is left over.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+qt=${1:?usage: third-party <qt-dir> <out-file>}
+out=${2:?usage: third-party <qt-dir> <out-file>}
+die() { echo "third-party: $*" >&2; exit 1; }
+
+shopt -s nullglob
+version_files=("$qt"/lib/cmake/Qt6/Qt6ConfigVersion*.cmake)
+((${#version_files[@]})) || die "no $qt/lib/cmake/Qt6/Qt6ConfigVersion*.cmake"
+# the Windows Qt's files end their lines in CR LF
+versions=$(tr -d '\r' < <(cat "${version_files[@]}") |
+  sed -n 's/^[[:space:]]*set(PACKAGE_VERSION "\([0-9][0-9.]*\)")[[:space:]]*$/\1/p' | sort -u)
+[[ $versions =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+  die "no single Qt version X.Y.Z in ${version_files[*]}: '${versions//$'\n'/ }'"
+minor=${versions%.*}
+
+tmp=$out.tmp
+sed -e "s/@QT_VERSION@/$versions/g" -e "s/@QT_MINOR@/$minor/g" "$here/THIRD-PARTY.txt" > "$tmp"
+if left=$(grep -n '@[A-Z_]*@' "$tmp"); then
+  rm -f "$tmp"
+  die "THIRD-PARTY.txt keeps a placeholder: $left"
+fi
+mv "$tmp" "$out"
+echo "third-party: $out for Qt $versions"
