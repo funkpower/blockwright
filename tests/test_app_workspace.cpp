@@ -50,9 +50,12 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
+#include <QWindow>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
+#include <tuple>
 #include <utility>
 
 using namespace bw;
@@ -1227,6 +1230,9 @@ TEST_CASE("resized dock column widths survive closing the window", "[dock-width]
         REQUIRE(w.close());
     }
     MainWindow w;
+    // Wide enough to leave the canvas its floor beside them, so the widths
+    // stand as saved (#244).
+    w.resize(1366, 768);
     w.show();
     QApplication::processEvents();
     CHECK(w.toolboxDock()->width() == 200);
@@ -1242,6 +1248,181 @@ TEST_CASE("resized dock column widths survive closing the window", "[dock-width]
         QApplication::processEvents();
         CHECK(w.toolboxDock()->width() == 200);
         CHECK(w.libraryDock()->width() == 300);
+    }
+}
+
+namespace {
+
+// Saves the layout of a window `size` big whose columns are `left` and
+// `right` wide, as closing it does.
+void saveColumns(QSize size, int left, int right) {
+    MainWindow w;
+    w.resize(size);
+    w.show();
+    QApplication::processEvents();
+    w.resizeDocks({w.toolboxDock(), w.libraryDock()}, {left, right}, Qt::Horizontal);
+    QApplication::processEvents();
+    REQUIRE(w.toolboxDock()->width() == left);
+    REQUIRE(w.libraryDock()->width() == right);
+    REQUIRE(w.close());
+}
+
+int canvasViewport(MainWindow& w) { return qobject_cast<QScrollArea*>(w.centralWidget())->viewport()->width(); }
+
+// The left column's native minimum width, as rightColumnMinimum's.
+int leftColumnMinimum(MainWindow& w) {
+    int minimum = 0;
+    for (QDockWidget* d : w.docks())
+        if (w.dockWidgetArea(d) == Qt::LeftDockWidgetArea && !d->isHidden() && !d->isFloating())
+            minimum = std::max({minimum, d->minimumWidth(), d->minimumSizeHint().width()});
+    return minimum;
+}
+
+// A restored layout that leaves the canvas at its floor gave up only what
+// the floor needs: `left` and `right` shrank, each in proportion to its
+// saved width. A column that reaches its minimum stops there and the other
+// gives the rest.
+void checkProportionalShrink(MainWindow& w, int left, int right) {
+    const int viewport = canvasViewport(w);
+    const int leftShrink = left - w.toolboxDock()->width();
+    const int rightShrink = right - w.libraryDock()->width();
+    const int leftRoom = left - leftColumnMinimum(w);
+    const int rightRoom = right - rightColumnMinimum(w);
+    CAPTURE(viewport, leftShrink, rightShrink, leftRoom, rightRoom);
+    CHECK(viewport >= 640);
+    // Not a pixel more than needed.
+    CHECK(viewport <= 641);
+    const int deficit = leftShrink + rightShrink;
+    CHECK(deficit > 0);
+    REQUIRE(deficit < leftRoom + rightRoom);
+    const double share = std::clamp(double(deficit) * left / (left + right), double(deficit - rightRoom), double(leftRoom));
+    CHECK(std::abs(leftShrink - share) <= 1.0);
+    CHECK(leftShrink <= leftRoom);
+    CHECK(rightShrink <= rightRoom);
+    CHECK(w.toolOptionsDock()->width() == w.toolboxDock()->width());
+    for (QDockWidget* d : {w.previewDock(), w.paletteDock(), w.layersDock(), w.lintDock()}) {
+        INFO(d->objectName().toStdString());
+        CHECK(d->width() == w.libraryDock()->width());
+    }
+}
+
+} // namespace
+
+TEST_CASE("a restored layout too wide for the canvas floor shrinks both columns in proportion",
+          "[dock-width][dock-restore]") {
+    ClearLayout clear;
+    // A 360/360 layout saved from a wide window, and an uneven one, restored
+    // on a 1280x720 screen: the saved widths would leave the canvas 484
+    // pixels at 360/360 (#244).
+    const auto [left, right] = GENERATE(std::pair(360, 360), std::pair(300, 420), std::pair(420, 300));
+    CAPTURE(left, right);
+    saveColumns({1920, 1080}, left, right);
+    MainWindow w;
+    w.resize(1280, 720);
+    w.show();
+    QApplication::processEvents();
+    checkProportionalShrink(w, left, right);
+    // The saved widths would have left the canvas under its floor.
+    MainWindow sized;
+    sized.resize(1280, 720);
+    sized.show();
+    QApplication::processEvents();
+    sized.resizeDocks({sized.toolboxDock(), sized.libraryDock()}, {left, right}, Qt::Horizontal);
+    QApplication::processEvents();
+    CHECK(canvasViewport(sized) < 640);
+    CHECK(w.toolboxDock()->width() >= leftColumnMinimum(w));
+    CHECK(w.libraryDock()->width() >= rightColumnMinimum(w));
+}
+
+TEST_CASE("a restored layout that leaves the canvas its floor keeps its widths exactly", "[dock-width][dock-restore]") {
+    ClearLayout clear;
+    const auto [size, left, right] = GENERATE(std::tuple(QSize(1920, 1080), 360, 360), std::tuple(QSize(1366, 768), 300, 320),
+                                              std::tuple(QSize(1280, 720), 200, 300));
+    CAPTURE(size.width(), size.height(), left, right);
+    saveColumns({1920, 1080}, left, right);
+    MainWindow w;
+    w.resize(size);
+    w.show();
+    QApplication::processEvents();
+    CHECK(canvasViewport(w) >= 640);
+    CHECK(w.toolboxDock()->width() == left);
+    CHECK(w.toolOptionsDock()->width() == left);
+    for (QDockWidget* d : {w.previewDock(), w.paletteDock(), w.layersDock(), w.libraryDock(), w.lintDock()}) {
+        INFO(d->objectName().toStdString());
+        CHECK(d->width() == right);
+    }
+}
+
+TEST_CASE("a restored layout with no room for the canvas floor gives the canvas all the minimums leave",
+          "[dock-width][dock-restore]") {
+    ClearLayout clear;
+    saveColumns({1920, 1080}, 360, 360);
+    MainWindow w;
+    // Under 640 for the canvas even with both columns at their minimums.
+    w.resize(900, 600);
+    w.show();
+    QApplication::processEvents();
+    CAPTURE(canvasViewport(w), w.toolboxDock()->width(), w.libraryDock()->width());
+    CHECK(canvasViewport(w) < 640);
+    CHECK(w.toolboxDock()->width() == leftColumnMinimum(w));
+    CHECK(w.toolOptionsDock()->width() == leftColumnMinimum(w));
+    CHECK(w.libraryDock()->width() == rightColumnMinimum(w));
+    // Qt's own clamp agrees: neither column goes any narrower.
+    CHECK(w.libraryDock()->width() == rightColumnFloor(w));
+}
+
+TEST_CASE("a window resized after its layout was restored keeps its columns", "[dock-width][dock-restore]") {
+    ClearLayout clear;
+    saveColumns({1920, 1080}, 360, 360);
+    MainWindow w;
+    w.resize(1280, 720);
+    w.show();
+    QApplication::processEvents();
+    // The restore gave the canvas its floor...
+    const int left = w.toolboxDock()->width();
+    const int right = w.libraryDock()->width();
+    CAPTURE(left, right);
+    REQUIRE(canvasViewport(w) >= 640);
+    REQUIRE(left < 360);
+    REQUIRE(right < 360);
+    // ...and a size the user gives the window later is no restore: the
+    // columns stay as they are, wider or narrower than the canvas would like.
+    for (QSize size : {QSize(1100, 720), QSize(1920, 1080), QSize(1280, 720)}) {
+        CAPTURE(size.width(), size.height());
+        w.resize(size);
+        QApplication::processEvents();
+        CHECK(w.toolboxDock()->width() == left);
+        CHECK(w.libraryDock()->width() == right);
+    }
+    CHECK(canvasViewport(w) >= 640);
+    w.resize(1100, 720);
+    QApplication::processEvents();
+    CHECK(canvasViewport(w) < 640);
+}
+
+TEST_CASE("a restored window sized again before it is on screen is still the restore", "[dock-width][dock-restore]") {
+    ClearLayout clear;
+    saveColumns({1920, 1080}, 360, 360);
+    // The window manager fits or maximizes a window as it maps it, after
+    // show() and before the window is exposed.
+    const bool widens = GENERATE(false, true);
+    CAPTURE(widens);
+    MainWindow w;
+    w.resize(widens ? QSize(1280, 720) : QSize(1920, 1080));
+    w.show();
+    REQUIRE_FALSE(w.windowHandle()->isExposed());
+    w.resize(widens ? QSize(1920, 1080) : QSize(1280, 720));
+    QApplication::processEvents();
+    REQUIRE(w.windowHandle()->isExposed());
+    CHECK(canvasViewport(w) >= 640);
+    if (widens) {
+        // The saved widths fit the final size: they come back exactly.
+        CHECK(w.toolboxDock()->width() == 360);
+        CHECK(w.libraryDock()->width() == 360);
+    } else {
+        CHECK(w.toolboxDock()->width() < 360);
+        CHECK(w.libraryDock()->width() < 360);
+        CHECK(canvasViewport(w) <= 641);
     }
 }
 

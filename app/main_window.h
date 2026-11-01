@@ -305,6 +305,19 @@ private:
     // Toolbox, palette, preview, Layers and Lint at their targets and Tool
     // Options or the Library taking the rest; the glyph bar at its hint.
     void applyDefaultDockHeights();
+    // A restored layout's widths, its columns shrunk in proportion to their
+    // widths where the canvas would fall under its floor (#244).
+    void clampRestoredDockWidths();
+    void endRestoredDockWidthClamp();
+    // Sizes the side columns that have an open dock and lays them out.
+    void resizeDockColumns(int leftWidth, int rightWidth);
+    // How the side columns give width back to the canvas: the defaults' left
+    // column above 256 first, or both in proportion to their widths.
+    enum class ColumnShrink { DefaultOrder, Proportional };
+    // Shrinks the side columns as far as the canvas viewport needs to keep
+    // its floor, never below their minimums; if even the minimums can't
+    // leave it, both go to their minimums.
+    void keepCanvasFloor(ColumnShrink shrink);
     // The user sized a column: the defaults stop following the window.
     void keepDockWidths();
     // Applies the followed defaults again once the layout has caught up
@@ -326,6 +339,11 @@ private:
     // The left and right columns' widths, 0 for a column with no open dock.
     QSize dockColumnWidths() const;
     bool defaultDockWidthsPending_ = true;
+    // A restored layout's columns keep the canvas's floor from the first
+    // show until the window is on screen (the window manager can size it
+    // until then), at the widths they were saved with.
+    bool clampRestoredDockWidths_ = false;
+    QSize restoredColumns_;
     // The default widths follow window sizing and docks opening and closing
     // until the user sizes a column (PLAN §11).
     bool followDefaultDockWidths_ = false;
