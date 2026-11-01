@@ -33,8 +33,8 @@ if "$tool" "$qt" "$out" >/dev/null; then
   else
     bad "Qt 6.9.1 not filled in: $(grep -n 'Qt 6\|download\.qt\.io' "$out" | tr '\n' ' ')"
   fi
-  if grep -q '@[A-Z_]*@' "$out"; then
-    bad "placeholder left: $(grep -n '@[A-Z_]*@' "$out")"
+  if grep -q '@[A-Z][A-Z0-9_]*@' "$out"; then
+    bad "placeholder left: $(grep -n '@[A-Z][A-Z0-9_]*@' "$out")"
   else
     ok "no placeholder left"
   fi

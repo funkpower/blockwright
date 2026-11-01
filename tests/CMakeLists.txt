@@ -272,6 +272,32 @@ add_test(NAME windows_third_party
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/windows_third_party_test.sh ${PROJECT_SOURCE_DIR}
           ${CMAKE_CURRENT_BINARY_DIR}/windows-third-party)
 
+# packaging/qt-third-party writes each value into its placeholder as it is
+# and fails, writing nothing, on a leftover placeholder or an @ in a value
+add_test(NAME qt_third_party
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/qt_third_party_test.sh ${PROJECT_SOURCE_DIR}
+          ${CMAKE_CURRENT_BINARY_DIR}/qt-third-party)
+
+# packaging/macos/third-party puts Qt's notice (its version, frameworks,
+# plugins and source link), the LGPL, Qt's SBOMs and the libzip and zstd
+# licences into the app's Contents/Resources/doc, on fake Qt prefixes and
+# bundles. macos_third_party checks what lands and that a run, failing or
+# not, leaves nothing in TMPDIR and a failing one adds nothing to the app;
+# macos_third_party_<case>_exit wants the script's own exit code, 0
+# for ok and pdf, non-zero (WILL_FAIL) for the rest.
+add_test(NAME macos_third_party
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/macos_third_party_test.sh ${PROJECT_SOURCE_DIR}
+          ${CMAKE_CURRENT_BINARY_DIR}/macos-third-party)
+foreach(case ok pdf no_version no_sbom unknown_framework unknown_plugin no_deps_licence no_deps_stamp no_license
+        leftover_placeholder)
+  add_test(NAME macos_third_party_${case}_exit
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/macos_third_party_test.sh ${PROJECT_SOURCE_DIR}
+            ${CMAKE_CURRENT_BINARY_DIR}/macos-third-party-exit ${case})
+  if(NOT case MATCHES "^(ok|pdf)$")
+    set_tests_properties(macos_third_party_${case}_exit PROPERTIES WILL_FAIL TRUE)
+  endif()
+endforeach()
+
 # packaging/debian/copyright gives each file the licence its header or its
 # third_party/ README states (DEP-5, last match wins)
 find_program(BW_PYTHON3 NAMES python3)

@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Puts the notices for what scripts/package-macos bundles into the app, after
+# macdeployqt and before signing:
+#
+#   packaging/macos/third-party <qt-dir> <deps-dir> <Blockwright.app>
+#
+# Into Contents/Resources/doc, beside the LICENSE and NOTICE the install put
+# there, go THIRD-PARTY.txt (packaging/macos/, filled in by
+# packaging/qt-third-party with the version of the Qt in <qt-dir> and the Qt
+# frameworks and plugin directories in the app, and the libzip and zstd
+# versions scripts/macos-deps recorded in <deps-dir>), LGPL-3.0-only.txt
+# (packaging/windows/licenses/), libzip.txt and zstd.txt (<deps-dir>/licenses/),
+# and qt-sbom/ with <qt-dir>/sbom/<module>-<version>.spdx of every Qt module
+# the app carries a framework or plugin of. Fails, adding nothing, when a Qt
+# framework or plugin belongs to no module this script knows, or a version,
+# SBOM or licence is missing. Runs under a Mac's bash 3.2 and on Linux.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+usage="usage: third-party <qt-dir> <deps-dir> <Blockwright.app>"
+qt=${1:?$usage}
+deps=${2:?$usage}
+app=${3:?$usage}
+die() { echo "macos third-party: $*" >&2; exit 1; }
+
+doc=$app/Contents/Resources/doc
+[[ -f $doc/LICENSE ]] || die "no $doc/LICENSE (the install puts it there)"
+[[ -d $app/Contents/Frameworks ]] || die "no $app/Contents/Frameworks (run macdeployqt first)"
+version=$("$here/../qt-third-party" --version "$qt")
+
+# The Qt module (and so the SBOM) each framework and plugin comes from, as
+# Qt's own SBOMs list them
+framework_module() {
+  case $1 in
+    QtCore | QtGui | QtWidgets | QtConcurrent | QtDBus | QtNetwork | QtPrintSupport | QtOpenGL | \
+      QtOpenGLWidgets | QtXml | QtSql | QtTest) echo qtbase ;;
+    QtSvg | QtSvgWidgets) echo qtsvg ;;
+    QtPdf | QtPdfWidgets | QtPdfQuick) echo qtpdf ;;
+    *) return 1 ;;
+  esac
+}
+plugin_module() { # <dir>/<name without lib and .dylib>
+  case $1 in
+    platforms/* | styles/* | generic/* | networkinformation/* | tls/* | sqldrivers/* | permissions/* | \
+      imageformats/qgif | imageformats/qico | imageformats/qjpeg) echo qtbase ;;
+    iconengines/qsvgicon | imageformats/qsvg) echo qtsvg ;;
+    imageformats/qpdf) echo qtpdf ;;
+    imageformats/qicns | imageformats/qmacheif | imageformats/qmacjp2 | imageformats/qtga | \
+      imageformats/qtiff | imageformats/qwbmp | imageformats/qwebp) echo qtimageformats ;;
+    *) return 1 ;;
+  esac
+}
+
+modules=qtbase
+add_module() { case " $modules " in *" $1 "*) ;; *) modules="$modules $1" ;; esac; }
+frameworks=
+while IFS= read -r f; do
+  [[ -n $f ]] || continue
+  name=$(basename "$f" .framework)
+  m=$(framework_module "$name") || die "$name.framework is in the app but no Qt module is known for it: add it to $0"
+  add_module "$m"
+  frameworks="${frameworks:+$frameworks, }$name"
+done <<<"$(find "$app/Contents/Frameworks" -maxdepth 1 -name 'Qt*.framework' | LC_ALL=C sort)"
+[[ -n $frameworks ]] || die "no Qt framework in $app/Contents/Frameworks"
+plugin_dirs=
+if [[ -d $app/Contents/PlugIns ]]; then
+  while IFS= read -r f; do
+    [[ -n $f ]] || continue
+    dir=$(basename "$(dirname "$f")")
+    name=$(basename "$f" .dylib)
+    name=${name#lib}
+    m=$(plugin_module "$dir/$name") || die "plugin $dir/$(basename "$f") is in the app but no Qt module is known for it: add it to $0"
+    add_module "$m"
+    case ", $plugin_dirs, " in *", $dir, "*) ;; *) plugin_dirs="${plugin_dirs:+$plugin_dirs, }$dir" ;; esac
+  done <<<"$(find "$app/Contents/PlugIns" -type f -name '*.dylib' | LC_ALL=C sort)"
+fi
+[[ -n $plugin_dirs ]] || plugin_dirs=none
+
+# scripts/macos-deps records "zstd <version> libzip <version> <target> <archs>"
+stamp=$deps/.macos-deps
+[[ -f $stamp ]] || die "no $stamp (scripts/macos-deps writes it)"
+read -r w1 zstd_version w3 libzip_version _ < "$stamp" || true
+[[ ${w1:-} == zstd && ${w3:-} == libzip && ${zstd_version:-} =~ ^[0-9]+(\.[0-9]+)+$ &&
+   ${libzip_version:-} =~ ^[0-9]+(\.[0-9]+)+$ ]] || die "no zstd and libzip versions in $stamp"
+
+licences=("$here/../windows/licenses/LGPL-3.0-only.txt" "$deps/licenses/libzip.txt" "$deps/licenses/zstd.txt")
+sboms=()
+for m in $modules; do sboms+=("$qt/sbom/$m-$version.spdx"); done
+for f in "${licences[@]}" "${sboms[@]}"; do
+  [[ -f $f ]] || die "no $f"
+done
+
+# Everything is written to a directory under $TMPDIR first and copied in at
+# the end, so a failure adds nothing to the app
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/bw-third-party.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+"$here/../qt-third-party" "$qt" "$here/THIRD-PARTY.txt" "$tmp/THIRD-PARTY.txt" \
+  QT_FRAMEWORKS="$frameworks" QT_PLUGINS="$plugin_dirs" \
+  LIBZIP_VERSION="$libzip_version" ZSTD_VERSION="$zstd_version" >/dev/null
+mkdir "$tmp/qt-sbom"
+cp "${licences[@]}" "$tmp/"
+cp "${sboms[@]}" "$tmp/qt-sbom/"
+
+rm -rf "$doc/qt-sbom"
+cp -R "$tmp/." "$doc/"
+echo "macos third-party: notices for Qt $version ($modules) in $doc"

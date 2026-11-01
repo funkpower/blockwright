@@ -287,13 +287,25 @@ It builds a Release bundle, runs `macdeployqt` (the CLI too), keeps only the
 app's architecture of Qt's universal libraries, removes every absolute
 search path from the app and the CLI, and fails if anything in the bundle
 loads a library from outside it but the system's (`/usr/lib`, `/System`) or
-still has an absolute search path, signs it ad hoc, inside out, and makes
+still has an absolute search path, adds the notices for what it bundled (below),
+signs it ad hoc, inside out, and makes
 `dist/Blockwright-<version>.dmg` with dmgbuild (in a venv in the work
 directory): the app beside an Applications link over a background that says
 to drag it. Beside the dmg go its `.sha256` and `blockwright.rb`, the
 Homebrew cask for exactly that file. `--help` lists the options;
 `CMAKE_OSX_ARCHITECTURES="arm64;x86_64"` makes a universal app (Qt's build is
 universal; `macos-deps` builds both slices).
+
+The notices go in `Contents/Resources/doc`, beside the install's `LICENSE`,
+`NOTICE` and the font's and icons' notices, and before signing, so the
+signature covers them (`packaging/macos/third-party`): `THIRD-PARTY.txt` (from
+`packaging/macos/`, with the bundled Qt's version, source link, frameworks and
+plugin directories filled in), the LGPL v3 that Qt is used under (the Windows
+package's copy), libzip's and zstd's licences (`scripts/macos-deps` keeps them
+in `<prefix>/licenses`), and in `qt-sbom/` the SBOM of each Qt module in the
+app. Packaging fails if the app carries a Qt framework or plugin the script
+can't place in a module (add it to the script's list), or a version, SBOM or
+licence is missing.
 
 The app is signed ad hoc, not with a Developer ID, and not notarized, so
 Gatekeeper blocks the first run of a downloaded copy: of the app, and of

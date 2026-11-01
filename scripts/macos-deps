@@ -9,7 +9,8 @@
 # newer macOS. libzip uses the system zlib and CommonCrypto; bzip2, lzma, zstd
 # compression in zips and TLS libraries are off (projects only store and
 # deflate). Point CMAKE_PREFIX_PATH at <prefix> to build against them.
-# A prefix that already holds both is left as it is.
+# Their licences go in <prefix>/licenses. A prefix that already holds both
+# and their licences is left as it is.
 set -euo pipefail
 
 [[ $(uname -s) == Darwin ]] || { echo "macos-deps: run this on a Mac" >&2; exit 1; }
@@ -29,6 +30,7 @@ libzip_url=https://github.com/nih-at/libzip/releases/download/v$libzip_ver/libzi
 libzip_sha=8a247f57d1e3e6f6d11413b12a6f28a9d388de110adc0ec608d893180ed7097b
 
 if [[ -f $prefix/lib/libzstd.a && -f $prefix/lib/libzip.a && -f $prefix/.macos-deps ]] \
+   && [[ -f $prefix/licenses/zstd.txt && -f $prefix/licenses/libzip.txt ]] \
    && [[ $(<"$prefix/.macos-deps") == "zstd $zstd_ver libzip $libzip_ver $target $archs" ]]; then
   echo "macos-deps: $prefix is up to date"
   exit 0
@@ -70,6 +72,12 @@ cmake -S "$work/src/libzip-$libzip_ver" -B "$work/build/libzip" "${common[@]}" \
   -DBUILD_TOOLS=OFF -DBUILD_REGRESS=OFF -DBUILD_OSSFUZZ=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOC=OFF >/dev/null
 nice -n 10 cmake --build "$work/build/libzip" -j "$jobs" >/dev/null
 cmake --install "$work/build/libzip" >/dev/null
+
+# Their licences ship in the app (they are linked into the programs):
+# packaging/macos/third-party copies them in.
+mkdir -p "$prefix/licenses"
+cp "$work/src/zstd-$zstd_ver/LICENSE" "$prefix/licenses/zstd.txt"
+cp "$work/src/libzip-$libzip_ver/LICENSE" "$prefix/licenses/libzip.txt"
 
 rm -rf "$work/src" "$work/build"
 printf '%s\n' "zstd $zstd_ver libzip $libzip_ver $target $archs" > "$prefix/.macos-deps"

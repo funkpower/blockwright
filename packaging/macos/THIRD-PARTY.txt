@@ -1,0 +1,28 @@
+Third-party software in the macOS app
+
+Beyond what NOTICE lists, Blockwright.app carries the following. The licence
+texts are in this directory, Contents/Resources/doc in the app.
+
+- Qt @QT_VERSION@, The Qt Company Ltd and other contributors,
+  https://www.qt.io/, used under the GNU Lesser General Public License v3
+  (LGPL-3.0-only.txt, with the GNU GPL v3 in LICENSE):
+    frameworks in Contents/Frameworks: @QT_FRAMEWORKS@
+    plugins in Contents/PlugIns: @QT_PLUGINS@
+  The Qt frameworks and plugins are Qt's own release builds of unmodified Qt
+  source, loaded at run time. Packaging keeps only the app's architecture in
+  them, strips their local symbols (macdeployqt), points their load paths into
+  the app and signs them again. They can be replaced with other builds of the
+  same Qt version: copy them over the ones in Contents/Frameworks or
+  Contents/PlugIns, then sign the app again, as changing a file in it breaks
+  its signature:
+    codesign --force --deep --sign - Blockwright.app
+  Their source:
+  https://download.qt.io/archive/qt/@QT_MINOR@/@QT_VERSION@/submodules/
+  Qt includes third-party code under its own licences; the qt-sbom directory
+  lists each component, its version and its licence.
+
+- libzip @LIBZIP_VERSION@, Dieter Baron and Thomas Klausner,
+  https://libzip.org/, BSD 3-clause licence (libzip.txt); Zstandard
+  @ZSTD_VERSION@, Meta Platforms, Inc. and affiliates,
+  https://facebook.github.io/zstd/, BSD licence (zstd.txt). Both are linked
+  into the programs; libzip uses the zlib that is part of macOS.

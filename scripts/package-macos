@@ -15,6 +15,10 @@
 # makes a universal app, with a universal Qt), MACOSX_DEPLOYMENT_TARGET
 # (default the project's, 12.0), JOBS (default 8).
 #
+# The app carries the notices for the Qt, libzip and zstd it bundles in
+# Contents/Resources/doc (packaging/macos/third-party). Qt's SBOMs come from
+# <qt>/sbom, so use Qt's own build, which has them.
+#
 # Writes <out>/Blockwright-<version>.dmg, its .sha256, and blockwright.rb, the
 # Homebrew cask for it (packaging/README.md says how to publish). The app is
 # signed ad hoc: from a download, Gatekeeper blocks the first run of the app
@@ -96,6 +100,12 @@ leaks=$(find "$app" -type f -perm -u+x -o -type f -name '*.dylib' | while read -
   otool -l "$f" | awk '/cmd LC_RPATH/ { r = 1 } r && /^ *path / { print $2; r = 0 }' | grep -E "^/" | sed "s|^|$f: rpath |" || true
 done)
 [[ -z $leaks ]] || die "the bundle loads libraries from outside it:"$'\n'"$leaks"
+
+echo "== notices"
+# Qt's notice with its version, frameworks, plugins and source link, the LGPL,
+# Qt's SBOMs and the libzip and zstd licences, into Contents/Resources/doc
+# before signing seals them in
+"$root/packaging/macos/third-party" "$qt" "$deps" "$app"
 
 echo "== sign (ad hoc)"
 # Inside out: libraries and frameworks, then the CLI, then the app.

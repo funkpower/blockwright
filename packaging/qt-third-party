@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Fills the bundled Qt's version into a package's THIRD-PARTY.txt template.
+#
+#   packaging/qt-third-party <qt-dir> <template> <out-file> [NAME=value...]
+#   packaging/qt-third-party --version <qt-dir>
+#
+# The version comes from <qt-dir>/lib/cmake/Qt6/Qt6ConfigVersion*.cmake and
+# fills in @QT_VERSION@ and @QT_MINOR@, so the notice and its source link name
+# the Qt the package carries; each NAME=value fills in @NAME@, with the value
+# written as it is. A value may not hold an @, so no value can bring in a
+# placeholder of its own. Fails, writing nothing, when the version can't be
+# read, a value holds an @ or a line break, or a placeholder is left over.
+# --version prints the version alone. Runs under a Mac's bash 3.2 too.
+set -euo pipefail
+usage="usage: qt-third-party <qt-dir> <template> <out-file> [NAME=value...] | --version <qt-dir>"
+die() { echo "qt-third-party: $*" >&2; exit 1; }
+
+qt_version() {
+  local files versions
+  files=$(find "$1/lib/cmake/Qt6" -maxdepth 1 -type f -name 'Qt6ConfigVersion*.cmake' 2>/dev/null | LC_ALL=C sort)
+  [[ -n $files ]] || die "no $1/lib/cmake/Qt6/Qt6ConfigVersion*.cmake"
+  # the Windows Qt's files end their lines in CR LF
+  versions=$(while IFS= read -r f; do cat "$f"; done <<<"$files" | tr -d '\r' |
+    sed -n 's/^[[:space:]]*set(PACKAGE_VERSION "\([0-9][0-9.]*\)")[[:space:]]*$/\1/p' | LC_ALL=C sort -u)
+  [[ $versions =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    die "no single Qt version X.Y.Z in $(tr '\n' ' ' <<<"$files"): '$(tr '\n' ' ' <<<"$versions")'"
+  echo "$versions"
+}
+
+if [[ ${1:-} == --version ]]; then
+  qt_version "${2:?$usage}"
+  exit 0
+fi
+qt=${1:?$usage}
+template=${2:?$usage}
+out=${3:?$usage}
+shift 3
+version=$(qt_version "$qt")
+minor=${version%.*}
+
+# A sed replacement with \, & and the | delimiter escaped
+esc() { printf '%s\n' "$1" | sed 's/[\\&|]/\\&/g'; }
+subst=(-e "s|@QT_VERSION@|$version|g" -e "s|@QT_MINOR@|$minor|g")
+for kv in "$@"; do
+  name=${kv%%=*}
+  value=${kv#*=}
+  [[ $kv == *=* && $name =~ ^[A-Z][A-Z0-9_]*$ ]] || die "not NAME=value: '$kv'"
+  [[ $value != *$'\n'* ]] || die "$name's value has a line break"
+  [[ $value != *@* ]] || die "$name's value has an @: '$value'"
+  subst+=(-e "s|@$name@|$(esc "$value")|g")
+done
+
+tmp=$out.tmp
+sed "${subst[@]}" "$template" > "$tmp"
+# Any @NAME@ a NAME=value could have filled in
+if left=$(grep -n '@[A-Z][A-Z0-9_]*@' "$tmp"); then
+  rm -f "$tmp"
+  die "$(basename "$template") keeps a placeholder: $left"
+fi
+mv "$tmp" "$out"
+echo "qt-third-party: $out for Qt $version"

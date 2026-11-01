@@ -9,10 +9,12 @@ the file that holds its notice.
   usr/plugins), The Qt Company Ltd and other contributors, https://www.qt.io/,
   used under the GNU Lesser General Public License v3
   (licenses/LGPL-3.0-only.txt, with the GNU GPL v3 in LICENSE).
-  The Qt libraries are unmodified and loaded from separate shared libraries,
-  which can be replaced with other builds of the same Qt version: extract the
-  AppImage with --appimage-extract, replace them in squashfs-root/usr/lib or
-  squashfs-root/usr/plugins, and run squashfs-root/AppRun. Their source:
+  The Qt libraries and plugins are Qt's own release builds of unmodified Qt
+  source; linuxdeploy changes only their library search path (RPATH). They are
+  loaded from separate shared libraries, which can be replaced with other
+  builds of the same Qt version: extract the AppImage with --appimage-extract,
+  replace them in squashfs-root/usr/lib or squashfs-root/usr/plugins, and run
+  squashfs-root/AppRun. Their source:
   https://download.qt.io/archive/qt/@QT_MINOR@/@QT_VERSION@/submodules/
   Qt includes third-party code under its own licences; the qt-sbom directory
   lists each component, its version and its licence.
@@ -23,9 +25,9 @@ the file that holds its notice.
   (licenses/ICU-73.txt). Its source:
   https://github.com/unicode-org/icu/releases/tag/release-@ICU_TAG@
 
-- The other libraries in usr/lib are unmodified copies from the Debian
-  @DEBIAN_VERSION@ packages the AppImage was built on. Each package's
-  copyright file, which gives its authors and licences, is in
-  ../<package>/copyright (usr/share/doc/<package>/copyright); the source of
-  every Debian package is at https://sources.debian.org/ and
-  https://snapshot.debian.org/.
+- The other libraries in usr/lib are copies from the Debian @DEBIAN_VERSION@
+  packages the AppImage was built on; linuxdeploy changes only their library
+  search path (RPATH). Each package's copyright file, which gives its authors
+  and licences, is in ../<package>/copyright
+  (usr/share/doc/<package>/copyright); the source of every Debian package is
+  at https://sources.debian.org/ and https://snapshot.debian.org/.
