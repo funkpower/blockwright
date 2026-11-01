@@ -1,0 +1,40 @@
+.TH BLOCKWRIGHT 1 2026-10-31 "Blockwright 0.1.0" "User Commands"
+.SH NAME
+blockwright \- editor for ANSI and IRC block art
+.SH SYNOPSIS
+.B blockwright
+.RI [ file.ans | file.xb | file.bin | project.bwp | project-directory ]
+.br
+.B blockwright
+.BR \-\-help | \-\-version
+.SH DESCRIPTION
+.B blockwright
+draws block art on the 80-column CP437 grid: shading ramps, brushes, stamps
+from a library of reusable parts, layers, generator layers driven by
+scripts, and a lint that checks a piece against the craft rules.
+It reads and writes ANSI (.ans with SAUCE), XBIN and BIN, exports IRC text
+with mIRC colour codes, and shows how many bytes each line of a piece takes
+as an IRC message.
+.PP
+A project (a .bwp zip or a project directory) keeps the layers, the
+generators and the saved rounds of a piece.
+With a file or project argument
+.B blockwright
+opens it.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print the usage and exit.
+.TP
+.BR \-v ", " \-\-version
+Print the version, the commit it was built from, and the credits of the
+bundled font and icons, and exit.
+.SH FILES
+.TP
+.I /usr/share/blockwright/library/
+The bundled library of stamps and text styles.
+.TP
+.I /usr/share/doc/blockwright/
+The licence and the notices of the bundled font and icons.
+.SH SEE ALSO
+.BR blockwright-cli (1)

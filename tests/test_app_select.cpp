@@ -538,7 +538,7 @@ TEST_CASE("the reference image item sits above Quit in the File menu") {
     CHECK(items.at(ref - 1)->isSeparator());
     REQUIRE(ref + 1 < items.size());
     CHECK(items.at(ref + 1)->isSeparator());
-    CHECK(items.back()->shortcut() == QKeySequence(QKeySequence::Quit));
+    CHECK(items.back() == act(w, "quit"));
     CHECK(items.at(items.size() - 2) == items.at(ref + 1));
 
     QStringList menus;

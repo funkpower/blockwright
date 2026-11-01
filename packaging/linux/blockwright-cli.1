@@ -1,0 +1,98 @@
+.TH BLOCKWRIGHT-CLI 1 2026-10-31 "Blockwright 0.1.0" "User Commands"
+.SH NAME
+blockwright-cli \- convert, render, export and check ANSI and IRC block art
+.SH SYNOPSIS
+.B blockwright-cli
+.RI [ options ]
+.I command
+.RI [ args ...]
+.SH DESCRIPTION
+.B blockwright-cli
+is Blockwright without the window: it reads ANSI (.ans), XBIN (.xb), BIN
+(.bin) and Blockwright projects (a .bwp zip or a project directory, read as
+its flattened composite), and converts, renders, exports, shades and lints
+them.
+.B blockwright-cli \-\-help
+lists every option and which commands take it.
+.SH COMMANDS
+.TP
+.BI info " file"
+Dimensions and SAUCE fields.
+.TP
+.BI convert " in out"
+Write an .ans back out as .ans, XBIN or BIN, by the name of
+.IR out .
+.TP
+.BI render " in out.png"
+Draw a piece as a PNG with the IBM VGA font;
+.B \-\-irc
+draws the IRC view, each line cut at
+.B \-\-budget
+bytes.
+.TP
+.BI "export \-\-irc" " in out"
+Write IRC text with mIRC colour codes and report each line's size in bytes.
+.TP
+.BI shade " in out"
+Lighten or darken cells along a ramp's shading ladder, or run the form,
+despeckle or rim-light brush over a box or a mask.
+.TP
+.BI lint " in"
+Check the shading ladders, pixel noise and the craft rules; exits 4 when
+there are findings.
+.TP
+.BI "library list" " \fR[\fPdir\fR]\fP"
+List the stamps and text styles in a library.
+.TP
+.BI "library check" " dir"
+Check every stamp, sidecar and text style in a library.
+.TP
+.BI pack " in out.bwp"
+Write a piece or a project as a project zip.
+.TP
+.BI unpack " in dir"
+Write a piece or a project as a project directory.
+.TP
+.BI snapshot " project"
+Save the flattened composite as the project's next round.
+.TP
+.BI add-generator " project dir"
+Add a generator layer from a directory with a generator.json, run it once and
+save the project.
+.TP
+.BI run-generators " project"
+Run the project's generator layers again and save their output.
+.TP
+.BI import-scene " scene.py out"
+Open a Python scene as a new project with a generator layer for each of its
+layers.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print the commands and options and exit.
+.TP
+.BR \-v ", " \-\-version
+Print the version and the commit it was built from, and exit.
+.PP
+The other options belong to particular commands; see
+.BR "blockwright-cli \-\-help" .
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+An input that can't be read or an output that can't be written.
+.TP
+.B 2
+A usage error.
+.TP
+.B 3
+.B export \-\-irc
+found a line over the byte budget.
+.TP
+.B 4
+.B lint
+found something.
+.SH SEE ALSO
+.BR blockwright (1)

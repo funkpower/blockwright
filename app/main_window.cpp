@@ -261,7 +261,10 @@ void MainWindow::createActions() {
     file->addSeparator();
     a = file->addAction(tr("&Quit"), this, &QWidget::close);
     a->setObjectName(QStringLiteral("quit"));
-    a->setShortcut(QKeySequence::Quit);
+    // Qt 6.10's generic theme gives Quit only the bare Exit key, which keyboard
+    // mode would take; Ctrl+Q there, as the other desktops have it.
+    const QKeySequence quit(QKeySequence::Quit);
+    a->setShortcut(shortcutRefusal(quit).isEmpty() ? quit : QKeySequence(Qt::CTRL | Qt::Key_Q));
 
     QMenu* edit = menuBar()->addMenu(tr("&Edit"));
     a = doc_.undoStack()->createUndoAction(this, tr("&Undo"));

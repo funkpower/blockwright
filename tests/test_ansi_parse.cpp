@@ -248,7 +248,7 @@ TEST_CASE("TAB at the right edge wraps the next glyph, as libansilove", "[parse]
     CHECK(e.canvas.at(0, 1).ch == U'Y');
 }
 
-TEST_CASE("ESC[m does nothing and empty SGR fields are skipped, as libansilove", "[parse]") {
+TEST_CASE("An SGR with no fields (CSI m) does nothing and empty SGR fields are skipped, as libansilove", "[parse]") {
     // libansilove splits SGR with strtok (loaders/ansi.c:399), which yields
     // nothing for ESC[m and skips empty fields
     auto d = parse("\x1b[1;44m\x1b[mA");
@@ -492,7 +492,7 @@ TEST_CASE("Unknown and private sequences are skipped", "[parse]") {
     CHECK(d.canvas.at(2, 0).ch == U' ');
 }
 
-TEST_CASE("An ESC not followed by [ skips only the ESC, as libansilove", "[parse]") {
+TEST_CASE("An ESC that starts no CSI skips only the ESC, as libansilove", "[parse]") {
     SECTION("a lone ESC before a CSI") {
         auto d = parse("\x1b[31mA\x1b\x1b[32mB");
         CHECK(d.canvas.at(0, 0).ch == U'A');

@@ -15,6 +15,12 @@ distribution builder download the release assets anonymously.
    `CMakeLists.txt` and add the version to `<releases>` in
    `packaging/linux/online.pumpin.funkpower.blockwright.metainfo.xml`
    (`<release version="<version>" date="YYYY-MM-DD"/>`, newest first).
+   In the same PR, add a `packaging/debian/changelog` entry for
+   `<version>-1` (`dch -v <version>-1`) and set the `Version:` of
+   `packaging/rpm/blockwright.spec` with a `%changelog` entry for
+   `<version>-1`, and the version in the `.TH` line of
+   `packaging/linux/blockwright.1` and `blockwright-cli.1`; the
+   `linux_packages` test fails until they all match.
    Merge it through a PR like any other change.
 2. Check `main` at that commit: the full `ctest` passes
    (`QT_QPA_PLATFORM=offscreen`) and the dev install says the new version
@@ -77,18 +83,27 @@ changes only when its build does.
    check it with `makepkg -sf` and `namcap`, and push both files to
    `ssh://aur@aur.archlinux.org/blockwright-git.git`.
 
-## 4. macOS (dmg and Homebrew cask)
+## 4. Debian, Ubuntu and Fedora
+
+No repository carries these yet: build each from the uploaded tarball, as in
+[README.md § Debian and Ubuntu](README.md#debian-and-ubuntu) and
+[§ Fedora](README.md#fedora), in a clean container or chroot of each release,
+with `lintian` and `rpmlint` clean. The `.deb` of one release is for that
+release only, so name the distribution in each file uploaded to the release
+(`blockwright_<version>-1_ubuntu26.04_amd64.deb`, `blockwright-<version>-1.fc44.x86_64.rpm`).
+
+## 5. macOS (dmg and Homebrew cask)
 
 On a Mac at the tag: build the dmg, upload it with its `.sha256`, and publish
 the cask, as in [README.md § Homebrew](README.md#homebrew).
 
-## 5. Windows (MSI)
+## 6. Windows (MSI)
 
 On the dev machine at the tag: `scripts/package-windows`, as in
 [windows/README.md § The MSI](windows/README.md#the-msi), then upload
 `dist/blockwright-<version>-x86_64.msi`.
 
-## 6. After publishing
+## 7. After publishing
 
 - Install each package from where users get it and run `blockwright --version`
   and `blockwright-cli --version`: `yay -S blockwright` on Arch, the dmg and

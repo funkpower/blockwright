@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A Linux install carries the desktop entry, the icons and the AppStream
-# metadata, where the desktop finds them:
+# A Linux install carries the desktop entry, the icons, the AppStream
+# metadata and the manual pages, where the desktop and man find them:
 #   linux_desktop_test.sh <build dir> <scratch dir> <full bindir> <full datadir> [<config>]
 #
 # Installs the build with DESTDIR=<scratch>/stage and checks the files, that
@@ -46,6 +46,9 @@ for size in 256 512; do
   else
     ok "hicolor/${size}x$size/apps/blockwright.png"
   fi
+done
+for page in blockwright blockwright-cli; do
+  [[ -f $share/man/man1/$page.1 ]] && ok "share/man/man1/$page.1" || bad "no $share/man/man1/$page.1"
 done
 if [[ -f $metainfo ]] && grep -q '<launchable type="desktop-id">blockwright.desktop</launchable>' "$metainfo"; then
   ok "the metainfo names blockwright.desktop"

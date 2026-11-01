@@ -119,8 +119,8 @@ install(FILES third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fo
 install(FILES third_party/tabler-icons/LICENSE third_party/tabler-icons/README.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/tabler-icons)
 
-# The desktop entry, icon and AppStream metadata of a Linux (freedesktop)
-# install, which the distribution packages and the AppImage carry.
+# The desktop entry, icon, AppStream metadata and manual pages of a Linux
+# (freedesktop) install, which the distribution packages and the AppImage carry.
 # packaging/linux/blockwright-*.png are icon-1024.png scaled down
 # (packaging/README.md).
 if(UNIX AND NOT APPLE)
@@ -131,6 +131,8 @@ if(UNIX AND NOT APPLE)
     install(FILES packaging/linux/blockwright-${size}.png
             DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps RENAME blockwright.png)
   endforeach()
+  install(FILES packaging/linux/blockwright.1 packaging/linux/blockwright-cli.1
+          DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 endif()
 
 # The bundled Library (PLAN §12): stamps the GUI and `blockwright-cli library

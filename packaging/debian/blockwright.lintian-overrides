@@ -1,0 +1,6 @@
+# Released on the project's forge, not uploaded to Debian: no Debian bug
+# closes with the first upload.
+blockwright: initial-upload-closes-no-bugs
+# The programs name usr/share/doc/blockwright/ as where their notices are: the
+# project's own licence and those of the bundled fonts and icons.
+blockwright: extra-license-file [usr/share/doc/blockwright/*]

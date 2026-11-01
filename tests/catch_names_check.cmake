@@ -1,0 +1,60 @@
+# cmake -DDIR=<tests dir> [-DMIN=<n>] -P catch_names_check.cmake
+#
+# Every TEST_CASE name keeps its square brackets matched. Catch2 before 3.8
+# (Debian testing's 3.7.1, Ubuntu 24.04's 3.4.0) lists the tests as text, and
+# its catch_discover_tests reads that list as a CMake list, in which an
+# unmatched [ hides the separators after it: every name up to the next ] runs
+# into one test that matches nothing, and the cases in it never run.
+if(NOT DIR)
+  message(FATAL_ERROR "usage: cmake -DDIR=<tests dir> -P catch_names_check.cmake")
+endif()
+string(ASCII 1 lb)
+string(ASCII 2 rb)
+set(lit "\"([^\"\\\\]|\\\\.)*\"")
+file(GLOB sources "${DIR}/*.cpp")
+set(bad 0)
+set(count 0)
+foreach(src IN LISTS sources)
+  file(READ "${src}" text)
+  # A list of the matches would split on the semicolons in the names, and
+  # run them together at an unmatched bracket: the very fault this checks for.
+  string(REPLACE ";" "<semicolon>" text "${text}")
+  string(REPLACE "[" "${lb}" text "${text}")
+  string(REPLACE "]" "${rb}" text "${text}")
+  string(REGEX MATCHALL "TEST_CASE\\(([ \t\r\n]*${lit})+" calls "${text}")
+  foreach(call IN LISTS calls)
+    math(EXPR count "${count} + 1")
+    # the name: the string literals, joined
+    string(REGEX MATCHALL "${lit}" parts "${call}")
+    set(name "")
+    foreach(part IN LISTS parts)
+      string(REGEX REPLACE "^\"(.*)\"$" "\\1" part "${part}")
+      string(APPEND name "${part}")
+    endforeach()
+    # keep only the brackets and take out matched pairs until none are left
+    string(REGEX REPLACE "[^${lb}${rb}]" "" brackets "${name}")
+    set(prev "")
+    while(NOT brackets STREQUAL prev)
+      set(prev "${brackets}")
+      string(REPLACE "${lb}${rb}" "" brackets "${brackets}")
+    endwhile()
+    if(NOT brackets STREQUAL "")
+      get_filename_component(file "${src}" NAME)
+      string(REPLACE "<semicolon>" ";" name "${name}")
+      string(REPLACE "${lb}" "[" name "${name}")
+      string(REPLACE "${rb}" "]" name "${name}")
+      message("${file}: unmatched square bracket in TEST_CASE(\"${name}\")")
+      math(EXPR bad "${bad} + 1")
+    endif()
+  endforeach()
+endforeach()
+if(NOT MIN)
+  set(MIN 100)
+endif()
+if(count LESS MIN)
+  message(FATAL_ERROR "found only ${count} TEST_CASE names in ${DIR}: the pattern is broken")
+endif()
+if(bad)
+  message(FATAL_ERROR "${bad} of ${count} TEST_CASE names have an unmatched [ or ]")
+endif()
+message("all ${count} TEST_CASE names keep their brackets matched")

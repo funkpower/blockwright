@@ -37,6 +37,7 @@
 #include <QMouseEvent>
 #include <QRawFont>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QSettings>
@@ -52,6 +53,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <utility>
 
 using namespace bw;
 
@@ -193,6 +195,62 @@ QString fontFileMismatch(const QRawFont& resolved, const QString& path) {
         .arg(resolved.familyName(), resolved.styleName(), headRevision(got), path, headRevision(want));
 }
 
+// The bytes of a font file's table `tag`, as an offset and length into `font`,
+// or {0, 0} when it has none.
+std::pair<qsizetype, qsizetype> fontTableRange(const QByteArray& font, const char (&tag)[5]) {
+    const auto u16 = [&](qsizetype at) { return (quint8(font[at]) << 8) | quint8(font[at + 1]); };
+    const auto u32 = [&](qsizetype at) { return (quint32(u16(at)) << 16) | quint32(u16(at + 2)); };
+    if (font.size() < 12)
+        return {0, 0};
+    const int tables = u16(4);
+    for (int i = 0; i < tables && 12 + 16 * (i + 1) <= font.size(); ++i) {
+        const qsizetype record = 12 + 16 * i;
+        const qsizetype offset = u32(record + 8), length = u32(record + 12);
+        if (font.mid(record, 4) == QByteArray(tag) && offset + length <= font.size())
+            return {offset, length};
+    }
+    return {0, 0};
+}
+
+// The family the layout tests register the bundled Noto Sans under: a name no
+// installed font has, as long as "Noto Sans" so the file's name records keep
+// their lengths. Under its own name the bundled file shares Qt's slot for
+// Noto Sans (family, foundry and style) with any other Noto Sans on the
+// machine, and the font registered last holds it. A fresh process, as ctest
+// runs each case in, adds the bundled file before the font database fills, so
+// the system's files filled in after it took the slot (#253).
+constexpr char kLayoutFamily[] = "Bw Layout";
+static_assert(sizeof(kLayoutFamily) == sizeof("Noto Sans"));
+
+// The file at `path` with every "Noto Sans" in its name table (and the
+// PostScript name's "NotoSans") renamed to kLayoutFamily, in the Mac Roman and
+// the UTF-16 records alike. Nothing else in the font changes.
+QByteArray renamedBundledFont(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    QByteArray font = file.readAll();
+    const auto [offset, length] = fontTableRange(font, "name");
+    if (length == 0)
+        return {};
+    const auto utf16 = [](const char* s) {
+        QByteArray out;
+        for (; *s; ++s)
+            out.append('\0').append(*s);
+        return out;
+    };
+    const QByteArray spaced(kLayoutFamily), joined = QByteArray(kLayoutFamily).replace(' ', "");
+    const std::pair<QByteArray, QByteArray> renames[] = {{"Noto Sans", spaced},
+                                                         {"NotoSans", joined},
+                                                         {utf16("Noto Sans"), utf16(kLayoutFamily)},
+                                                         {utf16("NotoSans"), utf16(joined.constData())}};
+    QByteArray table = font.mid(offset, length);
+    for (const auto& [from, to] : renames)
+        table.replace(from, to);
+    font.replace(offset, length, table);
+    return font;
+}
+
 // Sets the application's font for a test and puts the old one back: Noto
 // Sans at `pointSize`, from tests/data/fonts, so the layout tests measure
 // the same font on every machine (#236). 10 pt is the desktop default the
@@ -203,14 +261,14 @@ struct UiFont {
         static const QString family = [] {
             QString name;
             for (const bool bold : {false, true}) {
-                const QStringList families =
-                    QFontDatabase::applicationFontFamilies(QFontDatabase::addApplicationFont(bundledFont(bold)));
+                const QStringList families = QFontDatabase::applicationFontFamilies(
+                    QFontDatabase::addApplicationFontFromData(renamedBundledFont(bundledFont(bold))));
                 if (!families.isEmpty())
                     name = families.first();
             }
             return name;
         }();
-        REQUIRE(family == QStringLiteral("Noto Sans"));
+        REQUIRE(family == QLatin1String(kLayoutFamily));
         QFont f = saved;
         f.setFamily(family);
         f.setPointSize(pointSize);
@@ -267,6 +325,62 @@ TEST_CASE("the layout tests name a font that isn't the bundled file", "[ui-font]
     CHECK(mismatch.contains(QStringLiteral("shadows it")));
     CHECK(fontFileMismatch(regular, QStringLiteral("no-such-font.ttf")).contains(QStringLiteral("revision ?")));
     CHECK(headRevision(QByteArray("\0\1\0\0\0\2\x80\0", 8)) == QStringLiteral("2.500"));
+}
+
+TEST_CASE("the bundled font is renamed in its name table and nowhere else", "[ui-font]") {
+    for (const bool bold : {false, true}) {
+        QFile file(bundledFont(bold));
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        const QByteArray original = file.readAll();
+        const QByteArray renamed = renamedBundledFont(bundledFont(bold));
+        REQUIRE(renamed.size() == original.size());
+        const auto [offset, length] = fontTableRange(original, "name");
+        REQUIRE(length > 0);
+        CHECK(renamed.left(offset) == original.left(offset));
+        CHECK(renamed.mid(offset + length) == original.mid(offset + length));
+        CHECK(renamed.mid(offset, length) != original.mid(offset, length));
+        const QRawFont raw(renamed, 10);
+        REQUIRE(raw.isValid());
+        CHECK(raw.familyName() == QLatin1String(kLayoutFamily));
+        CHECK(raw.styleName() == (bold ? QStringLiteral("Bold") : QStringLiteral("Regular")));
+        CHECK(raw.fontTable("head") == QRawFont(bundledFont(bold), 10).fontTable("head"));
+    }
+    CHECK(renamedBundledFont(QStringLiteral("no-such-font.ttf")).isEmpty());
+}
+
+// Another Noto Sans on the machine, registered after the bundled one (as the
+// system's are when the font database fills late, in a process of a test's
+// own), still leaves the layout tests the bundled file: before the bundled
+// file had a family of its own, this decoy took its place and UiFont failed
+// with "Noto Sans Regular resolves to a font of revision 1.500".
+TEST_CASE("another Noto Sans registered after the bundled one doesn't take its place", "[ui-font]") {
+    { UiFont first(10); }
+    // removed again however the case ends, so no later case in this process meets them
+    struct Decoys {
+        QList<int> ids;
+        ~Decoys() {
+            for (const int id : ids)
+                QFontDatabase::removeApplicationFont(id);
+        }
+    } decoys;
+    for (const bool bold : {false, true}) {
+        QFile file(bundledFont(bold));
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        QByteArray decoy = file.readAll();
+        const auto [offset, length] = fontTableRange(decoy, "head");
+        REQUIRE(length >= 8);
+        decoy.replace(offset + 4, 4, QByteArray("\0\1\x80\0", 4)); // revision 1.500
+        decoys.ids.append(QFontDatabase::addApplicationFontFromData(decoy));
+        REQUIRE(QFontDatabase::applicationFontFamilies(decoys.ids.last()) == QStringList{QStringLiteral("Noto Sans")});
+    }
+    {
+        UiFont font(10);
+        for (const bool bold : {false, true}) {
+            QFont styled = QApplication::font();
+            styled.setBold(bold);
+            CHECK(fontFileMismatch(QRawFont::fromFont(styled), bundledFont(bold)).isEmpty());
+        }
+    }
 }
 
 TEST_CASE("the toolbox has a button for every tool, with the Tools menu's actions and keys") {
@@ -1651,6 +1765,10 @@ TEST_CASE("a narrower left column gives the Toolbox the rows it needs", "[dock-h
 
 TEST_CASE("the right column's docks open at their default heights", "[dock-height]") {
     ClearLayout clear;
+    // The bundled Noto Sans at the test platform's 9 pt, not whatever font the
+    // machine defaults to: the targets below (Library and Lint give way at
+    // 1080p) hold for the font the panels are sized for.
+    UiFont font(9);
     MainWindow w;
     const QSize screen = GENERATE(QSize(1366, 768), QSize(1920, 1080), QSize(2560, 1440));
     const bool reset = GENERATE(false, true);

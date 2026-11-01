@@ -5,7 +5,7 @@
 - Windows: an MSI cross-built on Linux with `scripts/package-windows`
   ([windows/README.md](windows/README.md)).
 - Linux: a source tarball made by `scripts/release`, and the distribution
-  packages built from it (below).
+  packages built from it (below): Arch (AUR), Debian and Ubuntu, Fedora.
 
 PLAN §14 records the decisions behind them, and [RELEASING.md](RELEASING.md)
 is the checklist for publishing a version.
@@ -45,7 +45,10 @@ A Linux install also puts in `<prefix>/share/`:
 - `icons/hicolor/{256x256,512x512}/apps/blockwright.png`, from
   `packaging/linux/blockwright-{256,512}.png`;
 - `metainfo/online.pumpin.funkpower.blockwright.metainfo.xml`, the AppStream
-  metadata software centres read.
+  metadata software centres read;
+- `man/man1/blockwright.1` and `man/man1/blockwright-cli.1`, the manual pages,
+  from `packaging/linux/`. `blockwright-cli.1` lists the commands and leaves
+  the options to `blockwright-cli --help`.
 
 The icons are `packaging/macos/icon-1024.png` scaled down; after redrawing it
 (below), remake them with ImageMagick:
@@ -75,6 +78,74 @@ tarball, with the version and checksum filled in, to
 `dist/aur/blockwright/`. After changing either PKGBUILD, regenerate its
 `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO` and check both with
 `namcap`.
+
+### Debian and Ubuntu
+
+`packaging/debian/` is the `debian/` directory of a package of the release
+tarball: debhelper compat 13, `dh` with CMake and Ninja, source format
+`3.0 (quilt)` with the tarball as its orig tarball. To build it:
+
+```sh
+cp blockwright-<version>.tar.gz blockwright_<version>.orig.tar.gz
+tar xf blockwright_<version>.orig.tar.gz
+cd blockwright-<version>
+cp -r packaging/debian debian
+sudo apt-get build-dep ./
+dpkg-buildpackage -us -uc
+lintian -I --pedantic ../blockwright_<version>-1_*.changes
+```
+
+`dh_auto_test` runs the tests with `QT_QPA_PLATFORM=offscreen` against the
+packaged Catch2 3 (`BW_FETCH_CATCH2=OFF`). The layout tests measure the docks
+in the Noto Sans in `tests/data/fonts`, registered under a family name of its
+own, so a Noto Sans the build root has installed can't take its place. The build
+profile `nocheck` (`DEB_BUILD_PROFILES=nocheck DEB_BUILD_OPTIONS=nocheck`, and
+`apt-get build-dep -o APT::Build-Profiles=nocheck ./`) builds without the
+tests and without Catch2.
+
+The package needs Qt 6.7 or newer, the minimum `CMakeLists.txt` states (#263),
+so it is built only for releases that have it. Debian 12 and Ubuntu 24.04 ship
+Qt 6.4.2: they are not packaged natively; use the AppImage, which bundles its
+own Qt.
+
+| Release | Qt | Catch2 | Package |
+|---|---|---|---|
+| Debian 13 (trixie) | 6.8.2 | 3.7.1 | built, tests run |
+| Debian testing | 6.11 | 3.7 | built, tests run |
+| Ubuntu 26.04 | 6.10 | 3.7 | built, tests run |
+| Ubuntu 26.10 | 6.11 | 3.7 | built, tests run |
+| Debian 12 | 6.4.2 | 2.13 | not packaged natively; use the AppImage |
+| Ubuntu 24.04 | 6.4.2 | 3.4 | not packaged natively; use the AppImage |
+
+Catch2 before 3.8 reads its test list as a CMake list, which an unmatched `[`
+in a test name corrupts; the `catch_names` test keeps every name's brackets
+matched.
+
+### Fedora
+
+`packaging/rpm/blockwright.spec` builds the release tarball against the newest
+Fedora (Fedora 44: Qt 6.11, Catch2 3.13):
+
+```sh
+rpmdev-setuptree
+cp blockwright-<version>.tar.gz ~/rpmbuild/SOURCES/
+sudo dnf builddep packaging/rpm/blockwright.spec
+rpmbuild -ba packaging/rpm/blockwright.spec
+rpmlint packaging/rpm/blockwright.spec ~/rpmbuild/SRPMS/*.src.rpm ~/rpmbuild/RPMS/*/*.rpm
+```
+
+`%check` validates the desktop entry and AppStream metadata and runs the tests
+(`--without check` skips the tests). `LICENSE`, `NOTICE` and the bundled
+font's and icons' licences (`LICENSE.oldschool-pc-fonts`,
+`LICENSE.tabler-icons`) are `%license` files in
+`/usr/share/licenses/blockwright/`, which an install with `tsflags=nodocs`
+keeps. The same notices are also in `/usr/share/doc/blockwright/`, where
+`NOTICE` and `--version` say they are; its `LICENSE` links to the `%license`
+copy.
+
+`linux_packages` checks that `debian/changelog`'s newest entry, the spec's
+`Version` and the manual pages are the tree's version, and that
+`blockwright-cli.1` describes every command `blockwright-cli --help` lists.
 
 ## macOS: Blockwright.app, the disk image and the Homebrew cask
 

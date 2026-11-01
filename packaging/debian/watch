@@ -1,0 +1,4 @@
+version=4
+opts="searchmode=plain" \
+https://git.pumpin.online/funkpower/blockwright/releases \
+  /funkpower/blockwright/releases/download/v@ANY_VERSION@/blockwright-@ANY_VERSION@@ARCHIVE_EXT@

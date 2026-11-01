@@ -1,0 +1,38 @@
+Source: blockwright
+Section: graphics
+Priority: optional
+Maintainer: funkpower <funkpower@pumpin.online>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.24),
+               ninja-build,
+# Qt 6.7 is the minimum (CMakeLists.txt, #263)
+               qt6-base-dev (>= 6.7),
+               qt6-svg-dev (>= 6.7),
+               libzip-dev (>= 1.7),
+               libzstd-dev,
+               catch2 (>= 3) <!nocheck>,
+               qt6-base-private-dev (>= 6.7) <!nocheck>,
+               python3 <!nocheck>
+Standards-Version: 4.7.4
+Homepage: https://git.pumpin.online/funkpower/blockwright
+Vcs-Browser: https://git.pumpin.online/funkpower/blockwright
+Vcs-Git: https://git.pumpin.online/funkpower/blockwright.git
+Rules-Requires-Root: no
+
+Package: blockwright
+Architecture: any
+Depends: qt6-qpa-plugins,
+         ${misc:Depends},
+         ${shlibs:Depends}
+Recommends: python3,
+            qt6-image-formats-plugins
+Description: editor for ANSI and IRC block art
+ Blockwright is an editor for ANSI art in CP437 block characters and for
+ IRC colour art. It has half-block, shade and form brushes, layers, text
+ faces and styles, a library of stamps, and generator layers that run
+ scripts.
+ .
+ It reads and writes .ans with SAUCE, XBIN and BIN, exports IRC text
+ within a line budget and checks a piece against lint rules. The
+ blockwright-cli command renders, converts and checks pieces without a
+ display.

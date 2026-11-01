@@ -215,6 +215,19 @@ if(CMAKE_GENERATOR MATCHES "^Ninja")
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CMAKE_CONFIGURATION_TYPES=Debug")
 endif()
 
+# The Debian and Fedora packages (packaging/debian, packaging/rpm) build the
+# version the tree is
+add_test(NAME linux_packages
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/linux_packages_test.sh ${PROJECT_SOURCE_DIR})
+
+# packaging/debian/copyright gives each file the licence its header or its
+# third_party/ README states (DEP-5, last match wins)
+find_program(BW_PYTHON3 NAMES python3)
+if(BW_PYTHON3)
+  add_test(NAME debian_copyright
+    COMMAND ${BW_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/debian_copyright_test.py ${PROJECT_SOURCE_DIR})
+endif()
+
 # The desktop entry, icons and AppStream metadata of a Linux install
 if(UNIX AND NOT APPLE)
   add_test(NAME linux_desktop
@@ -234,6 +247,20 @@ add_test(NAME catch2_offline
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/catch2_offline_test.sh
           ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/catch2-offline-tmp
           ${CMAKE_GENERATOR} ${Qt6_DIR} "${bw_prefix_path}" "${bw_catch2_dir}")
+
+# A distribution's Catch2 may be older than 3.8, whose catch_discover_tests
+# runs every test name after an unmatched [ into one test that runs nothing
+# (catch_names_check.cmake): no TEST_CASE name has one, and the check finds one.
+add_test(NAME catch_names
+  COMMAND ${CMAKE_COMMAND} -DDIR=${CMAKE_CURRENT_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/catch_names_check.cmake)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/catch-names-bad/bad.cpp
+  "TEST_CASE(\"Ctrl+[ and Ctrl+] are matched\") {}\nTEST_CASE(\"a [ alone \"\n          \"over two lines\", \"[tag]\") {}\n")
+add_test(NAME catch_names_finds_unmatched
+  COMMAND ${CMAKE_COMMAND} -DDIR=${CMAKE_CURRENT_BINARY_DIR}/catch-names-bad -DMIN=2
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/catch_names_check.cmake)
+set_tests_properties(catch_names_finds_unmatched PROPERTIES
+  PASS_REGULAR_EXPRESSION "1 of 2 TEST_CASE names have an unmatched"
+  FAIL_REGULAR_EXPRESSION "Ctrl\\+\\[ and")
 
 # scripts/release (run on Linux): the same tarball of a commit every time,
 # committed files only
@@ -471,6 +498,19 @@ list(TRANSFORM bw_app_test_files REPLACE "^(.+)$" "$<TARGET_FILE:\\1>")
 add_test(NAME app_tests_leave_profile_alone
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_profile_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-profile-check
           ${bw_app_test_files})
+# It leaves fontconfig's cache out and still finds anything else written.
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/app-profile-fake/fontconfig.sh
+  "mkdir -p \"$XDG_CACHE_HOME/fontconfig\" && touch \"$XDG_CACHE_HOME/fontconfig/x-le64.cache-9\"\n")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/app-profile-fake/settings.sh
+  "mkdir -p \"$XDG_CONFIG_HOME/QtProject\" \"$XDG_CACHE_HOME/fontconfig\" && touch \"$XDG_CONFIG_HOME/QtProject/x.conf\"\n")
+file(CHMOD ${CMAKE_CURRENT_BINARY_DIR}/app-profile-fake/fontconfig.sh ${CMAKE_CURRENT_BINARY_DIR}/app-profile-fake/settings.sh
+  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+add_test(NAME app_profile_ignores_fontconfig_cache
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_profile_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-profile-fake-check
+          ${CMAKE_CURRENT_BINARY_DIR}/app-profile-fake/fontconfig.sh ${CMAKE_CURRENT_BINARY_DIR}/app-profile-fake/settings.sh)
+set_tests_properties(app_profile_ignores_fontconfig_cache PROPERTIES
+  PASS_REGULAR_EXPRESSION "ok   fontconfig.sh\nFAIL settings.sh wrote into the profile:\n  ./config\n  ./config/QtProject\n  ./config/QtProject/x.conf\n"
+  FAIL_REGULAR_EXPRESSION "  ./cache")
 # Each app test binary, when its scratch directory can't be made, refuses to
 # run and leaves a profile already holding Blockwright settings byte-identical:
 # the settings would otherwise be that profile's own. Linux paths, so host only.

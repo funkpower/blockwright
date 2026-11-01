@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Regenerates the bundled glyph tables from the pack's Windows bitmap fonts:
 #   fon2inc.py <Bm437_IBM_VGA_8x16.FON> core/src/font_ibm_vga_8x16.inc
 #   fon2inc.py <Bm437_IBM_BIOS.FON> core/src/font_ibm_bios_8x8.inc
