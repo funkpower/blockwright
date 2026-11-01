@@ -280,7 +280,15 @@ bw_qt_links_case(none fail "" "" "FAIL no THIRD-PARTY file under packaging/")
 set(bw_qt_fixed "FAIL packaging/windows/THIRD-PARTY.txt names a fixed Qt version instead of @QT_VERSION@: 1:- ")
 string(ASCII 194 160 bw_nbsp)
 foreach(c "two_spaces;Qt  6.9.1;Qt 6\\.9\\.1" "tab;Qt\t6.9.1;Qt\t6\\.9\\.1" "version_word;Qt version 6.9.1;Qt version 6\\.9\\.1"
-          "qt6;Qt6 6.9.1;Qt6 6\\.9\\.1" "lower;qt 6.9.1;qt 6\\.9\\.1" "nbsp;Qt${bw_nbsp}6.9.1;Qt${bw_nbsp}6\\.9\\.1")
+          "qt6;Qt6 6.9.1;Qt6 6\\.9\\.1" "lower;qt 6.9.1;qt 6\\.9\\.1" "nbsp;Qt${bw_nbsp}6.9.1;Qt${bw_nbsp}6\\.9\\.1"
+          # a v before the version, with and without a word; a hyphen with no
+          # word and a run holding a hyphen after one, which are no licence id;
+          # and Qt's source tarball names
+          "v_prefix;Qt v6.9.1;Qt v6\\.9\\.1" "version_v;Qt version: v6.9.1;Qt version: v6\\.9\\.1"
+          "hyphen;Qt-6.9.1;Qt-6\\.9\\.1" "version_dash;Qt version - 6.9.1;Qt version - 6\\.9\\.1"
+          "tarball;qt-everywhere-src-6.9.1.tar.xz;qt-everywhere-src-6\\.9\\.1\\.tar\\.xz"
+          "tarball_module;qtbase-everywhere-src-6.9.1.tar.xz;qtbase-everywhere-src-6\\.9\\.1\\.tar\\.xz"
+          "tarball_opensource;qt-everywhere-opensource-src-5.15.2.tar.xz;qt-everywhere-opensource-src-5\\.15\\.2\\.tar\\.xz")
   list(GET c 0 name)
   list(GET c 1 text)
   list(GET c 2 want)
@@ -296,6 +304,15 @@ bw_qt_links_case(fixed_name_latin1_nbsp fail windows/THIRD-PARTY.txt "- Qt${bw_l
 bw_qt_links_case(fixed_name_lookalikes pass linux/THIRD-PARTY.txt
   "- Qt @QT_VERSION@ and Qt6 @QT_VERSION@ (Core)\n  builds of the same Qt version: copy them over\n  Qt6ConfigVersion 6.9 is read\nSource:\n  ${bw_qt_tpl}\n"
   "${bw_qt_ok}")
+# A licence id, a word joined to its X.Y by a hyphen, is no Qt version: in
+# brackets, after an em dash, and two of them
+string(ASCII 226 128 148 bw_em_dash)
+foreach(c "licence_brackets;- Qt (LGPL-3.0-only)" "licence_em_dash;- Qt ${bw_em_dash} LGPL-3.0-only"
+          "licence_or;Qt (GPL-2.0 or LGPL-3.0)")
+  list(GET c 0 name)
+  list(GET c 1 text)
+  bw_qt_links_case(fixed_name_${name} pass linux/THIRD-PARTY.txt "${text}\nSource:\n  ${bw_qt_tpl}\n" "${bw_qt_ok}")
+endforeach()
 # A THIRD-PARTY* that is a directory or a symlink, and a symlink to a
 # directory, which find does not go into, fail rather than being skipped
 set(bw_qt_dead "https://download.qt.io/official_releases/qt/6.8/6.8.3/submodules/\n")

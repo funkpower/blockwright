@@ -13,11 +13,16 @@
 # the package carries: "Qt" or "Qt6" in any letter case, then any run of
 # characters that are neither letters nor digits (spaces, a tab, a
 # non-breaking space in UTF-8 or Latin-1), at most one word such as "version"
-# with its own run, and an X.Y. A THIRD-PARTY* that is not a regular file (a
-# directory or a symlink), and a symlink to a directory anywhere under
-# packaging/, fail too, since the check would not read what they hold. Files
-# are read as bytes and as text, whatever the locale and whatever bytes they
-# hold. No network access.
+# with its own run, and an X.Y, with or without a "v" before it. A word joined
+# to its X.Y by a lone "-" is a licence id such as LGPL-3.0 and no Qt version;
+# with any other run ("LGPL 3.0", "LGPL v3.0") the X.Y still counts as one.
+# Qt's source tarball names, qt*-everywhere-src-X.Y and
+# qt*-everywhere-opensource-src-X.Y, fail wherever they stand. Letters joined
+# to "Qt" ("QtCore 6.8") and two words ("Qt for Windows 6.8") are not caught.
+# A THIRD-PARTY* that is not a regular file (a directory or a symlink), and a
+# symlink to a directory anywhere under packaging/, fail too, since the check
+# would not read what they hold. Files are read as bytes and as text, whatever
+# the locale and whatever bytes they hold. No network access.
 #
 # Any failure, including an error in this script, exits non-zero: the only
 # way to exit 0 is to reach the end with nothing counted.
@@ -84,7 +89,8 @@ for f in "${files[@]}"; do
     bad "$f links under official_releases, which drops old minors: $(tr -s ' ' <<<"$dead")"
     continue
   fi
-  fixed=$(g -niE '(^|[^[:alnum:]_])qt6?[^[:alnum:]]+([a-z]+[^[:alnum:]]+)?[0-9]+\.[0-9]+' "$src/$f")
+  fixed=$(g -niE -e '(^|[^[:alnum:]_])qt6?[^[:alnum:]]+([a-z]+([^[:alnum:]-]|[^[:alnum:]]{2,}))?v?[0-9]+\.[0-9]+' \
+    -e 'qt[[:alnum:]]*-everywhere-(opensource-)?src-[0-9]+\.[0-9]+' "$src/$f")
   fixed=$(tr -s ' ' <<<"$fixed")
   if [[ -n $fixed ]]; then
     bad "$f names a fixed Qt version instead of @QT_VERSION@: $(tr '\n' ' ' <<<"$fixed")"
