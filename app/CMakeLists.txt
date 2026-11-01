@@ -51,6 +51,8 @@ add_library(blockwright_app STATIC
   preferences.h
   publish.cpp
   publish.h
+  recent_files.cpp
+  recent_files.h
   reference_scale.cpp
   reference_scale.h
   row_tree.h
@@ -64,6 +66,8 @@ add_library(blockwright_app STATIC
   shortcut_settings.h
   shortcuts_dialog.cpp
   shortcuts_dialog.h
+  start_screen.cpp
+  start_screen.h
   text_options.cpp
   text_options.h
   text_tool.cpp

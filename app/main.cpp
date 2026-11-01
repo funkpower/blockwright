@@ -6,6 +6,7 @@
 #include "file_open.h"
 #include "generator_runner.h"
 #include "main_window.h"
+#include "start_screen.h"
 
 #include "blockwright/credits.h"
 #include "blockwright/version.h"
@@ -94,7 +95,7 @@ int main(int argc, char** argv) {
     // A document opened from the Finder or the Dock (macOS) arrives as an event.
     app.installEventFilter(new bw::FileOpenForwarder(&w));
     w.show();
-    if (!files.empty())
-        w.openInteractive(QString::fromLocal8Bit(files.front()));
+    // A file named opens; with none, the start screen asks what to do.
+    bw::startUp(&w, files.empty() ? QString() : QString::fromLocal8Bit(files.front()));
     return app.exec();
 }

@@ -505,9 +505,13 @@ void Document::replace(AnsiDocument doc, const QString& path) {
     setModified(false);
 }
 
-void Document::clear() {
+void Document::clear() { clear(Canvas::kDefaultWidth, Canvas::kDefaultHeight, true); }
+
+void Document::clear(int width, int height, bool ice) {
     undo_.clear();
-    doc_ = blank();
+    doc_ = AnsiDocument{};
+    doc_.canvas = Canvas(width, height);
+    doc_.ice = ice;
     resetLayers(LayerStack::fromCanvas(doc_.canvas));
     extras_ = {};
     countLostBlink_ = false;
@@ -543,6 +547,7 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         *error = f.errorString();
         return false;
     }
+    emit fileWritten(path);
     // An .ans holding less than the document doesn't save it: a project
     // stays the document's file, and a flat document stays modified, so
     // nothing discards the layers or snapshots on no disk without asking.
@@ -595,6 +600,7 @@ bool Document::saveProject(const QString& path, FileForm form, QString* error) {
         *error = QString::fromStdString(e.what());
         return false;
     }
+    emit fileWritten(path);
     if (path_ != path || form_ != form) {
         path_ = path;
         form_ = form;

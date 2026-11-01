@@ -103,6 +103,9 @@ public:
     // Starts over on a blank default-size canvas (one blank Background
     // layer) with no file and an empty undo stack.
     void clear();
+    // The same on a blank `width` x `height` canvas with iCE colours `ice`.
+    // The caller sees that the renderer can show it (MainWindow::newCanvas).
+    void clear(int width, int height, bool ice);
 
     // Reads the project (a .bwp zip or a project directory) at `path` into
     // `out` without touching any document; false and `error` (what
@@ -412,6 +415,10 @@ signals:
     void cursorRequested(bw::Cursor cursor);
     // The file behind the document or its form (form()) changed.
     void pathChanged(const QString& path);
+    // save() or saveProject() wrote `path`, whether or not it is now the
+    // document's file (an .ans exported from a project is not). The recent
+    // list (recent_files.h) follows it.
+    void fileWritten(const QString& path);
     // The SAUCE record or the iCE setting changed (not on open or new; see
     // reset). The cell width may have changed with it.
     void formatChanged();

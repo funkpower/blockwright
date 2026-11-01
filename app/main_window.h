@@ -165,7 +165,17 @@ public:
     // Opens `path` without asking anything; false and `error` on failure.
     // A project (project::isProject, or a name ending in .bwp, or a
     // directory) opens as one, with its layers (main_window_project.cpp).
+    // What opens goes first in the recent list (recent_files.h), as does
+    // every file a save writes (Document::fileWritten).
     bool openFile(const QString& path, QString* error);
+    // Starts over on a blank `size` canvas (in cells) with iCE colours
+    // `ice`, without asking anything, as New does at the default size and
+    // the start screen's New at the size it was given. False, and `error`,
+    // for a size outside 1 x 1 to kMaxColumns x kMaxRows or one too large
+    // to display, leaving the document as it was.
+    bool newCanvas(QSize size, bool ice, QString* error);
+    // File > Open Recent, filled from the recent list each time it opens.
+    QMenu* openRecentMenu() const { return openRecentMenu_; }
     // Opens the Python scene at `path` as a new project, a generator layer
     // for each scene layer (scene_import.h), running the scene once for
     // each layer's cells, without asking anything; false and `error` on
@@ -203,6 +213,10 @@ public slots:
     void openRequested(const QString& path);
     // File > Open Project Directory...: a directory picker.
     void openDirectory();
+    // File > Start Screen...: asks to save unsaved edits, as New does, then
+    // starts over on a new canvas with the start screen over it
+    // (start_screen.h).
+    void showStartScreen();
     // File > Open Scene...: a file picker, then the question whether to run
     // the scene, before openSceneFile.
     void openScene();
@@ -253,6 +267,9 @@ protected:
 
 private:
     void createActions();
+    // Fills File > Open Recent from the recent list: each entry (a missing
+    // one disabled) opens through openRequested.
+    void fillRecentMenu();
     // The iCE and letter-spacing toggles (main_window_format.cpp).
     void createFormatActions(QMenu* view);
     // The renderer and the toggles follow the document's format.
@@ -387,6 +404,7 @@ private:
     QDockWidget* layersDock_ = nullptr;
     QMenu* layerMenu_ = nullptr;
     QMenu* windowMenu_ = nullptr;
+    QMenu* openRecentMenu_ = nullptr;
     QHash<QString, QAction*> toolActions_;  // the Tools menu's, by tool id
     LibraryDock* library_ = nullptr;
     QDockWidget* libraryDock_ = nullptr;

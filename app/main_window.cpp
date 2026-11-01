@@ -8,7 +8,9 @@
 #include "preferences.h"
 #include "shortcut_settings.h"
 #include "publish.h"
+#include "recent_files.h"
 #include "shortcuts_dialog.h"
+#include "start_screen.h"
 
 #include "blockwright/credits.h"
 #include "blockwright/glyph_sets.h"
@@ -18,6 +20,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -168,6 +171,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(&doc_, &Document::formatChanged, this, &MainWindow::formatChanged);
     connect(&doc_, &Document::modifiedChanged, this, &MainWindow::updateTitle);
     connect(&doc_, &Document::pathChanged, this, &MainWindow::updateTitle);
+    connect(&doc_, &Document::fileWritten, this, [](const QString& path) { addRecentFile(path); });
     connect(view_, &CanvasView::cursorMoved, this, [this] {
         const QRect r = view_->toWidget(view_->cellRect(view_->cellCursor()));
         scroll_->ensureVisible(r.center().x(), r.center().y(), r.width(), r.height());
@@ -246,6 +250,12 @@ void MainWindow::createActions() {
     a->setObjectName(QStringLiteral("openDirectory"));
     a = file->addAction(tr("Open S&cene..."), this, &MainWindow::openScene);
     a->setObjectName(QStringLiteral("openScene"));
+    openRecentMenu_ = file->addMenu(tr("Open Rec&ent"));
+    openRecentMenu_->setObjectName(QStringLiteral("openRecent"));
+    connect(openRecentMenu_, &QMenu::aboutToShow, this, &MainWindow::fillRecentMenu);
+    fillRecentMenu();
+    a = file->addAction(tr("Star&t Screen..."), this, &MainWindow::showStartScreen);
+    a->setObjectName(QStringLiteral("startScreen"));
     a = file->addAction(tr("&Save"), this, &MainWindow::save);
     a->setObjectName(QStringLiteral("save"));
     a->setShortcut(QKeySequence::Save);
@@ -458,8 +468,12 @@ void MainWindow::canvasReset() {
 }
 
 bool MainWindow::openFile(const QString& path, QString* error) {
-    if (project::isProject(QFile::encodeName(path).toStdString()) || fileFormFor(path) != FileForm::Ansi)
-        return openProject(path, error);
+    if (project::isProject(QFile::encodeName(path).toStdString()) || fileFormFor(path) != FileForm::Ansi) {
+        if (!openProject(path, error))
+            return false;
+        addRecentFile(path);
+        return true;
+    }
     AnsiDocument candidate;
     if (!Document::read(path, &candidate, error))
         return false;
@@ -474,7 +488,48 @@ bool MainWindow::openFile(const QString& path, QString* error) {
         return false;
     }
     doc_.replace(std::move(candidate), path);
+    addRecentFile(path);
     return true;
+}
+
+bool MainWindow::newCanvas(QSize size, bool ice, QString* error) {
+    if (size.width() < 1 || size.height() < 1 || size.width() > kMaxColumns || size.height() > kMaxRows) {
+        *error = tr("a canvas is 1 to %1 columns wide and 1 to %2 rows high").arg(kMaxColumns).arg(kMaxRows);
+        return false;
+    }
+    // As openFile: the renderer takes the canvas first, so one too large to
+    // display leaves the document as it was.
+    const Canvas candidate(size.width(), size.height());
+    try {
+        renderer_.setCanvas(&candidate, 8);
+    } catch (const std::exception&) {
+        *error = tr("the canvas is too large to display");
+        return false;
+    }
+    doc_.clear(size.width(), size.height(), ice);
+    return true;
+}
+
+void MainWindow::fillRecentMenu() {
+    openRecentMenu_->clear();
+    const QStringList list = recentFiles();
+    for (const QString& path : list) {
+        QString text = QDir::toNativeSeparators(path);
+        QAction* a = openRecentMenu_->addAction(text.replace(QLatin1Char('&'), QStringLiteral("&&")), this,
+                                                [this, path] { openRequested(path); });
+        a->setEnabled(QFileInfo::exists(path));
+    }
+    if (list.isEmpty())
+        openRecentMenu_->addAction(tr("(none)"))->setEnabled(false);
+}
+
+void MainWindow::showStartScreen() {
+    if (!maybeSave())
+        return;
+    doc_.clear();
+    auto* screen = new StartScreen(this);
+    screen->setAttribute(Qt::WA_DeleteOnClose);
+    screen->open();
 }
 
 bool MainWindow::saveFile(const QString& path, QString* error, bool allowLossy) {
