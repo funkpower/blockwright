@@ -83,7 +83,18 @@ under wine has 300 seconds unless it sets its own `TIMEOUT` (the `cli`
 script has 900), so a program that hangs fails its test instead of holding
 up the run; `-DDART_TESTING_TIMEOUT=<seconds>` sets another default, and
 `ctest --timeout <seconds>` overrides it for one run. `wineserver -k` with
-`WINEPREFIX` set to the prefix stops the session at once.
+`WINEPREFIX` set to the prefix stops the session at once; otherwise its
+server and services are still running for the 60 seconds after the last
+program. A server already up for the prefix gets the services started too
+when it has none, as one started by hand with `wineserver -p` has, or they
+would hold the next program's output until that server was killed (#273).
+
+ctest runs each Catch2 test case as its own program. `blockwright-tests.exe`
+run whole in one process takes about as long as on Linux, over ten minutes
+on the dev machine, so a `timeout` round it needs more than 300 seconds.
+A test spec of `"*"` takes in the hidden measurement tests (`[.measure]`,
+`[.timing]`, `[.survey]`, `[.sheets]` and others) too, a few more minutes;
+`[.sheets]` skips unless `BW_PRESET_SHEETS` names a directory to write to.
 
 The tests skip what a Windows program can't do (POSIX permissions, sh
 generators, Python scenes when the prefix has no Python, and the Send to

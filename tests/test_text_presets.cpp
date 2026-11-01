@@ -503,10 +503,12 @@ TEST_CASE("Shade on a flat Fill leaves no fallback speck in any face of the matr
 // The comparison sheets: for each face and iCE setting, each fixture word
 // unstyled and then in each preset, each drawing under its name, written as
 // <face>-ice-<on|off>.ans in the directory BW_PRESET_SHEETS names. Run with
-// "[.sheets]"; `blockwright-cli render` turns a sheet into a PNG.
+// "[.sheets]"; `blockwright-cli render` turns a sheet into a PNG. A run that
+// takes in the hidden tests ("*") without BW_PRESET_SHEETS skips it (#273).
 TEST_CASE("comparison sheets of the presets", "[.sheets]") {
     const char* dir = std::getenv("BW_PRESET_SHEETS");
-    REQUIRE(dir);
+    if (!dir || !*dir)
+        SKIP("BW_PRESET_SHEETS names no directory to write the sheets to");
     fs::create_directories(dir);
     TextStyleEntry none;
     none.name = "unstyled";

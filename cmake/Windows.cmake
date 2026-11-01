@@ -107,10 +107,20 @@ done
 # is running already), then the services. Under a lock, so a program never
 # starts while another wine-run is still starting them; the lock's descriptor
 # is closed for the server and the services, which outlive this script.
+# A server that is already up may have no services yet: one started by hand
+# with `wineserver -p` stays up with none, and they would hold the next
+# program's output until it was killed (#273). So the services are started
+# whenever this prefix has no services.exe; where /proc can't tell, always.
 mkdir -p "$WINEPREFIX"
+services_up() {
+  for p in $(pgrep -x services.exe); do
+    tr '\0' '\n' <"/proc/$p/environ" | grep -qxF "WINEPREFIX=$WINEPREFIX" && return 0
+  done
+  return 1
+} 2>/dev/null
 start() {
   "@BW_WINESERVER@" -p60 </dev/null >/dev/null 2>&1 9>&-
-  [ $? = 2 ] || "@BW_WINE@" wineboot </dev/null >/dev/null 2>&1 9>&-
+  [ $? = 2 ] && services_up || "@BW_WINE@" wineboot </dev/null >/dev/null 2>&1 9>&-
 }
 if command -v flock >/dev/null 2>&1; then
   (flock 9 && start) 9>"$WINEPREFIX/.wine-run.lock"
