@@ -35,6 +35,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QRawFont>
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
@@ -166,6 +167,32 @@ struct ClearLayout {
     ~ClearLayout() { bwtest::resetScratchSettings(); }
 };
 
+QString bundledFont(bool bold) {
+    return QString::fromStdString(
+        (bwtest::dataDir() / "fonts" / (bold ? "NotoSans-Bold.ttf" : "NotoSans-Regular.ttf")).string());
+}
+
+// The font revision in a 'head' table (16.16 fixed point at offset 4), or "?".
+QString headRevision(const QByteArray& head) {
+    if (head.size() < 8)
+        return QStringLiteral("?");
+    const auto* b = reinterpret_cast<const unsigned char*>(head.constData()) + 4;
+    const quint32 fixed = (quint32(b[0]) << 24) | (quint32(b[1]) << 16) | (quint32(b[2]) << 8) | b[3];
+    return QString::number(fixed / 65536.0, 'f', 3);
+}
+
+// Empty when `resolved` is the font in the file at `path` (their 'head' tables
+// match); otherwise names the font that was resolved and the file.
+QString fontFileMismatch(const QRawFont& resolved, const QString& path) {
+    const QByteArray want = QRawFont(path, 10).fontTable("head");
+    const QByteArray got = resolved.fontTable("head");
+    if (!want.isEmpty() && got == want)
+        return {};
+    return QStringLiteral("%1 %2 resolves to a font of revision %3, not the bundled %4 (revision %5): "
+                          "another font of that family on this machine shadows it")
+        .arg(resolved.familyName(), resolved.styleName(), headRevision(got), path, headRevision(want));
+}
+
 // Sets the application's font for a test and puts the old one back: Noto
 // Sans at `pointSize`, from tests/data/fonts, so the layout tests measure
 // the same font on every machine (#236). 10 pt is the desktop default the
@@ -175,9 +202,9 @@ struct UiFont {
     explicit UiFont(int pointSize) {
         static const QString family = [] {
             QString name;
-            for (const char* file : {"NotoSans-Regular.ttf", "NotoSans-Bold.ttf"}) {
-                const QString path = QString::fromStdString((bwtest::dataDir() / "fonts" / file).string());
-                const QStringList families = QFontDatabase::applicationFontFamilies(QFontDatabase::addApplicationFont(path));
+            for (const bool bold : {false, true}) {
+                const QStringList families =
+                    QFontDatabase::applicationFontFamilies(QFontDatabase::addApplicationFont(bundledFont(bold)));
                 if (!families.isEmpty())
                     name = families.first();
             }
@@ -189,6 +216,15 @@ struct UiFont {
         f.setPointSize(pointSize);
         QApplication::setFont(f);
         REQUIRE(QFontInfo(QApplication::font()).family() == family);
+        // The family is the bundled one's, but another font of that family
+        // installed on the machine can still win a style (#253).
+        for (const bool bold : {false, true}) {
+            QFont styled = QApplication::font();
+            styled.setBold(bold);
+            const QString mismatch = fontFileMismatch(QRawFont::fromFont(styled), bundledFont(bold));
+            if (!mismatch.isEmpty())
+                FAIL(mismatch.toStdString());
+        }
     }
     ~UiFont() { QApplication::setFont(saved); }
     UiFont(const UiFont&) = delete;
@@ -217,6 +253,21 @@ void checkDefaultWidths(MainWindow& w) {
 }
 
 } // namespace
+
+TEST_CASE("the layout tests name a font that isn't the bundled file", "[ui-font]") {
+    const QRawFont regular(bundledFont(false), 10), bold(bundledFont(true), 10);
+    REQUIRE(regular.isValid());
+    REQUIRE(bold.isValid());
+    CHECK(fontFileMismatch(regular, bundledFont(false)).isEmpty());
+    CHECK(fontFileMismatch(bold, bundledFont(true)).isEmpty());
+    const QString mismatch = fontFileMismatch(bold, bundledFont(false));
+    INFO(mismatch.toStdString());
+    CHECK(mismatch.contains(QStringLiteral("Noto Sans Bold resolves to a font of revision ")));
+    CHECK(mismatch.contains(QStringLiteral("NotoSans-Regular.ttf (revision 2.015)")));
+    CHECK(mismatch.contains(QStringLiteral("shadows it")));
+    CHECK(fontFileMismatch(regular, QStringLiteral("no-such-font.ttf")).contains(QStringLiteral("revision ?")));
+    CHECK(headRevision(QByteArray("\0\1\0\0\0\2\x80\0", 8)) == QStringLiteral("2.500"));
+}
 
 TEST_CASE("the toolbox has a button for every tool, with the Tools menu's actions and keys") {
     MainWindow w;
