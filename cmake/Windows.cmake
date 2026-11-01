@@ -44,6 +44,16 @@ endfunction()
 if(CMAKE_CROSSCOMPILING AND NOT CMAKE_CROSSCOMPILING_EMULATOR)
   find_program(BW_WINE wine)
   if(BW_WINE)
+    # The server of the same wine: beside it, or where distributions keep it
+    # off PATH.
+    get_filename_component(bw_wine_dir "${BW_WINE}" DIRECTORY)
+    find_program(BW_WINESERVER NAMES wineserver wineserver64
+                 HINTS ${bw_wine_dir} PATHS /usr/lib/wine /usr/lib64/wine /usr/libexec/wine
+                       /usr/lib/x86_64-linux-gnu/wine)
+    if(NOT BW_WINESERVER)
+      message(WARNING "wineserver not found beside ${BW_WINE}; set BW_WINESERVER. The tests under wine can stall.")
+      set(BW_WINESERVER wineserver)
+    endif()
     get_filename_component(bw_qt_bin "${Qt6_DIR}/../../../bin" ABSOLUTE)
     set(bw_winepath "")
     # llvm-mingw's runtime first: Qt's bin has an older libc++.dll that lacks
@@ -91,11 +101,22 @@ for v in $(env | sed -n 's/^\(QT_[A-Za-z0-9_]*\)=.*/\1/p'); do
   eval "export WINE$v=\"\$$v\""
 done
 # The first program of a wine session starts wine's services, which keep its
-# output open while the session lasts: ctest would wait on them. Start them
-# with none of the caller's descriptors when no session is running.
+# output open while the session lasts: ctest would wait on them. So the
+# session is started here, with none of the caller's descriptors: a server
+# that stays up for 60 s after its last program exits (exit status 2 means one
+# is running already), then the services. Under a lock, so a program never
+# starts while another wine-run is still starting them; the lock's descriptor
+# is closed for the server and the services, which outlive this script.
 mkdir -p "$WINEPREFIX"
-server="/tmp/.wine-$(id -u)/server-$(stat -Lc %D "$WINEPREFIX")-$(printf %x "$(stat -Lc %i "$WINEPREFIX")")"
-[ -S "$server/socket" ] || "@BW_WINE@" wineboot </dev/null >/dev/null 2>&1
+start() {
+  "@BW_WINESERVER@" -p60 </dev/null >/dev/null 2>&1 9>&-
+  [ $? = 2 ] || "@BW_WINE@" wineboot </dev/null >/dev/null 2>&1 9>&-
+}
+if command -v flock >/dev/null 2>&1; then
+  (flock 9 && start) 9>"$WINEPREFIX/.wine-run.lock"
+else
+  start
+fi
 exec "@BW_WINE@" "$@"
 ]] @ONLY)
     file(CHMOD ${PROJECT_BINARY_DIR}/wine-run PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ

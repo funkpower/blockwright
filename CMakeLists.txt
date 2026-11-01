@@ -38,6 +38,12 @@ if(BLOCKWRIGHT_MACOS_BUNDLE)
 endif()
 
 include(GNUInstallDirs)
+# A cross build's tests run under wine (cmake/Windows.cmake), where a program
+# that hangs holds up the whole run: each test gets 300 s unless it sets its
+# own TIMEOUT, not CTest's 1500.
+if(WIN32 AND CMAKE_CROSSCOMPILING)
+  set(DART_TESTING_TIMEOUT 300 CACHE STRING "Maximum time allowed before CTest will kill the test.")
+endif()
 include(CTest)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg)

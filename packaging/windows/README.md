@@ -69,9 +69,19 @@ cd ~/.cache/dw/bw-win-build/build && QT_QPA_PLATFORM=offscreen ctest -j 8
 ```
 
 The build directory's `wine-run` runs each program with its own wine prefix
-(`BW_WINEPREFIX` names another). The tests skip what a Windows program can't
-do (POSIX permissions, sh generators, Python scenes when the prefix has
-no Python, and for now the symbolic-link tests, #251);
+(`BW_WINEPREFIX` names another). It starts the wine session itself, with
+none of the caller's descriptors and under a lock (`flock`): a `wineserver`
+that stays up 60 seconds after its last program exits, then wine's services.
+A program that started the session would start the services, and they would
+hold its output open, and ctest with it, until the session ended. Each test
+under wine has 300 seconds unless it sets its own `TIMEOUT` (the `cli`
+script has 900), so a program that hangs fails its test instead of holding
+up the run; `-DDART_TESTING_TIMEOUT=<seconds>` sets another default, and
+`ctest --timeout <seconds>` overrides it for one run. `wineserver -k` with
+`WINEPREFIX` set to the prefix stops the session at once.
+
+The tests skip what a Windows program can't do (POSIX permissions, sh
+generators, Python scenes when the prefix has no Python, and for now the symbolic-link tests, #251);
 `test_generator_win.cpp` runs generators the Windows way,
 `test_junction_win.cpp` checks junctions are refused as symbolic links are,
 and `test_scene_import.cpp` finds a scene's Python (`py -3`, `python`,

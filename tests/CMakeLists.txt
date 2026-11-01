@@ -152,6 +152,14 @@ add_test(NAME irc_oracle
           ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/irc-oracle-tmp)
 set_tests_properties(irc_oracle PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
+# wine-run starts the wine session so its services hold no test's output (#259)
+if(CMAKE_CROSSCOMPILING_EMULATOR STREQUAL "${PROJECT_BINARY_DIR}/wine-run")
+  add_test(NAME wine_run_session
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/wine_run_test.sh
+            ${CMAKE_CROSSCOMPILING_EMULATOR} ${BW_WINESERVER} ${CMAKE_CURRENT_BINARY_DIR}/wine-run-tmp)
+  set_tests_properties(wine_run_session PROPERTIES TIMEOUT 900)
+endif()
+
 if(NOT CMAKE_CROSSCOMPILING)  # host tools, and builds on the host
 add_test(NAME install_dev_paths
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/install_dev_test.sh
