@@ -43,6 +43,7 @@
 #include <QTimer>
 #include <QUndoStack>
 
+#include <filesystem>
 #include <memory>
 
 #include <sys/stat.h>
@@ -482,14 +483,14 @@ TEST_CASE("an all-blank selection is not saved as a stamp") {
 }
 
 TEST_CASE("the dock reports links it skipped") {
-#ifdef _WIN32
-    SKIP("QFile::link makes .lnk shortcuts on Windows, not symbolic links");
-#endif
+    // std::filesystem's links: QFile::link makes .lnk shortcuts on Windows.
+    if (!bwtest::symlinksWork())
+        SKIP("the symbolic-link tests don't run here: no right to make links (fs_quirks.h)");
     Fixture f;
     QTemporaryDir shared;
-    REQUIRE(QFile::link(shared.path(), QDir(f.user.path()).filePath(QStringLiteral("linked"))));
-    REQUIRE(QFile::link(QDir(f.user.path()).filePath(QStringLiteral("gone.ans")),
-                        QDir(f.user.path()).filePath(QStringLiteral("broken.ans"))));
+    const auto in = [&](const char* name) { return QDir(f.user.path()).filePath(QLatin1String(name)).toStdWString(); };
+    std::filesystem::create_directory_symlink(shared.path().toStdWString(), in("linked"));
+    std::filesystem::create_symlink(in("gone.ans"), in("broken.ans"));
     f.dock->rescan();
     CHECK(f.dock->problems().size() == 2);
     CHECK(f.dock->problemLabel()->text() == QStringLiteral("2 file(s) skipped"));

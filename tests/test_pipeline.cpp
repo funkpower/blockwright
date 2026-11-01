@@ -344,7 +344,7 @@ TEST_CASE("Publish to Library refuses what it can't publish cleanly", "[pipeline
         fs::path temp = plan.ansPath;
         temp += ".bw-" + std::to_string(::getpid()) + "-0.tmp";
         if (!bwtest::symlinksWork())
-            SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
+            SKIP("the symbolic-link tests don't run here: no right to make links (fs_quirks.h)");
         fs::create_symlink(lib.root / "sentinel", temp);
         publish(plan);
         CHECK(bwtest::readFile(lib.root / "sentinel") == "keep me");
@@ -354,7 +354,7 @@ TEST_CASE("Publish to Library refuses what it can't publish cleanly", "[pipeline
     SECTION("a link in place of a file") {
         const PublishPlan plan = planPublish(request(lib));
         if (!bwtest::symlinksWork())
-            SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
+            SKIP("the symbolic-link tests don't run here: no right to make links (fs_quirks.h)");
         fs::create_symlink(lib.root / "elsewhere.txt", plan.txtPath);
         CHECK_THROWS_AS(publish(plan), PipelineError);
         CHECK_FALSE(fs::exists(lib.root / "elsewhere.txt"));

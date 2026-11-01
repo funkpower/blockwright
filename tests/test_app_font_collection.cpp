@@ -50,16 +50,19 @@ void writeFont(const QString& path, const std::string& bytes) {
 struct ResetFolder {
     ~ResetFolder() { setFontsFolderSetting({}); }
 };
+// Makes `home` the home folder the default fonts folder is looked for under,
+// for one test: HOME, which QDir::homePath() follows, or on Windows, where it
+// is the user's profile folder whatever the environment says, testing::home.
 struct ScratchHome {
+#ifdef _WIN32
+    explicit ScratchHome(const QString& home) { testing::home = home; }
+    ~ScratchHome() { testing::home = QString(); }
+#else
     QByteArray old = qgetenv("HOME");
     bool had = qEnvironmentVariableIsSet("HOME");
-    explicit ScratchHome(const QString& home) {
-#ifdef _WIN32
-        SKIP("Windows takes the home folder from the user's profile, not HOME");
-#endif
-        qputenv("HOME", QFile::encodeName(home));
-    }
+    explicit ScratchHome(const QString& home) { qputenv("HOME", QFile::encodeName(home)); }
     ~ScratchHome() { if (had) qputenv("HOME", old); else qunsetenv("HOME"); }
+#endif
 };
 int facesMade(const FontCatalogue& c) {
     int made = 0;

@@ -81,11 +81,16 @@ up the run; `-DDART_TESTING_TIMEOUT=<seconds>` sets another default, and
 `WINEPREFIX` set to the prefix stops the session at once.
 
 The tests skip what a Windows program can't do (POSIX permissions, sh
-generators, Python scenes when the prefix has no Python, and for now the symbolic-link tests, #251);
+generators, Python scenes when the prefix has no Python, and the Send to
+WeeChat tests whose remote command needs a POSIX sh). The symbolic-link
+tests run, since wine makes links without Developer Mode; their scratch
+folder is on `Z:` there, as wine reads a link named by a path that starts
+with `/` as what it points at.
 `test_generator_win.cpp` runs generators the Windows way,
 `test_junction_win.cpp` checks junctions are refused as symbolic links are,
 and `test_scene_import.cpp` finds a scene's Python (`py -3`, `python`,
-`python3`) among stand-ins built from `bw-gen-helper.exe`. Qt's offscreen
+`python3`) among stand-ins built from `bw-gen-helper.exe`, as
+`test_app_publish.cpp` builds its ssh. Qt's offscreen
 platform finds no font under wine, so the configure step
 copies one sans family from `/usr/share/fonts` (Noto Sans, else DejaVu Sans;
 `-DBW_WINE_FONTS=<files>` names others) into the build's `wine-fonts` and

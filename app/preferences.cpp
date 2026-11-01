@@ -38,7 +38,8 @@ QString fontsFolderSetting(const QString& home) {
     const auto s = appSettings();
     if (s->contains(QLatin1String(kFontsFolderKey)))
         return s->value(QLatin1String(kFontsFolderKey)).toString();
-    const QString path = QDir(home.isNull() ? QDir::homePath() : home).filePath(QStringLiteral("tdfiglet/fonts"));
+    const QString base = !home.isNull() ? home : !testing::home.isNull() ? testing::home : QDir::homePath();
+    const QString path = QDir(base).filePath(QStringLiteral("tdfiglet/fonts"));
     return QDir(path).exists() ? path : QString();
 }
 

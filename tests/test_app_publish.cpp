@@ -1,7 +1,9 @@
 // File > Publish to Library... and File > Send to WeeChat... (PLAN §9). The
-// library is a scratch folder; ssh is a script that runs the remote command
-// locally, with a scratch home, a pgrep that names a WeeChat and a scratch
-// runtime folder, so the fifo handling runs for real without a host.
+// library is a scratch folder. ssh is a stand-in that records what it was
+// given and answers as told (RecordingSsh, on Windows too), or a script that
+// runs the remote command locally, with a scratch home, a pgrep that names a
+// WeeChat and a scratch runtime folder, so the fifo handling runs for real
+// without a host (FakeSsh, which needs a POSIX sh).
 
 #include "scratch_settings.h"
 #include "util.h"
@@ -97,13 +99,60 @@ QString inLibrary(const QString& lib, const char* name) {
     return QString::fromStdString((std::filesystem::path(lib.toStdString()) / name).string());
 }
 
+// An ssh that runs nothing: it writes its arguments and its input to files,
+// prints `out` and `err` and exits with `exitCode`. On Windows it is a copy
+// of bw-gen-helper (gen_helper_win.cpp), so Publisher starts a real program
+// there and hands it its arguments through a Windows command line.
+struct RecordingSsh {
+    QTemporaryDir dir;
+    QString program;
+
+    explicit RecordingSsh(const QByteArray& out, int exitCode = 0, const QByteArray& err = {}) {
+        REQUIRE(dir.isValid());
+        writeFile(file("out"), out);
+        writeFile(file("err"), err);
+        writeFile(file("exit"), QByteArray::number(exitCode));
+#ifdef _WIN32
+        program = file("exe");
+        const QString helper = QCoreApplication::applicationDirPath() + QStringLiteral("/bw-gen-helper.exe");
+        REQUIRE(QFile::copy(helper, program));
+        writeFile(file("mode"), "ssh");
+#else
+        program = dir.filePath(QStringLiteral("ssh"));
+        const QByteArray at = QFile::encodeName(dir.filePath(QStringLiteral("ssh.")));
+        writeFile(program, "#!/bin/sh\nfor a; do printf '%s\\0' \"$a\"; done > '" + at + "args'\ncat > '" + at +
+                               "stdin'\ncat '" + at + "out'\ncat '" + at + "err' >&2\nexit $(cat '" + at +
+                               "exit')\n");
+        chmod(QFile::encodeName(program).constData(), 0755);
+#endif
+    }
+    QString file(const char* ext) const { return dir.filePath(QStringLiteral("ssh.") + QLatin1String(ext)); }
+    bool ran() const { return QFile::exists(file("args")); }
+    QStringList args() const {
+        QStringList out;
+        for (const QByteArray& a : readAll(file("args")).split('\0'))
+            out << QString::fromUtf8(a);
+        out.removeLast();  // after the last NUL
+        return out;
+    }
+    QByteArray input() const { return readAll(file("stdin")); }
+};
+
+QStringList sshArguments(const QString& host, const QString& wip, const QString& slug, int round, std::size_t size) {
+    QStringList out;
+    for (const std::string& a : pipeline::sshArguments({host.toStdString(), wip.toStdString()}, slug.toStdString(),
+                                                       round, size))
+        out << QString::fromStdString(a);
+    return out;
+}
+
 struct FakeSsh {
     QTemporaryDir dir;
     QString script, log, home, run, fifo;
 
     explicit FakeSsh(int exitCode = 0, int forward = -1) {
 #ifdef _WIN32
-        SKIP("the stand-in ssh is a shell script");
+        SKIP("the remote command runs in a POSIX sh, which Windows hasn't");
 #endif
         REQUIRE(dir.isValid());
         script = dir.filePath(QStringLiteral("ssh"));
@@ -336,8 +385,8 @@ TEST_CASE("Publish to Library and Send to WeeChat stamp a floating selection fir
         CHECK(plan->txt == irc::joinLines(pipeline::ircLines(ans)));
     }
     SECTION("send") {
-        FakeSsh ssh;
-        f.p->setSshProgram(ssh.script);
+        RecordingSsh ssh("NOFIFO\n");
+        f.p->setSshProgram(ssh.program);
         const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
                                           QStringLiteral("neon-skull"), 1);
         INFO(r.message.toStdString());
@@ -345,7 +394,7 @@ TEST_CASE("Publish to Library and Send to WeeChat stamp a floating selection fir
         CHECK_FALSE(f.w.selectTool()->floating());
         const std::string ans = f.w.document()->encode().bytes;
         CHECK(ans != unstamped);
-        CHECK(readAll(ssh.wip(QStringLiteral("neon-skull-r1.ans"))).toStdString() == ans);
+        CHECK(ssh.input().toStdString() == ans);
     }
 }
 
@@ -455,11 +504,58 @@ TEST_CASE("Send to WeeChat leaves the round there when the upload is cut short")
     }
 }
 
+TEST_CASE("Send to WeeChat hands ssh the remote command and the piece, and reads its answer") {
+    Fixture f;
+    appSettings()->remove(QStringLiteral("pipeline"));
+    const std::string ans = f.w.document()->encode().bytes;
+    const QStringList expected = sshArguments(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                              QStringLiteral("neon-skull"), 2, ans.size());
+    const auto send = [&](RecordingSsh& ssh) {
+        f.p->setSshProgram(ssh.program);
+        const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                          QStringLiteral("neon-skull"), 2);
+        INFO(r.message.toStdString());
+        CHECK(ssh.args() == expected);
+        CHECK(ssh.input().toStdString() == ans);
+        return r;
+    };
+    SECTION("a WeeChat reloads") {
+        RecordingSsh ssh("RELOADED\n");
+        const auto r = send(ssh);
+        CHECK(r.ok);
+        CHECK(r.reloaded);
+        CHECK(r.message.isEmpty());
+        CHECK(f.p->nextRound(QStringLiteral("neon-skull")) == 3);
+    }
+    SECTION("no WeeChat has a fifo") {
+        RecordingSsh ssh("NOFIFO\n");
+        const auto r = send(ssh);
+        CHECK(r.ok);
+        CHECK_FALSE(r.reloaded);
+        CHECK(r.message.contains(QStringLiteral("/fifo enable")));
+        CHECK(f.p->nextRound(QStringLiteral("neon-skull")) == 3);
+    }
+    SECTION("an answer that is neither, though ssh exits 0") {
+        RecordingSsh ssh("RELOADED\nsomething else\n");
+        const auto r = send(ssh);
+        CHECK_FALSE(r.ok);
+        CHECK(r.message == QStringLiteral("Sending to irc-host failed (exit 0)"));
+        CHECK(f.p->nextRound(QStringLiteral("neon-skull")) == 1);
+    }
+    SECTION("ssh fails after the remote command answered") {
+        RecordingSsh ssh("RELOADED\n", 255, "Connection to irc-host closed.\n");
+        const auto r = send(ssh);
+        CHECK_FALSE(r.ok);
+        CHECK(r.message == QStringLiteral("Sending to irc-host failed (exit 255):\nConnection to irc-host closed."));
+        CHECK(f.p->nextRound(QStringLiteral("neon-skull")) == 1);
+    }
+}
+
 TEST_CASE("Send to WeeChat refuses bad input and reports ssh failing") {
     Fixture f;
     SECTION("ssh fails") {
-        FakeSsh ssh(255);
-        f.p->setSshProgram(ssh.script);
+        RecordingSsh ssh({}, 255, "no route to host\n");
+        f.p->setSshProgram(ssh.program);
         const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
                                           QStringLiteral("neon-skull"), 1);
         CHECK_FALSE(r.ok);
@@ -467,8 +563,8 @@ TEST_CASE("Send to WeeChat refuses bad input and reports ssh failing") {
         CHECK(r.message.contains(QStringLiteral("no route to host")));
     }
     SECTION("bad input never runs ssh") {
-        FakeSsh ssh;
-        f.p->setSshProgram(ssh.script);
+        RecordingSsh ssh("RELOADED\n");
+        f.p->setSshProgram(ssh.program);
         CHECK_FALSE(f.p->sendToWeechat(QStringLiteral("-oProxyCommand=x"), QStringLiteral("~/w"),
                                        QStringLiteral("a"), 1).ok);
         CHECK_FALSE(f.p->sendToWeechat(QStringLiteral("h"), QStringLiteral("~/w;rm"), QStringLiteral("a"), 1).ok);
@@ -481,7 +577,7 @@ TEST_CASE("Send to WeeChat refuses bad input and reports ssh failing") {
         const auto lossy = f.p->sendToWeechat(QStringLiteral("h"), QStringLiteral("~/w"), QStringLiteral("a"), 1);
         CHECK_FALSE(lossy.ok);
         CHECK(lossy.message.contains(QStringLiteral("lose data")));
-        CHECK_FALSE(QFile::exists(ssh.log));
+        CHECK_FALSE(ssh.ran());
     }
     SECTION("a missing ssh") {
         f.p->setSshProgram(f.dir.filePath(QStringLiteral("no-ssh")));
@@ -493,8 +589,8 @@ TEST_CASE("Send to WeeChat refuses bad input and reports ssh failing") {
 
 TEST_CASE("Send to WeeChat through its dialogs remembers the host and the round") {
     Fixture f;
-    FakeSsh ssh;
-    f.p->setSshProgram(ssh.script);
+    RecordingSsh ssh("NOFIFO\n");
+    f.p->setSshProgram(ssh.program);
     appSettings()->remove(QStringLiteral("pipeline"));
     bool asked = false, confirmed = false, told = false;
     QString question, info;
@@ -525,7 +621,9 @@ TEST_CASE("Send to WeeChat through its dialogs remembers the host and the round"
     CHECK(told);
     CHECK(question.contains(QStringLiteral("irc-host:~/ascii/wip/neon-skull-r1.ans")));
     CHECK(info.contains(QStringLiteral("/fifo enable")));
-    CHECK(QFile::exists(ssh.wip(QStringLiteral("neon-skull-r1.ans"))));
+    CHECK(ssh.args() == sshArguments(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                     QStringLiteral("neon-skull"), 1, f.w.document()->encode().bytes.size()));
+    CHECK(ssh.input().toStdString() == f.w.document()->encode().bytes);
 
     CHECK(appSettings()->value(QStringLiteral("pipeline/host")).toString() == QStringLiteral("irc-host"));
     CHECK(f.p->nextRound(QStringLiteral("neon-skull")) == 2);

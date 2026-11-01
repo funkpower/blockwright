@@ -652,7 +652,7 @@ TEST_CASE("the CLI reads a generator's directory, skipping hidden entries and re
     CHECK_THROWS_AS(bwcli::readGeneratorDir(dir / "missing"), bwcli::Failure);
     const fs::path link = scratch("link");
     if (!bwtest::symlinksWork())
-        SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
+        SKIP("the symbolic-link tests don't run here: no right to make links (fs_quirks.h)");
     fs::create_directory_symlink(dir, link / "to-dir");
     CHECK_THROWS_AS(bwcli::readGeneratorDir(link / "to-dir"), bwcli::Failure);
     fs::create_symlink(dir / "gen.sh", dir / "lib" / "link.sh");
@@ -660,7 +660,7 @@ TEST_CASE("the CLI reads a generator's directory, skipping hidden entries and re
         bwcli::readGeneratorDir(dir);
         FAIL("no throw");
     } catch (const bwcli::Failure& f) {
-        CHECK_THAT(f.message, ContainsSubstring("lib/link.sh: not a plain file"));
+        CHECK_THAT(f.message, ContainsSubstring((fs::path("lib") / "link.sh").string() + ": not a plain file"));
     }
 }
 

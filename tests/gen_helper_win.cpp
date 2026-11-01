@@ -26,6 +26,13 @@
 //             stderr, exit 9009
 //   python2   "Python 2.7.18" on stderr, exit 0
 //   hang      sleep 10 s, then exit 0 with nothing printed
+//
+// or for an ssh in the Send to WeeChat tests (test_app_publish.cpp):
+//
+//   ssh       write each argument, ended by a NUL, to NAME.args and stdin
+//             to NAME.stdin, then write NAME.out to stdout and NAME.err to
+//             stderr (when there are such files) and exit with the number
+//             in NAME.exit (0 without one)
 
 #include <windows.h>
 
@@ -58,10 +65,30 @@ int cat(const char* file) {
 
 void touch(const char* file, const char* text) { std::ofstream(file, std::ios::binary) << text; }
 
-// A Python stand-in (above) doing what `modeFile` says.
-int python(const std::filesystem::path& modeFile, int argc, char** argv) {
-    std::ifstream in(modeFile, std::ios::binary);
-    const std::string mode = slurp(in);
+// The bytes of `p`, or nothing when there is no such file.
+std::string contents(const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return slurp(in);
+}
+
+// The ssh stand-in (above), its files named by `modeFile`.
+int ssh(std::filesystem::path modeFile, int argc, char** argv) {
+    std::string args;
+    for (int i = 1; i < argc; ++i)
+        (args += argv[i]) += '\0';
+    std::ofstream(modeFile.replace_extension(".args"), std::ios::binary) << args;
+    std::ofstream(modeFile.replace_extension(".stdin"), std::ios::binary) << slurp(std::cin);
+    std::cout << contents(modeFile.replace_extension(".out")) << std::flush;
+    std::cerr << contents(modeFile.replace_extension(".err")) << std::flush;
+    const std::string status = contents(modeFile.replace_extension(".exit"));
+    return status.empty() ? 0 : std::atoi(status.c_str());
+}
+
+// A Python or ssh stand-in (above) doing what `modeFile` says.
+int standIn(const std::filesystem::path& modeFile, int argc, char** argv) {
+    const std::string mode = contents(modeFile);
+    if (mode == "ssh")
+        return ssh(modeFile, argc, argv);
     if (mode == "alias") {
         std::cerr << "Python was not found; run without arguments to install from the Microsoft Store.\n";
         return 9009;
@@ -117,7 +144,7 @@ int main(int argc, char** argv) {
         modeFile.replace_extension(".mode");
         std::error_code ec;
         if (n > 0 && n < MAX_PATH && std::filesystem::is_regular_file(modeFile, ec))
-            return python(modeFile, argc, argv);
+            return standIn(modeFile, argc, argv);
     }
     const std::string mode = argc > 1 ? argv[1] : "";
     if (mode == "cat" && argc == 3)

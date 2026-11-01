@@ -11,19 +11,14 @@
 namespace bwtest {
 
 // Whether the symbolic-link tests run here. Windows makes symbolic links only
-// with the right to (Developer Mode, or an elevated process). Under wine it
-// makes them, and they read back as links, but the tests that use them don't
-// run there yet (#251): two use POSIX paths or expect `/` as the separator
-// (test_library.cpp's realBinDir case, test_generator.cpp's readGeneratorDir
-// case), and two (test_project.cpp's and test_pipeline.cpp's link swapped in
-// mid-save) see their own link as a plain file through a wine stat quirk in
-// the same process. Junctions, which need no right, are tested on Windows in
-// test_junction_win.cpp.
+// with the right to (Developer Mode, or an elevated process); wine makes them
+// always. Under wine a link must be named by a path with a drive: one named by
+// a path that starts with / reads as what it points at, so the tests' scratch
+// folder is on Z: there (tests/CMakeLists.txt). Junctions, which need no
+// right, are tested on Windows in test_junction_win.cpp.
 inline bool symlinksWork() {
 #ifdef _WIN32
     static const bool works = [] {
-        if (::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "wine_get_version"))
-            return false;
         namespace fs = std::filesystem;
         std::error_code ec;
         const fs::path link =

@@ -103,12 +103,20 @@ if(WIN32)
   target_link_options(bw-gen-helper PRIVATE -static)
   add_dependencies(blockwright-tests bw-gen-helper)
 endif()
+# The tests' scratch folder. Wine takes a path that starts with / for a host
+# path and reads a symbolic link named that way as what it points at (even
+# DeleteFileW removes the target), so under wine it is named on wine's drive
+# for /, Z:, where links behave as they do on Windows.
+set(BW_TEST_TMP "${CMAKE_CURRENT_BINARY_DIR}/catch-tmp")
+if(WIN32 AND CMAKE_CROSSCOMPILING)
+  set(BW_TEST_TMP "Z:${BW_TEST_TMP}")
+endif()
 # libzip and zstd to write the broken files test_project.cpp reads
 target_link_libraries(blockwright-tests PRIVATE blockwright::core blockwright_cli_io libzip::zip ${BW_ZSTD}
                                                 Qt6::Core Catch2::Catch2WithMain)
 target_compile_definitions(blockwright-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
                                                     BW_ANSIDRAW_DIR="${BW_ANSIDRAW_DIR}"
-                                                    BW_TEST_TMP="${CMAKE_CURRENT_BINARY_DIR}/catch-tmp"
+                                                    BW_TEST_TMP="${BW_TEST_TMP}"
                                                     BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
 catch_discover_tests(blockwright-tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
@@ -349,6 +357,9 @@ add_executable(blockwright-publish-tests
 target_link_libraries(blockwright-publish-tests PRIVATE blockwright_app Catch2::Catch2)
 target_compile_definitions(blockwright-publish-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 set_target_properties(blockwright-publish-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_RUNNER}")
+if(WIN32)
+  add_dependencies(blockwright-publish-tests bw-gen-helper)  # copied as the stand-in ssh
+endif()
 catch_discover_tests(blockwright-publish-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)

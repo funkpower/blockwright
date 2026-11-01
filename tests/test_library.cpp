@@ -241,7 +241,7 @@ TEST_CASE("writeStamp leaves the old stamp intact when a file can't be written")
     }
     SECTION("a symbolic link is never written through") {
         if (!bwtest::symlinksWork())
-            SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
+            SKIP("the symbolic-link tests don't run here: no right to make links (fs_quirks.h)");
         const fs::path outside = scratch("atomic-outside") / "target.ans";
         put(outside, "outside");
         fs::create_symlink(outside, dir / "pine.ans");
@@ -368,7 +368,7 @@ TEST_CASE("scanning a library finds stamps recursively, sorted, and lists what i
 
     SECTION("symbolic links: files are read through, folders and broken links are reported") {
         if (!bwtest::symlinksWork())
-            SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
+            SKIP("the symbolic-link tests don't run here: no right to make links (fs_quirks.h)");
         const fs::path shared = scratch("scan-shared");
         writeStamp(shared / "oak.ans", encodeStamp("Oak", "trees", {}, tree(), true));
         fs::create_directory_symlink(shared, dir / "linked");
@@ -453,7 +453,7 @@ TEST_CASE("the bundled library is found from the real executable, or where it wa
     fs::create_directories(dir / "links");
     { std::ofstream(dir / "prefix/bin/blockwright-cli") << "x"; }
     if (!bwtest::symlinksWork())
-        SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
+        SKIP("the symbolic-link tests don't run here: no right to make links (fs_quirks.h)");
     fs::create_symlink(dir / "prefix/bin/blockwright-cli", dir / "links/blockwright-cli-dev");
     const fs::path real = fs::canonical(dir / "prefix/bin");
     // through a link in another directory: the link's target's directory

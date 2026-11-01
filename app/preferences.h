@@ -25,7 +25,8 @@ namespace bw {
 inline constexpr char kFontsFolderKey[] = "fonts/folder";
 
 // The explicit setting, including empty, or the existing default under home.
-// A null home resolves through QDir::homePath(); tests can inject a scratch home.
+// A null home resolves through testing::home, or QDir::homePath() when that
+// is null too; tests can inject a scratch home.
 QString fontsFolderSetting(const QString& home = {});
 bool fontsFolderIsDefault();
 // Keeps `folder` as the fonts folder; empty clears it.
@@ -33,6 +34,13 @@ void setFontsFolderSetting(const QString& folder);
 
 // The catalogue of `folder` (bw::scanFontsFolder), or null for none (empty).
 std::shared_ptr<const FontCatalogue> loadFontsFolder(const QString& folder);
+
+namespace testing {
+// When not null, the home folder the default fonts folder is looked for
+// under. A test sets it on Windows, where QDir::homePath() is the user's
+// profile folder, which no variable it can set moves.
+inline QString home;
+} // namespace testing
 
 class PreferencesDialog : public QDialog {
     Q_OBJECT

@@ -866,7 +866,7 @@ TEST_CASE("a directory with a symbolic link is refused", "[project][io]") {
     const fs::path dir = scratch("symlink") / "piece";
     project::writeDirectory(everything(), dir);
     if (!bwtest::symlinksWork())
-        SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
+        SKIP("the symbolic-link tests don't run here: no right to make links (fs_quirks.h)");
     fs::create_symlink(fs::temp_directory_path(), dir / "refs" / "link.txt");
     CHECK_THROWS_AS(project::read(dir), ProjectError);
 }
@@ -1030,7 +1030,7 @@ TEST_CASE("a directory save doesn't follow symbolic links", "[project][io][safet
     project::writeDirectory(p, dir);
     writeBytes(root / "victim", "precious");
     if (!bwtest::symlinksWork())
-        SKIP("the symbolic-link tests don't run here: no right to make links, or wine (fs_quirks.h, #251)");
+        SKIP("the symbolic-link tests don't run here: no right to make links (fs_quirks.h)");
 
     // a hidden link where a predictable temporary file would go
     fs::create_symlink("../victim", dir / ".manifest.json.bw-tmp");
