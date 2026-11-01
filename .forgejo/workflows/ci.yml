@@ -1,0 +1,97 @@
+# CI for Linux: build and run the whole test suite in the blockwright-ci image
+# (.forgejo/ci/arch.Dockerfile), on the project's own self-hosted runner.
+#
+# Trigger policy: pushes to this repository's branches only. Only people with
+# write access can push here, and maintainers' PR branches live in this
+# repository, so a push covers them. Don't add pull_request or
+# pull_request_target. That alone doesn't keep strangers' code off the runner:
+# a fork or AGit pull request runs the workflow files in its own head commit,
+# whatever this file says. What stops it is the forge's controlled
+# registration (the maintainer decides who gets an account) plus Forgejo's
+# approval gate for pull requests from users without write access: Forgejo
+# holds a run when neither the PR's poster nor the user whose action fired it
+# has write access or is marked "always trust", however many of their PRs were
+# merged before; a held run's jobs stay blocked and no runner is offered them.
+# The maintainer accepts that as the runner's protection.
+#
+# These run without approval:
+# - a PR the maintainer opens from a fork branch (the maintainer's own fork
+#   included), and every later push to that branch, by anyone;
+# - a writer's push to a fork's PR branch, the "Update branch" button included;
+# - an approved run, or any run by an author marked "always trust";
+# - any fork or AGit PR run that is re-run (all jobs or one job). Forgejo
+#   clears a run's hold whenever it cancels it, and re-run never checks
+#   approval. A held run is cancelled by Deny; by Cancel, in the web UI or
+#   the API; by the PR being closed, which its author can do; by a newer run
+#   in the same concurrency group, which by default is every later push to
+#   the same PR; and by revoking trust. None of these leaves a mark that the
+#   run was held, so every push to an open fork or AGit PR leaves a cancelled
+#   run that can be re-run.
+# So never re-run a fork or AGit PR run (is_fork_pull_request: true); delete
+# it instead. Delete a fork or AGit PR's superseded runs while it is open, and
+# all its runs once it closes. Deny held runs and delete them; never approve
+# one or "always trust" its author; never open a PR from someone else's fork
+# branch, push to it or update it. Pull the commits into a branch of this
+# repository instead.
+#
+# The job needs no secrets. Forgejo gives each job a token that can write to
+# this repository and that every step can read; main's branch protection
+# refuses direct pushes, so it can't push to main.
+#
+# Network: jobs have outbound internet access, including to the project's own
+# public address. A job reaches whatever that address publishes, and its
+# traffic leaves from that address, so anything that trusts the address trusts
+# a job. The maintainer accepts this. The runner puts every job on one fixed
+# docker network that the dev machine firewalls: nothing in the private,
+# carrier-grade NAT, link-local or multicast ranges is reachable directly,
+# nothing over IPv6, and nothing on the dev machine itself. Names resolve
+# through the host's resolver.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+
+jobs:
+  linux:
+    name: linux (Arch, current Qt 6)
+    runs-on: bw-linux
+    container:
+      # Built on the runner's host by .forgejo/ci/build-image; never pulled.
+      image: blockwright-ci:arch-2
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out
+        env:
+          TOKEN: ${{ forgejo.token }}
+          URL: ${{ forgejo.server_url }}/${{ forgejo.repository }}.git
+          SHA: ${{ forgejo.sha }}
+        run: |
+          set -eu
+          cd "$HOME"
+          git init -q src
+          cd src
+          git remote add origin "$URL"
+          # The token goes in through the environment, not the command line.
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
+            GIT_CONFIG_VALUE_0="Authorization: token $TOKEN" \
+            git fetch -q --depth=1 origin "$SHA"
+          git checkout -q --detach FETCH_HEAD
+          git log -1 --format='%h %s'
+
+      - name: Configure
+        run: cmake -S "$HOME/src" -B "$HOME/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build "$HOME/build" -j8
+
+      # The install_notices tests each configure and build Blockwright again
+      # at -j8. Run beside each other and the rest of the suite, they need more
+      # than the job's 12 GB, so they run after it, one at a time.
+      - name: Test
+        run: ctest --test-dir "$HOME/build" -j8 --output-on-failure --timeout 300 --no-tests=error -E '^install_notices'
+
+      - name: Test (nested builds)
+        run: ctest --test-dir "$HOME/build" -j1 --output-on-failure --timeout 300 --no-tests=error -R '^install_notices'

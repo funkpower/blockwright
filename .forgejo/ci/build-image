@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Builds the CI image on the runner's host, under the tag the workflow names:
+#   blockwright-ci:arch-<rev>  (arch.Dockerfile)
+# Bump rev with any change to the Dockerfile, change the tag in ci.yml to match
+# in the same PR, and run this on the runner's host before merging.
+set -euo pipefail
+rev=2
+here=$(cd "$(dirname "$0")" && pwd)
+docker build -t "blockwright-ci:arch-$rev" -f "$here/arch.Dockerfile" "$here"
