@@ -24,7 +24,7 @@ Native ANSI/IRC art editor in C++20 / Qt 6. `PLAN.md` is the design; read it bef
 
 ## Public repo
 
-The repo, its history, issues and PRs are public. Tracked files, commit messages and PR or issue text carry no real names, personal host names, home-directory paths (write `~/…`), email addresses, tokens or other secrets, and nothing about anyone's employer or private infrastructure. People are "funkpower" or "the maintainer"; machines are "the dev machine". PRs are squash-merged, so the PR title and the first paragraph of its body become the commit on `main`.
+The repo, its history, issues and PRs are public. Tracked files, commit messages and PR or issue text carry no real names, personal host names, home-directory paths (write `~/…`), email addresses, tokens or other secrets, and nothing about anyone's employer or private infrastructure. The one exception is funkpower's maintainer address (the one on funkpower's commits), which may appear in exactly these packaging fields and nowhere else: the Debian `control` Maintainer field, the Debian `changelog` trailer, the rpm spec `%changelog`, and the AUR PKGBUILD `# Maintainer:` comment. Any other field, AppStream included, needs a new ruling from the maintainer. Tests may use placeholder addresses at reserved example domains (`example.org`, `example.com`, `.invalid`, `.test`), which belong to nobody. No other address and no other personal data goes anywhere. People are "funkpower" or "the maintainer"; machines are "the dev machine". PRs are squash-merged, so the PR title and the first paragraph of its body become the commit on `main`.
 
 ## Review
 
