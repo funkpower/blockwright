@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Builds Blockwright as an AppImage for x86_64 Linux.
+#
+#   scripts/package-appimage [--qmake PROGRAM] [--tools DIR] [--work DIR] [--out DIR]
+#
+#   --qmake  the qmake of the Qt 6 to bundle (default: $QMAKE, else qmake6 or
+#            qmake on PATH, else /usr/lib/qt6/bin/qmake)
+#   --tools  where linuxdeploy, its Qt and AppImage plugins and the AppImage
+#            runtime are kept, downloaded there and checked against their
+#            pinned sha256 if they aren't yet
+#            (default: ~/.cache/dw/toolchains/linuxdeploy)
+#   --work   build tree and AppDir (default: $BW_PACKAGE_WORK, else
+#            ~/.cache/dw/blockwright-appimage-build)
+#   --out    where the AppImage goes (default: dist/ in the repo)
+#
+# Environment: JOBS (default 8).
+#
+# A Release build without the tests is installed into an AppDir, linuxdeploy
+# copies Qt, its plugins and every other library the programs load into it,
+# except the ones each system must provide itself (glibc, OpenGL, X11 and
+# the like), and the AppImage is made from it: <out>/blockwright-<version>-x86_64.AppImage
+# and its .sha256. tests/appimage_test.sh then runs it. An AppImage runs on
+# systems whose glibc is at least the build system's: build it on the oldest
+# distribution Blockwright supports (packaging/README.md).
+#
+# The AppImage runs the editor; run under a name starting blockwright-cli (a
+# symlink), or with --cli first, it runs blockwright-cli.
+set -euo pipefail
+
+die() { echo "package-appimage: $*" >&2; exit 1; }
+[[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || die "run this on x86_64 Linux"
+root=$(cd "$(dirname "$0")/.." && pwd)
+
+qmake=${QMAKE:-}
+tools=$HOME/.cache/dw/toolchains/linuxdeploy
+work=${BW_PACKAGE_WORK:-$HOME/.cache/dw/blockwright-appimage-build}
+out=$root/dist
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --qmake) qmake=$2; shift 2 ;;
+    --tools) tools=$2; shift 2 ;;
+    --work) work=$2; shift 2 ;;
+    --out) out=$2; shift 2 ;;
+    -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument $1 (see --help)" ;;
+  esac
+done
+if [[ -z $qmake ]]; then
+  for q in qmake6 qmake /usr/lib/qt6/bin/qmake; do
+    command -v "$q" >/dev/null && { qmake=$(command -v "$q"); break; }
+  done
+fi
+[[ -n $qmake ]] && "$qmake" -query QT_VERSION 2>/dev/null | grep -q '^6\.' ||
+  die "no qmake for Qt 6: --qmake PROGRAM or QMAKE"
+qt_prefix=$("$qmake" -query QT_INSTALL_PREFIX)
+for tool in cmake ninja curl sha256sum file; do
+  command -v "$tool" >/dev/null || die "$tool is not on PATH"
+done
+mkdir -p "$tools" "$work" "$out"
+tools=$(cd "$tools" && pwd)
+work=$(cd "$work" && pwd)
+out=$(cd "$out" && pwd)
+jobs=${JOBS:-8}
+
+echo "== linuxdeploy"
+# Tagged releases, pinned: a tool whose bytes differ from these is fetched
+# again, and one that still differs stops the build. The AppImage runtime is
+# pinned too, as appimagetool would otherwise fetch its moving "continuous" one.
+pins=(
+  "linuxdeploy-x86_64.AppImage c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+   https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
+  "linuxdeploy-plugin-qt-x86_64.AppImage 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
+   https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage"
+  "linuxdeploy-plugin-appimage-x86_64.AppImage 992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3
+   https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage"
+  "runtime-x86_64 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+   https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64"
+)
+for pin in "${pins[@]}"; do
+  read -r name sha url <<<"$(echo $pin)"
+  f=$tools/$name
+  if ! echo "$sha  $f" | sha256sum -c --status 2>/dev/null; then
+    echo "downloading $name"
+    curl -fsSL -o "$f.part" "$url"
+    echo "$sha  $f.part" | sha256sum -c --status || { rm -f "$f.part"; die "$url isn't the pinned $name (sha256 $sha)"; }
+    mv "$f.part" "$f"
+  fi
+  chmod +x "$f"
+done
+
+echo "== build (Qt $("$qmake" -query QT_VERSION) in $qt_prefix)"
+build=$work/build appdir=$work/AppDir
+cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+  -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_PREFIX_PATH="$qt_prefix" >/dev/null
+nice -n 10 cmake --build "$build" -j "$jobs"
+version=$(sed -n 's/^CMAKE_PROJECT_VERSION:[A-Z]*=//p' "$build/CMakeCache.txt")
+[[ -n $version ]] || die "no project version in $build/CMakeCache.txt"
+rm -rf "$appdir"
+DESTDIR=$appdir cmake --install "$build" >/dev/null
+[[ -x $appdir/usr/bin/blockwright && -x $appdir/usr/bin/blockwright-cli ]] || die "the install left no $appdir/usr/bin"
+
+echo "== AppImage"
+appimage=$out/blockwright-$version-x86_64.AppImage
+rm -f "$appimage" "$appimage.sha256"
+# The AppImage tools are AppImages too: extracting themselves needs no FUSE.
+# The offscreen platform plugin lets the AppImage run without a display (its
+# check does); Wayland's runs it natively under Wayland, with the
+# shell-integration, decoration and graphics-integration plugins the Qt
+# plugin deploys for the waylandcompositor module (Qt 6 loads xdg-shell as a
+# plugin, so without them the wayland platform makes no window). The
+# libraries come stripped from the distribution and a Release build has no
+# debug info, so linuxdeploy's own (older) strip is left out. A Qt outside
+# the system's library path (Qt's own installer, aqtinstall) is found through
+# LD_LIBRARY_PATH, as the installed programs carry no RPATH. linuxdeploy runs
+# twice: it fills the AppDir, the notices for what it copied in are added,
+# and then it makes the AppImage.
+qt_libs=$("$qmake" -query QT_INSTALL_LIBS)
+linuxdeploy() {
+  (cd "$work" &&
+    PATH=$tools:$PATH APPIMAGE_EXTRACT_AND_RUN=1 QMAKE=$qmake \
+    LD_LIBRARY_PATH=$qt_libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
+    EXTRA_PLATFORM_PLUGINS="libqoffscreen.so;libqwayland-generic.so" EXTRA_QT_MODULES=waylandcompositor \
+    LDAI_OUTPUT=$appimage LDAI_RUNTIME_FILE=$tools/runtime-x86_64 \
+    LINUXDEPLOY_OUTPUT_VERSION=$version NO_STRIP=1 \
+    "$tools/linuxdeploy-x86_64.AppImage" --appdir "$appdir" "$@")
+}
+linuxdeploy --executable "$appdir/usr/bin/blockwright" --executable "$appdir/usr/bin/blockwright-cli" \
+  --desktop-file "$appdir/usr/share/applications/blockwright.desktop" \
+  --icon-file "$appdir/usr/share/icons/hicolor/256x256/apps/blockwright.png" \
+  --custom-apprun "$root/packaging/linux/AppRun" --plugin qt
+
+echo "== notices"
+# Every library in usr/lib gets a notice: Qt's and ICU's from
+# packaging/linux (with Qt's SBOMs), every other one its Debian package's
+# copyright file. bundled-libraries.txt lists library, origin and notice;
+# tests/appimage_test.sh checks it covers usr/lib.
+doc=$appdir/usr/share/doc/blockwright
+mkdir -p "$doc/licenses" "$doc/qt-sbom"
+qt_version=$("$qmake" -query QT_VERSION)
+icu_version=$(cd "$qt_libs" && ls libicuuc.so.*.* 2>/dev/null | sed -n '1s/^libicuuc\.so\.//p')
+debian_version=$(cat /etc/debian_version 2>/dev/null || echo unknown)
+sed -e "s/@QT_VERSION@/$qt_version/g" -e "s/@QT_MINOR@/${qt_version%.*}/g" \
+    -e "s/@ICU_VERSION@/${icu_version:-none}/g" -e "s/@ICU_TAG@/${icu_version//./-}/g" \
+    -e "s/@DEBIAN_VERSION@/$debian_version/g" \
+    "$root/packaging/linux/THIRD-PARTY.txt" > "$doc/THIRD-PARTY.txt"
+cp "$root/packaging/windows/licenses/LGPL-3.0-only.txt" "$root/packaging/linux/licenses/ICU-73.txt" "$doc/licenses/"
+for m in qtbase qtsvg qtimageformats qtwayland; do
+  sbom=$qt_prefix/sbom/$m-$qt_version.spdx
+  [[ -f $sbom ]] || die "no SBOM $sbom (bundle Qt's own build, which has them)"
+  cp "$sbom" "$doc/qt-sbom/"
+done
+list=$doc/bundled-libraries.txt
+: > "$list"
+for f in "$appdir"/usr/lib/*; do
+  name=$(basename "$f")
+  if [[ -e $qt_libs/$name ]]; then
+    case $name in
+      libQt6*) echo -e "$name\tQt $qt_version\tblockwright/THIRD-PARTY.txt" ;;
+      libicu*)
+        [[ ${icu_version%%.*} == 73 ]] || die "$name is ICU $icu_version; packaging/linux/licenses/ICU-73.txt is ICU 73's licence"
+        echo -e "$name\tICU $icu_version\tblockwright/licenses/ICU-73.txt" ;;
+      *) die "$name comes from Qt ($qt_libs) but has no notice: add it to packaging/linux/THIRD-PARTY.txt" ;;
+    esac >> "$list"
+    continue
+  fi
+  command -v dpkg >/dev/null || die "$name: dpkg finds the package and copyright of each library; build on Debian"
+  pkg=$(dpkg -S "*/$name" 2>/dev/null | sed -n '1s/:.*//p')
+  [[ -n $pkg ]] || die "$name: no Debian package has it"
+  cr=/usr/share/doc/$pkg/copyright
+  [[ -f $cr ]] || die "$name: $pkg has no $cr"
+  mkdir -p "$appdir/usr/share/doc/$pkg"
+  cp -L "$cr" "$appdir/usr/share/doc/$pkg/copyright"
+  echo -e "$name\t$pkg $(dpkg-query -W -f '${Version}' "$pkg")\t$pkg/copyright" >> "$list"
+done
+
+linuxdeploy --output appimage
+[[ -x $appimage ]] || die "linuxdeploy made no $appimage"
+
+echo "== check"
+BW_APPIMAGE_WAYLAND=require bash "$root/tests/appimage_test.sh" "$appimage" "$work/check" "$root/tests/data" || die "$appimage fails its check"
+sha=$(sha256sum "$appimage" | cut -d' ' -f1)
+printf '%s  %s\n' "$sha" "$(basename "$appimage")" > "$appimage.sha256"
+
+echo "== done"
+echo "$appimage ($(du -h "$appimage" | cut -f1), sha256 $sha)"

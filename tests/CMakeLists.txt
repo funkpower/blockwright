@@ -228,8 +228,18 @@ if(BW_PYTHON3)
     COMMAND ${BW_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/debian_copyright_test.py ${PROJECT_SOURCE_DIR})
 endif()
 
-# The desktop entry, icons and AppStream metadata of a Linux install
+# The desktop entry, icons and AppStream metadata of a Linux install, the
+# AppImage's AppRun, and the AppImage scripts/package-appimage made, when
+# BW_APPIMAGE names it
 if(UNIX AND NOT APPLE)
+  add_test(NAME appimage_apprun
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/apprun_test.sh ${PROJECT_SOURCE_DIR}/packaging/linux/AppRun
+            ${CMAKE_CURRENT_BINARY_DIR}/apprun-tmp)
+  if(BW_APPIMAGE)
+    add_test(NAME appimage
+      COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/appimage_test.sh ${BW_APPIMAGE}
+              ${CMAKE_CURRENT_BINARY_DIR}/appimage-tmp ${CMAKE_CURRENT_SOURCE_DIR}/data)
+  endif()
   add_test(NAME linux_desktop
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/linux_desktop_test.sh
             ${PROJECT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/linux-desktop-tmp

@@ -1,0 +1,13 @@
+#!/bin/sh
+# The AppImage's entry point: blockwright-cli when the AppImage is run under a
+# name starting blockwright-cli (a symlink to it) or with --cli first, else
+# the editor.
+here=$(dirname "$(readlink -f "$0")")
+case $(basename "${ARGV0:-$0}") in
+  blockwright-cli*) exec "$here/usr/bin/blockwright-cli" "$@" ;;
+esac
+if [ "${1-}" = --cli ]; then
+  shift
+  exec "$here/usr/bin/blockwright-cli" "$@"
+fi
+exec "$here/usr/bin/blockwright" "$@"

@@ -5,7 +5,8 @@
 - Windows: an MSI cross-built on Linux with `scripts/package-windows`
   ([windows/README.md](windows/README.md)).
 - Linux: a source tarball made by `scripts/release`, and the distribution
-  packages built from it (below): Arch (AUR), Debian and Ubuntu, Fedora.
+  packages built from it (below): Arch (AUR), Debian and Ubuntu, Fedora, and
+  an AppImage.
 
 PLAN §14 records the decisions behind them, and [RELEASING.md](RELEASING.md)
 is the checklist for publishing a version.
@@ -146,6 +147,83 @@ copy.
 `linux_packages` checks that `debian/changelog`'s newest entry, the spec's
 `Version` and the manual pages are the tree's version, and that
 `blockwright-cli.1` describes every command `blockwright-cli --help` lists.
+
+### AppImage
+
+`scripts/package-appimage` builds `dist/blockwright-<version>-x86_64.AppImage`
+and its `.sha256`: a Release build installed into an AppDir, with Qt, its
+plugins (X11, Wayland and offscreen platforms, Wayland's shell-integration,
+decoration and graphics-integration plugins, SVG, image formats) and every
+other library the programs load copied in by
+[linuxdeploy](https://github.com/linuxdeploy/linuxdeploy) and its Qt plugin.
+The notices for what it bundles are in `usr/share/doc/blockwright/`:
+`THIRD-PARTY.txt` (from `packaging/linux/`), the LGPL v3 that Qt is used under
+(the Windows package's copy), ICU 73's licence, Qt's SBOMs, and
+`bundled-libraries.txt`, which names each library in `usr/lib`, its origin
+(Qt, ICU or a Debian package with its version) and its notice; every Debian
+package's `copyright` file is copied to `usr/share/doc/<package>/`.
+Only the libraries each system has to provide itself come from the host:
+glibc, the C++ runtime, OpenGL, X11 and XCB, fontconfig, FreeType and the like
+(on a minimal Debian 12 or Ubuntu 24.04: `libgl1`, `libegl1`, `libfontconfig1`,
+`libx11-xcb1` and `libwayland-client0`).
+The script downloads linuxdeploy and its Qt and AppImage plugins, tagged
+releases pinned by sha256, to `~/.cache/dw/toolchains/linuxdeploy/`
+(`--tools`).
+
+An AppImage runs where glibc is at least as new as the build system's, so the
+release is built on the oldest supported release, Debian 12 (glibc 2.36). Debian
+12's Qt, 6.4.2, is older than the Qt 6.7 minimum (#263), so the AppImage bundles
+Qt's own 6.8.3 build (6.8 is a long-term-support release; it needs glibc 2.28)
+with `qtimageformats`, installed with aqtinstall:
+
+```sh
+python3 -m venv ~/.cache/dw/toolchains/aqt-venv
+~/.cache/dw/toolchains/aqt-venv/bin/pip install aqtinstall
+cd ~/.cache/dw/toolchains
+aqt-venv/bin/aqt install-qt -O qt-appimage linux desktop 6.8.3 linux_gcc_64 -m qtimageformats
+# Qt is then in ~/.cache/dw/toolchains/qt-appimage/6.8.3/gcc_64
+```
+
+Then, from the release tarball (its `packaging/tarball-commit` gives
+`--version` the commit without git), in a Debian 12 container with the
+libraries Qt's plugins load, which linuxdeploy copies in or leaves to the
+system:
+
+```sh
+tar xzf blockwright-<version>.tar.gz && cd blockwright-<version>
+docker run --rm --cpus 8 -v "$PWD":/src:ro -v ~/.cache/dw/toolchains/linuxdeploy:/tools \
+  -v ~/.cache/dw/toolchains/qt-appimage/6.8.3/gcc_64:/qt:ro -v "$PWD/dist":/out debian:12 bash -c '
+  apt-get update && apt-get install -y --no-install-recommends build-essential cmake \
+    ninja-build libgl-dev libegl-dev libfontconfig-dev libfreetype-dev libxkbcommon-dev \
+    libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+    libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 \
+    libx11-xcb1 libwayland-client0 libwayland-cursor0 libwayland-egl1 libdbus-1-3 \
+    libglib2.0-0 libzip-dev zipcmp zipmerge ziptool libzstd-dev curl file ca-certificates \
+    weston &&
+  useradd -m bw && mkdir /w && chown bw /w /out /tools &&
+  su bw -c "/src/scripts/package-appimage --qmake /qt/bin/qmake --tools /tools --work /w --out /out"'
+```
+
+The AppImage runs the editor. Run under a name starting `blockwright-cli` (a
+symlink to it) or with `--cli` first, it runs `blockwright-cli`:
+
+```sh
+ln -s blockwright-<version>-x86_64.AppImage ~/.local/bin/blockwright-cli
+blockwright-cli render piece.ans piece.png
+./blockwright-<version>-x86_64.AppImage --cli lint piece.ans
+```
+
+Running an AppImage needs FUSE 2 (`libfuse2`); without it, set
+`APPIMAGE_EXTRACT_AND_RUN=1` or run it with `--appimage-extract-and-run`.
+Where AppImageLauncher is installed, its binfmt handler runs every AppImage
+under the AppImage's own path, so a `blockwright-cli` symlink starts the
+editor; use `--cli` there.
+The script finishes with `tests/appimage_test.sh`, which runs the AppImage
+offscreen and, under a headless weston (hence `weston` above), on Wayland,
+checks with `ldd` that nothing in it loads Qt or Qt's libraries from the
+system, and checks that every bundled library has its notice; with
+`-DBW_APPIMAGE=<file>`, `ctest` runs it as the `appimage` test, which skips
+the Wayland run where weston isn't installed. `appimage_apprun` tests `packaging/linux/AppRun`.
 
 ## macOS: Blockwright.app, the disk image and the Homebrew cask
 

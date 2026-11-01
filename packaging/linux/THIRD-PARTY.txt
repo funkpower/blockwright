@@ -1,0 +1,31 @@
+Third-party software in the AppImage
+
+Beyond what NOTICE lists, the AppImage carries the following. The licence
+texts are in the licenses directory beside this file, and
+bundled-libraries.txt names every library in usr/lib, where it came from and
+the file that holds its notice.
+
+- Qt @QT_VERSION@ (the libQt6 libraries in usr/lib and the plugins in
+  usr/plugins), The Qt Company Ltd and other contributors, https://www.qt.io/,
+  used under the GNU Lesser General Public License v3
+  (licenses/LGPL-3.0-only.txt, with the GNU GPL v3 in LICENSE).
+  The Qt libraries are unmodified and loaded from separate shared libraries,
+  which can be replaced with other builds of the same Qt version: extract the
+  AppImage with --appimage-extract, replace them in squashfs-root/usr/lib or
+  squashfs-root/usr/plugins, and run squashfs-root/AppRun. Their source:
+  https://download.qt.io/archive/qt/@QT_MINOR@/@QT_VERSION@/submodules/
+  Qt includes third-party code under its own licences; the qt-sbom directory
+  lists each component, its version and its licence.
+
+- ICU @ICU_VERSION@ (libicudata, libicui18n and libicuuc in usr/lib), Unicode,
+  Inc. and others, https://icu.unicode.org/, as built by The Qt Company for
+  Qt, under the Unicode licence and the third-party licences that file lists
+  (licenses/ICU-73.txt). Its source:
+  https://github.com/unicode-org/icu/releases/tag/release-@ICU_TAG@
+
+- The other libraries in usr/lib are unmodified copies from the Debian
+  @DEBIAN_VERSION@ packages the AppImage was built on. Each package's
+  copyright file, which gives its authors and licences, is in
+  ../<package>/copyright (usr/share/doc/<package>/copyright); the source of
+  every Debian package is at https://sources.debian.org/ and
+  https://snapshot.debian.org/.

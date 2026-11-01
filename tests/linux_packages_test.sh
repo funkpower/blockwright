@@ -7,7 +7,8 @@
 # CMakeLists.txt, and the files the packages need are there: debian/rules
 # runnable, debian/source/format 3.0 (quilt), and a %changelog entry in the
 # spec for its Version-Release, and %license holds every notice. blockwright-cli.1 describes every command
-# blockwright-cli --help lists.
+# blockwright-cli --help lists. The AppImage's THIRD-PARTY.txt links Qt's source
+# under download.qt.io/archive/qt/, which keeps every release.
 set -uo pipefail
 src=$1
 fails=0
@@ -89,6 +90,18 @@ else
   done
   [[ -z $missing ]] && ok "blockwright-cli.1 describes all $(wc -w <<<"$commands") commands" ||
     bad "blockwright-cli.1 doesn't describe:$missing"
+fi
+
+# official_releases/qt/ keeps only the current minors, so a link there dies
+# once the bundled Qt's minor is superseded
+third=$src/packaging/linux/THIRD-PARTY.txt
+qt_link='https://download.qt.io/archive/qt/@QT_MINOR@/@QT_VERSION@/submodules/'
+if grep -q 'download\.qt\.io/official_releases' "$third"; then
+  bad "THIRD-PARTY.txt links Qt's source under official_releases, which drops old minors: $(grep -n 'official_releases' "$third")"
+elif grep -qF "$qt_link" "$third"; then
+  ok "THIRD-PARTY.txt links Qt's source under download.qt.io/archive/qt/"
+else
+  bad "THIRD-PARTY.txt has no link to Qt's source ($qt_link)"
 fi
 
 exit $((fails > 0))

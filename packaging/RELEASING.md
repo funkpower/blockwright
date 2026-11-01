@@ -92,20 +92,29 @@ with `lintian` and `rpmlint` clean. The `.deb` of one release is for that
 release only, so name the distribution in each file uploaded to the release
 (`blockwright_<version>-1_ubuntu26.04_amd64.deb`, `blockwright-<version>-1.fc44.x86_64.rpm`).
 
-## 5. macOS (dmg and Homebrew cask)
+## 5. AppImage
+
+From the uploaded tarball, in a Debian 12 container with Qt 6.8.3:
+`scripts/package-appimage`, as in
+[README.md § AppImage](README.md#appimage); it checks the AppImage before it
+writes the `.sha256`. Upload `blockwright-<version>-x86_64.AppImage` and its
+`.sha256`.
+
+## 6. macOS (dmg and Homebrew cask)
 
 On a Mac at the tag: build the dmg, upload it with its `.sha256`, and publish
 the cask, as in [README.md § Homebrew](README.md#homebrew).
 
-## 6. Windows (MSI)
+## 7. Windows (MSI)
 
 On the dev machine at the tag: `scripts/package-windows`, as in
 [windows/README.md § The MSI](windows/README.md#the-msi), then upload
 `dist/blockwright-<version>-x86_64.msi`.
 
-## 7. After publishing
+## 8. After publishing
 
 - Install each package from where users get it and run `blockwright --version`
   and `blockwright-cli --version`: `yay -S blockwright` on Arch, the dmg and
-  `brew install --cask blockwright` on a Mac, the MSI on Windows.
+  `brew install --cask blockwright` on a Mac, the MSI on Windows, the AppImage
+  (`--version` and `--cli --version`) on a current Linux.
 - Note the release in the issue tracker if an issue was waiting on it.
