@@ -4,8 +4,77 @@
   with `scripts/package-macos` (below).
 - Windows: an MSI cross-built on Linux with `scripts/package-windows`
   ([windows/README.md](windows/README.md)).
+- Linux: a source tarball made by `scripts/release`, and the distribution
+  packages built from it (below).
 
-PLAN §14 records the decisions behind both.
+PLAN §14 records the decisions behind them, and [RELEASING.md](RELEASING.md)
+is the checklist for publishing a version.
+
+## Linux
+
+### The source tarball
+
+`scripts/release <version> [<ref>]` makes `dist/blockwright-<version>.tar.gz`
+and its `.sha256` with `git archive` of the tag `v<version>` or the given
+commit: only tracked, committed files, under `blockwright-<version>/`, the same
+bytes from the same commit. git writes the commit into
+`packaging/tarball-commit` (`export-subst` in `.gitattributes`), and a build of
+the tarball reports it in `--version` instead of asking git, which would answer
+for whatever repository the tarball was unpacked inside. The forge's own
+archive of a tag gets the same treatment. `--check DIR` builds the tarball and
+runs its tests without network.
+
+### Building without network
+
+Distribution builders have no network. Configure with
+
+- `-DBW_FETCH_CATCH2=OFF`: the tests use the installed Catch2 3, and the
+  configure stops with a message if there is none, rather than downloading it
+  (the default, ON, downloads a pinned Catch2 when none is installed);
+- or `-DBUILD_TESTING=OFF`: no tests, and no Catch2 needed.
+
+Nothing else is downloaded at build time. The `catch2_offline` test checks
+both switches.
+
+### Desktop files
+
+A Linux install also puts in `<prefix>/share/`:
+
+- `applications/blockwright.desktop`, the launcher entry (the GUI sets its
+  desktop file name from the name it runs as, so the entry matches it);
+- `icons/hicolor/{256x256,512x512}/apps/blockwright.png`, from
+  `packaging/linux/blockwright-{256,512}.png`;
+- `metainfo/online.pumpin.funkpower.blockwright.metainfo.xml`, the AppStream
+  metadata software centres read.
+
+The icons are `packaging/macos/icon-1024.png` scaled down; after redrawing it
+(below), remake them with ImageMagick:
+
+```sh
+for s in 256 512; do
+  magick packaging/macos/icon-1024.png -scale $((s * 100 / 1024))% -strip \
+    -define png:exclude-chunks=date,time packaging/linux/blockwright-$s.png
+done
+```
+
+`linux_desktop` installs a build and checks these files, with
+`desktop-file-validate` and `appstreamcli validate` where they are installed.
+
+### Arch Linux (AUR)
+
+`packaging/aur/blockwright/` builds a release tarball and
+`packaging/aur/blockwright-git/` the newest commit of `main`, each with its
+`.SRCINFO`. Both build with `BW_FETCH_CATCH2=OFF` against Arch's `catch2` and
+run the tests in `check()` with `QT_QPA_PLATFORM=offscreen`; `noto-fonts` is
+a check dependency because the layout tests measure text and a clean chroot has
+no font. `package()` copies the notices and the font's and icons' licences into
+`/usr/share/licenses/<pkgname>/` rather than linking them into
+`/usr/share/doc/`, which pacman's `NoExtract` may drop. The release
+PKGBUILD in the tree is a template: `scripts/release` writes the one for its
+tarball, with the version and checksum filled in, to
+`dist/aur/blockwright/`. After changing either PKGBUILD, regenerate its
+`.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO` and check both with
+`namcap`.
 
 ## macOS: Blockwright.app, the disk image and the Homebrew cask
 

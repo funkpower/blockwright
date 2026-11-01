@@ -1,0 +1,47 @@
+# Maintainer: funkpower
+pkgname=blockwright-git
+_pkgname=blockwright
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc='Editor for ANSI and IRC block art (development version)'
+arch=('x86_64' 'aarch64')
+url='https://git.pumpin.online/funkpower/blockwright'
+license=('GPL-3.0-or-later' 'CC-BY-SA-4.0' 'MIT')
+depends=('glibc' 'hicolor-icon-theme' 'libgcc' 'libstdc++' 'libzip' 'qt6-base' 'qt6-svg' 'zstd')
+makedepends=('catch2' 'cmake' 'git' 'ninja')
+checkdepends=('noto-fonts' 'python')
+optdepends=('qt6-imageformats: WebP, TIFF and other reference image formats'
+            'python: generator layers and scene scripts')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+source=("$_pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  local version
+  version=$(sed -n 's/^project(blockwright VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+  printf '%s.r%s.g%s' "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+build() {
+  cmake -S "$_pkgname" -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=None \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DBW_FETCH_CATCH2=OFF
+  cmake --build build
+}
+
+check() {
+  QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+  # the bundled font's and icons' licences, beside GPL-3.0-or-later's common
+  # one: copies, since NoExtract may leave out /usr/share/doc
+  local src="$_pkgname" lic="$pkgdir/usr/share/licenses/$pkgname"
+  install -Dm644 "$src/NOTICE" "$lic/NOTICE"
+  install -Dm644 "$src/third_party/oldschool-pc-fonts/LICENSE" "$lic/LICENSE.oldschool-pc-fonts"
+  install -Dm644 "$src/third_party/tabler-icons/LICENSE" "$lic/LICENSE.tabler-icons"
+}

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Blockwright
+GenericName=ANSI art editor
+Comment=Draw ANSI and IRC block art
+Exec=blockwright %f
+Icon=blockwright
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=ANSI;ASCII;IRC;CP437;textmode;art;

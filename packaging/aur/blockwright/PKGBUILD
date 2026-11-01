@@ -1,0 +1,37 @@
+# Maintainer: funkpower
+pkgname=blockwright
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Editor for ANSI and IRC block art'
+arch=('x86_64' 'aarch64')
+url='https://git.pumpin.online/funkpower/blockwright'
+license=('GPL-3.0-or-later' 'CC-BY-SA-4.0' 'MIT')
+depends=('glibc' 'hicolor-icon-theme' 'libgcc' 'libstdc++' 'libzip' 'qt6-base' 'qt6-svg' 'zstd')
+makedepends=('catch2' 'cmake' 'ninja')
+checkdepends=('noto-fonts' 'python')
+optdepends=('qt6-imageformats: WebP, TIFF and other reference image formats'
+            'python: generator layers and scene scripts')
+source=("$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+
+build() {
+  cmake -S "$pkgname-$pkgver" -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=None \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DBW_FETCH_CATCH2=OFF
+  cmake --build build
+}
+
+check() {
+  QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+  # the bundled font's and icons' licences, beside GPL-3.0-or-later's common
+  # one: copies, since NoExtract may leave out /usr/share/doc
+  local src="$pkgname-$pkgver" lic="$pkgdir/usr/share/licenses/$pkgname"
+  install -Dm644 "$src/NOTICE" "$lic/NOTICE"
+  install -Dm644 "$src/third_party/oldschool-pc-fonts/LICENSE" "$lic/LICENSE.oldschool-pc-fonts"
+  install -Dm644 "$src/third_party/tabler-icons/LICENSE" "$lic/LICENSE.tabler-icons"
+}

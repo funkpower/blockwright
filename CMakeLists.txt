@@ -44,7 +44,12 @@ include(GNUInstallDirs)
 if(WIN32 AND CMAKE_CROSSCOMPILING)
   set(DART_TESTING_TIMEOUT 300 CACHE STRING "Maximum time allowed before CTest will kill the test.")
 endif()
+# BUILD_TESTING (CTest's switch, default ON) builds the tests, which need
+# Catch2 3; OFF builds without them and without Catch2.
 include(CTest)
+# Distribution builders have no network: with BW_FETCH_CATCH2 OFF the tests
+# use the installed Catch2 3 or the configure stops and says so.
+option(BW_FETCH_CATCH2 "Download Catch2 when no installed Catch2 3 is found" ON)
 
 find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg)
 # Older Qt releases (6.8.3 among them) link the AGL framework, which the
@@ -79,6 +84,16 @@ endif()
 # so the binary never reports a stale commit; scripts/install-dev sets it
 # because it builds from an exported tree with no .git.
 set(BLOCKWRIGHT_GIT_COMMIT "" CACHE STRING "Commit reported by --version (empty: ask git at build time)")
+# A tree made by `git archive` (scripts/release, or the forge's archive of a
+# tag) has no .git; git wrote the commit into packaging/tarball-commit
+# (export-subst). Read it rather than ask git, which would answer for whatever
+# repository the tree was unpacked inside: a packaging repository's own.
+if(NOT BLOCKWRIGHT_GIT_COMMIT AND EXISTS ${CMAKE_SOURCE_DIR}/packaging/tarball-commit)
+  file(STRINGS ${CMAKE_SOURCE_DIR}/packaging/tarball-commit bw_tarball_commit LIMIT_COUNT 1)
+  if(bw_tarball_commit MATCHES "^[0-9a-f]+$")
+    set(BLOCKWRIGHT_GIT_COMMIT ${bw_tarball_commit})
+  endif()
+endif()
 set(BW_VERSION_HEADER ${CMAKE_BINARY_DIR}/generated/blockwright/version.h)
 add_custom_target(bw_version ALL
   COMMAND ${CMAKE_COMMAND}
@@ -103,6 +118,20 @@ install(FILES third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fo
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/oldschool-pc-fonts)
 install(FILES third_party/tabler-icons/LICENSE third_party/tabler-icons/README.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/tabler-icons)
+
+# The desktop entry, icon and AppStream metadata of a Linux (freedesktop)
+# install, which the distribution packages and the AppImage carry.
+# packaging/linux/blockwright-*.png are icon-1024.png scaled down
+# (packaging/README.md).
+if(UNIX AND NOT APPLE)
+  install(FILES packaging/linux/blockwright.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+  install(FILES packaging/linux/online.pumpin.funkpower.blockwright.metainfo.xml
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+  foreach(size 256 512)
+    install(FILES packaging/linux/blockwright-${size}.png
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps RENAME blockwright.png)
+  endforeach()
+endif()
 
 # The bundled Library (PLAN §12): stamps the GUI and `blockwright-cli library
 # list` find from the binaries' directory, <prefix>/share/blockwright/library/.

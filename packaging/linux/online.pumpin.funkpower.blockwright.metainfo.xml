@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>online.pumpin.funkpower.blockwright</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later AND CC-BY-SA-4.0 AND MIT</project_license>
+  <name>Blockwright</name>
+  <summary>Draw ANSI and IRC block art</summary>
+  <developer id="online.pumpin.funkpower">
+    <name>funkpower</name>
+  </developer>
+  <description>
+    <p>
+      Blockwright is an editor for ANSI art in CP437 block characters and for
+      IRC colour art. It has half-block, shade and form brushes, layers,
+      text faces and styles, a library of stamps, and generator layers that
+      run scripts.
+    </p>
+    <p>
+      It reads and writes .ans with SAUCE, XBIN and BIN, exports IRC text
+      within a line budget and checks a piece against lint rules. The
+      blockwright-cli command renders, converts and checks pieces without a
+      display.
+    </p>
+  </description>
+  <launchable type="desktop-id">blockwright.desktop</launchable>
+  <url type="homepage">https://git.pumpin.online/funkpower/blockwright</url>
+  <url type="bugtracker">https://git.pumpin.online/funkpower/blockwright/issues</url>
+  <provides>
+    <binary>blockwright</binary>
+    <binary>blockwright-cli</binary>
+  </provides>
+  <categories>
+    <category>Graphics</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

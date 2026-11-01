@@ -6,6 +6,13 @@ set(BW_ANSIDRAW_DIR "$ENV{BW_ANSIDRAW_DIR}" CACHE PATH
 
 find_package(Catch2 3 QUIET)
 if(NOT Catch2_FOUND)
+  if(NOT BW_FETCH_CATCH2)
+    message(FATAL_ERROR
+      "The tests need Catch2 3, which wasn't found, and BW_FETCH_CATCH2 is OFF, "
+      "so it won't be downloaded. Install Catch2 3 (or name its prefix in "
+      "CMAKE_PREFIX_PATH), turn BW_FETCH_CATCH2 on, or configure with "
+      "-DBUILD_TESTING=OFF to build without the tests.")
+  endif()
   include(FetchContent)
   FetchContent_Declare(Catch2
     URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.8.1.tar.gz
@@ -206,6 +213,35 @@ if(CMAKE_GENERATOR MATCHES "^Ninja")
   set_tests_properties(install_notices_multi_config PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
   set_tests_properties(install_notices_multi_config_debug_env PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CMAKE_CONFIGURATION_TYPES=Debug")
+endif()
+
+# The desktop entry, icons and AppStream metadata of a Linux install
+if(UNIX AND NOT APPLE)
+  add_test(NAME linux_desktop
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/linux_desktop_test.sh
+            ${PROJECT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/linux-desktop-tmp
+            ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR} "$<CONFIG>")
+endif()
+
+# Distribution builds have no network: BW_FETCH_CATCH2=OFF never downloads,
+# and BUILD_TESTING=OFF needs no Catch2
+if(Catch2_FOUND)
+  set(bw_catch2_dir ${Catch2_DIR})
+else()
+  set(bw_catch2_dir "")
+endif()
+add_test(NAME catch2_offline
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/catch2_offline_test.sh
+          ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/catch2-offline-tmp
+          ${CMAKE_GENERATOR} ${Qt6_DIR} "${bw_prefix_path}" "${bw_catch2_dir}")
+
+# scripts/release (run on Linux): the same tarball of a commit every time,
+# committed files only
+if(UNIX AND NOT APPLE)
+  add_test(NAME release_tarball
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/release_test.sh
+            ${PROJECT_SOURCE_DIR}/scripts/release ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/release-tmp)
+  set_tests_properties(release_tarball PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 add_test(NAME forge_merge

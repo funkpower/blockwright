@@ -1,0 +1,2 @@
+# git archive writes the commit into it (packaging/README.md, release tarballs)
+packaging/tarball-commit export-subst

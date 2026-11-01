@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Make the release source tarball of a version:
+#
+#   scripts/release [--out DIR] [--repo DIR] [--check DIR] <version> [<ref>]
+#
+#   <version>  the version, as in project(VERSION) in CMakeLists.txt at <ref>
+#   <ref>      the tag or commit to package (default: v<version>)
+#   --out      where the tarball goes (default: dist/ in the repository)
+#   --repo     the repository to package (default: the one holding this script)
+#   --check    then unpack the tarball in DIR (below ~/.cache/dw/), build it
+#              with BW_FETCH_CATCH2=OFF and run ctest, without network where
+#              `unshare --net` works; it needs Catch2 3 installed or named in
+#              CMAKE_PREFIX_PATH
+#
+# Writes <out>/blockwright-<version>.tar.gz, whose files sit under
+# blockwright-<version>/, <out>/blockwright-<version>.tar.gz.sha256
+# (sha256sum's format), and the AUR package's <out>/aur/blockwright/PKGBUILD
+# for that tarball with its .SRCINFO (where makepkg runs). The tarball is
+# `git archive` of the commit, so only committed, tracked files go in;
+# untracked and modified ones never do. The same commit
+# gives the same bytes: the entries carry the commit's time, gzip records no
+# name or time, and the file modes and the commit written into
+# packaging/tarball-commit don't depend on the local git configuration.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+out=
+check=
+args=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --out) out=$2; shift 2 ;;
+    --repo) repo=$2; shift 2 ;;
+    --check) check=$2; shift 2 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+    -*) echo "release: unknown option $1" >&2; exit 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+if [[ ${#args[@]} -lt 1 || ${#args[@]} -gt 2 ]]; then
+  echo "usage: scripts/release [--out DIR] [--repo DIR] [--check DIR] <version> [<ref>]" >&2
+  exit 2
+fi
+version=${args[0]}
+ref=${args[1]:-v$version}
+if [[ ! $version =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+  echo "release: $version isn't a version (digits and dots)" >&2; exit 2
+fi
+[[ -n $out ]] || out=$repo/dist
+
+if ! commit=$(git -C "$repo" rev-parse --verify -q "$ref^{commit}"); then
+  echo "release: no commit $ref in $repo" >&2; exit 1
+fi
+# the version the tree itself builds as
+have=$(git -C "$repo" show "$commit:CMakeLists.txt" |
+  sed -n 's/^project(blockwright VERSION \([0-9.]*\).*/\1/p' | head -n 1)
+if [[ $have != "$version" ]]; then
+  echo "release: $ref is version ${have:-unknown} (project(VERSION) in CMakeLists.txt), not $version" >&2
+  exit 1
+fi
+
+name=blockwright-$version
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+tarball=$out/$name.tar.gz
+git -C "$repo" -c core.abbrev=7 -c tar.umask=0022 archive --format=tar --prefix="$name/" "$commit" |
+  gzip -n -9 > "$tarball.new"
+mv "$tarball.new" "$tarball"
+(cd "$out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+echo "release: $tarball ($(git -C "$repo" rev-parse --short=7 "$commit"))"
+cat "$tarball.sha256"
+
+# The AUR package of this tarball: the commit's packaging/aur/blockwright with
+# pkgver, pkgrel and sha256sums filled in, and its .SRCINFO where makepkg is
+# installed and runs. The PKGBUILD's own sum can't be the tarball's, which holds it.
+if git -C "$repo" cat-file -e "$commit:packaging/aur/blockwright/PKGBUILD" 2>/dev/null; then
+  aur=$out/aur/blockwright
+  mkdir -p "$aur"
+  sum=$(cut -d' ' -f1 "$tarball.sha256")
+  git -C "$repo" show "$commit:packaging/aur/blockwright/PKGBUILD" |
+    sed -e "s/^pkgver=.*/pkgver=$version/" -e 's/^pkgrel=.*/pkgrel=1/' \
+        -e "s/^sha256sums=.*/sha256sums=('$sum')/" > "$aur/PKGBUILD"
+  # makepkg refuses to run as root, even for --printsrcinfo: then, as without
+  # makepkg, the PKGBUILD goes out alone and the note says what to run
+  rm -f "$aur/.SRCINFO" "$aur/.SRCINFO.new"
+  if ! command -v makepkg >/dev/null; then
+    echo "release: $aur/PKGBUILD (no makepkg here: make its .SRCINFO with makepkg --printsrcinfo)"
+  elif (cd "$aur" && makepkg --printsrcinfo > .SRCINFO.new) 2>"$aur/.SRCINFO.err"; then
+    mv "$aur/.SRCINFO.new" "$aur/.SRCINFO"
+    rm -f "$aur/.SRCINFO.err"
+    echo "release: $aur/PKGBUILD and .SRCINFO"
+  else
+    rc=$?
+    echo "release: $aur/PKGBUILD (makepkg --printsrcinfo failed with $rc: $(head -n 1 "$aur/.SRCINFO.err");" \
+         "make its .SRCINFO with makepkg --printsrcinfo as a user who isn't root)"
+    rm -f "$aur/.SRCINFO.new" "$aur/.SRCINFO.err"
+  fi
+fi
+
+[[ -n $check ]] || exit 0
+
+# --check: the tarball alone builds and passes its tests, without network
+case $(realpath -m -- "$check") in
+  "$(realpath -m -- "$HOME/.cache/dw")"/?*) ;;
+  *) echo "release: --check $check must be below ~/.cache/dw/" >&2; exit 2 ;;
+esac
+check=$(realpath -m -- "$check")
+rm -rf "$check/$name" "$check/build"
+mkdir -p "$check"
+tar -xzf "$tarball" -C "$check"
+offline=()
+if unshare --map-current-user --net true 2>/dev/null; then
+  offline=(unshare --map-current-user --net)
+  echo "release: checking without network"
+else
+  echo "release: unshare --net is unavailable here; checking with the network up" >&2
+fi
+"${offline[@]}" cmake -S "$check/$name" -B "$check/build" -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBW_FETCH_CATCH2=OFF
+"${offline[@]}" nice -n 10 cmake --build "$check/build" -j 8
+(cd "$check/build" && QT_QPA_PLATFORM=offscreen "${offline[@]}" nice -n 10 ctest -j 8 --output-on-failure)
+version_out=$("$check/build/cli/blockwright-cli" --version | head -n 1)
+want="blockwright-cli $version ($(git -C "$repo" rev-parse --short=7 "$commit"))"
+if [[ $version_out != "$want" ]]; then
+  echo "release: the built CLI says '$version_out', not '$want'" >&2; exit 1
+fi
+echo "release: $name builds and passes its tests; --version: $version_out"
