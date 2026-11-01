@@ -1269,7 +1269,9 @@ TEST_CASE("paths are one under full case folding, for every code point", "[proje
             if (!project::samePath(s, utf8(other)))
                 apart.push_back(s + " " + utf8(other));
     }
-    CHECK(swept > 150'000);  // Unicode 16 assigns over 150 000 outside private use
+    // the sweep saw Qt's Unicode data: over 149 000 code points are
+    // assigned outside private use (149 251 in Qt 6.7, 149 878 in 6.8)
+    CHECK(swept > 149'000);
     INFO(apart.size() << " apart, first: " << (apart.empty() ? "" : apart.front()));
     CHECK(apart.empty());
     CHECK_FALSE(project::samePath("refs/a", "refs/b"));

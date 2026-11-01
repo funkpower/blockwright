@@ -46,7 +46,7 @@ if(WIN32 AND CMAKE_CROSSCOMPILING)
 endif()
 include(CTest)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg)
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg)
 # Older Qt releases (6.8.3 among them) link the AGL framework, which the
 # macOS 26 SDK no longer has; Qt uses nothing in it.
 if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)

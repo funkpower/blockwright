@@ -201,7 +201,9 @@ QImage readReferencePicture(const QByteArray& bytes, qint64 limit, QSize* origin
             *error = QStringLiteral("The picture's dimensions could not be read.");
         return {};
     }
-    const bool scaledDecode = reader.supportsOption(QImageIOHandler::ScaledSize);
+    // Qt's PNG handler (Qt 6.7's, at least) offers ScaledSize but decodes the
+    // whole picture and scales it afterwards, so a PNG is held to the ceiling.
+    const bool scaledDecode = reader.supportsOption(QImageIOHandler::ScaledSize) && format != "png";
     if (!scaledDecode && qint64(size.width()) * size.height() > kMaxReferenceDecodePixels) {
         if (error)
             *error = QStringLiteral("The picture is too large to decode: %1 × %2 pixels (limit %3).")

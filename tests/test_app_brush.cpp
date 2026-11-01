@@ -1379,6 +1379,16 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
         CHECK(changed(w) == std::set<std::pair<int, int>>{{2, 2}, {3, 2}, {4, 2}});
         CHECK(w.document()->undoStack()->count() == 1);
     }
+    // Qt before 6.8 sends a tablet release under a popup to the canvas's
+    // window as any other and records it, so the press after it is an
+    // ordinary one with a tablet grab: a pen lifted off the canvas still
+    // comes here and drags the stroke out to it, and a press of another
+    // button is that button's. The cases that need Qt to keep the pen down
+    // (#46) arise from Qt 6.8.
+    const auto penKeptDownUnderPopup = [] {
+        if (QT_VERSION < QT_VERSION_CHECK(6, 8, 0))
+            SKIP("Qt before 6.8 records a tablet release under a popup (#46 doesn't arise)");
+    };
     SECTION("a stylus press right after a release under a popup") {
         // #46: the release goes through the popup, so Qt keeps the pen down
         // and sends the next press, with no hover between, as a move.
@@ -1511,6 +1521,7 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
             bwtest::systemTablet(v, off, Qt::NoButton, 0.0);
         };
         SECTION("lifted off the canvas, its stroke lands when the pen hovers back") {
+            penKeptDownUnderPopup();
             strokeLiftedOffCanvas();
             bwtest::systemTablet(v, pixel(v, 30, 4), Qt::NoButton, 0.0);
             CHECK_FALSE(dragTool(w)->dragging());
@@ -1524,6 +1535,7 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
             CHECK(w.document()->undoStack()->count() == 3);
         }
         SECTION("lifted off the canvas, its stroke lands when the pen presses on it again") {
+            penKeptDownUnderPopup();
             // No hover over the canvas between: the press lands the old
             // stroke and starts its own, joined to nothing.
             strokeLiftedOffCanvas();
@@ -1537,6 +1549,7 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
             CHECK(w.document()->undoStack()->count() == 3);
         }
         SECTION("lifted off the canvas, its stroke lands when another button presses on it") {
+            penKeptDownUnderPopup();
             strokeLiftedOffCanvas();
             bwtest::systemTablet(v, pixel(v, 11, 4), Qt::RightButton, 1.0);
             CHECK(dragTool(w)->dragging());
@@ -1563,6 +1576,7 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
             CHECK(w.document()->undoStack()->count() == 3);
         }
         SECTION("a click in keyboard mode with another button moves the cell cursor") {
+            penKeptDownUnderPopup();
             // Codex round 2: Qt sends the right press as the left button's;
             // keyboard mode doesn't take it, so it moves the cell cursor as
             // a click does.
@@ -1578,6 +1592,7 @@ TEST_CASE("a popup that opens during a mouse drag ends it; a stylus stroke goes 
         bwtest::systemTablet(v, pixel(v, 50, 4), Qt::NoButton, 0.0);
     }
     SECTION("a right stroke lifted off the canvas ends where the view last saw it, not at the next press") {
+        penKeptDownUnderPopup();
         // Codex round 3: Qt shows only the left button changing on the left
         // press, so nothing says the right one went up there.
         use(w, "halfBlock");

@@ -26,7 +26,6 @@
 #include <QPointingDevice>
 #include <QScrollBar>
 #include <QScopedValueRollback>
-#include <QTimer>
 #include <QUndoStack>
 #include <QWhatsThis>
 #include <QWindow>
@@ -558,7 +557,6 @@ void CanvasView::cellsChanged(const QRegion& cells) {
 }
 
 void CanvasView::updateSize() {
-    sizedDpr_ = devicePixelRatioF();
     setFixedSize(sizeHint());
 }
 
@@ -568,10 +566,6 @@ void CanvasView::dprChanged() {
 }
 
 void CanvasView::paintEvent(QPaintEvent* e) {
-#if !BW_DPR_CHANGE_EVENT
-    if (devicePixelRatioF() != sizedDpr_)
-        QTimer::singleShot(0, this, &CanvasView::dprChanged);
-#endif
     QPainter p(this);
     const QRect clip = beginViewPaint(p, e->rect(), viewSize(), palette().color(backgroundRole()));
     // Nothing thrown here may leave paintEvent: what can't be drawn is left
@@ -828,11 +822,9 @@ void CanvasView::commit(const EditResult& r) {
 }
 
 bool CanvasView::event(QEvent* e) {
-#if BW_DPR_CHANGE_EVENT
     // A screen with another scale: view pixels change size.
     if (e->type() == QEvent::DevicePixelRatioChange)
         dprChanged();
-#endif
     // The undo key during a drag is the view's (keyPressEvent), not the
     // Undo action's: it must not undo a step the drag can't see, and works
     // with nothing to undo. So is Shift+F1, What's This's key: the mode
@@ -1513,7 +1505,6 @@ void PreviewWidget::canvasReset() {
 }
 
 void PreviewWidget::updateSize() {
-    sizedDpr_ = devicePixelRatioF();
     setFixedSize(sizeHint());
 }
 
@@ -1527,18 +1518,12 @@ void PreviewWidget::cellsChanged(const QRegion& cells) {
 }
 
 bool PreviewWidget::event(QEvent* e) {
-#if BW_DPR_CHANGE_EVENT
     if (e->type() == QEvent::DevicePixelRatioChange)
         dprChanged();
-#endif
     return QWidget::event(e);
 }
 
 void PreviewWidget::paintEvent(QPaintEvent* e) {
-#if !BW_DPR_CHANGE_EVENT
-    if (devicePixelRatioF() != sizedDpr_)
-        QTimer::singleShot(0, this, &PreviewWidget::dprChanged);
-#endif
     QPainter p(this);
     const QRect clip = beginViewPaint(p, e->rect(), renderer_->imageSize(), palette().color(backgroundRole()));
     const QRect src = clip & QRect(QPoint(0, 0), renderer_->imageSize());

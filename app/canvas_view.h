@@ -36,15 +36,6 @@
 #include <functional>
 #include <optional>
 
-// Qt 6.6 added QEvent::DevicePixelRatioChange. Before it a scale change is
-// seen on the next paint (Qt repaints the window at the new ratio), which
-// queues the same resize the event does.
-#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
-#define BW_DPR_CHANGE_EVENT 1
-#else
-#define BW_DPR_CHANGE_EVENT 0
-#endif
-
 namespace bw {
 
 class Document;
@@ -419,7 +410,6 @@ private:
         QImage image;
     };
     std::vector<Scaled> scaled_;
-    qreal sizedDpr_ = 0;  // the device pixel ratio updateSize last ran at
 };
 
 // The canvas at 1x, for the always-visible preview dock: one view pixel to a
@@ -442,7 +432,6 @@ private:
     void dprChanged();
 
     CanvasRenderer* renderer_;
-    qreal sizedDpr_ = 0;  // the device pixel ratio updateSize last ran at
 };
 
 } // namespace bw
