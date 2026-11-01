@@ -231,15 +231,10 @@ add_test(NAME packaging_qt_links
 # ignores the exit code) and packaging_qt_links_<case>_exit wants exit 0 for a
 # pass and non-zero for a fail (WILL_FAIL), so a check that prints FAIL but
 # exits 0 is red.
+# A case may give an environment, such as a BASH_ENV file for bash to source
+# before the check to make a tool it calls fail, or a locale.
 set(bw_qt_links_cases ${CMAKE_CURRENT_BINARY_DIR}/packaging-qt-links)
-function(bw_qt_links_case name outcome file content expect)
-  set(tree ${bw_qt_links_cases}/${name})
-  file(REMOVE_RECURSE ${tree})
-  if(NOT file STREQUAL "")
-    file(WRITE ${tree}/packaging/${file} "${content}")
-  else()
-    file(MAKE_DIRECTORY ${tree}/packaging/linux)
-  endif()
+function(bw_qt_links_tests name tree outcome expect)
   add_test(NAME packaging_qt_links_${name}
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/packaging_qt_links_test.sh ${tree})
   set_tests_properties(packaging_qt_links_${name} PROPERTIES PASS_REGULAR_EXPRESSION "${expect}")
@@ -248,10 +243,25 @@ function(bw_qt_links_case name outcome file content expect)
   if(outcome STREQUAL "fail")
     set_tests_properties(packaging_qt_links_${name}_exit PROPERTIES WILL_FAIL TRUE)
   endif()
+  if(ARGC GREATER 4)
+    set_tests_properties(packaging_qt_links_${name} packaging_qt_links_${name}_exit PROPERTIES
+      ENVIRONMENT "${ARGV4}")
+  endif()
+endfunction()
+function(bw_qt_links_case name outcome file content expect)
+  # an optional environment follows
+  set(tree ${bw_qt_links_cases}/${name})
+  file(REMOVE_RECURSE ${tree})
+  if(NOT file STREQUAL "")
+    file(WRITE ${tree}/packaging/${file} "${content}")
+  else()
+    file(MAKE_DIRECTORY ${tree}/packaging/linux)
+  endif()
+  bw_qt_links_tests(${name} ${tree} ${outcome} "${expect}" ${ARGN})
 endfunction()
 set(bw_qt_tpl "https://download.qt.io/archive/qt/@QT_MINOR@/@QT_VERSION@/submodules/")
-bw_qt_links_case(template pass linux/THIRD-PARTY.txt "- Qt @QT_VERSION@\nSource:\n  ${bw_qt_tpl}\n"
-  "^ok   packaging/linux/THIRD-PARTY.txt links Qt's source under download.qt.io/archive/qt/ \\(1\\)\n$")
+set(bw_qt_ok "^ok   packaging/linux/THIRD-PARTY.txt links Qt's source under download.qt.io/archive/qt/ \\(1\\)\n$")
+bw_qt_links_case(template pass linux/THIRD-PARTY.txt "- Qt @QT_VERSION@\nSource:\n  ${bw_qt_tpl}\n" "${bw_qt_ok}")
 bw_qt_links_case(dead fail windows/THIRD-PARTY.txt "Source:\n  https://download.qt.io/official_releases/qt/6.8/6.8.3/submodules/\n"
   "FAIL packaging/windows/THIRD-PARTY.txt links under official_releases")
 bw_qt_links_case(fixed_link fail windows/THIRD-PARTY.txt "Source:\n  https://download.qt.io/archive/qt/6.8/6.8.3/submodules/\n"
@@ -265,6 +275,64 @@ bw_qt_links_case(upper_case fail macos/THIRD-PARTY.txt "Source:\n  HTTPS://DOWNL
 bw_qt_links_case(upper_dead fail macos/THIRD-PARTY.txt "Source:\n  https://download.qt.io/OFFICIAL_RELEASES/qt/6.8/6.8.3/submodules/\n"
   "FAIL packaging/macos/THIRD-PARTY.txt links under official_releases")
 bw_qt_links_case(none fail "" "" "FAIL no THIRD-PARTY file under packaging/")
+# A fixed version however it is spaced, worded or cased: two spaces, a tab,
+# "Qt version", "Qt6", lower case and a non-breaking space
+set(bw_qt_fixed "FAIL packaging/windows/THIRD-PARTY.txt names a fixed Qt version instead of @QT_VERSION@: 1:- ")
+string(ASCII 194 160 bw_nbsp)
+foreach(c "two_spaces;Qt  6.9.1;Qt 6\\.9\\.1" "tab;Qt\t6.9.1;Qt\t6\\.9\\.1" "version_word;Qt version 6.9.1;Qt version 6\\.9\\.1"
+          "qt6;Qt6 6.9.1;Qt6 6\\.9\\.1" "lower;qt 6.9.1;qt 6\\.9\\.1" "nbsp;Qt${bw_nbsp}6.9.1;Qt${bw_nbsp}6\\.9\\.1")
+  list(GET c 0 name)
+  list(GET c 1 text)
+  list(GET c 2 want)
+  bw_qt_links_case(fixed_name_${name} fail windows/THIRD-PARTY.txt "- ${text} (Core)\nSource:\n  ${bw_qt_tpl}\n"
+    "${bw_qt_fixed}${want} \\(Core\\)")
+endforeach()
+# A lone Latin-1 non-breaking space under a UTF-8 locale, where it is no
+# character at all unless the check reads bytes
+string(ASCII 160 bw_latin1_nbsp)
+bw_qt_links_case(fixed_name_latin1_nbsp fail windows/THIRD-PARTY.txt "- Qt${bw_latin1_nbsp}6.9.1 (Core)\nSource:\n  ${bw_qt_tpl}\n"
+  "${bw_qt_fixed}Qt.6\\.9\\.1 \\(Core\\)" LC_ALL=C.UTF-8)
+# What the real notices say about Qt and its version is no fixed version
+bw_qt_links_case(fixed_name_lookalikes pass linux/THIRD-PARTY.txt
+  "- Qt @QT_VERSION@ and Qt6 @QT_VERSION@ (Core)\n  builds of the same Qt version: copy them over\n  Qt6ConfigVersion 6.9 is read\nSource:\n  ${bw_qt_tpl}\n"
+  "${bw_qt_ok}")
+# A THIRD-PARTY* that is a directory or a symlink, and a symlink to a
+# directory, which find does not go into, fail rather than being skipped
+set(bw_qt_dead "https://download.qt.io/official_releases/qt/6.8/6.8.3/submodules/\n")
+bw_qt_links_case(directory fail linux/THIRD-PARTY.txt "Source:\n  ${bw_qt_tpl}\n"
+  "FAIL packaging/macos/THIRD-PARTY is not a regular file")
+file(WRITE ${bw_qt_links_cases}/directory/packaging/macos/THIRD-PARTY/qt.txt "${bw_qt_dead}")
+foreach(c symlink symlink_dir)
+  set(tree ${bw_qt_links_cases}/${c})
+  file(REMOVE_RECURSE ${tree})
+  file(WRITE ${tree}/packaging/linux/THIRD-PARTY.txt "Source:\n  ${bw_qt_tpl}\n")
+  file(WRITE ${tree}/elsewhere/THIRD-PARTY.txt "${bw_qt_dead}")
+endforeach()
+file(MAKE_DIRECTORY ${bw_qt_links_cases}/symlink/packaging/macos)
+file(CREATE_LINK ../../elsewhere/THIRD-PARTY.txt ${bw_qt_links_cases}/symlink/packaging/macos/THIRD-PARTY.txt SYMBOLIC)
+bw_qt_links_tests(symlink ${bw_qt_links_cases}/symlink fail
+  "FAIL packaging/macos/THIRD-PARTY.txt is a symlink, not a regular file")
+file(CREATE_LINK ../elsewhere ${bw_qt_links_cases}/symlink_dir/packaging/macos SYMBOLIC)
+bw_qt_links_tests(symlink_dir ${bw_qt_links_cases}/symlink_dir fail
+  "FAIL packaging/macos is a symlink to a directory, which the check does not go into")
+# A NUL byte, which makes grep call the file binary and print no line
+set(tree ${bw_qt_links_cases}/nul_byte)
+file(REMOVE_RECURSE ${tree})
+file(MAKE_DIRECTORY ${tree}/packaging/windows)
+execute_process(COMMAND printf "Qt\\0notice\\nSource:\\n  ${bw_qt_dead}"
+  OUTPUT_FILE ${tree}/packaging/windows/THIRD-PARTY.txt COMMAND_ERROR_IS_FATAL ANY)
+bw_qt_links_tests(nul_byte ${tree} fail "FAIL packaging/windows/THIRD-PARTY.txt links under official_releases")
+# An error stops the check with a non-zero exit even where it would
+# otherwise pass: grep failing (rc 2, which g() tells from no match) and
+# another tool failing (set -e) on the template tree
+file(WRITE ${bw_qt_links_cases}/grep-error.bash "grep() { return 2; }\n")
+bw_qt_links_tests(grep_error ${bw_qt_links_cases}/template fail
+  "FAIL grep .* failed \\(rc 2\\).*FAIL stopped before checking every file \\(rc 1\\)"
+  BASH_ENV=${bw_qt_links_cases}/grep-error.bash)
+file(WRITE ${bw_qt_links_cases}/tool-error.bash "tr() { return 1; }\n")
+bw_qt_links_tests(tool_error ${bw_qt_links_cases}/template fail
+  "FAIL stopped before checking every file \\(rc 1\\)"
+  BASH_ENV=${bw_qt_links_cases}/tool-error.bash)
 
 # packaging/windows/third-party fills the Windows Qt's version into the
 # Windows THIRD-PARTY.txt

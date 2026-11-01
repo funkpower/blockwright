@@ -8,8 +8,9 @@
 # fills in @QT_VERSION@ and @QT_MINOR@, so the notice and its source link name
 # the Qt the package carries; each NAME=value fills in @NAME@, with the value
 # written as it is. A value may not hold an @, so no value can bring in a
-# placeholder of its own. Fails, writing nothing, when the version can't be
-# read, a value holds an @ or a line break, or a placeholder is left over.
+# placeholder of its own. Fails, writing nothing, when the version or the
+# template can't be read, a value holds an @ or a line break, or a placeholder
+# is left over.
 # --version prints the version alone. Runs under a Mac's bash 3.2 too.
 set -euo pipefail
 usage="usage: qt-third-party <qt-dir> <template> <out-file> [NAME=value...] | --version <qt-dir>"
@@ -35,6 +36,8 @@ qt=${1:?$usage}
 template=${2:?$usage}
 out=${3:?$usage}
 shift 3
+# A directory is no template either, and not every sed fails on one
+[[ -f $template && -r $template ]] || die "can't read the template $template"
 version=$(qt_version "$qt")
 minor=${version%.*}
 
@@ -51,10 +54,11 @@ for kv in "$@"; do
 done
 
 tmp=$out.tmp
+# Nothing left behind when sed or the check below fails
+trap 'rm -f "$tmp"' EXIT
 sed "${subst[@]}" "$template" > "$tmp"
 # Any @NAME@ a NAME=value could have filled in
 if left=$(grep -n '@[A-Z][A-Z0-9_]*@' "$tmp"); then
-  rm -f "$tmp"
   die "$(basename "$template") keeps a placeholder: $left"
 fi
 mv "$tmp" "$out"
