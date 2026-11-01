@@ -1396,15 +1396,72 @@ TEST_CASE("a writer refuses SAUCE text a reader would refuse", "[project][limits
     }
 }
 
+#ifdef _WIN32
+// The longest path, in UTF-16 units with its terminator, Windows itself says
+// this process opens, asked without the writer's help: 32767 where
+// RtlAreLongPathsEnabled() in ntdll is true (the system's LongPathsEnabled is
+// set and the program's manifest asks for long paths), MAX_PATH (260) where
+// it is false or ntdll has no such function
+static std::size_t systemPathChars() {
+    using Query = BOOLEAN(WINAPI*)();
+    const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+    const auto query =
+        ntdll ? reinterpret_cast<Query>(reinterpret_cast<void*>(::GetProcAddress(ntdll, "RtlAreLongPathsEnabled")))
+              : nullptr;
+    return query && query() ? std::size_t(32767) : std::size_t(MAX_PATH);
+}
+
+TEST_CASE("a directory save's path limit is the one Windows reports", "[project][io][paths]") {
+    // a writer that missed long paths would refuse every save of a path of
+    // 260 units or more, even where the system takes them
+    project::testing::pathLimit = 0;
+    INFO("Windows' limit " << systemPathChars());
+    CHECK(project::maxPathChars() == systemPathChars());
+}
+#endif
+
 TEST_CASE("a name as long as a disk takes is written to a directory", "[project][io][paths]") {
     const fs::path dir = scratch("longname");
-    Project p = everything();
-    p.files["refs/" + std::string(255, 'n')] = "long";
-    project::writeDirectory(p, dir / "piece");
-    CHECK(project::read(dir / "piece") == p);
-    p.notes = "saved again";
-    project::writeDirectory(p, dir / "piece");
-    CHECK(project::read(dir / "piece") == p);
+    const std::string name = "refs/" + std::string(255, 'n');
+    // the save at the system's limit and, on Windows, at MAX_PATH (260), the
+    // limit where long paths are off
+    std::vector<std::size_t> limits = {0};
+#ifdef _WIN32
+    limits.push_back(260);
+#endif
+    struct Reset {
+        ~Reset() { project::testing::pathLimit = 0; }
+    } reset;
+    for (const std::size_t limit : limits) {
+        INFO("path limit " << limit);
+        project::testing::pathLimit = limit;
+        const fs::path piece = dir / (limit ? "limited" : "piece");
+        Project p = everything();
+        p.files[name] = "long";
+#ifdef _WIN32
+        // Windows opens no path of its limit in units or more (the one set
+        // here, else the one Windows reports, not the writer's own); no
+        // 255-character name fits under MAX_PATH beside the save's 64-unit
+        // temporary name, so where long paths are off the save refuses it
+        // before making anything
+        if ((fs::absolute(piece) / fs::path(name)).native().size() + 64 >= (limit ? limit : systemPathChars())) {
+            std::string error;
+            try {
+                project::writeDirectory(p, piece);
+            } catch (const ProjectError& e) {
+                error = e.what();
+            }
+            CHECK(error.find("the path is too long") != std::string::npos);
+            CHECK_FALSE(fs::exists(piece));
+            continue;
+        }
+#endif
+        project::writeDirectory(p, piece);
+        CHECK(project::read(piece) == p);
+        p.notes = "saved again";
+        project::writeDirectory(p, piece);
+        CHECK(project::read(piece) == p);
+    }
 
     // a longer one no disk takes is refused by the writer and the reader
     const std::string longer = "refs/" + std::string(256, 'n');
