@@ -1261,6 +1261,8 @@ Entries readDirectory(const fs::path& root) {
     return out;
 }
 
+} // namespace
+
 #ifdef _WIN32
 // The longest path, in UTF-16 units with its terminator, this process
 // opens: MAX_PATH, or about 32767 where long paths are on (the programs'
@@ -1279,6 +1281,8 @@ std::size_t maxPathChars() {
     return limit;
 }
 #endif
+
+namespace {
 
 long processId() {
 #if BW_PROJECT_POSIX

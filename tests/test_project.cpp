@@ -1427,21 +1427,29 @@ TEST_CASE("a path longer than a directory save can write is refused", "[project]
     CHECK(project::safeEntryPath(deep));
     Project p = everything();
     p.files[deep] = "deep";
-#ifdef PATH_MAX
-    // (with room for the 64-byte temporary name beside it)
-    if ((dir / "piece" / deep).native().size() + 64 >= PATH_MAX) {
-        // macOS opens no path of PATH_MAX (1024) bytes or more, so there a
-        // directory save refuses it before making anything
+    // the longest path the save opens, with room for the 64-byte temporary
+    // name beside it, against the system's limit
+#ifdef _WIN32
+    // Windows: the writer's own limit, MAX_PATH, or 32767 where long paths
+    // are on (as under wine); not mingw's PATH_MAX of 260
+    const bool tooLong =
+        (fs::absolute(dir) / "piece" / fs::path(deep)).native().size() + 64 >= project::maxPathChars();
+#elif defined(PATH_MAX)
+    // macOS opens no path of PATH_MAX (1024) bytes or more
+    const bool tooLong = (dir / "piece" / deep).native().size() + 64 >= PATH_MAX;
+#else
+    const bool tooLong = false;
+#endif
+    if (tooLong) {
+        // a directory save refuses it before making anything
         try {
             project::writeDirectory(p, dir / "piece");
-            FAIL("a path past PATH_MAX was written");
+            FAIL("a path past the system's limit was written");
         } catch (const ProjectError& e) {
             CHECK(std::string(e.what()).find("the path is too long") != std::string::npos);
         }
         CHECK_FALSE(fs::exists(dir / "piece"));
-    } else
-#endif
-    {
+    } else {
         project::writeDirectory(p, dir / "piece");
         CHECK(project::read(dir / "piece") == p);
     }

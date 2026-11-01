@@ -374,4 +374,11 @@ inline std::function<int(std::string_view call, const std::filesystem::path& at)
 inline std::size_t pathLimit = 0;
 } // namespace testing
 
+#ifdef _WIN32
+// The longest path, in UTF-16 units with its terminator, a directory save
+// writes: testing::pathLimit when it is set, else MAX_PATH, or 32767 where
+// long paths are on.
+std::size_t maxPathChars();
+#endif
+
 } // namespace bw::project
