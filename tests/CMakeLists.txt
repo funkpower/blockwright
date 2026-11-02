@@ -131,6 +131,7 @@ add_test(NAME cli
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_test.sh
           ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-tmp)
 set_tests_properties(cli PROPERTIES ENVIRONMENT "${BW_CLI_ENV}")
+set_property(TEST cli APPEND PROPERTY ENVIRONMENT "BW_LOGO=${PROJECT_SOURCE_DIR}/branding/logo.txt")
 if(CMAKE_CROSSCOMPILING)
   set_tests_properties(cli PROPERTIES TIMEOUT 900)  # some hundred programs under an emulator
 endif()
@@ -513,6 +514,7 @@ add_executable(blockwright-app-tests
   test_app_shortcut_settings.cpp
   test_app_help.cpp
   test_app_scene.cpp
+  test_app_branding.cpp
   scene_env.h
   scratch_settings.h
   system_input.h
@@ -529,6 +531,8 @@ add_dependencies(blockwright-app-tests blockwright-cli)
 target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
                                                         BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library"
                                                         BW_HELP_SOURCE="${PROJECT_SOURCE_DIR}/app/help"
+                                                        BW_BRANDING_DIR="${PROJECT_SOURCE_DIR}/branding"
+                                                        BW_PACKAGING_DIR="${PROJECT_SOURCE_DIR}/packaging"
                                                         BW_ANSIDRAW_DIR="${BW_ANSIDRAW_DIR}"
                                                         BW_CLI="$<TARGET_FILE:blockwright-cli>")
 set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_RUNNER}")
@@ -724,6 +728,7 @@ endif()
 
 add_test(NAME gui_version
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh ${BW_GUI_COMMAND})
+set_property(TEST gui_version APPEND PROPERTY ENVIRONMENT "BW_LOGO=${PROJECT_SOURCE_DIR}/branding/logo.txt")
 
 # The app bundle (macOS, BLOCKWRIGHT_MACOS_BUNDLE): its Info.plist, and the
 # notices --version names inside it.

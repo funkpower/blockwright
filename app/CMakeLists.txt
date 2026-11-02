@@ -1,6 +1,8 @@
 # The GUI: Qt 6 Widgets. The window and its parts live in a library so the
 # tests can drive them without the executable.
 add_library(blockwright_app STATIC
+  branding.cpp
+  branding.h
   canvas_view.cpp
   canvas_view.h
   device_grid.cpp
@@ -135,6 +137,24 @@ qt_add_resources(blockwright_app "tool_icons" PREFIX "/tool-icons" BASE ${BW_TAB
   ${BW_TABLER_ICONS}/square.svg
   ${BW_TABLER_ICONS}/typography.svg
 )
+# The logos and the app icon (#205): :/branding/logo-large.ans (the start
+# screen's), :/branding/logo-small.ans (the About box's) and
+# :/branding/blockwright-<size>.png, the icon branding/render writes to
+# packaging/linux/
+set(BW_BRANDING ${PROJECT_SOURCE_DIR}/branding)
+qt_add_resources(blockwright_app "branding_logos" PREFIX "/branding" BASE ${BW_BRANDING} FILES
+  ${BW_BRANDING}/logo-large.ans
+  ${BW_BRANDING}/logo-small.ans
+)
+set(BW_ICON_PNGS ${PROJECT_SOURCE_DIR}/packaging/linux)
+qt_add_resources(blockwright_app "branding_icon" PREFIX "/branding" BASE ${BW_ICON_PNGS} FILES
+  ${BW_ICON_PNGS}/blockwright-16.png
+  ${BW_ICON_PNGS}/blockwright-32.png
+  ${BW_ICON_PNGS}/blockwright-48.png
+  ${BW_ICON_PNGS}/blockwright-128.png
+  ${BW_ICON_PNGS}/blockwright-256.png
+  ${BW_ICON_PNGS}/blockwright-512.png
+)
 add_dependencies(blockwright_app bw_version)
 target_include_directories(blockwright_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(blockwright_app PUBLIC blockwright::core blockwright::render Qt6::Widgets Qt6::Concurrent Qt6::Svg)
@@ -146,7 +166,8 @@ if(WIN32)
   # a GUI program: no console window opens with it (main.cpp writes
   # --version and --help to the one it was started from)
   set_target_properties(blockwright PROPERTIES WIN32_EXECUTABLE ON)
-  bw_windows_resources(blockwright "Blockwright, an ANSI and IRC art editor")
+  bw_windows_resources(blockwright "Blockwright, an ANSI and IRC art editor"
+                       ${PROJECT_SOURCE_DIR}/packaging/windows/blockwright.ico)
 endif()
 target_link_libraries(blockwright PRIVATE blockwright_app)
 target_compile_options(blockwright PRIVATE

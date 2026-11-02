@@ -43,23 +43,18 @@ A Linux install also puts in `<prefix>/share/`:
 
 - `applications/blockwright.desktop`, the launcher entry (the GUI sets its
   desktop file name from the name it runs as, so the entry matches it);
-- `icons/hicolor/{256x256,512x512}/apps/blockwright.png`, from
-  `packaging/linux/blockwright-{256,512}.png`;
+- `icons/hicolor/{16x16,32x32,48x48,128x128,256x256,512x512}/apps/blockwright.png`,
+  from `packaging/linux/blockwright-<size>.png`;
 - `metainfo/online.pumpin.funkpower.blockwright.metainfo.xml`, the AppStream
   metadata software centres read;
 - `man/man1/blockwright.1` and `man/man1/blockwright-cli.1`, the manual pages,
   from `packaging/linux/`. `blockwright-cli.1` lists the commands and leaves
   the options to `blockwright-cli --help`.
 
-The icons are `packaging/macos/icon-1024.png` scaled down; after redrawing it
-(below), remake them with ImageMagick:
-
-```sh
-for s in 256 512; do
-  magick packaging/macos/icon-1024.png -scale $((s * 100 / 1024))% -strip \
-    -define png:exclude-chunks=date,time packaging/linux/blockwright-$s.png
-done
-```
+The icons are rendered from the art in `branding/` by `branding/render`
+(see `branding/README.md`), which writes these PNGs,
+`packaging/macos/icon-1024.png` and `packaging/windows/blockwright.ico`.
+Redraw the art and rerun it rather than editing the PNGs.
 
 `linux_desktop` installs a build and checks these files, with
 `desktop-file-validate` and `appstreamcli validate` where they are installed.
@@ -325,9 +320,9 @@ instead of `-` and notarize with `notarytool`.
 
 ### The icon and the background
 
-`packaging/macos/icon-1024.png`, `dmg-background.png` and
-`dmg-background@2x.png` are drawn by `packaging/macos/make-art.py` (needs
-Pillow): a "B" of block pixels in the 16-colour palette, and a caption set in
+`packaging/macos/icon-1024.png` is the app icon rendered at four times its
+size by `branding/render`. `dmg-background.png` and `dmg-background@2x.png`
+are drawn by `packaging/macos/make-art.py` (needs Pillow): a caption set in
 the editor's IBM VGA font. Change the script and rerun it rather than editing
 the PNGs:
 

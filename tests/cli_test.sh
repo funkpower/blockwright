@@ -24,6 +24,17 @@ piece=$data/golden/tux.ans
 
 expect "--version prints version and short commit" 0 '^blockwright-cli [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]{7,}(-dirty)?|unknown)\)$' -- "$cli" --version
 expect "--help" 0 'convert <in> <out>' -- "$cli" --help
+# BW_LOGO: branding/logo.txt, which --version prints under the version line
+# and --help above the usage
+if [[ -n ${BW_LOGO:-} ]]; then
+  logo=$(tr -d '\r' <"$BW_LOGO")
+  out=$("$cli" --version 2>&1 | tr -d '\r')
+  if [[ $(head -n1 <<<"$out") == blockwright-cli\ * && $out == *"$logo"* ]]; then ok "--version: version line, then the logo"; else bad "--version has no logo under the version: $out"; fi
+  out=$("$cli" --help 2>&1 | tr -d '\r')
+  if [[ $out == "$logo"* ]]; then ok "--help starts with the logo"; else bad "--help doesn't start with the logo: $out"; fi
+else
+  bad "BW_LOGO isn't set"
+fi
 expect "--help lists export" 0 'export --irc <in> <out>' -- "$cli" --help
 
 expect "info: dimensions" 0 '^size: +30x17$' -- "$cli" info "$piece"

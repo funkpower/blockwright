@@ -106,6 +106,14 @@ add_custom_target(bw_version ALL
   COMMENT "Recording the git commit for --version"
   VERBATIM)
 
+# The plain-text logo (branding/logo.txt, #205) that --help and --version
+# print, as a header: generated/blockwright/logo_text.h. Editing the file
+# reconfigures.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/branding/logo.txt)
+file(READ ${CMAKE_SOURCE_DIR}/branding/logo.txt BW_LOGO_TEXT)
+string(REPLACE "\r" "" BW_LOGO_TEXT "${BW_LOGO_TEXT}")
+configure_file(cmake/logo_text.h.in ${CMAKE_BINARY_DIR}/generated/blockwright/logo_text.h @ONLY)
+
 add_subdirectory(core)
 add_subdirectory(render)
 add_subdirectory(cli)
@@ -121,13 +129,13 @@ install(FILES third_party/tabler-icons/LICENSE third_party/tabler-icons/README.m
 
 # The desktop entry, icon, AppStream metadata and manual pages of a Linux
 # (freedesktop) install, which the distribution packages and the AppImage carry.
-# packaging/linux/blockwright-*.png are icon-1024.png scaled down
-# (packaging/README.md).
+# packaging/linux/blockwright-*.png are rendered from branding/icon.ans and
+# branding/icon-small.ans by branding/render.
 if(UNIX AND NOT APPLE)
   install(FILES packaging/linux/blockwright.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
   install(FILES packaging/linux/online.pumpin.funkpower.blockwright.metainfo.xml
           DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
-  foreach(size 256 512)
+  foreach(size 16 32 48 128 256 512)
     install(FILES packaging/linux/blockwright-${size}.png
             DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps RENAME blockwright.png)
   endforeach()

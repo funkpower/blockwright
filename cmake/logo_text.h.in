@@ -1,0 +1,11 @@
+#pragma once
+// The plain-text logo, branding/logo.txt (#205): 7-bit ASCII, at most 72
+// columns, each line ending in a newline. blockwright-cli prints it in --help
+// and --version, and blockwright in --version. Written by CMake at configure
+// time; edit branding/logo.txt, not this file.
+
+namespace bw {
+
+inline constexpr const char* kLogoText = R"bwlogo(@BW_LOGO_TEXT@)bwlogo";
+
+} // namespace bw

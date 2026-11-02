@@ -26,8 +26,8 @@
 # there (recorded in <build-dir>/built-commit). Installs the GUI as
 # blockwright-dev and the CLI as blockwright-cli-dev, with the licence and
 # font notices in <prefix>/share/doc/blockwright/, and the launcher entry
-# "Blockwright (dev)" (the commit in its Comment) as
-# <apps-dir>/blockwright-dev.desktop.
+# "Blockwright (dev)" (the commit in its Comment, the installed icon its Icon)
+# as <apps-dir>/blockwright-dev.desktop.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -152,6 +152,13 @@ for f in blockwright blockwright-cli; do
     rm -rf "$stage"; exit 1
   fi
 done
+# The app icon (#205), which the launcher entry names by its path; only a
+# Linux install has the freedesktop icons
+icon_rel=share/icons/hicolor/256x256/apps/blockwright.png
+if [[ $(uname -s) == Linux && ! -f $stage/$icon_rel ]]; then
+  echo "install-dev: the install left out the icon ($icon_rel); keeping the old dev build" >&2
+  rm -rf "$stage"; exit 1
+fi
 # The bundled Library (PLAN §12) ships with it
 # (searched under the literal directory: the prefix may hold glob characters)
 if [[ -z $(find "$stage/share/blockwright/library" -mindepth 2 -maxdepth 2 -name '*.ans' -print -quit 2>/dev/null) ]]; then
@@ -177,6 +184,13 @@ q=${q//\`/\\\`}
 q=${q//\$/\\\$}
 q=${q//\\/\\\\}
 q=${q//%/%%}
+# Icon is a path, not a theme name, so the dev build's launcher shows the
+# dev build's icon; in its value a backslash is written \\
+icon=
+if [[ -f $prefix/$icon_rel ]]; then
+  icon=$prefix/$icon_rel
+  icon=${icon//\\/\\\\}
+fi
 mkdir -p "$apps_dir"
 desktop=$apps_dir/blockwright-dev.desktop
 cat > "$desktop.new" <<DESKTOP
@@ -189,6 +203,7 @@ Exec="$q" %f
 Terminal=false
 Categories=Graphics;2DGraphics;
 DESKTOP
+[[ -z $icon ]] || echo "Icon=$icon" >> "$desktop.new"
 mv "$desktop.new" "$desktop"
 echo "install-dev: launcher entry $desktop"
 "$bin_dir/blockwright-dev" --version

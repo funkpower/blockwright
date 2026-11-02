@@ -152,7 +152,13 @@ lib=$(find "$d" -type d -path '*/blockwright/library' | head -n 1)
 [ -n "$lib" ] || { echo "cmake stub: no bundled library staged" >&2; exit 1; }
 mkdir -p "$prefix/share/blockwright"
 cp -R "$lib" "$prefix/share/blockwright/library"
+icons=$(find "$d" -type d -path '*/icons/hicolor' | head -n 1)
+if [ -n "$icons" ]; then
+  mkdir -p "$prefix/share/icons"
+  cp -R "$icons" "$prefix/share/icons/hicolor"
+fi
 [ -z "${NOLIB:-}" ] || rm -rf "$prefix/share/blockwright"
+[ -z "${NOICON:-}" ] || rm -rf "$prefix/share/icons"
 [ -z "${NODOCS:-}" ] || rm -rf "$prefix/share/doc"
 [ -z "${NOGUI:-}" ] || rm -f "$prefix/bin/blockwright"
 STUB
@@ -177,11 +183,13 @@ else
   bad "blockwright-dev --version: $("$home/.local/bin/blockwright-dev" --version 2>&1)"
 fi
 
-# The launcher entry: the dev name, the commit, the dev binary with %f
+# The launcher entry: the dev name, the commit, the dev binary with %f, the icon
 desktop=$home/.local/share/applications/blockwright-dev.desktop
 want=$(printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Blockwright (dev)' 'GenericName=ANSI art editor' \
   'Comment=Blockwright dev build 0123456' "Exec=\"$home/.local/bin/blockwright-dev\" %f" 'Terminal=false' \
   'Categories=Graphics;2DGraphics;')
+# and on Linux the installed icon, by its path (#205)
+[[ $(uname -s) == Linux ]] && want+=$'\n'"Icon=$prefix/share/icons/hicolor/256x256/apps/blockwright.png"
 if [[ -f $desktop && $(<"$desktop") == "$want" ]]; then
   ok "install-dev writes the launcher entry"
 else
@@ -226,6 +234,15 @@ else
   bad "install-dev took an install without the bundled library (exit $st): $out"
 fi
 if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the library-less install keeps the old dev build"; else bad "the library-less install replaced the old dev build"; fi
+if [[ $(uname -s) == Linux ]]; then
+  out=$(NOICON=1 dev); st=$?
+  if [[ $st -ne 0 ]] && grep -q 'left out the icon' <<<"$out"; then
+    ok "install-dev refuses an install without the icon"
+  else
+    bad "install-dev took an install without the icon (exit $st): $out"
+  fi
+  if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the icon-less install keeps the old dev build"; else bad "the icon-less install replaced the old dev build"; fi
+fi
 has_library() { [[ -n $(find "$1/share/blockwright/library" -mindepth 2 -maxdepth 2 -name '*.ans' -print -quit 2>/dev/null) ]]; }
 if has_library "$prefix"; then ok "install-dev installs the bundled library"; else bad "no bundled library in $prefix"; fi
 # A prefix with glob characters is a literal path: the library check must

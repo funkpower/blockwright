@@ -7,6 +7,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/render.h"
 #include "blockwright/sauce.h"
+#include "blockwright/version.h"
 
 #include "canvas_view.h"
 #include "document.h"
@@ -16,6 +17,7 @@
 #include "scratch_settings.h"
 #include "settings.h"
 #include "start_screen.h"
+#include "branding.h"
 #include "system_input.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -678,10 +680,10 @@ TEST_CASE("the start screen draws the logo, or the wordmark without one", "[star
     StartScreen::Options o;
     o.available = QSize(1920, 1080);
 
-    SECTION("no logo resource yet: the wordmark") {
-        StartScreen s(&w, StartScreen::Options{});
-        if (QFile::exists(QString::fromLatin1(kStartLogoPath)))
-            SKIP("the logo resource is built in");
+    SECTION("a logo resource that isn't built in: the wordmark") {
+        o.logoPath = QStringLiteral(":/branding/no-such-logo.ans");
+        REQUIRE_FALSE(QFile::exists(o.logoPath));
+        StartScreen s(&w, o);
         CHECK(s.logoScale() == 0);
         CHECK(child<QLabel>(&s, "startWordmark")->text() == QStringLiteral("Blockwright"));
         CHECK_FALSE(s.findChild<QLabel*>(QStringLiteral("startLogo")));
@@ -754,4 +756,37 @@ TEST_CASE("startLogoScale picks 2x only when the doubled logo and the rest fit",
     CHECK(startLogoScale(logo, rest, QSize(1311, 1000)) == 1);
     CHECK(startLogoScale(logo, rest, QSize(1920, 999)) == 1);
     CHECK(startLogoScale(logo, QSize(1400, 300), QSize(1399, 1080)) == 1);
+}
+
+TEST_CASE("the shipped start screen draws the real logo, 80 x 18 cells, with --version's first line under it",
+          "[start-screen][logo][branding]") {
+    clearRecent();
+    // the resource is the large logo #205 ships, byte for byte
+    CHECK(QString::fromLatin1(kStartLogoPath) == QString::fromLatin1(kLogoLarge));
+    QFile f(QString::fromLatin1(kStartLogoPath));
+    REQUIRE(f.open(QIODevice::ReadOnly));
+    const QByteArray bytes = f.readAll();
+    CHECK(bytes.toStdString() == bwtest::readFile(std::filesystem::path(BW_BRANDING_DIR) / "logo-large.ans"));
+    const AnsiDocument doc = parseAnsi(std::string_view(bytes.constData(), size_t(bytes.size())));
+    CHECK(doc.canvas.width() == 80);
+    CHECK(doc.canvas.height() == 18);
+
+    MainWindow w;
+    const auto [available, scale] = GENERATE(std::pair(QSize(1280, 720), 1), std::pair(QSize(1920, 1080), 2));
+    INFO(available.width() << "x" << available.height());
+    StartScreen::Options o;  // the default logo path, as startUp() makes it
+    o.available = available;
+    StartScreen s(&w, o);
+    CHECK(s.logoScale() == scale);
+    CHECK_FALSE(s.findChild<QLabel*>(QStringLiteral("startWordmark")));
+    RenderOptions opts;
+    opts.scale = scale;
+    const QImage expected = renderDocument(doc, opts);
+    const QImage shown = child<QLabel>(&s, "startLogo")->pixmap().toImage().convertToFormat(expected.format());
+    CHECK(shown.size() == expected.size());
+    CHECK(shown == expected);
+    CHECK(renderStartLogo(QString::fromLatin1(kStartLogoPath)).size() == expected.size() / scale);
+    // the line under it is the first line blockwright --version prints
+    CHECK(child<QLabel>(&s, "startVersion")->text() ==
+          QStringLiteral("blockwright " BLOCKWRIGHT_VERSION " (" BLOCKWRIGHT_GIT_COMMIT ")"));
 }

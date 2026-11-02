@@ -6,8 +6,10 @@
 
 set(BW_WINDOWS_MANIFEST ${PROJECT_SOURCE_DIR}/packaging/windows/blockwright.manifest)
 
-# bw_windows_resources(<target> [<description>]): the manifest, and with a
-# description a version resource naming the target's output file.
+# bw_windows_resources(<target> [<description> [<icon.ico>]]): the manifest,
+# with a description a version resource naming the target's output file, and
+# with an icon the program's icon, which Explorer and the Start menu shortcut
+# show (packaging/windows/blockwright.ico, made by branding/render).
 function(bw_windows_resources target)
   set(rc ${CMAKE_CURRENT_BINARY_DIR}/${target}.rc)
   file(TO_CMAKE_PATH "${BW_WINDOWS_MANIFEST}" manifest)
@@ -31,9 +33,14 @@ function(bw_windows_resources target)
       "  BLOCK \"VarFileInfo\"\n  BEGIN\n    VALUE \"Translation\", 0x409, 1200\n  END\n"
       "END\n")
   endif()
+  set(icon "")
+  if(ARGC GREATER 2)
+    file(TO_CMAKE_PATH "${ARGV2}" icon)
+    string(APPEND text "IDI_ICON1 ICON \"${icon}\"\n")
+  endif()
   file(CONFIGURE OUTPUT ${rc} CONTENT "${text}")
   target_sources(${target} PRIVATE ${rc})
-  set_property(SOURCE ${rc} APPEND PROPERTY OBJECT_DEPENDS ${BW_WINDOWS_MANIFEST})
+  set_property(SOURCE ${rc} APPEND PROPERTY OBJECT_DEPENDS ${BW_WINDOWS_MANIFEST} ${icon})
 endfunction()
 
 # A cross build's programs run under wine (when it is installed): the tests,

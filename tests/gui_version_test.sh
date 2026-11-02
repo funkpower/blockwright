@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # blockwright --version, --help and usage errors, with no display: gui_version_test.sh <blockwright>
-# BW_NOTICES_DIR names where --version says the notices are (default share/doc/blockwright/).
+# BW_NOTICES_DIR names where --version says the notices are (default share/doc/blockwright/);
+# BW_LOGO is branding/logo.txt, which --version prints under the version line.
 set -uo pipefail
 bin=$1
 notices_dir=${BW_NOTICES_DIR:-share/doc/blockwright/}
@@ -26,6 +27,8 @@ if grep -q 'Includes icons from Tabler Icons, MIT licence, https://tabler.io/ico
 else
   bad "--version has no icon credit: $out"
 fi
+logo=$(tr -d '\r' <"${BW_LOGO:?BW_LOGO is unset}")
+if [[ $(tr -d '\r' <<<"$out") == *"$logo"* ]]; then ok "--version shows the logo"; else bad "--version has no logo: $out"; fi
 out=$(env -u DISPLAY -u WAYLAND_DISPLAY "$bin" --help 2>&1); st=$?
 if [[ $st -eq 0 ]] && grep -q 'Usage: blockwright' <<<"$out"; then ok "--help"; else bad "--help (exit $st): $out"; fi
 out=$(env -u DISPLAY -u WAYLAND_DISPLAY "$bin" --bogus 2>&1); st=$?

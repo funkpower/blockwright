@@ -37,7 +37,7 @@ if [[ -f $desktop ]]; then
 else
   bad "no $desktop"
 fi
-for size in 256 512; do
+for size in 16 32 48 128 256 512; do
   icon=$share/icons/hicolor/${size}x$size/apps/blockwright.png
   if [[ ! -f $icon ]]; then
     bad "no $icon"

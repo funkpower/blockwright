@@ -3,12 +3,14 @@
 //   blockwright [file.ans | file.xb | file.bin | project.bwp | project-directory]
 //   blockwright --version | --help
 
+#include "branding.h"
 #include "file_open.h"
 #include "generator_runner.h"
 #include "main_window.h"
 #include "start_screen.h"
 
 #include "blockwright/credits.h"
+#include "blockwright/logo_text.h"
 #include "blockwright/version.h"
 
 #include <QApplication>
@@ -57,7 +59,9 @@ int main(int argc, char** argv) {
             dashdash = true;
         } else if (!std::strcmp(a, "--version") || !std::strcmp(a, "-v")) {
             messagesToConsole();
-            std::cout << "blockwright " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n"
+            // The version stays the first line, for the scripts that read it
+            std::cout << "blockwright " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n\n"
+                      << bw::kLogoText << "\n"
                       << bw::kFontCredit << bw::kIconCredit;
             return 0;
         } else if (!std::strcmp(a, "--help") || !std::strcmp(a, "-h")) {
@@ -87,6 +91,8 @@ int main(int argc, char** argv) {
     // The dev install runs as blockwright-dev, with a .desktop file of that
     // name: matching it lets the desktop find its launcher entry.
     QApplication::setDesktopFileName(QFileInfo(QString::fromLocal8Bit(argv[0])).fileName());
+    // Every window's icon (#205); a desktop shell may take the launcher's instead
+    QApplication::setWindowIcon(bw::applicationIcon());
 
     // A generator still running when the app quits is stopped, not waited for.
     bw::killGeneratorsOnQuit(&app);

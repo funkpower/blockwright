@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Renders Blockwright's logos and app icon from the projects in branding/.
+#
+#   branding/render [blockwright-cli]
+#
+# blockwright-cli defaults to $BLOCKWRIGHT_CLI, else the one on PATH. Needs
+# ImageMagick 7 (magick) and Pillow. Each <name>.bwp is the source: it is flattened to
+# <name>.ans beside it, and every PNG is rendered from an .ans by
+# `blockwright-cli render`, then at most scaled here, never edited:
+#
+#   branding/png/logo-large.png, logo-large@2x.png   the large logo, 1x and 2x
+#   branding/png/logo-small.png, logo-small@2x.png   the small logo, 1x and 2x
+#   packaging/linux/blockwright-256.png              icon.ans at 1x (32 x 16 cells)
+#   packaging/linux/blockwright-512.png              icon.ans at 2x
+#   packaging/macos/icon-1024.png                    icon.ans at 4x
+#   packaging/linux/blockwright-128.png              the 256 px icon halved, each 2 x 2 averaged
+#   packaging/linux/blockwright-16.png               icon-small.ans (16 x 8 cells) at 1x, each
+#                                                    half-block pixel taken at its centre
+#   packaging/linux/blockwright-{32,48}.png          the 16 px icon, each pixel repeated
+#   packaging/windows/blockwright.ico                the 16, 32, 48 and 256 px icons
+#
+# The icons' black outside the tile, the black reached from each corner, is
+# made transparent; the art has no black inside the tile.
+#
+# The PNGs carry no timestamps, so a rerun over unchanged sources changes no
+# bytes.
+set -euo pipefail
+shopt -s extglob
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/.." && pwd)
+cli=${1:-${BLOCKWRIGHT_CLI:-blockwright-cli}}
+command -v "$cli" >/dev/null || { echo "render: no blockwright-cli at '$cli'" >&2; exit 2; }
+command -v magick >/dev/null || { echo "render: needs ImageMagick 7 (magick)" >&2; exit 2; }
+python3 -I -c "import PIL" 2>/dev/null || { echo "render: needs Pillow (python3 -m pip install Pillow)" >&2; exit 2; }
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/bw-branding.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+# png <in.png> <out.png> [magick operations...]: rewritten without metadata
+png() {
+  local in=$1 out=$2; shift 2
+  magick "$in" "$@" -strip -define png:exclude-chunks=date,time,tIME "PNG24:$out"
+}
+
+# icon <in.png> <out.png> [magick operations...]: as png, with the black
+# reached from each corner made transparent
+icon() {
+  local in=$1 out=$2; shift 2
+  magick "$in" "$@" "$tmp/icon-op.png"
+  local w h corners=()
+  read -r w h < <(magick identify -format '%w %h\n' "$tmp/icon-op.png")
+  for xy in "0,0" "$((w - 1)),0" "0,$((h - 1))" "$((w - 1)),$((h - 1))"; do
+    [[ $(magick "$tmp/icon-op.png" -format "%[pixel:p{$xy}]" info:) == @(black|srgb\(0,0,0\)) ]] &&
+      corners+=(-draw "color $xy floodfill")
+  done
+  magick "$tmp/icon-op.png" -alpha set -fill none -fuzz 0 "${corners[@]}" \
+    -strip -define png:exclude-chunks=date,time,tIME "PNG32:$out"
+}
+
+for name in logo-large logo-small icon icon-small; do
+  "$cli" convert "$here/$name.bwp" "$here/$name.ans"
+done
+
+for name in logo-large logo-small; do
+  "$cli" render "$here/$name.ans" "$tmp/$name.png"
+  "$cli" render --scale 2 "$here/$name.ans" "$tmp/$name@2x.png"
+  png "$tmp/$name.png" "$here/png/$name.png"
+  png "$tmp/$name@2x.png" "$here/png/$name@2x.png"
+done
+
+linux=$root/packaging/linux
+"$cli" render "$here/icon.ans" "$tmp/icon-256.png"
+"$cli" render --scale 2 "$here/icon.ans" "$tmp/icon-512.png"
+"$cli" render --scale 4 "$here/icon.ans" "$tmp/icon-1024.png"
+"$cli" render "$here/icon-small.ans" "$tmp/icon-small.png"
+for f in "$tmp"/icon-256.png "$tmp"/icon-512.png "$tmp"/icon-1024.png "$tmp"/icon-small.png; do
+  size=$(magick identify -format '%wx%h' "$f")
+  case $f in
+    *icon-256.png) want=256x256 ;; *icon-512.png) want=512x512 ;;
+    *icon-1024.png) want=1024x1024 ;; *) want=128x128 ;;
+  esac
+  [[ $size == "$want" ]] || { echo "render: $f is $size, not $want: is the icon the right size in cells?" >&2; exit 1; }
+done
+icon "$tmp/icon-256.png" "$linux/blockwright-256.png"
+icon "$tmp/icon-512.png" "$linux/blockwright-512.png"
+icon "$tmp/icon-1024.png" "$root/packaging/macos/icon-1024.png"
+# -scale shrinks by averaging whole blocks of pixels and grows by repeating them
+icon "$linux/blockwright-256.png" "$linux/blockwright-128.png" -scale 128x128
+# The VGA font's half blocks split a cell 7/9 rows, so the 16 px icon takes
+# each half-block pixel's centre rather than averaging its 8 x 8 block
+icon "$tmp/icon-small.png" "$linux/blockwright-16.png" -define sample:offset=50 -sample 16x16
+icon "$linux/blockwright-16.png" "$linux/blockwright-32.png" -scale 32x32
+icon "$linux/blockwright-16.png" "$linux/blockwright-48.png" -scale 48x48
+
+# Pillow writes each image into the .ico as a PNG, as Windows takes since
+# Vista; ImageMagick would write the 256 px one uncompressed
+python3 -I -c '
+import sys
+from PIL import Image
+ims = [Image.open(p).convert("RGBA") for p in sys.argv[2:]]
+ims[-1].save(sys.argv[1], format="ICO", sizes=[i.size for i in ims], append_images=ims[:-1])
+' "$root/packaging/windows/blockwright.ico" \
+  "$linux/blockwright-16.png" "$linux/blockwright-32.png" "$linux/blockwright-48.png" "$linux/blockwright-256.png"
+
+echo "render: done"

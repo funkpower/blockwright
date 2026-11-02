@@ -45,6 +45,7 @@
 #include "blockwright/irc_view.h"
 #include "blockwright/library.h"
 #include "blockwright/lint.h"
+#include "blockwright/logo_text.h"
 #include "blockwright/project.h"
 #include "blockwright/render.h"
 #include "blockwright/version.h"
@@ -935,14 +936,16 @@ int main(int argc, char** argv) {
         return kUsage;
     }
     if (parser.isSet(versionOpt)) {
-        std::cout << "blockwright-cli " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n";
-        std::cout << bw::kFontCredit;
+        // The version stays the first line, for the scripts that read it
+        std::cout << "blockwright-cli " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n\n"
+                  << bw::kLogoText << "\n"
+                  << bw::kFontCredit;
         return kOk;
     }
     // Printed here rather than by showHelp(), which on Windows puts the text
     // in a message box when it finds no console, as under a pipe it may not.
     if (parser.isSet(helpOpt)) {
-        std::cout << parser.helpText().toStdString();
+        std::cout << bw::kLogoText << "\n" << parser.helpText().toStdString();
         return kOk;
     }
 
