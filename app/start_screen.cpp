@@ -21,6 +21,7 @@
 #include <QScrollArea>
 #include <QShortcut>
 #include <QSpinBox>
+#include <QStyle>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -95,8 +96,12 @@ int startLogoScale(QSize logo, QSize rest, QSize available) {
     return width <= available.width() && height <= available.height() - 60 ? 2 : 1;
 }
 
-StartScreen::StartScreen(MainWindow* window, const Options& options) : QDialog(window), window_(window) {
+StartScreen::StartScreen(MainWindow* window, const Options& options)
+    : QDialog(options.launch ? nullptr : window), window_(window), launch_(options.launch) {
     setObjectName(QStringLiteral("startScreen"));
+    // A launch screen has no parent to take it down with the window.
+    if (launch_)
+        connect(window, &QObject::destroyed, this, [this] { delete this; });
     setWindowTitle(tr("Blockwright"));
     // Anything that opens or makes a document while the screen is up closes
     // it, whatever started it: its own buttons, File > Open Recent, or a file
@@ -249,6 +254,17 @@ StartScreen::StartScreen(MainWindow* window, const Options& options) : QDialog(w
             }
         }
     }
+    // A launch screen has no window under it to come up over: it is centred
+    // on the window's screen, the one its logo was sized for and the window
+    // shows on, not on whichever screen the pointer is on.
+    if (launch_) {
+        QScreen* on = window->screen() ? window->screen() : QGuiApplication::primaryScreen();
+        const QRect area = on->availableGeometry();
+        // Its top-left kept on the work area, title bar and all, when it is
+        // taller or wider than the area.
+        const QPoint at = QStyle::alignedRect(Qt::LeftToRight, Qt::AlignCenter, sizeHint(), area).topLeft();
+        move(std::max(at.x(), area.left()), std::max(at.y(), area.top()));
+    }
     create->setFocus();
 }
 
@@ -355,18 +371,24 @@ void StartScreen::done(int result) {
     closing_ = true;
     if (result == QDialog::Rejected)
         window_->document()->clear();
+    // At launch the window shows now, before the screen goes, so the app
+    // never has no window open and quits.
+    if (launch_)
+        window_->show();
     QDialog::done(result);
     closing_ = false;
 }
 
 StartScreen* startUp(MainWindow* window, const QString& file) {
-    if (!file.isEmpty()) {
-        window->openInteractive(file);
+    if (!file.isEmpty() || !startScreenAtStartup()) {
+        window->show();
+        if (!file.isEmpty())
+            window->openInteractive(file);
         return nullptr;
     }
-    if (!startScreenAtStartup())
-        return nullptr;
-    auto* screen = new StartScreen(window);
+    StartScreen::Options options;
+    options.launch = !window->isVisible();
+    auto* screen = new StartScreen(window, options);
     screen->setAttribute(Qt::WA_DeleteOnClose);
     screen->open();
     return screen;

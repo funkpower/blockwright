@@ -1,6 +1,7 @@
 #pragma once
-// The start screen (#206, PLAN §11): shown over the main window on a launch
-// with no file or project named, and again from File > Start Screen.... The
+// The start screen (#206, PLAN §11): shown before the main window on a
+// launch with no file or project named, and over it from File > Start
+// Screen.... The
 // large logo, drawn by the renderer on black, with the version under it; then
 // the actions, each a button in one column with its key (New, Open...,
 // Open Project Directory...), and the sections beside them (Recent). Every
@@ -56,6 +57,9 @@ public:
         // The screen area the logo's scale is chosen for; empty for the
         // available geometry of the window's screen.
         QSize available;
+        // At launch, before the window shows: the screen is a window of its
+        // own, and the main window shows only once it closes.
+        bool launch = false;
     };
     explicit StartScreen(MainWindow* window, const Options& options);
     explicit StartScreen(MainWindow* window) : StartScreen(window, Options{}) {}
@@ -85,6 +89,7 @@ private:
     MainWindow* window_;
     // In done(), whose own clear() resets the document.
     bool closing_ = false;
+    bool launch_ = false;
     int logoScale_ = 0;
     QVBoxLayout* actions_ = nullptr;
     QBoxLayout* sections_ = nullptr;
@@ -95,9 +100,10 @@ private:
     QWidget* recentBox_ = nullptr;
 };
 
-// What main() does once the window shows: opens `file` as a file named on
-// the command line, or, with none, shows the start screen unless it is
-// turned off. The screen shown, or null.
+// What main() does at launch: opens `file` as a file named on the command
+// line, or, with none, shows the start screen unless it is turned off. The
+// window shows first unless the screen does; then the screen comes up alone
+// and the window shows when it closes. The screen shown, or null.
 StartScreen* startUp(MainWindow* window, const QString& file);
 
 } // namespace bw

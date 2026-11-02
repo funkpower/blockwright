@@ -27,6 +27,7 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPointer>
 #include <QScrollArea>
 #include <QScreen>
 #include <QStatusBar>
@@ -538,7 +539,7 @@ void MainWindow::open() {
     if (!maybeSave())
         return;
     const QString dir = doc_.path().isEmpty() ? QString() : QFileInfo(doc_.path()).absolutePath();
-    const QString path = QFileDialog::getOpenFileName(this, tr("Open"), dir, kFilter);
+    const QString path = QFileDialog::getOpenFileName(promptParent(), tr("Open"), dir, kFilter);
     if (!path.isEmpty())
         openInteractive(path);
 }
@@ -550,8 +551,22 @@ void MainWindow::openRequested(const QString& path) {
 
 void MainWindow::openInteractive(const QString& path) {
     QString error;
-    if (!openFile(path, &error))
-        QMessageBox::warning(this, tr("Open"), tr("Could not open %1:\n%2").arg(path, error));
+    if (openFile(path, &error))
+        return;
+    // On the heap: at launch its parent is the start screen, which a file
+    // the system hands the app while the box is up closes and deletes.
+    QPointer<QMessageBox> box = new QMessageBox(QMessageBox::Warning, tr("Open"),
+                                                tr("Could not open %1:\n%2").arg(path, error), QMessageBox::Ok,
+                                                promptParent());
+    box->exec();
+    delete box;
+}
+
+QWidget* MainWindow::promptParent() {
+    if (isVisible())
+        return this;
+    QWidget* modal = QApplication::activeModalWidget();
+    return modal ? modal : this;
 }
 
 bool MainWindow::save() { return doc_.path().isEmpty() ? saveAs() : saveInteractive(doc_.path(), doc_.form()); }

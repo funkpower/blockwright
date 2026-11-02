@@ -208,6 +208,9 @@ public slots:
     void open();
     // Opens `path`, reporting a failure in a message box.
     void openInteractive(const QString& path);
+    // What File > Open's prompts are parented to: the window, or while it is
+    // still hidden at launch, the start screen up in its place (#294).
+    QWidget* promptParent();
     // Opens a file the system asks for (FileOpenForwarder): asks to save
     // unsaved edits first, as File > Open does.
     void openRequested(const QString& path);

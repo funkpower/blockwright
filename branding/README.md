@@ -4,8 +4,8 @@ The Blockwright logos and the app icon, drawn in Blockwright.
 
 | File | What | Size |
 |---|---|---|
-| `logo-large.bwp` | the wordmark and the builder's mark: the start screen | at most 80 × 20 cells |
-| `logo-small.bwp` | the wordmark: About Blockwright, the README | at most 40 × 6 cells |
+| `logo-large.bwp` | the wordmark and the builder's mark: the start screen, the README | at most 80 × 20 cells |
+| `logo-small.bwp` | the wordmark: About Blockwright | at most 40 × 6 cells |
 | `logo.txt` | the wordmark in 7-bit ASCII: `--help`, `--version`, alt text | at most 72 columns |
 | `icon.bwp` | the app icon, 256 px and up | 32 × 16 cells |
 | `icon-small.bwp` | the app icon redrawn for 16, 32 and 48 px | 16 × 8 cells |

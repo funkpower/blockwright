@@ -248,9 +248,9 @@ TEST_CASE("the plain-text logo is 7-bit ASCII at most 72 columns, and the binari
     // the header --help and --version print it from
     CHECK(std::string(kLogoText) == text);
 
-    // the README's header: the small logo, with this as its alt text
+    // the README's header: the large logo, with this as its alt text
     const std::string readme = slurp(kBranding + "/../README.md");
-    const std::string open = "<img src=\"branding/png/logo-small@2x.png\" width=\"304\" alt=\"";
+    const std::string open = "<img src=\"branding/png/logo-large@2x.png\" width=\"640\" alt=\"";
     const auto at = readme.find(open);
     REQUIRE(at != std::string::npos);
     const auto end = readme.find('"', at + open.size());

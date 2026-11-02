@@ -588,6 +588,27 @@ foreach(screen IN LISTS dock_screens)
             ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:blockwright-app-tests> "[dock-width]")
 endforeach()
 
+# The launch start screen on two screens of different heights: it comes up
+# on the window's screen, whichever the pointer is on, and fits it.
+set(config "${CMAKE_CURRENT_BINARY_DIR}/offscreen-two-screens.json")
+file(WRITE "${config}"
+  "{\"screens\": [{\"name\": \"small\", \"x\": 0, \"y\": 0, \"width\": 1366, \"height\": 768,"
+  " \"logicalDpi\": 96, \"logicalBaseDpi\": 96, \"dpr\": 1},"
+  " {\"name\": \"big\", \"x\": 1366, \"y\": 0, \"width\": 2560, \"height\": 1440,"
+  " \"logicalDpi\": 96, \"logicalBaseDpi\": 96, \"dpr\": 1}]}\n")
+add_test(NAME "start screen on two screens"
+  COMMAND ${BW_APP_TEST_ENV} QT_QPA_PLATFORM=offscreen:configfile=${config}
+          ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:blockwright-app-tests> "[start-screen-screens]")
+
+# ... and on a work area shorter than the screen, its top-left stays on it.
+set(config "${CMAKE_CURRENT_BINARY_DIR}/offscreen-short-screen.json")
+file(WRITE "${config}"
+  "{\"screens\": [{\"name\": \"short\", \"x\": 0, \"y\": 0, \"width\": 1024, \"height\": 574,"
+  " \"logicalDpi\": 96, \"logicalBaseDpi\": 96, \"dpr\": 1}]}\n")
+add_test(NAME "start screen on a short screen"
+  COMMAND ${BW_APP_TEST_ENV} QT_QPA_PLATFORM=offscreen:configfile=${config}
+          ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:blockwright-app-tests> "[start-screen-short]")
+
 # File > Publish to Library and Send to WeeChat: its main points the settings
 # and the Library at scratch folders before the QApplication exists.
 add_executable(blockwright-publish-tests

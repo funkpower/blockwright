@@ -87,7 +87,7 @@ void MainWindow::openDirectory() {
     if (!maybeSave())
         return;
     const QString dir = doc_.path().isEmpty() ? QString() : QFileInfo(doc_.path()).absolutePath();
-    const QString path = QFileDialog::getExistingDirectory(this, tr("Open Project Directory"), dir);
+    const QString path = QFileDialog::getExistingDirectory(promptParent(), tr("Open Project Directory"), dir);
     if (!path.isEmpty())
         openInteractive(path);
 }

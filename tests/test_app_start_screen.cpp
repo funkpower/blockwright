@@ -26,6 +26,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QCursor>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -37,8 +38,11 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QPointer>
+#include <QScreen>
 #include <QTemporaryDir>
 #include <QTimer>
+
+#include <utility>
 
 using namespace bw;
 
@@ -310,6 +314,197 @@ TEST_CASE("the start screen shows on a launch with no file and not with one", "[
         CHECK(w.document()->path() == clean(dir));
         CHECK(w.document()->form() == FileForm::ProjectDirectory);
     }
+}
+
+TEST_CASE("at launch the start screen comes up before the window, which shows when it closes", "[start-screen]") {
+    setStartScreenAtStartup(true);
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    SECTION("no file: the screen alone, a window of its own") {
+        MainWindow w;
+        QPointer<StartScreen> s = startUp(&w, QString());
+        REQUIRE(s);
+        CHECK(s->isVisible());
+        CHECK(s->parentWidget() == nullptr);
+        CHECK(s->isModal());
+        CHECK_FALSE(w.isVisible());
+        SECTION("New: the window shows with the canvas") {
+            child<QPushButton>(s, "startNew")->click();
+            QApplication::processEvents();
+            CHECK(closed(s));
+            CHECK(w.isVisible());
+        }
+        SECTION("Esc: the window shows with the default canvas") {
+            s->reject();
+            QApplication::processEvents();
+            CHECK(closed(s));
+            CHECK(w.isVisible());
+            CHECK(w.document()->canvas().width() == kStartNewWidth);
+        }
+        SECTION("a file the system hands the app: the window shows with it") {
+            const QString tux = tuxAt(tmp.filePath(QStringLiteral("tux.ans")));
+            w.openRequested(tux);
+            QApplication::processEvents();
+            CHECK(closed(s));
+            CHECK(w.isVisible());
+            CHECK(w.document()->path() == tux);
+        }
+    }
+    SECTION("the window goes while the screen is up: the screen goes with it") {
+        QPointer<StartScreen> s;
+        {
+            MainWindow w;
+            s = startUp(&w, QString());
+            REQUIRE(s);
+        }
+        CHECK_FALSE(s);
+    }
+    SECTION("a file: the window shows with it, and no screen") {
+        const QString tux = tuxAt(tmp.filePath(QStringLiteral("tux.ans")));
+        MainWindow w;
+        CHECK_FALSE(startUp(&w, tux));
+        CHECK(w.isVisible());
+        CHECK(w.document()->path() == tux);
+    }
+    SECTION("Show at startup off: the window shows, and no screen") {
+        setStartScreenAtStartup(false);
+        MainWindow w;
+        CHECK_FALSE(startUp(&w, QString()));
+        CHECK(w.isVisible());
+        setStartScreenAtStartup(true);
+    }
+}
+
+TEST_CASE("at launch the start screen comes up on the window's screen and fits it", "[start-screen][start-screen-screens]") {
+    // Run with two screens of different heights (see tests/CMakeLists.txt).
+    const auto screens = QGuiApplication::screens();
+    if (screens.size() < 2)
+        SKIP("one screen");
+    QScreen* big = screens[0];
+    QScreen* small = screens[0];
+    for (QScreen* sc : screens) {
+        if (sc->availableGeometry().height() > big->availableGeometry().height())
+            big = sc;
+        if (sc->availableGeometry().height() < small->availableGeometry().height())
+            small = sc;
+    }
+    REQUIRE(big != small);
+    setStartScreenAtStartup(true);
+    for (const auto& [on, pointer] : {std::pair{big, small}, std::pair{small, big}}) {
+        INFO("window on " << on->name().toStdString() << ", pointer on " << pointer->name().toStdString());
+        MainWindow w;
+        w.move(on->availableGeometry().topLeft() + QPoint(10, 10)); // where its saved geometry put it
+        QCursor::setPos(pointer->geometry().center());
+        QPointer<StartScreen> s = startUp(&w, QString());
+        REQUIRE(s);
+        REQUIRE(bwtest::showExposed(s));
+        CHECK(QGuiApplication::screenAt(s->frameGeometry().center()) == on);
+        CHECK(s->frameGeometry().height() <= on->availableGeometry().height() - 60);
+        CHECK(on->availableGeometry().contains(s->frameGeometry()));
+        s->reject();
+        QApplication::processEvents();
+    }
+}
+
+TEST_CASE("at launch a failed open says so over the start screen", "[start-screen][start-screen-screens]") {
+    setStartScreenAtStartup(true);
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    MainWindow w;
+    QPointer<StartScreen> s = startUp(&w, QString());
+    REQUIRE(s);
+    REQUIRE(bwtest::showExposed(s));
+    QWidget* parent = nullptr;
+    QRect box;
+    QTimer::singleShot(0, s, [&] {
+        auto* b = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!b)
+            return;
+        parent = b->parentWidget();
+        box = b->frameGeometry();
+        b->button(QMessageBox::Ok)->click();
+    });
+    w.openRequested(tmp.filePath(QStringLiteral("gone.ans")));
+    QApplication::processEvents();
+    REQUIRE(box.isValid());
+    CHECK(parent == s.data());
+    CHECK(s->frameGeometry().contains(box.center()));
+    CHECK_FALSE(closed(s));
+    CHECK_FALSE(w.isVisible());
+}
+
+TEST_CASE("at launch a file the system hands the app while the failed-open box is up opens it", "[start-screen]") {
+    setStartScreenAtStartup(true);
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString tux = tuxAt(tmp.filePath(QStringLiteral("tux.ans")));
+    MainWindow w;
+    FileOpenForwarder forwarder(&w);
+    QApplication::instance()->installEventFilter(&forwarder);
+    QPointer<StartScreen> s = startUp(&w, QString());
+    REQUIRE(s);
+    REQUIRE(bwtest::showExposed(s));
+    QPointer<QMessageBox> box;
+    QTimer::singleShot(0, s, [&] {
+        box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!box)
+            return;
+        QFileOpenEvent open(tux); // from the Finder, while the box is up
+        QApplication::sendEvent(QApplication::instance(), &open);
+        // Dismissed if it is still up; gone with it if not.
+        QMessageBox* b = box.data();
+        QTimer::singleShot(50, b, [b] { b->button(QMessageBox::Ok)->click(); });
+    });
+    w.openRequested(tmp.filePath(QStringLiteral("gone.ans")));
+    QApplication::processEvents();
+    QApplication::instance()->removeEventFilter(&forwarder);
+    CHECK(closed(s));
+    CHECK_FALSE(box);
+    CHECK(w.document()->path() == tux);
+    CHECK(w.isVisible());
+}
+
+TEST_CASE("at launch the start screen's top-left stays on the work area", "[start-screen][start-screen-short]") {
+    // Also run on a screen shorter than the start screen (see tests/CMakeLists.txt).
+    setStartScreenAtStartup(true);
+    MainWindow w;
+    QPointer<StartScreen> s = startUp(&w, QString());
+    REQUIRE(s);
+    REQUIRE(bwtest::showExposed(s));
+    const QRect area = w.screen()->availableGeometry();
+    INFO("frame " << s->frameGeometry().x() << "," << s->frameGeometry().y() << " " << s->frameGeometry().width()
+                  << "x" << s->frameGeometry().height() << " on a work area " << area.width() << "x" << area.height());
+    CHECK(s->frameGeometry().top() >= area.top());
+    CHECK(s->frameGeometry().left() >= area.left());
+}
+
+TEST_CASE("at launch File > Open's dialog is the start screen's", "[start-screen]") {
+    if (!fileDialogsAllowed())
+        SKIP("a QFileDialog would write Qt's native settings, which can't be moved off the user's on this platform");
+    QtDialogs qtDialogs;
+    setStartScreenAtStartup(true);
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString tux = tuxAt(tmp.filePath(QStringLiteral("tux.ans")));
+    MainWindow w;
+    QPointer<StartScreen> s = startUp(&w, QString());
+    REQUIRE(s);
+    REQUIRE(bwtest::showExposed(s));
+    QWidget* parent = nullptr;
+    QTimer peek;
+    peek.setInterval(5);
+    QObject::connect(&peek, &QTimer::timeout, [&parent] {
+        if (auto* d = qobject_cast<QFileDialog*>(QApplication::activeModalWidget()))
+            parent = d->parentWidget();
+    });
+    peek.start();
+    FileAnswer pick(tux);
+    child<QPushButton>(s, "startOpen")->click();
+    CHECK(pick.picked);
+    CHECK(parent == s.data());
+    CHECK(closed(s));
+    CHECK(w.isVisible());
+    CHECK(w.document()->path() == tux);
 }
 
 TEST_CASE("Show at startup is kept in the settings and respected", "[start-screen]") {

@@ -100,8 +100,8 @@ int main(int argc, char** argv) {
     bw::MainWindow w;
     // A document opened from the Finder or the Dock (macOS) arrives as an event.
     app.installEventFilter(new bw::FileOpenForwarder(&w));
-    w.show();
-    // A file named opens; with none, the start screen asks what to do.
+    // A file named opens in the window; with none, the start screen asks
+    // what to do before the window shows.
     bw::startUp(&w, files.empty() ? QString() : QString::fromLocal8Bit(files.front()));
     return app.exec();
 }
