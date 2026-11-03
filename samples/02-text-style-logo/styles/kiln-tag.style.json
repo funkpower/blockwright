@@ -1,0 +1,10 @@
+{
+  "kind": "text-style",
+  "name": "Kiln tag",
+  "category": "signs",
+  "tags": ["plate", "tagline"],
+  "effects": [
+    {"kind": "plate", "enabled": true, "colour": 4, "padding": 1},
+    {"kind": "fill", "enabled": true, "colour": 14, "mode": "flat", "ramp": "fire"}
+  ]
+}

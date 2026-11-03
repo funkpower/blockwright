@@ -1,0 +1,43 @@
+{
+    "alphaLocked": false,
+    "height": 6,
+    "id": 8,
+    "kind": "text",
+    "locked": false,
+    "mode": "normal",
+    "name": "tagline",
+    "source": {
+        "align": "left",
+        "case": "as-typed",
+        "colour": 14,
+        "face": {
+            "kind": "pixel",
+            "name": "mini"
+        },
+        "letterSpacing": 0,
+        "lineSpacing": 0,
+        "text": "ART AT WHITE HEAT",
+        "wrapWidth": 0
+    },
+    "style": {
+        "effects": [
+            {
+                "colour": 4,
+                "enabled": true,
+                "kind": "plate",
+                "padding": 1
+            },
+            {
+                "colour": 14,
+                "enabled": true,
+                "kind": "fill",
+                "mode": "flat",
+                "ramp": "fire"
+            }
+        ]
+    },
+    "visible": true,
+    "width": 68,
+    "x": 5,
+    "y": 20
+}

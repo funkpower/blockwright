@@ -1,0 +1,12 @@
+{
+  "kind": "text-style",
+  "name": "Quenched",
+  "category": "metal",
+  "tags": ["ice", "steel", "extrude", "shade", "big"],
+  "ice": "required",
+  "effects": [
+    {"kind": "shadow", "enabled": true, "colour": 8, "direction": "se", "distance": 2, "form": "extrude"},
+    {"kind": "fill", "enabled": true, "colour": 15, "mode": "flat", "ramp": "ice"},
+    {"kind": "shade", "enabled": true, "light": "s", "ramp": "ice"}
+  ]
+}

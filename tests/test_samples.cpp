@@ -5,8 +5,11 @@
 #include "blockwright/composite.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/irc.h"
+#include "blockwright/library.h"
 #include "blockwright/project.h"
 #include "blockwright/samples.h"
+#include "blockwright/text_source.h"
+#include "blockwright/text_style.h"
 
 #include "../cli/lint.h"
 
@@ -421,4 +424,69 @@ TEST_CASE("the bundled samples show every layer capability between them") {
     CHECK(variant);
     CHECK(orderMatters);
     CHECK(upperWins);
+}
+
+// #207's second sample: a logo built on the text-style system (PLAN §15).
+TEST_CASE("the text-style logo sample holds big styled text, its saved stacks and a baked copy") {
+    const fs::path dir = kSamples / "02-text-style-logo";
+    const project::Project p = project::read(dir);
+    CHECK(p.ice);
+    CHECK(names(p.layers) == std::vector<std::string>{"backdrop", "sparks", "EMBER (baked)", "EMBER (quenched)",
+                                                      "KILN (quenched)", "EMBER", "KILN", "tagline"});
+    CHECK(p.snapshots.size() == 2);
+
+    // the saved stacks ship with it, as library text styles
+    const auto stack = [&](const std::string& file) {
+        const std::string path = "styles/" + file + ".style.json";
+        REQUIRE(p.files.count(path) == 1);
+        const library::TextStyleEntry entry = library::parseTextStyleEntry(p.files.at(path));
+        // in the form Save as Preset… writes, so one saved back is the same bytes
+        CHECK(library::textStyleEntryJson(entry) == p.files.at(path));
+        return entry.style;
+    };
+    const TextStyle molten = stack("molten"), quenched = stack("quenched"), tag = stack("kiln-tag");
+
+    // every text layer has its style; the words are big text
+    for (const Layer& l : p.layers.layers()) {
+        if (l.props.kind != LayerKind::Text)
+            continue;
+        INFO(l.props.name);
+        REQUIRE(l.props.text.has_value());
+        REQUIRE(l.props.style.has_value());
+        CHECK_FALSE(l.props.style->effects.empty());
+        if (l.props.name != "tagline")
+            CHECK(l.props.text->bigStyle == BigTextStyle::Block);
+    }
+    // one stack on two layers, and a second on the hidden copies
+    CHECK(named(p.layers, "EMBER").props.style == molten);
+    CHECK(named(p.layers, "KILN").props.style == molten);
+    CHECK(named(p.layers, "EMBER (quenched)").props.style == quenched);
+    CHECK(named(p.layers, "KILN (quenched)").props.style == quenched);
+    CHECK(named(p.layers, "tagline").props.style == tag);
+    CHECK_FALSE(named(p.layers, "EMBER (quenched)").props.visible);
+    CHECK_FALSE(named(p.layers, "KILN (quenched)").props.visible);
+    // what the effects a logo uses come to between them
+    REQUIRE(molten.get<ShadowEffect>() != nullptr);
+    CHECK(molten.get<ShadowEffect>()->form == ShadowForm::Extrude);
+    CHECK(molten.get<FillEffect>() != nullptr);
+    CHECK(molten.get<ShadeEffect>() != nullptr);
+    CHECK(quenched.get<ShadeEffect>() != nullptr);
+    CHECK(tag.get<PlateEffect>() != nullptr);
+
+    // the baked copy is EMBER's bake, hidden, in the same place
+    const Layer& ember = named(p.layers, "EMBER");
+    const Layer& baked = named(p.layers, "EMBER (baked)");
+    const Layer b = bake(ember, p.ice);
+    CHECK(baked.props.kind == LayerKind::Cells);
+    CHECK_FALSE(baked.props.visible);
+    CHECK(baked.props.x == ember.props.x);
+    CHECK(baked.props.y == ember.props.y);
+    CHECK(baked.cells == b.cells);
+
+    // it saves back as it reads, as a directory and as a zip
+    const fs::path out = scratch("logo-round-trip");
+    project::writeDirectory(p, out / "dir");
+    CHECK(project::read(out / "dir") == p);
+    project::writeZip(p, out / "logo.bwp");
+    CHECK(project::read(out / "logo.bwp") == p);
 }
