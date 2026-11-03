@@ -585,6 +585,147 @@ TEST_CASE("an XBIN save warns that SAUCE's letter spacing, aspect and font name 
     CHECK_FALSE(w.document()->isModified());
 }
 
+// #319: the SAUCE fields an XBIN save drops are format state the undo
+// stack holds, so the drop is a step of its own with the clean index after
+// it. Undo brings them back as a change; redo drops them again, clean.
+namespace {
+int letterSpacing(MainWindow& w) {
+    const auto& s = w.document()->ansi().sauce;
+    return s ? s->letterSpacing() : 0;
+}
+
+// After a save that dropped the 9 px as one step: clean, 8 px; undo is 9 px
+// and modified; redo is 8 px and clean again.
+void checkDropStep(MainWindow& w, int stepsBefore) {
+    QUndoStack* undo = w.document()->undoStack();
+    CHECK(undo->count() == stepsBefore + 1);
+    CHECK(undo->index() == undo->count());
+    CHECK(undo->undoText() == QStringLiteral("Save as XBIN"));
+    CHECK(letterSpacing(w) == 0);
+    CHECK_FALSE(w.document()->isModified());
+    undo->undo();
+    CHECK(letterSpacing(w) == 2);
+    CHECK(w.document()->isModified());
+    undo->redo();
+    CHECK(letterSpacing(w) == 0);
+    CHECK_FALSE(w.document()->isModified());
+}
+}  // namespace
+
+TEST_CASE("undo then redo after an XBIN Save As that drops 9 px leaves it dropped and clean") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(qpath(bwtest::dataDir() / "golden" / "tux.ans"), &error));
+    REQUIRE(w.document()->setLetterSpacing(9));
+    const QString xb = tmp.filePath(QStringLiteral("p.xb"));
+    REQUIRE(w.saveFile(xb, &error, true));
+    REQUIRE(w.document()->path() == xb);
+    checkDropStep(w, 1);
+    // undoing the drop and the 9 px is the file as opened, not as saved
+    QUndoStack* undo = w.document()->undoStack();
+    undo->undo();
+    undo->undo();
+    CHECK(undo->index() == 0);
+    CHECK(letterSpacing(w) == 0);
+    CHECK(w.document()->isModified());
+    // and a second save to the same XBIN has nothing left to drop
+    undo->redo();
+    undo->redo();
+    REQUIRE(w.saveFile(xb, &error));
+    CHECK(undo->count() == 2);
+    CHECK_FALSE(w.document()->isModified());
+}
+
+TEST_CASE("undo then redo after an XBIN Save that drops 9 px leaves it dropped and clean") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString xb = tmp.filePath(QStringLiteral("tux.xb"));
+    REQUIRE(QFile::copy(qpath(bwtest::dataDir() / "xbin" / "tux.xb"), xb));
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(xb, &error));
+    REQUIRE(w.document()->setLetterSpacing(9));
+    CHECK_FALSE(w.saveFile(xb, &error));  // refused unless allowed
+    CHECK(w.document()->undoStack()->count() == 1);
+    CHECK(letterSpacing(w) == 2);
+    REQUIRE(w.saveFile(xb, &error, true));
+    checkDropStep(w, 1);
+}
+
+TEST_CASE("an XBIN save that drops 9 px, aspect and font name drops them in one undo step") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    AnsiDocument d = parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden" / "tux.ans"));
+    REQUIRE(d.sauce);
+    d.sauce->flags = 0x15;  // iCE, 9 px, square
+    d.sauce->font = "Amiga Topaz 1";
+    const QString in = tmp.filePath(QStringLiteral("flags.ans"));
+    {
+        const std::string bytes = writeAnsi(d).bytes;
+        QFile f(in);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        REQUIRE(f.write(bytes.data(), qint64(bytes.size())) == qint64(bytes.size()));
+    }
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(in, &error));
+    REQUIRE(w.saveFile(tmp.filePath(QStringLiteral("flags.xb")), &error, true));
+    // opened with them, so the drop is the only step
+    checkDropStep(w, 0);
+    w.document()->undoStack()->undo();
+    const auto& s = w.document()->ansi().sauce;
+    REQUIRE(s);
+    CHECK(s->aspectRatio() != 0);
+    CHECK(s->font == "Amiga Topaz 1");
+    CHECK(w.document()->ansi().ice);
+    w.document()->undoStack()->redo();
+    CHECK(s->aspectRatio() == 0);
+    CHECK(s->font.empty());
+    CHECK(w.document()->ansi().ice);
+}
+
+TEST_CASE("a save that drops no SAUCE field adds no undo step") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(qpath(bwtest::dataDir() / "golden" / "tux.ans"), &error));
+    QUndoStack* undo = w.document()->undoStack();
+
+    SECTION("an 8 px XBIN Save As") {
+        REQUIRE(w.document()->setIce(!w.document()->ansi().ice));
+        const QString xb = tmp.filePath(QStringLiteral("plain.xb"));
+        REQUIRE(w.saveFile(xb, &error));
+        CHECK(undo->count() == 1);
+        CHECK_FALSE(w.document()->isModified());
+        undo->undo();
+        CHECK(w.document()->isModified());
+        undo->redo();
+        CHECK_FALSE(w.document()->isModified());
+    }
+    SECTION("9 px saved to formats that keep it, Save As then Save") {
+        REQUIRE(w.document()->setLetterSpacing(9));
+        for (const char* name : {"keep.ans", "keep.bin"}) {
+            const QString path = tmp.filePath(QString::fromLatin1(name));
+            REQUIRE(w.saveFile(path, &error));
+            CHECK(undo->count() == 1);
+            CHECK(letterSpacing(w) == 2);
+            CHECK_FALSE(w.document()->isModified());
+            REQUIRE(w.saveFile(path, &error));  // Save, to the document's own file
+            CHECK(undo->count() == 1);
+            CHECK_FALSE(w.document()->isModified());
+            undo->undo();
+            CHECK(letterSpacing(w) == 0);
+            CHECK(w.document()->isModified());
+            undo->redo();
+            CHECK(letterSpacing(w) == 2);
+            CHECK_FALSE(w.document()->isModified());
+        }
+    }
+}
+
 TEST_CASE("a canvas too large to display is refused and the open document stays") {
     QTemporaryDir tmp;
     // 400x5000 cells at 9 px is 3600x80000 = 288,000,000 px, over the

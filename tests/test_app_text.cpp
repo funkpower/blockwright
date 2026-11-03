@@ -771,6 +771,78 @@ TEST_CASE("a save or a new document between a click and the edit's end leaves no
     }
 }
 
+// #322 review (B1): the "Save as XBIN" step was pushed without
+// commandAboutToPush, after the steps of the empty layer the edit made, so
+// the layer could no longer be taken back and the save left two layers.
+TEST_CASE("a lossy XBIN save between a click and the edit's end leaves no empty layer", "[text]") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    MainWindow w;
+    Document* d = w.document();
+    REQUIRE(d->setLetterSpacing(9));
+    const size_t layers = d->layers().size();
+    const int steps = d->undoStack()->count();
+    use(w, "text");
+    click(w.canvasView(), 2, 1);
+    type(w.canvasView(), QStringLiteral("A"));
+    key(w.canvasView(), Qt::Key_Backspace, QStringLiteral("\b"));
+    REQUIRE(d->layers().size() == layers + 1);
+    REQUIRE(sourceOf(d).text.empty());
+    QString error;
+    REQUIRE(w.saveFile(tmp.filePath(QStringLiteral("a.xb")), &error, true));
+    QCoreApplication::processEvents();
+    // the edit ended before the drop, so the file held the whole document
+    CHECK(textTool(w)->editing() == 0);
+    CHECK(d->layers().size() == layers);
+    CHECK_FALSE(d->isModified());
+    CHECK(d->ansi().sauce->letterSpacing() == 0);
+    QUndoStack* undo = d->undoStack();
+    CHECK(undo->count() == steps + 1);
+    CHECK(undo->undoText() == QStringLiteral("Save as XBIN"));
+    key(w.canvasView(), Qt::Key_Escape);
+    CHECK(d->layers().size() == layers);
+    CHECK_FALSE(d->isModified());
+    undo->undo();
+    CHECK(d->ansi().sauce->letterSpacing() == 2);
+    CHECK(d->isModified());
+    CHECK(d->layers().size() == layers);
+    undo->redo();
+    CHECK(d->ansi().sauce->letterSpacing() == 0);
+    CHECK_FALSE(d->isModified());
+    // a later save is of a flat document, clean, with no step
+    REQUIRE(w.saveFile(tmp.filePath(QStringLiteral("a.xb")), &error));
+    CHECK(undo->count() == steps + 1);
+    CHECK_FALSE(d->isModified());
+}
+
+TEST_CASE("a lossy XBIN save during an edit with text in it keeps the edit going", "[text]") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    MainWindow w;
+    Document* d = w.document();
+    REQUIRE(d->setLetterSpacing(9));
+    const size_t layers = d->layers().size();
+    use(w, "text");
+    click(w.canvasView(), 2, 1);
+    type(w.canvasView(), QStringLiteral("A"));
+    const LayerId made = textTool(w)->editing();
+    REQUIRE(made);
+    QString error;
+    REQUIRE(w.saveFile(tmp.filePath(QStringLiteral("a.xb")), &error, true));
+    QCoreApplication::processEvents();
+    CHECK(textTool(w)->editing() == made);
+    CHECK(d->layers().size() == layers + 1);
+    CHECK(d->undoStack()->undoText() == QStringLiteral("Save as XBIN"));
+    CHECK(d->ansi().sauce->letterSpacing() == 0);
+    CHECK(d->isModified());  // only a project keeps the text layer
+    type(w.canvasView(), QStringLiteral("B"));
+    CHECK(d->activeLayer() == made);
+    CHECK(sourceOf(d).text == U"AB");
+    key(w.canvasView(), Qt::Key_Escape);
+    CHECK(textTool(w)->editing() == 0);
+    CHECK(d->layers().size() == layers + 1);
+}
+
 TEST_CASE("a click that moves the text cursor to the other line of a wrap starts a new run", "[text]") {
     MainWindow w;
     Document* d = w.document();

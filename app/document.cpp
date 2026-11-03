@@ -548,6 +548,16 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         return false;
     }
     emit fileWritten(path);
+    // An XBIN that left out the SAUCE letter spacing, aspect or font name
+    // drops them from the document as a step of its own (#319).
+    const bool xbin = artFormatFor(QFile::encodeName(path).toStdString()) == ArtFormat::Xbin;
+    const bool dropsSauce =
+        xbin && doc_.sauce && (out.letterSpacingDropped || out.aspectDropped || !out.fontNameDropped.empty());
+    // A step pushed for a file that is now the document's ends a text edit
+    // whose layer is still empty first, as any other command does, so the
+    // layer is gone before the check of whether the file holds it all.
+    if (dropsSauce && (form_ == FileForm::Ansi || flatHoldsAll()))
+        emit commandAboutToPush();
     // An .ans holding less than the document doesn't save it: a project
     // stays the document's file, and a flat document stays modified, so
     // nothing discards the layers or snapshots on no disk without asking.
@@ -560,19 +570,24 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         emit pathChanged(path_);
     }
     countLostBlink_ = false;  // the file written has no blink left to lose
-    if (artFormatFor(QFile::encodeName(path).toStdString()) != ArtFormat::Xbin) {
+    if (!xbin) {
         // nor a palette or font, now it is the document's file
         doc_.palette.reset();
         doc_.font.reset();
-    } else if (doc_.sauce && (out.letterSpacingDropped || out.aspectDropped || !out.fontNameDropped.empty())) {
-        // nor the SAUCE letter spacing, aspect or font name an XBIN left out
+    } else if (dropsSauce) {
+        // nor the SAUCE letter spacing, aspect or font name an XBIN left out.
+        // Those are format state the undo stack holds (#319), so dropping
+        // them is a step of its own, the clean index after it: undo puts
+        // them back as a change, redo drops them again at the saved state.
+        DocumentFormat f = format();
         if (out.letterSpacingDropped)
-            doc_.sauce->setLetterSpacing(0);
+            f.sauce->setLetterSpacing(0);
         if (out.aspectDropped)
-            doc_.sauce->setAspectRatio(0);
+            f.sauce->setAspectRatio(0);
         if (!out.fontNameDropped.empty())
-            doc_.sauce->font.clear();
-        emit formatChanged();
+            f.sauce->font.clear();
+        if (!(f == format()))
+            undo_.push(new FormatCommand(this, format(), std::move(f), tr("Save as XBIN")));
     }
     if (whole) {
         undo_.setClean();
