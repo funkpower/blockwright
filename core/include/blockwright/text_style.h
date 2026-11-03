@@ -146,6 +146,20 @@ std::optional<Compass> compassPointFromName(std::string_view name);
 // mustn't make a stack undrawable.
 std::optional<std::string> textStyleProblem(const TextStyle& style);
 
+// Whether the stack's look needs iCE colours (PLAN §15, iCE off; a preset's
+// `"ice": "required"`): some switched-on effect, drawn with iCE on, writes a
+// ░▒▓ rung between two bright ramp colours, which only a bright background
+// shows (LightRed to Yellow on fire). The rungs each effect can reach, on
+// any text: Glow rung 1 to its brightness; a rows or columns Fill rung 4 to
+// the ramp's top; Shade from the colour Fill leaves (a flat colour's step,
+// any rung of a ramp Fill or a rainbow's colours, any rung at all when Fill
+// is off) down to rung 4; Bevel one rung above any colour Fill and Shade
+// leave. A flat or rainbow Fill writes solid colours only. A ramp Fill's
+// rank mapping of a TheDraw face's colours (which lowers its top with iCE
+// off) depends on the face, not the stack, and doesn't count. A ramp this
+// build lacks draws nothing and needs nothing.
+bool styleNeedsIce(const TextStyle& style);
+
 // The cells the style draws beyond the letters on each side: the outline's
 // width (a cell, for either form) plus the largest of the glow's width and
 // the shadow's reach that way (its distance in pixels: columns across, rows

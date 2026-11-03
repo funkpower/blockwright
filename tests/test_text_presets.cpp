@@ -272,6 +272,8 @@ TEST_CASE("the bundled presets are the eleven, none needing iCE", "[presets]") {
         CHECK(p.path.filename().string() == slug(p.name) + ".style.json");
         CHECK_FALSE(textStyleProblem(p.style));
         got[p.name] = p.iceRequired;
+        // the marking is what the stack needs (#310)
+        CHECK(styleNeedsIce(p.style) == p.iceRequired);
     }
     CHECK(got == expected);
 }

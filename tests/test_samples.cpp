@@ -442,6 +442,8 @@ TEST_CASE("the text-style logo sample holds big styled text, its saved stacks an
         const library::TextStyleEntry entry = library::parseTextStyleEntry(p.files.at(path));
         // in the form Save as Preset… writes, so one saved back is the same bytes
         CHECK(library::textStyleEntryJson(entry) == p.files.at(path));
+        // marked as needing iCE exactly when its stack does (#310)
+        CHECK(styleNeedsIce(entry.style) == entry.iceRequired);
         return entry.style;
     };
     const TextStyle molten = stack("molten"), quenched = stack("quenched"), tag = stack("kiln-tag");

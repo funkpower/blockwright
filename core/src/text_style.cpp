@@ -155,6 +155,84 @@ std::optional<std::string> textStyleProblem(const TextStyle& style) {
     return std::nullopt;
 }
 
+namespace {
+
+// Whether rung `rung` is a ░▒▓ of two bright ramp colours, which no way
+// round shows on a dark background (rungCell).
+bool rungNeedsIce(const Ramp& ramp, int rung) {
+    if (rung <= 0 || rung >= ramp.topRung() || rung % kRungsPerStep == 0)
+        return false;
+    const auto i = static_cast<std::size_t>(rung / kRungsPerStep);
+    return ramp.colours[i] >= 8 && ramp.colours[i + 1] >= 8;
+}
+
+bool anyNeedsIce(const Ramp& ramp, int lo, int hi) {
+    for (int r = std::max(lo, 1); r <= std::min(hi, ramp.topRung()); ++r)
+        if (rungNeedsIce(ramp, r))
+            return true;
+    return false;
+}
+
+} // namespace
+
+bool styleNeedsIce(const TextStyle& style) {
+    if (const GlowEffect* g = style.get<GlowEffect>())
+        if (const auto ramp = findRamp(g->ramp); ramp && anyNeedsIce(*ramp, 1, g->brightness))
+            return true;
+    // The cells the letters can show once Fill has drawn them; empty for
+    // any colour at all (Fill off: the text's own colours).
+    std::optional<std::vector<Cell>> letters;
+    if (const FillEffect* f = style.get<FillEffect>()) {
+        letters.emplace();
+        const auto solid = [](std::uint8_t c) { return halfBlockCell(HalfPair{c, c}); };
+        if (f->mode == FillMode::Flat) {
+            letters->push_back(solid(f->colour));
+        } else if (const auto ramp = findRamp(f->ramp)) {
+            if (f->mode == FillMode::Rainbow) {
+                for (std::size_t i = 1; i < ramp->colours.size(); ++i)
+                    letters->push_back(solid(ramp->colours[i]));
+            } else {
+                if (anyNeedsIce(*ramp, kRungsPerStep, ramp->topRung()))
+                    return true;
+                for (int r = kRungsPerStep; r <= ramp->topRung(); ++r)
+                    letters->push_back(rungCell(*ramp, r));
+            }
+        }
+    }
+    // The rungs the letters can show on `ramp`.
+    const auto rungsOn = [&](const Ramp& ramp) {
+        std::vector<int> out;
+        if (!letters) {
+            for (int r = 0; r <= ramp.topRung(); ++r)
+                out.push_back(r);
+        } else {
+            for (const Cell& c : *letters)
+                if (const auto r = rungOf(ramp, c))
+                    out.push_back(*r);
+        }
+        return out;
+    };
+    if (const ShadeEffect* s = style.get<ShadeEffect>())
+        if (const auto ramp = findRamp(s->ramp)) {
+            const std::vector<int> from = rungsOn(*ramp);
+            for (const int r : from) {
+                if (r <= kRungsPerStep)
+                    continue;
+                if (anyNeedsIce(*ramp, kRungsPerStep, r - 1))
+                    return true;
+                if (letters)
+                    for (int k = kRungsPerStep; k < r; ++k)
+                        letters->push_back(rungCell(*ramp, k));
+            }
+        }
+    if (const BevelEffect* b = style.get<BevelEffect>())
+        if (const auto ramp = findRamp(b->ramp))
+            for (const int r : rungsOn(*ramp))
+                if (rungNeedsIce(*ramp, r + 1))
+                    return true;
+    return false;
+}
+
 StyleMargins styleMargins(const TextStyle& style) {
     StyleMargins m;
     const int outline = style.get<OutlineEffect>() ? 1 : 0;
@@ -595,15 +673,138 @@ private:
         return t;
     }
 
-    // The solid ramp colour nearest a position given in quarter rungs.
-    static std::uint8_t nearestSolid(const Ramp& ramp, int quarters, bool lighterOnTie) {
+    // The step of the solid ramp colour nearest a position given in quarter
+    // rungs, never black (the ramp's darkest) on a ramp with more.
+    static std::size_t nearestStep(const Ramp& ramp, int quarters, bool lighterOnTie) {
         const int per = kRungsPerStep * 4;
         int i = quarters / per;
         const int rem = quarters % per;
         if (rem * 2 > per || (rem * 2 == per && lighterOnTie))
             ++i;
         i = std::clamp(i, std::min<int>(1, int(ramp.colours.size()) - 1), int(ramp.colours.size()) - 1);
-        return ramp.colours[static_cast<std::size_t>(i)];
+        return static_cast<std::size_t>(i);
+    }
+
+    // The solid ramp colour nearest a position given in quarter rungs.
+    static std::uint8_t nearestSolid(const Ramp& ramp, int quarters, bool lighterOnTie) {
+        return ramp.colours[nearestStep(ramp, quarters, lighterOnTie)];
+    }
+
+    // The one colour the source cells show apart from black (a pixel cell's
+    // two halves, any other cell's foreground and background, as they show
+    // with iCE on), or nothing when they show none or more than one: Block
+    // big text, a TheDraw block or outline font, a cells layer drawn in one
+    // colour (#311).
+    std::optional<std::uint8_t> sourceColour() const {
+        std::optional<std::uint8_t> one;
+        for (int y = 0; y < h_; ++y)
+            for (int x = 0; x < w_; ++x) {
+                if (!source(x, y))
+                    continue;
+                const Cell& c = sourceCell(x, y);
+                const auto h = halfBlocks(c, true);
+                for (const std::uint8_t k : h ? std::array{h->top, h->bottom}
+                                              : std::array{c.fg.paletteIndex(), c.bg.paletteIndex()}) {
+                    if (k == Black)
+                        continue;
+                    if (one && *one != k)
+                        return std::nullopt;
+                    one = k;
+                }
+            }
+        return one;
+    }
+
+    // A source cell of a face in one colour (`colour`, sourceColour) at
+    // rung `rung` of a rows or columns gradient (#311). It keeps its
+    // character, as every Fill on source cells does: the colour takes the
+    // solid nearest the rung, or for a ▀/▄ half in it and half black in a
+    // rows gradient the solid nearest its pixel, as a fringe does. A
+    // background takes the step the colour went to only where it shows
+    // (with iCE off, a dark one): a half block whose bright colour is its
+    // background is turned over, any other cell's background takes the
+    // nearest step below that shows. Nothing for a cell of black only.
+    std::optional<Cell> byPosition(const Cell& src, std::uint8_t colour, const Ramp& ramp, int rung,
+                                   bool rows) const {
+        const auto h = halfBlocks(src, true);
+        const bool top = h && h->top == colour, bottom = h && h->bottom == colour;
+        if (h && !top && !bottom)
+            return std::nullopt;
+        const bool fringe = rows && top != bottom;
+        const std::size_t i = nearestStep(ramp, rung * 4 + (fringe ? (top ? 2 : -2) : 0), fringe ? top : true);
+        const bool fg = src.fg.paletteIndex() == colour, bg = src.bg.paletteIndex() == colour;
+        if (!fg && !bg)
+            return std::nullopt;
+        const std::uint8_t c = ramp.colours[i];
+        Cell out = src;
+        out.transparent = false;
+        if (fg)
+            out.fg = Color::indexed(c);
+        if (bg) {
+            if (h && !ice_ && c >= 8) {
+                out = halfBlockCell(HalfPair{top ? c : std::uint8_t(Black), bottom ? c : std::uint8_t(Black)}, ice_);
+                out.attrs = src.attrs;
+                return out;
+            }
+            out.bg = Color::indexed(ramp.colours[backStep(ramp, i, ice_)] & (ice_ ? 15 : 7));
+        }
+        return out;
+    }
+
+    // After the by-position pass (`placed`, its cells): along each run of
+    // solid cells the gradient runs across (a row's for columns, a column's
+    // for rows), a step one cell long takes the step of the next one, or at
+    // the run's end the one before. A cell that had a neighbour of its own
+    // colour so keeps one of its own rung, and a step's edge never cuts one
+    // cell off a stroke to stand as a speck, lighter or darker than every
+    // neighbour, on any ramp.
+    void evenSteps(Canvas& cv, const std::vector<char>& placed, std::uint8_t colour, const Ramp& ramp,
+                   bool rows) const {
+        const int w = cv.width(), h = cv.height();
+        const int lines = rows ? w : h, along = rows ? h : w;
+        const auto at = [&](int line, int i) -> Cell& { return rows ? cv.at(line, i) : cv.at(i, line); };
+        const auto solid = [&](int line, int i) -> std::optional<int> {
+            if (!placed[static_cast<std::size_t>(rows ? i : line) * w + (rows ? line : i)])
+                return std::nullopt;
+            const auto g = rungOf(ramp, at(line, i));
+            if (!g || *g % kRungsPerStep)
+                return std::nullopt;
+            return g;
+        };
+        for (int line = 0; line < lines; ++line)
+            for (int i = 0; i < along;) {
+                if (!solid(line, i)) {
+                    ++i;
+                    continue;
+                }
+                int end = i;
+                while (end < along && solid(line, end))
+                    ++end;
+                // the run [i, end): its steps, first to last
+                std::vector<std::pair<int, int>> steps;  // (first cell, rung)
+                for (int k = i; k < end; ++k)
+                    if (const int g = *solid(line, k); steps.empty() || steps.back().second != g)
+                        steps.emplace_back(k, g);
+                for (std::size_t s = 0; s < steps.size() && steps.size() > 1;) {
+                    const int len = (s + 1 < steps.size() ? steps[s + 1].first : end) - steps[s].first;
+                    if (len != 1) {
+                        ++s;
+                        continue;
+                    }
+                    const std::size_t to = s + 1 < steps.size() ? s + 1 : s - 1;
+                    const int k = steps[s].first;
+                    const int x = rows ? line : k, y = rows ? k : line;
+                    if (const auto c = byPosition(sourceCell(x, y), colour, ramp, steps[to].second, rows))
+                        at(line, k) = *c;
+                    if (to > s) {
+                        steps[to].first = k;
+                        steps.erase(steps.begin() + static_cast<long>(s));
+                    } else {
+                        steps.erase(steps.begin() + static_cast<long>(s));
+                    }
+                }
+                i = end;
+            }
     }
 
     // Each source cell's colours mapped onto the ramp by rank (#184): black
@@ -733,6 +934,13 @@ private:
                 }
         } else {
             recolourSources(cells, *ramp);
+            // a face whose cells show one colour has one rank, which the
+            // rank mapping puts on the top step: a rows or columns gradient
+            // runs over its cells by position instead (#311)
+            const std::optional<std::uint8_t> one =
+                f->mode == FillMode::Rainbow ? std::nullopt : sourceColour();
+            const int cw = cells.cells.width();
+            std::vector<char> placed(static_cast<std::size_t>(cw) * cells.cells.height(), 0);
             for (const auto& band : bands_) {
                 const std::vector<Letter> ls = letters(band);
                 if (ls.empty())
@@ -760,9 +968,16 @@ private:
                 const int r0 = band.first / 2, r1 = (band.second + 1) / 2;
                 for (int y = r0; y < r1; ++y)
                     for (int x = 0; x < w_; ++x) {
-                        if (source(x, y) || !cellInk(x, y))
+                        if (!cellInk(x, y) || (source(x, y) && !one))
                             continue;
                         const int rung = rungs[static_cast<std::size_t>((rows ? y : x) - lo)];
+                        if (source(x, y)) {
+                            if (const auto c = byPosition(sourceCell(x, y), *one, *ramp, rung, rows)) {
+                                cells.cells.at(x, y) = *c;
+                                placed[static_cast<std::size_t>(y) * cw + x] = 1;
+                            }
+                            continue;
+                        }
                         const bool top = ink(x, 2 * y), bottom = ink(x, 2 * y + 1);
                         if (top && bottom) {
                             cells.cells.at(x, y) = rungAt(*ramp, rung);
@@ -774,6 +989,8 @@ private:
                         setPixel(pixels, x, 2 * y + (top ? 0 : 1), nearestSolid(*ramp, at, rows ? top : true));
                     }
             }
+            if (one)
+                evenSteps(cells.cells, placed, *one, *ramp, f->mode == FillMode::Rows);
         }
         std::vector<Layer> out;
         out.push_back(std::move(cells));

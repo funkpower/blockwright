@@ -488,6 +488,7 @@ TEST_CASE("Save as Preset writes the style to the user library as a new .style.j
     CHECK(e.category == "neon");
     CHECK(e.tags == std::vector<std::string>{"blue"});
     CHECK(e.style == outlined());
+    CHECK_FALSE(e.iceRequired);  // an outline needs no iCE
     // the library finds it
     const library::ScanResult found = library::scan(lib);
     REQUIRE(found.styles.size() == 1);
@@ -498,6 +499,20 @@ TEST_CASE("Save as Preset writes the style to the user library as a new .style.j
     CHECK(std::filesystem::path(second.toStdString()) == lib / "neon-2.style.json");
     CHECK(library::readTextStyleEntry(first.toStdString()).tags == std::vector<std::string>{"blue"});
     CHECK(saved == QStringList{first, second});
+
+    // a stack whose look needs iCE is saved marked so (#310): a rows
+    // gradient on fire reaches its LightRed–Yellow rungs; one on steel never
+    // needs a bright background
+    d.setRow(Effect{true, FillEffect{FillMode::Rows, Grey, "fire"}});
+    REQUIRE(d.style());
+    REQUIRE(styleNeedsIce(*d.style()));
+    const QString hot = d.savePreset(QStringLiteral("Hot"), QStringLiteral("neon"), {}, &error);
+    REQUIRE_FALSE(hot.isEmpty());
+    CHECK(library::readTextStyleEntry(hot.toStdString()).iceRequired);
+    d.setRow(Effect{true, FillEffect{FillMode::Rows, Grey, "steel"}});
+    const QString cold = d.savePreset(QStringLiteral("Cold"), QStringLiteral("neon"), {}, &error);
+    REQUIRE_FALSE(cold.isEmpty());
+    CHECK_FALSE(library::readTextStyleEntry(cold.toStdString()).iceRequired);
 
     // a tag the library refuses is an error, nothing written
     CHECK(d.savePreset(QStringLiteral("Bad"), QStringLiteral("neon"), {QStringLiteral("a\tb")}, &error).isEmpty());

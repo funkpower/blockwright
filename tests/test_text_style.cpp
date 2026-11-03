@@ -4,9 +4,12 @@
 
 #include "blockwright/text_style.h"
 
+#include "blockwright/big_text.h"
 #include "blockwright/composite.h"
+#include "blockwright/irc.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/lint.h"
+#include "blockwright/lint_rules.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
@@ -777,6 +780,126 @@ TEST_CASE("Fill rows and columns: the ladder down the rows or across the columns
     }
 }
 
+// #310: whether a stack's look needs iCE, the rungs each effect can reach
+// read off its ramp: a ░▒▓ between two bright colours needs a bright
+// background.
+TEST_CASE("styleNeedsIce: a stack that can write a shade between two bright ramp colours", "[style]") {
+    const auto needs = [](std::vector<EffectSettings> e) { return styleNeedsIce(styleOf(std::move(e))); };
+    CHECK_FALSE(styleNeedsIce(TextStyle{}));
+    CHECK_FALSE(needs({OutlineEffect{}, PlateEffect{}, ShadowEffect{}}));
+    // Fill: a flat colour or a rainbow writes solids only; a gradient
+    // reaches the ramp's top
+    CHECK_FALSE(needs({FillEffect{FillMode::Flat, White, "fire"}}));
+    CHECK_FALSE(needs({FillEffect{FillMode::Rainbow, Grey, "fire"}}));
+    for (const FillMode mode : {FillMode::Rows, FillMode::Columns}) {
+        INFO(fillModeName(mode));
+        CHECK(needs({FillEffect{mode, Grey, "fire"}}));    // LightRed–Yellow, Yellow–White
+        CHECK(needs({FillEffect{mode, Grey, "sunset"}}));  // LightMagenta–LightRed–Yellow
+        CHECK(needs({FillEffect{mode, Grey, "ice"}}));     // LightBlue–LightCyan–White
+        CHECK_FALSE(needs({FillEffect{mode, Grey, "steel"}}));  // Grey is dark: one bright step
+        CHECK_FALSE(needs({FillEffect{mode, Grey, "wood"}}));   // Yellow alone is bright
+        CHECK_FALSE(needs({FillEffect{mode, Grey, "sea"}}));    // LightCyan alone
+    }
+    // an effect switched off counts for nothing
+    TextStyle off = styleOf({FillEffect{FillMode::Rows, Grey, "fire"}});
+    off.effects[0].enabled = false;
+    CHECK_FALSE(styleNeedsIce(off));
+    // Glow: rung 1 to its brightness (fire's rung 9 is LightRed–Yellow)
+    CHECK_FALSE(needs({GlowEffect{"fire", 3, 3}}));
+    CHECK_FALSE(needs({GlowEffect{"fire", 3, 8}}));
+    CHECK(needs({GlowEffect{"fire", 3, 9}}));
+    // Shade: from the colour Fill leaves down to rung 4
+    CHECK_FALSE(needs({FillEffect{FillMode::Flat, Red, "fire"}, ShadeEffect{"fire", Compass::N}}));
+    CHECK_FALSE(needs({FillEffect{FillMode::Flat, LightRed, "fire"}, ShadeEffect{"fire", Compass::N}}));
+    CHECK(needs({FillEffect{FillMode::Flat, Yellow, "fire"}, ShadeEffect{"fire", Compass::N}}));
+    CHECK(needs({ShadeEffect{"fire", Compass::N}}));  // Fill off: any colour
+    CHECK_FALSE(needs({ShadeEffect{"steel", Compass::N}}));
+    // a flat colour off Shade's ramp gives it nothing to step down from
+    CHECK_FALSE(needs({FillEffect{FillMode::Flat, Grey, "fire"}, ShadeEffect{"fire", Compass::N}}));
+    // Bevel: one rung above the colour Fill (and Shade) leave
+    CHECK_FALSE(needs({FillEffect{FillMode::Flat, Red, "fire"}, BevelEffect{"fire", Compass::NW}}));
+    CHECK(needs({FillEffect{FillMode::Flat, LightRed, "fire"}, BevelEffect{"fire", Compass::NW}}));
+    CHECK(needs({FillEffect{FillMode::Flat, Yellow, "fire"}, BevelEffect{"fire", Compass::NW}}));
+    CHECK_FALSE(needs({FillEffect{FillMode::Flat, White, "fire"}, BevelEffect{"fire", Compass::NW}}));  // the top
+    CHECK_FALSE(needs({FillEffect{FillMode::Flat, Grey, "steel"}, BevelEffect{"steel", Compass::NW}}));
+    // a ramp this build lacks draws nothing
+    CHECK_FALSE(needs({FillEffect{FillMode::Rows, Grey, "no-such-ramp"}}));
+}
+
+// #311: Block big text is cells of one colour, every one a source cell; a
+// rows or columns Fill runs over them by position, as over a pixel face's
+// ink, where mapping its one colour by rank would put every cell on the top.
+TEST_CASE("Fill rows and columns on Block big text: a gradient by position and not one flat colour",
+          "[style][mask]") {
+    TextSource s = word(U"EMBER", "block", White);
+    s.bigStyle = BigTextStyle::Block;
+    const Canvas base = plain(s, bigTextFace());
+    for (const char* name : {"fire", "steel", "sunset"})
+        for (const FillMode mode : {FillMode::Rows, FillMode::Columns})
+            for (const bool ice : {true, false}) {
+                const bool rows = mode == FillMode::Rows;
+                const Ramp ramp = *findRamp(name);
+                INFO(name << " / " << fillModeName(mode) << " / iCE " << ice);
+                const Canvas out = styled(s, styleOf({FillEffect{mode, Grey, name}}), bigTextFace(), ice);
+                REQUIRE(out.width() == base.width());
+                REQUIRE(out.height() == base.height());
+                // each ink cell keeps its character, its colour a step of
+                // the ramp past black
+                std::vector<int> step(static_cast<std::size_t>(out.width()) * out.height(), -1);
+                std::set<int> used;
+                for (int y = 0; y < out.height(); ++y)
+                    for (int x = 0; x < out.width(); ++x) {
+                        const Cell& b = base.at(x, y);
+                        if (b.transparent || isBlank(b))
+                            continue;
+                        INFO(x << "," << y);
+                        CHECK(out.at(x, y).ch == b.ch);
+                        const auto c = solidColour(out.at(x, y));
+                        REQUIRE(c);
+                        const int i = ramp.indexOf(*c);
+                        CHECK(i >= 1);
+                        if (!ice)
+                            CHECK(out.at(x, y).bg.paletteIndex() < 8);
+                        step[static_cast<std::size_t>(y) * out.width() + x] = i;
+                        used.insert(i);
+                    }
+                // more than one step (fire's rows with iCE off all stop at
+                // LightRed, short of its bright LightRed–Yellow rungs, as a
+                // pixel face's do), light first, none skipped between
+                // neighbours along the gradient
+                if (ice || std::string(name) != "fire" || !rows)
+                    CHECK(used.size() > 1);
+                const int lines = rows ? out.width() : out.height(), along = rows ? out.height() : out.width();
+                for (int line = 0; line < lines; ++line) {
+                    int was = -1;
+                    for (int k = 0; k < along; ++k) {
+                        const int i = step[static_cast<std::size_t>(rows ? k : line) * out.width() + (rows ? line : k)];
+                        if (i < 0) {
+                            was = -1;
+                            continue;
+                        }
+                        if (was >= 0) {
+                            CHECK(i <= was);
+                            CHECK(was - i <= 1);
+                        }
+                        was = i;
+                    }
+                }
+                // it lints clean and fits a line
+                lint::LintOptions options;
+                options.ramps = namedRamps();
+                options.craftPairs = true;
+                options.ice = ice;
+                std::string findings;
+                for (const lint::Finding& f : lint::lintCanvas(out, options).findings)
+                    if (lint::ladderKind(f.kind))
+                        findings += f.ramp + " " + f.message + "\n";
+                CHECK(findings == "");
+                for (const std::string& line : irc::encodeCanvas(out))
+                    CHECK(line.size() <= irc::kEfnetWeechatBudget);
+            }
+}
+
 TEST_CASE("Fill rainbow: each letter one ramp colour, in turn", "[style][mask]") {
     const TextSource s = word(U"funk", "block");
     const Pixels ink = pixelsOf(plain(s));
@@ -1316,10 +1439,17 @@ TEST_CASE("a ramp Fill maps a TheDraw face's colours onto consecutive steps from
         // Fill's gradient tops out (fire at LightRed, sunset at LightMagenta)
         CHECK(mapping(*colour, "fire", mode, false) == M{{Cyan, {LightRed}}, {Blue, {Red}}});
         CHECK(mapping(*colour, "sunset", mode, false) == M{{Cyan, {LightMagenta}}, {Blue, {Magenta}}});
-        // one colour on black: the ramp's top
+        // one colour on black: a rainbow's letters the ramp's top; a rows or
+        // columns gradient runs over the cells by position (#311), down
+        // from the top step
         const M one = mapping(*block, "fire", mode, true);
         REQUIRE(one.size() == 1);
-        CHECK(one.begin()->second == std::set<std::uint8_t>{White});
+        if (mode == FillMode::Rainbow)
+            CHECK(one.begin()->second == std::set<std::uint8_t>{White});
+        else if (mode == FillMode::Rows)
+            CHECK(one.begin()->second == std::set<std::uint8_t>{LightRed, Yellow, White});
+        else
+            CHECK(one.begin()->second == std::set<std::uint8_t>{Red, LightRed, Yellow, White});
     }
     // the black under bw-colour's █ stays black, as its blank cells do
     const Canvas fired = styled(s, styleOf({FillEffect{FillMode::Rows, Grey, "fire"}}), *colour);

@@ -647,6 +647,7 @@ QString LayerStyleDialog::savePreset(const QString& name, const QString& categor
     for (const QString& t : tags)
         entry.tags.push_back(t.trimmed().toStdString());
     entry.style = *s;
+    entry.iceRequired = styleNeedsIce(*s);
     std::filesystem::path written;
     try {
         written = library::writeTextStyle(presetDir_, entry);
