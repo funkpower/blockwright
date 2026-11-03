@@ -7,11 +7,19 @@
 # app/plural.h picks the English form instead. A count is any third argument
 # to tr (after the source text and a disambiguation of nullptr, Q_NULLPTR, 0,
 # NULL, {} or a string) or fourth to translate (after the context too). The
-# source text may be a string, a raw string R"(...)" or a name (a QT_TR_NOOP
-# table's entry, say). A comment between the arguments hides the call from
-# the check; so does a raw string with a delimiter (R"x(...)x"). A line that
-# is only a // comment is left alone; a "(s)" in any other string literal, a
-# trailing comment's included, is found.
+# source text may be any expression: a string, a raw string R"(...)", a name,
+# a table entry (kMsgs[i]), a member (e.text, e->text) or a call
+# (s.toUtf8().constData(), nested two deep). A counted call is flagged whatever
+# its source text, since a non-literal one can't be checked for "(s)".
+# A bare tr( or translate( is checked, and so is a qualified one (QObject::tr,
+# QCoreApplication::translate); a member (m.tr(...), m->tr(...)) or a variable
+# declared by that name (QRect tr(l, 0, w, h)) is not, so this->tr(...) goes
+# unchecked. A comment between the arguments hides the call from the check;
+# so does a raw string with a delimiter (R"x(...)x"). A line that is only a //
+# comment is left alone; a "(s)" in any other string literal, a trailing
+# comment's included, is found. A character literal is one character, a run
+# of non-ASCII bytes ('░' written out) or an escape, so a digit separator
+# (1'000) or an apostrophe in a comment opens none.
 if(FILE)
   set(sources "${FILE}")
 elseif(DIR)
@@ -22,29 +30,47 @@ endif()
 if(NOT sources)
   message(FATAL_ERROR "no sources in ${DIR}")
 endif()
-set(lit "\"([^\"\\\\]|\\\\.)*\"")
 # R"(...)": anything up to the first )" (a delimiter isn't matched)
-set(raw "R\"\\(([^)]|\\)[^\"])*\\)\"")
+set(raw "R\"\\(([^)]|\\)+[^)\"])*\\)+\"")
 set(ws "[ \t\r\n]*")
-set(lits "(${ws}(${raw}|${lit}))+${ws}")
-set(name "${ws}[A-Za-z_][A-Za-z0-9_:]*${ws}")
-set(text "(${lits}|${name})")
-set(disambig "${ws}(nullptr|Q_NULLPTR|0|NULL|[{]${ws}[}]|${lits})${ws}")
 # The literals of a line in order, so code between two of them is never taken
 # for one: a raw string, a string, or a character literal (so '"' opens none).
 set(strlit "\"([^\"\\\\\n]|\\\\.)*\"")
-set(chrlit "'([^'\\\\\n]|\\\\.)*'")
+set(chrlit "'([^'\r\n\\\\]|[^ -~\t\r\n]+|\\\\.[^'\\\\\n]*)'")
+# The calls are matched with each literal, or run of adjacent ones, written
+# "", so a comma or parenthesis in one ends nothing. The source text is an
+# expression up to the next comma or closing parenthesis outside a
+# parenthesized group, the group nested at most two deep.
+set(text "([^(),]|\\(([^()]|\\([^()]*\\))*\\))+")
+set(disambig "${ws}(nullptr|Q_NULLPTR|0|NULL|[{]${ws}[}]|\"\")${ws}")
+# a word and a space before tr( or translate( (a type, in a declaration)
+set(before "[A-Za-z_][A-Za-z0-9_]*[ \t\r\n]+")
 set(bad 0)
 foreach(src IN LISTS sources)
   file(READ "${src}" source)
   string(REPLACE ";" "<semicolon>" source "${source}")
   get_filename_component(file "${src}" NAME)
   string(REGEX REPLACE "(^|\n)[ \t]*//[^\n]*" "\\1" code "${source}")
-  string(REGEX MATCHALL "(^|[^A-Za-z0-9_])(tr${ws}\\(${text},${disambig},|translate${ws}\\(${text},${text},${disambig},)"
-         counted "${code}")
+  string(REGEX REPLACE "${raw}|${strlit}|${chrlit}" "\"\"" masked "${code}")
+  string(REGEX REPLACE "\"\"(${ws}\"\")+" "\"\"" masked "${masked}")
+  string(REGEX MATCHALL "(^|->|${before}|[^A-Za-z0-9_])tr${ws}\\(${text},${disambig},"
+         counted "${masked}")
+  string(REGEX MATCHALL "(^|->|${before}|[^A-Za-z0-9_])translate${ws}\\(${text},${text},${disambig},"
+         translated "${masked}")
+  list(APPEND counted ${translated})
   foreach(call IN LISTS counted)
-    string(REGEX REPLACE "^[^A-Za-z0-9_]" "" call "${call}")
+    # what comes before the name: a member or a declaration isn't a call
+    string(REGEX MATCH "^(->|${before}|[^A-Za-z0-9_]|)(tr|translate)${ws}\\(" head "${call}")
+    set(pre "${CMAKE_MATCH_1}")
+    string(LENGTH "${pre}" skip)
+    string(SUBSTRING "${call}" ${skip} -1 call)
+    string(STRIP "${pre}" pre)
+    if(pre MATCHES "^(->|[.])$" OR (pre MATCHES "^[A-Za-z_]"
+       AND NOT pre MATCHES "^(return|co_return|co_yield|throw|else|do|case)$"))
+      continue()
+    endif()
     string(REGEX REPLACE "[ \t\r\n]+" " " call "${call}")
+    string(REPLACE "\"\"" "\"...\"" call "${call}")
     message("${file}: a count passed to ${call}")
     math(EXPR bad "${bad} + 1")
   endforeach()
