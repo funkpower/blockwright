@@ -1,0 +1,240 @@
+#include "util.h"
+
+#include "blockwright/ansi.h"
+#include "blockwright/cp437.h"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <filesystem>
+#include <string>
+#include <vector>
+
+using namespace bw;
+using namespace std::string_literals;
+namespace fs = std::filesystem;
+
+namespace {
+
+AnsiDocument parseAs(std::string_view ansi, TextEncoding enc, int width = 80) {
+    ParseOptions o;
+    o.defaultWidth = width;
+    o.encoding = enc;
+    return parseAnsi(ansi, o);
+}
+
+// The first `n` glyphs of row `y`.
+std::u32string row(const AnsiDocument& d, int y, int n) {
+    std::u32string s;
+    for (int x = 0; x < n; ++x)
+        s += d.canvas.at(x, y).ch;
+    return s;
+}
+
+std::string withSauce(const std::string& body, Sauce s) {
+    return body + encodeSauce(s, static_cast<std::uint32_t>(body.size()));
+}
+
+} // namespace
+
+TEST_CASE("nextUtf8 takes only well-formed sequences", "[utf8]") {
+    auto one = [](std::string_view s) {
+        std::size_t i = 0;
+        auto cp = nextUtf8(s, i);
+        return std::pair{cp, i};
+    };
+    CHECK(one("A") == std::pair{std::optional<char32_t>(U'A'), std::size_t(1)});
+    CHECK(one("\xC3\x87") == std::pair{std::optional<char32_t>(U'Ç'), std::size_t(2)});
+    CHECK(one("\xE2\x96\x88") == std::pair{std::optional<char32_t>(U'█'), std::size_t(3)});
+    CHECK(one("\xF0\x9F\x98\x80") == std::pair{std::optional<char32_t>(U'\U0001F600'), std::size_t(4)});
+    // each bad one is refused and only its first byte is passed over
+    for (std::string_view bad : {"\x80", "\xBF", "\xC0\xAF", "\xC1\xBF", "\xE0\x80\xAF",
+                                 "\xED\xA0\x80", "\xF4\x90\x80\x80", "\xF5\x80\x80\x80",
+                                 "\xE2\x96", "\xE2\x41\x88", "\xFF"}) {
+        CAPTURE(std::string(bad));
+        CHECK(one(bad) == std::pair{std::optional<char32_t>(), std::size_t(1)});
+    }
+}
+
+TEST_CASE("detectEncoding: UTF-8 only when every high byte is well formed and one sequence is long",
+          "[utf8]") {
+    CHECK(detectEncoding("") == TextEncoding::Cp437);
+    CHECK(detectEncoding("plain ASCII\r\n\x1b[1;31mred") == TextEncoding::Cp437);
+    CHECK(detectEncoding("\xE2\x96\x88") == TextEncoding::Utf8);
+    CHECK(detectEncoding("\x1b[31m\xE2\x96\x88\xE2\x96\x80\r\n") == TextEncoding::Utf8);
+    CHECK(detectEncoding("\xF0\x9F\x98\x80") == TextEncoding::Utf8);
+    // only two-byte sequences: CP437 pairs look like that (╔╗ is C9 BB, ╚╝ C8 BC)
+    CHECK(detectEncoding("\xC9\xBB\r\n\xC8\xBC") == TextEncoding::Cp437);
+    CHECK(detectEncoding("caf\xC3\xA9") == TextEncoding::Cp437);
+    // one bad byte anywhere: CP437
+    CHECK(detectEncoding("\xE2\x96\x88\x80") == TextEncoding::Cp437);
+    CHECK(detectEncoding("\xDB\xE2\x96\x88") == TextEncoding::Cp437);
+    // a BOM says UTF-8 whatever follows
+    CHECK(detectEncoding("\xEF\xBB\xBF") == TextEncoding::Utf8);
+    CHECK(detectEncoding("\xEF\xBB\xBF" "A") == TextEncoding::Utf8);
+    CHECK(detectEncoding("\xEF\xBB\xBF\xDB\xB0") == TextEncoding::Utf8);
+}
+
+TEST_CASE("every CP437 glyph's UTF-8 form reads as that one glyph", "[utf8]") {
+    for (int b = 1; b < 256; ++b) {
+        // the codes .ans acts on rather than draws
+        if (b == '\t' || b == '\n' || b == '\r' || b == 0x1A || b == 0x1B)
+            continue;
+        const char32_t glyph = cp437ToUnicode(std::uint8_t(b));
+        const std::string utf8 = cp437ToUtf8(std::string(1, char(b)));
+        CAPTURE(b);
+        const AnsiDocument d = parseAs("x" + utf8 + "y", TextEncoding::Utf8);
+        CHECK(d.encoding == TextEncoding::Utf8);
+        CHECK(row(d, 0, 3) == std::u32string{U'x', glyph, U'y'});
+        // and the same as the CP437 byte reads
+        CHECK(parseAs(std::string("x") + char(b) + "y", TextEncoding::Cp437).canvas == d.canvas);
+        // found without being told, next to a three-byte glyph
+        if (b >= 0x80) {
+            const AnsiDocument found = parseAnsi("\xE2\x96\x88" + utf8);
+            CHECK(found.encoding == TextEncoding::Utf8);
+            CHECK(row(found, 0, 2) == std::u32string{U'█', glyph});
+        }
+    }
+}
+
+TEST_CASE("UTF-8 text keeps every code point, not only CP437's", "[utf8]") {
+    const AnsiDocument d = parseAnsi("\xE2\x96\x88\xCE\xBB\xE2\x82\xAC\xF0\x9F\x98\x80!");
+    REQUIRE(d.encoding == TextEncoding::Utf8);
+    CHECK(row(d, 0, 5) == U"█λ€\U0001F600!");
+}
+
+TEST_CASE("invalid UTF-8", "[utf8]") {
+    SECTION("found: one bad byte makes the whole file CP437") {
+        const AnsiDocument d = parseAnsi("\xE2\x96\x88\x80");
+        CHECK(d.encoding == TextEncoding::Cp437);
+        CHECK(row(d, 0, 4) == U"ΓûêÇ");
+    }
+    SECTION("forced: each bad byte is one U+FFFD and the rest still reads") {
+        struct Case {
+            std::string bytes;
+            std::u32string cells;
+        };
+        const std::vector<Case> cases = {
+            {"\x80" "A", U"�A"},
+            {"\xC0\xAF" "A", U"��A"},                    // overlong /
+            {"\xED\xA0\x80" "A", U"���A"},          // a surrogate
+            {"\xF4\x90\x80\x80" "A", U"����A"}, // past U+10FFFF
+            {"\xE2\x96" "A", U"��A"},                    // cut short
+            {"\xE2\x96\x88\xFF\xE2\x96\x88", U"█�█"},
+        };
+        for (const Case& c : cases) {
+            CAPTURE(c.bytes);
+            const AnsiDocument d = parseAs(c.bytes, TextEncoding::Utf8);
+            CHECK(row(d, 0, int(c.cells.size())) == c.cells);
+        }
+    }
+    SECTION("cut short by the end of the content") {
+        const AnsiDocument d = parseAs("A\xE2\x96", TextEncoding::Utf8);
+        CHECK(row(d, 0, 3) == U"A��");
+    }
+}
+
+TEST_CASE("a byte order mark", "[utf8]") {
+    SECTION("found: it says UTF-8 and is not a cell") {
+        const AnsiDocument d = parseAnsi("\xEF\xBB\xBF" "A\xC3\x87");
+        CHECK(d.encoding == TextEncoding::Utf8);
+        CHECK(row(d, 0, 3) == U"AÇ ");
+    }
+    SECTION("followed by bytes that aren't UTF-8: U+FFFD for each") {
+        const AnsiDocument d = parseAnsi("\xEF\xBB\xBF\xDB" "A");
+        CHECK(d.encoding == TextEncoding::Utf8);
+        CHECK(row(d, 0, 2) == U"�A");
+    }
+    SECTION("forced CP437: three glyphs") {
+        const AnsiDocument d = parseAs("\xEF\xBB\xBF" "A", TextEncoding::Cp437);
+        CHECK(row(d, 0, 4) == U"∩╗┐A");
+    }
+    SECTION("only at the start") {
+        const AnsiDocument d = parseAs("A\xEF\xBB\xBF", TextEncoding::Utf8);
+        CHECK(row(d, 0, 2) == U"A﻿");
+    }
+}
+
+TEST_CASE("CP437 files with high bytes are not taken for UTF-8", "[utf8]") {
+    SECTION("box corners that happen to be valid two-byte UTF-8") {
+        const AnsiDocument d = parseAnsi("\xC9\xBB\r\n\xC8\xBC");
+        CHECK(d.encoding == TextEncoding::Cp437);
+        CHECK(row(d, 0, 2) == U"╔╗");
+        CHECK(row(d, 1, 2) == U"╚╝");
+    }
+    SECTION("every piece in the test data reads exactly as before") {
+        int pieces = 0;
+        for (const char* sub : {"golden", "render/pieces"}) {
+            for (const auto& e : fs::directory_iterator(bwtest::dataDir() / sub)) {
+                if (e.path().extension() != ".ans")
+                    continue;
+                const std::string bytes = bwtest::readFile(e.path());
+                if (bytes.empty())
+                    continue;
+                CAPTURE(e.path().filename().string());
+                const AnsiDocument found = parseAnsi(bytes);
+                CHECK(found.encoding == TextEncoding::Cp437);
+                const AnsiDocument cp437 = parseAs(bytes, TextEncoding::Cp437);
+                CHECK(found.canvas == cp437.canvas);
+                CHECK(found.ice == cp437.ice);
+                ++pieces;
+            }
+        }
+        CHECK(pieces >= 15);
+    }
+}
+
+TEST_CASE("SAUCE on a UTF-8 file", "[utf8][sauce]") {
+    SECTION("a UTF-8 copy of a piece reads as the piece, SAUCE and all") {
+        const AnsiDocument cp437 = parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden/tux.ans"));
+        const AnsiDocument utf8 =
+            parseAnsi(bwtest::readFile(bwtest::dataDir() / "utf8/tux-utf8.ans"));
+        CHECK(cp437.encoding == TextEncoding::Cp437);
+        CHECK(utf8.encoding == TextEncoding::Utf8);
+        REQUIRE(utf8.sauce);
+        REQUIRE(cp437.sauce);
+        CHECK(utf8.sauce->title == cp437.sauce->title);
+        CHECK(utf8.sauce->author == cp437.sauce->author);
+        CHECK(utf8.sauce->group == cp437.sauce->group);
+        CHECK(utf8.sauce->tinfo1 == cp437.sauce->tinfo1);
+        CHECK(utf8.sauce->tinfo2 == cp437.sauce->tinfo2);
+        CHECK(utf8.ice == cp437.ice);
+        CHECK(utf8.canvas == cp437.canvas);
+        // written back, it is the CP437 piece
+        CHECK(writeAnsi(utf8).bytes == writeAnsi(cp437).bytes);
+    }
+    SECTION("SAUCE's text stays CP437 bytes and has no say in the detection") {
+        Sauce s = Sauce::fresh(80, 1);
+        s.title = "\xC9\xCD\xBB caf\x82";  // ╔═╗ café, CP437
+        s.author = "\xE2\x96\x88";          // UTF-8 for █, kept as three CP437 bytes
+        const AnsiDocument d = parseAnsi(withSauce("\xE2\x96\x88", s));
+        CHECK(d.encoding == TextEncoding::Utf8);
+        CHECK(row(d, 0, 1) == U"█");
+        REQUIRE(d.sauce);
+        CHECK(d.sauce->title == s.title);
+        CHECK(d.sauce->author == s.author);
+
+        // ASCII art under a SAUCE record holding UTF-8: still CP437
+        const AnsiDocument ascii = parseAnsi(withSauce("hi", s));
+        CHECK(ascii.encoding == TextEncoding::Cp437);
+    }
+    SECTION("0x1A ends a UTF-8 file's content") {
+        const AnsiDocument d = parseAnsi("\xE2\x96\x88\x1A\xDB\xDB");
+        CHECK(d.encoding == TextEncoding::Utf8);
+        CHECK(row(d, 0, 2) == U"█ ");
+    }
+}
+
+TEST_CASE("controls and escapes act the same in UTF-8", "[utf8]") {
+    const std::string art = "\x1b[1;31m\xE2\x96\x88\x1b[0m\tA\r\n\x01\x7F\x00" "B"s;
+    const AnsiDocument d = parseAs(art, TextEncoding::Utf8);
+    CHECK(d.canvas.at(0, 0).ch == U'█');
+    CHECK(d.canvas.at(0, 0).fg.index == LightRed);
+    CHECK(d.canvas.at(8, 0).ch == U'A');
+    CHECK(d.canvas.at(8, 0).fg.index == Grey);
+    CHECK(row(d, 1, 4) == U"☺⌂ B");
+    // and as they do in CP437 once the glyph is a byte
+    const AnsiDocument cp =
+        parseAs("\x1b[1;31m\xDB\x1b[0m\tA\r\n\x01\x7F\x00" "B"s,
+                TextEncoding::Cp437);
+    CHECK(cp.canvas == d.canvas);
+}

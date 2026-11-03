@@ -13,6 +13,8 @@ namespace {
 // Numbers in escape sequences saturate here instead of overflowing.
 constexpr int kMaxParam = 1'000'000;
 
+constexpr std::string_view kUtf8Bom = "\xEF\xBB\xBF";
+
 enum class Fields {
     Csi,    // an empty or non-numeric field reads as 0
     Pablo,  // CSI t: empty fields are skipped (strtok, as libansilove:
@@ -72,11 +74,13 @@ std::uint8_t clampByte(int v) { return static_cast<std::uint8_t>(std::clamp(v, 0
 // other escape wraps first, as libansilove does on every ESC.
 class Parser {
 public:
-    Parser(int width, bool ice) : width_(width), ice_(ice) {}
+    Parser(int width, bool ice, bool utf8) : width_(width), ice_(ice), utf8_(utf8) {}
 
     void run(std::string_view data) {
         const size_t n = data.size();
         size_t i = 0;
+        if (utf8_ && data.starts_with(kUtf8Bom))
+            i = kUtf8Bom.size();
         while (i < n) {
             const auto b = static_cast<unsigned char>(data[i]);
             if (b == 0x1b) {
@@ -134,7 +138,12 @@ public:
                 put(U' ');
                 break;
             default:
-                put(cp437ToUnicode(b));
+                if (utf8_ && b >= 0x80) {
+                    --i;
+                    put(nextUtf8(data, i).value_or(U'\uFFFD'));
+                } else {
+                    put(cp437ToUnicode(b));
+                }
             }
         }
     }
@@ -345,6 +354,7 @@ private:
 
     int width_;
     bool ice_;
+    bool utf8_;
     std::map<int, std::vector<Cell>> rows_;  // only the rows drawn on
     std::vector<Cell>* curRow_ = nullptr;
     int curRowIndex_ = -1;
@@ -475,10 +485,28 @@ Opened openAsEditor(AnsiDocument& doc) {
     return r;
 }
 
+TextEncoding detectEncoding(std::string_view content) {
+    if (content.starts_with(kUtf8Bom))
+        return TextEncoding::Utf8;
+    bool wide = false;
+    for (size_t i = 0; i < content.size();) {
+        if (static_cast<unsigned char>(content[i]) < 0x80) {
+            ++i;
+            continue;
+        }
+        const size_t start = i;
+        if (!nextUtf8(content, i))
+            return TextEncoding::Cp437;
+        wide = wide || i - start >= 3;
+    }
+    return wide ? TextEncoding::Utf8 : TextEncoding::Cp437;
+}
+
 AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts) {
     SauceSplit split = splitSauce(file);
     AnsiDocument doc;
     doc.sauce = std::move(split.sauce);
+    doc.encoding = opts.encoding.value_or(detectEncoding(split.content));
     int width = opts.defaultWidth, minHeight = 0;
     if (doc.sauce && doc.sauce->isCharacterArt()) {
         if (doc.sauce->tinfo1)
@@ -488,7 +516,7 @@ AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts) {
     }
     if (width < 1 || width > kMaxColumns)
         throw AnsiError("width " + std::to_string(width) + " is outside 1-" + std::to_string(kMaxColumns) + " columns");
-    Parser parser(width, doc.ice);
+    Parser parser(width, doc.ice, doc.encoding == TextEncoding::Utf8);
     parser.run(split.content);
     if (parser.empty())
         throw AnsiError("no ANSI content (nothing is drawn)");

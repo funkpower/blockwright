@@ -1,5 +1,5 @@
 #pragma once
-// .ans files: CP437 text with ANSI escapes, plus SAUCE.
+// .ans files: CP437 (or UTF-8) text with ANSI escapes, plus SAUCE.
 
 #include "blockwright/canvas.h"
 #include "blockwright/sauce.h"
@@ -22,8 +22,14 @@ struct FileFont {
     bool operator==(const FileFont&) const = default;
 };
 
+// The character set of an .ans file's text: CP437, a byte a glyph, or
+// UTF-8, the way a terminal (or a paste from one) writes it.
+enum class TextEncoding { Cp437, Utf8 };
+
 struct AnsiDocument {
     Canvas canvas{Canvas::kDefaultWidth, 1};
+    // What parseAnsi read the text as. Every writer writes CP437 for now.
+    TextEncoding encoding = TextEncoding::Cp437;
     std::optional<Sauce> sauce;
     bool ice = true;  // blink = bright background
     // What an XBIN carries besides its cells, kept so that saving it as XBIN
@@ -44,7 +50,19 @@ public:
 
 struct ParseOptions {
     int defaultWidth = 80;  // when there is no SAUCE width
+    // The text's character set; nothing: what detectEncoding finds.
+    std::optional<TextEncoding> encoding;
 };
+
+// The character set of an .ans file's text, `content` being the bytes
+// before its SAUCE record and first EOF (splitSauce). UTF-8 when `content`
+// starts with a UTF-8 byte order mark (EF BB BF), or when every byte of it
+// from 0x80 up is part of a well-formed UTF-8 sequence (nextUtf8) and at
+// least one of those sequences is three or four bytes long. Otherwise CP437.
+// The three-byte rule keeps CP437 bytes that happen to pair up as two-byte
+// sequences (╔╗ is C9 BB, U+027B) reading as CP437; the block and box
+// elements terminal art is drawn with (U+2500-U+259F) are all three bytes.
+TextEncoding detectEncoding(std::string_view content);
 
 // Guards against a broken file's cursor jumps or SAUCE eating memory.
 inline constexpr int kMaxColumns = 400;
@@ -54,7 +72,15 @@ inline constexpr int kMaxRows = 5000;
 // and as tall as the last row anything was drawn on, or the SAUCE height
 // (TInfo2, capped at kMaxRows) if that is taller. iCE comes from SAUCE and
 // defaults to on. 24-bit colours (PabloDraw CSI t, SGR 38/48) are quantised
-// to the palette. Throws AnsiError on input it can't make a canvas from.
+// to the palette. The text is read as opts.encoding, or as detectEncoding
+// finds it (AnsiDocument::encoding says which). As UTF-8, a byte under 0x80
+// is read as it is in CP437 (escapes and controls act, 0x01-0x1F and 0x7F
+// other than those are the CP437 pictographs, NUL a space); each well-formed
+// sequence of two to four bytes is one cell holding its code point; any
+// other byte from 0x80 up is one cell holding U+FFFD; and a byte order mark
+// at the start of the content is skipped. SAUCE's text fields are CP437
+// either way, as the SAUCE spec has them. Throws AnsiError on input it
+// can't make a canvas from.
 AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts = {});
 
 struct Unwritable {

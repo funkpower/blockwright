@@ -546,7 +546,10 @@ std::string dateIndexJson(const DateIndex& index, bool newline) {
     return indexJson(index, newline, [](std::string& out, std::int64_t v) { out += std::to_string(v); });
 }
 
-std::vector<std::string> ircLines(std::string_view ans) { return irc::exportCanvas(parseAnsi(ans).canvas); }
+// `ans` is the .ans Publish writes (writeAnsi), which is CP437.
+std::vector<std::string> ircLines(std::string_view ans) {
+    return irc::exportCanvas(parseAnsi(ans, {.encoding = TextEncoding::Cp437}).canvas);
+}
 
 PublishPlan planPublish(const PublishRequest& r) {
     if (!validSlug(r.slug))

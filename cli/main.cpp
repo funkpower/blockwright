@@ -24,6 +24,9 @@
 //   blockwright-cli import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]
 //                                <scene.py> <out.bwp|dir>
 //
+// info, convert, render, export, shade, lint, pack and unpack take
+// --encoding auto|cp437|utf-8: what an .ans input's text is read as (PLAN §8).
+//
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
 // .bwp zip or a project directory, as its flattened composite. convert and
@@ -103,6 +106,10 @@ bw::project::Project loadProject(const std::string& path) {
     }
 }
 
+// --encoding: the character set every .ans a command reads is read as;
+// nothing: what bw::detectEncoding finds in each.
+std::optional<bw::TextEncoding> gEncoding;
+
 // An .ans, XBIN or BIN, or a project as its flattened composite.
 bw::AnsiDocument load(const std::string& path) {
     if (bw::project::isProject(path))
@@ -111,7 +118,7 @@ bw::AnsiDocument load(const std::string& path) {
     if (data.empty())
         throw Failure{path + ": empty file"};
     try {
-        return bw::parseArt(data, bw::artFormatOf(path, data));
+        return bw::parseArt(data, bw::artFormatOf(path, data), {.encoding = gEncoding});
     } catch (const bw::AnsiError& e) {
         throw Failure{path + ": " + e.what()};
     }
@@ -201,6 +208,8 @@ int info(const std::string& path) {
             std::cout << "none\n";
     } else if (format == bw::ArtFormat::Bin) {
         std::cout << "format:      BIN\n";
+    } else {
+        std::cout << "encoding:    " << (doc.encoding == bw::TextEncoding::Utf8 ? "UTF-8" : "CP437") << "\n";
     }
     std::cout << "size:        " << doc.canvas.width() << "x" << doc.canvas.height() << "\n"
               << "ice:         " << (doc.ice ? "on" : "off") << "\n";
@@ -573,6 +582,18 @@ int exportIrc(const std::string& in, const std::string& out, const IrcArgs& args
     return kOk;
 }
 
+// --encoding's value: auto (nothing), cp437, or utf-8 (or utf8), in any case.
+std::optional<bw::TextEncoding> encodingValue(const QString& s) {
+    const QString v = s.toLower();
+    if (v == QLatin1String("auto"))
+        return std::nullopt;
+    if (v == QLatin1String("cp437"))
+        return bw::TextEncoding::Cp437;
+    if (v == QLatin1String("utf-8") || v == QLatin1String("utf8"))
+        return bw::TextEncoding::Utf8;
+    throw Usage{"--encoding takes auto, cp437 or utf-8, not '" + s.toStdString() + "'"};
+}
+
 // A positive integer option value, or a usage error naming the option.
 int intValue(const QString& s, const char* option, int lo, int hi) {
     bool ok = false;
@@ -923,7 +944,12 @@ int main(int argc, char** argv) {
         "and a project (a .bwp zip or a project directory) as its flattened\n"
         "composite. convert and shade write XBIN to an <out> named .xb and BIN\n"
         "to one named .bin. convert, shade, export --irc and render refuse an\n"
-        "<out> named .bwp: pack writes a project."));
+        "<out> named .bwp: pack writes a project.\n\n"
+        "An .ans is read as CP437, or as UTF-8 when it starts with a byte order\n"
+        "mark or is all well-formed UTF-8 with a sequence of three bytes or more\n"
+        "(the block and box glyphs terminals draw with); --encoding cp437 or\n"
+        "utf-8 says which. info prints the one it was read as. Everything is\n"
+        "written as CP437."));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
@@ -1043,6 +1069,13 @@ int main(int argc, char** argv) {
                        "when it is set, else today)"),
         QStringLiteral("CCYYMMDD"));
     parser.addOption(dateOpt);
+    const QCommandLineOption encodingOpt(
+        QStringLiteral("encoding"),
+        QStringLiteral("info, convert, render, export, shade, lint, pack, unpack: read each .ans input as auto, "
+                       "cp437 or utf-8 (default: auto, UTF-8 when it has a byte order mark or is all well-formed "
+                       "UTF-8 with a sequence of three bytes or more, else CP437)"),
+        QStringLiteral("enc"), QStringLiteral("auto"));
+    parser.addOption(encodingOpt);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators or import-scene"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
@@ -1081,7 +1114,8 @@ int main(int argc, char** argv) {
                   << "       | run-generators [--layer ID]... [--timeout S] <project>\n"
                   << "       | import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]\n"
                   << "         <scene.py> <out.bwp|dir>\n"
-                  << "       | --version\n";
+                  << "       | --version\n"
+                  << "       info, convert, render, export, shade, lint, pack and unpack take --encoding auto|cp437|utf-8\n";
         return kUsage;
     };
     if (args.isEmpty())
@@ -1099,6 +1133,7 @@ int main(int argc, char** argv) {
         {&nameOpt, {"add-generator"}},     {&layerOpt, {"run-generators"}},
         {&timeoutOpt, {"add-generator", "run-generators", "import-scene"}},
         {&bakeOpt, {"import-scene"}},      {&authorOpt, {"import-scene"}}, {&dateOpt, {"import-scene"}},
+        {&encodingOpt, {"info", "convert", "render", "export", "shade", "lint", "pack", "unpack"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
@@ -1129,6 +1164,7 @@ int main(int argc, char** argv) {
         return a;
     };
     try {
+        gEncoding = encodingValue(parser.value(encodingOpt));
         if (cmd == QLatin1String("info")) {
             if (args.size() != 2)
                 return usage("info takes one file");

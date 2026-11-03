@@ -26,8 +26,9 @@ ArtFormat artFormatFor(std::string_view path);
 // artFormatFor names it.
 ArtFormat artFormatOf(std::string_view path, std::string_view file);
 
-// parseAnsi, parseXbin or parseBin.
-AnsiDocument parseArt(std::string_view file, ArtFormat format);
+// parseAnsi (with `ansi`), parseXbin or parseBin. XBIN and BIN are bytes,
+// a glyph each, so `ansi` doesn't apply to them.
+AnsiDocument parseArt(std::string_view file, ArtFormat format, const ParseOptions& ansi = {});
 // writeAnsi, writeXbin or writeBin.
 AnsiOutput writeArt(const AnsiDocument& doc, ArtFormat format);
 

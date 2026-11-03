@@ -90,6 +90,27 @@ void appendUtf8(std::string& out, char32_t cp) {
     }
 }
 
+std::optional<char32_t> nextUtf8(std::string_view s, std::size_t& i) {
+    const auto b = static_cast<unsigned char>(s[i]);
+    const int len = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xe ? 3 : (b >> 3) == 0x1e ? 4 : 0;
+    char32_t cp = len == 1 ? b : len == 2 ? (b & 0x1f) : len == 3 ? (b & 0x0f) : (b & 0x07);
+    bool ok = len > 0 && i + std::size_t(len) <= s.size();
+    for (int k = 1; ok && k < len; ++k) {
+        const auto c = static_cast<unsigned char>(s[i + std::size_t(k)]);
+        ok = (c >> 6) == 0x2;
+        cp = (cp << 6) | (c & 0x3f);
+    }
+    // overlong forms, surrogates and code points past U+10FFFF
+    static constexpr char32_t kLeast[] = {0, 0, 0x80, 0x800, 0x10000};
+    ok = ok && cp >= kLeast[len] && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff);
+    if (!ok) {
+        ++i;
+        return std::nullopt;
+    }
+    i += std::size_t(len);
+    return cp;
+}
+
 std::string cp437ToUtf8(std::string_view bytes) {
     std::string out;
     out.reserve(bytes.size());

@@ -20,6 +20,12 @@ inline char32_t cp437ToUnicode(std::uint8_t byte) { return cp437Table()[byte]; }
 std::optional<std::uint8_t> unicodeToCp437(char32_t cp);
 
 void appendUtf8(std::string& out, char32_t cp);
+
+// The UTF-8 sequence at `i` in `s`, advancing `i` past it. Only well-formed
+// sequences count (RFC 3629: no overlong forms, no surrogates, nothing past
+// U+10FFFF, none cut short by the end of `s`); for any other byte, nothing,
+// and `i` moves past that one byte.
+std::optional<char32_t> nextUtf8(std::string_view s, std::size_t& i);
 // CP437 bytes (a SAUCE title, say) as UTF-8.
 std::string cp437ToUtf8(std::string_view bytes);
 

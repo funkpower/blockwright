@@ -1323,3 +1323,23 @@ TEST_CASE("a count picks the English form, with no translator installed (#304)")
                          "2 cells lost their blink when the file was opened with iCE colours, and this save doesn't "
                          "put it back"));
 }
+
+TEST_CASE("the app opens a UTF-8 .ans as its cells and saves it as CP437", "[app][utf8]") {
+    const std::string cp437Path = (bwtest::dataDir() / "golden/tux.ans").string();
+    const std::string utf8Path = (bwtest::dataDir() / "utf8/tux-utf8.ans").string();
+    const AnsiDocument cp437 = parseAnsi(bwtest::readFile(cp437Path));
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(QString::fromStdString(utf8Path), &error));
+    CHECK(w.document()->ansi().encoding == TextEncoding::Utf8);
+    CHECK(w.document()->canvas() == cp437.canvas);
+    REQUIRE(w.document()->ansi().sauce);
+    CHECK(w.document()->ansi().sauce->author == "funkpower");
+
+    QTemporaryDir tmp;
+    const QString out = tmp.filePath(QStringLiteral("tux.ans"));
+    REQUIRE(w.saveFile(out, &error));
+    QFile f(out);
+    REQUIRE(f.open(QIODevice::ReadOnly));
+    CHECK(f.readAll().toStdString() == writeAnsi(cp437).bytes);
+}

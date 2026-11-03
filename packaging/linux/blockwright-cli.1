@@ -14,10 +14,20 @@ its flattened composite), and converts, renders, exports, shades and lints
 them.
 .B blockwright-cli \-\-help
 lists every option and which commands take it.
+.PP
+An .ans is read as UTF-8 when it starts with a byte order mark, or when every
+byte from 0x80 up belongs to well-formed UTF-8 and at least one character
+takes three or four bytes; otherwise it is read as CP437.
+.BR "\-\-encoding auto" ", " cp437 " or " utf\-8
+sets it for
+.BR info ", " convert ", " render ", " export ", " shade ", " lint ", " pack
+and
+.BR unpack .
+SAUCE fields are CP437 either way, and everything is written as CP437.
 .SH COMMANDS
 .TP
 .BI info " file"
-Dimensions and SAUCE fields.
+Dimensions, SAUCE fields and, for an .ans, the text encoding it was read as.
 .TP
 .BI convert " in out"
 Write an .ans back out as .ans, XBIN or BIN, by the name of

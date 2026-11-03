@@ -1084,3 +1084,23 @@ TEST_CASE("a text style preset never replaces a file made at its path while it i
     CHECK(writeTextStyle(dir, entry) == dir / "neon-2.style.json");
     CHECK(bwtest::readFile(dir / "neon.style.json") == "sentinel");
 }
+
+TEST_CASE("a stamp is read as CP437 even when its bytes would pass for UTF-8") {
+    // α░▒ is E0 B0 B1 in CP437, which is also UTF-8 for one Telugu letter
+    const fs::path dir = scratch("cp437-not-utf8");
+    CellBlock b(3, 1);
+    b.at(0, 0) = cell(U'α', White);
+    b.at(1, 0) = cell(U'░', White);
+    b.at(2, 0) = cell(U'▒', White);
+    const StampFiles f = encodeStamp("Alpha", "letters", {}, b, true);
+    REQUIRE(f.ans.find("\xE0\xB0\xB1") != std::string::npos);
+    REQUIRE(detectEncoding(splitSauce(f.ans).content) == TextEncoding::Utf8);
+    writeStamp(dir / "alpha.ans", f);
+    const Stamp s = readStamp(dir / "alpha.ans");
+    CHECK(s.art.encoding == TextEncoding::Cp437);
+    const CellBlock back = s.block();
+    REQUIRE(back.width == 3);
+    CHECK(back.at(0, 0).ch == U'α');
+    CHECK(back.at(1, 0).ch == U'░');
+    CHECK(back.at(2, 0).ch == U'▒');
+}

@@ -57,6 +57,7 @@ add_executable(blockwright-tests
   test_cli_shade.cpp
   test_composite.cpp
   test_cp437.cpp
+  test_utf8_ansi.cpp
   test_detail.cpp
   test_texture.cpp
   test_spray.cpp

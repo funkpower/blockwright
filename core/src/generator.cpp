@@ -994,6 +994,7 @@ std::string input(const project::Project& project, const Layer& layer) {
 Canvas cellsFromOutput(std::string_view ans, int width, std::optional<std::uint8_t> key) {
     ParseOptions opts;
     opts.defaultWidth = std::clamp(width, 1, kMaxColumns);
+    opts.encoding = TextEncoding::Cp437;  // a generator writes CP437 (PLAN §7)
     AnsiDocument doc;
     try {
         doc = parseAnsi(ans, opts);

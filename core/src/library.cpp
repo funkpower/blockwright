@@ -109,6 +109,10 @@ std::string readRegularFile(const fs::path& p) {
 
 namespace {
 
+// A stamp is CP437, as Save to Library writes it: never read as UTF-8, so a
+// stamp's cells don't hang on detectEncoding.
+const ParseOptions kStampParse{.encoding = TextEncoding::Cp437};
+
 constexpr const char* kCategory = "category";
 constexpr const char* kTags = "tags";
 constexpr const char* kIrcBytes = "ircBytes";
@@ -763,7 +767,7 @@ Stamp readStamp(const fs::path& ans) {
         throw LibraryError(std::string(".ans ") + e.what());
     }
     try {
-        s.art = parseAnsi(data);
+        s.art = parseAnsi(data, kStampParse);
     } catch (const AnsiError& e) {
         throw LibraryError(std::string(".ans does not parse: ") + e.what());
     }
@@ -870,7 +874,7 @@ StampFiles encodeChecked(const std::string& name, const std::string& category, c
 
     // Check and count the art as it reads back, which is what readStamp
     // checks the sidecar against.
-    const Canvas back = parseAnsi(out.bytes).canvas;
+    const Canvas back = parseAnsi(out.bytes, kStampParse).canvas;
     if (allBlank(back))
         throw LibraryError("every cell is blank, so the stamp would draw nothing");
     StampMeta meta{category, tags, widestRowBytes(back)};

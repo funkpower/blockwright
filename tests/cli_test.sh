@@ -145,6 +145,38 @@ expect "info: BIN format" 0 '^format: +BIN$' -- "$cli" info "$tmp/tux.bin"
 expect "info: BIN FileSize checked" 0 '^filesize: +1020 \(matches content\)$' -- "$cli" info "$tmp/tux.bin"
 expect "info: BIN size from SAUCE" 0 '^size: +30x17$' -- "$cli" info "$tmp/tux.bin"
 expect "info: .ans has no format line" 1 '' -- grep -q '^format:' <("$cli" info "$piece")
+# UTF-8 .ans (#302): found by its bytes, read into the same cells, written as CP437
+u8=$data/utf8/tux-utf8.ans
+expect "info: a CP437 .ans says so" 0 '^encoding: +CP437$' -- "$cli" info "$piece"
+expect "info: a UTF-8 .ans says so" 0 '^encoding: +UTF-8$' -- "$cli" info "$u8"
+expect "info: a UTF-8 .ans keeps its SAUCE" 0 '^author: +funkpower$' -- "$cli" info "$u8"
+expect "info: a UTF-8 .ans's FileSize is its UTF-8 length" 0 '^filesize: +2492 \(matches content\)$' -- "$cli" info "$u8"
+expect "info --encoding cp437 reads it as CP437" 0 '^encoding: +CP437$' -- "$cli" info --encoding cp437 "$u8"
+expect "info --encoding UTF-8 reads a CP437 file as UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info --encoding UTF-8 "$piece"
+expect "info --encoding auto" 0 '^encoding: +UTF-8$' -- "$cli" info --encoding auto "$u8"
+expect "--encoding with a bad value is refused" 2 "--encoding takes auto, cp437 or utf-8, not 'latin1'" -- "$cli" info --encoding latin1 "$u8"
+expect "--encoding on library is refused" 2 '--encoding is an info, convert, render, export, shade, lint, pack or unpack option, not a library option' -- "$cli" library --encoding cp437
+expect "--help lists --encoding" 0 '^  --encoding <enc> +info, convert, render, export, shade, lint, pack,$' -- "$cli" --help
+expect "info: an XBIN has no encoding line" 1 '' -- grep -q '^encoding:' <("$cli" info "$tmp/tux.xb")
+expect "convert a UTF-8 .ans" 0 '^$' -- "$cli" convert "$u8" "$tmp/from-u8.ans"
+if cmp -s "$piece" "$tmp/from-u8.ans"; then ok "a UTF-8 .ans converts to the CP437 piece, byte for byte"; else bad "convert of the UTF-8 piece differs from the CP437 piece"; fi
+"$cli" render "$piece" "$tmp/tux.png" && "$cli" render "$u8" "$tmp/tux-u8.png"
+if cmp -s "$tmp/tux.png" "$tmp/tux-u8.png"; then ok "a UTF-8 .ans renders as the CP437 piece"; else bad "the UTF-8 piece renders differently"; fi
+"$cli" unpack "$piece" "$tmp/unpack-cp" > /dev/null && "$cli" unpack "$u8" "$tmp/unpack-u8" > /dev/null
+if diff -r "$tmp/unpack-cp" "$tmp/unpack-u8" > /dev/null; then ok "a UTF-8 .ans unpacks as the CP437 piece"; else bad "unpack of the UTF-8 piece differs"; fi
+printf '\xe2\x96\x88\r\n' > "$tmp/block-u8.ans"
+expect "export --irc of a UTF-8 full block" 0 '^1 line, longest 6 bytes' -- "$cli" export --irc "$tmp/block-u8.ans" "$tmp/block-u8.txt"
+if [[ $(od -An -tx1 "$tmp/block-u8.txt" | tr -d ' \n') == *e29688* && $(od -An -tx1 "$tmp/block-u8.txt" | tr -d ' \n') != *ce93* ]]; then ok "it sends one █, not Γûê"; else bad "export --irc of a UTF-8 block: $(od -An -tx1 "$tmp/block-u8.txt")"; fi
+"$cli" export --irc --encoding cp437 "$tmp/block-u8.ans" "$tmp/block-cp.txt"
+if [[ $(od -An -tx1 "$tmp/block-cp.txt" | tr -d ' \n') == *ce93c3bbc3aa* ]]; then ok "export --irc --encoding cp437 sends Γûê"; else bad "export --irc --encoding cp437: $(od -An -tx1 "$tmp/block-cp.txt")"; fi
+expect "convert a UTF-8 full block" 0 '^$' -- "$cli" convert "$tmp/block-u8.ans" "$tmp/block-cp.ans"
+if [[ $(od -An -tx1 "$tmp/block-cp.ans" | tr -d ' \n') == *db* && $(od -An -tx1 "$tmp/block-cp.ans" | tr -d ' \n') != *e29688* ]]; then ok "it is written as the CP437 byte DB"; else bad "convert of a UTF-8 block: $(od -An -tx1 "$tmp/block-cp.ans")"; fi
+printf '\xef\xbb\xbfA\xc3\x87\r\n' > "$tmp/bom.ans"
+expect "info: a BOM says UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/bom.ans"
+"$cli" convert "$tmp/bom.ans" "$tmp/bom-cp.ans"
+if [[ $(od -An -tx1 "$tmp/bom-cp.ans" | tr -d ' \n') == *4180* && $(od -An -tx1 "$tmp/bom-cp.ans" | tr -d ' \n') != *efbbbf* ]]; then ok "the BOM is dropped and Ç is written as 80"; else bad "convert of a BOM file: $(od -An -tx1 "$tmp/bom-cp.ans")"; fi
+printf '\xc9\xbb\r\n\xc8\xbc\r\n' > "$tmp/corners.ans"
+expect "info: CP437 corners that look like UTF-8 stay CP437" 0 '^encoding: +CP437$' -- "$cli" info "$tmp/corners.ans"
 cp "$tmp/tux.xb" "$tmp/tux-xb.ans"
 expect "an XBIN is read by its header whatever its name" 0 '^format: +XBIN' -- "$cli" info "$tmp/tux-xb.ans"
 expect "convert .xb to .ans" 0 '^$' -- "$cli" convert "$tmp/tux.xb" "$tmp/from-xb.ans"

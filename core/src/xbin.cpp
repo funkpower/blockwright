@@ -113,13 +113,13 @@ ArtFormat artFormatOf(std::string_view path, std::string_view file) {
     return file.starts_with(kMagic) ? ArtFormat::Xbin : artFormatFor(path);
 }
 
-AnsiDocument parseArt(std::string_view file, ArtFormat format) {
+AnsiDocument parseArt(std::string_view file, ArtFormat format, const ParseOptions& ansi) {
     switch (format) {
     case ArtFormat::Xbin: return parseXbin(file);
     case ArtFormat::Bin: return parseBin(file);
     case ArtFormat::Ansi: break;
     }
-    return parseAnsi(file);
+    return parseAnsi(file, ansi);
 }
 
 AnsiOutput writeArt(const AnsiDocument& doc, ArtFormat format) {

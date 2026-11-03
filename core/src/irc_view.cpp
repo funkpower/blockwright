@@ -33,26 +33,7 @@ std::uint8_t colour(std::uint8_t n) { return n > 98 ? kClientColour : n; }
 
 // The UTF-8 sequence at `i` (advancing `i`); U+FFFD for a byte that doesn't
 // start a valid one, which is then one byte long.
-char32_t glyph(std::string_view s, std::size_t& i) {
-    const auto b = static_cast<unsigned char>(s[i]);
-    int len = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xe ? 3 : (b >> 3) == 0x1e ? 4 : 0;
-    char32_t cp = len == 1 ? b : len == 2 ? (b & 0x1f) : len == 3 ? (b & 0x0f) : (b & 0x07);
-    bool ok = len > 0 && i + std::size_t(len) <= s.size();
-    for (int k = 1; ok && k < len; ++k) {
-        const auto c = static_cast<unsigned char>(s[i + std::size_t(k)]);
-        ok = (c >> 6) == 0x2;
-        cp = (cp << 6) | (c & 0x3f);
-    }
-    // overlong forms, surrogates and code points past U+10FFFF
-    static constexpr char32_t kLeast[] = {0, 0, 0x80, 0x800, 0x10000};
-    ok = ok && cp >= kLeast[len] && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff);
-    if (!ok) {
-        ++i;
-        return U'�';
-    }
-    i += std::size_t(len);
-    return cp;
-}
+char32_t glyph(std::string_view s, std::size_t& i) { return nextUtf8(s, i).value_or(U'\uFFFD'); }
 
 Color shownColour(std::uint8_t mirc, std::uint32_t client) {
     const std::uint32_t rgb = mirc == kClientColour ? client : kMircRgb[mirc];
