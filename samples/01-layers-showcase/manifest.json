@@ -1,0 +1,42 @@
+{
+    "format": "blockwright",
+    "height": 40,
+    "ice": false,
+    "ircBudget": {
+        "bytes": 407,
+        "profile": "efnet-weechat"
+    },
+    "layers": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13
+    ],
+    "nextLayerId": 14,
+    "palette": "cga",
+    "sauce": {
+        "aspectRatio": "none",
+        "author": "funkpower",
+        "comments": [
+        ],
+        "date": "20261102",
+        "font": "IBM VGA",
+        "group": "",
+        "letterSpacing": null,
+        "reservedFlags": 0,
+        "tinfo3": 0,
+        "tinfo4": 0,
+        "title": "Harbour at night"
+    },
+    "version": "1.5",
+    "width": 80
+}

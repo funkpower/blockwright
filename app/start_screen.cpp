@@ -19,10 +19,13 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QShortcut>
 #include <QSpinBox>
 #include <QStyle>
 #include <QVBoxLayout>
+
+#include <vector>
 
 #include <algorithm>
 #include <exception>
@@ -39,6 +42,9 @@ constexpr int kLogoMargin = 16;
 // The recent list scrolls past this height, so ten entries don't push the
 // screen past a 720-high screen.
 constexpr int kRecentHeight = 190;
+// A sample's title is cut short past this width, its whole title in the
+// tooltip.
+constexpr int kSampleTitleWidth = 260;
 
 std::optional<AnsiDocument> readLogo(const QString& path) {
     QFile f(path);
@@ -65,10 +71,23 @@ QImage renderLogo(const AnsiDocument& doc, int scale) {
     }
 }
 
-// A scroll area that asks for a fixed height, whatever it holds.
+// A scroll area that asks for a fixed height, whatever it holds: the recent
+// list's, and the samples'.
 class RecentScroll : public QScrollArea {
 public:
     QSize sizeHint() const override { return {QScrollArea::sizeHint().width(), kRecentHeight}; }
+};
+
+// The samples' list: no horizontal scrollbar, and as wide as its entries
+// with room kept for the vertical one, so however many there are the
+// scrollbar covers none of them, and the screen can't squeeze them.
+class SamplesScroll : public RecentScroll {
+public:
+    SamplesScroll() { setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); }
+    QSize sizeHint() const override {
+        return RecentScroll::sizeHint() + QSize(verticalScrollBar()->sizeHint().width(), 0);
+    }
+    QSize minimumSizeHint() const override { return {sizeHint().width(), RecentScroll::minimumSizeHint().height()}; }
 };
 
 QLabel* heading(const QString& text) {
@@ -161,8 +180,9 @@ StartScreen::StartScreen(MainWindow* window, const Options& options)
     actions_ = new QVBoxLayout;
     actions_->setSpacing(6);
     body->addLayout(actions_);
-    sections_ = new QVBoxLayout;
-    sections_->setSpacing(6);
+    // The sections side by side, so one more doesn't make the screen taller.
+    sections_ = new QHBoxLayout;
+    sections_->setSpacing(24);
     body->addLayout(sections_, 1);
 
     // New: its size and iCE setting, then the button.
@@ -237,6 +257,44 @@ StartScreen::StartScreen(MainWindow* window, const Options& options)
     addSection(tr("Recent"), scroll);
     refreshRecent();
 
+    // Samples, when any came with the app: each opens as an untitled copy.
+    // The list scrolls in the recent list's height, and a long title is cut
+    // short, so however many there are the screen keeps its size.
+    const std::vector<samples::Sample> samples = MainWindow::bundledSamples();
+    if (!samples.empty()) {
+        auto* scroll = new SamplesScroll;
+        scroll->setObjectName(QStringLiteral("startSamples"));
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        auto* box = new QWidget;
+        auto* list = new QVBoxLayout(box);
+        list->setContentsMargins(0, 0, 0, 0);
+        list->setSpacing(2);
+        for (const samples::Sample& sample : samples) {
+            const QString path = QFile::decodeName(QByteArray::fromStdString(sample.path.string()));
+            const QString title = QString::fromStdString(sample.title);
+            // Elided before '&' is doubled, so the width is the text's own.
+            QString shown = fontMetrics().elidedText(title, Qt::ElideRight, kSampleTitleWidth);
+            const bool cut = shown != title;
+            auto* entry = new QPushButton(shown.replace(QLatin1Char('&'), QStringLiteral("&&")));
+            entry->setObjectName(QStringLiteral("startSampleEntry"));
+            entry->setProperty("path", path);
+            entry->setAutoDefault(true);
+            entry->setFlat(true);
+            entry->setStyleSheet(QStringLiteral("text-align: left; padding: 2px 6px;"));
+            entry->setEnabled(sample.problem.empty());
+            const QString tip = sample.problem.empty()
+                                    ? QString::fromStdString(sample.summary)
+                                    : tr("Can't be read: %1").arg(QString::fromStdString(sample.problem));
+            entry->setToolTip(cut ? title + QLatin1Char('\n') + tip : tip);
+            connect(entry, &QPushButton::clicked, this, [this, path] { openSample(path); });
+            list->addWidget(entry);
+        }
+        list->addStretch(1);
+        scroll->setWidget(box);
+        addSection(tr("Samples"), scroll, 0);
+    }
+
     // The logo at 2x when the screen has room for it.
     if (logoScale_) {
         QSize available = options.available;
@@ -282,9 +340,12 @@ QPushButton* StartScreen::addAction(const QString& name, const QString& text, co
     return b;
 }
 
-void StartScreen::addSection(const QString& title, QWidget* body) {
-    sections_->addWidget(heading(title));
-    sections_->addWidget(body, 1);
+void StartScreen::addSection(const QString& title, QWidget* body, int stretch) {
+    auto* column = new QVBoxLayout;
+    column->setSpacing(6);
+    column->addWidget(heading(title));
+    column->addWidget(body, 1);
+    sections_->addLayout(column, stretch);
 }
 
 void StartScreen::refreshRecent() {
@@ -361,6 +422,8 @@ void StartScreen::openFile() { window_->open(); }
 void StartScreen::openDirectory() { window_->openDirectory(); }
 
 void StartScreen::openRecent(const QString& path) { window_->openRequested(path); }
+
+void StartScreen::openSample(const QString& path) { window_->openSample(path); }
 
 void StartScreen::done(int result) {
     if (closing_)

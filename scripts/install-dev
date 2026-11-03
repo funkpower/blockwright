@@ -165,6 +165,11 @@ if [[ -z $(find "$stage/share/blockwright/library" -mindepth 2 -maxdepth 2 -name
   echo "install-dev: the install left out the bundled library (share/blockwright/library/); keeping the old dev build" >&2
   rm -rf "$stage"; exit 1
 fi
+# and the sample projects (PLAN §12, Samples)
+if [[ -z $(find "$stage/share/blockwright/samples" -mindepth 2 -maxdepth 2 -name manifest.json -print -quit 2>/dev/null) ]]; then
+  echo "install-dev: the install left out the sample projects (share/blockwright/samples/); keeping the old dev build" >&2
+  rm -rf "$stage"; exit 1
+fi
 [[ -e $prefix ]] && mv "$prefix" "$prefix.old"
 mv "$stage" "$prefix"
 rm -rf "$prefix.old"

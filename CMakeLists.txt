@@ -118,6 +118,7 @@ add_subdirectory(core)
 add_subdirectory(render)
 add_subdirectory(cli)
 add_subdirectory(app)
+add_subdirectory(samples)
 
 # The licence and the bundled font's and icons' notices travel with the
 # binaries (CC BY-SA 4.0 section 3, MIT): <prefix>/share/doc/blockwright/.

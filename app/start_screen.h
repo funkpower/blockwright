@@ -4,7 +4,8 @@
 // Screen.... The
 // large logo, drawn by the renderer on black, with the version under it; then
 // the actions, each a button in one column with its key (New, Open...,
-// Open Project Directory...), and the sections beside them (Recent). Every
+// Open Project Directory...), and the sections beside them, side by side
+// (Recent, and Samples when any came with the app). Every
 // action goes through the window's own path. Anything that opens or makes a
 // document while the screen is up closes it, whatever started it (its
 // buttons, or a file the system hands the app); one cancelled or refused
@@ -75,6 +76,7 @@ public:
     void openFile();
     void openDirectory();
     void openRecent(const QString& path);
+    void openSample(const QString& path);
 
 protected:
     void done(int result) override;
@@ -84,8 +86,9 @@ private:
     // by it and by `keys`.
     QPushButton* addAction(const QString& name, const QString& text, const QList<QKeySequence>& keys,
                            const std::function<void()>& run);
-    // One more section beside the actions, under `title`.
-    void addSection(const QString& title, QWidget* body);
+    // One more section beside the actions and the sections before it, under
+    // `title`, taking `stretch` of the spare width.
+    void addSection(const QString& title, QWidget* body, int stretch = 1);
     MainWindow* window_;
     // In done(), whose own clear() resets the document.
     bool closing_ = false;

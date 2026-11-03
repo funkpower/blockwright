@@ -43,6 +43,7 @@ add_library(blockwright_core STATIC
   src/pipeline.cpp
   src/project.cpp
   src/ramp.cpp
+  src/samples.cpp
   src/sauce.cpp
   src/scene_import.cpp
   src/selection.cpp
@@ -70,5 +71,12 @@ file(RELATIVE_PATH BW_LIBRARY_FROM_BINDIR ${CMAKE_INSTALL_FULL_BINDIR}
      ${CMAKE_INSTALL_FULL_DATADIR}/blockwright/library)
 set_source_files_properties(src/library.cpp PROPERTIES
   COMPILE_DEFINITIONS "BW_LIBRARY_FROM_BINDIR=\"${BW_LIBRARY_FROM_BINDIR}\"")
+# And the sample projects, beside it.
+file(RELATIVE_PATH BW_SAMPLES_FROM_BINDIR ${CMAKE_INSTALL_FULL_BINDIR}
+     ${CMAKE_INSTALL_FULL_DATADIR}/blockwright/samples)
+set_source_files_properties(src/samples.cpp PROPERTIES
+  COMPILE_DEFINITIONS "BW_SAMPLES_FROM_BINDIR=\"${BW_SAMPLES_FROM_BINDIR}\"")
+# The tests check the lookup against the same path, whatever the layout.
+set(BW_SAMPLES_FROM_BINDIR "${BW_SAMPLES_FROM_BINDIR}" PARENT_SCOPE)
 target_compile_options(blockwright_core PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)

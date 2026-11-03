@@ -1,0 +1,21 @@
+{
+    "alphaLocked": false,
+    "height": 0,
+    "id": 13,
+    "kind": "reference",
+    "locked": false,
+    "mode": "normal",
+    "name": "reference sketch",
+    "reference": {
+        "height": 40,
+        "image": "refs/23c7f7efd7c417bf6edce111fd684d4d0f02fdd8446508d3b1a059405e740329.png",
+        "opacity": 40,
+        "width": 80,
+        "x": 0,
+        "y": 0
+    },
+    "visible": false,
+    "width": 0,
+    "x": 0,
+    "y": 0
+}

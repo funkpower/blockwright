@@ -379,6 +379,8 @@ void MainWindow::createActions() {
     a = help->addAction(tr("&Manual..."), this, [this] { showManual(*tools_, this); });
     a->setObjectName(QStringLiteral("manual"));
     a->setStatusTip(tr("What each tool, its options and each kind of layer do"));
+    createSamplesMenu(help);
+    help->addSeparator();
     a = help->addAction(tr("&About Blockwright"), this, [this] { showAbout(this); });
     a->setObjectName(QStringLiteral("about"));
     a = help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);

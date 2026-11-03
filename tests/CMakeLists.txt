@@ -74,6 +74,7 @@ add_executable(blockwright-tests
   test_layers.cpp
   test_library.cpp
   test_library_bundled.cpp
+  test_samples.cpp
   test_lint.cpp
   test_lint_rules.cpp
   test_irc_view.cpp
@@ -124,7 +125,9 @@ target_link_libraries(blockwright-tests PRIVATE blockwright::core blockwright_cl
 target_compile_definitions(blockwright-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
                                                     BW_ANSIDRAW_DIR="${BW_ANSIDRAW_DIR}"
                                                     BW_TEST_TMP="${BW_TEST_TMP}"
-                                                    BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library")
+                                                    BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library"
+                                                    BW_SAMPLES_SOURCE="${PROJECT_SOURCE_DIR}/samples"
+                                                    BW_SAMPLES_FROM_BINDIR="${BW_SAMPLES_FROM_BINDIR}")
 catch_discover_tests(blockwright-tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
 add_test(NAME cli
@@ -161,6 +164,12 @@ add_test(NAME library_install
           ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR} "$<CONFIG>"
           ${PROJECT_SOURCE_DIR}/library)
 set_tests_properties(library_install PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+# The sample projects install as they are in the source (samples.h).
+add_test(NAME samples_install
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/samples_install_test.sh
+          ${PROJECT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/samples-install-tmp
+          ${CMAKE_INSTALL_FULL_DATADIR} ${CMAKE_INSTALL_FULL_BINDIR} ${PROJECT_SOURCE_DIR}/samples "$<CONFIG>")
+set_tests_properties(samples_install PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 endif()
 
 add_test(NAME irc_oracle
@@ -506,6 +515,7 @@ add_executable(blockwright-app-tests
   test_app_tool_icons.cpp
   test_app_project.cpp
   test_app_start_screen.cpp
+  test_app_samples.cpp
   test_app_text.cpp
   test_app_generator.cpp
   test_app_fonts.cpp
@@ -532,6 +542,7 @@ target_compile_definitions(blockwright-app-tests PRIVATE BW_TEST_DATA="${CMAKE_C
                                                         BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library"
                                                         BW_HELP_SOURCE="${PROJECT_SOURCE_DIR}/app/help"
                                                         BW_BRANDING_DIR="${PROJECT_SOURCE_DIR}/branding"
+                                                        BW_SAMPLES_SOURCE="${PROJECT_SOURCE_DIR}/samples"
                                                         BW_PACKAGING_DIR="${PROJECT_SOURCE_DIR}/packaging"
                                                         BW_ANSIDRAW_DIR="${BW_ANSIDRAW_DIR}"
                                                         BW_CLI="$<TARGET_FILE:blockwright-cli>")

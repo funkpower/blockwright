@@ -152,6 +152,10 @@ lib=$(find "$d" -type d -path '*/blockwright/library' | head -n 1)
 [ -n "$lib" ] || { echo "cmake stub: no bundled library staged" >&2; exit 1; }
 mkdir -p "$prefix/share/blockwright"
 cp -R "$lib" "$prefix/share/blockwright/library"
+samples=$(find "$d" -type d -path '*/blockwright/samples' | head -n 1)
+[ -n "$samples" ] || { echo "cmake stub: no sample projects staged" >&2; exit 1; }
+cp -R "$samples" "$prefix/share/blockwright/samples"
+[ -z "${NOSAMPLES:-}" ] || rm -rf "$prefix/share/blockwright/samples"
 icons=$(find "$d" -type d -path '*/icons/hicolor' | head -n 1)
 if [ -n "$icons" ]; then
   mkdir -p "$prefix/share/icons"
@@ -234,6 +238,13 @@ else
   bad "install-dev took an install without the bundled library (exit $st): $out"
 fi
 if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the library-less install keeps the old dev build"; else bad "the library-less install replaced the old dev build"; fi
+out=$(NOSAMPLES=1 dev); st=$?
+if [[ $st -ne 0 ]] && grep -q 'left out the sample projects' <<<"$out"; then
+  ok "install-dev refuses an install without the sample projects"
+else
+  bad "install-dev took an install without the sample projects (exit $st): $out"
+fi
+if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the sample-less install keeps the old dev build"; else bad "the sample-less install replaced the old dev build"; fi
 if [[ $(uname -s) == Linux ]]; then
   out=$(NOICON=1 dev); st=$?
   if [[ $st -ne 0 ]] && grep -q 'left out the icon' <<<"$out"; then
@@ -245,6 +256,7 @@ if [[ $(uname -s) == Linux ]]; then
 fi
 has_library() { [[ -n $(find "$1/share/blockwright/library" -mindepth 2 -maxdepth 2 -name '*.ans' -print -quit 2>/dev/null) ]]; }
 if has_library "$prefix"; then ok "install-dev installs the bundled library"; else bad "no bundled library in $prefix"; fi
+if [[ -f $prefix/share/blockwright/samples/01-layers-showcase/manifest.json ]]; then ok "install-dev installs the sample projects"; else bad "no sample projects in $prefix"; fi
 # A prefix with glob characters is a literal path: the library check must
 # not read [dev] as a character class and refuse (and delete) a good install
 bracket=$home/.local/opt/blockwright[dev]

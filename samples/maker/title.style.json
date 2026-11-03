@@ -1,0 +1,10 @@
+{
+  "kind": "text-style",
+  "name": "Harbour title",
+  "category": "classic",
+  "tags": ["gold", "shadow"],
+  "effects": [
+    {"kind": "shadow", "enabled": true, "colour": 6, "direction": "sw", "distance": 1, "form": "drop"},
+    {"kind": "fill", "enabled": true, "colour": 14, "mode": "flat", "ramp": "wood"}
+  ]
+}

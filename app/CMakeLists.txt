@@ -45,6 +45,7 @@ add_library(blockwright_app STATIC
   main_window_irc.cpp
   main_window_library.cpp
   main_window_project.cpp
+  main_window_samples.cpp
   manual_dialog.cpp
   manual_dialog.h
   palette_widget.cpp

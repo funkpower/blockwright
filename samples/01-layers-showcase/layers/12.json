@@ -1,0 +1,45 @@
+{
+    "alphaLocked": false,
+    "height": 5,
+    "id": 12,
+    "kind": "text",
+    "locked": false,
+    "mode": "normal",
+    "name": "title",
+    "source": {
+        "align": "left",
+        "case": "as-typed",
+        "colour": 14,
+        "face": {
+            "kind": "pixel",
+            "name": "block"
+        },
+        "letterSpacing": 0,
+        "lineSpacing": 0,
+        "text": "HARBOUR",
+        "wrapWidth": 0
+    },
+    "style": {
+        "effects": [
+            {
+                "colour": 6,
+                "direction": "sw",
+                "distance": 1,
+                "enabled": true,
+                "form": "drop",
+                "kind": "shadow"
+            },
+            {
+                "colour": 14,
+                "enabled": true,
+                "kind": "fill",
+                "mode": "flat",
+                "ramp": "wood"
+            }
+        ]
+    },
+    "visible": true,
+    "width": 57,
+    "x": 12,
+    "y": 31
+}

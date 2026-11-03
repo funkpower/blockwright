@@ -1,0 +1,10 @@
+{
+  "command": ["python3", "fog.py"],
+  "key": 0,
+  "params": [
+    {"name": "seed", "type": "integer", "label": "Seed", "min": 0, "max": 9999, "default": 7},
+    {"name": "wisps", "type": "integer", "label": "Wisps", "min": 0, "max": 20, "default": 5},
+    {"name": "top", "type": "integer", "label": "Top row", "min": 0, "max": 39, "default": 24},
+    {"name": "bottom", "type": "integer", "label": "Bottom row", "min": 0, "max": 39, "default": 27}
+  ]
+}

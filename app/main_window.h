@@ -15,6 +15,8 @@
 
 #include "document.h"
 
+#include "blockwright/samples.h"
+
 #include <QHash>
 #include <QSet>
 #include <QMainWindow>
@@ -183,6 +185,16 @@ public:
     // (main_window_generators.cpp). The scene runs with `python`, or with
     // scene::findPython()'s when it is empty.
     bool openSceneFile(const QString& path, QString* error, const std::vector<std::string>& python = {});
+    // Opens the sample project at `path` (samples.h) as an untitled copy,
+    // without asking anything: unmodified, off the recent list, its
+    // generators not trusted. False and `error` on failure, leaving the
+    // document as it was (main_window_samples.cpp).
+    bool openSampleFile(const QString& path, QString* error);
+    // The samples that came with the app (samples::bundledDir beside the real
+    // binary), as Help > Samples and the start screen list them.
+    static std::vector<samples::Sample> bundledSamples();
+    // Help > Samples, filled from bundledSamples() each time it opens.
+    QMenu* samplesMenu() const { return samplesMenu_; }
     // Saves to `path` without asking anything, in the document's form if
     // `path` is its file, else in the form the path asks for (fileFormFor):
     // a flat .ans (the layers flattened, project::toAnsi), a .bwp zip or a
@@ -214,6 +226,9 @@ public slots:
     // Opens a file the system asks for (FileOpenForwarder): asks to save
     // unsaved edits first, as File > Open does.
     void openRequested(const QString& path);
+    // Help > Samples and the start screen: asks to save unsaved edits, then
+    // openSampleFile, reporting a failure in a message box.
+    void openSample(const QString& path);
     // File > Open Project Directory...: a directory picker.
     void openDirectory();
     // File > Start Screen...: asks to save unsaved edits, as New does, then
@@ -273,6 +288,9 @@ private:
     // Fills File > Open Recent from the recent list: each entry (a missing
     // one disabled) opens through openRequested.
     void fillRecentMenu();
+    // Help > Samples (main_window_samples.cpp).
+    void createSamplesMenu(QMenu* help);
+    void fillSamplesMenu();
     // The iCE and letter-spacing toggles (main_window_format.cpp).
     void createFormatActions(QMenu* view);
     // The renderer and the toggles follow the document's format.
@@ -408,6 +426,7 @@ private:
     QMenu* layerMenu_ = nullptr;
     QMenu* windowMenu_ = nullptr;
     QMenu* openRecentMenu_ = nullptr;
+    QMenu* samplesMenu_ = nullptr;
     QHash<QString, QAction*> toolActions_;  // the Tools menu's, by tool id
     LibraryDock* library_ = nullptr;
     QDockWidget* libraryDock_ = nullptr;
