@@ -13,6 +13,7 @@
 #include "shortcuts_dialog.h"
 #include "start_screen.h"
 
+#include "blockwright/cp437.h"
 #include "blockwright/glyph_sets.h"
 
 #include <QAction>
@@ -69,6 +70,14 @@ QString lossDescription(const AnsiOutput& out) {
         parts << QObject::tr("the file's own palette is left out (only XBIN keeps one)");
     if (out.fontDropped)
         parts << QObject::tr("the file's own font is left out (only XBIN keeps one)");
+    if (out.letterSpacingDropped)
+        parts << QObject::tr("the 9 px letter spacing is left out (XBIN has none and draws 8 px)");
+    if (out.aspectDropped)
+        parts << (out.aspectDropped == 1 ? QObject::tr("the legacy aspect ratio is left out (XBIN has none)")
+                                         : QObject::tr("the square aspect ratio is left out (XBIN has none)"));
+    if (!out.fontNameDropped.empty())
+        parts << QObject::tr("the SAUCE font name %1 is left out (XBIN names no font)")
+                     .arg(QString::fromStdString(cp437ToUtf8(out.fontNameDropped)));
     return parts.join(QStringLiteral(";\n"));
 }
 

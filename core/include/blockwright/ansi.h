@@ -76,8 +76,20 @@ struct AnsiOutput {
     // can't hold, left out.
     bool paletteDropped = false;
     bool fontDropped = false;
+    // SAUCE fields an XBIN has no place for (its record's TFlags and TInfoS
+    // are 0, and its header has neither), left out by writeXbin: 9 px
+    // letter spacing (an XBIN draws 8 px), the aspect ratio (SAUCE's value,
+    // 1 legacy or 2 square), and a font name other than the IBM VGA an XBIN
+    // means without one. 8 px and an unset flag are what an XBIN draws, so
+    // they lose nothing.
+    bool letterSpacingDropped = false;
+    int aspectDropped = 0;
+    std::string fontNameDropped;
 
-    bool lossy() const { return !unwritable.empty() || blinkDropped || paletteDropped || fontDropped; }
+    bool lossy() const {
+        return !unwritable.empty() || blinkDropped || paletteDropped || fontDropped || letterSpacingDropped ||
+               aspectDropped || !fontNameDropped.empty();
+    }
 };
 
 // Writes the canvas in canonical form: ESC[0m first; per row, trailing

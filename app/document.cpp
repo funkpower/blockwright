@@ -564,6 +564,15 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         // nor a palette or font, now it is the document's file
         doc_.palette.reset();
         doc_.font.reset();
+    } else if (doc_.sauce && (out.letterSpacingDropped || out.aspectDropped || !out.fontNameDropped.empty())) {
+        // nor the SAUCE letter spacing, aspect or font name an XBIN left out
+        if (out.letterSpacingDropped)
+            doc_.sauce->setLetterSpacing(0);
+        if (out.aspectDropped)
+            doc_.sauce->setAspectRatio(0);
+        if (!out.fontNameDropped.empty())
+            doc_.sauce->font.clear();
+        emit formatChanged();
     }
     if (whole) {
         undo_.setClean();

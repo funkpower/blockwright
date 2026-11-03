@@ -535,6 +535,55 @@ TEST_CASE("an XBIN's palette and font are kept by an XBIN save and lost after a 
     CHECK_FALSE(w.document()->ansi().font);
 }
 
+// #299: XBIN has no place for SAUCE's 9 px letter spacing, aspect ratio or
+// font name; the editor's save warns of each, as of any other loss.
+TEST_CASE("an XBIN save warns that SAUCE's letter spacing, aspect and font name are left out") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    AnsiDocument d = parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden" / "tux.ans"));
+    REQUIRE(d.sauce);
+    d.sauce->flags = 0x15;  // iCE, 9 px, square
+    d.sauce->font = "Amiga Topaz 1";
+    const QString in = tmp.filePath(QStringLiteral("flags.ans"));
+    {
+        const std::string bytes = writeAnsi(d).bytes;
+        QFile f(in);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        REQUIRE(f.write(bytes.data(), qint64(bytes.size())) == qint64(bytes.size()));
+    }
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(in, &error));
+    const AnsiOutput out = w.document()->encode(ArtFormat::Xbin);
+    CHECK(out.lossy());
+    CHECK(lossDescription(out) == QStringLiteral("the 9 px letter spacing is left out (XBIN has none and draws 8 px);\n"
+                                                 "the square aspect ratio is left out (XBIN has none);\n"
+                                                 "the SAUCE font name Amiga Topaz 1 is left out (XBIN names no font)"));
+    CHECK(saveWarning(out, false, ArtFormat::Xbin).startsWith(QStringLiteral("Before saving as XBIN:")));
+    // .ans and BIN keep them
+    CHECK_FALSE(w.document()->encode(ArtFormat::Ansi).lossy());
+    CHECK_FALSE(w.document()->encode(ArtFormat::Bin).lossy());
+
+    const QString xb = tmp.filePath(QStringLiteral("flags.xb"));
+    CHECK_FALSE(w.saveFile(xb, &error));
+    CHECK(error.contains(QStringLiteral("letter spacing")));
+    CHECK_FALSE(QFile::exists(xb));
+    REQUIRE(w.saveFile(xb, &error, true));
+    const AnsiDocument back = parseXbin(bwtest::readFile(xb.toStdString()));
+    REQUIRE(back.sauce);
+    CHECK(back.sauce->letterSpacing() == 0);
+    CHECK(back.sauce->font.empty());
+    // the document is now that XBIN, which has nothing more to lose
+    CHECK(w.document()->path() == xb);
+    REQUIRE(w.document()->ansi().sauce);
+    CHECK(w.document()->ansi().sauce->letterSpacing() == 0);
+    CHECK(w.document()->ansi().sauce->aspectRatio() == 0);
+    CHECK(w.document()->ansi().sauce->font.empty());
+    CHECK(w.document()->ansi().ice);
+    CHECK_FALSE(w.document()->encode(ArtFormat::Xbin).lossy());
+    CHECK_FALSE(w.document()->isModified());
+}
+
 TEST_CASE("a canvas too large to display is refused and the open document stays") {
     QTemporaryDir tmp;
     // 400x5000 cells at 9 px is 3600x80000 = 288,000,000 px, over the

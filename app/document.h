@@ -149,7 +149,10 @@ public:
     // a flat document takes `path` as its file but stays modified, with no
     // clean state left in its undo stack, until a project save. A flat
     // document saved to anything but an XBIN name (artFormatFor) drops the
-    // palette and font it was opened with, as the file it is now holds none.
+    // palette and font it was opened with, as the file it is now holds none;
+    // one saved to an XBIN drops the SAUCE letter spacing, aspect and font
+    // name `out` says it left out (letterSpacingDropped, aspectDropped,
+    // fontNameDropped), for the same reason.
     bool save(const QString& path, const AnsiOutput& out, QString* error);
     // Whether a flat .ans holds all of the document: one visible cells
     // layer, at (0, 0) and the canvas's size, compositing normally, and no

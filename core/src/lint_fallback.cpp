@@ -163,7 +163,8 @@ void row(const Canvas& canvas, const Ramp& ramp, const Box& box, int y, bool ice
 LadderFinding finding(int x, int y) {
     return {LadderFinding::Kind::FallbackSpeck, x, y,
             "cell " + std::to_string(x) + "," + std::to_string(y) +
-                ": a fallback speck, a half block showing none of the shading's colours beside it"};
+                ": a fallback speck, a half block in a colour the shading beside it doesn't show but falls back to "
+                "where a pixel cuts it"};
 }
 
 } // namespace bw::lint::fallback

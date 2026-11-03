@@ -291,6 +291,15 @@ void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
         std::cerr << "blockwright-cli: warning: " << in << ": its palette is left out: only XBIN holds one\n";
     if (res.fontDropped)
         std::cerr << "blockwright-cli: warning: " << in << ": its font is left out: only XBIN holds one\n";
+    if (res.letterSpacingDropped)
+        std::cerr << "blockwright-cli: warning: " << in
+                  << ": its 9 px letter spacing is left out: XBIN has no letter spacing and draws 8 px\n";
+    if (res.aspectDropped)
+        std::cerr << "blockwright-cli: warning: " << in << ": its " << aspectName(res.aspectDropped)
+                  << " aspect ratio is left out: XBIN has no aspect ratio\n";
+    if (!res.fontNameDropped.empty())
+        std::cerr << "blockwright-cli: warning: " << in << ": its SAUCE font name (" << text(res.fontNameDropped)
+                  << ") is left out: XBIN names no font\n";
 }
 
 void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocument& doc, bool allowLossy,

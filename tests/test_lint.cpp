@@ -540,6 +540,10 @@ TEST_CASE("the ladder check finds fallback specks beside shading", "[lint][ladde
                                      [](const auto& f) { return f.kind == Kind::FallbackSpeck; });
         CHECK(it->x == 3);
         CHECK(it->y == 2);
+        // the half shows grey, which the K░w beside it falls back to but
+        // doesn't show (#305)
+        CHECK(it->message == "cell 3,2: a fallback speck, a half block in a colour the shading beside it doesn't "
+                             "show but falls back to where a pixel cuts it");
         // the same pixel over the shade's own colour isn't
         c.at(3, 2) = cell(kUpperHalf, Yellow, DarkGrey);
         CHECK(fallback() == 0);

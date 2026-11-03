@@ -82,7 +82,7 @@ struct LadderFinding {
         WideRung,           // a step of a gradient wider than maxRung along it
         RungSkip,           // a gradient jumping more than one rung
         Speckle,            // a lone cell lighter or darker than all its neighbours
-        FallbackSpeck,      // a ▀/▄ beside shading showing none of its colours
+        FallbackSpeck,      // a ▀/▄ beside shading in a colour it falls back to but doesn't show
         OneGlyph,           // the shading uses one of ░▒▓ only
         Noise,              // pixel noise over maxNoise
     };

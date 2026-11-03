@@ -162,6 +162,29 @@ expect "unpack --allow-lossy writes without the font" 0 'its font is left out' -
 expect "the packed project is the XBIN's cells" 0 '^size: +30x17$' -- "$cli" info "$tmp/pf.bwp"
 [[ -f $tmp/pf-dir/manifest.json ]] && ok "unpack --allow-lossy wrote the project" || bad "unpack --allow-lossy wrote no project"
 expect "pack: an XBIN without a palette or font is not lossy" 0 '^$' -- "$cli" pack "$tmp/tux.xb" "$tmp/tux-xb.bwp"
+# #299: XBIN has no place for SAUCE's 9 px letter spacing, aspect ratio or
+# font name (TFlags and TInfoS are 0 for XBin); BIN keeps them. tux.ans with
+# its record's TFlags 0x15 (iCE, 9 px, square) and TInfoS "Amiga Topaz 1"
+size=$(wc -c <"$piece")
+{ head -c $((size - 23)) "$piece"; printf '\x15Amiga Topaz 1'; head -c 9 /dev/zero; } > "$tmp/flags.ans"
+expect "info: the patched flags" 0 '^flags: +0x15 \(iCE on, letter spacing 9 px, aspect square\)$' -- "$cli" info "$tmp/flags.ans"
+expect "XBIN drops 9 px letter spacing: refused" 1 \
+  'flags\.ans: its 9 px letter spacing is left out: XBIN has no letter spacing and draws 8 px$' -- \
+  "$cli" convert "$tmp/flags.ans" "$tmp/flags.xb"
+expect "XBIN drops the aspect ratio: says so" 1 'flags\.ans: its square aspect ratio is left out: XBIN has no aspect ratio$' -- \
+  "$cli" convert "$tmp/flags.ans" "$tmp/flags.xb"
+expect "XBIN drops the font name: says so" 1 \
+  'flags\.ans: its SAUCE font name \(Amiga Topaz 1\) is left out: XBIN names no font$' -- \
+  "$cli" convert "$tmp/flags.ans" "$tmp/flags.xb"
+if [[ -e $tmp/flags.xb ]]; then bad "refused XBIN convert of SAUCE flags left a file"; else ok "refused XBIN convert of SAUCE flags writes nothing"; fi
+expect "XBIN SAUCE flags: --allow-lossy writes" 0 '9 px letter spacing is left out' -- \
+  "$cli" convert --allow-lossy "$tmp/flags.ans" "$tmp/flags.xb"
+expect "info: the XBIN keeps iCE" 0 '^ice: +on$' -- "$cli" info "$tmp/flags.xb"
+expect "info: the XBIN's SAUCE has no flags" 0 '^flags: +0x0 ' -- "$cli" info "$tmp/flags.xb"
+expect "BIN keeps the SAUCE flags" 0 '^$' -- "$cli" convert "$tmp/flags.ans" "$tmp/flags.bin"
+expect "info: the BIN's flags" 0 '^flags: +0x15 ' -- "$cli" info "$tmp/flags.bin"
+expect "info: the BIN's font name" 0 '^font: +Amiga Topaz 1$' -- "$cli" info "$tmp/flags.bin"
+
 # #300: ○ ← ◙ are CP437 0x09 0x1B 0x0A, which XBIN and BIN keep and .ans reads as TAB, ESC and LF
 printf 'XBIN\x1a\x04\x00\x01\x00\x10\x00\x09\x07\x1b\x07\x0a\x07\x41\x07' > "$tmp/ctl.xb"
 expect "control bytes lost as .ans: refused, and says which" 1 \

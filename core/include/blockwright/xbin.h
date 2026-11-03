@@ -67,9 +67,11 @@ struct XbinOptions {
 // row end) as few bytes as the four run kinds allow, or uncompressed. Then
 // SAUCE: the document's record or a fresh one, as XBin (DataType 6, FileType
 // 0, TInfo1-2 the width and height, TInfo3-4, TFlags and TInfoS 0), FileSize
-// the content's length. Glyphs with no CP437 byte are written as '?' and
-// listed in `unwritable`; every other glyph, NUL and control codes included,
-// is its byte.
+// the content's length. The record's 9 px letter spacing, aspect ratio and
+// a font name other than IBM VGA, which an XBIN has no place for, are
+// reported left out (letterSpacingDropped, aspectDropped, fontNameDropped).
+// Glyphs with no CP437 byte are written as '?' and listed in `unwritable`;
+// every other glyph, NUL and control codes included, is its byte.
 AnsiOutput writeXbin(const AnsiDocument& doc, const XbinOptions& opts = {});
 
 struct BinOptions {

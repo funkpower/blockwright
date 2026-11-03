@@ -393,6 +393,14 @@ AnsiOutput writeXbin(const AnsiDocument& doc, const XbinOptions& opts) {
     } else {
         s.append(pairs.begin(), pairs.end());
     }
+    if (doc.sauce) {
+        const Sauce& had = *doc.sauce;
+        out.letterSpacingDropped = had.letterSpacing() == 2;
+        if (had.aspectRatio() == 1 || had.aspectRatio() == 2)
+            out.aspectDropped = had.aspectRatio();
+        if (!had.font.empty() && had.font != "IBM VGA" && had.font != "IBM VGA 437")
+            out.fontNameDropped = had.font;
+    }
     Sauce sauce = doc.sauce ? *doc.sauce : Sauce::fresh(cv.width(), cv.height());
     sauce.dataType = kXBin;
     sauce.fileType = 0;

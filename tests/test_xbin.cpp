@@ -156,7 +156,10 @@ TEST_CASE("writeXbin's SAUCE is XBin: DataType 6, the size in TInfo1-2, no flags
     d.sauce->tinfo3 = 9;
     d.sauce->setLetterSpacing(2);
     d.sauce->comments = {"kept"};
-    const std::string out = writeXbin(d, {.compress = false}).bytes;
+    const AnsiOutput written = writeXbin(d, {.compress = false});
+    // the 9 px letter spacing it leaves out is a loss (#299)
+    CHECK(written.letterSpacingDropped);
+    const std::string& out = written.bytes;
     const Sauce s = sauceOf(out);
     CHECK(s.dataType == 6);
     CHECK(s.fileType == 0);
@@ -690,6 +693,78 @@ TEST_CASE("a palette or font only XBIN keeps is reported lost by the others", "[
     const AnsiDocument back = parseXbin(x.bytes);
     CHECK(back.palette == d.palette);
     CHECK(back.font == d.font);
+}
+
+// #299: XBin's SAUCE has no TFlags or TInfoS and its header no letter
+// spacing or aspect, so an XBIN save leaves out 9 px letter spacing, the
+// aspect ratio and a font name, and reports each; BIN keeps all three. 8 px,
+// an unset flag and IBM VGA are what an XBIN draws: nothing is lost.
+TEST_CASE("writeXbin reports the SAUCE letter spacing, aspect and font name it leaves out", "[xbin]") {
+    AnsiDocument d;
+    d.canvas = Canvas(4, 1);
+    for (int x = 0; x < 4; ++x)
+        d.canvas.at(x, 0) = cell(char32_t(U'A' + x), 1, 4);
+    d.ice = true;
+    d.sauce = someSauce();
+    d.sauce->flags = 0x15;  // iCE, 9 px, square
+    d.sauce->font = "Amiga Topaz 1";
+    // through .ans first, as the issue's file was
+    const AnsiDocument src = parseAnsi(writeAnsi(d).bytes);
+    REQUIRE(src.sauce);
+    REQUIRE(src.sauce->flags == 0x15);
+    REQUIRE(src.sauce->font == "Amiga Topaz 1");
+
+    const AnsiOutput x = writeXbin(src);
+    CHECK(x.letterSpacingDropped);
+    CHECK(x.aspectDropped == 2);
+    CHECK(x.fontNameDropped == "Amiga Topaz 1");
+    CHECK_FALSE(x.paletteDropped);
+    CHECK_FALSE(x.fontDropped);
+    CHECK(x.lossy());
+    // read back: the cells and iCE (the header's) kept, the three gone
+    const AnsiDocument back = parseXbin(x.bytes);
+    CHECK(back.canvas == src.canvas);
+    CHECK(back.ice);
+    REQUIRE(back.sauce);
+    CHECK(back.sauce->letterSpacing() == 0);
+    CHECK(back.sauce->aspectRatio() == 0);
+    CHECK(back.sauce->font.empty());
+    // and what an XBIN read back holds, it writes again without loss
+    CHECK_FALSE(writeXbin(back).lossy());
+    CHECK(writeXbin(back).bytes == x.bytes);
+
+    // BIN keeps all three
+    const AnsiOutput b = writeBin(src);
+    CHECK_FALSE(b.lossy());
+    CHECK(parseBin(b.bytes).sauce->flags == 0x15);
+    CHECK(parseBin(b.bytes).sauce->font == "Amiga Topaz 1");
+
+    // each on its own
+    AnsiDocument one = src;
+    one.sauce->flags = 0x01;
+    one.sauce->font = "IBM VGA";
+    CHECK_FALSE(writeXbin(one).lossy());
+    one.sauce->setLetterSpacing(1);  // 8 px: what an XBIN draws
+    CHECK_FALSE(writeXbin(one).lossy());
+    one.sauce->setLetterSpacing(2);
+    CHECK(writeXbin(one).letterSpacingDropped);
+    CHECK(writeXbin(one).aspectDropped == 0);
+    CHECK(writeXbin(one).fontNameDropped.empty());
+    one.sauce->setLetterSpacing(0);
+    one.sauce->setAspectRatio(1);
+    CHECK(writeXbin(one).aspectDropped == 1);
+    CHECK_FALSE(writeXbin(one).letterSpacingDropped);
+    CHECK(writeXbin(one).lossy());
+    one.sauce->setAspectRatio(0);
+    for (const char* font : {"", "IBM VGA", "IBM VGA 437"}) {
+        one.sauce->font = font;
+        CHECK_FALSE(writeXbin(one).lossy());
+    }
+    one.sauce->font = "IBM VGA50";
+    CHECK(writeXbin(one).fontNameDropped == "IBM VGA50");
+    // no SAUCE on the document: the fresh record writeXbin adds loses nothing
+    one.sauce.reset();
+    CHECK_FALSE(writeXbin(one).lossy());
 }
 
 TEST_CASE("parseArt and writeArt go to the format's codec", "[xbin]") {
