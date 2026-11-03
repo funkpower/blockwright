@@ -550,7 +550,9 @@ bool writtenIce(const AnsiDocument& doc, int* blinkDropped) {
 bool utf8Writable(char32_t ch) {
     if (ch < 0x80)
         return ch == 0 || (ch >= 0x20 && ch < 0x7f);
-    return ch <= 0x10ffff && (ch < 0xd800 || ch > 0xdfff);
+    // C1 controls: a terminal that honours them takes C2 9B for a CSI, as
+    // the IRC export has it (irc::encodeCanvas writes them as '?' too).
+    return ch >= 0xa0 && ch <= 0x10ffff && (ch < 0xd800 || ch > 0xdfff);
 }
 
 AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {

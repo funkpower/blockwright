@@ -1838,6 +1838,7 @@ Project fromAnsi(const AnsiDocument& from, Opened* opened) {
     Project p;
     p.layers = LayerStack::fromCanvas(doc.canvas);
     p.ice = doc.ice;
+    p.ansEncoding = doc.encoding;
     if (doc.sauce)
         p.sauce = normalSauce(*doc.sauce, doc.canvas.width(), doc.canvas.height(), doc.ice);
     return p;
@@ -1849,6 +1850,7 @@ AnsiDocument toAnsi(const Project& project) {
     AnsiDocument doc;
     doc.canvas = flatten(project.layers, o);
     doc.ice = project.ice;
+    doc.encoding = project.ansEncoding;
     // as the editor saves a document (Document::encode)
     for (int y = 0; y < doc.canvas.height(); ++y)
         for (int x = 0; x < doc.canvas.width(); ++x)
@@ -1970,7 +1972,7 @@ Entries encode(const Project& project) {
         out[layerPath(l.props.id, false)] = json;
         out[layerPath(l.props.id, true)] = encodeCells(l.cells);
     }
-    const QJsonObject manifest{
+    QJsonObject manifest{
         {"format", "blockwright"},
         {"version", qstr(glowCells ? std::to_string(kGlowCellsFormatMajor) + "." + std::to_string(kGlowCellsFormatMinor)
                          : styled  ? std::to_string(kStyledFormatMajor) + "." +
@@ -1996,6 +1998,10 @@ Entries encode(const Project& project) {
         {"layers", order},
         {"nextLayerId", qint64(stack.nextId())},
     };
+    // Only when it isn't CP437, so a CP437 project's manifest is what it
+    // was before the key.
+    if (project.ansEncoding == TextEncoding::Utf8)
+        manifest.insert("ansEncoding", "utf-8");
     out["manifest.json"] = toJson(manifest);
     checkJsonSize("manifest.json", out["manifest.json"].size());
     if (!project.notes.empty())
@@ -2040,6 +2046,10 @@ Project decode(const Entries& entries) {
             fail("manifest.json: the IRC budget has no profile");
         p.ircBudget.bytes = std::size_t(b.integer("bytes", std::int64_t(irc::kMinBudget), std::int64_t(irc::kMaxBudget)));
     }
+    // A save preference, not art: a value this build doesn't know (a later
+    // one's) is CP437, as a project with no key is, not a refusal (PLAN §6).
+    if (m.has("ansEncoding") && m.string("ansEncoding") == "utf-8")
+        p.ansEncoding = TextEncoding::Utf8;
     if (const QJsonValue s = m.value("sauce"); !s.isNull()) {
         if (!s.isObject())
             fail("manifest.json: \"sauce\" is not an object or null");

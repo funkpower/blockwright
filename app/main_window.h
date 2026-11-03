@@ -71,7 +71,20 @@ void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project 
 // the two ANSI art filters, nothing (the document's own) for any other.
 std::optional<TextEncoding> saveFilterEncoding(const QString& filter);
 
-// What a lossy save or snapshot loses, one line per kind of loss.
+// File > Open's name filters. "ANSI art (*.ans)" and the filters naming
+// several formats read an .ans in the encoding its bytes give
+// (detectEncoding); "ANSI art, CP437 (*.ans)" and "ANSI art, UTF-8 (*.ans)"
+// read it as that one.
+QStringList openNameFilters();
+// The text encoding File > Open reads an .ans in when `filter` is the one of
+// openNameFilters chosen: CP437 or UTF-8 for the two that name one, nothing
+// (detectEncoding) for any other.
+std::optional<TextEncoding> openFilterEncoding(const QString& filter);
+
+// What a lossy save or snapshot loses, one line per kind of loss. Cells
+// written as '?' are glyphs with no CP437 code or whose byte .ans reads as a
+// control code for a CP437 .ans (out.encoding), and control characters for
+// a UTF-8 one, which holds every glyph.
 QString lossDescription(const AnsiOutput& out);
 
 // The status-bar message for typed or committed `text` whose glyphs
@@ -84,6 +97,8 @@ QString rejectedGlyphsMessage(const QString& text);
 // (which keeps every glyph, so only blink lost on open and an XBIN's palette
 // and font count). Blink lost on open is stated as what happened on open,
 // not as something this save loses, as the cells may have been put back.
+// A CP437 .ans whose '?' cells a UTF-8 one would keep says how many, and to
+// Save As "ANSI art, UTF-8 (*.ans)".
 QString saveWarning(const AnsiOutput& out, bool project = false, ArtFormat format = ArtFormat::Ansi);
 
 class SelectTool;
@@ -124,6 +139,9 @@ public:
     // Every dock, in the Window menu's order.
     QList<QDockWidget*> docks() const;
     QLabel* glyphSetLabel() const { return glyphSetLabel_; }
+    // The status bar's "CP437" or "UTF-8": the encoding Save writes an .ans
+    // in (Document::textEncoding).
+    QLabel* encodingLabel() const { return encodingLabel_; }
     const CanvasRenderer& renderer() const { return renderer_; }
     ToolRegistry* tools() const { return tools_; }
     SelectTool* selectTool() const { return selectTool_; }
@@ -184,7 +202,9 @@ public:
     // directory) opens as one, with its layers (main_window_project.cpp).
     // What opens goes first in the recent list (recent_files.h), as does
     // every file a save writes (Document::fileWritten).
-    bool openFile(const QString& path, QString* error);
+    // An .ans is read as `encoding`, or with none as its bytes say
+    // (Document::read); a project or an XBIN or BIN ignores it.
+    bool openFile(const QString& path, QString* error, std::optional<TextEncoding> encoding = {});
     // Starts over on a blank `size` canvas (in cells) with iCE colours
     // `ice`, without asking anything, as New does at the default size and
     // the start screen's New at the size it was given. False, and `error`,
@@ -237,10 +257,14 @@ public slots:
     void newFile();
     void open();
     // Opens `path`, reporting a failure in a message box.
-    void openInteractive(const QString& path);
+    void openInteractive(const QString& path, std::optional<TextEncoding> encoding = {});
     // What File > Open's prompts are parented to: the window, or while it is
     // still hidden at launch, the start screen up in its place (#294).
     QWidget* promptParent();
+    // File > Reopen with Encoding: asks to save unsaved edits, then opens the
+    // document's .ans again read as `encoding` (with none, as its bytes say).
+    // Enabled only while the document is a flat .ans with a file.
+    void reopenWithEncoding(std::optional<TextEncoding> encoding);
     // Opens a file the system asks for (FileOpenForwarder): asks to save
     // unsaved edits first, as File > Open does.
     void openRequested(const QString& path);
@@ -303,6 +327,10 @@ protected:
 
 private:
     void createActions();
+    // Whether the document is a flat .ans with a file (reopenWithEncoding).
+    bool reopenable() const;
+    // The encoding label and Reopen with Encoding follow the document.
+    void updateEncoding();
     // Fills File > Open Recent from the recent list: each entry (a missing
     // one disabled) opens through openRequested.
     void fillRecentMenu();
@@ -457,6 +485,8 @@ private:
     ToolRegistry* tools_ = nullptr;
     SelectTool* selectTool_ = nullptr;
     QLabel* glyphSetLabel_ = nullptr;
+    QLabel* encodingLabel_ = nullptr;
+    QMenu* reopenMenu_ = nullptr;
     QList<QAction*> glyphSetActions_;
     QAction* iceAction_ = nullptr;
     QAction* ninePxAction_ = nullptr;

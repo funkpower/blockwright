@@ -876,7 +876,8 @@ TEST_CASE("the save warning tells glyphs with no CP437 code from control bytes")
     const AnsiOutput ans = w.document()->encode(ArtFormat::Ansi);
     CHECK(saveWarning(ans) == QStringLiteral("Before saving as .ans:\n3 cells hold a glyph whose CP437 byte .ans "
                                              "reads as a control code (TAB, ESC, LF) and will be written as '?' "
-                                             "(XBIN and BIN keep them).\n\nSave anyway?"));
+                                             "(XBIN and BIN keep them).\n\nA UTF-8 .ans keeps all 3 of those glyphs: "
+                                             "Save As and choose \"ANSI art, UTF-8 (*.ans)\".\n\nSave anyway?"));
 }
 
 TEST_CASE("an input-method commit replaces the cells it names") {

@@ -163,7 +163,11 @@ if cmp -s "$piece" "$tmp/from-u8.ans"; then ok "a UTF-8 .ans converts to the CP4
 "$cli" render "$piece" "$tmp/tux.png" && "$cli" render "$u8" "$tmp/tux-u8.png"
 if cmp -s "$tmp/tux.png" "$tmp/tux-u8.png"; then ok "a UTF-8 .ans renders as the CP437 piece"; else bad "the UTF-8 piece renders differently"; fi
 "$cli" unpack "$piece" "$tmp/unpack-cp" > /dev/null && "$cli" unpack "$u8" "$tmp/unpack-u8" > /dev/null
-if diff -r "$tmp/unpack-cp" "$tmp/unpack-u8" > /dev/null; then ok "a UTF-8 .ans unpacks as the CP437 piece"; else bad "unpack of the UTF-8 piece differs"; fi
+if diff -r -x manifest.json "$tmp/unpack-cp" "$tmp/unpack-u8" > /dev/null; then ok "a UTF-8 .ans unpacks as the CP437 piece"; else bad "unpack of the UTF-8 piece differs"; fi
+if diff <(grep -v '"ansEncoding"' "$tmp/unpack-u8/manifest.json") "$tmp/unpack-cp/manifest.json" > /dev/null; then ok "its manifest differs only by ansEncoding"; else bad "the UTF-8 piece's manifest differs by more than ansEncoding"; fi
+expect "info: a project unpacked from a UTF-8 .ans says so" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/unpack-u8"
+expect "info: a project unpacked from a CP437 .ans says so" 0 '^encoding: +CP437$' -- "$cli" info "$tmp/unpack-cp"
+expect "a CP437 project's manifest has no ansEncoding" 1 '' -- grep -q '"ansEncoding"' "$tmp/unpack-cp/manifest.json"
 printf '\xe2\x96\x88\r\n' > "$tmp/block-u8.ans"
 expect "export --irc of a UTF-8 full block" 0 '^1 line, longest 6 bytes' -- "$cli" export --irc "$tmp/block-u8.ans" "$tmp/block-u8.txt"
 if [[ $(od -An -tx1 "$tmp/block-u8.txt" | tr -d ' \n') == *e29688* && $(od -An -tx1 "$tmp/block-u8.txt" | tr -d ' \n') != *ce93* ]]; then ok "it sends one █, not Γûê"; else bad "export --irc of a UTF-8 block: $(od -An -tx1 "$tmp/block-u8.txt")"; fi
@@ -178,6 +182,11 @@ if [[ $(od -An -tx1 "$tmp/bom-cp.ans" | tr -d ' \n') == *4180* && $(od -An -tx1 
 printf '\xc9\xbb\r\n\xc8\xbc\r\n' > "$tmp/corners.ans"
 expect "info: CP437 corners that look like UTF-8 stay CP437" 0 '^encoding: +CP437$' -- "$cli" info "$tmp/corners.ans"
 # writing UTF-8 (#302 part 2): convert and shade take --output-encoding
+printf 'A\xc2\x9b31mB\r\n' > "$tmp/c1-u8.ans"
+expect "convert --output-encoding utf-8 refuses a C1 control" 1 'warning: .*c1-u8\.ans: 1 cell holds a control character a UTF-8 \.ans can.t hold.*U\+009B' -- \
+  "$cli" convert --encoding utf-8 --output-encoding utf-8 "$tmp/c1-u8.ans" "$tmp/c1-out.ans"
+"$cli" convert --allow-lossy --encoding utf-8 --output-encoding utf-8 "$tmp/c1-u8.ans" "$tmp/c1-out.ans" 2> /dev/null
+if [[ $(od -An -tx1 "$tmp/c1-out.ans" | tr -d ' \n') == *413f33316d42* ]]; then ok "--allow-lossy writes it as '?'"; else bad "a C1 control written as UTF-8: $(od -An -tx1 "$tmp/c1-out.ans")"; fi
 expect "convert --output-encoding utf-8" 0 '^$' -- "$cli" convert --output-encoding utf-8 "$piece" "$tmp/to-u8.ans"
 if cmp -s "$u8" "$tmp/to-u8.ans"; then ok "the CP437 piece written as UTF-8 is the UTF-8 piece, byte for byte"; else bad "convert --output-encoding utf-8 differs from tux-utf8.ans"; fi
 expect "info: what convert wrote as UTF-8 says so" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/to-u8.ans"

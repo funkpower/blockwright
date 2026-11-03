@@ -93,8 +93,10 @@ public:
     // writes it and `cli render` draws it: its blinking cells keep their
     // dark background and lose the blink, and those whose blink showed (not
     // on a blank glyph), as writeAnsi counts them, are marked
-    // (Cell::lostBlink; openAsEditor).
-    static bool read(const QString& path, AnsiDocument* out, QString* error);
+    // (Cell::lostBlink; openAsEditor). An .ans is read as `encoding`, or
+    // with none as its bytes say (detectEncoding); an XBIN or BIN ignores it.
+    static bool read(const QString& path, AnsiDocument* out, QString* error,
+                     std::optional<TextEncoding> encoding = {});
     // Replaces the document with `doc`, read from `path`, unmodified and
     // with an empty undo stack: one layer, "Background", holding its cells
     // (LayerStack::fromCanvas), and active. Its marked cells (from read) are
@@ -113,10 +115,12 @@ public:
     static bool readProject(const QString& path, project::Project* out, QString* error);
     // Replaces the document with `project`, read from `path` in `form`: its
     // layer stack (next layer id included; the bottom layer active), iCE,
-    // SAUCE fields and extras, unmodified and with an empty undo stack. No
-    // cell counts as lost blink: a project holds none to lose.
+    // SAUCE fields, extras and .ans encoding (Project::ansEncoding),
+    // unmodified and with an empty undo stack. No cell counts as lost blink:
+    // a project holds none to lose.
     void replace(project::Project project, const QString& path, FileForm form);
-    // The document as a project: the layer stack, iCE, SAUCE and extras.
+    // The document as a project: the layer stack, iCE, SAUCE, extras and the
+    // encoding Save As writes an .ans in (textEncoding).
     project::Project project() const;
     // Marks the document modified, with no undo step to go back to its
     // unmodified state: one made rather than read (a scene opened as a
@@ -145,8 +149,9 @@ public:
     AnsiOutput encode(ArtFormat format = ArtFormat::Ansi, std::optional<TextEncoding> encoding = {}) const;
     // The text encoding Save writes an .ans in: what the document's .ans was
     // read as (AnsiDocument::encoding), then what save() last made its file
-    // in (AnsiOutput::encoding; CP437 for an XBIN or BIN). CP437 for a new
-    // document and a project.
+    // in (AnsiOutput::encoding; CP437 for an XBIN or BIN). A project's is the
+    // one it was saved with (Project::ansEncoding), which an export to an .ans
+    // doesn't change. CP437 for a new document.
     TextEncoding textEncoding() const { return doc_.encoding; }
     // Writes `out` (from encode()) to `path` all or nothing. Refuses to
     // write over a project (project::isProject), as the CLI does. When the
@@ -427,6 +432,9 @@ signals:
     void cursorRequested(bw::Cursor cursor);
     // The file behind the document or its form (form()) changed.
     void pathChanged(const QString& path);
+    // textEncoding() changed: on open, new or a save that made the file the
+    // document's in another encoding.
+    void encodingChanged();
     // save() or saveProject() wrote `path`, whether or not it is now the
     // document's file (an .ans exported from a project is not). The recent
     // list (recent_files.h) follows it.

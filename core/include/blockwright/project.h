@@ -4,7 +4,8 @@
 // layout (for git and other tools):
 //
 //   manifest.json      "format": "blockwright", "version": "1.3", the canvas
-//                      size, palette, iCE, IRC budget, SAUCE fields (font and
+//                      size, palette, iCE, IRC budget, the flat .ans form's
+//                      text encoding (only when UTF-8), SAUCE fields (font and
 //                      letter spacing among them), the layer order (ids,
 //                      bottom first) and the next layer id
 //   layers/<id>.json   the layer's properties (LayerProperties, its size;
@@ -169,6 +170,13 @@ struct Project {
     // FileSize is written as the content's. Without one, flatten writes a
     // fresh record.
     std::optional<Sauce> sauce;
+    // The text encoding of the project's flat .ans form (PLAN §8): what the
+    // .ans it was made from was read as (fromAnsi), or what the app last
+    // saved it in. The app's Save As .ans writes it unless told otherwise;
+    // the CLI, snapshots and Publish don't follow it (their .ans is CP437
+    // unless an option says). The manifest's "ansEncoding", "utf-8" or
+    // "cp437", written only when UTF-8; a project without it is CP437.
+    TextEncoding ansEncoding = TextEncoding::Cp437;
     IrcBudget ircBudget;
     std::string notes;               // notes.md
     std::vector<Snapshot> snapshots;  // by round, first first
@@ -185,11 +193,11 @@ struct Project {
 };
 
 // A flat file as a project: one Background layer (LayerStack::fromCanvas),
-// its SAUCE and iCE, opened as the editor opens it (openAsEditor, whose
+// its SAUCE, iCE and text encoding (ansEncoding), opened as the editor opens it (openAsEditor, whose
 // result goes to `opened`), so toAnsi writes it back as writeAnsi does.
 Project fromAnsi(const AnsiDocument& doc, Opened* opened = nullptr);
 // The project flattened through the compositor (bw::flatten) with its iCE
-// and SAUCE fields, each cell as it shows with the project's iCE (iceCell),
+// and SAUCE fields (and ansEncoding as the document's encoding), each cell as it shows with the project's iCE (iceCell),
 // as the editor saves: what exports and snapshots write with writeAnsi.
 AnsiDocument toAnsi(const Project& project);
 

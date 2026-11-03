@@ -499,6 +499,57 @@ TEST_CASE("a reader refuses another major version and reads a newer minor", "[pr
     CHECK_THROWS_AS(project::decode(e), ProjectError);
 }
 
+TEST_CASE("a project keeps the encoding of the .ans it was made from, and an old one is CP437", "[project][utf8]") {
+    Project p = everything();
+    CHECK(p.ansEncoding == TextEncoding::Cp437);
+    Entries e = project::encode(p);
+    // a CP437 project writes no key: its manifest is what an older build wrote
+    const QJsonObject cp437 = object(e.at("manifest.json"));
+    CHECK_FALSE(cp437.contains("ansEncoding"));
+    CHECK(project::decode(e).ansEncoding == TextEncoding::Cp437);
+
+    p.ansEncoding = TextEncoding::Utf8;
+    e = project::encode(p);
+    QJsonObject m = object(e.at("manifest.json"));
+    CHECK(m.value("ansEncoding").toString() == QStringLiteral("utf-8"));
+    // an optional key a reader of the same major ignores: no version bump
+    CHECK(m.value("version") == cp437.value("version"));
+    const Project back = project::decode(e);
+    CHECK(back.ansEncoding == TextEncoding::Utf8);
+    CHECK(back.layers == p.layers);
+
+    m["ansEncoding"] = "cp437";
+    e["manifest.json"] = json(m);
+    CHECK(project::decode(e).ansEncoding == TextEncoding::Cp437);
+    // a value this build doesn't know is a preference it can't follow: CP437,
+    // and the project opens with every cell it had
+    for (const char* unknown : {"latin1", "UTF-8", "utf-16", ""}) {
+        INFO(unknown);
+        m["ansEncoding"] = unknown;
+        e["manifest.json"] = json(m);
+        Project read;
+        REQUIRE_NOTHROW(read = project::decode(e));
+        CHECK(read.ansEncoding == TextEncoding::Cp437);
+        CHECK(read.layers == p.layers);
+    }
+    // the key is still a string when it is there: a malformed manifest is refused
+    for (const QJsonValue bad : {QJsonValue(1), QJsonValue(true), QJsonValue(QJsonValue::Null)}) {
+        INFO(json(QJsonObject{{"v", bad}}));
+        m["ansEncoding"] = bad;
+        e["manifest.json"] = json(m);
+        CHECK_THROWS_AS(project::decode(e), ProjectError);
+    }
+
+    // fromAnsi takes the .ans's encoding and toAnsi gives it back
+    AnsiDocument doc = parseAnsi("\xe2\x96\x88\r\n");
+    REQUIRE(doc.encoding == TextEncoding::Utf8);
+    const Project made = project::fromAnsi(doc);
+    CHECK(made.ansEncoding == TextEncoding::Utf8);
+    CHECK(project::toAnsi(made).encoding == TextEncoding::Utf8);
+    CHECK(project::fromAnsi(parseAnsi("\xdb\r\n")).ansEncoding == TextEncoding::Cp437);
+    CHECK(project::toAnsi(everything()).encoding == TextEncoding::Cp437);
+}
+
 TEST_CASE("decode refuses a manifest and layers that disagree", "[project]") {
     const Project p = everything();
     const Entries good = project::encode(p);

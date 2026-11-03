@@ -257,7 +257,7 @@ AnsiDocument oneRow(std::u32string glyphs) {
 
 } // namespace
 
-TEST_CASE("utf8Writable: everything but controls and surrogates", "[utf8]") {
+TEST_CASE("utf8Writable: everything but C0 and C1 controls and surrogates", "[utf8]") {
     CHECK(utf8Writable(U'\0'));  // written as a space
     CHECK(utf8Writable(U' '));
     CHECK(utf8Writable(U'~'));
@@ -271,6 +271,11 @@ TEST_CASE("utf8Writable: everything but controls and surrogates", "[utf8]") {
     CHECK_FALSE(utf8Writable(char32_t(0xD800)));
     CHECK_FALSE(utf8Writable(char32_t(0xDFFF)));
     CHECK_FALSE(utf8Writable(char32_t(0x110000)));
+    // C1: a terminal that honours them takes C2 9B for a CSI
+    for (char32_t c = 0x80; c <= 0x9f; ++c)
+        CHECK_FALSE(utf8Writable(c));
+    CHECK(utf8Writable(char32_t(0x7e)));
+    CHECK(utf8Writable(char32_t(0xa0)));  // NBSP, CP437 0xFF
 }
 
 TEST_CASE("every CP437 glyph survives a UTF-8 write and read", "[utf8]") {
@@ -384,6 +389,31 @@ TEST_CASE("UTF-8 writes controls, surrogates and NUL safely", "[utf8]") {
     const AnsiOutput nul = writeAnsi(oneRow(std::u32string{U'x', U'\0', U'y'}), TextEncoding::Utf8);
     CHECK(nul.unwritable.empty());
     CHECK(contentOf(nul).find("x y") != std::string::npos);
+}
+
+TEST_CASE("UTF-8 writes a C1 control as '?' and reports it, as the IRC export does", "[utf8]") {
+    // #328 review: U+009B went out as C2 9B, which xterm reads as a CSI
+    const std::string in = "\xe2\x96\x88\xc2\x9b" "31mX\xc2\x85\xc2\x80\xc2\x9f\xc2\xa0Y\r\n";
+    const AnsiDocument d = parseAs(in, TextEncoding::Utf8);
+    REQUIRE(d.canvas.at(1, 0).ch == char32_t(0x9b));
+    const AnsiOutput out = writeAnsi(d, TextEncoding::Utf8);
+    REQUIRE(out.unwritable.size() == 4);
+    CHECK(out.unwritable[0].x == 1);
+    CHECK(out.unwritable[0].ch == char32_t(0x9b));
+    CHECK(out.unwritable[1].ch == char32_t(0x85));
+    CHECK(out.unwritable[2].ch == char32_t(0x80));
+    CHECK(out.unwritable[3].ch == char32_t(0x9f));
+    CHECK(out.lossy());
+    const std::string content = contentOf(out);
+    CHECK(content.find("\xc2\x9b") == std::string::npos);
+    CHECK(content.find("\xc2\x85") == std::string::npos);
+    CHECK(content.find("\xc2\x80") == std::string::npos);
+    CHECK(content.find("\xc2\x9f") == std::string::npos);
+    // what is written reads back: the controls as '?', the rest kept
+    CHECK(content.find("\xe2\x96\x88?31mX???\xc2\xa0Y") != std::string::npos);
+    const AnsiDocument back = parseAnsi(out.bytes);
+    CHECK(back.encoding == TextEncoding::Utf8);
+    CHECK(row(back, 0, 10) == U"█?31mX???\u00a0");
 }
 
 TEST_CASE("the SAUCE of a UTF-8 .ans is the CP437 record", "[utf8][sauce]") {

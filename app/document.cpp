@@ -279,7 +279,7 @@ bool Document::load(const QString& path, QString* error) {
     return true;
 }
 
-bool Document::read(const QString& path, AnsiDocument* out, QString* error) {
+bool Document::read(const QString& path, AnsiDocument* out, QString* error, std::optional<TextEncoding> encoding) {
     if (QFileInfo(path).isDir()) {
         *error = tr("%1 is a directory").arg(path);
         return false;
@@ -300,7 +300,9 @@ bool Document::read(const QString& path, AnsiDocument* out, QString* error) {
     }
     try {
         const std::string_view bytes(data.constData(), size_t(data.size()));
-        *out = parseArt(bytes, artFormatOf(QFile::encodeName(path).toStdString(), bytes));
+        ParseOptions options;
+        options.encoding = encoding;
+        *out = parseArt(bytes, artFormatOf(QFile::encodeName(path).toStdString(), bytes), options);
     } catch (const AnsiError& e) {
         *error = QString::fromStdString(e.what());
         return false;
@@ -328,6 +330,7 @@ void Document::replace(project::Project p, const QString& path, FileForm form) {
     doc_ = AnsiDocument{};
     doc_.ice = p.ice;
     doc_.sauce = std::move(p.sauce);
+    doc_.encoding = p.ansEncoding;
     resetLayers(std::move(p.layers));
     extras_ = {std::move(p.ircBudget), std::move(p.notes), std::move(p.snapshots), std::move(p.files),
                std::move(p.fonts)};
@@ -338,6 +341,7 @@ void Document::replace(project::Project p, const QString& path, FileForm form) {
     emit layersChanged();
     emit activeLayerChanged(active_);
     emit pathChanged(path_);
+    emit encodingChanged();
     setModified(false);
 }
 
@@ -356,6 +360,7 @@ project::Project Document::project() const {
     p.snapshots = extras_.snapshots;
     p.files = extras_.files;
     p.fonts = extras_.fonts;
+    p.ansEncoding = doc_.encoding;
     return p;
 }
 
@@ -502,6 +507,7 @@ void Document::replace(AnsiDocument doc, const QString& path) {
     emit layersChanged();
     emit activeLayerChanged(active_);
     emit pathChanged(path_);
+    emit encodingChanged();
     setModified(false);
 }
 
@@ -521,6 +527,7 @@ void Document::clear(int width, int height, bool ice) {
     emit layersChanged();
     emit activeLayerChanged(active_);
     emit pathChanged(path_);
+    emit encodingChanged();
     setModified(false);
 }
 
@@ -570,7 +577,10 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         emit pathChanged(path_);
     }
     countLostBlink_ = false;  // the file written has no blink left to lose
-    doc_.encoding = out.encoding;  // and is read back in the encoding it was written in
+    if (doc_.encoding != out.encoding) {  // and is read back in the encoding it was written in
+        doc_.encoding = out.encoding;
+        emit encodingChanged();
+    }
     if (!xbin) {
         // nor a palette or font, now it is the document's file
         doc_.palette.reset();

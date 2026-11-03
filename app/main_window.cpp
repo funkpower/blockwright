@@ -44,15 +44,45 @@ namespace bw {
 
 namespace {
 
-const QString kFilter = QObject::tr("Blockwright projects and ANSI art (*.bwp *.ans *.xb *.bin);;Blockwright projects "
-                                    "(*.bwp);;ANSI art (*.ans);;XBIN (*.xb);;BIN (*.bin);;All files (*)");
+QString ansiFilter() { return QObject::tr("ANSI art (*.ans)"); }
+QString utf8AnsiFilter() { return QObject::tr("ANSI art, UTF-8 (*.ans)"); }
+QString cp437OpenFilter() { return QObject::tr("ANSI art, CP437 (*.ans)"); }
+QString utf8OpenFilter() { return utf8AnsiFilter(); }
 
 } // namespace
 
+QStringList openNameFilters() {
+    return {QObject::tr("Blockwright projects and ANSI art (*.bwp *.ans *.xb *.bin)"),
+            QObject::tr("Blockwright projects (*.bwp)"),
+            ansiFilter(),
+            cp437OpenFilter(),
+            utf8OpenFilter(),
+            QObject::tr("XBIN (*.xb)"),
+            QObject::tr("BIN (*.bin)"),
+            QObject::tr("All files (*)")};
+}
+
+std::optional<TextEncoding> openFilterEncoding(const QString& filter) {
+    if (filter == cp437OpenFilter())
+        return TextEncoding::Cp437;
+    if (filter == utf8OpenFilter())
+        return TextEncoding::Utf8;
+    return std::nullopt;
+}
+
 QString lossDescription(const AnsiOutput& out) {
     QStringList parts;
-    const int controls = ansControlCount(out.unwritable);
-    if (const int n = int(out.unwritable.size()) - controls)
+    // UTF-8 holds every glyph, so what it can't write is a control character
+    // (C0, DEL or C1) a cell holds, never a glyph CP437 lacks.
+    const bool utf8 = out.encoding == TextEncoding::Utf8;
+    const int controls = utf8 ? 0 : ansControlCount(out.unwritable);
+    if (utf8 && !out.unwritable.empty())
+        parts << plural(int(out.unwritable.size()),
+                        QObject::tr("%n cell holds a control character a UTF-8 .ans can't hold and will be written "
+                                    "as '?'"),
+                        QObject::tr("%n cells hold control characters a UTF-8 .ans can't hold and will be written "
+                                    "as '?'"));
+    else if (const int n = int(out.unwritable.size()) - controls)
         parts << plural(n, QObject::tr("%n cell holds a glyph with no CP437 code and will be written as '?'"),
                         QObject::tr("%n cells hold a glyph with no CP437 code and will be written as '?'"));
     if (controls)
@@ -114,7 +144,26 @@ QString saveWarning(const AnsiOutput& out, bool project, ArtFormat format) {
                            : format == ArtFormat::Xbin ? QObject::tr("Before saving as XBIN:")
                            : format == ArtFormat::Bin  ? QObject::tr("Before saving as BIN:")
                                                        : QObject::tr("Before saving as .ans:");
-    return QObject::tr("%1\n%2.\n\nSave anyway?").arg(before, lossDescription(out));
+    QString hint;
+    // A CP437 .ans that loses glyphs a UTF-8 one would hold says so.
+    if (!project && format == ArtFormat::Ansi && out.encoding == TextEncoding::Cp437) {
+        const auto kept = std::count_if(out.unwritable.begin(), out.unwritable.end(),
+                                        [](const Unwritable& u) { return utf8Writable(u.ch); });
+        // No hint at all when nothing lost would survive: a save that only
+        // drops blink, a palette or a font gains nothing from UTF-8.
+        if (kept > 0) {
+            const QString keeps =
+                kept == std::ptrdiff_t(out.unwritable.size())
+                    ? plural(int(kept), QObject::tr("A UTF-8 .ans keeps that cell's glyph"),
+                             QObject::tr("A UTF-8 .ans keeps all %n of those glyphs"))
+                    : plural(int(kept), QObject::tr("A UTF-8 .ans keeps the glyph of %n of those cells"),
+                             QObject::tr("A UTF-8 .ans keeps the glyphs of %n of those cells"));
+            // Its own paragraph after the loss list, which ends in its own full stop.
+            hint = QStringLiteral("\n\n") +
+                   QObject::tr("%1: Save As and choose \"%2\".").arg(keeps, utf8AnsiFilter());
+        }
+    }
+    return QObject::tr("%1\n%2.%3\n\nSave anyway?").arg(before, lossDescription(out), hint);
 }
 
 SavePath resolveSavePath(const QString& chosen, const QString& suffix) {
@@ -124,12 +173,6 @@ SavePath resolveSavePath(const QString& chosen, const QString& suffix) {
     return {path, QFileInfo::exists(path)};
 }
 
-namespace {
-
-QString ansiFilter() { return QObject::tr("ANSI art (*.ans)"); }
-QString utf8AnsiFilter() { return QObject::tr("ANSI art, UTF-8 (*.ans)"); }
-
-} // namespace
 
 std::optional<TextEncoding> saveFilterEncoding(const QString& filter) {
     if (filter == ansiFilter())
@@ -218,6 +261,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     glyphSetLabel_ = new QLabel;
     glyphSetLabel_->setObjectName(QStringLiteral("glyphSetLabel"));
     statusBar()->addPermanentWidget(glyphSetLabel_);
+    encodingLabel_ = new QLabel;
+    encodingLabel_->setObjectName(QStringLiteral("encodingLabel"));
+    encodingLabel_->setToolTip(tr("The text encoding Save writes an .ans in"));
+    statusBar()->addPermanentWidget(encodingLabel_);
     status_ = new QLabel;
     statusBar()->addPermanentWidget(status_);
 
@@ -230,6 +277,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(&doc_, &Document::formatChanged, this, &MainWindow::formatChanged);
     connect(&doc_, &Document::modifiedChanged, this, &MainWindow::updateTitle);
     connect(&doc_, &Document::pathChanged, this, &MainWindow::updateTitle);
+    connect(&doc_, &Document::pathChanged, this, &MainWindow::updateEncoding);
+    connect(&doc_, &Document::encodingChanged, this, &MainWindow::updateEncoding);
     connect(&doc_, &Document::fileWritten, this, [](const QString& path) { addRecentFile(path); });
     connect(view_, &CanvasView::cursorMoved, this, [this] {
         const QRect r = view_->toWidget(view_->cellRect(view_->cellCursor()));
@@ -273,6 +322,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     for (QAction* set : std::as_const(glyphSetActions_))
         connect(set, &QAction::changed, this, &MainWindow::updateGlyphSet);
     updateTitle();
+    updateEncoding();
     updateStatus();
     updateGlyphSet();
     resize(initialSize(screen()->availableGeometry().size()));
@@ -313,6 +363,17 @@ void MainWindow::createActions() {
     openRecentMenu_->setObjectName(QStringLiteral("openRecent"));
     connect(openRecentMenu_, &QMenu::aboutToShow, this, &MainWindow::fillRecentMenu);
     fillRecentMenu();
+    reopenMenu_ = file->addMenu(tr("Reopen with Encodin&g"));
+    reopenMenu_->setObjectName(QStringLiteral("reopenWithEncoding"));
+    const std::pair<const char*, std::optional<TextEncoding>> reopen[] = {
+        {"reopenAuto", std::nullopt}, {"reopenCp437", TextEncoding::Cp437}, {"reopenUtf8", TextEncoding::Utf8}};
+    for (const auto& [name, enc] : reopen) {
+        const QString text = !enc                          ? tr("&Auto (as its bytes say)")
+                             : *enc == TextEncoding::Cp437 ? tr("&CP437")
+                                                           : tr("&UTF-8");
+        a = reopenMenu_->addAction(text, this, [this, enc] { reopenWithEncoding(enc); });
+        a->setObjectName(QLatin1String(name));
+    }
     a = file->addAction(tr("Star&t Screen..."), this, &MainWindow::showStartScreen);
     a->setObjectName(QStringLiteral("startScreen"));
     a = file->addAction(tr("&Save"), this, &MainWindow::save);
@@ -521,7 +582,7 @@ void MainWindow::canvasReset() {
     updateStatus();
 }
 
-bool MainWindow::openFile(const QString& path, QString* error) {
+bool MainWindow::openFile(const QString& path, QString* error, std::optional<TextEncoding> encoding) {
     if (project::isProject(QFile::encodeName(path).toStdString()) || fileFormFor(path) != FileForm::Ansi) {
         if (!openProject(path, error))
             return false;
@@ -529,7 +590,7 @@ bool MainWindow::openFile(const QString& path, QString* error) {
         return true;
     }
     AnsiDocument candidate;
-    if (!Document::read(path, &candidate, error))
+    if (!Document::read(path, &candidate, error, encoding))
         return false;
     // Let the renderer take the new canvas before the document does, so a
     // canvas too large to display leaves the open one as it was. setCanvas
@@ -601,9 +662,30 @@ void MainWindow::open() {
     if (!maybeSave())
         return;
     const QString dir = doc_.path().isEmpty() ? QString() : QFileInfo(doc_.path()).absolutePath();
-    const QString path = QFileDialog::getOpenFileName(promptParent(), tr("Open"), dir, kFilter);
+    QString filter;
+    const QString path = QFileDialog::getOpenFileName(promptParent(), tr("Open"), dir,
+                                                      openNameFilters().join(QStringLiteral(";;")), &filter);
     if (!path.isEmpty())
-        openInteractive(path);
+        openInteractive(path, openFilterEncoding(filter));
+}
+
+void MainWindow::reopenWithEncoding(std::optional<TextEncoding> encoding) {
+    if (!reopenable() || !maybeSave())
+        return;
+    // maybeSave may have saved it elsewhere: reopen the file it is now
+    if (reopenable())
+        openInteractive(doc_.path(), encoding);
+}
+
+bool MainWindow::reopenable() const {
+    return doc_.form() == FileForm::Ansi && !doc_.path().isEmpty() &&
+           artFormatFor(QFile::encodeName(doc_.path()).toStdString()) == ArtFormat::Ansi;
+}
+
+void MainWindow::updateEncoding() {
+    encodingLabel_->setText(doc_.textEncoding() == TextEncoding::Utf8 ? tr("UTF-8") : tr("CP437"));
+    if (reopenMenu_)
+        reopenMenu_->setEnabled(reopenable());
 }
 
 void MainWindow::openRequested(const QString& path) {
@@ -611,9 +693,9 @@ void MainWindow::openRequested(const QString& path) {
         openInteractive(path);
 }
 
-void MainWindow::openInteractive(const QString& path) {
+void MainWindow::openInteractive(const QString& path, std::optional<TextEncoding> encoding) {
     QString error;
-    if (openFile(path, &error))
+    if (openFile(path, &error, encoding))
         return;
     // On the heap: at launch its parent is the start screen, which a file
     // the system hands the app while the box is up closes and deletes.

@@ -139,7 +139,8 @@ struct AnsiOutput {
 // glyph is written as UTF-8: one of 0x20-0x7E as its byte, NUL as a space,
 // anything else utf8Writable takes as its code point's sequence (so every
 // CP437 glyph, ○ ◙ ♪ → ← included, and any code point CP437 lacks), and
-// the rest as '?', listed in `unwritable`. The content starts with a byte
+// the rest (C0 and C1 controls, DEL, surrogates) as '?', listed in
+// `unwritable`. The content starts with a byte
 // order mark only when it would not be read back as UTF-8 without one
 // (detectEncoding: no sequence of three bytes or more), so parseAnsi of the
 // bytes always gives the cells back, read as UTF-8. SAUCE's text fields stay
@@ -148,9 +149,11 @@ struct AnsiOutput {
 AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding = TextEncoding::Cp437);
 
 // Whether writeAnsi writes `ch` as itself in a UTF-8 .ans: NUL (a blank),
-// 0x20-0x7E, and every Unicode scalar value from U+0080 up (no surrogate,
+// 0x20-0x7E, and every Unicode scalar value from U+00A0 up (no surrogate,
 // nothing past U+10FFFF). The other C0 controls and DEL are not: a byte
-// under 0x80 reads back as its CP437 glyph or acts as a control.
+// under 0x80 reads back as its CP437 glyph or acts as a control. Nor are
+// the C1 controls U+0080-U+009F, which a terminal that honours them acts on
+// (C2 9B is a CSI), as the IRC export writes them as '?'.
 bool utf8Writable(char32_t ch);
 
 // The iCE colours writeAnsi, writeXbin and writeBin write `doc` with: its

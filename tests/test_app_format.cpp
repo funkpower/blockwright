@@ -10,6 +10,7 @@
 #include "blockwright/brushes/form.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/brushes/soft.h"
+#include "blockwright/project.h"
 #include "blockwright/ramp.h"
 
 #include "canvas_view.h"
@@ -27,9 +28,11 @@
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QTemporaryDir>
@@ -92,6 +95,18 @@ QString writeIceOff(const QTemporaryDir& tmp, const char* name, const std::strin
     const std::string bytes = body + encodeSauce(s, std::uint32_t(body.size()));
     REQUIRE(f.write(bytes.data(), qint64(bytes.size())) == qint64(bytes.size()));
     return path;
+}
+
+// Answers the next message box with `button`; `asked` says one came.
+void answer(QWidget* context, QMessageBox::StandardButton button, bool* asked) {
+    *asked = false;
+    QTimer::singleShot(0, context, [=] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!box)
+            return;
+        *asked = true;
+        box->button(button)->click();
+    });
 }
 
 QString saveTo(MainWindow& w, const QTemporaryDir& tmp, const char* name) {
@@ -1412,4 +1427,279 @@ TEST_CASE("UTF-8 saves glyphs a CP437 save loses, with no warning", "[app][utf8]
     QFile f(path);
     REQUIRE(f.open(QIODevice::ReadOnly));
     CHECK(f.readAll().contains("\xE2\x98\x85\xE2\x96\x88"));
+}
+
+namespace {
+
+std::string fileBytes(const QString& path) {
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll().toStdString() : std::string();
+}
+
+} // namespace
+
+TEST_CASE("File > Open's filters pick the encoding an .ans is read as", "[app][utf8]") {
+    const QStringList filters = openNameFilters();
+    REQUIRE(filters.size() == 8);
+    CHECK(filters[2] == QStringLiteral("ANSI art (*.ans)"));
+    CHECK(filters[3] == QStringLiteral("ANSI art, CP437 (*.ans)"));
+    CHECK(filters[4] == QStringLiteral("ANSI art, UTF-8 (*.ans)"));
+    CHECK(openFilterEncoding(filters[3]) == TextEncoding::Cp437);
+    CHECK(openFilterEncoding(filters[4]) == TextEncoding::Utf8);
+    for (const int i : {0, 1, 2, 5, 6, 7}) {
+        INFO(filters[i].toStdString());
+        CHECK_FALSE(openFilterEncoding(filters[i]).has_value());
+    }
+    CHECK_FALSE(openFilterEncoding(QString()).has_value());
+
+    const QString utf8Path = QString::fromStdString((bwtest::dataDir() / "utf8/tux-utf8.ans").string());
+    const AnsiDocument cp437 = parseAnsi(bwtest::readFile((bwtest::dataDir() / "golden/tux.ans").string()));
+    MainWindow w;
+    QString error;
+    // auto: the bytes say UTF-8
+    REQUIRE(w.openFile(utf8Path, &error));
+    CHECK(w.document()->textEncoding() == TextEncoding::Utf8);
+    CHECK(w.document()->canvas() == cp437.canvas);
+    CHECK(w.encodingLabel()->text() == QStringLiteral("UTF-8"));
+    // told CP437, each byte is a glyph: the canvas is the mojibake CP437 draws
+    REQUIRE(w.openFile(utf8Path, &error, TextEncoding::Cp437));
+    CHECK(w.document()->textEncoding() == TextEncoding::Cp437);
+    CHECK(w.document()->canvas() == parseAnsi(bwtest::readFile(utf8Path.toStdString()), {.encoding = TextEncoding::Cp437}).canvas);
+    CHECK_FALSE(w.document()->canvas() == cp437.canvas);
+    CHECK(w.encodingLabel()->text() == QStringLiteral("CP437"));
+    // and saved, it writes those bytes back, as CP437
+    QTemporaryDir tmp;
+    const QString out = tmp.filePath(QStringLiteral("mojibake.ans"));
+    REQUIRE(w.saveFile(out, &error));
+    CHECK(parseAnsi(fileBytes(out)).encoding == TextEncoding::Cp437);
+}
+
+TEST_CASE("File > Reopen with Encoding reads the document's .ans again", "[app][utf8]") {
+    const QString utf8Path = QString::fromStdString((bwtest::dataDir() / "utf8/tux-utf8.ans").string());
+    const AnsiDocument cp437 = parseAnsi(bwtest::readFile((bwtest::dataDir() / "golden/tux.ans").string()));
+    MainWindow w;
+    auto* menu = w.findChild<QMenu*>(QStringLiteral("reopenWithEncoding"));
+    REQUIRE(menu);
+    CHECK(menuOf(w, menu->menuAction()) == QStringLiteral("File"));
+    CHECK_FALSE(menu->isEnabled());  // a new document has no file to read again
+
+    QString error;
+    REQUIRE(w.openFile(utf8Path, &error));
+    CHECK(menu->isEnabled());
+    action(w, "reopenCp437")->trigger();
+    CHECK(w.document()->path() == utf8Path);
+    CHECK(w.document()->textEncoding() == TextEncoding::Cp437);
+    CHECK_FALSE(w.document()->canvas() == cp437.canvas);
+    CHECK(w.encodingLabel()->text() == QStringLiteral("CP437"));
+    CHECK_FALSE(w.isWindowModified());
+    action(w, "reopenUtf8")->trigger();
+    CHECK(w.document()->textEncoding() == TextEncoding::Utf8);
+    CHECK(w.document()->canvas() == cp437.canvas);
+    action(w, "reopenCp437")->trigger();
+    action(w, "reopenAuto")->trigger();
+    CHECK(w.document()->textEncoding() == TextEncoding::Utf8);
+    CHECK(w.encodingLabel()->text() == QStringLiteral("UTF-8"));
+
+    // an XBIN and a project have no text encoding to choose
+    QTemporaryDir tmp;
+    const QString xb = tmp.filePath(QStringLiteral("tux.xb"));
+    REQUIRE(w.saveFile(xb, &error));
+    CHECK(w.document()->path() == xb);
+    CHECK_FALSE(menu->isEnabled());
+    action(w, "reopenUtf8")->trigger();  // does nothing
+    CHECK(w.document()->path() == xb);
+    const QString bwp = tmp.filePath(QStringLiteral("tux.bwp"));
+    REQUIRE(w.saveFile(bwp, &error));
+    CHECK(w.document()->form() == FileForm::ProjectZip);
+    CHECK_FALSE(menu->isEnabled());
+    w.document()->clear();
+    CHECK_FALSE(menu->isEnabled());
+}
+
+TEST_CASE("the status bar shows the encoding Save writes, through open, save, save-as and a project",
+          "[app][utf8]") {
+    const QString cp437Path = QString::fromStdString((bwtest::dataDir() / "golden/tux.ans").string());
+    const std::string utf8Bytes = bwtest::readFile((bwtest::dataDir() / "utf8/tux-utf8.ans").string());
+    MainWindow w;
+    QLabel* label = w.encodingLabel();
+    REQUIRE(label);
+    CHECK(label->objectName() == QStringLiteral("encodingLabel"));
+    CHECK(label->text() == QStringLiteral("CP437"));
+    QString error;
+    REQUIRE(w.openFile(cp437Path, &error));
+    CHECK(label->text() == QStringLiteral("CP437"));
+
+    QTemporaryDir tmp;
+    const QString u8 = tmp.filePath(QStringLiteral("tux-utf8.ans"));
+    REQUIRE(w.saveFile(u8, &error, false, TextEncoding::Utf8));  // Save As UTF-8
+    CHECK(label->text() == QStringLiteral("UTF-8"));
+    REQUIRE(w.saveFile(u8, &error));  // Save
+    CHECK(label->text() == QStringLiteral("UTF-8"));
+
+    // a project saved from it keeps UTF-8 for its next .ans, opened again too
+    const QString bwp = tmp.filePath(QStringLiteral("tux.bwp"));
+    REQUIRE(w.saveFile(bwp, &error));
+    CHECK(project::read(std::filesystem::path(bwp.toStdString())).ansEncoding == TextEncoding::Utf8);
+    CHECK(label->text() == QStringLiteral("UTF-8"));
+    MainWindow again;
+    REQUIRE(again.openFile(bwp, &error));
+    CHECK(again.document()->textEncoding() == TextEncoding::Utf8);
+    CHECK(again.encodingLabel()->text() == QStringLiteral("UTF-8"));
+    // an export to a CP437 .ans leaves the project's encoding as it was
+    again.document()->addLayer(LayerKind::Cells);
+    const QString cp = tmp.filePath(QStringLiteral("export.ans"));
+    REQUIRE(again.saveFile(cp, &error, false, TextEncoding::Cp437));
+    REQUIRE(again.document()->form() == FileForm::ProjectZip);
+    CHECK(again.document()->textEncoding() == TextEncoding::Utf8);
+    CHECK(again.encodingLabel()->text() == QStringLiteral("UTF-8"));
+    CHECK(parseAnsi(fileBytes(cp)).encoding == TextEncoding::Cp437);
+    // and one in the document's own encoding is the UTF-8 piece
+    const QString own = tmp.filePath(QStringLiteral("own.ans"));
+    REQUIRE(again.saveFile(own, &error));
+    CHECK(fileBytes(own) == utf8Bytes);
+
+    // Save As CP437 from the flat document, then New
+    REQUIRE(w.openFile(u8, &error));
+    REQUIRE(w.saveFile(tmp.filePath(QStringLiteral("back.ans")), &error, false, TextEncoding::Cp437));
+    CHECK(label->text() == QStringLiteral("CP437"));
+    REQUIRE(w.openFile(u8, &error));
+    CHECK(label->text() == QStringLiteral("UTF-8"));
+    w.document()->clear();
+    CHECK(label->text() == QStringLiteral("CP437"));
+}
+
+TEST_CASE("the loss warning words a UTF-8 save's '?' cells as controls, and a CP437 one points to UTF-8",
+          "[app][utf8]") {
+    AnsiDocument d;
+    d.canvas = Canvas(4, 1);
+    d.canvas.at(0, 0).ch = U'★';  // ★: no CP437 code, fine in UTF-8
+    d.canvas.at(1, 0).ch = U'\u0001';  // a C0 control: neither keeps it
+    d.canvas.at(2, 0).ch = U'\u0085';  // a C1 control: neither keeps it
+    d.canvas.at(3, 0).ch = U'○';  // ○: CP437 09, a TAB in .ans; fine in UTF-8
+
+    const AnsiOutput u8 = writeAnsi(d, TextEncoding::Utf8);
+    REQUIRE(u8.unwritable.size() == 2);
+    CHECK(lossDescription(u8) ==
+          QStringLiteral("2 cells hold control characters a UTF-8 .ans can't hold and will be written as '?'"));
+    CHECK_FALSE(lossDescription(u8).contains(QStringLiteral("CP437")));
+    CHECK_FALSE(saveWarning(u8).contains(QStringLiteral("UTF-8 .ans keeps")));
+    d.canvas.at(2, 0).ch = U' ';
+    CHECK(lossDescription(writeAnsi(d, TextEncoding::Utf8)) ==
+          QStringLiteral("1 cell holds a control character a UTF-8 .ans can't hold and will be written as '?'"));
+    d.canvas.at(2, 0).ch = U'\u0085';
+
+    // CP437 loses all four; UTF-8 would keep ★ and ○
+    const AnsiOutput cp = writeAnsi(d, TextEncoding::Cp437);
+    REQUIRE(cp.unwritable.size() == 4);
+    const QString warning = saveWarning(cp);
+    CHECK(warning.contains(QStringLiteral("glyph with no CP437 code")));
+    CHECK(warning.contains(QStringLiteral(
+        "A UTF-8 .ans keeps the glyphs of 2 of those cells: Save As and choose \"ANSI art, UTF-8 (*.ans)\".")));
+    CHECK(warning.endsWith(QStringLiteral("\n\nSave anyway?")));
+    // no hint for a project, an XBIN or BIN, or what UTF-8 can't keep either
+    CHECK_FALSE(saveWarning(cp, true).contains(QStringLiteral("UTF-8")));
+    CHECK_FALSE(saveWarning(cp, false, ArtFormat::Xbin).contains(QStringLiteral("UTF-8")));
+    CHECK_FALSE(saveWarning(cp, false, ArtFormat::Bin).contains(QStringLiteral("UTF-8")));
+    AnsiDocument controls;
+    controls.canvas = Canvas(1, 1);
+    controls.canvas.at(0, 0).ch = U'\u0001';
+    CHECK_FALSE(saveWarning(writeAnsi(controls, TextEncoding::Cp437)).contains(QStringLiteral("UTF-8")));
+
+    AnsiDocument star;
+    star.canvas = Canvas(2, 1);
+    star.canvas.at(0, 0).ch = U'★';
+    CHECK(saveWarning(writeAnsi(star)).contains(QStringLiteral("A UTF-8 .ans keeps that cell's glyph: Save As")));
+    star.canvas.at(1, 0).ch = U'☆';
+    CHECK(saveWarning(writeAnsi(star)).contains(QStringLiteral("A UTF-8 .ans keeps all 2 of those glyphs: Save As")));
+}
+
+TEST_CASE("a CP437 save lossy only by palette or blink gets no UTF-8 hint", "[app][utf8]") {
+    AnsiOutput palette;
+    palette.encoding = TextEncoding::Cp437;
+    palette.paletteDropped = true;
+    CHECK(saveWarning(palette) ==
+          QStringLiteral("Before saving as .ans:\nthe file's own palette is left out (only XBIN keeps one).\n\nSave anyway?"));
+    AnsiOutput blink;
+    blink.encoding = TextEncoding::Cp437;
+    blink.blinkDropped = 2;
+    CHECK_FALSE(saveWarning(blink).contains(QStringLiteral("UTF-8")));
+    CHECK(saveWarning(blink) ==
+          QStringLiteral("Before saving as .ans:\n2 cells lost their blink when the file was opened with iCE colours, "
+                         "and this save doesn't put it back.\n\nSave anyway?"));
+
+    // the XBIN with its own palette and font, opened in the app and saved as a CP437 .ans
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(QString::fromStdString((bwtest::dataDir() / "xbin/tux-palette-font.xb").string()), &error));
+    const AnsiOutput out = w.document()->encode(ArtFormat::Ansi);
+    REQUIRE(out.encoding == TextEncoding::Cp437);
+    REQUIRE(out.unwritable.empty());
+    CHECK(saveWarning(out) == QStringLiteral("Before saving as .ans:\nthe file's own palette is left out (only XBIN "
+                                             "keeps one);\nthe file's own font is left out (only XBIN keeps one)."
+                                             "\n\nSave anyway?"));
+}
+
+TEST_CASE("the UTF-8 hint is its own paragraph, for glyphs all kept, some kept and beside other losses",
+          "[app][utf8]") {
+    const QString hintEnd = QStringLiteral(": Save As and choose \"ANSI art, UTF-8 (*.ans)\".\n\nSave anyway?");
+    AnsiDocument d;
+    d.canvas = Canvas(2, 1);
+    d.canvas.at(0, 0).ch = U'★';  // no CP437 code, fine in UTF-8
+    CHECK(saveWarning(writeAnsi(d)) ==
+          QStringLiteral("Before saving as .ans:\n1 cell holds a glyph with no CP437 code and will be written as "
+                         "'?'.\n\nA UTF-8 .ans keeps that cell's glyph") + hintEnd);
+    d.canvas.at(1, 0).ch = U'☆';
+    CHECK(saveWarning(writeAnsi(d)) ==
+          QStringLiteral("Before saving as .ans:\n2 cells hold a glyph with no CP437 code and will be written as "
+                         "'?'.\n\nA UTF-8 .ans keeps all 2 of those glyphs") + hintEnd);
+
+    // a C1 control: no CP437 code, and no UTF-8 .ans holds it either
+    d.canvas.at(1, 0).ch = U'\u0085';
+    AnsiOutput some = writeAnsi(d);
+    REQUIRE(some.unwritable.size() == 2);
+    CHECK(saveWarning(some) ==
+          QStringLiteral("Before saving as .ans:\n2 cells hold a glyph with no CP437 code and will be written as "
+                         "'?'.\n\nA UTF-8 .ans keeps the glyph of 1 of those cells") + hintEnd);
+    // beside a loss UTF-8 doesn't help with, the list ends first
+    some.paletteDropped = true;
+    some.blinkDropped = 1;
+    CHECK(saveWarning(some) ==
+          QStringLiteral("Before saving as .ans:\n2 cells hold a glyph with no CP437 code and will be written as "
+                         "'?';\n1 cell lost its blink when the file was opened with iCE colours, and this save "
+                         "doesn't put it back;\nthe file's own palette is left out (only XBIN keeps one)."
+                         "\n\nA UTF-8 .ans keeps the glyph of 1 of those cells") + hintEnd);
+}
+
+TEST_CASE("Reopen with Encoding with unsaved edits: Cancel keeps the document, its edits and its encoding",
+          "[app][utf8]") {
+    const QString utf8Path = QString::fromStdString((bwtest::dataDir() / "utf8/tux-utf8.ans").string());
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(utf8Path, &error));
+    REQUIRE(w.document()->textEncoding() == TextEncoding::Utf8);
+    Cell x = w.document()->canvas().at(0, 0);
+    x.ch = U'★';
+    put(w.document(), 0, 0, x);
+    REQUIRE(w.document()->isModified());
+    const Canvas edited = w.document()->canvas();
+    const int undo = w.document()->undoStack()->count();
+
+    bool asked = false;
+    answer(&w, QMessageBox::Cancel, &asked);
+    action(w, "reopenCp437")->trigger();
+    CHECK(asked);
+    CHECK(w.document()->path() == utf8Path);
+    CHECK(w.document()->canvas() == edited);
+    CHECK(w.document()->isModified());
+    CHECK(w.document()->undoStack()->count() == undo);
+    CHECK(w.document()->textEncoding() == TextEncoding::Utf8);
+    CHECK(w.encodingLabel()->text() == QStringLiteral("UTF-8"));
+
+    // Discard drops the edit and reads the file again in the encoding picked
+    answer(&w, QMessageBox::Discard, &asked);
+    action(w, "reopenCp437")->trigger();
+    CHECK(asked);
+    CHECK(w.document()->textEncoding() == TextEncoding::Cp437);
+    CHECK_FALSE(w.document()->isModified());
+    CHECK(w.document()->canvas().at(0, 0).ch != U'★');
 }

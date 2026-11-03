@@ -158,6 +158,7 @@ int projectInfo(const std::string& path) {
               << "project:     " << (std::filesystem::is_directory(path) ? "directory" : "zip") << "\n"
               << "size:        " << s.width() << "x" << s.height() << "\n"
               << "ice:         " << (p.ice ? "on" : "off") << "\n"
+              << "encoding:    " << (p.ansEncoding == bw::TextEncoding::Utf8 ? "UTF-8" : "CP437") << "\n"
               << "irc budget:  " << p.ircBudget.bytes << " bytes (" << p.ircBudget.profile << ")\n"
               << "layers:      " << s.size() << " (next id " << s.nextId() << ")\n";
     // top first, as the layer panel lists them

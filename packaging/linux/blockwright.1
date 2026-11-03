@@ -16,6 +16,21 @@ It reads and writes ANSI (.ans with SAUCE), XBIN and BIN, exports IRC text
 with mIRC colour codes, and shows how many bytes each line of a piece takes
 as an IRC message.
 .PP
+An .ans may be CP437 or UTF-8.
+Open reads it as its bytes say, or as the encoding the
+.B "ANSI art, CP437"
+or
+.B "ANSI art, UTF-8"
+filter names;
+.B "File > Reopen with Encoding"
+reads the open .ans again as CP437 or UTF-8.
+The status bar shows the encoding Save writes the .ans in: the one it was
+opened or last saved in, and for a project the one it was saved with.
+Save As has a filter for each.
+A UTF-8 .ans keeps every glyph but control characters, which are written as
+.BR ? ;
+a CP437 save that would lose glyphs a UTF-8 one keeps says so.
+.PP
 A project (a .bwp zip or a project directory) keeps the layers, the
 generators and the saved rounds of a piece.
 With a file or project argument
