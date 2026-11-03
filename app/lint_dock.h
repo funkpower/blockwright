@@ -4,9 +4,11 @@
 // under every named ramp and the craft pairs (lint::craftPair), as the CLI
 // lints by default, or under one ramp, a finding to a row; activating a row asks
 // for the cell cursor at its cell. The IRC View dock shows the canvas as an
-// IRC client shows the exported lines (irc::ircView, renderIrcView): the
-// mIRC palette, the client's background where IRC drops cells, and a red
-// bar where a line over the budget is cut.
+// IRC client shows the lines File > Export IRC Text sends (irc::ircView,
+// renderIrcView): the cells as saved with the document's iCE setting
+// (irc::sentCanvas), the row meter's encoder options (View > IRC > Fit, Pad,
+// Swap Shades), the mIRC palette, the client's background where IRC drops
+// cells, and a red bar where a line over the budget is cut.
 //
 // Both follow the document a moment after each change (kRefreshDelayMs), and
 // only while they are shown: a hidden dock, or one in a tab behind another,
@@ -38,6 +40,7 @@ class QTreeWidget;
 namespace bw {
 
 class Document;
+class IrcMeter;
 
 inline constexpr int kRefreshDelayMs = 250;
 // How long a dock is behind before it says so: an edit that is caught up
@@ -162,7 +165,10 @@ private:
 class IrcViewDock : public FollowsDocument {
     Q_OBJECT
 public:
-    explicit IrcViewDock(Document* doc, QWidget* parent = nullptr);
+    // The view of `doc` sent with `meter`'s encoder options (IrcMeter::options),
+    // the ones Export writes with; a change to them (Fit, Pad, Swap Shades)
+    // refreshes the view as a new budget does.
+    IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent = nullptr);
 
     // The bytes a line may take before the view cuts it: the document's
     // budget (extras().ircBudget, View > IRC > Budget...), the one the row
@@ -180,6 +186,10 @@ protected:
     Work snapshot() override;
 
 private:
+    // Refreshes now if shown, else when next shown.
+    void follow();
+
+    IrcMeter* meter_;
     irc::View view_;
     QImage image_;
     QLabel* picture_;

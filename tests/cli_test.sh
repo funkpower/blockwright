@@ -472,7 +472,7 @@ expect "lint bad input" 1 'nope\.ans: No such file' -- "$cli" lint "$tmp/nope.an
 # naming the option and the command, and nothing written.
 declare -A owner=([--allow-lossy]="convert shade pack unpack snapshot" [--scale]=render [--font-width]=render
                   [--irc]="export render" [--budget]="export render" [--allow-over-budget]=export
-                  [--fit]=export [--pad]=export [--swap-shades]=export
+                  [--fit]="export render" [--pad]="export render" [--swap-shades]="export render"
                   [--ramp]="shade lint" [--darken]=shade [--steps]=shade [--box]="shade lint" [--ice]=shade
                   [--json]=lint)
 declare -A value=([--scale]=2 [--font-width]=9 [--budget]=60 [--ramp]=steel [--steps]=2 [--box]=0,0,1,1)

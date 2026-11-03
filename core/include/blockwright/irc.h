@@ -63,6 +63,15 @@ std::string encodeRow(std::span<const Cell> cells, const EncodeOptions& opts = {
 // in mIRC colours.
 std::vector<MircCell> mircRow(std::span<const Cell> cells);
 
+// A cell of the editor's canvas as it is sent: as it shows, and is saved,
+// with iCE colours `ice` (iceCell). With iCE off a bright background goes as
+// blink on its dark colour, which IRC shows as the dark colour. A
+// transparent cell is left as it is; the encoder draws it blank. The row
+// meter, File > Export IRC Text and the IRC View dock all send these.
+Cell sentCell(const Cell& c, bool ice);
+// The canvas with every cell as sentCell has it.
+Canvas sentCanvas(const Canvas& canvas, bool ice);
+
 // A canvas row as one IRC line, and how many of its cells fit changed.
 struct Line {
     std::string text;

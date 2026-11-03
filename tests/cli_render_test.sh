@@ -109,6 +109,25 @@ expect "render --irc bad budget text" 2 '--budget takes a positive number of byt
 expect "render --irc onto its input refused" 1 'not written: it is the input file' -- "$cli" render --irc "$piece" "$piece"
 if [[ -e $tmp/x.png ]]; then bad "a refused render --irc wrote $tmp/x.png"; else ok "refused renders --irc write nothing"; fi
 
+# render --irc takes export --irc's options and draws what export sends (#297)
+cat >"$tmp/mk_over.py" <<'EOF'
+import sys
+row = "".join(f"\x1b[0;{30+(x%7)+1};{40+(x*3)%8}m\xdb" if x%2 else f"\x1b[0;{30+(x%6)};4{(x+1)%8}m\xdf" for x in range(80))
+open(sys.argv[1],"wb").write((row+"\x1b[0m\r\n"+"\x1b[0;37;40m"+"A"*80+"\x1b[0m\r\n").encode("latin1"))
+EOF
+over=$tmp/over.ans
+python3 -I "$tmp/mk_over.py" "$over"
+expect "export --irc: the line is over" 3 '444 bytes' -- "$cli" export --irc "$over" "$tmp/over.txt"
+expect "render --irc cuts the line export sends" 0 '^IRC view: 1 row cut at 407 bytes$' -- "$cli" render --irc "$over" "$tmp/over.png"
+expect "render --irc --fit draws it fit" 0 '^IRC view: 0 rows cut at 407 bytes$' -- "$cli" render --irc --fit "$over" "$tmp/over-fit.png"
+if cmp -s "$tmp/over.png" "$tmp/over-fit.png"; then bad "render --irc --fit drew the unfit line"; else ok "render --irc --fit draws the fit line"; fi
+expect "render --irc --fit at a budget" 0 '^IRC view: 0 rows cut at 300 bytes$' -- "$cli" render --irc --fit --budget 300 "$over" "$tmp/over-300.png"
+expect "render --irc --pad --swap-shades" 0 '^IRC view: 1 row cut at 407 bytes$' -- "$cli" render --irc --pad --swap-shades "$over" "$tmp/over-pad.png"
+for opt in --fit --pad --swap-shades; do
+  expect "render $opt needs --irc" 2 "^blockwright-cli: $opt is a render --irc option\$" -- "$cli" render "$opt" "$over" "$tmp/x.png"
+done
+if [[ -e $tmp/x.png ]]; then bad "a refused render wrote $tmp/x.png"; else ok "refused render options write nothing"; fi
+
 # render never writes over its input, under any name; nothing is written
 same=$tmp/same && mkdir -p "$same/sub"
 cp "$piece" "$same/in.ans"

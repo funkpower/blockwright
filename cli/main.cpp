@@ -12,7 +12,8 @@
 //                         --ramp NAME|c,c,... [--light N|NE|...|NW] --box x0,y0,x1,y1 and/or
 //                         --mask <mask.ans> [--ice] [--allow-lossy] <in.ans> <out.ans>
 //   blockwright-cli lint [--ramp NAME|c,c,...]... [--box x0,y0,x1,y1] [--json] <in.ans>
-//   blockwright-cli render --irc [--budget N] [--scale N] [--font-width 8|9] <in.ans> <out.png>
+//   blockwright-cli render --irc [--budget N] [--fit] [--pad] [--swap-shades]
+//                          [--scale N] [--font-width 8|9] <in.ans|project> <out.png>
 //   blockwright-cli library list [dir]
 //   blockwright-cli library check <dir>
 //   blockwright-cli pack [--allow-lossy] <in.ans|project> <out.bwp>
@@ -454,24 +455,50 @@ int importScene(const std::string& scene, const std::string& out, const bw::gene
     return kOk;
 }
 
-// Writes the piece as IRC text and reports every line's size in bytes, as
-// the row encoder writes it with `opts`. The budget is `budget` if given,
-// else a project's own (project::IrcBudget), else EFnet / WeeChat's; with
-// `fit` the lines over it are fitted to it. A line still over the budget is
-// listed and nothing is written, unless allowOver.
-int exportIrc(const std::string& in, const std::string& out, std::optional<std::size_t> budget, bool fit,
-              bw::irc::EncodeOptions opts, bool allowOver) {
-    refuseSameFile(in, out);
+// The IRC options export --irc and render --irc take: --budget, --fit, --pad
+// and --swap-shades.
+struct IrcArgs {
+    std::optional<std::size_t> budget;
+    bool fit = false;
+    bw::irc::EncodeOptions opts;  // pad and swapShades; fit is set by ircSend
+};
+
+// What export --irc writes and render --irc shows, worked out in one place
+// so the two agree: the piece, the budget (`budget` if given, else a
+// project's own, project::IrcBudget, else EFnet / WeeChat's) and the encoder
+// options, with `fit` fitting to that budget.
+struct IrcSend {
     bw::AnsiDocument doc;
+    std::size_t budget = 0;
+    bw::irc::EncodeOptions opts;
+};
+
+IrcSend ircSend(const std::string& in, const IrcArgs& args) {
+    IrcSend s;
+    std::optional<std::size_t> budget = args.budget;
     if (bw::project::isProject(in)) {
         const bw::project::Project p = loadProject(in);
         budget = budget.value_or(p.ircBudget.bytes);
-        doc = bw::project::toAnsi(p);
+        s.doc = bw::project::toAnsi(p);
     } else {
-        doc = load(in);
+        s.doc = load(in);
     }
-    const std::size_t limit = budget.value_or(bw::irc::kEfnetWeechatBudget);
-    opts.fit = fit ? limit : 0;
+    s.budget = budget.value_or(bw::irc::kEfnetWeechatBudget);
+    s.opts = args.opts;
+    s.opts.fit = args.fit ? s.budget : 0;
+    return s;
+}
+
+// Writes the piece as IRC text and reports every line's size in bytes, as
+// the row encoder writes it with the options (ircSend). A line still over
+// the budget is listed and nothing is written, unless allowOver.
+int exportIrc(const std::string& in, const std::string& out, const IrcArgs& args, bool allowOver) {
+    refuseSameFile(in, out);
+    const IrcSend send = ircSend(in, args);
+    const bw::AnsiDocument& doc = send.doc;
+    const std::size_t limit = send.budget;
+    const bool fit = args.fit;
+    const bw::irc::EncodeOptions& opts = send.opts;
     std::vector<std::string> lines;
     std::size_t longest = 0, fitted = 0;
     int merged = 0;
@@ -543,11 +570,8 @@ bw::Ramp rampValue(const QString& s) {
     return r;
 }
 
-// --budget N for render --irc: a positive number of bytes; empty is the
-// EFnet / WeeChat budget.
+// --budget N for export --irc and render --irc: a positive number of bytes.
 std::size_t budgetValue(const QString& s) {
-    if (s.isEmpty())
-        return bw::irc::kEfnetWeechatBudget;
     bool ok = false;
     const qulonglong v = s.toULongLong(&ok);
     if (!ok || v == 0)
@@ -633,22 +657,26 @@ int shade(const std::string& in, const std::string& out, ShadeOptions o, const s
     return kOk;
 }
 
-// With `ircBudget`, the IRC view (irc_view.h) cut at that many bytes, and a
-// line on stdout saying how many rows the cut reaches.
+// With `irc`, the IRC view (irc_view.h) of the lines export --irc writes
+// with the same options (ircSend), cut at the budget, and a line on stdout
+// saying how many rows the cut reaches.
 int render(const std::string& in, const std::string& out, const bw::RenderOptions& opts,
-           std::optional<std::size_t> ircBudget) {
+           const std::optional<IrcArgs>& irc) {
     refuseSameFile(in, out);
-    const bw::AnsiDocument doc = load(in);
+    std::optional<IrcSend> send;
+    if (irc)
+        send = ircSend(in, *irc);
+    const bw::AnsiDocument doc = send ? send->doc : load(in);
     if (doc.sauce && doc.sauce->aspectRatio() == 1)
         std::cerr << "blockwright-cli: note: " << in
                   << ": SAUCE asks for the legacy (stretched) aspect ratio; the PNG has square pixels\n";
     QImage img;
     try {
-        if (ircBudget) {
-            const bw::irc::View view = bw::irc::ircView(doc.canvas, *ircBudget);
+        if (send) {
+            const bw::irc::View view = bw::irc::ircView(doc.canvas, send->budget, send->opts);
             img = bw::renderIrcView(view, bw::glyphWidth(doc, opts), opts.scale);
             const int cut = view.cutRows();
-            std::cout << "IRC view: " << cut << (cut == 1 ? " row" : " rows") << " cut at " << *ircBudget
+            std::cout << "IRC view: " << cut << (cut == 1 ? " row" : " rows") << " cut at " << send->budget
                       << " bytes\n";
         } else {
             img = bw::renderDocument(doc, opts);
@@ -862,22 +890,24 @@ int main(int argc, char** argv) {
     parser.addOption(ircOpt);
     const QCommandLineOption budgetOpt(
         QStringLiteral("budget"),
-        QStringLiteral("export --irc, render --irc: bytes a line may take (default: a project's own for export, else "
+        QStringLiteral("export --irc, render --irc: bytes a line may take (default: a project's own, else "
                        "%1, EFnet via WeeChat)")
             .arg(bw::irc::kEfnetWeechatBudget),
         QStringLiteral("bytes"));
     parser.addOption(budgetOpt);
     const QCommandLineOption fitOpt(
         QStringLiteral("fit"),
-        QStringLiteral("export --irc: fit lines over the budget by merging their least visible colours"));
+        QStringLiteral("export --irc, render --irc: fit lines over the budget by merging their least visible colours"));
     parser.addOption(fitOpt);
     const QCommandLineOption padOpt(
         QStringLiteral("pad"),
-        QStringLiteral("export --irc: keep trailing black cells and blank edge rows, ending rows on a black block"));
+        QStringLiteral("export --irc, render --irc: keep trailing black cells and blank edge rows, ending rows on a "
+                       "black block"));
     parser.addOption(padOpt);
     const QCommandLineOption swapShadesOpt(
         QStringLiteral("swap-shades"),
-        QStringLiteral("export --irc: let the encoder draw a shade as its opposite with the colours reversed"));
+        QStringLiteral("export --irc, render --irc: let the encoder draw a shade as its opposite with the colours "
+                       "reversed"));
     parser.addOption(swapShadesOpt);
     const QCommandLineOption overOpt(QStringLiteral("allow-over-budget"),
                                      QStringLiteral("export --irc: write even if a line is over the budget"));
@@ -973,7 +1003,8 @@ int main(int argc, char** argv) {
                   << "       | shade --form dome|cylinder|plane [--glint] | --despeckle | --rim --ramp R [--light N|NE|...|NW]\n"
                   << "         --box x0,y0,x1,y1 and/or --mask <mask> [--ice] [--allow-lossy] <in> <out>\n"
                   << "       | lint [--ramp R]... [--box x0,y0,x1,y1] [--json] <in>\n"
-                  << "       | render --irc [--budget N] [--scale N] [--font-width 8|9] <in> <out.png>\n"
+                  << "       | render --irc [--budget N] [--fit] [--pad] [--swap-shades] [--scale N] [--font-width 8|9]\n"
+                  << "         <in> <out.png>\n"
                   << "       | library list [dir] | library check <dir>\n"
                   << "       | pack <in> <out.bwp> | unpack <in> <dir> | snapshot [--allow-lossy] <project>\n"
                   << "       | add-generator [--name NAME] [--timeout S] <project> <dir>\n"
@@ -989,7 +1020,7 @@ int main(int argc, char** argv) {
     const std::pair<const QCommandLineOption*, std::vector<const char*>> owners[] = {
         {&lossyOpt, {"convert", "shade", "pack", "unpack", "snapshot"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
         {&ircOpt, {"export", "render"}},   {&budgetOpt, {"export", "render"}}, {&overOpt, {"export"}},
-        {&fitOpt, {"export"}},             {&padOpt, {"export"}},    {&swapShadesOpt, {"export"}},
+        {&fitOpt, {"export", "render"}},   {&padOpt, {"export", "render"}}, {&swapShadesOpt, {"export", "render"}},
         {&rampOpt, {"shade", "lint"}},     {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
         {&boxOpt, {"shade", "lint"}},      {&iceOpt, {"shade"}},     {&jsonOpt, {"lint"}},
         {&formOpt, {"shade"}},             {&glintOpt, {"shade"}},   {&despeckleOpt, {"shade"}},
@@ -1015,6 +1046,16 @@ int main(int argc, char** argv) {
                           " option, not a " + cmd.toStdString() + " option")
                              .c_str());
         }
+    // export --irc's and render --irc's options, read the same way for both.
+    const auto ircArgs = [&] {
+        IrcArgs a;
+        if (parser.isSet(budgetOpt))
+            a.budget = budgetValue(parser.value(budgetOpt));
+        a.fit = parser.isSet(fitOpt);
+        a.opts.pad = parser.isSet(padOpt);
+        a.opts.swapShades = parser.isSet(swapShadesOpt);
+        return a;
+    };
     try {
         if (cmd == QLatin1String("info")) {
             if (args.size() != 2)
@@ -1033,31 +1074,21 @@ int main(int argc, char** argv) {
             opts.scale = intValue(parser.value(scaleOpt), "scale", 1, bw::kMaxScale);
             if (parser.isSet(fontWidthOpt))
                 opts.fontWidth = intValue(parser.value(fontWidthOpt), "font-width", 8, 9);
-            std::optional<std::size_t> ircBudget;
-            if (parser.isSet(budgetOpt) && !parser.isSet(ircOpt))
-                return usage("--budget is a render --irc option");
+            if (!parser.isSet(ircOpt))
+                for (const QCommandLineOption* o : {&budgetOpt, &fitOpt, &padOpt, &swapShadesOpt})
+                    if (parser.isSet(*o))
+                        return usage(("--" + o->names().first().toStdString() + " is a render --irc option").c_str());
+            std::optional<IrcArgs> irc;
             if (parser.isSet(ircOpt))
-                ircBudget = budgetValue(parser.value(budgetOpt));
-            return render(args[1].toStdString(), args[2].toStdString(), opts, ircBudget);
+                irc = ircArgs();
+            return render(args[1].toStdString(), args[2].toStdString(), opts, irc);
         }
         if (cmd == QLatin1String("export")) {
             if (!parser.isSet(ircOpt))
                 return usage("export needs a format: --irc");
             if (args.size() != 3)
                 return usage("export takes an input and an output file");
-            std::optional<std::size_t> budget;
-            if (parser.isSet(budgetOpt)) {
-                bool ok = false;
-                const qulonglong v = parser.value(budgetOpt).toULongLong(&ok);
-                if (!ok || v == 0)
-                    return usage("--budget takes a positive number of bytes");
-                budget = static_cast<std::size_t>(v);
-            }
-            bw::irc::EncodeOptions opts;
-            opts.pad = parser.isSet(padOpt);
-            opts.swapShades = parser.isSet(swapShadesOpt);
-            return exportIrc(args[1].toStdString(), args[2].toStdString(), budget, parser.isSet(fitOpt), opts,
-                             parser.isSet(overOpt));
+            return exportIrc(args[1].toStdString(), args[2].toStdString(), ircArgs(), parser.isSet(overOpt));
         }
         if (cmd == QLatin1String("shade")) {
             if (!parser.isSet(rampOpt))

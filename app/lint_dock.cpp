@@ -1,6 +1,7 @@
 #include "lint_dock.h"
 
 #include "document.h"
+#include "irc_meter.h"
 #include "row_tree.h"
 
 #include "blockwright/irc_render.h"
@@ -199,8 +200,8 @@ void LintDock::showReport(lint::LintReport report) {
     summary_->setText(text);
 }
 
-IrcViewDock::IrcViewDock(Document* doc, QWidget* parent) :
-    FollowsDocument(doc, tr("Updating…"), parent), picture_(new QLabel), status_(new QLabel(this)) {
+IrcViewDock::IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent) :
+    FollowsDocument(doc, tr("Updating…"), parent), meter_(meter), picture_(new QLabel), status_(new QLabel(this)) {
     picture_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     auto* scroll = new QScrollArea(this);
     scroll->setWidget(picture_);
@@ -213,21 +214,28 @@ IrcViewDock::IrcViewDock(Document* doc, QWidget* parent) :
     lay->addWidget(scroll, 1);
     lay->addWidget(status_);
     lay->addWidget(staleLabel());
-    // open, New and replace come as Document::reset, which FollowsDocument
-    // follows; a new budget is redrawn at once, not after the edits' delay
-    connect(doc_, &Document::ircBudgetChanged, this, [this] {
-        if (shown())
-            refresh();
-        else
-            schedule();
-    });
+    // open, New and replace come as Document::reset, and an iCE change as
+    // Document::formatChanged, which FollowsDocument follows; a new budget or
+    // encoder option is redrawn at once, not after the edits' delay
+    connect(doc_, &Document::ircBudgetChanged, this, &IrcViewDock::follow);
+    connect(meter_, &IrcMeter::optionsChanged, this, &IrcViewDock::follow);
+}
+
+void IrcViewDock::follow() {
+    if (shown())
+        refresh();
+    else
+        schedule();
 }
 
 std::size_t IrcViewDock::budget() const { return doc_->extras().ircBudget.bytes; }
 
 FollowsDocument::Work IrcViewDock::snapshot() {
-    return [this, canvas = doc_->canvas(), budget = budget(), glyph = glyphWidth(doc_->ansi())]() -> Show {
-        auto view = std::make_shared<irc::View>(irc::ircView(canvas, budget));
+    // the cells and options Export sends (IrcMeter::lines): as saved with
+    // the document's iCE setting, with the row meter's options
+    return [this, canvas = doc_->canvas(), ice = doc_->ansi().ice, opts = meter_->options(), budget = budget(),
+            glyph = glyphWidth(doc_->ansi())]() -> Show {
+        auto view = std::make_shared<irc::View>(irc::ircView(irc::sentCanvas(canvas, ice), budget, opts));
         QImage image = renderIrcView(*view, glyph);
         return [this, view, image, budget] {
             view_ = std::move(*view);

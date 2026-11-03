@@ -272,6 +272,16 @@ std::vector<MircCell> mircRow(std::span<const Cell> cells) {
     return raw;
 }
 
+Cell sentCell(const Cell& c, bool ice) { return c.transparent ? c : iceCell(c, ice); }
+
+Canvas sentCanvas(const Canvas& canvas, bool ice) {
+    Canvas out = canvas;
+    for (int y = 0; y < out.height(); ++y)
+        for (int x = 0; x < out.width(); ++x)
+            out.at(x, y) = sentCell(out.at(x, y), ice);
+    return out;
+}
+
 std::string encodeRow(std::span<const Cell> cells, const EncodeOptions& opts) {
     return encodeMircRow(mircRow(cells), opts.swapShades);
 }

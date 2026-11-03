@@ -69,7 +69,8 @@ public:
     void setPad(bool on);
     bool swapShades() const { return swapShades_; }
     void setSwapShades(bool on);
-    // The encoder options: with fit on, fit to the budget.
+    // The encoder options: with fit on, fit to the budget. The IRC View dock
+    // sends with these too.
     irc::EncodeOptions options() const;
 
     // Shows the meter in its gutter, or hides it and gives the room back.
@@ -95,6 +96,11 @@ public:
     std::vector<irc::Line> lines();
 
     QSize sizeHint() const override;
+
+signals:
+    // Fit, Pad or Swap Shades was turned on or off. (A new budget comes as
+    // Document::ircBudgetChanged.)
+    void optionsChanged();
 
 protected:
     bool event(QEvent* e) override;

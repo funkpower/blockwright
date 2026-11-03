@@ -27,6 +27,7 @@
 #include <QFile>
 #include <QLabel>
 #include <QMenu>
+#include <QProcess>
 #include <QSemaphore>
 #include <QSpinBox>
 #include <QTemporaryDir>
@@ -36,6 +37,9 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 using namespace bw;
 
@@ -151,6 +155,119 @@ bool postedUntil(F done, int ms = 2000) {
 // What the IRC View dock should show of the document now.
 QImage ircNow(const Document& doc) {
     return renderIrcView(irc::ircView(doc.canvas(), doc.extras().ircBudget.bytes), glyphWidth(doc.ansi()));
+}
+
+// An 80x5 piece in which each of View > IRC's encoder options and the iCE
+// setting changes what Export sends. Rows 0 and 4 are blank: an export drops
+// them unless padded. Row 1 is #297's: 444 bytes, over the 407-byte budget,
+// and 406 once fit. Row 2 is shades that swap shorter, then black cells that
+// pad keeps. Row 3 starts with four spaces on bright blue (9), which go as
+// dark blue (mIRC 2) with iCE off (#301). iCE is off.
+AnsiDocument sendPiece() {
+    AnsiDocument d;
+    d.canvas = Canvas(80, 5);
+    d.ice = false;
+    const auto set = [&](int x, int y, char32_t ch, int fg, int bg) {
+        Cell& c = d.canvas.at(x, y);
+        c.ch = ch;
+        c.fg = Color::indexed(std::uint8_t(fg));
+        c.bg = Color::indexed(std::uint8_t(bg));
+    };
+    // #297's row is in ANSI's colour order: its palette index
+    constexpr int ansi[] = {Black, Red, Green, Brown, Blue, Magenta, Cyan, Grey};
+    for (int x = 0; x < 80; ++x) {
+        if (x % 2)
+            set(x, 1, kFullBlock, ansi[x % 7 + 1], ansi[x * 3 % 8]);
+        else
+            set(x, 1, U'▀', ansi[x % 6], ansi[(x + 1) % 8]);
+    }
+    for (int x = 0; x < 40; ++x) {
+        if (x % 2)
+            set(x, 2, kShadeLight, Blue, Red);
+        else
+            set(x, 2, kShadeDark, Red, Blue);
+    }
+    for (int x = 0; x < 4; ++x)
+        set(x, 3, U' ', White, 9);
+    return d;
+}
+
+std::uint32_t rgbOf(const Color& c) {
+    REQUIRE_FALSE(c.isIndexed());
+    return std::uint32_t(c.rgb.r) << 16 | std::uint32_t(c.rgb.g) << 8 | c.rgb.b;
+}
+
+std::uint32_t mircRgbOf(std::uint8_t mirc, std::uint32_t client) {
+    return mirc == irc::kClientColour ? client : irc::kMircRgb[mirc];
+}
+
+std::vector<std::string> linesOf(const std::string& text) {
+    std::vector<std::string> out;
+    std::size_t from = 0;
+    for (std::size_t nl; (nl = text.find('\n', from)) != std::string::npos; from = nl + 1)
+        out.push_back(text.substr(from, nl - from));
+    REQUIRE(from == text.size());
+    return out;
+}
+
+// Checks that the view `v` shows `exported`, the lines an export wrote:
+// past the blank rows above and below the art, which the export drops and
+// the view marks trimmed, each row is the next line, as long as it, with its
+// cells shown as a client reads the line (irc::decodeLine) in the mIRC
+// palette up to where the budget cuts it. Returns how many rows are cut.
+int checkShowsExport(const irc::View& v, const std::vector<std::string>& exported) {
+    std::size_t next = 0;
+    int cut = 0;
+    for (int y = 0; y < int(v.rows.size()); ++y) {
+        INFO("row " << y);
+        const irc::ViewRow& row = v.rows[std::size_t(y)];
+        if (row.trimmed) {
+            CHECK(row.bytes == 0);
+            continue;
+        }
+        REQUIRE(next < exported.size());
+        const std::string& line = exported[next++];
+        CHECK(row.bytes == line.size());
+        const std::vector<irc::ShownCell> cells = irc::decodeLine(line);
+        CHECK(row.kept == int(cells.size()));
+        REQUIRE(row.shown <= int(cells.size()));
+        for (int x = 0; x < row.shown; ++x) {
+            INFO("cell " << x);
+            const Cell& c = v.canvas.at(x, y);
+            const irc::MircCell& m = cells[std::size_t(x)].cell;
+            CHECK(c.ch == m.ch);
+            CHECK(rgbOf(c.fg) == mircRgbOf(m.fg, irc::kClientForeground));
+            CHECK(rgbOf(c.bg) == mircRgbOf(m.bg, irc::kClientBackground));
+        }
+        cut += row.cut();
+    }
+    CHECK(next == exported.size());
+    return cut;
+}
+
+QAction* ircAction(MainWindow& w, const char* name) {
+    auto* a = w.findChild<QAction*>(QString::fromLatin1(name));
+    REQUIRE(a);
+    return a;
+}
+
+struct CliRun {
+    int status = -1;
+    QString out;
+};
+
+CliRun runCli(const QStringList& args) {
+    QProcess p;
+    p.start(QStringLiteral(BW_CLI), args);
+    REQUIRE(p.waitForFinished(60000));
+    REQUIRE(p.exitStatus() == QProcess::NormalExit);
+    return {p.exitCode(), QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError())};
+}
+
+QByteArray fileBytes(const QString& path) {
+    QFile f(path);
+    REQUIRE(f.open(QIODevice::ReadOnly));
+    return f.readAll();
 }
 
 } // namespace
@@ -372,6 +489,176 @@ TEST_CASE("the IRC View dock cuts at the document's budget, the row meter's") {
     const auto meterAt = items.indexOf(w.findChild<QAction*>(QStringLiteral("ircMeterShown")));
     REQUIRE(meterAt >= 0);
     CHECK(items.value(meterAt + 1) == w.ircViewDock()->toggleViewAction());
+}
+
+TEST_CASE("the IRC View dock shows the lines Export writes, with Fit, Pad, Swap Shades and iCE off") {
+    QTemporaryDir dir;
+    const QString txt = dir.filePath(QStringLiteral("sent.txt"));
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    doc->replace(sendPiece(), QString());
+    REQUIRE_FALSE(doc->ansi().ice);
+    IrcViewDock* irc = w.ircViewWidget();
+    IrcMeter* meter = w.ircMeter();
+    w.ircViewDock()->raise();
+    REQUIRE(waitFor([&] { return irc->shown(); }));
+
+    // Exports the piece and checks the dock, caught up, shows what was
+    // written; returns how many rows it cuts.
+    const auto showsExport = [&]() {
+        REQUIRE(waitFor([&] { return !irc->stale(); }));
+        QString error;
+        REQUIRE(w.exportIrcText(txt, &error, true));
+        const std::vector<std::string> sent = linesOf(fileBytes(txt).toStdString());
+        const int cut = checkShowsExport(irc->view(), sent);
+        CHECK(irc->view().cutRows() == cut);
+        CHECK(irc->image() == renderIrcView(irc->view(), glyphWidth(doc->ansi())));
+        return cut;
+    };
+
+    // nothing on: row 1 is over the budget and cut; the blank rows are dropped
+    CHECK(showsExport() == 1);
+    CHECK(irc->view().rows[1].bytes == 444);
+    CHECK(irc->view().rows[1].cut());
+    CHECK(irc->view().rows[0].trimmed);
+    CHECK(irc->view().rows[4].trimmed);
+    // iCE off: row 3's bright blue goes as dark blue, mIRC 2 (#301)
+    CHECK(rgbOf(irc->view().canvas.at(0, 3).bg) == irc::kMircRgb[2]);
+    CHECK(fileBytes(txt).split('\n').value(2).startsWith("\x03" "2,2    \x0f"));
+
+    // Fit: row 1 fit to 406 bytes and not cut, as the meter says (#297)
+    ircAction(w, "ircFit")->trigger();
+    REQUIRE(meter->fit());
+    CHECK(irc->stale());
+    CHECK(showsExport() == 0);
+    CHECK(irc->view().rows[1].bytes == 406);
+    CHECK(irc->view().rows[1].bytes == meter->bytes(1));
+    CHECK(meter->state(1) == IrcMeter::RowState::Merged);
+    CHECK(irc->statusLabel()->text() == QStringLiteral("Every line fits 407 bytes"));
+
+    // Pad: the blank rows are kept and row 2's black cells with them
+    const std::size_t unpadded = irc->view().rows[2].bytes;
+    ircAction(w, "ircPad")->trigger();
+    REQUIRE(meter->pad());
+    CHECK(irc->stale());
+    CHECK(showsExport() == 0);
+    CHECK_FALSE(irc->view().rows[0].trimmed);
+    CHECK_FALSE(irc->view().rows[4].trimmed);
+    CHECK(irc->view().rows[2].kept == 80);
+    CHECK(irc->view().rows[2].bytes > unpadded);
+
+    // Swap Shades: row 2 goes shorter
+    const std::size_t unswapped = irc->view().rows[2].bytes;
+    ircAction(w, "ircSwapShades")->trigger();
+    REQUIRE(meter->swapShades());
+    CHECK(irc->stale());
+    CHECK(showsExport() == 0);
+    CHECK(irc->view().rows[2].bytes < unswapped);
+    for (int y = 0; y < doc->canvas().height(); ++y) {
+        INFO("row " << y);
+        CHECK(irc->view().rows[std::size_t(y)].bytes == meter->bytes(y));
+    }
+
+    // iCE on: row 3 goes bright blue, mIRC 12, in the dock as in the export
+    REQUIRE(doc->setIce(true));
+    CHECK(irc->stale());
+    CHECK(showsExport() == 0);
+    CHECK(rgbOf(irc->view().canvas.at(0, 3).bg) == irc::kMircRgb[12]);
+
+    // and with each turned off again
+    for (const char* name : {"ircFit", "ircPad", "ircSwapShades"}) {
+        INFO(name);
+        ircAction(w, name)->trigger();
+        CHECK(irc->stale());
+        showsExport();
+    }
+    CHECK(irc->view().cutRows() == 1);
+}
+
+TEST_CASE("an encoder option turned on while the IRC View dock is hidden shows when it is next shown") {
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    doc->replace(sendPiece(), QString());
+    IrcViewDock* irc = w.ircViewWidget();
+    w.ircViewDock()->raise();
+    REQUIRE(waitFor([&] { return irc->shown(); }));
+    REQUIRE(waitFor([&] { return !irc->stale(); }));
+    CHECK(irc->view().cutRows() == 1);
+
+    w.lintDock()->raise();
+    REQUIRE(waitFor([&] { return !irc->shown(); }));
+    ircAction(w, "ircFit")->trigger();
+    CHECK(irc->stale());
+    w.ircViewDock()->raise();
+    REQUIRE(waitFor([&] { return !irc->stale(); }));
+    CHECK(irc->view().cutRows() == 0);
+}
+
+TEST_CASE("render --irc with export's options draws the IRC View dock, and both show what export --irc writes") {
+    QTemporaryDir dir;
+    // a project with its own budget, saved with iCE turned off: its bright
+    // blue goes as dark blue
+    const QString bwp = dir.filePath(QStringLiteral("sent.bwp"));
+    project::Project p = project::fromAnsi(sendPiece());
+    REQUIRE(p.ice);  // a bright background opens with iCE on
+    p.ice = false;
+    p.ircBudget = {std::string(irc::kCustomProfile), 380};
+    project::writeZip(p, std::filesystem::path(QFile::encodeName(bwp).toStdString()));
+
+    MainWindow w;
+    w.show();
+    QString error;
+    REQUIRE(w.openFile(bwp, &error));
+    Document* doc = w.document();
+    REQUIRE_FALSE(doc->ansi().ice);
+    IrcViewDock* irc = w.ircViewWidget();
+    w.ircViewDock()->raise();
+    REQUIRE(waitFor([&] { return irc->shown(); }));
+
+    const QString png = dir.filePath(QStringLiteral("view.png"));
+    const QString txt = dir.filePath(QStringLiteral("cli.txt"));
+    const QString appTxt = dir.filePath(QStringLiteral("app.txt"));
+    // the options turned on in the app one by one, the same flags to the CLI
+    const std::pair<const char*, QString> options[] = {
+        {nullptr, QString()},
+        {"ircFit", QStringLiteral("--fit")},
+        {"ircPad", QStringLiteral("--pad")},
+        {"ircSwapShades", QStringLiteral("--swap-shades")},
+    };
+    QStringList flags;
+    for (const auto& [action, flag] : options) {
+        if (action) {
+            ircAction(w, action)->trigger();
+            flags << flag;
+        }
+        INFO("flags: " << flags.join(QLatin1Char(' ')).toStdString());
+        REQUIRE(waitFor([&] { return !irc->stale(); }));
+
+        const CliRun render =
+            runCli(QStringList{QStringLiteral("render"), QStringLiteral("--irc")} + flags + QStringList{bwp, png});
+        INFO(render.out.toStdString());
+        REQUIRE(render.status == 0);
+        const int cut = irc->view().cutRows();
+        CHECK(render.out.contains(QStringLiteral("IRC view: %1 %2 cut at 380 bytes")
+                                      .arg(cut)
+                                      .arg(cut == 1 ? QStringLiteral("row") : QStringLiteral("rows"))));
+        QImage drawn(png);
+        REQUIRE_FALSE(drawn.isNull());
+        CHECK(drawn.convertToFormat(irc->image().format()) == irc->image());
+
+        const CliRun exported = runCli(QStringList{QStringLiteral("export"), QStringLiteral("--irc")} + flags +
+                                       QStringList{QStringLiteral("--allow-over-budget"), bwp, txt});
+        INFO(exported.out.toStdString());
+        REQUIRE(exported.status == 0);
+        REQUIRE(w.exportIrcText(appTxt, &error, true));
+        CHECK(fileBytes(txt) == fileBytes(appTxt));
+        CHECK(checkShowsExport(irc->view(), linesOf(fileBytes(txt).toStdString())) == cut);
+        CHECK(rgbOf(irc->view().canvas.at(0, 3).bg) == irc::kMircRgb[2]);
+    }
+    // fit at the project's 380 bytes leaves nothing cut
+    CHECK(irc->view().cutRows() == 0);
 }
 
 TEST_CASE("the Lint dock lints off the GUI thread: the window keeps going while it runs") {

@@ -150,7 +150,7 @@ void MainWindow::createDocks() {
 
     lint_ = new LintDock(&doc_);
     lintDock_ = dock(tr("Lint"), "lintDock", lint_);
-    ircView_ = new IrcViewDock(&doc_);
+    ircView_ = new IrcViewDock(&doc_, ircMeter_);
     ircViewDock_ = dock(tr("IRC View"), "ircViewDock", ircView_);
     // These panels' forms, lists and buttons otherwise add their minimum
     // heights across the right column. Keep the content's own minimums,

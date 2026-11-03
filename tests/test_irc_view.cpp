@@ -300,3 +300,39 @@ TEST_CASE("a 120-row piece fits the EFnet budget, and the view agrees with the l
         }
     }
 }
+
+TEST_CASE("a cell is sent as it shows with the document's iCE setting", "[irc][view]") {
+    // iCE off: a bright background is blink on its dark colour, and IRC
+    // shows the dark colour (#301)
+    const Cell bright = cell(U' ', White, LightBlue);
+    const Cell off = sentCell(bright, false);
+    CHECK(off.bg == Color::indexed(Blue));
+    CHECK(off.attrs & attr::Blink);
+    CHECK(sentCell(bright, true) == bright);
+    // iCE on: blink is a bright background
+    Cell blinking = cell(U' ', White, Blue);
+    blinking.attrs |= attr::Blink;
+    const Cell on = sentCell(blinking, true);
+    CHECK(on.bg == Color::indexed(LightBlue));
+    CHECK_FALSE(on.attrs & attr::Blink);
+    CHECK(sentCell(blinking, false) == blinking);
+    // a transparent cell is left alone
+    Cell clear = bright;
+    clear.transparent = true;
+    CHECK(sentCell(clear, false) == clear);
+    CHECK(sentCell(clear, true) == clear);
+
+    Canvas canvas(4, 1);
+    for (int x = 0; x < 4; ++x)
+        canvas.at(x, 0) = bright;
+    canvas.at(3, 0) = clear;
+    const Canvas sent = sentCanvas(canvas, false);
+    for (int x = 0; x < 4; ++x)
+        CHECK(sent.at(x, 0) == sentCell(canvas.at(x, 0), false));
+    CHECK(sentCanvas(canvas, true).at(0, 0) == bright);
+
+    // the view of the sent canvas shows mIRC 2 where the canvas has 12
+    CHECK(rgb(ircView(sent).canvas.at(0, 0).bg) == kMircRgb[2]);
+    CHECK(rgb(ircView(canvas).canvas.at(0, 0).bg) == kMircRgb[12]);
+    CHECK(encodeCanvas(sent) == encodeCanvas(sentCanvas(sent, false)));
+}

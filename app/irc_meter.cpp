@@ -21,14 +21,6 @@
 
 namespace bw {
 
-namespace {
-
-// A cell as the document saves it: with iCE off a bright background is
-// written as blink on the dark colour, which IRC shows as the dark colour.
-Cell saved(const Cell& c, bool ice) { return c.transparent ? c : iceCell(c, ice); }
-
-} // namespace
-
 void GutterScrollArea::setGutter(QWidget* gutter, int width) {
     gutter_ = gutter;
     width_ = gutter ? width : 0;
@@ -74,6 +66,7 @@ void IrcMeter::setFit(bool on) {
     if (on != fit_) {
         fit_ = on;
         resetRows();
+        emit optionsChanged();
     }
 }
 
@@ -81,6 +74,7 @@ void IrcMeter::setPad(bool on) {
     if (on != pad_) {
         pad_ = on;
         resetRows();
+        emit optionsChanged();
     }
 }
 
@@ -88,6 +82,7 @@ void IrcMeter::setSwapShades(bool on) {
     if (on != swapShades_) {
         swapShades_ = on;
         resetRows();
+        emit optionsChanged();
     }
 }
 
@@ -122,7 +117,7 @@ const IrcMeter::Row& IrcMeter::row(int y) {
                 cells[std::size_t(c->x)] = c->after;
         const bool ice = doc_->ansi().ice;
         for (Cell& k : cells)
-            k = saved(k, ice);
+            k = irc::sentCell(k, ice);
         r = {encoded(irc::mircRow(cells)), true};
     }
     return r;
