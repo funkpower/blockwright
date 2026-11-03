@@ -147,6 +147,10 @@ add_test(NAME cli_scene
           ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-scene-tmp
           "${BW_ANSIDRAW_DIR}")
 set_tests_properties(cli_scene PROPERTIES ENVIRONMENT "${BW_CLI_ENV}" SKIP_RETURN_CODE 77)
+add_test(NAME cli_scene_fixed
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_scene_fixed_test.sh
+          ${BW_CLI_COMMAND} ${CMAKE_CURRENT_BINARY_DIR}/cli-scene-fixed-tmp)
+set_tests_properties(cli_scene_fixed PROPERTIES ENVIRONMENT "${BW_CLI_ENV}" SKIP_RETURN_CODE 77)
 add_test(NAME casefold
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/casefold_test.sh
           ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/casefold-tmp)

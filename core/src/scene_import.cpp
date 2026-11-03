@@ -34,22 +34,20 @@ std::optional<int> whole(const QJsonValue& v, int lo, int hi) {
     return int(d);
 }
 
-// The title as SAUCE bytes, or nothing when CP437 can't hold it or it is
-// too long for the field.
-std::optional<std::string> sauceTitle(const std::string& title) {
+} // namespace
+
+std::optional<std::string> sauceText(const std::string& text, std::size_t length) {
     std::string out;
-    for (const char32_t cp : QString::fromStdString(title).toUcs4()) {
+    for (const char32_t cp : QString::fromStdString(text).toUcs4()) {
         const std::optional<std::uint8_t> b = unicodeToCp437(cp);
         if (!b || *b < 0x20 || *b == 0x7f)
             return {};
         out += char(*b);
     }
-    if (out.empty() || out.size() > Sauce::kTitleLen)
+    if (out.empty() || out.size() > length)
         return {};
     return out;
 }
-
-} // namespace
 
 Listing parseListing(std::string_view json) {
     QJsonParseError err{};
@@ -70,6 +68,10 @@ Listing parseListing(std::string_view json) {
     if (!title.isString())
         fail("the scene's layer list has no title");
     l.title = title.toString().toStdString();
+    const QJsonValue ice = o.value(QStringLiteral("ice"));
+    if (!ice.isUndefined() && !ice.isBool())
+        fail("the scene's layer list has an \"ice\" that is neither true nor false");
+    l.ice = ice.toBool(true);
     const QJsonValue layers = o.value(QStringLiteral("layers"));
     if (!layers.isArray() || layers.toArray().isEmpty())
         fail("the scene's layer list names no layers");
@@ -195,9 +197,10 @@ project::Project importScene(const std::string& path, const generator::RunOption
     const Listing listing = list(python, scene.string(), options);
     project::Project p;
     p.layers = LayerStack(listing.width, listing.rows);
-    p.ice = true;
-    if (const std::optional<std::string> title = sauceTitle(listing.title)) {
+    p.ice = listing.ice;
+    if (const std::optional<std::string> title = sauceText(listing.title, Sauce::kTitleLen)) {
         p.sauce = Sauce::fresh(listing.width, listing.rows);
+        p.sauce->setIce(p.ice);
         p.sauce->title = *title;
     }
     for (std::size_t i = 0; i < listing.layers.size(); ++i) {
@@ -214,6 +217,33 @@ project::Project importScene(const std::string& path, const generator::RunOption
         }
     }
     return p;
+}
+
+void bake(project::Project& p) {
+    for (std::size_t i = 0; i < p.layers.size(); ++i) {
+        Layer& layer = p.layers[i];
+        if (layer.props.kind != LayerKind::Generator)
+            continue;
+        const std::string dir = generator::directory(layer.props.id);
+        layer = bw::bake(std::move(layer), p.ice);
+        for (auto it = p.files.lower_bound(dir); it != p.files.end() && it->first.starts_with(dir);)
+            it = p.files.erase(it);
+    }
+}
+
+void stamp(project::Project& p, const Stamp& s) {
+    if (!s.author && !s.date)
+        return;
+    if (!p.sauce) {
+        if (!s.record)
+            return;
+        p.sauce = Sauce::fresh(p.layers.width(), p.layers.height());
+        p.sauce->setIce(p.ice);
+    }
+    if (s.author)
+        p.sauce->author = *s.author;
+    if (s.date)
+        p.sauce->date = *s.date;
 }
 
 } // namespace bw::scene

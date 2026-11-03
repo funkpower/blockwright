@@ -6,8 +6,9 @@
 // The scene answers for itself (ansidraw's layer modes):
 //
 //   <python> -B scene.py --list-layers
-//       {"width": 80, "rows": 40, "title": "…",
+//       {"width": 80, "rows": 40, "title": "…", "ice": false,
 //        "layers": [{"name": "sky"}, {"name": "figure", "key": 13}, …]}
+//       ("ice" optional: true, iCE colours, when it is left out)
 //   <python> -B scene.py --layer-ans=NAME [--key=K]
 //       the layer's .ans: the layers below it drawn first, the cells it
 //       changed kept, every other cell a blank on palette colour K
@@ -115,14 +116,15 @@ struct SceneLayer {
 struct Listing {
     int width = 0, rows = 0;
     std::string title;
+    bool ice = true;  // the scene's iCE colours ("ice"; true when left out)
     std::vector<SceneLayer> layers;  // bottom first
 
     bool operator==(const Listing&) const = default;
 };
 
 // --list-layers' answer read strictly: a JSON object with "width" (1 to
-// kMaxColumns) and "rows" (1 to kMaxRows) whole, "title" a string, and
-// "layers" a non-empty list of objects, each with a non-empty "name" no
+// kMaxColumns) and "rows" (1 to kMaxRows) whole, "title" a string, "ice"
+// true, false or left out (true), and "layers" a non-empty list of objects, each with a non-empty "name" no
 // other has; the first without a "key", every other with a whole "key"
 // 0-15. Throws SceneError.
 Listing parseListing(std::string_view json);
@@ -140,7 +142,7 @@ Listing list(const PythonCommand& python, const std::string& scene, const genera
 // its name.
 using Progress = std::function<void(std::size_t index, std::size_t count, const std::string& name)>;
 
-// The scene at `path` as a new project: the listing's size, iCE on, its
+// The scene at `path` as a new project: the listing's size and iCE, its
 // title in SAUCE when CP437 can hold it, and a generator layer for each
 // scene layer (generator::add), run once for its cells. The scene runs
 // with `python`, or findPython()'s when it is empty. Throws SceneError for
@@ -148,5 +150,33 @@ using Progress = std::function<void(std::size_t index, std::size_t count, const 
 // refuse.
 project::Project importScene(const std::string& path, const generator::RunOptions& options = {},
                              const Progress& progress = {}, const PythonCommand& python = {});
+
+// `text` (UTF-8) as the bytes of a SAUCE text field at most `length` long,
+// or nothing when it is empty, too long, or holds a character CP437 has no
+// printable byte for (a control code or DEL included).
+std::optional<std::string> sauceText(const std::string& text, std::size_t length);
+
+// For a project that rebuilds byte for byte (#308): what import-scene's
+// --bake, --author and --date and SOURCE_DATE_EPOCH change in the project
+// a scene imports as.
+//
+// Every generator layer as a cells layer of the cells it last made
+// (bw::bake), its scripts/<id>/ files dropped. The project then no longer
+// names the scene or the Python, so the same scene imported from another
+// path is the same project; its layers can't be run again.
+void bake(project::Project& p);
+
+struct Stamp {
+    std::optional<std::string> author;  // SAUCE bytes (sauceText), at most Sauce::kAuthorLen
+    std::optional<std::string> date;    // CCYYMMDD (isSauceDate)
+    // A SAUCE record is made for them when the scene's title gave none;
+    // without this they only change a record the project already has.
+    bool record = false;
+};
+
+// Sets the author and the date of the project's SAUCE record, as `stamp`
+// gives them. A record it makes is Sauce::fresh's for the canvas, with the
+// project's iCE.
+void stamp(project::Project& p, const Stamp& stamp);
 
 } // namespace bw::scene

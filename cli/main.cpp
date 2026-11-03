@@ -21,7 +21,8 @@
 //   blockwright-cli snapshot [--allow-lossy] <project>
 //   blockwright-cli add-generator [--name NAME] [--timeout S] <project> <generator-dir>
 //   blockwright-cli run-generators [--layer ID]... [--timeout S] <project>
-//   blockwright-cli import-scene [--timeout S] <scene.py> <out.bwp|dir>
+//   blockwright-cli import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]
+//                                <scene.py> <out.bwp|dir>
 //
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
@@ -50,6 +51,7 @@
 #include "blockwright/logo_text.h"
 #include "blockwright/project.h"
 #include "blockwright/render.h"
+#include "blockwright/sauce.h"
 #include "blockwright/version.h"
 #include "blockwright/xbin.h"
 #include "generators.h"
@@ -451,11 +453,21 @@ int runGenerators(const std::string& path, const std::vector<bw::LayerId>& ids,
     return kOk;
 }
 
+// What import-scene's --bake, --author and --date (or SOURCE_DATE_EPOCH)
+// ask for, checked before the scene runs.
+struct SceneFix {
+    bool bake = false;
+    bw::scene::Stamp stamp;
+};
+
 // Opens the scene as a new project (scene::importScene), each scene layer a
 // generator layer run once, and writes it to `out`: a zip when its name
 // ends in .bwp, else a directory. Prints each layer as it runs. Nothing is
-// written over a file or a directory that isn't empty.
-int importScene(const std::string& scene, const std::string& out, const bw::generator::RunOptions& opts) {
+// written over a file or a directory that isn't empty. With `fix.bake` the
+// layers are written as cells, without their scripts; `fix.stamp` sets the
+// SAUCE author and date.
+int importScene(const std::string& scene, const std::string& out, const bw::generator::RunOptions& opts,
+                const SceneFix& fix) {
     namespace fs = std::filesystem;
     std::error_code ec;
     const bool directory = !QString::fromStdString(out).endsWith(QLatin1String(".bwp"), Qt::CaseInsensitive);
@@ -470,6 +482,9 @@ int importScene(const std::string& scene, const std::string& out, const bw::gene
     } catch (const bw::scene::SceneError& e) {
         throw Failure{scene + ": " + e.what() + "\n" + out + ": not written"};
     }
+    if (fix.bake)
+        bw::scene::bake(p);
+    bw::scene::stamp(p, fix.stamp);
     writeProject(p, out, directory);
     std::cout << p.layers.size() << (p.layers.size() == 1 ? " layer, " : " layers, ") << p.layers.width() << "x"
               << p.layers.height() << "\n";
@@ -900,7 +915,10 @@ int main(int argc, char** argv) {
         "                       directory that doesn't exist or is empty. This\n"
         "                       runs the scene with python3; on Windows with the\n"
         "                       first of py -3, python and python3 that is\n"
-        "                       Python 3\n\n"
+        "                       Python 3. To rebuild a project byte for byte:\n"
+        "                       --bake writes the layers as cells without the\n"
+        "                       scene's path, --author and --date set SAUCE's,\n"
+        "                       and SOURCE_DATE_EPOCH stands in for today\n\n"
         "Every command that reads an .ans also reads an XBIN (.xb) or BIN (.bin),\n"
         "and a project (a .bwp zip or a project directory) as its flattened\n"
         "composite. convert and shade write XBIN to an <out> named .xb and BIN\n"
@@ -1009,6 +1027,22 @@ int main(int argc, char** argv) {
             .arg(std::chrono::duration_cast<std::chrono::seconds>(bw::generator::kDefaultTimeout).count()),
         QStringLiteral("S"));
     parser.addOption(timeoutOpt);
+    const QCommandLineOption bakeOpt(
+        QStringLiteral("bake"),
+        QStringLiteral("import-scene: write each layer as the cells it made, without its script, so the project "
+                       "doesn't name the scene's path; its layers can't be run again"));
+    parser.addOption(bakeOpt);
+    const QCommandLineOption authorOpt(
+        QStringLiteral("author"),
+        QStringLiteral("import-scene: the SAUCE author, 1 to %1 CP437 characters").arg(bw::Sauce::kAuthorLen),
+        QStringLiteral("name"));
+    parser.addOption(authorOpt);
+    const QCommandLineOption dateOpt(
+        QStringLiteral("date"),
+        QStringLiteral("import-scene: the SAUCE date, a day as CCYYMMDD (default: SOURCE_DATE_EPOCH's day in UTC "
+                       "when it is set, else today)"),
+        QStringLiteral("CCYYMMDD"));
+    parser.addOption(dateOpt);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators or import-scene"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
@@ -1045,7 +1079,8 @@ int main(int argc, char** argv) {
                   << "       | pack <in> <out.bwp> | unpack <in> <dir> | snapshot [--allow-lossy] <project>\n"
                   << "       | add-generator [--name NAME] [--timeout S] <project> <dir>\n"
                   << "       | run-generators [--layer ID]... [--timeout S] <project>\n"
-                  << "       | import-scene [--timeout S] <scene.py> <out.bwp|dir>\n"
+                  << "       | import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]\n"
+                  << "         <scene.py> <out.bwp|dir>\n"
                   << "       | --version\n";
         return kUsage;
     };
@@ -1063,6 +1098,7 @@ int main(int argc, char** argv) {
         {&rimOpt, {"shade"}},              {&lightOpt, {"shade"}},   {&maskOpt, {"shade"}},
         {&nameOpt, {"add-generator"}},     {&layerOpt, {"run-generators"}},
         {&timeoutOpt, {"add-generator", "run-generators", "import-scene"}},
+        {&bakeOpt, {"import-scene"}},      {&authorOpt, {"import-scene"}}, {&dateOpt, {"import-scene"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
@@ -1248,7 +1284,28 @@ int main(int argc, char** argv) {
         if (cmd == QLatin1String("import-scene")) {
             if (args.size() != 3)
                 return usage("import-scene takes a scene.py and an output .bwp or directory");
-            return importScene(args[1].toStdString(), args[2].toStdString(), runOpts);
+            SceneFix fix;
+            fix.bake = parser.isSet(bakeOpt);
+            if (parser.isSet(authorOpt)) {
+                fix.stamp.author = bw::scene::sauceText(parser.value(authorOpt).toStdString(), bw::Sauce::kAuthorLen);
+                if (!fix.stamp.author)
+                    throw Usage{"--author takes 1 to " + std::to_string(bw::Sauce::kAuthorLen) +
+                                " printable CP437 characters, not '" + parser.value(authorOpt).toStdString() + "'"};
+            }
+            if (parser.isSet(dateOpt)) {
+                const std::string date = parser.value(dateOpt).toStdString();
+                if (!bw::isSauceDate(date))
+                    throw Usage{"--date takes a day as CCYYMMDD, such as 20261103, not '" + date + "'"};
+                fix.stamp.date = date;
+            } else if (const QByteArray epoch = qgetenv("SOURCE_DATE_EPOCH"); !epoch.isEmpty()) {
+                fix.stamp.date = bw::sauceDateFromEpoch(epoch.toStdString());
+                if (!fix.stamp.date)
+                    throw Usage{"SOURCE_DATE_EPOCH is seconds since 1970-01-01 UTC as digits, up to the end of "
+                                "9999, not '" + epoch.toStdString() + "'"};
+            }
+            // SOURCE_DATE_EPOCH only stands in for today: it makes no record
+            fix.stamp.record = fix.stamp.author || parser.isSet(dateOpt);
+            return importScene(args[1].toStdString(), args[2].toStdString(), runOpts, fix);
         }
         return usage(("unknown command '"+ cmd.toStdString() + "'").c_str());
     } catch (const Usage& u) {

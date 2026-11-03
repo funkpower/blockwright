@@ -1,6 +1,8 @@
 #include "blockwright/sauce.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <ctime>
 
 namespace bw {
@@ -58,6 +60,39 @@ Sauce Sauce::fresh(int width, int height) {
     s.tinfo2 = static_cast<std::uint16_t>(height);
     s.setIce(true);
     return s;
+}
+
+bool isSauceDate(std::string_view date) {
+    if (date.size() != 8 || !std::all_of(date.begin(), date.end(), [](char c) { return c >= '0' && c <= '9'; }))
+        return false;
+    const auto number = [&](std::size_t at, std::size_t len) {
+        unsigned v = 0;
+        for (std::size_t i = at; i < at + len; ++i)
+            v = v * 10 + unsigned(date[i] - '0');
+        return v;
+    };
+    const std::chrono::year_month_day day{std::chrono::year(int(number(0, 4))), std::chrono::month(number(4, 2)),
+                                          std::chrono::day(number(6, 2))};
+    return day.ok();
+}
+
+std::optional<std::string> sauceDateFromEpoch(std::string_view seconds) {
+    // 9999-12-31 23:59:59 UTC; more digits than that has can't be a time
+    // that fits CCYYMMDD, and stopping there keeps the sum from overflowing
+    constexpr long long kLast = 253402300799LL;
+    if (seconds.empty() || seconds.size() > 12 ||
+        !std::all_of(seconds.begin(), seconds.end(), [](char c) { return c >= '0' && c <= '9'; }))
+        return {};
+    long long s = 0;
+    for (const char c : seconds)
+        s = s * 10 + (c - '0');
+    if (s > kLast)
+        return {};
+    const std::chrono::year_month_day day{
+        std::chrono::floor<std::chrono::days>(std::chrono::sys_seconds(std::chrono::seconds(s)))};
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%04d%02u%02u", int(day.year()), unsigned(day.month()), unsigned(day.day()));
+    return std::string(buf);
 }
 
 SauceSplit splitSauce(std::string_view file) {

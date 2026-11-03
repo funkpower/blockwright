@@ -334,3 +334,30 @@ TEST_CASE("A trailing blinking space is written, not trimmed as black", "[sauce]
     CHECK(back.canvas.at(1, 0) == doc.canvas.at(1, 0));
     CHECK(iceCell(back.canvas.at(1, 0), true).bg == Color::indexed(DarkGrey));
 }
+
+TEST_CASE("isSauceDate takes eight digits that name a day", "[sauce]") {
+    for (const char* d : {"20261103", "20240229", "20000229", "19700101", "00010101", "99991231"}) {
+        INFO(d);
+        CHECK(isSauceDate(d));
+    }
+    for (const char* d : {"20230229", "19000229", "20241301", "20241100", "20241131", "2026113",
+                          "202611030", "2026-11-03", "2026110a", " 2026110", ""}) {
+        INFO(d);
+        CHECK_FALSE(isSauceDate(d));
+    }
+}
+
+TEST_CASE("sauceDateFromEpoch gives SOURCE_DATE_EPOCH's day in UTC", "[sauce]") {
+    CHECK(sauceDateFromEpoch("0") == "19700101");
+    CHECK(sauceDateFromEpoch("86399") == "19700101");
+    CHECK(sauceDateFromEpoch("86400") == "19700102");
+    CHECK(sauceDateFromEpoch("1700000000") == "20231114");
+    CHECK(sauceDateFromEpoch("951782400") == "20000229");  // 2000-02-29 00:00:00 UTC
+    CHECK(sauceDateFromEpoch("01700000000") == "20231114");
+    CHECK(sauceDateFromEpoch("253402300799") == "99991231");
+    for (const char* bad : {"", "-1", "+1", " 1", "1 ", "1.5", "1e9", "abc", "0x10", "253402300800",
+                            "9999999999999"}) {
+        INFO(bad);
+        CHECK_FALSE(sauceDateFromEpoch(bad));
+    }
+}

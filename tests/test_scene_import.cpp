@@ -5,7 +5,9 @@
 
 #include "blockwright/composite.h"
 #include "blockwright/generator.h"
+#include "blockwright/layer.h"
 #include "blockwright/project.h"
+#include "blockwright/sauce.h"
 #include "blockwright/scene_import.h"
 
 #include "scene_env.h"
@@ -28,6 +30,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -135,6 +138,115 @@ TEST_CASE("a scene's layer list is read strictly", "[scene]") {
             "layer sea has no key colour 0-15");
     refused(R"({"width": 24, "rows": 8, "title": "", "layers": [{"name": "sky"}, {"name": "sky", "key": 1}]})",
             "names layer sky twice");
+}
+
+TEST_CASE("a scene's \"ice\" is true when left out, and only true or false", "[scene]") {
+    const std::string head = R"({"width": 4, "rows": 1, "title": "", "layers": [{"name": "sky"}])";
+    CHECK(scene::parseListing(head + "}").ice);
+    CHECK(scene::parseListing(head + R"(, "ice": true})").ice);
+    CHECK_FALSE(scene::parseListing(head + R"(, "ice": false})").ice);
+    for (const char* bad : {R"("no")", "0", "1", "null", "[]"}) {
+        INFO(bad);
+        CHECK_THROWS_WITH(scene::parseListing(head + R"(, "ice": )" + bad + "}"),
+                          ContainsSubstring(R"("ice" that is neither true nor false)"));
+    }
+}
+
+TEST_CASE("sauceText gives a field's CP437 bytes, or nothing when they don't fit", "[scene]") {
+    CHECK(scene::sauceText("tiny", 35) == "tiny");
+    CHECK(scene::sauceText("R\u00e9\u2591", 20) == std::string("R\x82\xb0"));
+    CHECK(scene::sauceText(std::string(20, 'x'), 20) == std::string(20, 'x'));
+    CHECK_FALSE(scene::sauceText(std::string(21, 'x'), 20));
+    CHECK_FALSE(scene::sauceText("", 20));
+    CHECK_FALSE(scene::sauceText("tab\there", 20));
+    CHECK_FALSE(scene::sauceText("\u2713", 20));  // a check mark: no CP437 byte
+}
+
+TEST_CASE("bake turns each generator layer into cells and drops only its scripts", "[scene]") {
+    project::Project p;
+    p.layers = LayerStack(3, 1);
+    p.ice = false;
+    // ids 1 to 10, so scripts/1/ and scripts/10/ are both there
+    std::vector<LayerId> ids;
+    for (int i = 1; i <= 10; ++i) {
+        Layer l = makeLayer(i == 2 ? LayerKind::Cells : LayerKind::Generator, 3, 1, "l" + std::to_string(i));
+        l.cells.at(1, 0).ch = U'0' + static_cast<char32_t>(i % 10);
+        l.cells.at(1, 0).transparent = false;
+        ids.push_back(p.layers.add(std::move(l)));
+    }
+    REQUIRE(ids.front() == 1);
+    REQUIRE(ids.back() == 10);
+    p.files[gen::directory(1) + "generator.json"] = "{}";
+    p.files[gen::directory(1) + "lib/x.py"] = "x";
+    p.files[gen::directory(10) + "generator.json"] = "{}";
+    p.files["refs/one.png"] = "png";
+    p.files["scripts/note.txt"] = "kept";
+    // a generator layer's files and a cells layer's leftover scripts
+    p.files[gen::directory(2) + "generator.json"] = "{}";
+    const project::Project before = p;
+
+    SECTION("every generator layer") {
+        scene::bake(p);
+        for (std::size_t i = 0; i < p.layers.size(); ++i) {
+            const Layer& l = p.layers[i];
+            INFO(l.props.name);
+            CHECK(l.props.kind == LayerKind::Cells);
+            CHECK(l.props.id == before.layers[i].props.id);
+            CHECK(l.props.name == before.layers[i].props.name);
+            CHECK(l.cells == before.layers[i].cells);
+        }
+        CHECK(p.files == std::map<std::string, std::string>{{gen::directory(2) + "generator.json", "{}"},
+                                                            {"refs/one.png", "png"},
+                                                            {"scripts/note.txt", "kept"}});
+        CHECK(composite(p.layers, {p.ice, Cell{}}) == composite(before.layers, {before.ice, Cell{}}));
+        CHECK_FALSE(p.ice);
+        CHECK(p.layers.nextId() == before.layers.nextId());
+    }
+    SECTION("a project without generators is left as it is") {
+        project::Project plain;
+        plain.layers.add(makeLayer(LayerKind::Cells, 3, 1, "c"));
+        plain.files[gen::directory(1) + "generator.json"] = "{}";
+        const project::Project was = plain;
+        scene::bake(plain);
+        CHECK(plain == was);
+    }
+}
+
+TEST_CASE("stamp sets SAUCE's author and date, making a record only when asked", "[scene]") {
+    project::Project p;
+    p.layers = LayerStack(5, 2);
+    p.ice = false;
+
+    // nothing to set: nothing changes
+    scene::stamp(p, {{}, {}, true});
+    CHECK_FALSE(p.sauce);
+    // no record and none asked for
+    scene::stamp(p, {"funkpower", "20261103", false});
+    CHECK_FALSE(p.sauce);
+
+    SECTION("a record made for them is the canvas's, with the project's iCE") {
+        scene::stamp(p, {"funkpower", {}, true});
+        REQUIRE(p.sauce);
+        CHECK(p.sauce->author == "funkpower");
+        CHECK(p.sauce->date == Sauce::fresh(5, 2).date);
+        CHECK(p.sauce->title.empty());
+        CHECK(p.sauce->tinfo1 == 5);
+        CHECK(p.sauce->tinfo2 == 2);
+        CHECK_FALSE(p.sauce->ice());
+        scene::stamp(p, {{}, "19991231", false});
+        CHECK(p.sauce->author == "funkpower");
+        CHECK(p.sauce->date == "19991231");
+    }
+    SECTION("a record the scene's title made keeps everything else") {
+        p.sauce = Sauce::fresh(5, 2);
+        p.sauce->title = "tiny";
+        p.sauce->group = "lrh";
+        Sauce want = *p.sauce;
+        want.author = "funkpower";
+        want.date = "20000229";
+        scene::stamp(p, {"funkpower", "20000229", false});
+        CHECK(p.sauce == want);
+    }
 }
 
 TEST_CASE("a scene layer's command names the Python, the scene, the layer and its key", "[scene]") {

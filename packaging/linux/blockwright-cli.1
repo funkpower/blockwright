@@ -1,4 +1,4 @@
-.TH BLOCKWRIGHT-CLI 1 2026-10-31 "Blockwright 0.1.0" "User Commands"
+.TH BLOCKWRIGHT-CLI 1 2026-11-03 "Blockwright 0.1.0" "User Commands"
 .SH NAME
 blockwright-cli \- convert, render, export and check ANSI and IRC block art
 .SH SYNOPSIS
@@ -81,7 +81,17 @@ Run the project's generator layers again and save their output.
 .TP
 .BI import-scene " scene.py out"
 Open a Python scene as a new project with a generator layer for each of its
-layers.
+layers, iCE on unless the scene's layer list says
+.BR "\(dqice\(dq: false" .
+To rebuild a project byte for byte,
+.B \-\-bake
+writes each layer as the cells it made, without its script, so the project
+doesn't name the scene's path;
+.BI \-\-author " name"
+(1 to 20 CP437 characters) and
+.BI \-\-date " CCYYMMDD"
+set the SAUCE author and date, and make a SAUCE record when the scene's title
+gave none.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help
@@ -92,6 +102,15 @@ Print the version and the commit it was built from, and exit.
 .PP
 The other options belong to particular commands; see
 .BR "blockwright-cli \-\-help" .
+.SH ENVIRONMENT
+.TP
+.B SOURCE_DATE_EPOCH
+Seconds since 1970-01-01 00:00:00 UTC. When it is set and not empty,
+.B import-scene
+dates the project's SAUCE record with that day in UTC instead of today, unless
+.B \-\-date
+is given. A value that isn't digits, or is past the end of 9999, is a usage
+error.
 .SH EXIT STATUS
 .TP
 .B 0
