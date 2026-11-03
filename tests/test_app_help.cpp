@@ -53,6 +53,8 @@
 #include <QUndoStack>
 #include <QWhatsThis>
 
+#include <map>
+
 // QtGui's shortcut dispatch, as QTest's key clicks use it: the focus
 // widget sees ShortcutOverride, then the window's shortcuts get the key.
 Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject* o, ulong timestamp, int k, Qt::KeyboardModifiers mods,
@@ -658,6 +660,23 @@ TEST_CASE("making the pictures leaves the open document, its undo and the settin
     CHECK(w.canvasView()->brushSettings() == brush);
     CHECK(appSettings()->fileName() == settingsFile);
     CHECK(settingsBytes() == settings);
+}
+
+TEST_CASE("the pictures don't take the pen or glyph set kept from the last run", "[help][illustration]") {
+    REQUIRE(bwtest::settingsInScratch(scratchDir()));
+    std::map<QString, Canvas> fresh;
+    for (const QString& id : help::illustratedTools())
+        if (const auto p = help::makeToolIllustration(id))
+            fresh.emplace(id, p->cells);
+    appSettings()->setValue(QStringLiteral("pen/foreground"), int(Red));
+    appSettings()->setValue(QStringLiteral("pen/background"), int(LightBlue));
+    appSettings()->setValue(QStringLiteral("glyphSet/index"), 0);
+    for (const QString& id : help::illustratedTools()) {
+        INFO("tool " << id.toStdString());
+        const auto p = help::makeToolIllustration(id);
+        REQUIRE(p);
+        CHECK(p->cells == fresh.at(id));
+    }
 }
 
 TEST_CASE("the pictures show what their tools do", "[help][illustration]") {

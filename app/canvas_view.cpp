@@ -24,6 +24,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPointingDevice>
+#include <QRegularExpression>
 #include <QScrollBar>
 #include <QScopedValueRollback>
 #include <QUndoStack>
@@ -133,6 +134,54 @@ void saveTextureOptions(const TextureOptions& t) {
     s->setValue(kTextureSeedKey, t.seed);
 }
 
+// The pen's colours and the F-key glyph set. A palette colour is kept as its
+// index (0-15) and a 24-bit one the eyedropper took as #rrggbb. Anything else,
+// an index out of range among it, reads as the default: these are choices,
+// not amounts, so the nearest one in range would be a colour or set nobody
+// picked.
+const QString kPenForegroundKey = QStringLiteral("pen/foreground");
+const QString kPenBackgroundKey = QStringLiteral("pen/background");
+const QString kGlyphSetKey = QStringLiteral("glyphSet/index");
+
+QVariant colourSetting(const Color& c) {
+    if (c.isIndexed())
+        return int(c.index);
+    return QStringLiteral("#%1%2%3")
+        .arg(c.rgb.r, 2, 16, QLatin1Char('0'))
+        .arg(c.rgb.g, 2, 16, QLatin1Char('0'))
+        .arg(c.rgb.b, 2, 16, QLatin1Char('0'));
+}
+
+Color savedColour(const QSettings& s, const QString& key, Color fallback) {
+    static const QRegularExpression rgbForm(QStringLiteral("^#[0-9A-Fa-f]{6}$"));
+    const QString v = s.value(key).toString();
+    bool ok = false;
+    if (rgbForm.match(v).hasMatch()) {
+        const uint rgb = v.mid(1).toUInt(&ok, 16);
+        return Color::fromRgb({std::uint8_t(rgb >> 16), std::uint8_t(rgb >> 8), std::uint8_t(rgb)});
+    }
+    const int i = v.toInt(&ok);
+    return ok && i >= 0 && i <= 15 ? Color::indexed(std::uint8_t(i)) : fallback;
+}
+
+Pen savedPen() {
+    const auto s = appSettings();
+    const Pen d;
+    return {savedColour(*s, kPenForegroundKey, d.fg), savedColour(*s, kPenBackgroundKey, d.bg)};
+}
+
+void savePen(const Pen& pen) {
+    const auto s = appSettings();
+    s->setValue(kPenForegroundKey, colourSetting(pen.fg));
+    s->setValue(kPenBackgroundKey, colourSetting(pen.bg));
+}
+
+int savedGlyphSet() {
+    bool ok = false;
+    const int set = appSettings()->value(kGlyphSetKey).toString().toInt(&ok);
+    return ok && set >= 0 && set < kGlyphSetCount ? set : kDefaultGlyphSet;
+}
+
 // Saves the painter's state and puts it back, even when drawing throws.
 class SavedPainter {
 public:
@@ -148,7 +197,7 @@ private:
 } // namespace
 
 CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
-    : QWidget(parent), doc_(doc), renderer_(renderer), glyphSet_(kDefaultGlyphSet) {
+    : QWidget(parent), doc_(doc), renderer_(renderer), pen_(savedPen()), glyphSet_(savedGlyphSet()) {
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
     // A quarter strength is one rung a pass on the ramp shade brush; a
@@ -226,6 +275,7 @@ void CanvasView::setPen(const Pen& pen) {
     if (pen.fg == pen_.fg && pen.bg == pen_.bg)
         return;
     pen_ = pen;
+    savePen(pen_);
     emit penChanged(pen_);
 }
 
@@ -315,6 +365,7 @@ void CanvasView::setGlyphSet(int set) {
     if (set == glyphSet_)
         return;
     glyphSet_ = set;
+    appSettings()->setValue(kGlyphSetKey, set);
     emit glyphSetChanged(glyphSet_);
 }
 

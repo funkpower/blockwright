@@ -56,6 +56,8 @@ public:
     Cursor cellCursor() const { return cursor_; }
     void setCellCursor(Cursor c);  // kept on the canvas
 
+    // The pen, kept in the settings between runs (pen/foreground and
+    // pen/background).
     const Pen& pen() const { return pen_; }
     void setPen(const Pen& pen);
     // The pen's colours one at a time, as palette indices.
@@ -93,7 +95,8 @@ public:
     const TextureOptions& textureOptions() const { return texture_; }
     void setTextureOptions(const TextureOptions& options);  // density and seed clamped
 
-    // The F-key glyph set (glyph_sets.h), wrapping round at either end.
+    // The F-key glyph set (glyph_sets.h), wrapping round at either end; kept
+    // in the settings between runs (glyphSet/index).
     int glyphSet() const { return glyphSet_; }
     void setGlyphSet(int set);
 

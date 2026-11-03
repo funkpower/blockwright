@@ -45,6 +45,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <sstream>
 
 using namespace bw;
@@ -1262,6 +1263,136 @@ TEST_CASE("Ctrl+arrows cycle the pen's colours and Ctrl+D resets them") {
     CHECK(v->pen().fg == Color::indexed(Grey));
     CHECK(v->pen().bg == Color::indexed(Black));
     CHECK(p->pen().fg == Color::indexed(Grey));
+}
+
+TEST_CASE("the pen and the glyph set are kept between runs", "[settings]") {
+    REQUIRE(bwtest::settingsInScratch());
+    const auto stored = [](const char* k) { return appSettings()->value(QString::fromLatin1(k)).toString(); };
+    {
+        MainWindow w;
+        CHECK(w.canvasView()->pen().fg == Color::indexed(Grey));
+        CHECK(w.canvasView()->pen().bg == Color::indexed(Black));
+        CHECK(w.canvasView()->glyphSet() == kDefaultGlyphSet);
+        click(w.paletteWidget(), Red, Qt::LeftButton);
+        click(w.paletteWidget(), Blue, Qt::RightButton);
+        action(w, "glyphSet3")->trigger();
+    }
+    CHECK(stored("pen/foreground") == QStringLiteral("4"));
+    CHECK(stored("pen/background") == QStringLiteral("1"));
+    CHECK(stored("glyphSet/index") == QStringLiteral("2"));
+    {
+        MainWindow w;
+        CanvasView* v = w.canvasView();
+        CHECK(v->pen().fg == Color::indexed(Red));
+        CHECK(v->pen().bg == Color::indexed(Blue));
+        CHECK(w.paletteWidget()->pen().fg == Color::indexed(Red));
+        CHECK(w.paletteWidget()->pen().bg == Color::indexed(Blue));
+        CHECK(v->glyphSet() == 2);
+        CHECK(w.glyphSetLabel()->text().startsWith(QStringLiteral("F-keys set 3: ")));
+        CHECK(action(w, "glyphSet3")->isChecked());
+        key(v, Qt::Key_F1);
+        CHECK(w.document()->canvas().at(0, 0) ==
+              Cell{glyphSetGlyph(2, 0), Color::indexed(Red), Color::indexed(Blue), 0, false});
+        // a 24-bit colour the eyedropper took is kept as it is, not as the
+        // palette colour nearest it
+        v->setPen({Color::fromRgb({0x12, 0xab, 0xef}), Color::indexed(LightRed)});
+        action(w, "nextGlyphSet")->trigger();
+    }
+    CHECK(stored("pen/foreground") == QStringLiteral("#12abef"));
+    {
+        MainWindow w;
+        CHECK(w.canvasView()->pen().fg == Color::fromRgb({0x12, 0xab, 0xef}));
+        CHECK(w.canvasView()->pen().bg == Color::indexed(LightRed));
+        CHECK(w.canvasView()->glyphSet() == 3);
+        // the defaults, once chosen, are kept too
+        action(w, "defaultColours")->trigger();
+        action(w, "defaultGlyphSet")->trigger();
+    }
+    {
+        MainWindow w;
+        CHECK(w.canvasView()->pen().fg == Color::indexed(Grey));
+        CHECK(w.canvasView()->pen().bg == Color::indexed(Black));
+        CHECK(w.canvasView()->glyphSet() == kDefaultGlyphSet);
+    }
+}
+
+TEST_CASE("a stored pen colour or glyph set out of range reads as the default", "[settings]") {
+    REQUIRE(bwtest::settingsInScratch());
+    // A colour is a palette index 0-15 or #rrggbb; a glyph set an index 0-15.
+    // Anything else is not taken into range but dropped: the nearest colour
+    // or set is not one anybody picked.
+    const std::vector<std::pair<QVariant, std::optional<Color>>> colours = {
+        {QStringLiteral("0"), Color::indexed(Black)},
+        {QStringLiteral("15"), Color::indexed(White)},
+        {QVariant(12), Color::indexed(LightRed)},
+        {QStringLiteral("#A0b1C2"), Color::fromRgb({0xa0, 0xb1, 0xc2})},
+        {QStringLiteral("16"), std::nullopt},
+        {QStringLiteral("-1"), std::nullopt},
+        {QVariant(255), std::nullopt},
+        {QStringLiteral("12.5"), std::nullopt},
+        {QStringLiteral("red"), std::nullopt},
+        {QStringLiteral(""), std::nullopt},
+        {QStringLiteral("#12345"), std::nullopt},
+        {QStringLiteral("#1234567"), std::nullopt},
+        {QStringLiteral("#gg0000"), std::nullopt},
+        {QStringLiteral("#+12345"), std::nullopt},
+        {QStringLiteral("0x0c"), std::nullopt},
+        {QVariant(QStringList{QStringLiteral("1"), QStringLiteral("2")}), std::nullopt},
+    };
+    for (const auto& [value, want] : colours) {
+        INFO(value.toString().toStdString());
+        appSettings()->setValue(QStringLiteral("pen/foreground"), value);
+        appSettings()->setValue(QStringLiteral("pen/background"), value);
+        MainWindow w;
+        CHECK(w.canvasView()->pen().fg == want.value_or(Color::indexed(Grey)));
+        CHECK(w.canvasView()->pen().bg == want.value_or(Color::indexed(Black)));
+        CHECK(w.paletteWidget()->pen().fg == w.canvasView()->pen().fg);
+    }
+    const std::vector<std::pair<QVariant, int>> sets = {
+        {QStringLiteral("0"), 0},           {QStringLiteral("15"), 15},
+        {QVariant(9), 9},                   {QStringLiteral("16"), kDefaultGlyphSet},
+        {QStringLiteral("-1"), kDefaultGlyphSet}, {QVariant(100), kDefaultGlyphSet},
+        {QStringLiteral("2.5"), kDefaultGlyphSet}, {QStringLiteral("set"), kDefaultGlyphSet},
+        {QStringLiteral(""), kDefaultGlyphSet},
+    };
+    for (const auto& [value, want] : sets) {
+        INFO(value.toString().toStdString());
+        appSettings()->setValue(QStringLiteral("glyphSet/index"), value);
+        MainWindow w;
+        CHECK(w.canvasView()->glyphSet() == want);
+        CHECK(w.glyphSetLabel()->text().startsWith(QStringLiteral("F-keys set %1: ").arg(want + 1)));
+    }
+}
+
+TEST_CASE("a bright background pen kept from a run works in an iCE-off document as it did in that run",
+          "[settings]") {
+    REQUIRE(bwtest::settingsInScratch());
+    // Typing with a bright background into an iCE-off document, in a window
+    // whose pen was picked there and in one whose pen came from the settings:
+    // the pen, the cell and the saved bytes are the same.
+    const auto typeBright = [](MainWindow& w) {
+        action(w, "iceColours")->trigger();
+        REQUIRE_FALSE(w.document()->ansi().ice);
+        CHECK(w.canvasView()->pen().bg == Color::indexed(LightRed));
+        type(w.canvasView(), QStringLiteral("x"));
+        return std::pair{w.document()->canvas().at(0, 0), w.document()->encode().bytes};
+    };
+    std::pair<Cell, std::string> live;
+    {
+        MainWindow w;
+        click(w.paletteWidget(), Yellow, Qt::LeftButton);
+        click(w.paletteWidget(), LightRed, Qt::RightButton);
+        live = typeBright(w);
+    }
+    MainWindow w;
+    CHECK(w.canvasView()->pen().fg == Color::indexed(Yellow));
+    CHECK(w.document()->ansi().ice);
+    const auto restored = typeBright(w);
+    CHECK(restored.first == live.first);
+    CHECK(restored.second == live.second);
+    // the cell keeps the pen's bright background; with iCE off it shows and
+    // saves as blink on the dark colour
+    CHECK(live.first.bg == Color::indexed(LightRed));
 }
 
 #ifdef Q_OS_MACOS
