@@ -50,6 +50,7 @@ add_library(blockwright_app STATIC
   manual_dialog.h
   palette_widget.cpp
   palette_widget.h
+  plural.h
   preferences.cpp
   preferences.h
   publish.cpp

@@ -31,6 +31,14 @@ inline constexpr std::array<BudgetPreset, 1> kBudgetPresets = {{
 // The profile of a budget typed in or worked out with budgetFor.
 inline constexpr std::string_view kCustomProfile = "custom";
 
+// The byte budgets a line can have: at least one byte, and no more than an
+// IRC line's 512 (CR LF included), which nothing over can be sent in. The
+// project format, the Budget dialog and the CLI's --budget all take this
+// range (validBudget).
+inline constexpr std::size_t kMinBudget = 1;
+inline constexpr std::size_t kMaxBudget = 512;
+constexpr bool validBudget(std::size_t bytes) { return bytes >= kMinBudget && bytes <= kMaxBudget; }
+
 // The bytes of text one PRIVMSG to `target` can carry when the server relays
 // it to the channel as ":<mask> PRIVMSG <target> :<text>\r\n" within IRC's
 // 512 bytes: 498 minus the mask and the target. `mask` is the sender's

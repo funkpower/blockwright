@@ -493,7 +493,7 @@ TEST_CASE("the dock reports links it skipped") {
     std::filesystem::create_symlink(in("gone.ans"), in("broken.ans"));
     f.dock->rescan();
     CHECK(f.dock->problems().size() == 2);
-    CHECK(f.dock->problemLabel()->text() == QStringLiteral("2 file(s) skipped"));
+    CHECK(f.dock->problemLabel()->text() == QStringLiteral("2 files skipped"));
     CHECK(f.dock->problemLabel()->toolTip().contains(QStringLiteral("symbolic link to a folder, not followed")));
     CHECK(f.dock->problemLabel()->toolTip().contains(QStringLiteral("broken symbolic link, skipped")));
 }
@@ -639,7 +639,7 @@ TEST_CASE("the dock reports a folder it can't read") {
     REQUIRE(QFile::setPermissions(locked, {}));
     f.dock->rescan();
     QFile::setPermissions(locked, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
-    CHECK(f.dock->problemLabel()->text() == QStringLiteral("1 file(s) skipped"));
+    CHECK(f.dock->problemLabel()->text() == QStringLiteral("1 file skipped"));
     CHECK(f.dock->problemLabel()->toolTip().contains(QStringLiteral("folder can't be read")));
 #endif
 }

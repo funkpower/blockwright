@@ -64,7 +64,6 @@ constexpr std::uint8_t kFlagTransparent = 0x01;
 // What a zip entry's time says: 1980-01-01 00:00, the first DOS date.
 constexpr std::uint16_t kDosTime = 0, kDosDate = (1 << 5) | 1;
 constexpr int kMaxRoundDigits = 9;  // r999999999.ans: an int either way
-constexpr std::size_t kMaxBudget = 512;  // an IRC line, CR LF included
 constexpr std::uint8_t kReservedFlags = 0xE0;  // SAUCE TFlags bits 5-7
 constexpr std::size_t kMaxNameBytes = 255;     // a name on most disks (NAME_MAX)
 constexpr std::size_t kMaxPathBytes = 1024;    // a path in a project, leaving room for where it goes
@@ -1894,7 +1893,7 @@ Entries encode(const Project& project) {
     if (stack.width() < 1 || stack.width() > kMaxColumns || stack.height() < 1 || stack.height() > kMaxRows)
         fail("a canvas of " + std::to_string(stack.width()) + "x" + std::to_string(stack.height()) +
              " is over the limits");
-    if (project.ircBudget.profile.empty() || project.ircBudget.bytes < 1 || project.ircBudget.bytes > kMaxBudget)
+    if (project.ircBudget.profile.empty() || !irc::validBudget(project.ircBudget.bytes))
         fail("an IRC budget of " + std::to_string(project.ircBudget.bytes) + " bytes is out of range");
     std::size_t cells = 0;
     for (const Layer& l : stack.layers())
@@ -2039,7 +2038,7 @@ Project decode(const Entries& entries) {
         p.ircBudget.profile = b.string("profile");
         if (p.ircBudget.profile.empty())
             fail("manifest.json: the IRC budget has no profile");
-        p.ircBudget.bytes = std::size_t(b.integer("bytes", 1, kMaxBudget));
+        p.ircBudget.bytes = std::size_t(b.integer("bytes", std::int64_t(irc::kMinBudget), std::int64_t(irc::kMaxBudget)));
     }
     if (const QJsonValue s = m.value("sauce"); !s.isNull()) {
         if (!s.isObject())

@@ -6,6 +6,7 @@
 
 #include "canvas_view.h"
 #include "irc_meter.h"
+#include "plural.h"
 
 #include <QAction>
 #include <QFileDialog>
@@ -72,7 +73,8 @@ bool MainWindow::exportIrcText(const QString& path, QString* error, bool allowOv
     const std::vector<std::string> lines = texts(ircMeter_->lines());
     const auto over = irc::overBudget(lines, ircMeter_->budget().bytes);
     if (!over.empty() && !allowOverBudget) {
-        *error = tr("%n line(s) over the %1-byte budget", nullptr, int(over.size())).arg(ircMeter_->budget().bytes);
+        *error = plural(int(over.size()), tr("%n line over the %1-byte budget"), tr("%n lines over the %1-byte budget"))
+                     .arg(ircMeter_->budget().bytes);
         return false;
     }
     const std::string bytes = irc::joinLines(lines);
@@ -96,9 +98,11 @@ void MainWindow::exportIrc() {
             longest = std::max(longest, int(o.bytes));
         const auto answer = QMessageBox::warning(
             this, tr("Export IRC Text"),
-            tr("%n line(s) are over the %1-byte budget, the longest %2 bytes: a client cuts them short or drops "
-               "them.\n\nExport anyway?",
-               nullptr, int(over.size()))
+            plural(int(over.size()),
+                   tr("%n line is over the %1-byte budget, at %2 bytes: a client cuts it short or drops it.\n\n"
+                      "Export anyway?"),
+                   tr("%n lines are over the %1-byte budget, the longest %2 bytes: a client cuts them short or drops "
+                      "them.\n\nExport anyway?"))
                 .arg(budget)
                 .arg(longest),
             QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);
@@ -119,7 +123,8 @@ void MainWindow::exportIrc() {
         QMessageBox::warning(this, tr("Export IRC Text"), tr("Could not write %1:\n%2").arg(path, error));
         return;
     }
-    statusBar()->showMessage(tr("Exported %n IRC line(s) to %1", nullptr, int(lines.size())).arg(path), 3000);
+    statusBar()->showMessage(
+        plural(int(lines.size()), tr("Exported %n IRC line to %1"), tr("Exported %n IRC lines to %1")).arg(path), 3000);
 }
 
 } // namespace bw

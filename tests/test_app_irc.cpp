@@ -431,6 +431,34 @@ TEST_CASE("the IRC budget dialog takes a preset, a number or a mask and channel"
     // a custom budget opens as custom
     IrcBudgetDialog again(project::IrcBudget{"custom", 300});
     CHECK(again.budget() == project::IrcBudget{"custom", 300});
+
+    // the range the CLI's --budget and a project take (#303)
+    CHECK(d.bytesBox()->minimum() == int(irc::kMinBudget));
+    CHECK(d.bytesBox()->maximum() == int(irc::kMaxBudget));
+    CHECK(d.bytesBox()->maximum() == 512);
+}
+
+TEST_CASE("Export IRC Text says line for one line over the budget and lines for more (#304)") {
+    QTemporaryDir dir;
+    MainWindow w;
+    AnsiDocument d = blankDoc(80, 25);
+    const CellBlock row = halfBlockRow(40);  // 293 bytes
+    for (int x = 0; x < row.width; ++x)
+        d.canvas.at(x, 3) = row.at(x, 0);
+    w.document()->replace(d, QString());
+    w.document()->setIrcBudget({std::string(irc::kCustomProfile), 200});
+    const QString path = dir.filePath(QStringLiteral("p.txt"));
+    QString error;
+    CHECK_FALSE(w.exportIrcText(path, &error));
+    CHECK(error == QStringLiteral("1 line over the 200-byte budget"));
+
+    for (int x = 0; x < row.width; ++x)
+        d.canvas.at(x, 5) = row.at(x, 0);
+    w.document()->replace(d, QString());
+    w.document()->setIrcBudget({std::string(irc::kCustomProfile), 200});
+    CHECK_FALSE(w.exportIrcText(path, &error));
+    CHECK(error == QStringLiteral("2 lines over the 200-byte budget"));
+    CHECK_FALSE(QFile::exists(path));
 }
 
 TEST_CASE("View > IRC > Budget... sets the budget the meter measures against") {

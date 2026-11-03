@@ -830,6 +830,25 @@ StampFiles encodeStamp(const std::string& name, const std::string& category, con
     }
 }
 
+std::string stampLossMessage(const AnsiOutput& out) {
+    if (!out.unwritable.empty()) {
+        const int controls = ansControlCount(out.unwritable);
+        std::string why;
+        if (const int n = int(out.unwritable.size()) - controls)
+            why = std::to_string(n) + (n == 1 ? " cell holds" : " cells hold") + " a glyph with no CP437 code";
+        if (controls)
+            why += (why.empty() ? "" : " and ") + std::to_string(controls) +
+                   (controls == 1 ? " cell holds" : " cells hold") +
+                   " a glyph whose CP437 byte .ans reads as a control code (" + ansControlNames(out.unwritable) +
+                   ")";
+        return why + ", which .ans can't store";
+    }
+    if (out.blinkDropped)
+        return std::to_string(out.blinkDropped) +
+               (out.blinkDropped == 1 ? " blinking cell would lose its blink" : " blinking cells would lose their blink");
+    return {};
+}
+
 namespace {
 
 StampFiles encodeChecked(const std::string& name, const std::string& category, const std::vector<std::string>& tags,
@@ -846,19 +865,8 @@ StampFiles encodeChecked(const std::string& name, const std::string& category, c
     doc.sauce->title = name;
     doc.sauce->setIce(ice);
     const AnsiOutput out = writeAnsi(doc);
-    if (!out.unwritable.empty()) {
-        const int controls = ansControlCount(out.unwritable);
-        std::string why;
-        if (const int n = int(out.unwritable.size()) - controls)
-            why = std::to_string(n) + " cell(s) hold a glyph with no CP437 code";
-        if (controls)
-            why += (why.empty() ? "" : " and ") + std::to_string(controls) +
-                   " cell(s) hold a glyph whose CP437 byte .ans reads as a control code (" +
-                   ansControlNames(out.unwritable) + ")";
-        throw LibraryError(why + ", which .ans can't store");
-    }
-    if (out.blinkDropped)
-        throw LibraryError(std::to_string(out.blinkDropped) + " blinking cell(s) would lose their blink");
+    if (const std::string why = stampLossMessage(out); !why.empty())
+        throw LibraryError(why);
 
     // Check and count the art as it reads back, which is what readStamp
     // checks the sidecar against.

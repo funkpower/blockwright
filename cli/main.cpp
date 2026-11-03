@@ -26,7 +26,8 @@
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
 // .bwp zip or a project directory, as its flattened composite. convert and
-// shade write the format <out>'s name gives (.xb, .bin, else .ans).
+// shade write the format <out>'s name gives (.xb, .bin, else .ans), and
+// refuse a .bwp <out>: pack writes a project.
 //
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert, shade,
 // pack or unpack without --allow-lossy (nothing is written), or a library check that found
@@ -313,6 +314,16 @@ void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocum
     save(out, res.bytes);
 }
 
+// convert and shade write .ans, XBIN or BIN. A .bwp is a project, which the
+// app opens as a zip, so art bytes under that name are refused before the
+// input is read, as save refuses to write over a project by any name: pack
+// writes a project.
+void refuseProjectOutput(const char* cmd, const QString& out) {
+    if (QFileInfo(out).suffix().compare(QLatin1String("bwp"), Qt::CaseInsensitive) == 0)
+        throw Failure{out.toStdString() + ": not written: " + cmd +
+                      " writes .ans, .xb or .bin; use pack for a project"};
+}
+
 int convert(const std::string& in, const std::string& out, bool allowLossy) {
     saveAnsi(in, out, load(in), allowLossy);
     return kOk;
@@ -579,12 +590,15 @@ bw::Ramp rampValue(const QString& s) {
     return r;
 }
 
-// --budget N for export --irc and render --irc: a positive number of bytes.
+// --budget N for export --irc and render --irc, their one parser: 1 to 512
+// bytes, the range the app's Budget dialog and a project take
+// (irc::validBudget).
 std::size_t budgetValue(const QString& s) {
     bool ok = false;
     const qulonglong v = s.toULongLong(&ok);
-    if (!ok || v == 0)
-        throw Usage{"--budget takes a positive number of bytes"};
+    if (!ok || v > bw::irc::kMaxBudget || !bw::irc::validBudget(static_cast<std::size_t>(v)))
+        throw Usage{"--budget takes " + std::to_string(bw::irc::kMinBudget) + " to " +
+                    std::to_string(bw::irc::kMaxBudget) + " bytes"};
     return static_cast<std::size_t>(v);
 }
 
@@ -801,12 +815,17 @@ int libraryCheck(const std::string& dir) {
                 ++problems;
             }
         }
-    std::cout << r.stamps.size() << " stamp(s), " << r.styles.size() << " text style(s), " << problems
-              << " problem(s)\n";
+    std::cout << r.stamps.size() << (r.stamps.size() == 1 ? " stamp, " : " stamps, ") << r.styles.size()
+              << (r.styles.size() == 1 ? " text style, " : " text styles, ") << problems
+              << (problems == 1 ? " problem\n" : " problems\n");
     return problems ? kBadInput : kOk;
 }
 
 } // namespace
+
+// render --irc's entry in the command list spells these out.
+static_assert(bw::irc::kMinBudget == 1 && bw::irc::kMaxBudget == 512 && bw::irc::kEfnetWeechatBudget == 407,
+              "update render --irc in the --help command list");
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -821,7 +840,8 @@ int main(int argc, char** argv) {
         "  convert <in> <out>   read an .ans and write it back out as .ans, XBIN\n"
         "                       (<out> named .xb) or BIN (.bin); <out> may be\n"
         "                       <in>, which is rewritten in place (export and\n"
-        "                       render refuse to write over their input)\n"
+        "                       render refuse to write over their input); a\n"
+        "                       .bwp <out> is refused: pack writes a project\n"
         "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font\n"
         "  export --irc <in> <out>\n"
         "                       write IRC text (mIRC colour codes) and report each\n"
@@ -845,7 +865,9 @@ int main(int argc, char** argv) {
         "                       summary, or --json. Exits 4 when there are findings\n"
         "  render --irc <in> <out.png>\n"
         "                       draw the IRC view: the mIRC palette, what IRC\n"
-        "                       drops, and each line cut at --budget bytes\n"
+        "                       drops, and each line cut at --budget bytes, 1 to\n"
+        "                       512 (default: a project's own, else 407); --fit,\n"
+        "                       --pad and --swap-shades apply as in export --irc\n"
         "  library list [dir]   list the stamps and text styles in dir (default:\n"
         "                       the bundled and user libraries): kind, category,\n"
         "                       name, size, widest IRC row in bytes, ice when a\n"
@@ -899,9 +921,11 @@ int main(int argc, char** argv) {
     parser.addOption(ircOpt);
     const QCommandLineOption budgetOpt(
         QStringLiteral("budget"),
-        QStringLiteral("export --irc, render --irc: bytes a line may take (default: a project's own, else "
-                       "%1, EFnet via WeeChat)")
-            .arg(bw::irc::kEfnetWeechatBudget),
+        QStringLiteral("export --irc, render --irc: bytes a line may take, %2 to %3 (default: a project's own, "
+                       "else %1, EFnet via WeeChat)")
+            .arg(bw::irc::kEfnetWeechatBudget)
+            .arg(bw::irc::kMinBudget)
+            .arg(bw::irc::kMaxBudget),
         QStringLiteral("bytes"));
     parser.addOption(budgetOpt);
     const QCommandLineOption fitOpt(
@@ -1074,6 +1098,7 @@ int main(int argc, char** argv) {
         if (cmd == QLatin1String("convert")) {
             if (args.size() != 3)
                 return usage("convert takes an input and an output file");
+            refuseProjectOutput("convert", args[2]);
             return convert(args[1].toStdString(), args[2].toStdString(), parser.isSet(lossyOpt));
         }
         if (cmd == QLatin1String("render")) {
@@ -1104,6 +1129,7 @@ int main(int argc, char** argv) {
                 return usage("shade needs a ramp: --ramp NAME or --ramp c,c,...");
             if (args.size() != 3)
                 return usage("shade takes an input and an output file");
+            refuseProjectOutput("shade", args[2]);
             const bool step = parser.isSet(darkenOpt) || parser.isSet(stepsOpt);
             const bool form = parser.isSet(formOpt), despeckle = parser.isSet(despeckleOpt), rim = parser.isSet(rimOpt);
             if (int(step) + int(form) + int(despeckle) + int(rim) > 1)

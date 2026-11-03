@@ -691,6 +691,12 @@ TEST_CASE("the typing refusal says why each glyph can't be typed") {
     CHECK(rejectedGlyphsMessage(QStringLiteral("★")) == QStringLiteral("★ has no CP437 code; not typed"));
     CHECK(rejectedGlyphsMessage(QStringLiteral("★○…")) ==
           QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ★… has no CP437 code; not typed"));
+    // one keypress or input-method commit carrying a glyph twice gives its reason once
+    CHECK(rejectedGlyphsMessage(QStringLiteral("○○★★")) ==
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ★ has no CP437 code; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("★○←○★…")) ==
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ← is CP437 0x1B, which .ans reads as ESC; "
+                         "★… has no CP437 code; not typed"));
 }
 
 TEST_CASE("the save warning tells glyphs with no CP437 code from control bytes") {
@@ -698,13 +704,15 @@ TEST_CASE("the save warning tells glyphs with no CP437 code from control bytes")
     AnsiOutput out;
     out.unwritable = {{0, 0, U'○'}, {1, 0, U'←'}, {2, 0, U'★'}, {3, 0, U'◙'}, {4, 0, U'○'}};
     const QString lost = lossDescription(out);
-    CHECK(lost.contains(QStringLiteral("1 cell(s) hold a glyph with no CP437 code and will be written as '?'")));
-    CHECK(lost.contains(QStringLiteral("4 cell(s) hold a glyph whose CP437 byte .ans reads as a control code "
+    CHECK(lost.contains(QStringLiteral("1 cell holds a glyph with no CP437 code and will be written as '?'")));
+    CHECK(lost.contains(QStringLiteral("4 cells hold a glyph whose CP437 byte .ans reads as a control code "
                                        "(TAB, ESC, LF) and will be written as '?' (XBIN and BIN keep them)")));
     out.unwritable = {{0, 0, U'○'}};
-    CHECK_FALSE(lossDescription(out).contains(QStringLiteral("no CP437 code")));
-    out.unwritable = {{0, 0, U'★'}};
-    CHECK_FALSE(lossDescription(out).contains(QStringLiteral("control code")));
+    CHECK(lossDescription(out) == QStringLiteral("1 cell holds a glyph whose CP437 byte .ans reads as a control code "
+                                                 "(TAB) and will be written as '?' (XBIN and BIN keep it)"));
+    out.unwritable = {{0, 0, U'★'}, {1, 0, U'★'}};
+    CHECK(lossDescription(out) ==
+          QStringLiteral("2 cells hold a glyph with no CP437 code and will be written as '?'"));
 
     // the editor's own save of #300's XBIN: .ans loses the bytes and says
     // which, XBIN keeps them
@@ -725,7 +733,7 @@ TEST_CASE("the save warning tells glyphs with no CP437 code from control bytes")
     CHECK_FALSE(w.document()->encode(ArtFormat::Xbin).lossy());
     CHECK_FALSE(w.document()->encode(ArtFormat::Bin).lossy());
     const AnsiOutput ans = w.document()->encode(ArtFormat::Ansi);
-    CHECK(saveWarning(ans) == QStringLiteral("Before saving as .ans:\n3 cell(s) hold a glyph whose CP437 byte .ans "
+    CHECK(saveWarning(ans) == QStringLiteral("Before saving as .ans:\n3 cells hold a glyph whose CP437 byte .ans "
                                              "reads as a control code (TAB, ESC, LF) and will be written as '?' "
                                              "(XBIN and BIN keep them).\n\nSave anyway?"));
 }

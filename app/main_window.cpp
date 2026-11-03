@@ -6,6 +6,7 @@
 #include "manual_dialog.h"
 #include "select_tool.h"
 #include "palette_widget.h"
+#include "plural.h"
 #include "preferences.h"
 #include "shortcut_settings.h"
 #include "publish.h"
@@ -52,20 +53,26 @@ QString lossDescription(const AnsiOutput& out) {
     QStringList parts;
     const int controls = ansControlCount(out.unwritable);
     if (const int n = int(out.unwritable.size()) - controls)
-        parts << QObject::tr("%n cell(s) hold a glyph with no CP437 code and will be written as '?'", nullptr, n);
+        parts << plural(n, QObject::tr("%n cell holds a glyph with no CP437 code and will be written as '?'"),
+                        QObject::tr("%n cells hold a glyph with no CP437 code and will be written as '?'"));
     if (controls)
-        parts << QObject::tr("%n cell(s) hold a glyph whose CP437 byte .ans reads as a control code (%1) and will be "
-                             "written as '?' (XBIN and BIN keep them)",
-                             nullptr, controls)
+        parts << plural(controls,
+                        QObject::tr("%n cell holds a glyph whose CP437 byte .ans reads as a control code (%1) and "
+                                    "will be written as '?' (XBIN and BIN keep it)"),
+                        QObject::tr("%n cells hold a glyph whose CP437 byte .ans reads as a control code (%1) and "
+                                    "will be written as '?' (XBIN and BIN keep them)"))
                      .arg(QString::fromStdString(ansControlNames(out.unwritable)));
     // From the editor this is blink the file had and lost when it was opened
     // with iCE colours that this save still writes without (see
     // Document::encode). It claims nothing about the original file, which a
     // Save As to a new path leaves alone.
     if (out.blinkDropped)
-        parts << QObject::tr(
-            "%n cell(s) lost their blink when the file was opened with iCE colours, and this save doesn't put it back",
-            nullptr, out.blinkDropped);
+        parts << plural(
+            out.blinkDropped,
+            QObject::tr(
+                "%n cell lost its blink when the file was opened with iCE colours, and this save doesn't put it back"),
+            QObject::tr("%n cells lost their blink when the file was opened with iCE colours, and this save doesn't "
+                        "put it back"));
     if (out.paletteDropped)
         parts << QObject::tr("the file's own palette is left out (only XBIN keeps one)");
     if (out.fontDropped)
@@ -84,7 +91,11 @@ QString lossDescription(const AnsiOutput& out) {
 QString rejectedGlyphsMessage(const QString& text) {
     QStringList parts;
     QString uncoded;
+    std::vector<char32_t> seen;  // each glyph's reason once, however often it was typed
     for (const char32_t ch : text.toUcs4()) {
+        if (std::find(seen.begin(), seen.end(), ch) != seen.end())
+            continue;
+        seen.push_back(ch);
         const QString glyph = QString::fromUcs4(&ch, 1);
         if (const std::optional<std::uint8_t> b = ansControlByte(ch))
             parts << QObject::tr("%1 is CP437 0x%2, which .ans reads as %3")

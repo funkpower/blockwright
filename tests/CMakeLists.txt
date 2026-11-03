@@ -445,6 +445,20 @@ set_tests_properties(catch_names_finds_unmatched PROPERTIES
   PASS_REGULAR_EXPRESSION "1 of 2 TEST_CASE names have an unmatched"
   FAIL_REGULAR_EXPRESSION "Ctrl\\+\\[ and")
 
+# No app, CLI or core message counts through tr or translate or writes "(s)"
+# (#304).
+add_test(NAME plural_strings
+  COMMAND ${CMAKE_COMMAND} -DDIR=${PROJECT_SOURCE_DIR}/app -P ${CMAKE_CURRENT_SOURCE_DIR}/plural_strings_check.cmake)
+foreach(dir cli core/src)
+  string(REPLACE "/" "_" name "plural_strings_${dir}")
+  add_test(NAME ${name}
+    COMMAND ${CMAKE_COMMAND} -DDIR=${PROJECT_SOURCE_DIR}/${dir} -P ${CMAKE_CURRENT_SOURCE_DIR}/plural_strings_check.cmake)
+endforeach()
+# and the check itself, on a fixture per form it must find or let be
+add_test(NAME plural_strings_fixtures
+  COMMAND ${CMAKE_COMMAND} -DCHECK=${CMAKE_CURRENT_SOURCE_DIR}/plural_strings_check.cmake
+          -DFIXTURES=${CMAKE_CURRENT_SOURCE_DIR}/data/plural-strings -P ${CMAKE_CURRENT_SOURCE_DIR}/plural_strings_fixtures.cmake)
+
 # scripts/release (run on Linux): the same tarball of a commit every time,
 # committed files only
 if(UNIX AND NOT APPLE)

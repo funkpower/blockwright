@@ -324,7 +324,7 @@ TEST_CASE("a malformed .style.json is skipped and reported, and the rest still s
         bad.insert(p.path);
     CHECK(bad == std::set<fs::path>{f.userDir() / "broken.style.json", f.userDir() / "unknown.style.json",
                                     f.userDir() / "no-ramp.style.json"});
-    CHECK(f.dock.problemLabel()->text() == QStringLiteral("3 file(s) skipped"));
+    CHECK(f.dock.problemLabel()->text() == QStringLiteral("3 files skipped"));
     CHECK(f.dock.problemLabel()->toolTip().contains(QStringLiteral("broken.style.json")));
     for (const char* name : {"Broken", "Unknown", "No Ramp"})
         CHECK_FALSE(f.dock.shownNames().contains(QString::fromLatin1(name)));

@@ -210,6 +210,39 @@ TEST_CASE("readStamp refuses a sidecar that disagrees with the art, or a stamp m
     }
 }
 
+TEST_CASE("encodeStamp counts the glyphs .ans can't store as one cell or as cells") {
+    const auto why = [](const CellBlock& b) {
+        try {
+            encodeStamp("Pine", "trees", {}, b, true);
+        } catch (const LibraryError& e) {
+            return std::string(e.what());
+        }
+        return std::string("no error");
+    };
+    CellBlock b = tree();
+    b.at(0, 0) = cell(U'\u4E2D', Green);
+    CHECK(why(b) == "1 cell holds a glyph with no CP437 code, which .ans can't store");
+    b.at(3, 1) = cell(U'\u4E2D', Green);
+    CHECK(why(b) == "2 cells hold a glyph with no CP437 code, which .ans can't store");
+}
+
+TEST_CASE("stampLossMessage counts each loss as one cell or as cells") {
+    AnsiOutput out;
+    CHECK(stampLossMessage(out).empty());
+    out.unwritable = {{0, 0, U'★'}};
+    CHECK(stampLossMessage(out) == "1 cell holds a glyph with no CP437 code, which .ans can't store");
+    out.unwritable = {{0, 0, U'◙'}, {1, 0, U'○'}};
+    CHECK(stampLossMessage(out) ==
+          "2 cells hold a glyph whose CP437 byte .ans reads as a control code (LF, TAB), which .ans can't store");
+    // the glyphs come first; blink is told once every glyph can be written
+    out.blinkDropped = 1;
+    CHECK(stampLossMessage(out).find("blink") == std::string::npos);
+    out.unwritable.clear();
+    CHECK(stampLossMessage(out) == "1 blinking cell would lose its blink");
+    out.blinkDropped = 3;
+    CHECK(stampLossMessage(out) == "3 blinking cells would lose their blink");
+}
+
 TEST_CASE("writeStamp leaves the old stamp intact when a file can't be written") {
     const fs::path dir = scratch("atomic");
     const StampFiles old = encodeStamp("Pine", "trees", {"old"}, tree(), true);
@@ -303,17 +336,21 @@ TEST_CASE("encodeStamp refuses what a stamp can't hold") {
     CellBlock star = b;
     star.at(0, 0) = cell(U'★', Yellow);  // no CP437 code
     CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, star, true),
-                      "1 cell(s) hold a glyph with no CP437 code, which .ans can't store");
+                      "1 cell holds a glyph with no CP437 code, which .ans can't store");
     // #300: ◙ has CP437 0x0A, but .ans reads that byte as LF
     CellBlock lf = b;
     lf.at(0, 0) = cell(U'◙', Yellow);
     CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, lf, true),
-                      "1 cell(s) hold a glyph whose CP437 byte .ans reads as a control code (LF), which .ans can't "
+                      "1 cell holds a glyph whose CP437 byte .ans reads as a control code (LF), which .ans can't "
                       "store");
     lf.at(1, 0) = cell(U'★', Yellow);
     CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, lf, true),
-                      "1 cell(s) hold a glyph with no CP437 code and 1 cell(s) hold a glyph whose CP437 byte .ans "
+                      "1 cell holds a glyph with no CP437 code and 1 cell holds a glyph whose CP437 byte .ans "
                       "reads as a control code (LF), which .ans can't store");
+    lf.at(2, 0) = cell(U'○', Yellow);  // CP437 0x09, TAB
+    CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, lf, true),
+                      "1 cell holds a glyph with no CP437 code and 2 cells hold a glyph whose CP437 byte .ans "
+                      "reads as a control code (LF, TAB), which .ans can't store");
 }
 
 TEST_CASE("a stamp is written as the editor saves its cells with the document's iCE") {

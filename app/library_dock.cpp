@@ -1,6 +1,7 @@
 #include "library_dock.h"
 
 #include "canvas_view.h"
+#include "plural.h"
 #include "sauce_dialog.h"
 
 #include "blockwright/render.h"
@@ -182,7 +183,8 @@ void LibraryDock::rescan() {
         problemLabel_->clear();
         problemLabel_->setToolTip(QString());
     } else {
-        problemLabel_->setText(tr("%n file(s) skipped", nullptr, int(problems_.size())));
+        problemLabel_->setText(
+            plural(int(problems_.size()), tr("%n file skipped"), tr("%n files skipped")));
         QStringList lines;
         for (const library::Problem& p : problems_)
             lines << tr("%1: %2").arg(qpath(p.path), qtext(p.message));

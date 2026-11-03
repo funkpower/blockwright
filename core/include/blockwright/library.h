@@ -126,6 +126,12 @@ struct StampFiles {
 StampFiles encodeStamp(const std::string& name, const std::string& category,
                        const std::vector<std::string>& tags, const CellBlock& cells, bool ice);
 
+// Why encodeStamp refuses what writeAnsi wrote, in English with each count
+// in the singular or the plural: the cells written as '?' (those with no
+// CP437 code, then those whose byte .ans reads as a control code), else the
+// blinking cells that lost their blink. Empty when nothing was lost.
+std::string stampLossMessage(const AnsiOutput& out);
+
 // Writes both files (the sidecar at pairedSidecar(ans)), replacing a stamp
 // already there, under their exact native names (a name that isn't UTF-8
 // stays as it is) and, for a file replaced, its permission bits: 0777 only,

@@ -15,6 +15,7 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "main_window.h"
+#include "plural.h"
 #include "sauce_dialog.h"
 #include "select_tool.h"
 #include "shortcuts_dialog.h"
@@ -462,7 +463,7 @@ TEST_CASE("the save warning for blink lost on open stays true once iCE is off, a
     // #36: turning iCE off doesn't give the blink back. #82: erasing the cell
     // is the artist's own edit, so the cell no longer claims a blink
     const QString lost = QStringLiteral(
-        "1 cell(s) lost their blink when the file was opened with iCE colours, and this save doesn't put it back");
+        "1 cell lost its blink when the file was opened with iCE colours, and this save doesn't put it back");
     QTemporaryDir tmp;
     const QString path = writeIceOff(tmp, "blink.ans", "\x1b[0;5;31;44mA\x1b[0;37;104mB");
     MainWindow w;
@@ -541,7 +542,7 @@ TEST_CASE("the save warning for blink lost on open follows the lost cell through
         undo->redo();
         CHECK(d->encode().blinkDropped == 1);
         CHECK_FALSE(w.saveFile(saved, &error));
-        CHECK(error.contains(QStringLiteral("1 cell(s) lost their blink")));
+        CHECK(error.contains(QStringLiteral("1 cell lost its blink")));
     }
     SECTION("iCE off, A put back and moved: the moved cell carries its blink") {
         REQUIRE(d->setIce(false));
@@ -693,7 +694,7 @@ TEST_CASE("another cell made to blink doesn't stand in for a cell that lost its 
         CHECK_FALSE(blinksIn(out.bytes, 0));
         CHECK(out.blinkDropped == 1);
         CHECK_FALSE(w.saveFile(saved, &error));
-        CHECK(error.contains(QStringLiteral("1 cell(s) lost their blink")));
+        CHECK(error.contains(QStringLiteral("1 cell lost its blink")));
         d->undoStack()->undo();
         CHECK(d->encode().blinkDropped == 1);
         d->undoStack()->redo();
@@ -1296,4 +1297,29 @@ TEST_CASE("no two actions share a shortcut") {
         }
     }
     CHECK(seen.size() > 20);
+}
+
+TEST_CASE("a count picks the English form, with no translator installed (#304)") {
+    const QString one = QStringLiteral("%n line over the %1-byte budget"),
+                  many = QStringLiteral("%n lines over the %1-byte budget");
+    CHECK(plural(1, one, many).arg(407) == QStringLiteral("1 line over the 407-byte budget"));
+    CHECK(plural(3, one, many).arg(407) == QStringLiteral("3 lines over the 407-byte budget"));
+    CHECK(plural(0, one, many).arg(407) == QStringLiteral("0 lines over the 407-byte budget"));
+    // what tr does with a count and no translator: the count, and line(s) as written
+    CHECK(QCoreApplication::translate("MainWindow", "Exported %n IRC line(s) to %1", nullptr, 1) ==
+          QStringLiteral("Exported 1 IRC line(s) to %1"));
+
+    AnsiOutput out;
+    out.unwritable = {{0, 0, U'\u263A'}};
+    out.blinkDropped = 1;
+    CHECK(lossDescription(out) ==
+          QStringLiteral("1 cell holds a glyph with no CP437 code and will be written as '?';\n"
+                         "1 cell lost its blink when the file was opened with iCE colours, and this save doesn't "
+                         "put it back"));
+    out.unwritable.push_back({1, 0, U'\u263B'});
+    out.blinkDropped = 2;
+    CHECK(lossDescription(out) ==
+          QStringLiteral("2 cells hold a glyph with no CP437 code and will be written as '?';\n"
+                         "2 cells lost their blink when the file was opened with iCE colours, and this save doesn't "
+                         "put it back"));
 }

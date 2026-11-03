@@ -2,6 +2,7 @@
 
 #include "canvas_view.h"
 #include "document.h"
+#include "plural.h"
 #include "settings.h"
 
 #include "blockwright/brushes/clone.h"
@@ -589,7 +590,7 @@ QString GradientTool::status() const {
                     .arg(std::min(from_, top))
                     .arg(std::min(to_, top));
     if (!added_.empty())
-        s += tr(", adds %n lint finding(s)", nullptr, int(added_.size()));
+        s += plural(int(added_.size()), tr(", adds %n lint finding"), tr(", adds %n lint findings"));
     return s;
 }
 

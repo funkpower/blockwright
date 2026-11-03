@@ -41,7 +41,7 @@ if [[ -n $src ]]; then
   if [[ $n -gt 1 && -z $missing ]]; then ok "all $n bundled stamps install"; else bad "not installed as in the source: $missing"; fi
 fi
 out=$("$cli" library check "$lib" 2>&1); st=$?
-if [[ $st -eq 0 && $out == "$n stamp(s), $m text style(s), 0 problem(s)" ]]; then ok "the installed library checks clean"; else bad "library check (exit $st): $out"; fi
+if [[ $st -eq 0 && $out == "$n stamp$( ((n == 1)) || echo s), $m text style$( ((m == 1)) || echo s), 0 problems" ]]; then ok "the installed library checks clean"; else bad "library check (exit $st): $out"; fi
 
 # Run through a symlink, as the dev install's ~/.local/bin/blockwright-cli-dev
 # is: the bundled library is found beside the real binary, not the link.

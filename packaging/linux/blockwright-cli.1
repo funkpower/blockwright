@@ -21,14 +21,22 @@ Dimensions and SAUCE fields.
 .TP
 .BI convert " in out"
 Write an .ans back out as .ans, XBIN or BIN, by the name of
-.IR out .
+.IR out ;
+a .bwp
+.I out
+is refused, since
+.B pack
+writes a project.
 .TP
 .BI render " in out.png"
 Draw a piece as a PNG with the IBM VGA font;
 .B \-\-irc
 draws the IRC view, each line cut at
 .B \-\-budget
-bytes.
+bytes (1 to 512; default: a project's own, else 407), with
+.BR \-\-fit ", " \-\-pad " and " \-\-swap\-shades
+applied as in
+.BR "export \-\-irc" .
 .TP
 .BI "export \-\-irc" " in out"
 Write IRC text with mIRC colour codes and report each line's size in bytes.

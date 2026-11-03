@@ -2,6 +2,7 @@
 
 #include "canvas_view.h"
 #include "document.h"
+#include "plural.h"
 #include "tool.h"
 
 #include <QComboBox>
@@ -165,7 +166,7 @@ QString IrcMeter::describe(int y) {
     if (n > budget().bytes)
         s += tr(", over by %1").arg(n - budget().bytes);
     if (l.merged > 0)
-        s += tr(", %n cell(s) merged to fit", nullptr, l.merged);
+        s += plural(l.merged, tr(", %n cell merged to fit"), tr(", %n cells merged to fit"));
     return s;
 }
 
@@ -292,7 +293,7 @@ IrcBudgetDialog::IrcBudgetDialog(const project::IrcBudget& budget, QWidget* pare
     preset_->addItem(tr("Custom"), QString::fromUtf8(irc::kCustomProfile.data(), qsizetype(irc::kCustomProfile.size())));
     bytes_ = new QSpinBox;
     bytes_->setObjectName(QStringLiteral("ircBytes"));
-    bytes_->setRange(1, 512);
+    bytes_->setRange(int(irc::kMinBudget), int(irc::kMaxBudget));
     bytes_->setSuffix(tr(" bytes"));
     mask_ = new QLineEdit;
     mask_->setObjectName(QStringLiteral("ircMask"));
@@ -303,7 +304,7 @@ IrcBudgetDialog::IrcBudgetDialog(const project::IrcBudget& budget, QWidget* pare
 
     const int i = preset_->findData(QString::fromStdString(budget.profile));
     preset_->setCurrentIndex(i >= 0 ? i : preset_->count() - 1);
-    bytes_->setValue(int(std::min<std::size_t>(budget.bytes, 512)));
+    bytes_->setValue(int(std::clamp(budget.bytes, irc::kMinBudget, irc::kMaxBudget)));
 
     auto* hint = new QLabel(tr("A line is relayed as \":mask PRIVMSG #channel :text\" in 512 bytes. "
                                "Give your mask and the channel to work out the room left."));

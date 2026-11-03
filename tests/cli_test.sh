@@ -44,6 +44,16 @@ expect "info: flags" 0 '^flags: +0x1 \(iCE on' -- "$cli" info "$piece"
 
 expect "convert" 0 '^$' -- "$cli" convert "$piece" "$tmp/tux.ans"
 if cmp -s "$piece" "$tmp/tux.ans"; then ok "convert output is byte-identical"; else bad "convert output differs"; fi
+# a .bwp is a project, which the app opens as a zip: convert and shade write
+# art, so they refuse one and point to pack (#298)
+for out in tux.bwp TUX.BWP; do
+  expect "convert to $out is refused" 1 "$out: not written: convert writes \\.ans, \\.xb or \\.bin; use pack for a project" -- "$cli" convert "$piece" "$tmp/$out"
+  if [[ -e $tmp/$out ]]; then bad "convert to $out wrote a file"; else ok "convert to $out writes nothing"; fi
+done
+expect "shade to a .bwp is refused" 1 'tux\.bwp: not written: shade writes \.ans, \.xb or \.bin; use pack for a project' -- "$cli" shade --ramp steel "$piece" "$tmp/tux.bwp"
+if [[ -e $tmp/tux.bwp ]]; then bad "shade to a .bwp wrote a file"; else ok "shade to a .bwp writes nothing"; fi
+expect "pack writes the .bwp convert refuses" 0 '^$' -- "$cli" pack "$piece" "$tmp/tux.bwp"
+expect "info reads it as a project" 0 '^project: ' -- "$cli" info "$tmp/tux.bwp"
 
 # sauce <file> <iCE 0|1>: append a SAUCE record (80 wide, 1 high) to a body under 256 bytes
 sauce() {
@@ -233,7 +243,7 @@ if cmp -s "$data/golden-irc/tux.txt" "$tmp/over.txt"; then ok "--allow-over-budg
 # 80 cells, each a different colour from its neighbour: over 407 bytes
 for i in $(seq 0 79); do printf '\033[%d;%dmx' $((30 + i % 8)) $((40 + (i + 3) % 8)); done > "$tmp/rainbow.ans"
 expect "default budget is 407" 3 '^1 line, longest 4[0-9][0-9] bytes, budget 407: 1 over$' -- "$cli" export --irc "$tmp/rainbow.ans" "$tmp/rainbow.txt"
-expect "--budget raises it" 0 'budget 600: 0 over$' -- "$cli" export --irc --budget 600 "$tmp/rainbow.ans" "$tmp/rainbow.txt"
+expect "--budget raises it" 0 'budget 512: 0 over$' -- "$cli" export --irc --budget 512 "$tmp/rainbow.ans" "$tmp/rainbow.txt"
 # --fit: colours merged until every line is in the budget; text left alone
 for i in $(seq 0 79); do printf '\033[%d;%dm\xdf' $((30 + i % 8)) $((40 + (i + 3) % 8)); done > "$tmp/halves.ans"
 expect "half blocks over the budget" 3 '^1 line, longest 600 bytes, budget 407: 1 over$' -- "$cli" export --irc "$tmp/halves.ans" "$tmp/halves.txt"
@@ -256,8 +266,18 @@ expect "shades over the budget" 3 '^1 line, longest 560 bytes' -- "$cli" export 
 expect "--swap-shades" 0 '^1 line, longest 244 bytes, budget 407: 0 over$' -- "$cli" export --irc --swap-shades "$tmp/shade.ans" "$tmp/shade.txt"
 expect "export needs --irc" 2 'export needs a format: --irc' -- "$cli" export "$piece" "$tmp/x.txt"
 expect "export arity" 2 'export takes' -- "$cli" export --irc "$piece"
-expect "--budget must be a number" 2 '--budget takes a positive number' -- "$cli" export --irc --budget lots "$piece" "$tmp/x.txt"
-expect "--budget must be positive" 2 '--budget takes a positive number' -- "$cli" export --irc --budget 0 "$piece" "$tmp/x.txt"
+expect "--budget must be a number" 2 '--budget takes 1 to 512 bytes' -- "$cli" export --irc --budget lots "$piece" "$tmp/x.txt"
+expect "--budget must be positive" 2 '--budget takes 1 to 512 bytes' -- "$cli" export --irc --budget 0 "$piece" "$tmp/x.txt"
+# the range the app's Budget dialog and a project take: an IRC line is 512
+# bytes, CR LF included (#303)
+expect "--budget 1 is taken" 3 'budget 1: [0-9]+ over$' -- "$cli" export --irc --budget 1 "$piece" "$tmp/x.txt"
+for b in 513 600 99999 -1 18446744073709551617; do
+  expect "export --budget $b is refused" 2 '--budget takes 1 to 512 bytes' -- "$cli" export --irc --budget "$b" "$piece" "$tmp/x.txt"
+  expect "render --irc --budget $b is refused" 2 '--budget takes 1 to 512 bytes' -- "$cli" render --irc --budget "$b" "$piece" "$tmp/x.png"
+done
+if [[ -e $tmp/x.txt || -e $tmp/x.png ]]; then bad "a refused --budget wrote a file"; else ok "a refused --budget writes nothing"; fi
+expect "render --irc --budget 512 is taken" 0 '' -- "$cli" render --irc --budget 512 "$piece" "$tmp/x.png"
+expect "render --irc --budget 0 is refused" 2 '--budget takes 1 to 512 bytes' -- "$cli" render --irc --budget 0 "$piece" "$tmp/x.png"
 # export never writes over its input, whatever name the output gives it
 same=$tmp/same && mkdir -p "$same/sub"
 cp "$piece" "$same/a.ans"
@@ -552,7 +572,7 @@ expect "unknown option" 2 'Unknown option' -- "$cli" --bogus
 
 # library list / check
 lib=$data/library
-expect "library check: a good library" 0 '^2 stamp\(s\), 0 text style\(s\), 0 problem\(s\)$' -- "$cli" library check "$lib"
+expect "library check: a good library" 0 '^2 stamps, 0 text styles, 0 problems$' -- "$cli" library check "$lib"
 expect "library list: tab-separated" 0 $'^stamp\tsky\tSmall star\t5x3\t16\t-\tstar,night\t.*[/\\\\]sky[/\\\\]small-star\\.ans$' -- "$cli" library list "$lib"
 expect "library list: sorted by path" 0 $'^stamp\tfigures\tTux\t30x17\t80\t-\tpenguin,linux\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$lib"
 expect "library list: no dir lists the bundled and user libraries" 0 $'^stamp\tsky\tSmall star\t' -- env BLOCKWRIGHT_BUNDLED_LIBRARY="$lib" BLOCKWRIGHT_USER_LIBRARY="$tmp/no-user-lib" "$cli" library list
@@ -592,7 +612,7 @@ if [[ $problems == 9 ]]; then
   expect "library check: a broken link" 1 'dangling\.ans: broken symbolic link, skipped' -- "$cli" library check "$bl"
   expect "library list: a linked folder is a warning" 0 'warning: .*linked: symbolic link to a folder' -- "$cli" library list "$bl"
 fi
-expect "library check: counts" 1 "^0 stamp\\(s\\), 0 text style\\(s\\), $problems problem\\(s\\)\$" -- "$cli" library check "$bl"
+expect "library check: counts" 1 "^0 stamps, 0 text styles, $problems problems\$" -- "$cli" library check "$bl"
 expect "library list: problems are warnings" 0 'warning: .*orphan\.json: sidecar with no orphan\.ans' -- "$cli" library list "$bl"
 b2=$tmp/badlib2; mkdir -p "$b2"
 cp "$lib/sky/small-star.ans" "$b2/dup.ans"
@@ -619,7 +639,10 @@ cat > "$sl/text/hot.style.json" <<'JSON'
 {"kind": "text-style", "name": "Hot", "category": "classic", "tags": ["fire"], "ice": "required",
  "effects": [{"kind": "fill", "enabled": true, "colour": 7, "mode": "rows", "ramp": "fire"}]}
 JSON
-expect "library check: text styles" 0 '^1 stamp\(s\), 2 text style\(s\), 0 problem\(s\)$' -- "$cli" library check "$sl"
+expect "library check: text styles" 0 '^1 stamp, 2 text styles, 0 problems$' -- "$cli" library check "$sl"
+s1=$tmp/stylelib1; mkdir -p "$s1"
+cp "$sl/text/gold.style.json" "$s1/"; cp "$lib/sky/small-star.json" "$s1/orphan.json"
+expect "library check: one of each in the singular" 1 '^0 stamps, 1 text style, 1 problem$' -- "$cli" library check "$s1"
 expect "library list: a text style's kind and sample" 0 $'^text-style\tclassic\tGold\t[0-9]+x[0-9]+\t[0-9]+\t-\tgold,3d\t.*[/\\\\]text[/\\\\]gold\\.style\\.json$' -- "$cli" library list "$sl"
 expect "library list: a text style that needs iCE colours" 0 $'^text-style\tclassic\tHot\t[0-9]+x[0-9]+\t[0-9]+\tice\tfire\t' -- "$cli" library list "$sl"
 expect "library list: stamps first" 0 $'^stamp\tsky\tSmall star\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$sl"
@@ -647,7 +670,7 @@ expect "library check: a sidecar named as a text style is no sidecar" 1 'star\.s
 expect "library check: a key repeated in an effect" 1 'dupeffect\.style\.json: text style has the key "colour" more than once' -- "$cli" library check "$s2"
 expect "library check: a key repeated in an effect, escaped" 1 'escdup\.style\.json: text style has the key "colour" more than once' -- "$cli" library check "$s2"
 expect "library check: a flat fill's ramp that doesn't exist" 1 'flatramp\.style\.json: text style: fill ramp "does-not-exist" is not a named ramp' -- "$cli" library check "$s2"
-expect "library check: text style counts" 1 '^0 stamp\(s\), 0 text style\(s\), 9 problem\(s\)$' -- "$cli" library check "$s2"
+expect "library check: text style counts" 1 '^0 stamps, 0 text styles, 9 problems$' -- "$cli" library check "$s2"
 if [[ $(id -u) -ne 0 ]]; then
   b3=$tmp/badlib3; mkdir -p "$b3/locked"; cp "$lib/sky/small-star."* "$b3/"
   chmod 000 "$b3/locked"
@@ -691,8 +714,13 @@ expect "info: snapshots" 0 '^snapshots: +1 \(last r1\)$' -- "$cli" info "$proj/t
 expect "snapshot takes a project" 1 'tux\.ans: not a project' -- "$cli" snapshot "$piece"
 expect "pack takes --allow-lossy" 0 '^$' -- "$cli" pack --allow-lossy "$piece" "$proj/x.bwp"
 cp "$proj/tux.bwp" "$proj/keep.bwp"
-expect "a flat file never replaces a project" 1 'keep\.bwp: not written: it is a project' -- "$cli" convert "$piece" "$proj/keep.bwp"
+expect "a flat file never replaces a project" 1 'keep\.bwp: not written: convert writes \.ans, \.xb or \.bin; use pack for a project' -- "$cli" convert "$piece" "$proj/keep.bwp"
 if cmp -s "$proj/tux.bwp" "$proj/keep.bwp"; then ok "the project is untouched"; else bad "convert wrote over a project"; fi
+# by any name: a project zip named .ans, and a project directory
+cp "$proj/tux.bwp" "$proj/keep.ans"
+expect "a flat file never replaces a project named .ans" 1 'keep\.ans: not written: it is a project' -- "$cli" convert "$piece" "$proj/keep.ans"
+if cmp -s "$proj/tux.bwp" "$proj/keep.ans"; then ok "the project named .ans is untouched"; else bad "convert wrote over a project named .ans"; fi
+expect "a flat file never replaces a project directory" 1 'tux: not written: it is a project' -- "$cli" convert "$piece" "$proj/tux"
 mkdir -p "$proj/photos"; echo precious > "$proj/photos/cat.jpg"
 expect "unpack refuses a directory that isn't a project" 1 'photos: .*not empty and holds no project' -- "$cli" unpack "$piece" "$proj/photos"
 if [[ $(ls "$proj/photos") == cat.jpg ]]; then ok "the directory is untouched"; else bad "unpack wrote into a non-project directory"; fi

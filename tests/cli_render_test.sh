@@ -90,6 +90,8 @@ fi
 # render --irc: the IRC view, the mIRC palette and each line cut at the budget
 big=$data/golden/cocktober.ans  # 120x120
 expect "--help lists render --irc" 0 'render --irc <in> <out\.png>' -- "$cli" --help
+expect "--help gives render --irc's budget default and range" 0 "512 \\(default: a project's own, else 407\\)" -- "$cli" --help
+expect "--help says --fit, --pad and --swap-shades apply to render --irc" 0 '--pad and --swap-shades apply as in export --irc' -- "$cli" --help
 expect "render --irc: a 120-row piece fits 407 bytes" 0 '^IRC view: 0 rows cut at 407 bytes$' -- "$cli" render --irc "$big" "$tmp/irc.png"
 size_is "render --irc is the canvas's size" "$tmp/irc.png" 960x1920
 "$cli" render "$big" "$tmp/plain.png"
@@ -104,8 +106,8 @@ expect "render --irc a byte under it" 0 "^IRC view: $at rows? cut at $((widest -
 expect "render --irc --scale --font-width" 0 '^IRC view: 0 rows cut' -- "$cli" render --irc --scale 2 --font-width 9 "$piece" "$tmp/irc-tux.png"
 size_is "render --irc --scale 2 at 9 px" "$tmp/irc-tux.png" 540x544
 expect "render --budget needs --irc" 2 '^blockwright-cli: --budget is a render --irc option$' -- "$cli" render --budget 60 "$piece" "$tmp/x.png"
-expect "render --irc bad budget" 2 '--budget takes a positive number of bytes' -- "$cli" render --irc --budget 0 "$piece" "$tmp/x.png"
-expect "render --irc bad budget text" 2 '--budget takes a positive number of bytes' -- "$cli" render --irc --budget lots "$piece" "$tmp/x.png"
+expect "render --irc bad budget" 2 '--budget takes 1 to 512 bytes' -- "$cli" render --irc --budget 0 "$piece" "$tmp/x.png"
+expect "render --irc bad budget text" 2 '--budget takes 1 to 512 bytes' -- "$cli" render --irc --budget lots "$piece" "$tmp/x.png"
 expect "render --irc onto its input refused" 1 'not written: it is the input file' -- "$cli" render --irc "$piece" "$piece"
 if [[ -e $tmp/x.png ]]; then bad "a refused render --irc wrote $tmp/x.png"; else ok "refused renders --irc write nothing"; fi
 
