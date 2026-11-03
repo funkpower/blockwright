@@ -2,7 +2,7 @@
 // The whole lint (PLAN §3, §10): the ladder check (lint.h) under each ramp,
 // the pixel noise score, and the craft rules that
 // a program can judge (stray cells, same-colour merges, dotted diagonals,
-// flat areas, what IRC drops, glyphs with no CP437 code). The lint panel and
+// flat areas, what IRC drops, glyphs an .ans saves as '?'). The lint panel and
 // `blockwright-cli lint` both run lintCanvas, so they agree.
 #include "blockwright/lint.h"
 
@@ -33,7 +33,7 @@ struct Finding {
         Flat,            // an area of one flat look in the box, 4x2-cell windows wide
         TrailingBlack,   // black cells at a row's end beside rows that reach the edge: IRC drops them
         BlankEdgeRows,   // blank rows above or below the art: IRC trims them
-        NoCp437,         // a glyph CP437 has no code for: it saves as '?'
+        NoCp437,         // a glyph an .ans saves as '?': no CP437 code, or a control byte there
     };
     Kind kind = Kind::Noise;
     std::string ramp;  // the ramp a ladder finding came from; empty for the rest
@@ -96,7 +96,9 @@ struct RuleOptions {
 //   the client's background instead.
 // - BlankEdgeRows: blank rows above or below the art, which the export trims
 //   (a margin needs a black-on-black █).
-// - NoCp437: a glyph with no CP437 code, which an .ans saves as '?'.
+// - NoCp437: a glyph an .ans saves as '?': one with no CP437 code, or one
+//   whose CP437 byte .ans reads as a control code (ansControlByte: ○ ◙ ♪ → ←),
+//   which XBIN and BIN keep.
 std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options = {});
 
 // Whether hand shading goes between the two colours, either way round,

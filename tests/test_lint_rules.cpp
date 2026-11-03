@@ -404,6 +404,28 @@ TEST_CASE("a glyph with no CP437 code is found; CP437's own aren't", "[lint][rul
     CHECK(found[0].message == "U+2603 ☃ has no CP437 code: an .ans saves it as '?'");
 }
 
+TEST_CASE("a glyph whose CP437 byte .ans reads as a control code is found, with why", "[lint][rules]") {
+    // #300: an .ans save writes these as '?', so no-cp437 flags them too
+    Canvas c = filled(7, 1, cell(U' ', Grey, Black));
+    const std::u32string row = U"○◙♪→←•☺";
+    for (int x = 0; x < 7; ++x)
+        c.at(x, 0) = cell(row[std::size_t(x)], White, Black);
+    auto found = rules(c, Kind::NoCp437);
+    REQUIRE(found.size() == 5);
+    CHECK(found[0].x == 0);
+    CHECK(found[0].message ==
+          "U+25CB ○ is CP437 0x09, which .ans reads as TAB: an .ans saves it as '?' (XBIN and BIN keep it)");
+    CHECK(found[1].message ==
+          "U+25D9 ◙ is CP437 0x0A, which .ans reads as LF: an .ans saves it as '?' (XBIN and BIN keep it)");
+    CHECK(found[2].message ==
+          "U+266A ♪ is CP437 0x0D, which .ans reads as CR: an .ans saves it as '?' (XBIN and BIN keep it)");
+    CHECK(found[3].message ==
+          "U+2192 → is CP437 0x1A, which .ans reads as SUB: an .ans saves it as '?' (XBIN and BIN keep it)");
+    CHECK(found[4].message ==
+          "U+2190 ← is CP437 0x1B, which .ans reads as ESC: an .ans saves it as '?' (XBIN and BIN keep it)");
+    CHECK(found[4].x == 4);  // • and ☺ (0x07, 0x01) draw, so aren't found
+}
+
 TEST_CASE("kinds have distinct names and only the ladder's name a ramp", "[lint][rules]") {
     std::set<std::string_view> names;
     for (int k = int(Kind::NonNeighbourShade); k <= int(Kind::NoCp437); ++k)

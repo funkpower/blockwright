@@ -258,16 +258,30 @@ void save(const std::string& out, const std::string& bytes) {
 // before it got here (openAsEditor), counted with what writeAnsi drops.
 // Warns once per kind of loss in what writeAnsi wrote for `in`, with a count.
 void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
-    if (const size_t n = res.unwritable.size()) {
-        const bw::Unwritable& u = res.unwritable.front();
+    // The first cell written as '?' whose byte is (or isn't) a control code in .ans.
+    const auto first = [&](bool control) {
+        return *std::find_if(res.unwritable.begin(), res.unwritable.end(),
+                             [&](const bw::Unwritable& u) { return bw::ansControlByte(u.ch).has_value() == control; });
+    };
+    const auto where = [](const bw::Unwritable& u) {
         std::string glyph;
         bw::appendUtf8(glyph, u.ch);
+        char code[16];
+        std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(u.ch));
+        return "(first: " + std::string(code) + " '" + glyph + "' at column " + std::to_string(u.x + 1) + ", row " +
+               std::to_string(u.y + 1) + ")";
+    };
+    const int controls = bw::ansControlCount(res.unwritable);
+    if (const int n = int(res.unwritable.size()) - controls)
         std::cerr << "blockwright-cli: warning: " << in << ": " << n
-                  << (n == 1 ? " glyph has" : " glyphs have") << " no CP437 byte and "
-                  << (n == 1 ? "is" : "are") << " written as '?' (first: U+" << std::hex << std::uppercase
-                  << unsigned(u.ch) << std::dec << " '" << glyph << "' at column " << u.x + 1 << ", row " << u.y + 1
-                  << ")\n";
-    }
+                  << (n == 1 ? " glyph has no CP437 code and is" : " glyphs have no CP437 code and are")
+                  << " written as '?' " << where(first(false)) << "\n";
+    if (const int n = controls)
+        std::cerr << "blockwright-cli: warning: " << in << ": " << n
+                  << (n == 1 ? " glyph has a CP437 byte .ans reads as a control code ("
+                             : " glyphs have CP437 bytes .ans reads as control codes (")
+                  << bw::ansControlNames(res.unwritable) << ") and " << (n == 1 ? "is" : "are") << " written as '?' "
+                  << where(first(true)) << "; XBIN and BIN keep " << (n == 1 ? "it" : "them") << "\n";
     if (const int n = res.blinkDropped)
         std::cerr << "blockwright-cli: warning: " << in << ": " << n
                   << (n == 1 ? " blinking cell loses its blink" : " blinking cells lose their blink")

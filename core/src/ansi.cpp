@@ -366,12 +366,49 @@ bool blankBlack(const Cell& c, bool ice) {
     return c.transparent || (c.ch == U' ' && c.bg.paletteIndex() == Black && (ice || !(c.attrs & attr::Blink)));
 }
 
-bool writableByte(std::uint8_t b) {
-    // bytes the parser acts on instead of drawing
-    return b != 0x09 && b != 0x0a && b != 0x0d && b != 0x1a && b != 0x1b;
-}
+bool writableByte(std::uint8_t b) { return !ansControlName(b); }
 
 } // namespace
+
+const char* ansControlName(std::uint8_t b) {
+    // bytes the parser acts on instead of drawing
+    switch (b) {
+    case 0x09: return "TAB";
+    case 0x0a: return "LF";
+    case 0x0d: return "CR";
+    case 0x1a: return "SUB";
+    case 0x1b: return "ESC";
+    default: return nullptr;
+    }
+}
+
+std::optional<std::uint8_t> ansControlByte(char32_t ch) {
+    const std::optional<std::uint8_t> b = unicodeToCp437(ch);
+    if (b && ansControlName(*b))
+        return b;
+    return std::nullopt;
+}
+
+std::string ansControlNames(const std::vector<Unwritable>& cells) {
+    std::vector<std::string_view> seen;
+    std::string names;
+    for (const Unwritable& u : cells)
+        if (const std::optional<std::uint8_t> b = ansControlByte(u.ch)) {
+            const std::string_view name = ansControlName(*b);
+            if (std::find(seen.begin(), seen.end(), name) != seen.end())
+                continue;
+            seen.push_back(name);
+            if (!names.empty())
+                names += ", ";
+            names += name;
+        }
+    return names;
+}
+
+int ansControlCount(const std::vector<Unwritable>& cells) {
+    return static_cast<int>(std::count_if(cells.begin(), cells.end(),
+                                          [](const Unwritable& u) { return ansControlByte(u.ch).has_value(); }));
+}
 
 bool isWritableGlyph(char32_t ch) {
     const std::optional<std::uint8_t> b = unicodeToCp437(ch);

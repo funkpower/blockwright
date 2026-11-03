@@ -846,9 +846,17 @@ StampFiles encodeChecked(const std::string& name, const std::string& category, c
     doc.sauce->title = name;
     doc.sauce->setIce(ice);
     const AnsiOutput out = writeAnsi(doc);
-    if (!out.unwritable.empty())
-        throw LibraryError(std::to_string(out.unwritable.size()) +
-                           " cell(s) hold a glyph with no CP437 code, which .ans can't store");
+    if (!out.unwritable.empty()) {
+        const int controls = ansControlCount(out.unwritable);
+        std::string why;
+        if (const int n = int(out.unwritable.size()) - controls)
+            why = std::to_string(n) + " cell(s) hold a glyph with no CP437 code";
+        if (controls)
+            why += (why.empty() ? "" : " and ") + std::to_string(controls) +
+                   " cell(s) hold a glyph whose CP437 byte .ans reads as a control code (" +
+                   ansControlNames(out.unwritable) + ")";
+        throw LibraryError(why + ", which .ans can't store");
+    }
     if (out.blinkDropped)
         throw LibraryError(std::to_string(out.blinkDropped) + " blinking cell(s) would lose their blink");
 

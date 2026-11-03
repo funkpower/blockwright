@@ -1,5 +1,6 @@
 #include "blockwright/lint_rules.h"
 
+#include "blockwright/ansi.h"
 #include "blockwright/cp437.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/irc.h"
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <set>
 #include <tuple>
 
@@ -359,16 +361,24 @@ void noCp437(const Canvas& canvas, std::vector<Finding>& out) {
     for (int y = 0; y < canvas.height(); ++y)
         for (int x = 0; x < canvas.width(); ++x) {
             const Cell& c = canvas.at(x, y);
-            if (c.transparent || c.ch < 0x20 || c.ch == 0x7f || unicodeToCp437(c.ch))
+            const std::optional<std::uint8_t> control = ansControlByte(c.ch);
+            if (c.transparent || c.ch < 0x20 || c.ch == 0x7f || (unicodeToCp437(c.ch) && !control))
                 continue;
             char code[16];
             std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(c.ch));
             std::string glyph;
             if (c.ch <= 0x10ffff && !(c.ch >= 0xd800 && c.ch <= 0xdfff))
                 appendUtf8(glyph, c.ch);
-            out.push_back(make(Kind::NoCp437, x, y, x, y,
-                               std::string(code) + (glyph.empty() ? "" : " " + glyph) +
-                                   " has no CP437 code: an .ans saves it as '?'"));
+            std::string message = std::string(code) + (glyph.empty() ? "" : " " + glyph);
+            if (control) {
+                char byte[8];
+                std::snprintf(byte, sizeof byte, "0x%02X", unsigned(*control));
+                message += std::string(" is CP437 ") + byte + ", which .ans reads as " + ansControlName(*control) +
+                           ": an .ans saves it as '?' (XBIN and BIN keep it)";
+            } else {
+                message += " has no CP437 code: an .ans saves it as '?'";
+            }
+            out.push_back(make(Kind::NoCp437, x, y, x, y, message));
         }
 }
 

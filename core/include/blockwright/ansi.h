@@ -64,7 +64,9 @@ struct Unwritable {
 
 struct AnsiOutput {
     std::string bytes;
-    std::vector<Unwritable> unwritable;  // cells written as '?'
+    // Cells written as '?': a glyph with no CP437 code, or (.ans only) one
+    // whose byte .ans reads as a control code (ansControlByte).
+    std::vector<Unwritable> unwritable;
     // Blinking cells written without their blink: the file is written with
     // iCE colours on, where blink means a bright background. Only cells whose
     // blink shows count: blink hides and shows the foreground, so on a blank
@@ -142,6 +144,25 @@ bool writesAlike(const Cell& a, const Cell& b);
 // Whether writeAnsi writes `ch` as itself: it has a CP437 byte and that byte
 // isn't one the parser acts on (TAB, LF, CR, SUB, ESC) or NUL.
 bool isWritableGlyph(char32_t ch);
+
+// The control code the ANSI parser reads CP437 byte `b` as instead of
+// drawing it ("TAB", "LF", "CR", "SUB" or "ESC" for 0x09, 0x0A, 0x0D, 0x1A,
+// 0x1B), or nullptr for a byte it draws.
+const char* ansControlName(std::uint8_t b);
+
+// The CP437 byte of `ch` when it is one ansControlName names: CP437 has the
+// glyph (○ ◙ ♪ → ←) but .ans can't hold its byte, so writeAnsi writes '?'
+// for it. XBIN and BIN keep it. Nothing for any other glyph.
+std::optional<std::uint8_t> ansControlByte(char32_t ch);
+
+// The names (ansControlName) of the control codes the glyphs in `cells` have
+// bytes for, each once, in the order they are first met, joined by ", "
+// ("TAB, ESC, LF"); empty if none has one.
+std::string ansControlNames(const std::vector<Unwritable>& cells);
+
+// How many of `cells` hold a glyph ansControlByte has a byte for; the rest
+// have no CP437 code.
+int ansControlCount(const std::vector<Unwritable>& cells);
 
 // Whether `ch` draws no foreground: a space, NUL or 0xFF (U+00A0). Blink
 // (with iCE off) hides and shows the foreground, so on these it shows nothing.

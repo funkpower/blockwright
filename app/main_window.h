@@ -64,6 +64,12 @@ void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project 
 
 // What a lossy save or snapshot loses, one line per kind of loss.
 QString lossDescription(const AnsiOutput& out);
+
+// The status-bar message for typed or committed `text` whose glyphs
+// isTypeable refuses: for each glyph CP437 has but .ans can't hold, its byte
+// and the control code .ans reads it as ("○ is CP437 0x09, which .ans reads
+// as TAB"), then the glyphs with no CP437 code; then "; not typed".
+QString rejectedGlyphsMessage(const QString& text);
 // The question Save asks before a lossy save (AnsiOutput::lossy) as .ans
 // (or the XBIN or BIN `format` names), or, with `project`, as a project
 // (which keeps every glyph, so only blink lost on open and an XBIN's palette

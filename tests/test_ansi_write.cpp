@@ -122,6 +122,43 @@ TEST_CASE("Glyphs with no CP437 byte are written as '?' and reported", "[write]"
     CHECK(body(out.bytes) == "\x1b[0m\x1b[0;1;37;40m????\x07\x1b[0m\r\n");
 }
 
+TEST_CASE("Glyphs whose CP437 byte .ans reads as a control code are told apart", "[write]") {
+    // #300: CP437 has ○ ◙ ♪ → ← (0x09 0x0A 0x0D 0x1A 0x1B), but the parser
+    // reads those bytes as TAB, LF, CR, SUB and ESC
+    CHECK(ansControlByte(U'○') == 0x09);
+    CHECK(ansControlByte(U'◙') == 0x0a);
+    CHECK(ansControlByte(U'♪') == 0x0d);
+    CHECK(ansControlByte(U'→') == 0x1a);
+    CHECK(ansControlByte(U'←') == 0x1b);
+    CHECK(std::string(ansControlName(0x09)) == "TAB");
+    CHECK(std::string(ansControlName(0x0a)) == "LF");
+    CHECK(std::string(ansControlName(0x0d)) == "CR");
+    CHECK(std::string(ansControlName(0x1a)) == "SUB");
+    CHECK(std::string(ansControlName(0x1b)) == "ESC");
+    CHECK_FALSE(ansControlByte(U'★'));  // no CP437 code at all
+    CHECK_FALSE(ansControlByte(U'•'));  // 0x07 draws
+    CHECK_FALSE(ansControlByte(U'A'));
+    CHECK_FALSE(ansControlByte(U'\0'));  // NUL is written as a space
+    CHECK_FALSE(ansControlByte(U'\t'));  // the codepoint TAB has no CP437 code; ○ is 0x09
+    for (int b = 0; b < 256; ++b)
+        CHECK((ansControlName(std::uint8_t(b)) != nullptr) ==
+              (b == 0x09 || b == 0x0a || b == 0x0d || b == 0x1a || b == 0x1b));
+
+    // the row of #300's repro, with a glyph CP437 has no code for after it
+    AnsiDocument doc;
+    doc.canvas = Canvas(7, 1);
+    const std::u32string row = U"○←◙A★○→";
+    for (int x = 0; x < 7; ++x)
+        doc.canvas.at(x, 0) = cell(row[std::size_t(x)], White, Black);
+    const AnsiOutput out = writeAnsi(doc);
+    REQUIRE(out.unwritable.size() == 6);
+    CHECK(ansControlCount(out.unwritable) == 5);
+    CHECK(ansControlNames(out.unwritable) == "TAB, ESC, LF, SUB");  // first met order, each once
+    CHECK(ansControlNames({}).empty());
+    CHECK(ansControlNames({{0, 0, U'★'}}).empty());
+    CHECK(ansControlCount({{0, 0, U'★'}}) == 0);
+}
+
 TEST_CASE("RGB cells are quantised when written", "[write]") {
     AnsiDocument doc;
     doc.canvas = Canvas(2, 1);

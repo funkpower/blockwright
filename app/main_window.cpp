@@ -49,9 +49,14 @@ const QString kFilter = QObject::tr("Blockwright projects and ANSI art (*.bwp *.
 
 QString lossDescription(const AnsiOutput& out) {
     QStringList parts;
-    if (!out.unwritable.empty())
-        parts << QObject::tr("%n cell(s) hold a glyph with no CP437 code and will be written as '?'", nullptr,
-                             int(out.unwritable.size()));
+    const int controls = ansControlCount(out.unwritable);
+    if (const int n = int(out.unwritable.size()) - controls)
+        parts << QObject::tr("%n cell(s) hold a glyph with no CP437 code and will be written as '?'", nullptr, n);
+    if (controls)
+        parts << QObject::tr("%n cell(s) hold a glyph whose CP437 byte .ans reads as a control code (%1) and will be "
+                             "written as '?' (XBIN and BIN keep them)",
+                             nullptr, controls)
+                     .arg(QString::fromStdString(ansControlNames(out.unwritable)));
     // From the editor this is blink the file had and lost when it was opened
     // with iCE colours that this save still writes without (see
     // Document::encode). It claims nothing about the original file, which a
@@ -65,6 +70,23 @@ QString lossDescription(const AnsiOutput& out) {
     if (out.fontDropped)
         parts << QObject::tr("the file's own font is left out (only XBIN keeps one)");
     return parts.join(QStringLiteral(";\n"));
+}
+
+QString rejectedGlyphsMessage(const QString& text) {
+    QStringList parts;
+    QString uncoded;
+    for (const char32_t ch : text.toUcs4()) {
+        const QString glyph = QString::fromUcs4(&ch, 1);
+        if (const std::optional<std::uint8_t> b = ansControlByte(ch))
+            parts << QObject::tr("%1 is CP437 0x%2, which .ans reads as %3")
+                         .arg(glyph, QStringLiteral("%1").arg(uint(*b), 2, 16, QLatin1Char('0')).toUpper(),
+                              QString::fromLatin1(ansControlName(*b)));
+        else
+            uncoded += glyph;
+    }
+    if (!uncoded.isEmpty())
+        parts << QObject::tr("%1 has no CP437 code").arg(uncoded);
+    return QObject::tr("%1; not typed").arg(parts.join(QStringLiteral("; ")));
 }
 
 QString saveWarning(const AnsiOutput& out, bool project, ArtFormat format) {
@@ -196,7 +218,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(view_, &CanvasView::penChanged, palette_, &PaletteWidget::setPen);
     connect(view_, &CanvasView::glyphSetChanged, this, &MainWindow::updateGlyphSet);
     connect(view_, &CanvasView::glyphRejected, this, [this](const QString& text) {
-        statusBar()->showMessage(tr("%1 has no CP437 glyph; not typed").arg(text), 3000);
+        statusBar()->showMessage(rejectedGlyphsMessage(text), 3000);
     });
     connect(view_, &CanvasView::layerMoveStatus, this, [this](const QString& text) {
         statusBar()->showMessage(text);

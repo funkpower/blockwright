@@ -162,6 +162,22 @@ expect "unpack --allow-lossy writes without the font" 0 'its font is left out' -
 expect "the packed project is the XBIN's cells" 0 '^size: +30x17$' -- "$cli" info "$tmp/pf.bwp"
 [[ -f $tmp/pf-dir/manifest.json ]] && ok "unpack --allow-lossy wrote the project" || bad "unpack --allow-lossy wrote no project"
 expect "pack: an XBIN without a palette or font is not lossy" 0 '^$' -- "$cli" pack "$tmp/tux.xb" "$tmp/tux-xb.bwp"
+# #300: ○ ← ◙ are CP437 0x09 0x1B 0x0A, which XBIN and BIN keep and .ans reads as TAB, ESC and LF
+printf 'XBIN\x1a\x04\x00\x01\x00\x10\x00\x09\x07\x1b\x07\x0a\x07\x41\x07' > "$tmp/ctl.xb"
+expect "control bytes lost as .ans: refused, and says which" 1 \
+  "^blockwright-cli: warning: .*ctl\.xb: 3 glyphs have CP437 bytes \.ans reads as control codes \(TAB, ESC, LF\) and are written as '\?' \(first: U\+25CB '○' at column 1, row 1\); XBIN and BIN keep them$" -- \
+  "$cli" convert "$tmp/ctl.xb" "$tmp/ctl.ans"
+if "$cli" convert "$tmp/ctl.xb" "$tmp/ctl.ans" 2>&1 | grep -q 'no CP437'; then bad "control bytes called glyphs with no CP437 code"; else ok "control bytes not called glyphs with no CP437 code"; fi
+expect "control bytes: --allow-lossy writes '?'" 0 'XBIN and BIN keep them' -- "$cli" convert --allow-lossy "$tmp/ctl.xb" "$tmp/ctl.ans"
+if [[ $(head -c 32 "$tmp/ctl.ans") == *'???A'* ]]; then ok "control bytes written as '?' in .ans"; else bad "control bytes not written as '?': $(head -c 32 "$tmp/ctl.ans" | od -c)"; fi
+expect "control bytes kept as .bin" 0 '^$' -- "$cli" convert "$tmp/ctl.xb" "$tmp/ctl.bin"
+if [[ $(head -c 8 "$tmp/ctl.bin" | od -An -tx1 | tr -d ' \n') == 09071b070a074107 ]]; then ok "BIN keeps the control bytes"; else bad "BIN lost the control bytes: $(head -c 8 "$tmp/ctl.bin" | od -An -tx1)"; fi
+expect "lint: control bytes are no-cp437, with why" 4 "^0,0 no-cp437 - U\+25CB ○ is CP437 0x09, which \.ans reads as TAB: an \.ans saves it as '\?' \(XBIN and BIN keep it\)$" -- \
+  "$cli" lint "$tmp/ctl.xb"
+expect "lint: each control byte is found" 4 '^3 findings \(3 no-cp437\)' -- "$cli" lint "$tmp/ctl.xb"
+expect "a glyph with no CP437 code says so" 1 \
+  "warning: .*unwritable\.bwp: 1 glyph has no CP437 code and is written as '\?' \(first: U\+2605 '★' at column 1, row 1\)$" -- \
+  "$cli" convert "$data/projects/unwritable.bwp" "$tmp/unwritable.ans"
 # SAUCE is only what follows the cells: cells that spell it are cells, and
 # a last 0x1A attribute right before the record is a cell, not its EOF
 { printf 'XBIN\x1a\x40\x00\x01\x00\x10\x08SAUCE00'; head -c 121 /dev/zero; } > "$tmp/spelled.xb"
@@ -664,7 +680,7 @@ expect "pack: blink lost on opening" 0 'warning: .*lossy\.ans: 1 blinking cell l
 "$cli" convert --allow-lossy "$tmp/lossy.ans" "$proj/lossy-direct.ans" 2> /dev/null
 "$cli" convert "$proj/lossy.bwp" "$proj/lossy-via.ans"
 if cmp -s "$proj/lossy-direct.ans" "$proj/lossy-via.ans"; then ok "a project writes the .ans convert writes"; else bad "pack then convert differs from convert"; fi
-expect "pack: a project with a glyph with no CP437 byte" 0 '^$' -- "$cli" pack "$data/projects/unwritable.bwp" "$proj/glyph.bwp"
+expect "pack: a project with a glyph with no CP437 code" 0 '^$' -- "$cli" pack "$data/projects/unwritable.bwp" "$proj/glyph.bwp"
 expect "lossy snapshot refused" 1 'glyph\.bwp: r1 not saved: the snapshot loses data' -- "$cli" snapshot "$proj/glyph.bwp"
 expect "lossy snapshot saved nothing" 0 '^snapshots: +0$' -- "$cli" info "$proj/glyph.bwp"
 expect "lossy snapshot with --allow-lossy" 0 '^r1$' -- "$cli" snapshot --allow-lossy "$proj/glyph.bwp"

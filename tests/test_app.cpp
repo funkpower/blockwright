@@ -35,6 +35,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
+#include <QStatusBar>
 #include <QTemporaryDir>
 #ifdef Q_OS_MACOS
 #include <QFont>
@@ -610,9 +611,73 @@ TEST_CASE("input-method commits type like keys") {
     CHECK(rejected == QStringList{QStringLiteral("★")});
     CHECK(v->cellCursor() == Cursor{1, 0});
     CHECK(w.document()->canvas().at(1, 0) == Cell{});
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("★ has no CP437 code; not typed"));
+
+    // #306: so is one CP437 has but .ans can't hold, and the status bar says why
+    QInputMethodEvent circle;
+    circle.setCommitString(QStringLiteral("○"));
+    QApplication::sendEvent(v, &circle);
+    CHECK(rejected.last() == QStringLiteral("○"));
+    CHECK(w.document()->canvas().at(1, 0) == Cell{});
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; not typed"));
 
     // the input method is told where the cursor is
     CHECK(v->inputMethodQuery(Qt::ImCursorRectangle).toRect() == v->cellRect(v->cellCursor()));
+}
+
+TEST_CASE("the typing refusal says why each glyph can't be typed") {
+    // #306: the five CP437 glyphs .ans can't hold say which byte and control code
+    CHECK(rejectedGlyphsMessage(QStringLiteral("○")) ==
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("◙")) ==
+          QStringLiteral("◙ is CP437 0x0A, which .ans reads as LF; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("♪")) ==
+          QStringLiteral("♪ is CP437 0x0D, which .ans reads as CR; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("→")) ==
+          QStringLiteral("→ is CP437 0x1A, which .ans reads as SUB; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("←")) ==
+          QStringLiteral("← is CP437 0x1B, which .ans reads as ESC; not typed"));
+    // a glyph with no CP437 code keeps its own reason, and a mix gives both
+    CHECK(rejectedGlyphsMessage(QStringLiteral("★")) == QStringLiteral("★ has no CP437 code; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("★○…")) ==
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ★… has no CP437 code; not typed"));
+}
+
+TEST_CASE("the save warning tells glyphs with no CP437 code from control bytes") {
+    // #300: the cells writeAnsi lists as '?' for either reason
+    AnsiOutput out;
+    out.unwritable = {{0, 0, U'○'}, {1, 0, U'←'}, {2, 0, U'★'}, {3, 0, U'◙'}, {4, 0, U'○'}};
+    const QString lost = lossDescription(out);
+    CHECK(lost.contains(QStringLiteral("1 cell(s) hold a glyph with no CP437 code and will be written as '?'")));
+    CHECK(lost.contains(QStringLiteral("4 cell(s) hold a glyph whose CP437 byte .ans reads as a control code "
+                                       "(TAB, ESC, LF) and will be written as '?' (XBIN and BIN keep them)")));
+    out.unwritable = {{0, 0, U'○'}};
+    CHECK_FALSE(lossDescription(out).contains(QStringLiteral("no CP437 code")));
+    out.unwritable = {{0, 0, U'★'}};
+    CHECK_FALSE(lossDescription(out).contains(QStringLiteral("control code")));
+
+    // the editor's own save of #300's XBIN: .ans loses the bytes and says
+    // which, XBIN keeps them
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    std::string xb("XBIN\x1a\x04\x00\x01\x00\x10\x00", 11);
+    for (const char b : {'\x09', '\x1b', '\x0a', 'A'})
+        xb += {b, '\x07'};
+    const QString path = tmp.filePath(QStringLiteral("ctl.xb"));
+    {
+        QFile f(path);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        REQUIRE(f.write(xb.data(), qint64(xb.size())) == qint64(xb.size()));
+    }
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(path, &error));
+    CHECK_FALSE(w.document()->encode(ArtFormat::Xbin).lossy());
+    CHECK_FALSE(w.document()->encode(ArtFormat::Bin).lossy());
+    const AnsiOutput ans = w.document()->encode(ArtFormat::Ansi);
+    CHECK(saveWarning(ans) == QStringLiteral("Before saving as .ans:\n3 cell(s) hold a glyph whose CP437 byte .ans "
+                                             "reads as a control code (TAB, ESC, LF) and will be written as '?' "
+                                             "(XBIN and BIN keep them).\n\nSave anyway?"));
 }
 
 TEST_CASE("an input-method commit replaces the cells it names") {

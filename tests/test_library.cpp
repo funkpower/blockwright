@@ -10,6 +10,7 @@
 #include "blockwright/selection.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <cstdlib>
@@ -300,8 +301,19 @@ TEST_CASE("encodeStamp refuses what a stamp can't hold") {
     CHECK_THROWS_AS(encodeStamp("Pine", "trees", {}, CellBlock{}, true), LibraryError);
     CHECK_THROWS_AS(encodeStamp("Pine", "trees", {}, CellBlock(3, 2), true), LibraryError);  // all blank
     CellBlock star = b;
-    star.at(0, 0) = cell(U'★', Yellow);  // no CP437 glyph
-    CHECK_THROWS_AS(encodeStamp("Pine", "trees", {}, star, true), LibraryError);
+    star.at(0, 0) = cell(U'★', Yellow);  // no CP437 code
+    CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, star, true),
+                      "1 cell(s) hold a glyph with no CP437 code, which .ans can't store");
+    // #300: ◙ has CP437 0x0A, but .ans reads that byte as LF
+    CellBlock lf = b;
+    lf.at(0, 0) = cell(U'◙', Yellow);
+    CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, lf, true),
+                      "1 cell(s) hold a glyph whose CP437 byte .ans reads as a control code (LF), which .ans can't "
+                      "store");
+    lf.at(1, 0) = cell(U'★', Yellow);
+    CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, lf, true),
+                      "1 cell(s) hold a glyph with no CP437 code and 1 cell(s) hold a glyph whose CP437 byte .ans "
+                      "reads as a control code (LF), which .ans can't store");
 }
 
 TEST_CASE("a stamp is written as the editor saves its cells with the document's iCE") {

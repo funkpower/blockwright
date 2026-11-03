@@ -229,8 +229,9 @@ signals:
     void zoomChanged(int zoom);
     void penChanged(const bw::Pen& pen);
     void glyphSetChanged(int set);
-    // The characters of typed or committed text with no CP437 glyph the file
-    // can hold; the text was not written.
+    // The characters of typed or committed text that isTypeable refuses (no
+    // CP437 code, or a byte .ans reads as a control code); the text was not
+    // written. rejectedGlyphsMessage says why.
     void glyphRejected(const QString& text);
     void mirrorChanged(bool on);
     // The symmetry or the pencil's connectivity changed (and mirror mode
@@ -274,7 +275,7 @@ private:
     // document's undo stack as one command, and the cursor moves on.
     void commit(const EditResult& r);
     // Writes the printable characters of `text` over the replacement range
-    // (relative to the cursor) as one edit. If any of them has no CP437 glyph
+    // (relative to the cursor) as one edit. If isTypeable refuses any of them
     // nothing is written and they are reported instead.
     void typeText(const QString& text, int replaceStart = 0, int replaceLength = 0);
     void updateSize();
