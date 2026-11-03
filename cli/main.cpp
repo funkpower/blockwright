@@ -26,8 +26,8 @@
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
 // .bwp zip or a project directory, as its flattened composite. convert and
-// shade write the format <out>'s name gives (.xb, .bin, else .ans), and
-// refuse a .bwp <out>: pack writes a project.
+// shade write the format <out>'s name gives (.xb, .bin, else .ans). convert,
+// shade, export --irc and render refuse a .bwp <out>: pack writes a project.
 //
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert, shade,
 // pack or unpack without --allow-lossy (nothing is written), or a library check that found
@@ -314,14 +314,15 @@ void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocum
     save(out, res.bytes);
 }
 
-// convert and shade write .ans, XBIN or BIN. A .bwp is a project, which the
-// app opens as a zip, so art bytes under that name are refused before the
-// input is read, as save refuses to write over a project by any name: pack
-// writes a project.
-void refuseProjectOutput(const char* cmd, const QString& out) {
+// convert and shade write .ans, XBIN or BIN, export --irc IRC text and render
+// a PNG. A .bwp is a project, which the app opens as a zip, so any of those
+// bytes under that name are refused before the input is read, as save
+// refuses to write over a project by any name: pack writes a project.
+// `writes` says what the command writes instead.
+void refuseProjectOutput(const char* cmd, const char* writes, const QString& out) {
     if (QFileInfo(out).suffix().compare(QLatin1String("bwp"), Qt::CaseInsensitive) == 0)
-        throw Failure{out.toStdString() + ": not written: " + cmd +
-                      " writes .ans, .xb or .bin; use pack for a project"};
+        throw Failure{out.toStdString() + ": not written: " + cmd + " writes " + writes +
+                      "; use pack for a project"};
 }
 
 int convert(const std::string& in, const std::string& out, bool allowLossy) {
@@ -842,11 +843,12 @@ int main(int argc, char** argv) {
         "                       <in>, which is rewritten in place (export and\n"
         "                       render refuse to write over their input); a\n"
         "                       .bwp <out> is refused: pack writes a project\n"
-        "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font\n"
+        "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font; a .bwp\n"
+        "                       <out> is refused\n"
         "  export --irc <in> <out>\n"
         "                       write IRC text (mIRC colour codes) and report each\n"
         "                       line's size in bytes; a project's own budget is\n"
-        "                       the default\n"
+        "                       the default; a .bwp <out> is refused\n"
         "  shade --ramp R <in> <out>\n"
         "                       lighten (or --darken) every cell in the box one\n"
         "                       rung along the ramp's shading ladder, then check\n"
@@ -902,7 +904,8 @@ int main(int argc, char** argv) {
         "Every command that reads an .ans also reads an XBIN (.xb) or BIN (.bin),\n"
         "and a project (a .bwp zip or a project directory) as its flattened\n"
         "composite. convert and shade write XBIN to an <out> named .xb and BIN\n"
-        "to one named .bin."));
+        "to one named .bin. convert, shade, export --irc and render refuse an\n"
+        "<out> named .bwp: pack writes a project."));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
@@ -1098,12 +1101,13 @@ int main(int argc, char** argv) {
         if (cmd == QLatin1String("convert")) {
             if (args.size() != 3)
                 return usage("convert takes an input and an output file");
-            refuseProjectOutput("convert", args[2]);
+            refuseProjectOutput("convert", ".ans, .xb or .bin", args[2]);
             return convert(args[1].toStdString(), args[2].toStdString(), parser.isSet(lossyOpt));
         }
         if (cmd == QLatin1String("render")) {
             if (args.size() != 3)
                 return usage("render takes an input .ans and an output .png");
+            refuseProjectOutput(parser.isSet(ircOpt) ? "render --irc" : "render", "a PNG", args[2]);
             bw::RenderOptions opts;
             opts.scale = intValue(parser.value(scaleOpt), "scale", 1, bw::kMaxScale);
             if (parser.isSet(fontWidthOpt))
@@ -1122,6 +1126,7 @@ int main(int argc, char** argv) {
                 return usage("export needs a format: --irc");
             if (args.size() != 3)
                 return usage("export takes an input and an output file");
+            refuseProjectOutput("export --irc", "IRC text", args[2]);
             return exportIrc(args[1].toStdString(), args[2].toStdString(), ircArgs(), parser.isSet(overOpt));
         }
         if (cmd == QLatin1String("shade")) {
@@ -1129,7 +1134,7 @@ int main(int argc, char** argv) {
                 return usage("shade needs a ramp: --ramp NAME or --ramp c,c,...");
             if (args.size() != 3)
                 return usage("shade takes an input and an output file");
-            refuseProjectOutput("shade", args[2]);
+            refuseProjectOutput("shade", ".ans, .xb or .bin", args[2]);
             const bool step = parser.isSet(darkenOpt) || parser.isSet(stepsOpt);
             const bool form = parser.isSet(formOpt), despeckle = parser.isSet(despeckleOpt), rim = parser.isSet(rimOpt);
             if (int(step) + int(form) + int(despeckle) + int(rim) > 1)

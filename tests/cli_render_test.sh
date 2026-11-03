@@ -34,6 +34,7 @@ size_is() {
 piece=$data/golden/tux.ans  # 30x17, SAUCE 8 px
 
 expect "--help lists render" 0 'render <in> <out>' -- "$cli" --help
+expect "--help says render refuses a .bwp" 0 'IBM VGA font; a \.bwp$' -- "$cli" --help
 expect "render" 0 '^$' -- "$cli" render "$piece" "$tmp/tux.png"
 size_is "render is 8 px x 16 px per cell" "$tmp/tux.png" 240x272
 expect "render --scale 2" 0 '^$' -- "$cli" render --scale 2 "$piece" "$tmp/tux2.png"
@@ -146,5 +147,17 @@ if cmp -s "$piece" "$same/in.ans"; then ok "refused renders leave the input"; el
 left=$(ls -A "$same" | grep -vxE 'in\.ans|link\.ans|hard\.ans|sub')
 if [[ -z $left ]]; then ok "refused renders leave no file"; else bad "refused renders left: $left"; fi
 expect "render beside its input still works" 0 '^$' -- "$cli" render "$same/in.ans" "$same/in.png"
+
+# a .bwp is a project, which the app opens as a zip: render writes a PNG, so
+# it refuses one and points to pack, as convert does (#316)
+mkdir -p "$tmp/bwp/sub"
+for out in y.bwp Y.BwP sub/x.tar.bwp; do
+  expect "render to $out is refused" 1 "${out//./\\.}: not written: render writes a PNG; use pack for a project" -- "$cli" render "$piece" "$tmp/bwp/$out"
+  expect "render --irc to $out is refused" 1 "${out//./\\.}: not written: render --irc writes a PNG; use pack for a project" -- "$cli" render --irc "$piece" "$tmp/bwp/$out"
+  if [[ -e $tmp/bwp/$out ]]; then bad "render to $out wrote a file"; else ok "render to $out writes nothing"; fi
+done
+expect "render refuses a .bwp before reading the input" 1 'y\.bwp: not written: render writes a PNG' -- "$cli" render "$tmp/bwp/missing.ans" "$tmp/bwp/y.bwp"
+expect "render still writes a .bwp.png" 0 '^$' -- "$cli" render "$piece" "$tmp/bwp/y.bwp.png"
+size_is "the .bwp.png is the render" "$tmp/bwp/y.bwp.png" 240x272
 
 exit $(( fails > 0 ))

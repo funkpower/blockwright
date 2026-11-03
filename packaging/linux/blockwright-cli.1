@@ -36,14 +36,22 @@ draws the IRC view, each line cut at
 bytes (1 to 512; default: a project's own, else 407), with
 .BR \-\-fit ", " \-\-pad " and " \-\-swap\-shades
 applied as in
-.BR "export \-\-irc" .
+.BR "export \-\-irc" ;
+a .bwp
+.I out
+is refused.
 .TP
 .BI "export \-\-irc" " in out"
-Write IRC text with mIRC colour codes and report each line's size in bytes.
+Write IRC text with mIRC colour codes and report each line's size in bytes;
+a .bwp
+.I out
+is refused.
 .TP
 .BI shade " in out"
 Lighten or darken cells along a ramp's shading ladder, or run the form,
-despeckle or rim-light brush over a box or a mask.
+despeckle or rim-light brush over a box or a mask; a .bwp
+.I out
+is refused.
 .TP
 .BI lint " in"
 Check the shading ladders, pixel noise and the craft rules; exits 4 when

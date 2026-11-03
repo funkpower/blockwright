@@ -36,6 +36,7 @@ else
   bad "BW_LOGO isn't set"
 fi
 expect "--help lists export" 0 'export --irc <in> <out>' -- "$cli" --help
+expect "--help says convert, shade, export --irc and render refuse a .bwp" 0 'convert, shade, export --irc and render refuse an' -- "$cli" --help
 
 expect "info: dimensions" 0 '^size: +30x17$' -- "$cli" info "$piece"
 expect "info: SAUCE author" 0 '^author: +funkpower$' -- "$cli" info "$piece"
@@ -52,6 +53,14 @@ for out in tux.bwp TUX.BWP; do
 done
 expect "shade to a .bwp is refused" 1 'tux\.bwp: not written: shade writes \.ans, \.xb or \.bin; use pack for a project' -- "$cli" shade --ramp steel "$piece" "$tmp/tux.bwp"
 if [[ -e $tmp/tux.bwp ]]; then bad "shade to a .bwp wrote a file"; else ok "shade to a .bwp writes nothing"; fi
+# export --irc writes IRC text, so it refuses a .bwp the same way (#316)
+mkdir -p "$tmp/sub"
+for out in y.bwp Y.BwP sub/x.tar.bwp; do
+  expect "export --irc to $out is refused" 1 "${out//./\\.}: not written: export --irc writes IRC text; use pack for a project" -- "$cli" export --irc "$piece" "$tmp/$out"
+  if [[ -e $tmp/$out ]]; then bad "export --irc to $out wrote a file"; else ok "export --irc to $out writes nothing"; fi
+done
+expect "export --irc refuses a .bwp before reading the input" 1 'y\.bwp: not written: export --irc writes IRC text' -- "$cli" export --irc "$tmp/missing.ans" "$tmp/y.bwp"
+expect "export --irc still writes a .bwp.txt" 0 'budget 407: 0 over$' -- "$cli" export --irc "$piece" "$tmp/y.bwp.txt"
 expect "pack writes the .bwp convert refuses" 0 '^$' -- "$cli" pack "$piece" "$tmp/tux.bwp"
 expect "info reads it as a project" 0 '^project: ' -- "$cli" info "$tmp/tux.bwp"
 
