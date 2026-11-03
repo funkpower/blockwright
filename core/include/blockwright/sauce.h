@@ -61,13 +61,15 @@ SauceSplit splitSauce(std::string_view file);
 std::string encodeSauce(const Sauce& s, std::uint32_t contentSize);
 
 // Whether `date` is a SAUCE date: CCYYMMDD, eight digits that name a day of
-// the Gregorian calendar (20240229 is one, 20230229 and 20241301 aren't).
+// the Gregorian calendar from 00010101 on (20240229 is one, 20230229,
+// 20241301 and 00000101 aren't). Only the CLI's --date asks: a record read
+// from a file keeps whatever date it carries.
 bool isSauceDate(std::string_view date);
 
 // The SAUCE date (CCYYMMDD, in UTC) of a SOURCE_DATE_EPOCH value
 // (https://reproducible-builds.org/specs/source-date-epoch/): seconds since
 // 1970-01-01 00:00:00 UTC as ASCII digits, as `date +%s` prints them, with
-// no sign, space or fraction. Nothing for any other text or a time past
+// no sign, space or fraction; leading zeros are allowed. Nothing for any other text or a time past
 // the year 9999.
 std::optional<std::string> sauceDateFromEpoch(std::string_view seconds);
 

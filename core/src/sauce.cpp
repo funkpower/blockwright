@@ -71,17 +71,23 @@ bool isSauceDate(std::string_view date) {
             v = v * 10 + unsigned(date[i] - '0');
         return v;
     };
-    const std::chrono::year_month_day day{std::chrono::year(int(number(0, 4))), std::chrono::month(number(4, 2)),
+    // the calendar's years start at 0001, as QDate's (the app's SAUCE dialog) do
+    const unsigned year = number(0, 4);
+    const std::chrono::year_month_day day{std::chrono::year(int(year)), std::chrono::month(number(4, 2)),
                                           std::chrono::day(number(6, 2))};
-    return day.ok();
+    return year != 0 && day.ok();
 }
 
 std::optional<std::string> sauceDateFromEpoch(std::string_view seconds) {
-    // 9999-12-31 23:59:59 UTC; more digits than that has can't be a time
-    // that fits CCYYMMDD, and stopping there keeps the sum from overflowing
+    // 9999-12-31 23:59:59 UTC; more significant digits than that has can't
+    // be a time that fits CCYYMMDD, and stopping there keeps the sum from
+    // overflowing
     constexpr long long kLast = 253402300799LL;
-    if (seconds.empty() || seconds.size() > 12 ||
-        !std::all_of(seconds.begin(), seconds.end(), [](char c) { return c >= '0' && c <= '9'; }))
+    if (seconds.empty() || !std::all_of(seconds.begin(), seconds.end(), [](char c) { return c >= '0' && c <= '9'; }))
+        return {};
+    // leading zeros add nothing to the value
+    seconds.remove_prefix(std::min(seconds.find_first_not_of('0'), seconds.size()));
+    if (seconds.size() > 12)
         return {};
     long long s = 0;
     for (const char c : seconds)

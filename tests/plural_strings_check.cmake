@@ -14,8 +14,9 @@
 # A bare tr( or translate( is checked, and so is a qualified one (QObject::tr,
 # QCoreApplication::translate) or one called through this->, qApp-> or
 # instance()-> (qApp->translate(...), QCoreApplication::instance()->tr(...)).
-# A member of another object (m.tr(...), m->tr(...)) is not, nor is a variable
-# declared by that name with its type on the same line (QRect tr(l, 0, w, h)).
+# A member of another object (m.tr(...), m->tr(...), get_instance()->tr(...))
+# is not, nor is a variable declared by that name with its type on the same
+# line (QRect tr(l, 0, w, h)).
 # A declaration with its type on the line before (QRect\n tr(l, 0, w, h)) or
 # a type ending in > (std::tuple<int, int, int> tr(1, 0, 2)) is flagged, and so
 # is a call to a variable or lambda named tr with 0 or nullptr second (the
@@ -54,7 +55,7 @@ set(disambig "${ws}(nullptr|Q_NULLPTR|0|NULL|[{]${ws}[}]|\"\")${ws}")
 set(before "[A-Za-z_][A-Za-z0-9_]*[ \t]+")
 # what may come before the name: this->, qApp-> or instance()-> (checked), ->
 # (a member, skipped), a type (skipped), or any other character
-set(lead "(^|[^A-Za-z0-9_](this|qApp)${ws}->|instance${ws}\\(${ws}\\)${ws}->|->|${before}|[^A-Za-z0-9_])")
+set(lead "(^|[^A-Za-z0-9_](this|qApp|instance${ws}\\(${ws}\\))${ws}->|->|${before}|[^A-Za-z0-9_])")
 set(bad 0)
 foreach(src IN LISTS sources)
   file(READ "${src}" source)

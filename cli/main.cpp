@@ -1288,7 +1288,9 @@ int main(int argc, char** argv) {
             fix.bake = parser.isSet(bakeOpt);
             if (parser.isSet(authorOpt)) {
                 fix.stamp.author = bw::scene::sauceText(parser.value(authorOpt).toStdString(), bw::Sauce::kAuthorLen);
-                if (!fix.stamp.author)
+                // SAUCE pads the field with spaces, so an author of only
+                // spaces reads back empty
+                if (!fix.stamp.author || fix.stamp.author->find_first_not_of(' ') == std::string::npos)
                     throw Usage{"--author takes 1 to " + std::to_string(bw::Sauce::kAuthorLen) +
                                 " printable CP437 characters, not '" + parser.value(authorOpt).toStdString() + "'"};
             }

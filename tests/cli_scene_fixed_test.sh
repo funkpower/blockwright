@@ -168,6 +168,8 @@ refused() {
 refused "an author of 21 characters" "--author takes 1 to 20 printable CP437 characters" \
   "$cli" import-scene --author 123456789012345678901
 refused "an empty author" "--author takes 1 to 20" "$cli" import-scene --author ''
+refused "an author of only spaces" "--author takes 1 to 20 printable CP437 characters, not '   '" \
+  "$cli" import-scene --author '   '
 refused "an author CP437 can't hold" "--author takes 1 to 20" "$cli" import-scene --author 'funk✓'
 refused "an author with a control code" "--author takes 1 to 20" "$cli" import-scene --author $'funk\tpower'
 refused "a day that isn't one" "--date takes a day as CCYYMMDD, such as 20261103, not '20230229'" \
@@ -175,13 +177,16 @@ refused "a day that isn't one" "--date takes a day as CCYYMMDD, such as 20261103
 refused "a month that isn't one" "--date takes a day as CCYYMMDD" "$cli" import-scene --date 20261301
 refused "a short date" "--date takes a day as CCYYMMDD" "$cli" import-scene --date 2026113
 refused "a date with dashes" "--date takes a day as CCYYMMDD" "$cli" import-scene --date 2026-11-03
-for v in -1 1.5 ' 1' 1e9 abc 253402300800 99999999999999; do
+for v in -1 1.5 ' 1' 1e9 abc 253402300800 99999999999999 000253402300800; do
   refused "SOURCE_DATE_EPOCH='$v'" "SOURCE_DATE_EPOCH is seconds since 1970-01-01 UTC as digits" \
     env SOURCE_DATE_EPOCH="$v" "$cli" import-scene
 done
 expect "the last second of 9999 is a SOURCE_DATE_EPOCH" 0 '' -- env SOURCE_DATE_EPOCH=253402300799 \
   "$cli" import-scene "$tmp/a/scene.py" "$tmp/epoch-last.bwp"
 expect "...and its day is 99991231" 0 '^date: +99991231$' -- "$cli" info "$tmp/epoch-last.bwp"
+expect "a SOURCE_DATE_EPOCH past 12 digits with leading zeros" 0 '' -- env SOURCE_DATE_EPOCH=000000000000001 \
+  "$cli" import-scene "$tmp/a/scene.py" "$tmp/epoch-zeros.bwp"
+expect "...is its value, 1970-01-01" 0 '^date: +19700101$' -- "$cli" info "$tmp/epoch-zeros.bwp"
 for o in --bake '--author x' '--date 20261103'; do
   # shellcheck disable=SC2086
   expect "$o is refused on another command" 2 "${o%% *} is an import-scene option, not a run-generators option" \
