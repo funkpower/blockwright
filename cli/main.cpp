@@ -2,7 +2,8 @@
 //
 //   blockwright-cli --version
 //   blockwright-cli info <file.ans|project>
-//   blockwright-cli convert [--allow-lossy] <in.ans|project> <out.ans|out.xb|out.bin>
+//   blockwright-cli convert [--allow-lossy] [--output-encoding cp437|utf-8]
+//                           <in.ans|project> <out.ans|out.xb|out.bin>
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli export --irc [--budget N] [--fit] [--pad] [--swap-shades]
 //                          [--allow-over-budget] <in.ans|project> <out.txt>
@@ -26,6 +27,8 @@
 //
 // info, convert, render, export, shade, lint, pack and unpack take
 // --encoding auto|cp437|utf-8: what an .ans input's text is read as (PLAN §8).
+// convert and shade take --output-encoding cp437|utf-8: what an .ans output's
+// text is written as (default cp437).
 //
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
@@ -109,6 +112,8 @@ bw::project::Project loadProject(const std::string& path) {
 // --encoding: the character set every .ans a command reads is read as;
 // nothing: what bw::detectEncoding finds in each.
 std::optional<bw::TextEncoding> gEncoding;
+// --output-encoding: the character set convert and shade write an .ans in.
+bw::TextEncoding gOutputEncoding = bw::TextEncoding::Cp437;
 
 // An .ans, XBIN or BIN, or a project as its flattened composite.
 bw::AnsiDocument load(const std::string& path) {
@@ -284,8 +289,20 @@ void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
         return "(first: " + std::string(code) + " '" + glyph + "' at column " + std::to_string(u.x + 1) + ", row " +
                std::to_string(u.y + 1) + ")";
     };
-    const int controls = bw::ansControlCount(res.unwritable);
-    if (const int n = int(res.unwritable.size()) - controls)
+    if (res.encoding == bw::TextEncoding::Utf8) {
+        // Only control characters: shown by their code point alone.
+        if (const int n = int(res.unwritable.size())) {
+            char code[16];
+            std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(res.unwritable.front().ch));
+            std::cerr << "blockwright-cli: warning: " << in << ": " << n
+                      << (n == 1 ? " cell holds a control character a UTF-8 .ans can't hold and is"
+                                 : " cells hold control characters a UTF-8 .ans can't hold and are")
+                      << " written as '?' (first: " << code << " at column " << res.unwritable.front().x + 1
+                      << ", row " << res.unwritable.front().y + 1 << ")\n";
+        }
+    }
+    const int controls = res.encoding == bw::TextEncoding::Utf8 ? 0 : bw::ansControlCount(res.unwritable);
+    if (const int n = res.encoding == bw::TextEncoding::Utf8 ? 0 : int(res.unwritable.size()) - controls)
         std::cerr << "blockwright-cli: warning: " << in << ": " << n
                   << (n == 1 ? " glyph has no CP437 code and is" : " glyphs have no CP437 code and are")
                   << " written as '?' " << where(first(false)) << "\n";
@@ -316,7 +333,7 @@ void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
 
 void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocument& doc, bool allowLossy,
               const std::string& why = {}, int blinkDropped = 0) {
-    bw::AnsiOutput res = bw::writeArt(doc, bw::artFormatFor(out));
+    bw::AnsiOutput res = bw::writeArt(doc, bw::artFormatFor(out), gOutputEncoding);
     res.blinkDropped += blinkDropped;
     warnLoss(in, res);
     if (res.lossy() && !allowLossy)
@@ -592,6 +609,23 @@ std::optional<bw::TextEncoding> encodingValue(const QString& s) {
     if (v == QLatin1String("utf-8") || v == QLatin1String("utf8"))
         return bw::TextEncoding::Utf8;
     throw Usage{"--encoding takes auto, cp437 or utf-8, not '" + s.toStdString() + "'"};
+}
+
+// --output-encoding's value: cp437, or utf-8 (or utf8), in any case.
+bw::TextEncoding outputEncodingValue(const QString& s) {
+    const QString v = s.toLower();
+    if (v == QLatin1String("cp437"))
+        return bw::TextEncoding::Cp437;
+    if (v == QLatin1String("utf-8") || v == QLatin1String("utf8"))
+        return bw::TextEncoding::Utf8;
+    throw Usage{"--output-encoding takes cp437 or utf-8, not '" + s.toStdString() + "'"};
+}
+
+// --output-encoding utf-8 is for an .ans: XBIN and BIN are CP437 bytes.
+void refuseUtf8Binary(const QString& out) {
+    if (gOutputEncoding == bw::TextEncoding::Utf8 &&
+        bw::artFormatFor(QFile::encodeName(out).toStdString()) != bw::ArtFormat::Ansi)
+        throw Usage{"--output-encoding utf-8 writes an .ans; " + out.toStdString() + " is XBIN or BIN, which are CP437"};
 }
 
 // A positive integer option value, or a usage error naming the option.
@@ -948,8 +982,10 @@ int main(int argc, char** argv) {
         "An .ans is read as CP437, or as UTF-8 when it starts with a byte order\n"
         "mark or is all well-formed UTF-8 with a sequence of three bytes or more\n"
         "(the block and box glyphs terminals draw with); --encoding cp437 or\n"
-        "utf-8 says which. info prints the one it was read as. Everything is\n"
-        "written as CP437."));
+        "utf-8 says which. info prints the one it was read as. convert and\n"
+        "shade write an .ans as CP437, or as UTF-8 with --output-encoding utf-8\n"
+        "(SAUCE stays CP437; a byte order mark only when the text has no\n"
+        "sequence of three bytes or more). Everything else is written as CP437."));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
@@ -1076,6 +1112,11 @@ int main(int argc, char** argv) {
                        "UTF-8 with a sequence of three bytes or more, else CP437)"),
         QStringLiteral("enc"), QStringLiteral("auto"));
     parser.addOption(encodingOpt);
+    const QCommandLineOption outputEncodingOpt(
+        QStringLiteral("output-encoding"),
+        QStringLiteral("convert, shade: write an .ans output as cp437 or utf-8 (default: cp437; SAUCE stays CP437)"),
+        QStringLiteral("enc"), QStringLiteral("cp437"));
+    parser.addOption(outputEncodingOpt);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators or import-scene"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
@@ -1115,7 +1156,8 @@ int main(int argc, char** argv) {
                   << "       | import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]\n"
                   << "         <scene.py> <out.bwp|dir>\n"
                   << "       | --version\n"
-                  << "       info, convert, render, export, shade, lint, pack and unpack take --encoding auto|cp437|utf-8\n";
+                  << "       info, convert, render, export, shade, lint, pack and unpack take --encoding auto|cp437|utf-8\n"
+                  << "       convert and shade take --output-encoding cp437|utf-8\n";
         return kUsage;
     };
     if (args.isEmpty())
@@ -1134,6 +1176,7 @@ int main(int argc, char** argv) {
         {&timeoutOpt, {"add-generator", "run-generators", "import-scene"}},
         {&bakeOpt, {"import-scene"}},      {&authorOpt, {"import-scene"}}, {&dateOpt, {"import-scene"}},
         {&encodingOpt, {"info", "convert", "render", "export", "shade", "lint", "pack", "unpack"}},
+        {&outputEncodingOpt, {"convert", "shade"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
@@ -1165,6 +1208,7 @@ int main(int argc, char** argv) {
     };
     try {
         gEncoding = encodingValue(parser.value(encodingOpt));
+        gOutputEncoding = outputEncodingValue(parser.value(outputEncodingOpt));
         if (cmd == QLatin1String("info")) {
             if (args.size() != 2)
                 return usage("info takes one file");
@@ -1174,6 +1218,7 @@ int main(int argc, char** argv) {
             if (args.size() != 3)
                 return usage("convert takes an input and an output file");
             refuseProjectOutput("convert", ".ans, .xb or .bin", args[2]);
+            refuseUtf8Binary(args[2]);
             return convert(args[1].toStdString(), args[2].toStdString(), parser.isSet(lossyOpt));
         }
         if (cmd == QLatin1String("render")) {
@@ -1207,6 +1252,7 @@ int main(int argc, char** argv) {
             if (args.size() != 3)
                 return usage("shade takes an input and an output file");
             refuseProjectOutput("shade", ".ans, .xb or .bin", args[2]);
+            refuseUtf8Binary(args[2]);
             const bool step = parser.isSet(darkenOpt) || parser.isSet(stepsOpt);
             const bool form = parser.isSet(formOpt), despeckle = parser.isSet(despeckleOpt), rim = parser.isSet(rimOpt);
             if (int(step) + int(form) + int(despeckle) + int(rim) > 1)
@@ -1250,6 +1296,7 @@ int main(int argc, char** argv) {
                 o.box = boxValue(parser.value(boxOpt));
             o.ice = parser.isSet(iceOpt);
             o.allowLossy = parser.isSet(lossyOpt);
+            o.encoding = gOutputEncoding;
             std::optional<std::string> mask;
             if (parser.isSet(maskOpt))
                 mask = parser.value(maskOpt).toStdString();

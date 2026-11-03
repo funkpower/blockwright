@@ -547,8 +547,16 @@ bool writtenIce(const AnsiDocument& doc, int* blinkDropped) {
     return ice;
 }
 
-AnsiOutput writeAnsi(const AnsiDocument& doc) {
+bool utf8Writable(char32_t ch) {
+    if (ch < 0x80)
+        return ch == 0 || (ch >= 0x20 && ch < 0x7f);
+    return ch <= 0x10ffff && (ch < 0xd800 || ch > 0xdfff);
+}
+
+AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
     AnsiOutput out;
+    out.encoding = encoding;
+    const bool utf8 = encoding == TextEncoding::Utf8;
     std::string& s = out.bytes;
     const Canvas& cv = doc.canvas;
     const Cell blank{};
@@ -584,6 +592,15 @@ AnsiOutput writeAnsi(const AnsiDocument& doc) {
                 s += 'm';
                 cur = key;
             }
+            if (utf8) {
+                if (!utf8Writable(c.ch)) {
+                    out.unwritable.push_back({x, y, c.ch});
+                    s += '?';
+                } else {
+                    appendUtf8(s, c.ch ? c.ch : U' ');  // NUL draws as a blank
+                }
+                continue;
+            }
             std::optional<std::uint8_t> b = unicodeToCp437(c.ch);
             if (b && *b == 0x00)
                 b = ' ';  // NUL draws as a blank
@@ -601,6 +618,10 @@ AnsiOutput writeAnsi(const AnsiDocument& doc) {
         if (end < cv.width())  // a full-width row wraps on its own
             s += "\r\n";
     }
+    // Only a byte order mark says UTF-8 for content with no sequence of
+    // three bytes or more (only ASCII, or two-byte sequences like é).
+    if (utf8 && detectEncoding(s) != TextEncoding::Utf8)
+        s.insert(0, kUtf8Bom);
     Sauce sauce = doc.sauce ? *doc.sauce : Sauce::fresh(cv.width(), cv.height());
     sauce.dataType = 1;
     sauce.fileType = 1;

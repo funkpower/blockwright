@@ -359,7 +359,7 @@ project::Project Document::project() const {
     return p;
 }
 
-AnsiOutput Document::encode(ArtFormat format) const {
+AnsiOutput Document::encode(ArtFormat format, std::optional<TextEncoding> encoding) const {
     project::Project p;
     p.layers = stack_;
     p.ice = doc_.ice;
@@ -367,7 +367,7 @@ AnsiOutput Document::encode(ArtFormat format) const {
     AnsiDocument flat = project::toAnsi(p);
     flat.palette = doc_.palette;
     flat.font = doc_.font;
-    AnsiOutput out = writeArt(flat, format);
+    AnsiOutput out = writeArt(flat, format, encoding.value_or(doc_.encoding));
     out.blinkDropped += lostBlinkOnOpen();
     return out;
 }
@@ -570,6 +570,7 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
         emit pathChanged(path_);
     }
     countLostBlink_ = false;  // the file written has no blink left to lose
+    doc_.encoding = out.encoding;  // and is read back in the encoding it was written in
     if (!xbin) {
         // nor a palette or font, now it is the document's file
         doc_.palette.reset();

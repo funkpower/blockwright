@@ -28,7 +28,8 @@ enum class TextEncoding { Cp437, Utf8 };
 
 struct AnsiDocument {
     Canvas canvas{Canvas::kDefaultWidth, 1};
-    // What parseAnsi read the text as. Every writer writes CP437 for now.
+    // What parseAnsi read the text as. writeAnsi doesn't follow it: its
+    // caller picks the encoding (the app's Save keeps this one).
     TextEncoding encoding = TextEncoding::Cp437;
     std::optional<Sauce> sauce;
     bool ice = true;  // blink = bright background
@@ -90,8 +91,12 @@ struct Unwritable {
 
 struct AnsiOutput {
     std::string bytes;
-    // Cells written as '?': a glyph with no CP437 code, or (.ans only) one
-    // whose byte .ans reads as a control code (ansControlByte).
+    // The text encoding the glyphs were written in: UTF-8 only for an .ans
+    // writeAnsi wrote as UTF-8. XBIN and BIN are CP437 bytes.
+    TextEncoding encoding = TextEncoding::Cp437;
+    // Cells written as '?'. CP437: a glyph with no CP437 code, or (.ans
+    // only) one whose byte .ans reads as a control code (ansControlByte).
+    // UTF-8: a code point utf8Writable refuses.
     std::vector<Unwritable> unwritable;
     // Blinking cells written without their blink: the file is written with
     // iCE colours on, where blink means a bright background. Only cells whose
@@ -129,7 +134,24 @@ struct AnsiOutput {
 // with no CP437 byte, or whose byte is a control code the parser would act
 // on, are written as '?' and listed in `unwritable`. A custom palette or a
 // font is left out (paletteDropped, fontDropped).
-AnsiOutput writeAnsi(const AnsiDocument& doc);
+//
+// With `encoding` UTF-8 the escapes, rows and SAUCE are the same, and each
+// glyph is written as UTF-8: one of 0x20-0x7E as its byte, NUL as a space,
+// anything else utf8Writable takes as its code point's sequence (so every
+// CP437 glyph, ○ ◙ ♪ → ← included, and any code point CP437 lacks), and
+// the rest as '?', listed in `unwritable`. The content starts with a byte
+// order mark only when it would not be read back as UTF-8 without one
+// (detectEncoding: no sequence of three bytes or more), so parseAnsi of the
+// bytes always gives the cells back, read as UTF-8. SAUCE's text fields stay
+// CP437 bytes, and FileSize counts the UTF-8 content, mark and all. The
+// document's own `encoding` is not consulted.
+AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding = TextEncoding::Cp437);
+
+// Whether writeAnsi writes `ch` as itself in a UTF-8 .ans: NUL (a blank),
+// 0x20-0x7E, and every Unicode scalar value from U+0080 up (no surrogate,
+// nothing past U+10FFFF). The other C0 controls and DEL are not: a byte
+// under 0x80 reads back as its CP437 glyph or acts as a control.
+bool utf8Writable(char32_t ch);
 
 // The iCE colours writeAnsi, writeXbin and writeBin write `doc` with: its
 // own, or on when a cell has a bright background. With them on, the cells

@@ -23,7 +23,17 @@ sets it for
 .BR info ", " convert ", " render ", " export ", " shade ", " lint ", " pack
 and
 .BR unpack .
-SAUCE fields are CP437 either way, and everything is written as CP437.
+SAUCE fields are CP437 either way.
+.B convert
+and
+.B shade
+write an .ans as CP437, or as UTF-8 with
+.BR "\-\-output\-encoding utf\-8"
+(SAUCE stays CP437, and a byte order mark is written only when the text has
+no character of three bytes or more); an XBIN or BIN
+.I out
+is CP437, so utf\-8 refuses one.
+Everything else is written as CP437.
 .SH COMMANDS
 .TP
 .BI info " file"
@@ -36,7 +46,9 @@ a .bwp
 .I out
 is refused, since
 .B pack
-writes a project.
+writes a project;
+.B \-\-output\-encoding
+picks the .ans text encoding.
 .TP
 .BI render " in out.png"
 Draw a piece as a PNG with the IBM VGA font;
@@ -61,7 +73,9 @@ is refused.
 Lighten or darken cells along a ramp's shading ladder, or run the form,
 despeckle or rim-light brush over a box or a mask; a .bwp
 .I out
-is refused.
+is refused, and
+.B \-\-output\-encoding
+picks the .ans text encoding.
 .TP
 .BI lint " in"
 Check the shading ladders, pixel noise and the craft rules; exits 4 when

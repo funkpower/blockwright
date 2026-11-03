@@ -44,6 +44,9 @@ struct ShadeOptions {
     // may write shades that need a bright background.
     bool ice = false;
     bool allowLossy = false;
+    // The text encoding an .ans output is written in (--output-encoding),
+    // which decides which glyphs it can hold.
+    bw::TextEncoding encoding = bw::TextEncoding::Cp437;
 };
 
 struct Shaded {

@@ -139,8 +139,15 @@ public:
     // save loses. It gates the save (lossy()) until the next save. In XBIN
     // or BIN (`format`, see writeArt) the same cells, with the palette and
     // font an XBIN was opened with: XBIN writes them back, the others lose
-    // them (paletteDropped, fontDropped).
-    AnsiOutput encode(ArtFormat format = ArtFormat::Ansi) const;
+    // them (paletteDropped, fontDropped). An .ans is written in `encoding`,
+    // or with none in the document's own (textEncoding): the one its file
+    // was read as or last saved in.
+    AnsiOutput encode(ArtFormat format = ArtFormat::Ansi, std::optional<TextEncoding> encoding = {}) const;
+    // The text encoding Save writes an .ans in: what the document's .ans was
+    // read as (AnsiDocument::encoding), then what save() last made its file
+    // in (AnsiOutput::encoding; CP437 for an XBIN or BIN). CP437 for a new
+    // document and a project.
+    TextEncoding textEncoding() const { return doc_.encoding; }
     // Writes `out` (from encode()) to `path` all or nothing. Refuses to
     // write over a project (project::isProject), as the CLI does. When the
     // .ans holds the whole document (flatHoldsAll), `path` becomes the
@@ -152,7 +159,9 @@ public:
     // palette and font it was opened with, as the file it is now holds none;
     // one saved to an XBIN drops the SAUCE letter spacing, aspect and font
     // name `out` says it left out (letterSpacingDropped, aspectDropped,
-    // fontNameDropped), for the same reason.
+    // fontNameDropped), for the same reason. When `path` becomes the
+    // document's file it takes `out`'s encoding (textEncoding), so Save
+    // writes it the same way again.
     bool save(const QString& path, const AnsiOutput& out, QString* error);
     // Whether a flat .ans holds all of the document: one visible cells
     // layer, at (0, 0) and the canvas's size, compositing normally, and no

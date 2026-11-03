@@ -29,8 +29,9 @@ ArtFormat artFormatOf(std::string_view path, std::string_view file);
 // parseAnsi (with `ansi`), parseXbin or parseBin. XBIN and BIN are bytes,
 // a glyph each, so `ansi` doesn't apply to them.
 AnsiDocument parseArt(std::string_view file, ArtFormat format, const ParseOptions& ansi = {});
-// writeAnsi, writeXbin or writeBin.
-AnsiOutput writeArt(const AnsiDocument& doc, ArtFormat format);
+// writeAnsi (in `ansi`), writeXbin or writeBin. XBIN and BIN are CP437
+// bytes whatever `ansi` says.
+AnsiOutput writeArt(const AnsiDocument& doc, ArtFormat format, TextEncoding ansi = TextEncoding::Cp437);
 
 // A file's SAUCE record and the bytes its art takes (`content`), as each
 // format bounds them. `.ans`: splitSauce. XBIN: the cells first, from the

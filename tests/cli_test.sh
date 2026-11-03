@@ -177,6 +177,53 @@ expect "info: a BOM says UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/bom.
 if [[ $(od -An -tx1 "$tmp/bom-cp.ans" | tr -d ' \n') == *4180* && $(od -An -tx1 "$tmp/bom-cp.ans" | tr -d ' \n') != *efbbbf* ]]; then ok "the BOM is dropped and Ç is written as 80"; else bad "convert of a BOM file: $(od -An -tx1 "$tmp/bom-cp.ans")"; fi
 printf '\xc9\xbb\r\n\xc8\xbc\r\n' > "$tmp/corners.ans"
 expect "info: CP437 corners that look like UTF-8 stay CP437" 0 '^encoding: +CP437$' -- "$cli" info "$tmp/corners.ans"
+# writing UTF-8 (#302 part 2): convert and shade take --output-encoding
+expect "convert --output-encoding utf-8" 0 '^$' -- "$cli" convert --output-encoding utf-8 "$piece" "$tmp/to-u8.ans"
+if cmp -s "$u8" "$tmp/to-u8.ans"; then ok "the CP437 piece written as UTF-8 is the UTF-8 piece, byte for byte"; else bad "convert --output-encoding utf-8 differs from tux-utf8.ans"; fi
+expect "info: what convert wrote as UTF-8 says so" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/to-u8.ans"
+expect "info: its FileSize is its UTF-8 length" 0 '^filesize: +2492 \(matches content\)$' -- "$cli" info "$tmp/to-u8.ans"
+"$cli" convert "$tmp/to-u8.ans" "$tmp/back-cp.ans"
+if cmp -s "$piece" "$tmp/back-cp.ans"; then ok "and converts back to the CP437 piece"; else bad "UTF-8 round trip differs from the CP437 piece"; fi
+"$cli" convert --output-encoding cp437 "$u8" "$tmp/u8-cp.ans"
+if cmp -s "$piece" "$tmp/u8-cp.ans"; then ok "--output-encoding cp437 writes the CP437 piece"; else bad "--output-encoding cp437 differs"; fi
+for enc in UTF-8 utf8 Utf8; do
+  "$cli" convert --output-encoding "$enc" "$piece" "$tmp/to-u8-$enc.ans"
+  if cmp -s "$u8" "$tmp/to-u8-$enc.ans"; then ok "--output-encoding $enc is UTF-8"; else bad "--output-encoding $enc isn't UTF-8"; fi
+done
+expect "--output-encoding with a bad value is refused" 2 "--output-encoding takes cp437 or utf-8, not 'auto'" -- "$cli" convert --output-encoding auto "$piece" "$tmp/bad-enc.ans"
+if [[ -e $tmp/bad-enc.ans ]]; then bad "a bad --output-encoding wrote a file"; else ok "a bad --output-encoding writes nothing"; fi
+for cmd in info lint render export pack; do
+  expect "--output-encoding on $cmd is refused" 2 "--output-encoding is a convert or shade option, not an? $cmd option" -- "$cli" "$cmd" --output-encoding utf-8 "$piece" "$tmp/x"
+done
+for out in tux-u8.xb tux-u8.XBIN tux-u8.bin; do
+  expect "--output-encoding utf-8 to $out is refused" 2 "--output-encoding utf-8 writes an \.ans; .*${out//./\\.} is XBIN or BIN, which are CP437" -- "$cli" convert --output-encoding utf-8 "$piece" "$tmp/$out"
+  if [[ -e $tmp/$out ]]; then bad "--output-encoding utf-8 to $out wrote a file"; else ok "--output-encoding utf-8 to $out writes nothing"; fi
+done
+expect "--output-encoding cp437 to an XBIN is fine" 0 '^$' -- "$cli" convert --output-encoding cp437 "$piece" "$tmp/tux-cp.xb"
+# a byte order mark only where the bytes don't say UTF-8: é is two bytes
+printf 'caf\x82\r\n' > "$tmp/cafe-cp.ans"
+"$cli" convert --encoding cp437 --output-encoding utf-8 "$tmp/cafe-cp.ans" "$tmp/cafe-u8.ans"
+hex=$(od -An -tx1 "$tmp/cafe-u8.ans" | tr -d ' \n')
+if [[ $hex == efbbbf* && $hex == *636166c3a9* ]]; then ok "é-only UTF-8 starts with a byte order mark"; else bad "é-only UTF-8: $hex"; fi
+expect "info: and reads back as UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/cafe-u8.ans"
+if [[ $(head -c 3 "$tmp/to-u8.ans" | od -An -tx1 | tr -d ' \n') != efbbbf ]]; then ok "no byte order mark when a glyph is three bytes"; else bad "tux as UTF-8 has a byte order mark"; fi
+# ○ ← ◙ survive as UTF-8, where a CP437 .ans loses them (#300)
+printf 'XBIN\x1a\x04\x00\x01\x00\x10\x00\x09\x07\x1b\x07\x0a\x07\x41\x07' > "$tmp/ctl.xb"
+expect "control-byte glyphs convert to UTF-8 with no warning" 0 '^$' -- "$cli" convert --output-encoding utf-8 "$tmp/ctl.xb" "$tmp/ctl-u8.ans"
+hex=$(od -An -tx1 "$tmp/ctl-u8.ans" | tr -d ' \n')
+if [[ $hex == *e2978be28690e2979941* ]]; then ok "○ ← ◙ kept as UTF-8"; else bad "○ ← ◙ as UTF-8: $hex"; fi
+# a glyph with no CP437 code is kept too
+expect "a glyph with no CP437 code converts to UTF-8 with no warning" 0 '^$' -- "$cli" convert --output-encoding utf-8 "$data/projects/unwritable.bwp" "$tmp/unwritable-u8.ans"
+if [[ $(od -An -tx1 "$tmp/unwritable-u8.ans" | tr -d ' \n') == *e29885* ]]; then ok "★ kept as UTF-8"; else bad "★ lost in UTF-8"; fi
+expect "shade --output-encoding utf-8" 0 '' -- "$cli" shade --ramp steel --output-encoding utf-8 "$piece" "$tmp/shade-u8.ans"
+expect "info: shade wrote UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/shade-u8.ans"
+"$cli" shade --ramp steel "$piece" "$tmp/shade-cp.ans"
+"$cli" convert "$tmp/shade-u8.ans" "$tmp/shade-u8-cp.ans"
+if cmp -s "$tmp/shade-cp.ans" "$tmp/shade-u8-cp.ans"; then ok "shade's UTF-8 output is its CP437 output's cells"; else bad "shade UTF-8 and CP437 outputs differ"; fi
+expect "shade --output-encoding utf-8 to a .bin is refused" 2 'is XBIN or BIN, which are CP437' -- "$cli" shade --ramp steel --output-encoding utf-8 "$piece" "$tmp/shade.bin"
+expect "--help lists --output-encoding" 0 '^  --output-encoding <enc> +convert, shade: write an \.ans output as cp437 or' -- "$cli" --help
+expect "--help says convert and shade write UTF-8 with it" 0 '^shade write an \.ans as CP437, or as UTF-8 with --output-encoding utf-8$' -- "$cli" --help
+expect "the usage says convert and shade take it" 2 '^ +convert and shade take --output-encoding cp437\|utf-8$' -- "$cli" convert
 cp "$tmp/tux.xb" "$tmp/tux-xb.ans"
 expect "an XBIN is read by its header whatever its name" 0 '^format: +XBIN' -- "$cli" info "$tmp/tux-xb.ans"
 expect "convert .xb to .ans" 0 '^$' -- "$cli" convert "$tmp/tux.xb" "$tmp/from-xb.ans"

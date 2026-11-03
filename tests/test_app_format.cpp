@@ -1324,7 +1324,7 @@ TEST_CASE("a count picks the English form, with no translator installed (#304)")
                          "put it back"));
 }
 
-TEST_CASE("the app opens a UTF-8 .ans as its cells and saves it as CP437", "[app][utf8]") {
+TEST_CASE("the app opens a UTF-8 .ans as its cells and saves it as UTF-8", "[app][utf8]") {
     const std::string cp437Path = (bwtest::dataDir() / "golden/tux.ans").string();
     const std::string utf8Path = (bwtest::dataDir() / "utf8/tux-utf8.ans").string();
     const AnsiDocument cp437 = parseAnsi(bwtest::readFile(cp437Path));
@@ -1332,14 +1332,84 @@ TEST_CASE("the app opens a UTF-8 .ans as its cells and saves it as CP437", "[app
     QString error;
     REQUIRE(w.openFile(QString::fromStdString(utf8Path), &error));
     CHECK(w.document()->ansi().encoding == TextEncoding::Utf8);
+    CHECK(w.document()->textEncoding() == TextEncoding::Utf8);
     CHECK(w.document()->canvas() == cp437.canvas);
     REQUIRE(w.document()->ansi().sauce);
     CHECK(w.document()->ansi().sauce->author == "funkpower");
 
     QTemporaryDir tmp;
+    auto read = [](const QString& path) {
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? f.readAll().toStdString() : std::string();
+    };
+    // Save keeps the encoding it was opened in: the UTF-8 file, byte for byte
     const QString out = tmp.filePath(QStringLiteral("tux.ans"));
     REQUIRE(w.saveFile(out, &error));
-    QFile f(out);
+    CHECK(read(out) == bwtest::readFile(utf8Path));
+    CHECK(w.document()->textEncoding() == TextEncoding::Utf8);
+
+    // Save As CP437 writes the CP437 piece, and Save then keeps CP437
+    const QString cp = tmp.filePath(QStringLiteral("tux-cp437.ans"));
+    REQUIRE(w.saveFile(cp, &error, false, TextEncoding::Cp437));
+    CHECK(read(cp) == writeAnsi(cp437).bytes);
+    CHECK(w.document()->textEncoding() == TextEncoding::Cp437);
+    REQUIRE(w.saveFile(cp, &error));
+    CHECK(read(cp) == writeAnsi(cp437).bytes);
+}
+
+TEST_CASE("the app saves a CP437 .ans as CP437 unless told UTF-8", "[app][utf8]") {
+    const std::string cp437Path = (bwtest::dataDir() / "golden/tux.ans").string();
+    const std::string utf8Path = (bwtest::dataDir() / "utf8/tux-utf8.ans").string();
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(QString::fromStdString(cp437Path), &error));
+    CHECK(w.document()->textEncoding() == TextEncoding::Cp437);
+    QTemporaryDir tmp;
+    auto read = [](const QString& path) {
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? f.readAll().toStdString() : std::string();
+    };
+    const QString out = tmp.filePath(QStringLiteral("tux.ans"));
+    REQUIRE(w.saveFile(out, &error));
+    CHECK(read(out) == bwtest::readFile(cp437Path));
+
+    // Save As UTF-8, then Save keeps UTF-8
+    const QString u8 = tmp.filePath(QStringLiteral("tux-utf8.ans"));
+    REQUIRE(w.saveFile(u8, &error, false, TextEncoding::Utf8));
+    CHECK(read(u8) == bwtest::readFile(utf8Path));
+    CHECK(w.document()->textEncoding() == TextEncoding::Utf8);
+    REQUIRE(w.saveFile(u8, &error));
+    CHECK(read(u8) == bwtest::readFile(utf8Path));
+
+    // an XBIN is CP437, and the document saved as one is too
+    const QString xb = tmp.filePath(QStringLiteral("tux.xb"));
+    REQUIRE(w.saveFile(xb, &error, false, TextEncoding::Utf8));
+    CHECK(read(xb).starts_with("XBIN\x1a"));
+    CHECK(w.document()->textEncoding() == TextEncoding::Cp437);
+
+    // a new document is CP437
+    MainWindow fresh;
+    CHECK(fresh.document()->textEncoding() == TextEncoding::Cp437);
+}
+
+TEST_CASE("UTF-8 saves glyphs a CP437 save loses, with no warning", "[app][utf8]") {
+    MainWindow w;
+    QString error;
+    QTemporaryDir tmp;
+    const QString path = tmp.filePath(QStringLiteral("star.ans"));
+    {
+        QFile f(path);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        f.write("\xE2\x98\x85\xE2\x96\x88\r\n");  // ★█
+    }
+    REQUIRE(w.openFile(path, &error));
+    REQUIRE(w.document()->textEncoding() == TextEncoding::Utf8);
+    CHECK(w.document()->canvas().at(0, 0).ch == U'\u2605');
+    CHECK_FALSE(w.document()->encode().lossy());
+    CHECK(w.document()->encode(ArtFormat::Ansi, TextEncoding::Cp437).unwritable.size() == 1);
+    // saved without allowLossy: nothing is lost, so nothing to allow
+    REQUIRE(w.saveFile(path, &error));
+    QFile f(path);
     REQUIRE(f.open(QIODevice::ReadOnly));
-    CHECK(f.readAll().toStdString() == writeAnsi(cp437).bytes);
+    CHECK(f.readAll().contains("\xE2\x98\x85\xE2\x96\x88"));
 }

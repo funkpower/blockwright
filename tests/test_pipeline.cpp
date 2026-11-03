@@ -591,3 +591,27 @@ TEST_CASE("Send to WeeChat's command removes its temporary file when the connect
     fs::remove_all(root);
 }
 #endif
+
+// Publish writes the .ans as CP437 (writeAnsi's default), so ircLines reads it
+// as CP437 even when its bytes would pass for UTF-8: changing it to detect
+// the encoding fails here (#302).
+TEST_CASE("ircLines reads the published .ans as CP437, never as UTF-8", "[pipeline][utf8]") {
+    AnsiDocument d;
+    d.canvas = Canvas(3, 1);
+    d.canvas.at(0, 0).ch = U'α';
+    d.canvas.at(1, 0).ch = U'░';
+    d.canvas.at(2, 0).ch = U'▒';
+    const std::string ans = writeAnsi(d).bytes;
+    // E0 B0 B1, which is also UTF-8 for one glyph (U+0C31)
+    REQUIRE(ans.find("\xE0\xB0\xB1") != std::string::npos);
+    REQUIRE(detectEncoding(std::string_view(ans).substr(0, ans.find("\x1A"))) == TextEncoding::Utf8);
+    const std::vector<std::string> lines = ircLines(ans);
+    REQUIRE(lines.size() == 1);
+    CHECK(lines[0].find("α░▒") != std::string::npos);
+    CHECK(lines[0].find("\xE0\xB0\xB1") == std::string::npos);
+    // UTF-8 bytes for █ send Γûê
+    const std::vector<std::string> block = ircLines("\xE2\x96\x88\r\n");
+    REQUIRE(block.size() == 1);
+    CHECK(block[0].find("Γûê") != std::string::npos);
+    CHECK(block[0].find("█") == std::string::npos);
+}

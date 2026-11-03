@@ -122,13 +122,13 @@ AnsiDocument parseArt(std::string_view file, ArtFormat format, const ParseOption
     return parseAnsi(file, ansi);
 }
 
-AnsiOutput writeArt(const AnsiDocument& doc, ArtFormat format) {
+AnsiOutput writeArt(const AnsiDocument& doc, ArtFormat format, TextEncoding ansi) {
     switch (format) {
     case ArtFormat::Xbin: return writeXbin(doc);
     case ArtFormat::Bin: return writeBin(doc);
     case ArtFormat::Ansi: break;
     }
-    return writeAnsi(doc);
+    return writeAnsi(doc, ansi);
 }
 
 namespace {

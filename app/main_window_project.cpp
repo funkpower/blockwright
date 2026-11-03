@@ -60,9 +60,9 @@ bool MainWindow::openProject(const QString& path, QString* error) {
     return true;
 }
 
-AnsiOutput MainWindow::saveLoss(const QString& path, FileForm form) const {
+AnsiOutput MainWindow::saveLoss(const QString& path, FileForm form, std::optional<TextEncoding> encoding) const {
     if (form == FileForm::Ansi)
-        return doc_.encode(artFormatFor(QFile::encodeName(path).toStdString()));
+        return doc_.encode(artFormatFor(QFile::encodeName(path).toStdString()), encoding);
     // A project keeps every glyph; only blink lost on open is gone, and an
     // XBIN's palette and font, which it has no place for.
     AnsiOutput out;
@@ -72,10 +72,11 @@ AnsiOutput MainWindow::saveLoss(const QString& path, FileForm form) const {
     return out;
 }
 
-bool MainWindow::writeFile(const QString& path, FileForm form, QString* error, bool allowLossy) {
+bool MainWindow::writeFile(const QString& path, FileForm form, QString* error, bool allowLossy,
+                           std::optional<TextEncoding> encoding) {
     // A floating selection is saved where it floats.
     view_->finishTool();
-    const AnsiOutput out = saveLoss(path, form);
+    const AnsiOutput out = saveLoss(path, form, encoding);
     if (out.lossy() && !allowLossy) {
         *error = lossDescription(out);
         return false;

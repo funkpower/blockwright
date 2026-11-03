@@ -60,7 +60,16 @@ SavePath resolveSavePath(const QString& chosen, const QString& suffix = QStringL
 // XBIN and ".xb", BIN and ".bin", else ANSI art and ".ans"). It adds the
 // selected filter's suffix itself, so its own overwrite check sees the name
 // that will be written.
-void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project = false);
+//
+// ANSI art comes as two filters, CP437 and UTF-8 (the same *.ans); the one
+// for `encoding` is the one selected for an .ans.
+void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project = false,
+                         TextEncoding encoding = TextEncoding::Cp437);
+
+// The text encoding Save As writes an .ans in when `filter` is the name
+// filter chosen in a dialog configureSaveDialog set up: CP437 or UTF-8 for
+// the two ANSI art filters, nothing (the document's own) for any other.
+std::optional<TextEncoding> saveFilterEncoding(const QString& filter);
 
 // What a lossy save or snapshot loses, one line per kind of loss.
 QString lossDescription(const AnsiOutput& out);
@@ -209,7 +218,10 @@ public:
     // Document::encode) is refused unless `allowLossy`. An .ans that can't
     // hold the whole document (Document::flatHoldsAll) leaves it unsaved:
     // from a project it is an export, and the project stays its file.
-    bool saveFile(const QString& path, QString* error, bool allowLossy = false);
+    // An .ans is written in `encoding`, or with none in the document's own
+    // (Document::textEncoding).
+    bool saveFile(const QString& path, QString* error, bool allowLossy = false,
+                  std::optional<TextEncoding> encoding = {});
     // Writes the IRC lines the row meter measures to `path`, a floating
     // selection stamped first, as Save does. Refused, with `error`, if a
     // line is over the budget, unless `allowOverBudget`.
@@ -314,17 +326,18 @@ private:
     // Options line edit) writes its edit when it loses the focus. Takes the
     // focus from it now, so the edit lands while the document is here (#241).
     void commitFocusedEdit();
-    bool saveInteractive(const QString& path, FileForm form);
+    bool saveInteractive(const QString& path, FileForm form, std::optional<TextEncoding> encoding = {});
     // Save As into the directory picked, or through the file dialog.
     bool saveAsDirectory();
     bool saveAsFile();
     // openFile for a project, and saveFile's write in `form`.
     bool openProject(const QString& path, QString* error);
-    bool writeFile(const QString& path, FileForm form, QString* error, bool allowLossy);
+    bool writeFile(const QString& path, FileForm form, QString* error, bool allowLossy,
+                   std::optional<TextEncoding> encoding = {});
     // What a save to `path` in `form` would lose, for the warning: encode()
     // in the format `path` names (artFormatFor) for a flat file; for a
     // project, blink lost on open and the XBIN palette and font it can't keep.
-    AnsiOutput saveLoss(const QString& path, FileForm form) const;
+    AnsiOutput saveLoss(const QString& path, FileForm form, std::optional<TextEncoding> encoding = {}) const;
     // File > Save As Project Directory... and Take Snapshot, after Save As.
     void createProjectActions(QMenu* file);
     void syncProjectActions();

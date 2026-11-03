@@ -80,7 +80,7 @@ Shaded shadeDocument(bw::AnsiDocument& doc, const ShadeOptions& o) {
 
     // A piece that was written without loss and is lossy once shaded only
     // can be because --ice turned iCE colours on, where blink can't be kept.
-    const bw::AnsiOutput before = bw::writeAnsi(doc);
+    const bw::AnsiOutput before = bw::writeAnsi(doc, o.encoding);
     const bool flag = doc.ice;
     bw::openAsEditor(doc);
     if (o.ice)
@@ -108,7 +108,7 @@ Shaded shadeDocument(bw::AnsiDocument& doc, const ShadeOptions& o) {
     r.blinkDropped = bw::lostBlinkCount(doc);
     r.iceTurnedOn = !flag && doc.ice;
     if (before.unwritable.empty() && !before.blinkDropped) {
-        const int n = bw::writeAnsi(doc).blinkDropped;
+        const int n = bw::writeAnsi(doc, o.encoding).blinkDropped;
         if (n)
             r.why = "--ice turns iCE colours on, and " + std::to_string(n) +
                     (n == 1 ? " blinking cell would lose its blink" : " blinking cells would lose their blink");

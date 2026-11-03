@@ -962,3 +962,21 @@ TEST_CASE("the CLI refuses a generator directory it can't read all of", "[genera
     CHECK(bwcli::readGeneratorDir(dir).size() == 2);
 }
 #endif
+
+// A generator writes CP437 (PLAN §7): its output is read as CP437 even when
+// its bytes would pass for UTF-8, so changing cellsFromOutput to detect the
+// encoding fails here (#302).
+TEST_CASE("a generator's output is read as CP437, never detected as UTF-8", "[generator][utf8]") {
+    // α░▒ in CP437 is E0 B0 B1, which is also UTF-8 for one glyph (U+0C31)
+    const std::string stamp = "\xE0\xB0\xB1\r\n";
+    REQUIRE(detectEncoding(stamp) == TextEncoding::Utf8);
+    const Canvas c = gen::cellsFromOutput(stamp, 6, std::nullopt);
+    CHECK(c.at(0, 0).ch == U'α');
+    CHECK(c.at(1, 0).ch == U'░');
+    CHECK(c.at(2, 0).ch == U'▒');
+    // and UTF-8 bytes for █ are three CP437 glyphs, not one block
+    const Canvas block = gen::cellsFromOutput("\xE2\x96\x88\r\n", 6, std::nullopt);
+    CHECK(block.at(0, 0).ch == U'Γ');
+    CHECK(block.at(1, 0).ch == U'û');
+    CHECK(block.at(2, 0).ch == U'ê');
+}

@@ -124,10 +124,26 @@ SavePath resolveSavePath(const QString& chosen, const QString& suffix) {
     return {path, QFileInfo::exists(path)};
 }
 
-void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project) {
+namespace {
+
+QString ansiFilter() { return QObject::tr("ANSI art (*.ans)"); }
+QString utf8AnsiFilter() { return QObject::tr("ANSI art, UTF-8 (*.ans)"); }
+
+} // namespace
+
+std::optional<TextEncoding> saveFilterEncoding(const QString& filter) {
+    if (filter == ansiFilter())
+        return TextEncoding::Cp437;
+    if (filter == utf8AnsiFilter())
+        return TextEncoding::Utf8;
+    return std::nullopt;
+}
+
+void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project, TextEncoding encoding) {
     // Each filter and the suffix it adds; "All files" keeps the last one.
     const std::vector<std::pair<QString, QString>> filters = {
-        {QObject::tr("ANSI art (*.ans)"), QStringLiteral("ans")},
+        {ansiFilter(), QStringLiteral("ans")},
+        {utf8AnsiFilter(), QStringLiteral("ans")},
         {QObject::tr("Blockwright project (*.bwp)"), QStringLiteral("bwp")},
         {QObject::tr("XBIN (*.xb)"), QStringLiteral("xb")},
         {QObject::tr("BIN (*.bin)"), QStringLiteral("bin")},
@@ -139,10 +155,11 @@ void configureSaveDialog(QFileDialog& dialog, const QString& path, bool project)
         names << f.first;
     dialog.setNameFilters(names << QObject::tr("All files (*)"));
     const ArtFormat format = artFormatFor(QFile::encodeName(path).toStdString());
-    const auto& selected = filters[project                       ? 1
-                                   : format == ArtFormat::Xbin ? 2
-                                   : format == ArtFormat::Bin  ? 3
-                                                               : 0];
+    const auto& selected = filters[project                            ? 2
+                                   : format == ArtFormat::Xbin      ? 3
+                                   : format == ArtFormat::Bin       ? 4
+                                   : encoding == TextEncoding::Utf8 ? 1
+                                                                    : 0];
     dialog.selectNameFilter(selected.first);
     dialog.setDefaultSuffix(selected.second);
     QObject::connect(&dialog, &QFileDialog::filterSelected, &dialog, [&dialog, filters](const QString& name) {
@@ -569,9 +586,10 @@ void MainWindow::showStartScreen() {
     screen->open();
 }
 
-bool MainWindow::saveFile(const QString& path, QString* error, bool allowLossy) {
+bool MainWindow::saveFile(const QString& path, QString* error, bool allowLossy,
+                          std::optional<TextEncoding> encoding) {
     const FileForm form = path == doc_.path() ? doc_.form() : fileFormFor(path);
-    return writeFile(path, form, error, allowLossy);
+    return writeFile(path, form, error, allowLossy, encoding);
 }
 
 void MainWindow::newFile() {
@@ -621,7 +639,7 @@ bool MainWindow::saveAs() {
 
 bool MainWindow::saveAsFile() {
     QFileDialog dialog(this, tr("Save As"));
-    configureSaveDialog(dialog, doc_.path(), doc_.form() != FileForm::Ansi);
+    configureSaveDialog(dialog, doc_.path(), doc_.form() != FileForm::Ansi, doc_.textEncoding());
     if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty())
         return false;
     // A platform dialog may not apply the default suffix; then the name
@@ -631,12 +649,12 @@ bool MainWindow::saveAsFile() {
         QMessageBox::warning(this, tr("Save As"), tr("%1 already exists.\nDo you want to replace it?").arg(p.path),
                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return false;
-    return saveInteractive(p.path, fileFormFor(p.path));
+    return saveInteractive(p.path, fileFormFor(p.path), saveFilterEncoding(dialog.selectedNameFilter()));
 }
 
-bool MainWindow::saveInteractive(const QString& path, FileForm form) {
+bool MainWindow::saveInteractive(const QString& path, FileForm form, std::optional<TextEncoding> encoding) {
     view_->finishTool();
-    const AnsiOutput out = saveLoss(path, form);
+    const AnsiOutput out = saveLoss(path, form, encoding);
     if (out.lossy()) {
         const auto answer = QMessageBox::warning(
             this, tr("Save"),

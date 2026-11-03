@@ -969,17 +969,24 @@ TEST_CASE("Save As offers .bwp, and adds the suffix of the filter chosen") {
     CHECK(dialog.defaultSuffix() == QStringLiteral("bwp"));
     CHECK(dialog.selectedNameFilter().contains(QStringLiteral("*.bwp")));
     const QStringList filters = dialog.nameFilters();
-    REQUIRE(filters.size() == 5);
+    REQUIRE(filters.size() == 6);
     emit dialog.filterSelected(filters[0]);
     CHECK(dialog.defaultSuffix() == QStringLiteral("ans"));
-    emit dialog.filterSelected(filters[4]);  // All files keeps the last
+    emit dialog.filterSelected(filters[5]);  // All files keeps the last
     CHECK(dialog.defaultSuffix() == QStringLiteral("ans"));
-    emit dialog.filterSelected(filters[1]);
-    CHECK(dialog.defaultSuffix() == QStringLiteral("bwp"));
     emit dialog.filterSelected(filters[2]);
-    CHECK(dialog.defaultSuffix() == QStringLiteral("xb"));
+    CHECK(dialog.defaultSuffix() == QStringLiteral("bwp"));
+    emit dialog.filterSelected(filters[1]);  // ANSI art, UTF-8
+    CHECK(dialog.defaultSuffix() == QStringLiteral("ans"));
     emit dialog.filterSelected(filters[3]);
+    CHECK(dialog.defaultSuffix() == QStringLiteral("xb"));
+    emit dialog.filterSelected(filters[4]);
     CHECK(dialog.defaultSuffix() == QStringLiteral("bin"));
+    // the two .ans filters say which encoding; the rest leave it to the document
+    CHECK(saveFilterEncoding(filters[0]) == TextEncoding::Cp437);
+    CHECK(saveFilterEncoding(filters[1]) == TextEncoding::Utf8);
+    for (int i : {2, 3, 4, 5})
+        CHECK_FALSE(saveFilterEncoding(filters[i]).has_value());
 
     // a flat file starts on its own format's filter
     QFileDialog xbin;
@@ -990,4 +997,22 @@ TEST_CASE("Save As offers .bwp, and adds the suffix of the filter chosen") {
     configureSaveDialog(bin, tmp.filePath(QStringLiteral("PIECE.BIN")));
     CHECK(bin.defaultSuffix() == QStringLiteral("bin"));
     CHECK(bin.selectedNameFilter().contains(QStringLiteral("*.bin")));
+
+    // an .ans starts on the filter of the document's encoding (#302)
+    QFileDialog cp;
+    configureSaveDialog(cp, tmp.filePath(QStringLiteral("piece.ans")), false, TextEncoding::Cp437);
+    CHECK(saveFilterEncoding(cp.selectedNameFilter()) == TextEncoding::Cp437);
+    CHECK(cp.defaultSuffix() == QStringLiteral("ans"));
+    QFileDialog u8;
+    configureSaveDialog(u8, tmp.filePath(QStringLiteral("piece.ans")), false, TextEncoding::Utf8);
+    CHECK(saveFilterEncoding(u8.selectedNameFilter()) == TextEncoding::Utf8);
+    CHECK(u8.selectedNameFilter().contains(QStringLiteral("*.ans")));
+    CHECK(u8.defaultSuffix() == QStringLiteral("ans"));
+    // XBIN and a project keep their own filter whatever the encoding
+    QFileDialog xbU8;
+    configureSaveDialog(xbU8, tmp.filePath(QStringLiteral("piece.xb")), false, TextEncoding::Utf8);
+    CHECK(xbU8.selectedNameFilter().contains(QStringLiteral("*.xb")));
+    QFileDialog projU8;
+    configureSaveDialog(projU8, tmp.filePath(QStringLiteral("piece.bwp")), true, TextEncoding::Utf8);
+    CHECK(projU8.selectedNameFilter().contains(QStringLiteral("*.bwp")));
 }

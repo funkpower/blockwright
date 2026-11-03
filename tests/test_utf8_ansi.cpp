@@ -2,6 +2,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/cp437.h"
+#include "blockwright/xbin.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -237,4 +238,176 @@ TEST_CASE("controls and escapes act the same in UTF-8", "[utf8]") {
         parseAs("\x1b[1;31m\xDB\x1b[0m\tA\r\n\x01\x7F\x00" "B"s,
                 TextEncoding::Cp437);
     CHECK(cp.canvas == d.canvas);
+}
+
+// ---- writing UTF-8 .ans (#302 part 2) ----
+
+namespace {
+
+// The content writeAnsi wrote, before its SAUCE.
+std::string contentOf(const AnsiOutput& out) { return std::string(splitSauce(out.bytes).content); }
+
+AnsiDocument oneRow(std::u32string glyphs) {
+    AnsiDocument d;
+    d.canvas = Canvas(static_cast<int>(glyphs.size()), 1);
+    for (std::size_t x = 0; x < glyphs.size(); ++x)
+        d.canvas.at(static_cast<int>(x), 0).ch = glyphs[x];
+    return d;
+}
+
+} // namespace
+
+TEST_CASE("utf8Writable: everything but controls and surrogates", "[utf8]") {
+    CHECK(utf8Writable(U'\0'));  // written as a space
+    CHECK(utf8Writable(U' '));
+    CHECK(utf8Writable(U'~'));
+    CHECK(utf8Writable(U'é'));
+    CHECK(utf8Writable(U'█'));
+    CHECK(utf8Writable(U'★'));
+    CHECK(utf8Writable(U'\U0001F600'));
+    CHECK(utf8Writable(U'\U0010FFFF'));
+    for (char32_t c : {U'\x01', U'\t', U'\n', U'\r', U'\x1a', U'\x1b', U'\x1f', U'\x7f'})
+        CHECK_FALSE(utf8Writable(c));
+    CHECK_FALSE(utf8Writable(char32_t(0xD800)));
+    CHECK_FALSE(utf8Writable(char32_t(0xDFFF)));
+    CHECK_FALSE(utf8Writable(char32_t(0x110000)));
+}
+
+TEST_CASE("every CP437 glyph survives a UTF-8 write and read", "[utf8]") {
+    AnsiDocument d;
+    d.canvas = Canvas(16, 16);
+    for (int b = 0; b < 256; ++b)
+        d.canvas.at(b % 16, b / 16).ch = cp437ToUnicode(std::uint8_t(b));
+    d.canvas.at(0, 0).ch = U'A';  // NUL reads back as a space, so not here
+    const AnsiOutput out = writeAnsi(d, TextEncoding::Utf8);
+    CHECK(out.encoding == TextEncoding::Utf8);
+    CHECK(out.unwritable.empty());  // ○ ◙ ← → ♪ too, which a CP437 .ans can't hold
+    const AnsiDocument back = parseAnsi(out.bytes);
+    CHECK(back.encoding == TextEncoding::Utf8);
+    CHECK(back.canvas == d.canvas);
+    // no byte order mark: the box and block glyphs are three bytes
+    CHECK_FALSE(out.bytes.starts_with("\xEF\xBB\xBF"));
+    // the CP437 writer loses the five control-code glyphs (#300)
+    CHECK(writeAnsi(d).unwritable.size() == 5);
+}
+
+TEST_CASE("a CP437 piece written as UTF-8 reads back as the same cells", "[utf8]") {
+    for (const auto& e : fs::directory_iterator(bwtest::dataDir() / "golden")) {
+        if (e.path().extension() != ".ans")
+            continue;
+        CAPTURE(e.path().filename().string());
+        const AnsiDocument cp437 = parseAnsi(bwtest::readFile(e.path()));
+        REQUIRE(cp437.encoding == TextEncoding::Cp437);
+        const AnsiOutput out = writeAnsi(cp437, TextEncoding::Utf8);
+        CHECK(out.unwritable.empty());
+        const AnsiDocument back = parseAnsi(out.bytes);
+        CHECK(back.encoding == TextEncoding::Utf8);
+        // the cells the CP437 writer gives back, and a CP437 write of them is
+        // the CP437 write of the piece
+        CHECK(back.canvas == parseAnsi(writeAnsi(cp437).bytes).canvas);
+        CHECK(writeAnsi(back).bytes == writeAnsi(cp437).bytes);
+        // SAUCE is the piece's, its FileSize the UTF-8 content's length
+        REQUIRE(back.sauce);
+        REQUIRE(cp437.sauce);
+        CHECK(back.sauce->title == cp437.sauce->title);
+        CHECK(back.sauce->author == cp437.sauce->author);
+        CHECK(back.sauce->fileSize == contentOf(out).size());
+    }
+}
+
+TEST_CASE("tux written as UTF-8 is the UTF-8 copy of tux", "[utf8]") {
+    const AnsiDocument cp437 = parseAnsi(bwtest::readFile(bwtest::dataDir() / "golden/tux.ans"));
+    CHECK(writeAnsi(cp437, TextEncoding::Utf8).bytes == bwtest::readFile(bwtest::dataDir() / "utf8/tux-utf8.ans"));
+    // and the default is still the CP437 file, byte for byte
+    CHECK(writeAnsi(cp437).bytes == bwtest::readFile(bwtest::dataDir() / "golden/tux.ans"));
+    CHECK(writeAnsi(cp437).encoding == TextEncoding::Cp437);
+    CHECK(writeAnsi(cp437, TextEncoding::Cp437).bytes == writeAnsi(cp437).bytes);
+}
+
+TEST_CASE("a byte order mark only when the bytes wouldn't say UTF-8", "[utf8]") {
+    const std::string bom = "\xEF\xBB\xBF";
+    SECTION("ASCII only") {
+        const AnsiOutput out = writeAnsi(oneRow(U"hi"), TextEncoding::Utf8);
+        CHECK(contentOf(out).starts_with(bom));
+        const AnsiDocument back = parseAnsi(out.bytes);
+        CHECK(back.encoding == TextEncoding::Utf8);
+        CHECK(row(back, 0, 2) == U"hi");
+        // the FileSize counts the mark
+        REQUIRE(back.sauce);
+        CHECK(back.sauce->fileSize == contentOf(out).size());
+    }
+    SECTION("two-byte sequences only") {
+        const AnsiOutput out = writeAnsi(oneRow(U"café"), TextEncoding::Utf8);
+        CHECK(contentOf(out).starts_with(bom));
+        CHECK(contentOf(out).find("caf\xC3\xA9") != std::string::npos);
+        const AnsiDocument back = parseAnsi(out.bytes);
+        CHECK(back.encoding == TextEncoding::Utf8);
+        CHECK(row(back, 0, 4) == U"café");
+    }
+    SECTION("a three-byte sequence says it") {
+        const AnsiOutput out = writeAnsi(oneRow(U"café█"), TextEncoding::Utf8);
+        CHECK_FALSE(out.bytes.starts_with(bom));
+        CHECK(contentOf(out).find("caf\xC3\xA9\xE2\x96\x88") != std::string::npos);
+        CHECK(parseAnsi(out.bytes).encoding == TextEncoding::Utf8);
+    }
+    SECTION("an empty canvas") {
+        AnsiDocument d;
+        d.canvas = Canvas(4, 2);
+        const AnsiOutput out = writeAnsi(d, TextEncoding::Utf8);
+        CHECK(out.bytes.starts_with(bom));
+        CHECK(parseAnsi(out.bytes).encoding == TextEncoding::Utf8);
+    }
+}
+
+TEST_CASE("UTF-8 keeps glyphs CP437 has no code for", "[utf8]") {
+    const std::u32string glyphs = U"★λ€\U0001F600☺";
+    const AnsiOutput out = writeAnsi(oneRow(glyphs), TextEncoding::Utf8);
+    CHECK(out.unwritable.empty());
+    CHECK(row(parseAnsi(out.bytes), 0, 5) == glyphs);
+    // CP437 loses the four with no code
+    CHECK(writeAnsi(oneRow(glyphs)).unwritable.size() == 4);
+}
+
+TEST_CASE("UTF-8 writes controls, surrogates and NUL safely", "[utf8]") {
+    AnsiDocument d = oneRow(U"a\x01" "b\x7f" "c");
+    d.canvas.at(4, 0).ch = char32_t(0xD800);
+    const AnsiOutput out = writeAnsi(d, TextEncoding::Utf8);
+    REQUIRE(out.unwritable.size() == 3);
+    CHECK(out.unwritable[0].x == 1);
+    CHECK(out.unwritable[0].ch == U'\x01');
+    CHECK(out.unwritable[1].x == 3);
+    CHECK(out.unwritable[1].ch == U'\x7f');
+    CHECK(out.unwritable[2].x == 4);
+    CHECK(out.unwritable[2].ch == char32_t(0xD800));
+    CHECK(contentOf(out).find("a?b??") != std::string::npos);
+
+    const AnsiOutput nul = writeAnsi(oneRow(std::u32string{U'x', U'\0', U'y'}), TextEncoding::Utf8);
+    CHECK(nul.unwritable.empty());
+    CHECK(contentOf(nul).find("x y") != std::string::npos);
+}
+
+TEST_CASE("the SAUCE of a UTF-8 .ans is the CP437 record", "[utf8][sauce]") {
+    AnsiDocument d = oneRow(U"██");
+    Sauce s = Sauce::fresh(2, 1);
+    s.title = "\xC9\xCD\xBB caf\x82";  // CP437 bytes, written as they are
+    s.author = "funkpower";
+    d.sauce = s;
+    const AnsiOutput u8 = writeAnsi(d, TextEncoding::Utf8), cp = writeAnsi(d);
+    // the same record but for FileSize
+    Sauce c = *parseAnsi(cp.bytes).sauce;
+    c.fileSize = static_cast<std::uint32_t>(contentOf(u8).size());
+    CHECK(splitSauce(u8.bytes).sauce->title == s.title);
+    CHECK(u8.bytes.substr(contentOf(u8).size()) == encodeSauce(c, c.fileSize));
+}
+
+TEST_CASE("writeArt: XBIN and BIN stay CP437 whatever the .ans encoding", "[utf8][xbin]") {
+    const AnsiDocument d = oneRow(U"█░");
+    for (ArtFormat f : {ArtFormat::Xbin, ArtFormat::Bin}) {
+        CAPTURE(int(f));
+        const AnsiOutput u8 = writeArt(d, f, TextEncoding::Utf8);
+        CHECK(u8.bytes == writeArt(d, f).bytes);
+        CHECK(u8.encoding == TextEncoding::Cp437);
+    }
+    CHECK(writeArt(d, ArtFormat::Ansi, TextEncoding::Utf8).bytes == writeAnsi(d, TextEncoding::Utf8).bytes);
+    CHECK(writeArt(d, ArtFormat::Ansi).bytes == writeAnsi(d).bytes);
 }
