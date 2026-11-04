@@ -30,6 +30,9 @@ using namespace bw;
 
 namespace {
 
+// An edit settled as Document::edit and cli shade settle it.
+CellEdit settled(const Canvas& c, CellEdit e) { return settleMarks(c, settleWide(c, std::move(e))); }
+
 const Glyph kCont = Glyph::continuation();
 
 Cell cell(Glyph ch, std::uint8_t fg = 7, std::uint8_t bg = 0) {
@@ -299,14 +302,86 @@ TEST_CASE("the lost-blink mark stays on a cell drawn over a lead with what it wr
     // the mark, as drawing the same glyph over any cell does
     Cell lead = cell(U'A'), cont = cell(kCont);
     lead.lostBlink = cont.lostBlink = true;
+    Canvas c(2, 1);
+    c.at(0, 0) = lead;
+    c.at(1, 0) = cont;
     CellEdit e;
     e.changes.push_back({0, 0, lead, cell(U'?')});
     e.changes.push_back({1, 0, cont, cell(U' ')});
-    const CellEdit s = settleMarks(e);
+    const CellEdit s = settled(c, e);
+    REQUIRE(s.changes.size() == 2);
     CHECK(s.changes[0].after.lostBlink);
     CHECK(s.changes[1].after.lostBlink);
     CHECK(writtenOver(lead, cell(U'?'), kCont, U' ').lostBlink);
     CHECK_FALSE(writtenOver(lead, cell(U'A'), kCont, U' ').lostBlink);
+}
+
+TEST_CASE("writing over a lead the settle then breaks drops the lost-blink mark", "[wide][writers]") {
+    // review of #339, finding 1: 'A' over the lead of 中, its continuation
+    // in other colours; the settle makes the continuation a space in the
+    // lead's colours, so the save writes "A " where it wrote "? "
+    Canvas c(4, 1);
+    c.at(1, 0) = cell(U'中', 14, 1);
+    c.at(2, 0) = cell(kCont, 14, 1);
+    c.at(1, 0).lostBlink = c.at(2, 0).lostBlink = true;
+    CellEdit e;
+    e.changes.push_back({1, 0, c.at(1, 0), cell(U'A', 14, 1)});
+    e.changes.push_back({2, 0, c.at(2, 0), cell(kCont, 12, 1)});
+    Canvas out = c;
+    settled(c, e).apply(out);
+    CHECK(out.at(1, 0).ch == Glyph(U'A'));
+    CHECK_FALSE(out.at(1, 0).lostBlink);
+}
+
+TEST_CASE("writing over a lead what it writes keeps the lost-blink mark", "[wide][writers]") {
+    // review of #339, finding 2: '?' over a lead the edit doesn't name the
+    // continuation of writes "? " as before, so the mark stays
+    Canvas c(4, 1);
+    c.at(1, 0) = cell(U'A');
+    c.at(2, 0) = cell(kCont);
+    c.at(1, 0).lostBlink = c.at(2, 0).lostBlink = true;
+    CellEdit e;
+    e.changes.push_back({1, 0, c.at(1, 0), cell(U'?')});
+    Canvas out = c;
+    settled(c, e).apply(out);
+    CHECK(out.at(1, 0).lostBlink);
+}
+
+TEST_CASE("a pair's continuation takes its lead's marks", "[wide][writers]") {
+    // 中 over a marked '?' writes '?' as before, so the lead keeps the mark,
+    // and the continuation, over an unmarked B, takes it from the lead
+    Canvas c(4, 1);
+    c.at(1, 0) = cell(U'?');
+    c.at(1, 0).lostBlink = true;
+    c.at(2, 0) = cell(U'B');
+    CellEdit e;
+    e.changes.push_back({1, 0, c.at(1, 0), cell(U'中')});
+    e.changes.push_back({2, 0, c.at(2, 0), cell(kCont)});
+    Canvas out = c;
+    settled(c, e).apply(out);
+    CHECK(out.at(1, 0).lostBlink);
+    CHECK(out.at(2, 0).lostBlink);
+
+    SECTION("a continuation the edit leaves alone too, by a change of its own") {
+        // settleMarks alone, on a pair whose halves' marks differ: the lead
+        // drawn over as it is keeps its mark and gives it to the continuation
+        Canvas d(4, 1);
+        d.at(1, 0) = cell(U'中');
+        d.at(1, 0).lostBlink = true;
+        d.at(2, 0) = cell(kCont);
+        CellEdit f;
+        f.changes.push_back({1, 0, d.at(1, 0), cell(U'中')});
+        const CellEdit s = settleMarks(d, f);
+        REQUIRE(s.changes.size() == 1);  // the lead's change is none
+        CHECK(s.changes[0].x == 2);
+        CHECK(s.changes[0].after.lostBlink);
+        Canvas o = d;
+        s.apply(o);
+        CHECK(o.at(1, 0).lostBlink);
+        CHECK(o.at(2, 0).lostBlink);
+        s.revert(o);
+        CHECK(identical(o.at(2, 0), d.at(2, 0)));
+    }
 }
 
 // ---- stamps ---------------------------------------------------------------------

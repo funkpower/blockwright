@@ -116,6 +116,12 @@ inline constexpr int kGlowStyledFormatMinor = 4;
 // no brightness (or the width's) still opens, its counters now filled.
 inline constexpr int kGlowCellsFormatMajor = 3;
 inline constexpr int kGlowCellsFormatMinor = 0;
+// A layer that holds a wide pair or a cluster (PLAN §16), whose .cells is
+// version 2: an older reader would refuse the layer or, reading it, show
+// other columns, so the project is 4.0, which a 3.x reader refuses. It
+// implies every 3.x and 2.x minor.
+inline constexpr int kWideFormatMajor = 4;
+inline constexpr int kWideFormatMinor = 0;
 
 // Limits a reader holds a file to, and a writer checks before it writes
 // anything: no more than kMaxEntries entries, none over kMaxEntryBytes, all
@@ -128,7 +134,9 @@ inline constexpr int kGlowCellsFormatMinor = 0;
 // tdf.h's kMaxTdfBytes, counted before any is read (each can make up to
 // kMaxTdfCells cells of glyphs); a canvas within ansi.h's kMaxColumns by
 // kMaxRows; SAUCE text within the record's fields (Sauce::kTitleLen and the
-// rest, a date of 8).
+// rest, a date of 8); no more than kMaxTableCodePoints code points in the
+// layers' cluster tables together, counted from what each .cells frame
+// declares before any is decoded (encodeCells).
 inline constexpr std::size_t kMaxEntries = 10'000;
 inline constexpr std::size_t kMaxEntryBytes = std::size_t{256} << 20;
 inline constexpr std::size_t kMaxTotalBytes = std::size_t{1} << 30;
@@ -137,6 +145,7 @@ inline constexpr std::size_t kMaxLayerCells = std::size_t{kMaxColumns} * kMaxRow
 inline constexpr std::size_t kMaxTotalCells = 8 * kMaxLayerCells;
 inline constexpr std::size_t kMaxJsonBytes = std::size_t{1} << 20;
 inline constexpr std::size_t kMaxFontFiles = 16;
+inline constexpr std::size_t kMaxTableCodePoints = 4'000'000;
 
 class ProjectError : public std::runtime_error {
 public:
@@ -212,14 +221,29 @@ AnsiOutput takeSnapshot(Project& project);
 std::optional<std::string> layerReferenceProblem(const LayerProperties& props);
 
 // A layer's cells as layers/<id>.cells holds them: "BWCL", the format
-// version (u16, 1), reserved (u16, 0), width and height (u32), then one zstd
+// version (u16), reserved (u16, 0), width and height (u32), then one zstd
 // frame of width × height 14-byte cells, row by row: the code point (u32),
 // foreground and background (u8 kind, 0 a palette index then the index and
 // two zeros, 1 RGB then r, g, b), attributes (u8) and flags (u8, bit 0
-// transparent). All little-endian. decodeCells throws ProjectError for
+// transparent). All little-endian. Version 1 is written for a layer of code
+// points only, byte for byte as before wide glyphs (PLAN §16). Version 2 is
+// written for a layer that holds a continuation or a cluster: flags bit 1
+// marks a continuation (code point field 0, the colours, attributes and
+// transparency of the lead to its left, never in column 0 or right of
+// another continuation; its dither mark, kept in the layer's JSON, is the
+// lead's too) and bit 2 a cluster (the code point
+// field indexes the table); after the cells, in the same frame, the cluster
+// table: u32 count, then for each u8 n (2-16) and n u32 code points, in the
+// order the cells first use them, no two alike, each used, each one a
+// cluster may hold (clusterMayHold). decodeCells throws ProjectError for
 // anything else: another magic or version, a size over the limits, a frame
-// that isn't exactly the cells, a code point past U+10FFFF, an unknown
-// colour kind or flag.
+// that isn't exactly the cells (and table), a code point past U+10FFFF, an
+// unknown colour kind or flag, a version 2 layer with no continuation or
+// cluster, a table that could hold over kMaxTableCodePoints code points
+// (checked before decoding), and a pool that can't take the table (out of
+// ids or memory; never its lossy cap, PoolCap::Uncapped). encodeCells
+// refuses a canvas it would write so (a stray continuation, one in other
+// values than its lead's, a table over the limit).
 std::string encodeCells(const Canvas& cells);
 Canvas decodeCells(std::string_view data);
 
@@ -233,7 +257,9 @@ Canvas decodeCells(std::string_view data);
 // and Unicode-normalised ("refs/A" and "refs/a", "é" composed and
 // decomposed, a directory spelled two ways), or one a file and the other a
 // directory ("refs/x" and "refs/x/y"); so a directory save never writes one
-// file over another, or a font copy it refuses (above). encode
+// file over another, or a font copy it refuses (above). decode interns the
+// layers' clusters only once all of that has passed, so a project it refuses
+// adds nothing to the cluster pool. encode
 // throws it for a path in `files` that is unsafe or that the format owns
 // (manifest.json, notes.md, layers/<n>.json and .cells, snapshots/r<N>.ans,
 // fonts/<sha256>.tdf), for a text source in a TheDraw font `fonts` doesn't

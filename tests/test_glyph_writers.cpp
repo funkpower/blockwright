@@ -12,7 +12,6 @@
 #include "blockwright/cp437.h"
 #include "blockwright/glyph.h"
 #include "blockwright/irc.h"
-#include "blockwright/project.h"
 #include "blockwright/xbin.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -136,16 +135,3 @@ TEST_CASE("IRC text writes a pair whole and a cluster as its code points") {
                Catch::Matchers::ContainsSubstring("\xE4\xB8\xAD"));
 }
 
-TEST_CASE("a layer's cells can't hold a continuation or a cluster yet") {
-    using project::ProjectError;
-    Canvas cv(3, 1);
-    cv.at(0, 0).ch = U'中';
-    CHECK_NOTHROW(project::encodeCells(cv));
-    cv.at(1, 0).ch = kCont;
-    CHECK_THROWS_AS(project::encodeCells(cv), ProjectError);
-    CHECK_THROWS_WITH(project::encodeCells(cv), Catch::Matchers::ContainsSubstring("cell 1,0"));
-    cv.at(1, 0).ch = U' ';
-    cv.at(2, 0).ch = cluster({U'e', 0x301});
-    CHECK_THROWS_AS(project::encodeCells(cv), ProjectError);
-    CHECK_THROWS_WITH(project::encodeCells(cv), Catch::Matchers::ContainsSubstring("cell 2,0"));
-}

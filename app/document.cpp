@@ -699,10 +699,10 @@ QRegion Document::changedCells(const CellEdit& edit) {
 bool Document::edit(const CellEdit& edit, Cursor before, Cursor after) {
     if (!editable())
         return false;
-    std::optional<CellEdit> e = fitLayerEdit(*active(), settleMarks(edit), below(), doc_.ice);
+    std::optional<CellEdit> e = fitLayerEdit(*active(), edit, below(), doc_.ice);
     if (!e)
         return false;
-    *e = settleWide(active()->cells, std::move(*e));
+    *e = settleMarks(active()->cells, settleWide(active()->cells, std::move(*e)));
     if (e->changes.empty())
         return false;
     undo_.push(new LayerEditCommand(this, active_, *e, before, after));
@@ -715,10 +715,10 @@ CellEdit Document::previewEdit(const CellEdit& edit, CellEdit* layerCells) {
     if (!editable())
         return {};
     Layer& layer = *stack_.find(active_);
-    std::optional<CellEdit> e = fitLayerEdit(layer, settleMarks(edit), below(), doc_.ice);
+    std::optional<CellEdit> e = fitLayerEdit(layer, edit, below(), doc_.ice);
     if (!e)
         return {};
-    *e = settleWide(layer.cells, std::move(*e));
+    *e = settleMarks(layer.cells, settleWide(layer.cells, std::move(*e)));
     // Applied for the moment, to read the composite, and taken off again.
     e->apply(layer.cells);
     CellEdit out;

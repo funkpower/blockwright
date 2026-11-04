@@ -106,6 +106,7 @@ add_executable(blockwright-tests
   test_text_presets.cpp
   test_text_style.cpp
   test_wide_pairs.cpp
+  test_wide_cells.cpp
   test_wide_irc.cpp
   test_wide_writers.cpp
   util.h
@@ -136,6 +137,10 @@ target_compile_definitions(blockwright-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRE
                                                     BW_SAMPLES_SOURCE="${PROJECT_SOURCE_DIR}/samples"
                                                     BW_SAMPLES_FROM_BINDIR="${BW_SAMPLES_FROM_BINDIR}")
 catch_discover_tests(blockwright-tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+# hidden ([.pool-full]): it fills the process's cluster pool, so it runs alone
+add_test(NAME wide_cells_pool_full
+  COMMAND blockwright-tests "a project's clusters open whatever the session's pool holds")
+set_tests_properties(wide_cells_pool_full PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
 add_test(NAME cli
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_test.sh

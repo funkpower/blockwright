@@ -52,6 +52,8 @@ bool control(char32_t cp) {
 
 } // namespace
 
+bool clusterMayHold(char32_t cp) { return scalar(cp) && !control(cp); }
+
 struct ClusterPool::Impl {
     // Published in order: a chunk pointer before the count that covers its
     // first entry, an entry's contents before the count that covers it.
@@ -148,6 +150,8 @@ int ClusterPool::width(Glyph g) const {
     const Entry* e = d_->find(g);
     return e ? e->width : codePointWidth(U'�');
 }
+
+std::size_t ClusterPool::size() const { return d_->count.load(std::memory_order_acquire); }
 
 ClusterPool& clusterPool() {
     // never destroyed: a cell's id stays good until the process ends

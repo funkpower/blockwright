@@ -222,6 +222,7 @@ CellEdit toLayerEdit(const Layer& layer, const CellEdit& canvasEdit) {
     }
     std::erase_if(out.changes, [](const CellChange& c) { return identical(c.after, c.before); });
     out.moves = canvasEdit.moves;
+    out.dithers = canvasEdit.dithers;
     return out;
 }
 

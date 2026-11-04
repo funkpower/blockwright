@@ -30,8 +30,11 @@
 #include <map>
 #include <random>
 #include <set>
+#include <span>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 
@@ -56,11 +59,14 @@ namespace {
 
 constexpr char kMagic[] = "BWCL";
 constexpr std::uint16_t kCellsVersion = 1;
+constexpr std::uint16_t kWideCellsVersion = 2;  // pairs and clusters (PLAN §16)
 constexpr std::size_t kHeaderSize = 16;
 constexpr std::size_t kCellSize = 14;
 constexpr std::uint32_t kMaxSide = 65535;
 constexpr int kZstdLevel = 3;
 constexpr std::uint8_t kFlagTransparent = 0x01;
+constexpr std::uint8_t kFlagContinuation = 0x02;  // version 2
+constexpr std::uint8_t kFlagCluster = 0x04;       // version 2
 // What a zip entry's time says: 1980-01-01 00:00, the first DOS date.
 constexpr std::uint16_t kDosTime = 0, kDosDate = (1 << 5) | 1;
 constexpr int kMaxRoundDigits = 9;  // r999999999.ans: an int either way
@@ -107,6 +113,13 @@ Color getColour(const unsigned char* p, std::size_t at) {
     if (p[0] == 1)
         return Color::fromRgb({p[1], p[2], p[3]});
     fail("layer cells: cell " + std::to_string(at) + " has an unknown colour kind " + std::to_string(p[0]));
+}
+
+// A .cells file's format version, from its header; 0 for one that isn't.
+std::uint16_t cellsVersion(std::string_view data) {
+    if (data.size() < kHeaderSize || data.substr(0, 4) != std::string_view(kMagic, 4))
+        return 0;
+    return get16(reinterpret_cast<const unsigned char*>(data.data()) + 4);
 }
 
 // ---- paths ----
@@ -818,8 +831,28 @@ QJsonObject layerJson(const Layer& l) {
     return o;
 }
 
+// A version 2 layer's cluster table as read and checked, not yet interned,
+// and the cells that use each entry: a project's clusters go into the
+// process-wide pool, which never frees, only once the whole project has
+// passed (PLAN §16, Project format).
+struct PendingClusters {
+    std::vector<char32_t> cps;  // every entry's code points, entry after entry
+    std::vector<std::uint32_t> starts;  // entry e is cps[starts[e], starts[e + 1])
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> uses;  // a cell's index, its entry
+    bool empty() const { return uses.empty(); }
+};
+
+// decodeCells without the interning: each cell holding a cluster holds
+// U+FFFD until internClusters puts in the pool's glyph.
+Canvas readCells(std::string_view data, PendingClusters& pending);
+// Interns `pending`'s entries (PoolCap::Uncapped) and puts each in the
+// cells that use it. A pool out of ids or memory part-way leaves the entries
+// interned before it.
+void internClusters(const PendingClusters& pending, Canvas& cells);
+
 Layer layerFromEntries(LayerId id, const std::string& json, const std::string& cells, int major,
-                       const FontStore& fonts, const Entries& entries, ReadRefs& refs) {
+                       const FontStore& fonts, const Entries& entries, ReadRefs& refs,
+                       PendingClusters& clusters) {
     const std::string what = layerPath(id, false);
     const Reader r(parseObject(json, what), what);
     Layer l;
@@ -892,8 +925,12 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     }
     const auto w = r.integer("width", 0, kMaxSide);
     const auto h = r.integer("height", 0, kMaxSide);
+    // wide pairs and clusters (4.0); decode interns the clusters once every
+    // layer and the project have passed
+    if (cellsVersion(cells) == kWideCellsVersion && major < kWideFormatMajor)
+        fail(layerPath(id, true) + ": wide glyphs or clusters in a " + std::to_string(major) + ".x project");
     try {
-        l.cells = decodeCells(cells);
+        l.cells = readCells(cells, clusters);
     } catch (const ProjectError& e) {
         fail(layerPath(id, true) + ": " + e.what());
     }
@@ -903,6 +940,12 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     // the gradient's dither marks (1.7, 2.3)
     if (r.has("dither"))
         readDitherMarks(l.cells, r, what);
+    // a wide pair is one glyph: both halves marked or neither
+    for (int y = 0; y < l.height(); ++y)
+        for (int x = 1; x < l.width(); ++x)
+            if (l.cells.at(x, y).ch.isContinuation() && l.cells.at(x, y).dithered != l.cells.at(x - 1, y).dithered)
+                fail(what + ": the dither marks split the wide glyph at " + std::to_string(x - 1) + "," +
+                     std::to_string(y));
     return l;
 }
 
@@ -1727,30 +1770,76 @@ void writeTemporary(const Folder& in, const std::string& name, const std::string
 
 // ---- .cells ----
 
+namespace {
+
+// What a cluster table of `bytes` bytes could hold at most, counted before
+// it is decoded: every code point takes four bytes, so no more than a
+// quarter of them (PLAN §16). A writer checks the same count, so whatever
+// it writes a reader takes.
+std::size_t tableBound(std::size_t bytes) { return bytes / 4; }
+
+bool sameAsLead(const Cell& lead, const Cell& c) {
+    return c.fg == lead.fg && c.bg == lead.bg && c.attrs == lead.attrs && c.transparent == lead.transparent;
+}
+
+std::string cellName(int x, int y) { return std::to_string(x) + "," + std::to_string(y); }
+
+} // namespace
+
 std::string encodeCells(const Canvas& cells) {
     const std::uint32_t w = std::uint32_t(cells.width()), h = std::uint32_t(cells.height());
     if (w > kMaxSide || h > kMaxSide || std::size_t(w) * h > kMaxLayerCells)
         fail("a layer of " + std::to_string(w) + "x" + std::to_string(h) + " cells is over the limits");
     std::string raw;
     raw.reserve(std::size_t(w) * h * kCellSize);
+    bool wide = false;  // a continuation or a cluster: version 2
+    std::unordered_map<std::uint32_t, std::uint32_t> index;  // a cluster's bits, its table entry
+    std::string table;
+    std::uint32_t entries = 0;
     for (int y = 0; y < cells.height(); ++y)
         for (int x = 0; x < cells.width(); ++x) {
             const Cell& c = cells.at(x, y);
-            // an id is never written; version 2, which holds pairs and
-            // clusters, is PLAN §16's slice 5
-            const std::optional<char32_t> cp = c.ch.codePoint();
-            if (!cp)
-                fail("cell " + std::to_string(x) + "," + std::to_string(y) + " holds " +
-                     (c.ch.isContinuation() ? "the right half of a wide glyph" : "a cluster of code points") +
-                     ", which a layer's cells can't hold yet");
-            put32(raw, std::uint32_t(*cp));
+            std::uint32_t field = 0;
+            std::uint8_t flags = c.transparent ? kFlagTransparent : 0;
+            if (const std::optional<char32_t> cp = c.ch.codePoint()) {
+                field = std::uint32_t(*cp);
+            } else if (c.ch.isContinuation()) {
+                if (x == 0 || cells.at(x - 1, y).ch.isContinuation())
+                    fail("cell " + cellName(x, y) + " is the right half of a wide glyph with no left half");
+                const Cell& lead = cells.at(x - 1, y);
+                if (!sameAsLead(lead, c) || c.dithered != lead.dithered)
+                    fail("cell " + cellName(x, y) + ", the right half of a wide glyph, differs from its left half");
+                flags |= kFlagContinuation;
+                wide = true;
+            } else {
+                const GlyphCodePoints cps = codePoints(c.ch);
+                if (cps.size < 2 || cps.size > kMaxClusterCodePoints)
+                    fail("cell " + cellName(x, y) + " holds a cluster of " + std::to_string(cps.size) + " code points");
+                const auto [it, added] = index.try_emplace(c.ch.bits(), entries);
+                if (added) {
+                    table += char(cps.size);
+                    for (char32_t cp : cps)
+                        put32(table, std::uint32_t(cp));
+                    ++entries;
+                }
+                field = it->second;
+                flags |= kFlagCluster;
+                wide = true;
+            }
+            put32(raw, field);
             putColour(raw, c.fg);
             putColour(raw, c.bg);
             raw += char(c.attrs);
-            raw += char(c.transparent ? kFlagTransparent : 0);
+            raw += char(flags);
         }
+    if (wide) {
+        put32(raw, entries);
+        if (tableBound(4 + table.size()) > kMaxTableCodePoints)
+            fail("a layer's clusters are over " + std::to_string(kMaxTableCodePoints) + " code points");
+        raw += table;
+    }
     std::string out(kMagic, 4);
-    put16(out, kCellsVersion);
+    put16(out, wide ? kWideCellsVersion : kCellsVersion);
     put16(out, 0);
     put32(out, w);
     put32(out, h);
@@ -1776,6 +1865,21 @@ std::optional<std::size_t> cellsCount(std::string_view data) {
     return std::size_t(w) * h;
 }
 
+// The code points a version 2 .cells file's cluster table could hold, from
+// its header and the size its frame declares (tableBound); 0 for any other
+// file, or one decodeCells would refuse before it got that far.
+std::size_t cellsTableCodePoints(std::string_view data) {
+    const auto count = cellsCount(data);
+    if (!count || cellsVersion(data) != kWideCellsVersion)
+        return 0;
+    const std::string_view frame = data.substr(kHeaderSize);
+    const unsigned long long content = ZSTD_getFrameContentSize(frame.data(), frame.size());
+    if (content == ZSTD_CONTENTSIZE_UNKNOWN || content == ZSTD_CONTENTSIZE_ERROR || content < *count * kCellSize)
+        return 0;
+    const unsigned long long rest = content - *count * kCellSize;
+    return rest > kMaxEntryBytes ? tableBound(kMaxEntryBytes) : tableBound(std::size_t(rest));
+}
+
 void checkCells(std::size_t layers, std::size_t cells) {
     if (layers > kMaxLayers)
         fail("the project has over " + std::to_string(kMaxLayers) + " layers");
@@ -1783,15 +1887,21 @@ void checkCells(std::size_t layers, std::size_t cells) {
         fail("the project's layers hold over " + std::to_string(kMaxTotalCells) + " cells");
 }
 
-} // namespace
+void checkTableCodePoints(std::size_t codePoints) {
+    if (codePoints > kMaxTableCodePoints)
+        fail("the project's layers hold clusters of over " + std::to_string(kMaxTableCodePoints) + " code points");
+}
 
-Canvas decodeCells(std::string_view data) {
+Canvas readCells(std::string_view data, PendingClusters& pending) {
+    pending = {};
     if (data.size() < kHeaderSize || data.substr(0, 4) != std::string_view(kMagic, 4))
         fail("layer cells: not a .cells file");
     const auto* p = reinterpret_cast<const unsigned char*>(data.data());
-    if (get16(p + 4) != kCellsVersion)
-        fail("layer cells: format version " + std::to_string(get16(p + 4)) + ", this build reads " +
-             std::to_string(kCellsVersion));
+    const std::uint16_t version = get16(p + 4);
+    if (version != kCellsVersion && version != kWideCellsVersion)
+        fail("layer cells: format version " + std::to_string(version) + ", this build reads " +
+             std::to_string(kCellsVersion) + " and " + std::to_string(kWideCellsVersion));
+    const bool wide = version == kWideCellsVersion;
     if (get16(p + 6) != 0)
         fail("layer cells: the reserved header field is set");
     const std::uint32_t w = get32(p + 8), h = get32(p + 12);
@@ -1807,31 +1917,162 @@ Canvas decodeCells(std::string_view data) {
     const unsigned long long content = ZSTD_getFrameContentSize(frame.data(), frame.size());
     if (content == ZSTD_CONTENTSIZE_UNKNOWN || content == ZSTD_CONTENTSIZE_ERROR)
         fail("layer cells: the frame doesn't say its size");
-    if (content != expected)
+    if (!wide && content != expected)
         fail("layer cells: the frame holds " + std::to_string(content / kCellSize) + " cells, the header says " +
              std::to_string(count));
-    std::string raw(expected, '\0');
+    if (wide) {
+        if (content < expected + 4)
+            fail("layer cells: the frame holds " + std::to_string(content / kCellSize) +
+                 " cells and no cluster table, the header says " + std::to_string(count));
+        if (content - expected > kMaxEntryBytes || tableBound(std::size_t(content - expected)) > kMaxTableCodePoints)
+            fail("layer cells: the cluster table could hold over " + std::to_string(kMaxTableCodePoints) +
+                 " code points");
+    }
+    std::string raw(std::size_t(content), '\0');
     const std::size_t got = ZSTD_decompress(raw.data(), raw.size(), frame.data(), frame.size());
     if (ZSTD_isError(got))
         fail(std::string("layer cells: ") + ZSTD_getErrorName(got));
-    if (got != expected)
+    if (got != raw.size())
         fail("layer cells: the frame is short");
+
+    // the cluster table, checked whole, held flat: an entry costs its code
+    // points and one offset, not a vector of its own
+    std::size_t tableSize = 0;
+    if (wide) {
+        const auto* t = reinterpret_cast<const unsigned char*>(raw.data()) + expected;
+        const auto* end = reinterpret_cast<const unsigned char*>(raw.data()) + raw.size();
+        const std::uint32_t entries = get32(t);
+        t += 4;
+        // an entry takes at least 9 bytes, so the table's own size bounds both
+        const std::size_t bytes = std::size_t(end - t);
+        pending.starts.reserve(std::min<std::size_t>(entries, bytes / 9) + 1);
+        pending.cps.reserve(bytes / 4);
+        pending.starts.push_back(0);
+        for (std::uint32_t e = 0; e < entries; ++e) {
+            if (t == end)
+                fail("layer cells: the cluster table is short");
+            const unsigned n = *t++;
+            if (n < 2 || n > kMaxClusterCodePoints)
+                fail("layer cells: cluster " + std::to_string(e) + " has " + std::to_string(n) +
+                     " code points, not 2 to " + std::to_string(kMaxClusterCodePoints));
+            if (std::size_t(end - t) < std::size_t(n) * 4)
+                fail("layer cells: the cluster table is short");
+            for (unsigned i = 0; i < n; ++i, t += 4) {
+                const std::uint32_t cp = get32(t);
+                if (cp > 0x10FFFF || !clusterMayHold(char32_t(cp)))
+                    fail("layer cells: cluster " + std::to_string(e) + " holds a code point a cluster can't");
+                pending.cps.push_back(char32_t(cp));
+            }
+            pending.starts.push_back(std::uint32_t(pending.cps.size()));
+        }
+        if (t != end)
+            fail("layer cells: bytes after the cluster table");
+        tableSize = entries;
+        // no two alike: sorted by their code points, then by place, an entry
+        // equal to the one before it repeats an earlier one; the first such
+        // in the table is named
+        const auto entry = [&](std::uint32_t e) {
+            return std::u32string_view(pending.cps.data() + pending.starts[e],
+                                       pending.starts[e + 1] - pending.starts[e]);
+        };
+        std::vector<std::uint32_t> order(tableSize);
+        for (std::uint32_t e = 0; e < entries; ++e)
+            order[e] = e;
+        std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
+            const auto x = entry(a), y = entry(b);
+            return x != y ? x < y : a < b;
+        });
+        std::optional<std::uint32_t> repeat;
+        for (std::size_t k = 1; k < order.size(); ++k)
+            if (entry(order[k]) == entry(order[k - 1]) && (!repeat || order[k] < *repeat))
+                repeat = order[k];
+        if (repeat)
+            fail("layer cells: cluster " + std::to_string(*repeat) + " repeats an earlier one");
+    }
 
     Canvas out(static_cast<int>(w), static_cast<int>(h));
     const auto* r = reinterpret_cast<const unsigned char*>(raw.data());
+    const std::uint8_t known = wide ? kFlagTransparent | kFlagContinuation | kFlagCluster : kFlagTransparent;
+    std::uint32_t nextEntry = 0;  // the entry a new cluster must use
+    bool any = false;  // a continuation or a cluster
     for (std::size_t i = 0; i < count; ++i, r += kCellSize) {
-        const std::uint32_t cp = get32(r);
-        if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
-            fail("layer cells: cell " + std::to_string(i) + " is not a Unicode character");
-        if (r[13] & ~kFlagTransparent)
+        const std::uint32_t field = get32(r);
+        const std::uint8_t flags = r[13];
+        if (flags & ~known)
             fail("layer cells: cell " + std::to_string(i) + " has an unknown flag");
-        Cell& c = out.at(int(i % w), int(i / w));
-        c.ch = char32_t(cp);
+        const int x = int(i % w), y = int(i / w);
+        Cell& c = out.at(x, y);
         c.fg = getColour(r + 4, i);
         c.bg = getColour(r + 8, i);
         c.attrs = r[12];
-        c.transparent = (r[13] & kFlagTransparent) != 0;
+        c.transparent = (flags & kFlagTransparent) != 0;
+        if ((flags & kFlagContinuation) && (flags & kFlagCluster))
+            fail("layer cells: cell " + std::to_string(i) + " is both a continuation and a cluster");
+        if (flags & kFlagContinuation) {
+            if (field != 0)
+                fail("layer cells: cell " + std::to_string(i) + ", a continuation, has a code point");
+            if (x == 0 || out.at(x - 1, y).ch.isContinuation())
+                fail("layer cells: cell " + std::to_string(i) + ", a continuation, has no lead to its left");
+            if (!sameAsLead(out.at(x - 1, y), c))
+                fail("layer cells: cell " + std::to_string(i) + ", a continuation, differs from its lead");
+            c.ch = Glyph::continuation();
+            any = true;
+        } else if (flags & kFlagCluster) {
+            if (field >= tableSize)
+                fail("layer cells: cell " + std::to_string(i) + " uses cluster " + std::to_string(field) +
+                     " of " + std::to_string(tableSize));
+            if (field > nextEntry)
+                fail("layer cells: cell " + std::to_string(i) + " uses cluster " + std::to_string(field) +
+                     " before cluster " + std::to_string(nextEntry));
+            if (field == nextEntry)
+                ++nextEntry;
+            c.ch = U'\uFFFD';  // until internClusters
+            pending.uses.emplace_back(std::uint32_t(i), field);
+            any = true;
+        } else {
+            if (field > 0x10FFFF || (field >= 0xD800 && field <= 0xDFFF))
+                fail("layer cells: cell " + std::to_string(i) + " is not a Unicode character");
+            c.ch = char32_t(field);
+        }
     }
+    if (wide && nextEntry != tableSize)
+        fail("layer cells: cluster " + std::to_string(nextEntry) + " is never used");
+    if (wide && !any)
+        fail("layer cells: format version 2 with no wide glyph or cluster");
+    return out;
+}
+
+void internClusters(const PendingClusters& pending, Canvas& cells) {
+    if (pending.starts.empty())
+        return;
+    // never the pool's lossy cap, which a project's clusters don't count
+    // against
+    std::vector<Glyph> glyphs;
+    glyphs.reserve(pending.starts.size() - 1);
+    for (std::size_t e = 0; e + 1 < pending.starts.size(); ++e) {
+        std::optional<Glyph> g;
+        try {
+            g = clusterPool().intern(std::span(pending.cps.data() + pending.starts[e],
+                                               pending.starts[e + 1] - pending.starts[e]),
+                                     PoolCap::Uncapped);
+        } catch (const std::invalid_argument& err) {
+            fail(std::string("layer cells: cluster ") + std::to_string(e) + ": " + err.what());
+        }
+        if (!g)
+            fail("layer cells: no room for the layer's clusters");
+        glyphs.push_back(*g);
+    }
+    const auto w = std::uint32_t(cells.width());
+    for (const auto& [i, e] : pending.uses)
+        cells.at(int(i % w), int(i / w)).ch = glyphs[e];
+}
+
+} // namespace
+
+Canvas decodeCells(std::string_view data) {
+    PendingClusters pending;
+    Canvas out = readCells(data, pending);
+    internClusters(pending, out);
     return out;
 }
 
@@ -1931,6 +2172,8 @@ Entries encode(const Project& project) {
     bool dithered = false;  // a layer with dither marks (1.7, 2.3)
     bool glowLit = false;  // a live text layer's Glow whose brightness isn't its width (1.8, 2.4)
     bool glowCells = false;  // any Glow on a cells or pixels layer (3.0)
+    bool wide = false;  // a layer with a wide pair or a cluster (4.0)
+    std::size_t tableCodePoints = 0;  // what a reader counts the layers' cluster tables at
     std::set<std::string> writtenReferences;
     for (const Layer& l : stack.layers()) {
         order.append(qint64(l.props.id));
@@ -1977,11 +2220,17 @@ Entries encode(const Project& project) {
         const std::string json = toJson(layerJson(l));
         checkJsonSize(layerPath(l.props.id, false), json.size());
         out[layerPath(l.props.id, false)] = json;
-        out[layerPath(l.props.id, true)] = encodeCells(l.cells);
+        std::string& cellsEntry = out[layerPath(l.props.id, true)] = encodeCells(l.cells);
+        if (cellsVersion(cellsEntry) == kWideCellsVersion) {
+            wide = true;
+            tableCodePoints += cellsTableCodePoints(cellsEntry);
+        }
     }
+    checkTableCodePoints(tableCodePoints);
     QJsonObject manifest{
         {"format", "blockwright"},
-        {"version", qstr(glowCells ? std::to_string(kGlowCellsFormatMajor) + "." + std::to_string(kGlowCellsFormatMinor)
+        {"version", qstr(wide        ? std::to_string(kWideFormatMajor) + "." + std::to_string(kWideFormatMinor)
+                         : glowCells ? std::to_string(kGlowCellsFormatMajor) + "." + std::to_string(kGlowCellsFormatMinor)
                          : styled  ? std::to_string(kStyledFormatMajor) + "." +
                                       std::to_string(glowLit      ? kGlowStyledFormatMinor
                                                      : dithered   ? kDitherStyledFormatMinor
@@ -2036,9 +2285,11 @@ Project decode(const Entries& entries) {
         fail("manifest.json: not a blockwright project");
     const std::string version = m.string("version");
     const int major = parseVersion(version).first;
-    if (major != kFormatMajor && major != kStyledFormatMajor && major != kGlowCellsFormatMajor)
+    if (major != kFormatMajor && major != kStyledFormatMajor && major != kGlowCellsFormatMajor &&
+        major != kWideFormatMajor)
         fail("a project in format " + version + ": this build reads " + std::to_string(kFormatMajor) + ".x, " +
-             std::to_string(kStyledFormatMajor) + ".x and " + std::to_string(kGlowCellsFormatMajor) + ".x");
+             std::to_string(kStyledFormatMajor) + ".x, " + std::to_string(kGlowCellsFormatMajor) + ".x and " +
+             std::to_string(kWideFormatMajor) + ".x");
 
     Project p;
     const int w = int(m.integer("width", 1, kMaxColumns));
@@ -2089,15 +2340,20 @@ Project decode(const Entries& entries) {
     // is decoded
     const QJsonArray layers = m.array("layers");
     checkCells(std::size_t(layers.size()), 0);
-    std::size_t cells = 0;
+    std::size_t cells = 0, tableCodePoints = 0;
     for (const QJsonValue& v : layers) {
         const auto c = entries.find(layerPath(LayerId(m.integerOf(v, "layers", 1, UINT32_MAX)), true));
-        if (c != entries.end())
+        if (c != entries.end()) {
             cells += cellsCount(c->second).value_or(0);
+            tableCodePoints += cellsTableCodePoints(c->second);
+        }
     }
     checkCells(std::size_t(layers.size()), cells);
+    // and the code points their cluster tables could hold (PLAN §16)
+    checkTableCodePoints(tableCodePoints);
     std::set<LayerId> listed;
     ReadRefs refs;  // the refs/ files reference layers hold
+    std::vector<std::pair<LayerId, PendingClusters>> clusters;  // interned once everything has passed
     for (const QJsonValue& v : layers) {
         const LayerId id = LayerId(m.integerOf(v, "layers", 1, UINT32_MAX));
         if (!listed.insert(id).second)
@@ -2106,7 +2362,10 @@ Project decode(const Entries& entries) {
         const auto cells = entries.find(layerPath(id, true));
         if (json == entries.end() || cells == entries.end())
             fail("layer " + std::to_string(id) + " has no " + layerPath(id, json != entries.end()));
-        p.layers.add(layerFromEntries(id, json->second, cells->second, major, p.fonts, entries, refs));
+        PendingClusters pending;
+        p.layers.add(layerFromEntries(id, json->second, cells->second, major, p.fonts, entries, refs, pending));
+        if (!pending.empty())
+            clusters.emplace_back(id, std::move(pending));
     }
     const LayerId next = LayerId(m.integer("nextLayerId", 0, UINT32_MAX));
     if (next != 0 && !listed.empty() && next <= *listed.rbegin())
@@ -2131,6 +2390,16 @@ Project decode(const Entries& entries) {
     }
     std::sort(p.snapshots.begin(), p.snapshots.end(),
               [](const Snapshot& a, const Snapshot& b) { return a.round < b.round; });
+    // every check passed: only now the clusters into the process-wide pool,
+    // which never frees, so a refused project leaves nothing there (PLAN §16)
+    for (auto& [id, pending] : clusters) {
+        try {
+            internClusters(pending, p.layers.find(id)->cells);
+        } catch (const ProjectError& e) {
+            fail(layerPath(id, true) + ": " + e.what());
+        }
+        pending = {};
+    }
     return p;
 }
 

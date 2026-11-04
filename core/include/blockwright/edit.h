@@ -48,16 +48,19 @@ struct CellEdit {
 // judged as written ('?'); none (the default) judges it a single cell.
 Cell writtenOver(const Cell& under, Cell c, Glyph underRight = {}, Glyph cRight = {});
 
-// The marks `edit` leaves. A drawn cell carries no mark of its own,
-// whatever a brush built it from (a copy of the cell, of a neighbour, of a
-// mirror image), and takes the marks of the cell it is drawn over by
-// writtenOver; a cell changed twice is judged against what it was before
-// the edit, and its right neighbour as the edit has it before and after (a
-// neighbour the edit doesn't change counts as none: settleMarks has no
-// canvas). An edit that moves cells (CellEdit::moves) is left as its
-// builder made it, and the ramp gradient's (CellEdit::dithers) keeps the
-// dither marks it set. Document::edit and cli shade settle every edit.
-CellEdit settleMarks(CellEdit edit);
+// The marks `edit` leaves on `canvas`, the canvas it applies to (a layer's
+// own cells in the editor), once settleWide has settled it. A drawn cell
+// carries no mark of its own, whatever a brush built it from (a copy of the
+// cell, of a neighbour, of a mirror image), and takes the marks of the cell
+// it is drawn over by writtenOver; a cell changed twice is judged against
+// what it was before the edit, and its right neighbour as the edit leaves it
+// before and after (the canvas's where the edit doesn't change it), so a
+// lead is judged as written. A pair's continuation then takes its lead's
+// marks, and a change the marks leave as it was is dropped. An edit that
+// moves cells (CellEdit::moves) is left as its builder made it, and the ramp
+// gradient's (CellEdit::dithers) keeps the dither marks it set. Document::edit
+// and cli shade settle every edit: settleWide, then settleMarks.
+CellEdit settleMarks(const Canvas& canvas, CellEdit edit);
 
 // The pairs `edit` leaves whole (PLAN §16, Wide and combining characters).
 // It reads `edit` against `canvas`, the canvas it applies to (a layer's own

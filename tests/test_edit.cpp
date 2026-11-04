@@ -5,6 +5,7 @@
 #include "blockwright/brushes/despeckle.h"
 #include "blockwright/edit.h"
 #include "blockwright/glyph_sets.h"
+#include "blockwright/layer.h"
 #include "blockwright/ramp.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -347,31 +348,44 @@ TEST_CASE("a drawn edit keeps the dither mark only on a cell it leaves looking t
     marked.dithered = true;
     const Cell other{U'█', Color::indexed(7), Color::indexed(0), 0, false};
 
+    Canvas one(1, 1);
+    one.at(0, 0) = marked;
     SECTION("a new look drops it") {
-        const CellEdit e = settleMarks(CellEdit{{{0, 0, marked, other}}});
+        const CellEdit e = settleMarks(one, CellEdit{{{0, 0, marked, other}}});
+        REQUIRE(e.changes.size() == 1);
         CHECK_FALSE(e.changes[0].after.dithered);
     }
     SECTION("the same look keeps it, so there is nothing to do") {
-        const CellEdit e = settleMarks(CellEdit{{{0, 0, marked, plain}}});
-        CHECK(e.changes[0].after.dithered);
-        CHECK(identical(e.changes[0].after, e.changes[0].before));
+        CHECK(settleMarks(one, CellEdit{{{0, 0, marked, plain}}}).changes.empty());
     }
     SECTION("a drawn cell takes no mark from its tool") {
-        const CellEdit e = settleMarks(CellEdit{{{0, 0, plain, marked}}});
-        CHECK_FALSE(e.changes[0].after.dithered);
+        one.at(0, 0) = plain;
+        CHECK(settleMarks(one, CellEdit{{{0, 0, plain, marked}}}).changes.empty());
     }
+    Canvas two(2, 1);
+    two.at(0, 0) = plain;
+    two.at(1, 0) = marked;
     SECTION("the gradient's own edit keeps its marks and drops the ones it writes over") {
         CellEdit gradient{{{0, 0, plain, marked}, {1, 0, marked, plain}}};
         gradient.dithers = true;
-        const CellEdit e = settleMarks(gradient);
+        const CellEdit e = settleMarks(two, gradient);
         CHECK(e.dithers);
+        REQUIRE(e.changes.size() == 2);
         CHECK(e.changes[0].after.dithered);
         CHECK_FALSE(e.changes[1].after.dithered);
+    }
+    SECTION("the gradient's flag reaches the layer's edit") {
+        // settleMarks runs on the layer's edit, after fitLayerEdit
+        CellEdit gradient{{{0, 0, plain, marked}}};
+        gradient.dithers = true;
+        const Layer l = makeLayer(LayerKind::Cells, 2, 1);
+        CHECK(toLayerEdit(l, gradient).dithers);
+        CHECK(fitLayerEdit(l, gradient)->dithers);
     }
     SECTION("a move carries them as they are") {
         CellEdit move{{{0, 0, plain, marked}, {1, 0, marked, other}}};
         move.moves = true;
-        const CellEdit e = settleMarks(move);
+        const CellEdit e = settleMarks(two, move);
         CHECK(e.changes[0].after.dithered);
         CHECK_FALSE(e.changes[1].after.dithered);
     }

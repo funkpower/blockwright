@@ -746,7 +746,7 @@ TEST_CASE("the app refuses a newer major project and keeps a newer minor's files
     QString error;
     const QString ans = tuxAt(tmp.filePath(QStringLiteral("tux.ans")));
     REQUIRE(w.openFile(ans, &error));
-    writeBytes(manifest, withVersion("\"4.0\""));
+    writeBytes(manifest, withVersion("\"5.0\""));
     CHECK_FALSE(w.openFile(dir, &error));
     CHECK_FALSE(error.isEmpty());
     CHECK(w.document()->path() == ans);

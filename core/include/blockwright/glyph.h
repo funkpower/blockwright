@@ -92,6 +92,12 @@ struct GlyphCodePoints {
 // whether a project opens never depends on what the session read before.
 enum class PoolCap { Capped, Uncapped };
 
+// Whether a cluster of two or more code points may hold `cp`: a Unicode
+// scalar value that isn't a control (C0 but U+0000, DEL, C1, U+2028,
+// U+2029). What ClusterPool::intern takes, so a reader can check a sequence
+// before it interns anything.
+bool clusterMayHold(char32_t cp);
+
 // An append-only, interned set of clusters, each with its code points and
 // width (its base's, codePointWidth). Lookups take no lock and are safe from
 // any thread while others intern: the chunk directory is a fixed array of
@@ -127,6 +133,8 @@ public:
     // The cell width of `g`: codePointWidth of a code point, a cluster's
     // base's, 0 for the continuation.
     int width(Glyph g) const;
+    // The clusters the pool holds.
+    std::size_t size() const;
 
 private:
     struct Impl;
@@ -134,7 +142,8 @@ private:
 };
 
 // The process-wide pool every cell's cluster lives in. It never frees, and is
-// shared by every test in a process: no test asserts an id or its size.
+// shared by every test in a process: no test asserts an id or its size, only
+// how its size changes across a call.
 ClusterPool& clusterPool();
 
 // The process-wide pool's codePoints and width.

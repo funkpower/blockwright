@@ -343,8 +343,11 @@ TEST_CASE("the .cells codec refuses what it can't read exactly", "[project][cell
     refused(good.substr(0, 12));
     refused("BWCX" + good.substr(4));
     std::string v2 = good;
-    v2[4] = 2;
+    v2[4] = 2;  // version 2 has a cluster table after the cells
     refused(v2);
+    std::string v3 = good;
+    v3[4] = 3;
+    refused(v3);
     std::string reserved = good;
     reserved[6] = 1;
     refused(reserved);
@@ -378,7 +381,7 @@ TEST_CASE("the .cells codec refuses what it can't read exactly", "[project][cell
     refused(rawCells(1, 1, cellRecord(U' ', 2, 7, 0, 0, 0, 0, 0, 0)));     // no colour kind 2
     refused(rawCells(1, 1, cellRecord(U' ', 0, 16, 0, 0, 0, 0, 0, 0)));    // no palette index 16
     refused(rawCells(1, 1, cellRecord(U' ', 0, 7, 1, 0, 0, 0, 0, 0)));     // an index's padding set
-    refused(rawCells(1, 1, cellRecord(U' ', 0, 7, 0, 0, 0, 0, 0, 2)));     // no flag bit 1
+    refused(rawCells(1, 1, cellRecord(U' ', 0, 7, 0, 0, 0, 0, 0, 2)));     // no flag bit 1 in version 1
     CHECK(project::decodeCells(rawCells(1, 1, cellRecord(U' ', 1, 9, 8, 0, 0, 0, 0, 1))).at(0, 0) ==
           Cell{U' ', Color::fromRgb({9, 8, 0}), Color::indexed(0), 0, true});
 }
@@ -472,9 +475,12 @@ TEST_CASE("a reader refuses another major version and reads a newer minor", "[pr
     Entries e = project::encode(p);
     QJsonObject m = object(e.at("manifest.json"));
 
-    m["version"] = "4.0";
+    m["version"] = "5.0";
     e["manifest.json"] = json(m);
     CHECK_THROWS_AS(project::decode(e), ProjectError);
+    m["version"] = "4.0";
+    e["manifest.json"] = json(m);
+    CHECK(project::decode(e).layers == p.layers);
     m["version"] = "3.0";
     e["manifest.json"] = json(m);
     CHECK(project::decode(e).layers == p.layers);

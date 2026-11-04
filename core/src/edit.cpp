@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <map>
 #include <utility>
+#include <vector>
 
 namespace bw {
 
@@ -26,32 +27,69 @@ Cell writtenOver(const Cell& under, Cell c, Glyph underRight, Glyph cRight) {
     return c;
 }
 
-CellEdit settleMarks(CellEdit edit) {
+CellEdit settleMarks(const Canvas& canvas, CellEdit edit) {
     if (edit.moves || std::none_of(edit.changes.begin(), edit.changes.end(), [&](const CellChange& c) {
             return c.before.lostBlink || c.after.lostBlink ||
                    (!edit.dithers && (c.before.dithered || c.after.dithered));
         }))
         return edit;
-    std::map<std::pair<int, int>, Cell> was, now;  // (y, x) -> the cell before and after the edit
-    for (const CellChange& c : edit.changes) {
-        was.emplace(std::pair{c.y, c.x}, c.before);
-        now[{c.y, c.x}] = c.after;
+    using At = std::pair<int, int>;  // (y, x)
+    std::map<At, Cell> was;  // the cell before the edit, its first change's before
+    std::map<At, std::size_t> last;  // its last change
+    for (std::size_t i = 0; i < edit.changes.size(); ++i) {
+        const CellChange& c = edit.changes[i];
+        was.emplace(At{c.y, c.x}, c.before);
+        last[{c.y, c.x}] = i;
     }
-    // A cell's right neighbour, before and after, as far as the edit knows
-    // it: a cell it leaves alone counts as none, so a lead it doesn't touch
-    // the continuation of is judged as a single cell.
-    const auto right = [](const std::map<std::pair<int, int>, Cell>& cells, int x, int y) {
-        const auto it = cells.find({y, x + 1});
-        return it != cells.end() ? it->second.ch : Glyph();
+    // A cell's right neighbour, before and after the edit: the edit's where
+    // it changes it, the canvas's where it doesn't, none past the edge.
+    const auto before = [&](int x, int y) -> Glyph {
+        if (const auto it = was.find({y, x}); it != was.end())
+            return it->second.ch;
+        return canvas.contains(x, y) ? canvas.at(x, y).ch : Glyph();
+    };
+    const auto after = [&](int x, int y) -> Glyph {
+        if (const auto it = last.find({y, x}); it != last.end())
+            return edit.changes[it->second].after.ch;
+        return canvas.contains(x, y) ? canvas.at(x, y).ch : Glyph();
     };
     for (CellChange& c : edit.changes) {
         const bool dithered = c.after.dithered;
         c.after.lostBlink = false;
         c.after.dithered = false;
-        c.after = writtenOver(was.at({c.y, c.x}), c.after, right(was, c.x, c.y), right(now, c.x, c.y));
+        c.after = writtenOver(was.at({c.y, c.x}), c.after, before(c.x + 1, c.y), after(c.x + 1, c.y));
         if (edit.dithers)
             c.after.dithered = dithered;
     }
+    // A pair is one glyph: its continuation takes its lead's marks.
+    std::vector<CellChange> added;
+    for (const auto& [at, i] : last) {
+        const auto [y, x] = at;
+        if (!edit.changes[i].after.ch.isContinuation() && after(x + 1, y).isContinuation() &&
+            canvas.contains(x + 1, y)) {
+            const Cell& lead = edit.changes[i].after;
+            if (const auto it = last.find({y, x + 1}); it != last.end()) {
+                Cell& cont = edit.changes[it->second].after;
+                cont.lostBlink = lead.lostBlink;
+                cont.dithered = lead.dithered;
+            } else if (const Cell& cont = canvas.at(x + 1, y);
+                       cont.lostBlink != lead.lostBlink || cont.dithered != lead.dithered) {
+                Cell c = cont;
+                c.lostBlink = lead.lostBlink;
+                c.dithered = lead.dithered;
+                added.push_back({x + 1, y, cont, c});
+            }
+        } else if (edit.changes[i].after.ch.isContinuation() && x > 0 && !last.contains({y, x - 1}) &&
+                   canvas.contains(x - 1, y)) {
+            const Cell& lead = canvas.at(x - 1, y);
+            Cell& cont = edit.changes[i].after;
+            cont.lostBlink = lead.lostBlink;
+            cont.dithered = lead.dithered;
+        }
+    }
+    edit.changes.insert(edit.changes.end(), added.begin(), added.end());
+    // and a change the marks leave as it was is none
+    std::erase_if(edit.changes, [](const CellChange& c) { return identical(c.before, c.after); });
     return edit;
 }
 
