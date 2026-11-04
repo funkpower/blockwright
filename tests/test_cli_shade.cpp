@@ -670,3 +670,41 @@ TEST_CASE("cli shade --despeckle reads a speck's neighbour across the seam betwe
     }
     CHECK(doc.canvas == clean.canvas);
 }
+
+TEST_CASE("cli shade over half a pair settles the pair (PLAN §16)", "[cli][shade][wide]") {
+    // a row of LightRed █ with a pair at columns 3-4; the box ends on the
+    // pair's lead, so a mode that writes the lead leaves its continuation
+    // cut off
+    for (const bwcli::ShadeMode mode : {bwcli::ShadeMode::Step, bwcli::ShadeMode::Form, bwcli::ShadeMode::Despeckle, bwcli::ShadeMode::Rim}) {
+        INFO("mode " << int(mode));
+        AnsiDocument d;
+        d.ice = true;
+        d.canvas = Canvas(8, 3);
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 8; ++x)
+                d.canvas.at(x, y) = rungCell(fire(), 8);
+        Cell lead = rungCell(fire(), 8);
+        lead.ch = U'中';
+        Cell cont = lead;
+        cont.ch = Glyph::continuation();
+        d.canvas.at(3, 1) = lead;
+        d.canvas.at(4, 1) = cont;
+        bwcli::ShadeOptions o = options(fire());
+        o.mode = mode;
+        o.form = FormShape::Plane;
+        o.box = lint::Box{0, 0, 3, 2};
+        bwcli::shadeDocument(d, o);
+        const Cell& l = d.canvas.at(3, 1);
+        const Cell& r = d.canvas.at(4, 1);
+        if (r.ch.isContinuation()) {
+            // the pair stayed whole, in the lead's colours
+            CHECK(l.ch == Glyph(U'中'));
+            CHECK(r.fg == l.fg);
+            CHECK(r.bg == l.bg);
+        } else {
+            // or its lead was written over and the other half is a space
+            CHECK(l.ch != Glyph(U'中'));
+            CHECK(r.ch == Glyph(U' '));
+        }
+    }
+}

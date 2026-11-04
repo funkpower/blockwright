@@ -143,7 +143,13 @@ public:
     // layer still does.
     void ownChange(const std::function<void()>& change);
     // `edit` as mirror mode would push it: mirrored when it is on.
-    CellEdit mirrored(const CellEdit& edit) const;
+    // `unmirrored`, when given, is set to the number of wide pairs that got
+    // no mirrored copy, over their own image on the centre column
+    // (mirrorEdit); applyEdit says so in the status bar.
+    CellEdit mirrored(const CellEdit& edit, int* unmirrored = nullptr) const;
+    // Puts a notice in the status bar (statusNotice): what an edit or a
+    // transform couldn't do.
+    void notify(const QString& text) { emit statusNotice(text); }
     // The tool writes what it has in progress (a floating selection) as an
     // edit: before the view's own edits, and before the document is saved
     // or checked for unsaved changes.
@@ -236,6 +242,9 @@ signals:
     // CP437 code, or a byte .ans reads as a control code); the text was not
     // written. rejectedGlyphsMessage says why.
     void glyphRejected(const QString& text);
+    // A notice for the status bar: what an edit or a transform couldn't do
+    // (a wide pair mirror mode can't copy, a rotation refused).
+    void statusNotice(const QString& text);
     void mirrorChanged(bool on);
     // The symmetry or the pencil's connectivity changed (and mirror mode
     // with it, if it did).
@@ -277,6 +286,8 @@ private:
     // Every edit the view makes goes through here: it is pushed on the
     // document's undo stack as one command, and the cursor moves on.
     void commit(const EditResult& r);
+    // Says in the status bar that `pairs` wide pairs got no mirrored copy.
+    void noteUnmirrored(int pairs);
     // Writes the printable characters of `text` over the replacement range
     // (relative to the cursor) as one edit. If isTypeable refuses any of them
     // nothing is written and they are reported instead.

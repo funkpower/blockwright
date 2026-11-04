@@ -1,5 +1,6 @@
 #include "blockwright/selection.h"
 
+#include "blockwright/edit.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
 
@@ -7,7 +8,9 @@
 #include <array>
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <utility>
+#include <vector>
 
 namespace bw {
 
@@ -51,18 +54,52 @@ void clearInto(EditBuilder& b, const Canvas& canvas, const Selection& sel, const
 
 // Pastes over the canvas as `b` already has it, so a paste after a clear
 // sees the cleared cells (Under mode writes into them).
+// A wide pair (PLAN §16) is pasted whole or not at all: a half whose other
+// half isn't written (clipped at an edge, or kept out by the paste mode)
+// is written as a space in its own colours.
 void pasteInto(EditBuilder& b, const Canvas& canvas, const CellBlock& block, int x0, int y0, PasteMode mode,
                const Selection* cleared, const Cell& blank, PastePixels pixels = {}) {
-    for (int by = 0; by < block.height; ++by)
+    std::vector<std::optional<Cell>> row(static_cast<std::size_t>(block.width));
+    for (int by = 0; by < block.height; ++by) {
+        const long long ly = static_cast<long long>(y0) + by;
+        if (ly < 0 || ly >= canvas.height())
+            continue;
+        const int y = static_cast<int>(ly);
         for (int bx = 0; bx < block.width; ++bx) {
-            const long long lx = static_cast<long long>(x0) + bx, ly = static_cast<long long>(y0) + by;
-            if (lx < 0 || ly < 0 || lx >= canvas.width() || ly >= canvas.height())
+            auto& out = row[static_cast<std::size_t>(bx)];
+            out.reset();
+            const long long lx = static_cast<long long>(x0) + bx;
+            if (lx < 0 || lx >= canvas.width())
                 continue;
-            const int x = static_cast<int>(lx), y = static_cast<int>(ly);
+            const int x = static_cast<int>(lx);
             const Cell under = cleared && cleared->contains(x, y) ? blank : canvas.at(x, y);
             if (const auto c = pasteCell(block.at(bx, by), under, mode, pixels, block.pixelLayer))
-                b.set(x, y, writtenOver(under, *c));
+                out = writtenOver(under, *c);
         }
+        for (int bx = 0; bx < block.width; ++bx) {
+            auto& out = row[static_cast<std::size_t>(bx)];
+            if (!out)
+                continue;
+            const bool lead = bx + 1 < block.width && !block.at(bx, by).ch.isContinuation() &&
+                              block.at(bx + 1, by).ch.isContinuation();
+            const bool cont = block.at(bx, by).ch.isContinuation();
+            const bool whole = lead   ? row[static_cast<std::size_t>(bx + 1)].has_value()
+                               : cont ? bx > 0 && !block.at(bx - 1, by).ch.isContinuation() &&
+                                            row[static_cast<std::size_t>(bx - 1)].has_value()
+                                      : true;
+            if (!whole)
+                out->ch = U' ';
+            b.set(x0 + bx, y, *out);
+        }
+    }
+}
+
+// Whether (x, y) of `c` is the lead of a pair, or its continuation.
+bool leadAt(const Canvas& c, int x, int y) {
+    return c.contains(x + 1, y) && c.at(x + 1, y).ch.isContinuation() && !c.at(x, y).ch.isContinuation();
+}
+bool pairedContinuationAt(const Canvas& c, int x, int y) {
+    return c.at(x, y).ch.isContinuation() && x > 0 && !c.at(x - 1, y).ch.isContinuation();
 }
 
 // Box-drawing glyphs by the arms they reach out with: up, right, down, left,
@@ -188,10 +225,23 @@ CellBlock copyBlock(const Canvas& canvas, const Selection& sel) {
     CellBlock b(r.width, r.height);
     for (int y = 0; y < r.height; ++y)
         for (int x = 0; x < r.width; ++x) {
-            if (sel.contains(r.x + x, r.y + y))
-                b.at(x, y) = canvas.at(r.x + x, r.y + y);
-            else
+            const int cx = r.x + x, cy = r.y + y;
+            if (!sel.contains(cx, cy)) {
                 b.at(x, y) = transparentCell();
+                continue;
+            }
+            Cell& c = b.at(x, y) = canvas.at(cx, cy);
+            // a cut half of a pair (PLAN §16): a space in the pair's colours
+            if (leadAt(canvas, cx, cy) && !sel.contains(cx + 1, cy)) {
+                c.ch = U' ';
+            } else if (c.ch.isContinuation()) {
+                if (!pairedContinuationAt(canvas, cx, cy))
+                    c.ch = U' ';
+                else if (!sel.contains(cx - 1, cy)) {
+                    c = canvas.at(cx - 1, cy);
+                    c.ch = U' ';
+                }
+            }
         }
     return b;
 }
@@ -280,13 +330,25 @@ CellBlock transformed(const CellBlock& block, Transform t) {
     const int w = block.width, h = block.height;
     if (block.empty())
         return {};
+    // a pair turned would stand on end (PLAN §16): no rotation
+    if ((t == Transform::RotateClockwise || t == Transform::RotateCounterClockwise) && blockHoldsPair(block))
+        return block;
     switch (t) {
     case Transform::FlipHorizontal: {
         CellBlock out(w, h);
         out.pixelLayer = block.pixelLayer;
         for (int y = 0; y < h; ++y)
-            for (int x = 0; x < w; ++x)
+            for (int x = 0; x < w; ++x) {
+                // a pair keeps its lead on the left: (lead, continuation)
+                // lands as itself, not as (continuation, lead)
+                if (x + 1 < w && !block.at(x, y).ch.isContinuation() && block.at(x + 1, y).ch.isContinuation()) {
+                    out.at(w - 2 - x, y) = flipCell(block.at(x, y), Flip::Horizontal);
+                    out.at(w - 1 - x, y) = block.at(x + 1, y);
+                    ++x;
+                    continue;
+                }
                 out.at(w - 1 - x, y) = flipCell(block.at(x, y), Flip::Horizontal);
+            }
         return out;
     }
     case Transform::FlipVertical: {
@@ -321,6 +383,8 @@ SelectionEdit transformSelection(const Canvas& canvas, const Selection& sel, Tra
     const Selection from = sel.clipped(canvas);
     if (from.empty())
         return {{}, from};
+    if ((t == Transform::RotateClockwise || t == Transform::RotateCounterClockwise) && selectionHoldsPair(canvas, from))
+        return {{}, sel};
     const CellBlock block = transformed(copyBlock(canvas, from), t);
     const CellRect& r = from.bounds();
     EditBuilder b(canvas);
@@ -348,18 +412,72 @@ SelectionEdit moveSelection(const Canvas& canvas, const Selection& sel, int dx, 
 
 int mirrorColumn(int width, int x) { return width - 1 - x; }
 
-CellEdit mirrorEdit(const Canvas& canvas, const CellEdit& edit) {
+bool selectionHoldsPair(const Canvas& canvas, const Selection& sel) {
+    const CellRect r = sel.clipped(canvas).bounds();
+    for (int y = r.y; y < r.y + r.height; ++y)
+        for (int x = r.x; x < r.x + r.width; ++x)
+            if (sel.contains(x, y) && (leadAt(canvas, x, y) || pairedContinuationAt(canvas, x, y)))
+                return true;
+    return false;
+}
+
+bool blockHoldsPair(const CellBlock& block) {
+    for (int y = 0; y < block.height; ++y)
+        for (int x = 1; x < block.width; ++x)
+            if (block.at(x, y).ch.isContinuation() && !block.at(x - 1, y).ch.isContinuation())
+                return true;
+    return false;
+}
+
+CellEdit mirrorEdit(const Canvas& canvas, const CellEdit& edit, int* pairsUnmirrored) {
+    if (pairsUnmirrored)
+        *pairsUnmirrored = 0;
+    // settled first, so a change to one half of a pair is a change to both
+    // and the pair is mirrored whole
+    const CellEdit settled = settleWide(canvas, edit);
     EditBuilder own(canvas);
-    for (const CellChange& c : edit.changes)
+    std::map<std::pair<int, int>, Cell> after;  // (y, x) -> what the edit writes
+    for (const CellChange& c : settled.changes) {
         own.set(c.x, c.y, c.after);
+        after[{c.y, c.x}] = c.after;
+    }
+    const auto written = [&](int x, int y) -> const Cell* {
+        const auto it = after.find({y, x});
+        return it == after.end() ? nullptr : &it->second;
+    };
     EditBuilder all = own;
-    for (const CellChange& c : edit.changes) {
-        const int mx = mirrorColumn(canvas.width(), c.x);
-        if (!canvas.contains(c.x, c.y) || own.has(mx, c.y))
+    const int w = canvas.width();
+    // a drawn image is settled with the rest; a moved one is pasted
+    const auto put = [&](int mx, int y, const Cell& image) {
+        all.set(mx, y, edit.moves && canvas.contains(mx, y) ? writtenOver(canvas.at(mx, y), image) : image);
+    };
+    for (const auto& [yx, c] : after) {
+        const auto [y, x] = yx;
+        if (!canvas.contains(x, y))
             continue;
-        // a drawn image is settled with the rest; a moved one is pasted
-        const Cell image = flipCell(c.after, Flip::Horizontal);
-        all.set(mx, c.y, edit.moves && canvas.contains(mx, c.y) ? writtenOver(canvas.at(mx, c.y), image) : image);
+        const Cell* right = written(x + 1, y);
+        const Cell* left = x > 0 ? written(x - 1, y) : nullptr;
+        if (c.ch.isContinuation() && left && !left->ch.isContinuation())
+            continue;  // mirrored with its lead
+        if (!c.ch.isContinuation() && right && right->ch.isContinuation()) {
+            // a pair (x, x + 1): its image's lead at mirrorColumn(x + 1)
+            const int ml = mirrorColumn(w, x + 1), mr = mirrorColumn(w, x);
+            if (ml == x)
+                continue;  // its own image (an even width, across the axis)
+            if (own.has(ml, y) || own.has(mr, y)) {
+                // over its own image (an odd width) gets no copy; one over
+                // another change keeps that change
+                if (pairsUnmirrored && (ml == x + 1 || mr == x))
+                    ++*pairsUnmirrored;
+                continue;
+            }
+            put(ml, y, flipCell(c, Flip::Horizontal));
+            put(mr, y, *right);
+            continue;
+        }
+        const int mx = mirrorColumn(w, x);
+        if (!own.has(mx, y))
+            put(mx, y, flipCell(c, Flip::Horizontal));
     }
     CellEdit e = all.finish();
     e.moves = edit.moves;

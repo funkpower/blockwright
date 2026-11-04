@@ -103,7 +103,7 @@ Shaded shadeDocument(bw::AnsiDocument& doc, const ShadeOptions& o) {
         edit = coverBox(c, bw::RimLightBrush(o.ramp, o.light), r.box, o.light, so);
         break;
     }
-    r.edit = bw::settleMarks(std::move(edit));
+    r.edit = bw::settleWide(c, bw::settleMarks(std::move(edit)));
     r.edit.apply(c);
     r.blinkDropped = bw::lostBlinkCount(doc);
     r.iceTurnedOn = !flag && doc.ice;

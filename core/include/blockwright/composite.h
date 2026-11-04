@@ -53,9 +53,19 @@
 // with iCE off and has to be. A pixel doesn't blink, and nor does a half
 // under that showed the background.
 //
-// A cell depends only on the layers' cells at that cell, so recompositing
-// the cells an edit changed (dirtyRect in layer.h) brings a composite up to
-// date.
+// Wide pairs (PLAN §16): after the cells are composited one by one, a pair
+// (a lead and its continuation, Glyph::continuation(), in one layer) shows
+// only where both its halves show, from that layer; otherwise the half that
+// shows is a space in its own colours. A continuation that is no pair's
+// right half (at a layer's column 0, or right of another) shows as a space
+// too. A pair shown whole in two sets of colours (a colours-only layer over
+// one half) takes the colours laid last, the lead's when one layer laid
+// both. A cell with no pair beside it composites as above.
+//
+// A cell depends only on the layers' cells at that cell and the cells either
+// side of it, so recompositing the cells an edit changed (dirtyRect in
+// layer.h), which recomposite widens by a column each side, brings a
+// composite up to date.
 
 #include "blockwright/canvas.h"
 #include "blockwright/halfblock.h"
@@ -76,9 +86,10 @@ struct CompositeOptions {
 // The stack's visible composite, the stack's size.
 Canvas composite(const LayerStack& stack, const CompositeOptions& options = {});
 
-// Composites the cells of `rect` (clipped to the canvas) into `out`, which
-// must be the stack's size (LayerError otherwise), leaving the rest of it
-// alone: the same cells composite() gives there. For interactive painting,
+// Composites the cells of `rect` and a column either side of it (clipped
+// to the canvas) into `out`, which must be the stack's size (LayerError
+// otherwise), leaving the rest of it alone: the same cells composite()
+// gives there. For interactive painting,
 // with the rect of what changed: an edit's dirtyRect, a layer's bounds()
 // for a change of visibility, mode or kind or a move up or down the
 // stack, both bounds for a move across the canvas, united clipped to the

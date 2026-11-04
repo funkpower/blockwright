@@ -98,7 +98,9 @@ std::optional<Color> pickColour(const Canvas& canvas, int x, int py, bool backgr
     const int y = cellRow(py);
     if (!canvas.contains(x, y))
         return std::nullopt;
-    const Cell& c = canvas.at(x, y);
+    // a continuation shows its pair's colours, which are its lead's
+    const bool cont = canvas.at(x, y).ch.isContinuation() && x > 0 && !canvas.at(x - 1, y).ch.isContinuation();
+    const Cell& c = canvas.at(cont ? x - 1 : x, y);
     if (const auto pair = halfBlocks(c, ice))
         return Color::indexed(halfOf(*pair, bottomHalf(py)));
     return background ? iceCell(c, ice).bg : c.fg;

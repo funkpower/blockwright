@@ -46,6 +46,117 @@ CellEdit settleMarks(CellEdit edit) {
     return edit;
 }
 
+namespace {
+
+// One half of a pair given the other's colours, attributes and marks.
+void takeValues(Cell& c, const Cell& from) {
+    c.fg = from.fg;
+    c.bg = from.bg;
+    c.attrs = from.attrs;
+    c.lostBlink = from.lostBlink;
+    c.dithered = from.dithered;
+}
+
+bool sameValues(const Cell& a, const Cell& b) {
+    return a.fg == b.fg && a.bg == b.bg && a.attrs == b.attrs && a.lostBlink == b.lostBlink &&
+           a.dithered == b.dithered;
+}
+
+} // namespace
+
+CellEdit settleWide(const Canvas& canvas, CellEdit edit) {
+    const auto cont = [](const Cell& c) { return c.ch.isContinuation(); };
+    const auto onCanvasCont = [&](int x, int y) { return canvas.contains(x, y) && cont(canvas.at(x, y)); };
+    if (std::none_of(edit.changes.begin(), edit.changes.end(), [&](const CellChange& c) {
+            return cont(c.after) || onCanvasCont(c.x, c.y) || onCanvasCont(c.x + 1, c.y);
+        }))
+        return edit;
+
+    // The cells as the edit leaves them, the last change to each winning,
+    // and which of them it changes.
+    std::map<std::pair<int, int>, std::size_t> last;  // (y, x) -> its last change
+    for (std::size_t i = 0; i < edit.changes.size(); ++i)
+        if (canvas.contains(edit.changes[i].x, edit.changes[i].y))
+            last[{edit.changes[i].y, edit.changes[i].x}] = i;
+    const auto edited = [&](int x, int y) {
+        const auto it = last.find({y, x});
+        return it != last.end() && !identical(edit.changes[it->second].after, canvas.at(x, y));
+    };
+    const auto after = [&](int x, int y) -> const Cell& {
+        const auto it = last.find({y, x});
+        return it != last.end() ? edit.changes[it->second].after : canvas.at(x, y);
+    };
+
+    // What the settle writes, judged on the edit's result before any of it.
+    std::map<std::pair<int, int>, Cell> settle;
+    const auto set = [&](int x, int y, const Cell& c) {
+        if (!identical(c, after(x, y)))
+            settle[{y, x}] = c;
+    };
+    const auto space = [](Cell c) {
+        c.ch = U' ';
+        return c;
+    };
+    // Each changed cell and its neighbours, by rows.
+    std::map<int, std::vector<int>> region;
+    for (const auto& [yx, i] : last)
+        for (int x = yx.second - 1; x <= yx.second + 1; ++x)
+            if (canvas.contains(x, yx.first))
+                region[yx.first].push_back(x);
+    for (auto& [y, xs] : region) {
+        std::sort(xs.begin(), xs.end());
+        xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+        for (const int x : xs) {
+            const Cell& here = after(x, y);
+            if (!cont(here)) {
+                // a lead whose continuation the edit wrote over, the lead
+                // itself untouched: a space in its own colours
+                if (onCanvasCont(x + 1, y) && !cont(canvas.at(x, y)) && !edited(x, y) && edited(x + 1, y) &&
+                    !cont(after(x + 1, y)))
+                    set(x, y, space(here));
+                continue;
+            }
+            // a stray continuation: a space in its own colours
+            if (x == 0 || cont(after(x - 1, y))) {
+                if (edited(x, y) || edited(x - 1, y))
+                    set(x, y, space(here));
+                continue;
+            }
+            // the pair (x - 1, x)
+            const bool leadEdited = edited(x - 1, y), contEdited = edited(x, y);
+            if (!leadEdited && !contEdited)
+                continue;
+            const Cell& lead = after(x - 1, y);
+            const bool wasPair = cont(canvas.at(x, y)) && !cont(canvas.at(x - 1, y));
+            if (wasPair && !contEdited && lead.ch != canvas.at(x - 1, y).ch) {
+                // its lead written over: the continuation a space in the
+                // pair's colours
+                set(x, y, space(here));
+            } else if (wasPair && !leadEdited) {
+                // only the continuation recoloured: the lead takes it
+                if (!sameValues(lead, here)) {
+                    Cell l = lead;
+                    takeValues(l, here);
+                    set(x - 1, y, l);
+                }
+            } else if (!sameValues(lead, here)) {
+                // the lead recoloured, both written, or a new pair: the
+                // lead's values
+                Cell r = here;
+                takeValues(r, lead);
+                set(x, y, r);
+            }
+        }
+    }
+    for (const auto& [yx, c] : settle) {
+        if (const auto it = last.find(yx); it != last.end())
+            edit.changes[it->second].after = c;
+        else
+            edit.changes.push_back({yx.second, yx.first, canvas.at(yx.second, yx.first), c});
+    }
+    return edit;
+}
+
 Cursor moveCursor(const Canvas& canvas, Cursor c, int dx, int dy) {
     if (canvas.width() <= 0 || canvas.height() <= 0)
         return {};

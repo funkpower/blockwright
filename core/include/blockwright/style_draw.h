@@ -122,7 +122,9 @@ bool styledAtComposite(const LayerProperties& props);
 
 // The layer's cells with its style drawn on them, the layer's size (what
 // the compositor shows for a layer styledAtComposite): what the style draws
-// past the layer's edges is clipped.
+// past the layer's edges is clipped. What it draws over one half of a wide
+// pair is settled against the layer's cells as an edit is (settleWide,
+// edit.h).
 Canvas styledCells(const Layer& layer, bool ice);
 
 } // namespace bw

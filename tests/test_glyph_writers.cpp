@@ -151,7 +151,9 @@ TEST_CASE("IRC text writes a pair as '?' and a space and a cluster as '?'") {
     const std::vector<Cell> want{cell(U'?', 15, 1), cell(U' ', 14, 4), cell(U'?', 7, 0), cell(U'A', 7, 0)};
     CHECK(irc::encodeRow(got) == irc::encodeRow(want));
     // a lone wide glyph is itself, as before
-    CHECK(irc::encodeRow(std::vector{cell(U'中', 7, 0)}) == irc::encodeRow(std::vector{cell(U'中', 7, 0)}));
+    const std::string lone = irc::encodeRow(std::vector{cell(U'中', 7, 0)});
+    CHECK_THAT(lone, Catch::Matchers::ContainsSubstring("\xE4\xB8\xAD"));
+    CHECK(lone.find('?') == std::string::npos);
     CHECK_THAT(irc::encodeRow(std::vector{cell(U'中', 7, 0), cell(U'A', 7, 0)}),
                Catch::Matchers::ContainsSubstring("\xE4\xB8\xAD"));
 }

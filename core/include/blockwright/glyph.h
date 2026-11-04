@@ -114,7 +114,9 @@ public:
     // it is out of ids or memory). Throws std::invalid_argument for an empty
     // sequence, one longer than kMaxClusterCodePoints, or one holding a
     // surrogate or a value above U+10FFFF: no conversion mints an id from a
-    // non-scalar.
+    // non-scalar. A sequence of two or more also throws if it holds a
+    // control anywhere (C0 but U+0000, DEL, C1, U+2028, U+2029); its base
+    // may be zero-width (a lone mark, which lint names).
     std::optional<Glyph> intern(std::span<const char32_t> cps, PoolCap cap);
 
     // The code points of `g` (GlyphCodePoints).

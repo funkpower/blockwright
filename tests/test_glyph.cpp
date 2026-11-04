@@ -142,6 +142,28 @@ TEST_CASE("the pool takes 1 to 16 Unicode scalar values") {
     CHECK_THROWS_AS(intern(pool, {0xDFFF}), std::invalid_argument);
 }
 
+TEST_CASE("the pool refuses a cluster that holds a control, and keeps one on a zero-width base") {
+    ClusterPool pool;
+    // C0 but U+0000, DEL, C1, and the line and paragraph separators
+    for (const char32_t c : {char32_t(0x01), char32_t(0x09), char32_t(0x1B), char32_t(0x1F), char32_t(0x7F),
+                             char32_t(0x80), char32_t(0x85), char32_t(0x9F), char32_t(0x2028), char32_t(0x2029)}) {
+        INFO("U+" << std::hex << std::uint32_t(c));
+        CHECK_THROWS_AS(intern(pool, {c, 0x301}), std::invalid_argument);
+        CHECK_THROWS_AS(intern(pool, {U'a', c}), std::invalid_argument);
+        // alone it is a code point, not a cluster, as before
+        CHECK(intern(pool, {c}) == Glyph(c));
+    }
+    // U+0000 is a cell's blank, width 1
+    const auto nul = intern(pool, {0x0000, 0x301});
+    REQUIRE(nul);
+    CHECK(nul->isCluster());
+    // a lone mark takes a cell and later marks join it (lint lone-mark)
+    const auto marks = intern(pool, {0x301, 0x302});
+    REQUIRE(marks);
+    CHECK(marks->isCluster());
+    CHECK(pool.width(*marks) == 0);
+}
+
 TEST_CASE("an id a pool doesn't hold reads as U+FFFD") {
     ClusterPool other, fresh;
     const auto g = intern(other, {U'e', 0x301});
@@ -188,8 +210,11 @@ TEST_CASE("the pool is safe to read while other threads add") {
     ClusterPool pool;
     constexpr int kThreads = 6;
     constexpr std::size_t kEach = 6000;
-    std::atomic<int> wrong{0};
+    std::atomic<int> wrong{0}, shared{0};
     std::vector<std::vector<Glyph>> got(kThreads);
+    // the ids as each is interned, by any thread, for the others to read
+    // (a default glyph is a space, never a cluster)
+    std::vector<std::atomic<Glyph>> slots(kEach);
     std::vector<std::thread> threads;
     for (int t = 0; t < kThreads; ++t)
         threads.emplace_back([&, t] {
@@ -204,13 +229,24 @@ TEST_CASE("the pool is safe to read while other threads add") {
                     ++wrong;
                 else
                     mine[i] = *g;
+                if (g)
+                    slots[i].store(*g, std::memory_order_release);
                 const std::size_t j = (i * 31) % kEach;
                 if (mine[j].isCluster() && cpsOf(pool.codePoints(mine[j])) != nthCluster(j))
                     ++wrong;
+                // an id another thread may have interned, read here
+                const std::size_t k = (i * 17 + std::size_t(t) * 389) % kEach;
+                if (const Glyph other = slots[k].load(std::memory_order_acquire); other.isCluster()) {
+                    if (cpsOf(pool.codePoints(other)) != nthCluster(k))
+                        ++wrong;
+                    else if (mine[k] != other)
+                        ++shared;
+                }
             }
         });
     for (auto& th : threads)
         th.join();
+    INFO("ids read before this thread interned them: " << shared.load());
     CHECK(wrong == 0);
     // one id a sequence, whichever thread added it
     for (int t = 1; t < kThreads; ++t)

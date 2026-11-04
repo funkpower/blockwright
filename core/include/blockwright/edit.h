@@ -30,6 +30,7 @@ struct CellEdit {
     bool dithers = false;
 
     bool empty() const { return changes.empty(); }
+    bool operator==(const CellEdit&) const = default;
     // Writes each change's `after` (apply) or `before` (revert, in reverse
     // order). Changes outside the canvas are skipped.
     void apply(Canvas& canvas) const;
@@ -53,6 +54,22 @@ Cell writtenOver(const Cell& under, Cell c);
 // builder made it, and the ramp gradient's (CellEdit::dithers) keeps the
 // dither marks it set. Document::edit and cli shade settle every edit.
 CellEdit settleMarks(CellEdit edit);
+
+// The pairs `edit` leaves whole (PLAN §16, Wide and combining characters).
+// It reads `edit` against `canvas`, the canvas it applies to (a layer's own
+// cells in the editor), and looks at the cells it changes and their
+// neighbours only, going by continuations, never by width:
+// - a pair one half of which is written over (a glyph, a clear) keeps the
+//   other half as a space in the pair's colours;
+// - a continuation in column 0 or right of another continuation is a stray
+//   and becomes a space in its own colours;
+// - a colour, attribute or mark (Cell::lostBlink, Cell::dithered) changed on
+//   one half is changed on both, the lead's values winning when both halves
+//   are written, and a new pair taking its lead's.
+// A lone wide cell, one without a continuation, is an ordinary glyph to it.
+// An edit that touches no continuation, on the canvas or in what it writes,
+// is returned as it is. Document::edit and cli shade settle every edit.
+CellEdit settleWide(const Canvas& canvas, CellEdit edit);
 
 // The cell the keyboard writes to. `pastEnd` is set when a glyph was just
 // typed on the last column: the cursor stays on that cell but stands past

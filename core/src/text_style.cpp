@@ -3,6 +3,7 @@
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/shading.h"
 #include "blockwright/composite.h"
+#include "blockwright/edit.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
@@ -1204,7 +1205,26 @@ bool styledAtComposite(const LayerProperties& props) {
 Canvas styledCells(const Layer& layer, bool ice) {
     if (!layer.props.style)
         return layer.cells;
-    return drawStyle(styleInputOf(layer), *layer.props.style, ice);
+    Canvas out = drawStyle(styleInputOf(layer), *layer.props.style, ice);
+    // What the style drew over the layer's cells, settled against them as
+    // an edit is (PLAN §16), when there is a pair to settle.
+    const Canvas& cells = layer.cells;
+    if (out.width() != cells.width() || out.height() != cells.height())
+        return out;
+    bool pairs = false;
+    for (int y = 0; y < cells.height() && !pairs; ++y)
+        for (int x = 0; x < cells.width() && !pairs; ++x)
+            pairs = cells.at(x, y).ch.isContinuation() || out.at(x, y).ch.isContinuation();
+    if (!pairs)
+        return out;
+    CellEdit drawn;
+    for (int y = 0; y < cells.height(); ++y)
+        for (int x = 0; x < cells.width(); ++x)
+            if (!identical(cells.at(x, y), out.at(x, y)))
+                drawn.changes.push_back({x, y, cells.at(x, y), out.at(x, y)});
+    for (const CellChange& c : settleWide(cells, std::move(drawn)).changes)
+        out.at(c.x, c.y) = c.after;
+    return out;
 }
 
 } // namespace bw

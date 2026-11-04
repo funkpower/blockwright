@@ -212,6 +212,13 @@ void SelectTool::floatBlock(const CellBlock& block, QPoint cell, std::optional<P
 void SelectTool::transform(Transform t) {
     if (!view())
         return;
+    // A wide pair has no shape on its side (PLAN §16): a rotation of one,
+    // or of half of one, is refused.
+    const bool rotation = t == Transform::RotateClockwise || t == Transform::RotateCounterClockwise;
+    if (rotation && (floating_ ? blockHoldsPair(float_) : selectionHoldsPair(canvas(), selection()))) {
+        view()->notify(tr("Can't rotate a selection that holds a wide character"));
+        return;
+    }
     if (floating_) {
         float_ = transformed(float_, t);
         setFloatPos(floatPos_);

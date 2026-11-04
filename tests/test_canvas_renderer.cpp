@@ -244,3 +244,27 @@ TEST_CASE("9 px cells repeat column 8 for 0xC0-0xDF and are background otherwise
     CHECK(eight.copy(0, 0, 8, 16) == img.copy(0, 0, 8, 16));
     CHECK(same(eight, renderCanvas(cv, 8)));
 }
+
+TEST_CASE("a continuation draws as its background in both renderers (PLAN §16)", "[wide]") {
+    // a lead and its continuation in different colours, beside a pair-free
+    // cell; the continuation's glyph colour must not show anywhere
+    Canvas cv(3, 1);
+    cv.at(0, 0) = Cell{U'中', Color::indexed(Yellow), Color::indexed(Blue), 0, false};
+    cv.at(1, 0) = Cell{Glyph::continuation(), Color::indexed(White), Color::indexed(Red), 0, false};
+    cv.at(2, 0) = Cell{U'A', Color::indexed(Yellow), Color::indexed(Blue), 0, false};
+    for (int gw : {8, 9}) {
+        INFO("width " << gw);
+        const QImage want = renderCanvas(cv, gw, 1);
+        for (int y = 0; y < 16; ++y)
+            for (int x = gw; x < 2 * gw; ++x)
+                if (want.pixel(x, y) != qRgb(kPalette[Red].r, kPalette[Red].g, kPalette[Red].b))
+                    FAIL("continuation pixel " << x << "," << y << " isn't its background");
+        AtlasRenderer r;
+        r.setCanvas(&cv, gw);
+        for (int zoom : {1, 2}) {
+            const QImage got = paintAll(r, zoom);
+            INFO(firstDiff(got, renderCanvas(cv, gw, zoom)));
+            CHECK(same(got, renderCanvas(cv, gw, zoom)));
+        }
+    }
+}

@@ -1,4 +1,5 @@
 #include "canvas_view.h"
+#include "plural.h"
 
 #include "device_grid.h"
 #include "document.h"
@@ -450,8 +451,20 @@ void CanvasView::setTool(Tool* tool) {
 }
 
 bool CanvasView::applyEdit(const CellEdit& edit, bool mirrored) {
-    const QScopedValueRollback<bool> own(ownEdit_, true);
-    return doc_->edit(mirrored ? edit : this->mirrored(edit), cursor_, cursor_);
+    int unmirrored = 0;
+    bool changed = false;
+    {
+        const QScopedValueRollback<bool> own(ownEdit_, true);
+        changed = doc_->edit(mirrored ? edit : this->mirrored(edit, &unmirrored), cursor_, cursor_);
+    }
+    noteUnmirrored(unmirrored);
+    return changed;
+}
+
+void CanvasView::noteUnmirrored(int pairs) {
+    if (pairs > 0)
+        notify(plural(pairs, tr("%n wide character over the centre column got no mirrored copy"),
+                      tr("%n wide characters over the centre column got no mirrored copy")));
 }
 
 void CanvasView::ownChange(const std::function<void()>& change) {
@@ -459,8 +472,11 @@ void CanvasView::ownChange(const std::function<void()>& change) {
     change();
 }
 
-CellEdit CanvasView::mirrored(const CellEdit& edit) const {
-    return mirror_ && symmetry_.mode == SymmetryMode::MirrorX ? mirrorEdit(doc_->layerCanvas(), edit) : edit;
+CellEdit CanvasView::mirrored(const CellEdit& edit, int* unmirrored) const {
+    if (unmirrored)
+        *unmirrored = 0;
+    return mirror_ && symmetry_.mode == SymmetryMode::MirrorX ? mirrorEdit(doc_->layerCanvas(), edit, unmirrored)
+                                                              : edit;
 }
 
 void CanvasView::setSelection(const Selection& selection) {
@@ -865,10 +881,12 @@ void CanvasView::paintOutline(QPainter& p, const CellRect& r, bool floating) con
 }
 
 void CanvasView::commit(const EditResult& r) {
+    int unmirrored = 0;
     {
         const QScopedValueRollback<bool> own(ownEdit_, true);
-        doc_->edit(mirrored(r.edit), cursor_, r.cursor);
+        doc_->edit(mirrored(r.edit, &unmirrored), cursor_, r.cursor);
     }
+    noteUnmirrored(unmirrored);
     setCellCursor(r.cursor);
 }
 

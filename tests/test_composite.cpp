@@ -665,7 +665,8 @@ TEST_CASE("a dirty-rect recomposite equals a full composite on that rect", "[lay
             recomposite(s, shown, dirty, o);
             REQUIRE(shown == composite(s, o));
         }
-        // any rect of a canvas holding anything: that rect composited, the rest left alone
+        // any rect of a canvas holding anything: that rect and a column
+        // either side composited (PLAN §16), the rest left alone
         Canvas junk(24, 12);
         for (int y = 0; y < 12; ++y)
             for (int x = 0; x < 24; ++x)
@@ -674,7 +675,9 @@ TEST_CASE("a dirty-rect recomposite equals a full composite on that rect", "[lay
         const CellRect rect{r.range(-5, 20), r.range(-5, 10), r.range(0, 30), r.range(0, 20)};
         recomposite(s, junk, rect, o);
         const Canvas full = composite(s, o);
-        const CellRect on = intersect(rect, s.canvasRect());
+        CellRect on = intersect(rect, s.canvasRect());
+        if (!on.empty())
+            on = intersect({on.x - 1, on.y, on.width + 2, on.height}, s.canvasRect());
         for (int y = 0; y < 12; ++y)
             for (int x = 0; x < 24; ++x) {
                 REQUIRE(junk.at(x, y) == (on.contains(x, y) ? full.at(x, y) : before.at(x, y)));

@@ -377,6 +377,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(view_, &CanvasView::layerMoveStatus, this, [this](const QString& text) {
         statusBar()->showMessage(text);
     });
+    connect(view_, &CanvasView::statusNotice, this, [this](const QString& text) {
+        statusBar()->showMessage(text, 5000);
+    });
 
     createActions();
     createLibrary();

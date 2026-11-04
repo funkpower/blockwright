@@ -105,6 +105,7 @@ add_executable(blockwright-tests
   test_text.cpp
   test_text_presets.cpp
   test_text_style.cpp
+  test_wide_pairs.cpp
   util.h
 )
 if(WIN32)
@@ -513,6 +514,7 @@ set(BW_APP_TEST_ENV ${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen
 set(BW_APP_TEST_RUNNER ${BW_APP_TEST_ENV} ${CMAKE_CROSSCOMPILING_EMULATOR})
 
 add_executable(blockwright-app-tests
+  test_app_wide.cpp
   test_app.cpp
   test_app_brush.cpp
   test_app_layers.cpp

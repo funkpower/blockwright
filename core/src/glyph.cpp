@@ -44,6 +44,12 @@ static_assert(place(0).chunk == 0 && place(1023).offset == 1023 && place(1024).c
 
 bool scalar(char32_t cp) { return cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF); }
 
+// A control a cluster may not hold: C0 but U+0000 (a cell's blank), DEL,
+// C1, and the line and paragraph separators.
+bool control(char32_t cp) {
+    return (cp >= 0x01 && cp < 0x20) || (cp >= 0x7F && cp < 0xA0) || cp == 0x2028 || cp == 0x2029;
+}
+
 } // namespace
 
 struct ClusterPool::Impl {
@@ -81,6 +87,9 @@ std::optional<Glyph> ClusterPool::intern(std::span<const char32_t> cps, PoolCap 
             throw std::invalid_argument("a cluster holds Unicode scalar values only");
     if (cps.size() == 1)
         return Glyph(cps[0]);
+    for (char32_t cp : cps)
+        if (control(cp))
+            throw std::invalid_argument("a cluster holds no control");
     std::u32string key(cps.begin(), cps.end());
     const std::lock_guard lock(d_->adding);
     if (const auto it = d_->index.find(key); it != d_->index.end())

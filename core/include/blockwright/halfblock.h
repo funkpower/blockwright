@@ -65,7 +65,9 @@ Cell setHalfBlocks(const Cell& cell, std::uint8_t colour, bool ice = true);
 // The colour a viewer sees at pixel (x, py) with iCE `ice`: the half's
 // colour in a pixel cell; elsewhere the cell's foreground or, with
 // `background`, the background it shows (an eyedropper: the left button
-// picks the foreground, the right the background). Empty off the canvas.
+// picks the foreground, the right the background). Either half of a wide
+// pair (PLAN §16) gives the pair's colours, its lead's. Empty off the
+// canvas.
 std::optional<Color> pickColour(const Canvas& canvas, int x, int py, bool background, bool ice = true);
 
 // Plots pixels over a canvas and keeps the result as one CellEdit. Each

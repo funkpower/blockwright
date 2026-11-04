@@ -30,6 +30,23 @@ std::filesystem::path fspath(const QString& s) {
     return std::filesystem::path(QFile::encodeName(s).toStdString());
 }
 
+// The canvas cells whose composite a layer edit can change: each changed
+// cell on the canvas and the cells either side of it, as the pair beside a
+// cell shows or doesn't (PLAN §16). Row by row, each once.
+std::vector<std::pair<int, int>> compositeCellsOf(const CellEdit& layerEdit, const Layer& layer, const Canvas& canvas) {
+    std::vector<std::pair<int, int>> cells;  // (y, x)
+    cells.reserve(layerEdit.changes.size() * 3);
+    for (const CellChange& c : layerEdit.changes) {
+        const int x = c.x + layer.props.x, y = c.y + layer.props.y;
+        for (int dx = -1; dx <= 1; ++dx)
+            if (canvas.contains(x + dx, y))
+                cells.emplace_back(y, x + dx);
+    }
+    std::sort(cells.begin(), cells.end());
+    cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+    return cells;
+}
+
 } // namespace
 
 FileForm fileFormFor(const QString& path) {
@@ -682,8 +699,11 @@ QRegion Document::changedCells(const CellEdit& edit) {
 bool Document::edit(const CellEdit& edit, Cursor before, Cursor after) {
     if (!editable())
         return false;
-    const std::optional<CellEdit> e = fitLayerEdit(*active(), settleMarks(edit), below(), doc_.ice);
-    if (!e || e->changes.empty())
+    std::optional<CellEdit> e = fitLayerEdit(*active(), settleMarks(edit), below(), doc_.ice);
+    if (!e)
+        return false;
+    *e = settleWide(active()->cells, std::move(*e));
+    if (e->changes.empty())
         return false;
     undo_.push(new LayerEditCommand(this, active_, *e, before, after));
     return true;
@@ -695,9 +715,10 @@ CellEdit Document::previewEdit(const CellEdit& edit, CellEdit* layerCells) {
     if (!editable())
         return {};
     Layer& layer = *stack_.find(active_);
-    const std::optional<CellEdit> e = fitLayerEdit(layer, settleMarks(edit), below(), doc_.ice);
+    std::optional<CellEdit> e = fitLayerEdit(layer, settleMarks(edit), below(), doc_.ice);
     if (!e)
         return {};
+    *e = settleWide(layer.cells, std::move(*e));
     // Applied for the moment, to read the composite, and taken off again.
     e->apply(layer.cells);
     CellEdit out;
@@ -706,7 +727,10 @@ CellEdit Document::previewEdit(const CellEdit& edit, CellEdit* layerCells) {
     const bool cover = layerCells && showsReference();
     if (styledAtComposite(layer.props)) {
         // the style redrawn over the whole layer: each cell it changes
-        const CellRect rect = intersect(dirtyRect(layer, *e), stack_.canvasRect());
+        // and a column either side of it, for a pair beside it (PLAN §16)
+        CellRect rect = intersect(dirtyRect(layer, *e), stack_.canvasRect());
+        if (!rect.empty())
+            rect = intersect({rect.x - 1, rect.y, rect.width + 2, rect.height}, stack_.canvasRect());
         const Canvas fresh = compositeRect(stack_, rect, opts);
         for (int y = rect.y; y < rect.y + rect.height; ++y)
             for (int x = rect.x; x < rect.x + rect.width; ++x)
@@ -721,15 +745,14 @@ CellEdit Document::previewEdit(const CellEdit& edit, CellEdit* layerCells) {
                         {x, y, {}, styled.at(x - layer.props.x, y - layer.props.y)});
         }
     } else {
-        out.changes.reserve(e->changes.size());
-        for (const CellChange& c : e->changes) {
-            const int x = c.x + layer.props.x, y = c.y + layer.props.y;
-            if (!doc_.canvas.contains(x, y))
-                continue;
+        for (const auto& [y, x] : compositeCellsOf(*e, layer, doc_.canvas))
             out.changes.push_back({x, y, doc_.canvas.at(x, y), compositeCell(stack_, x, y, opts)});
-            if (cover)
-                layerCells->changes.push_back({x, y, c.before, c.after});
-        }
+        if (cover)
+            for (const CellChange& c : e->changes) {
+                const int x = c.x + layer.props.x, y = c.y + layer.props.y;
+                if (doc_.canvas.contains(x, y))
+                    layerCells->changes.push_back({x, y, c.before, c.after});
+            }
     }
     e->revert(layer.cells);
     return out;
@@ -1153,7 +1176,10 @@ QRegion Document::otherCells(const Canvas& a, QPoint aAt, const Canvas& b, QPoin
 }
 
 QRegion Document::recomposite(CellRect rect) {
+    // a column either side, for a pair beside the rect (PLAN §16)
     rect = intersect(rect, stack_.canvasRect());
+    if (!rect.empty())
+        rect = intersect({rect.x - 1, rect.y, rect.width + 2, rect.height}, stack_.canvasRect());
     const Canvas fresh = compositeRect(stack_, rect, compositeOptions());
     CellEdit diff;
     for (int y = rect.y; y < rect.y + rect.height; ++y)
@@ -1202,6 +1228,8 @@ void Document::applyLayerEdit(LayerId id, const CellEdit& layerEdit, bool revert
             layerCanvas_.at(x, y) = layer->cells.at(c.x, c.y);
         if (cover)
             touched.changes.push_back({x, y, c.before, c.after});
+    }
+    for (const auto& [y, x] : compositeCellsOf(layerEdit, *layer, doc_.canvas)) {
         Cell& cell = doc_.canvas.at(x, y);
         const Cell now = compositeCell(stack_, x, y, opts);
         if (!identical(now, cell)) {

@@ -24,12 +24,17 @@ bool composites(const Layer& l) {
     return l.props.visible && l.props.kind != LayerKind::Reference;
 }
 
+// What laying a layer cell over the composite wrote: its glyph, its colours
+// (and attributes), both or neither.
+constexpr std::uint8_t kWroteGlyph = 1, kWroteColours = 2, kWroteBoth = kWroteGlyph | kWroteColours;
+
 // Lays one layer cell over the cell composited so far (`acc`, `text` whether
-// it is text).
-void over(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, bool ice) {
+// it is text), and says what it wrote.
+std::uint8_t over(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, bool ice) {
     if (props.kind != LayerKind::Pixels) {
         if (lc.transparent)
-            return;
+            return 0;
+        std::uint8_t wrote = kWroteBoth;
         const bool isText = props.kind == LayerKind::Text;
         switch (props.mode) {
         case LayerMode::Normal:
@@ -41,27 +46,29 @@ void over(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, b
             acc.ch = lc.ch;
             text = isText;
             acc.dithered = false;  // a look neither layer's dither laid
+            wrote = kWroteGlyph;
             break;
         case LayerMode::ColoursOnly:
             acc.fg = lc.fg;
             acc.bg = lc.bg;
             acc.attrs = lc.attrs;
             acc.dithered = false;
+            wrote = kWroteColours;
             break;
         }
         acc.transparent = false;
-        return;
+        return wrote;
     }
     // A pixel cell may be transparent and still hold one half (layer.h).
     if (text)
-        return;
+        return 0;
     const LayerPixels p = layerPixels(lc);
     if (p.top && p.bottom) {
         acc = halfBlockCell(HalfPair{*p.top, *p.bottom}, ice);
-        return;
+        return kWroteBoth;
     }
     if (!p.top && !p.bottom)
-        return;
+        return 0;
     HalfPair pair = halvesUnder(acc, ice);
     const bool bottom = !p.top;
     const std::uint8_t colour = bottom ? *p.bottom : *p.top;
@@ -98,6 +105,7 @@ void over(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, b
         }
         acc.attrs |= attr::Blink;
     }
+    return kWroteBoth;
 }
 
 // How a layer whose style the compositor draws composites: its styled cells
@@ -113,10 +121,10 @@ LayerProperties styledProps(const LayerProperties& props) {
 
 // One styled cell over the cell composited so far: a pixel layer's styled
 // cells, like its pixels, never cover a text cell.
-void overStyled(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, bool ice) {
+std::uint8_t overStyled(Cell& acc, bool& text, const LayerProperties& props, const Cell& lc, bool ice) {
     if (props.kind == LayerKind::Pixels && text)
-        return;
-    over(acc, text, styledProps(props), lc, ice);
+        return 0;
+    return over(acc, text, styledProps(props), lc, ice);
 }
 
 // A styled layer's cells for compositeCellBelow, which composites a cell at
@@ -148,37 +156,191 @@ const Canvas& cachedStyledCells(const Layer& layer, bool ice) {
     return cache.front().cells;
 }
 
-// Composites the cells of `rect` (on the canvas, not empty) into `out`,
-// canvas cell (x, y) at (x - ox, y - oy).
-void compositeInto(const LayerStack& stack, CellRect rect, Canvas& out, int ox, int oy,
-                   const CompositeOptions& options) {
-    for (int y = rect.y; y < rect.y + rect.height; ++y)
-        for (int x = rect.x; x < rect.x + rect.width; ++x)
-            out.at(x - ox, y - oy) = options.ground;
-    std::vector<char> text(static_cast<std::size_t>(rect.width) * rect.height, 0);
-    for (const Layer& l : stack.layers()) {
-        if (!composites(l))
-            continue;
-        const CellRect r = intersect(rect, l.bounds());
-        if (r.empty())
-            continue;
-        // a style the compositor draws is drawn once for the whole layer
-        const bool styled = styledAtComposite(l.props);
-        const Canvas styledLayer = styled ? styledCells(l, options.ice) : Canvas{0, 0};
-        const Canvas& cells = styled ? styledLayer : l.cells;
-        for (int y = r.y; y < r.y + r.height; ++y) {
-            const int ly = y - l.props.y;
-            for (int x = r.x; x < r.x + r.width; ++x) {
-                char& t = text[static_cast<std::size_t>(y - rect.y) * rect.width + (x - rect.x)];
-                bool isText = t;
-                if (styled)
-                    overStyled(out.at(x - ox, y - oy), isText, l.props, cells.at(x - l.props.x, ly), options.ice);
-                else
-                    over(out.at(x - ox, y - oy), isText, l.props, cells.at(x - l.props.x, ly), options.ice);
-                t = isText;
-            }
+// Whether a layer cell is the right half of a wide pair (PLAN §16): an
+// opaque continuation.
+bool continuation(const Cell& c) {
+    return !c.transparent && c.ch.isContinuation();
+}
+
+// A visible layer as the compositor reads it: its cells, or its styled cells
+// for a layer whose style the compositor draws, with cell (0, 0) at canvas
+// cell (x, y).
+struct LayerView {
+    const LayerProperties* props = nullptr;
+    const Canvas* cells = nullptr;
+    int x = 0, y = 0;
+    bool styled = false;
+
+    const Cell* at(int cx, int cy) const {
+        const long lx = long(cx) - x, ly = long(cy) - y;
+        return lx >= 0 && ly >= 0 && lx < cells->width() && ly < cells->height() ? &cells->at(int(lx), int(ly))
+                                                                                  : nullptr;
+    }
+    CellRect bounds() const { return {x, y, cells->width(), cells->height()}; }
+    std::uint8_t lay(Cell& acc, bool& text, const Cell& lc, bool ice) const {
+        return styled ? overStyled(acc, text, *props, lc, ice) : over(acc, text, *props, lc, ice);
+    }
+};
+
+// The topmost view (index + 1, 0 for the ground) whose cell wrote a cell's
+// glyph, and the topmost that wrote its colours.
+struct Source {
+    std::uint32_t glyph = 0, colours = 0;
+};
+
+// Lays a row of one view's cells (`lc`, from canvas column x0) over the
+// row composited so far (`acc`, `text` whether each cell is text). With
+// `src`, records where each cell's glyph and colours came from (`id`).
+// Says whether any of the cells is a continuation.
+template <bool Styled, bool Track>
+bool layRow(const LayerProperties& props, const Cell* lc, Cell* acc, char* text, Source* src, std::uint32_t id,
+            int n, bool ice) {
+    bool pairs = false;
+    for (int i = 0; i < n; ++i) {
+        pairs |= lc[i].ch.isContinuation();
+        bool isText = text[i];
+        const std::uint8_t wrote =
+            Styled ? overStyled(acc[i], isText, props, lc[i], ice) : over(acc[i], isText, props, lc[i], ice);
+        text[i] = isText;
+        if constexpr (Track) {
+            if (wrote & kWroteGlyph)
+                src[i].glyph = id;
+            if (wrote & kWroteColours)
+                src[i].colours = id;
         }
     }
+    return pairs;
+}
+
+// Composites each cell of `area` (on the canvas, not empty) on its own into
+// `out`, canvas cell (x, y) at (x - ox, y - oy), recording in `src` (when
+// given) where each cell's glyph and colours came from. Says whether any
+// view holds a continuation in the area or just right of it, so that pairs
+// may need settling.
+bool compositeCells(const std::vector<LayerView>& views, CellRect area, Canvas& out, int ox, int oy,
+                    const CompositeOptions& options, std::vector<Source>* src) {
+    for (int y = area.y; y < area.y + area.height; ++y)
+        std::fill_n(&out.at(area.x - ox, y - oy), area.width, options.ground);
+    bool pairs = false;
+    std::vector<char> text(static_cast<std::size_t>(area.width) * area.height, 0);
+    const int right = area.x + area.width;
+    for (std::size_t i = 0; i < views.size(); ++i) {
+        const LayerView& v = views[i];
+        const CellRect r = intersect(area, v.bounds());
+        if (r.empty())
+            continue;
+        const auto row = v.styled ? (src ? layRow<true, true> : layRow<true, false>)
+                                  : (src ? layRow<false, true> : layRow<false, false>);
+        for (int y = r.y; y < r.y + r.height; ++y) {
+            const std::size_t k = static_cast<std::size_t>(y - area.y) * area.width + (r.x - area.x);
+            pairs |= row(*v.props, &v.cells->at(r.x - v.x, y - v.y), &out.at(r.x - ox, y - oy), &text[k],
+                         src ? &(*src)[k] : nullptr, std::uint32_t(i + 1), r.width, options.ice);
+            if (r.x + r.width == right)
+                if (const Cell* c = v.at(right, y))
+                    pairs |= continuation(*c);
+        }
+    }
+    return pairs;
+}
+
+// The pair pass after per-cell compositing (PLAN §16), over the cells of
+// `area` as compositeCells left them with `src`: a pair shows only where
+// both its halves show, from the same layer; otherwise the half that shows
+// is a space in its own colours. A pair that shows whole in two sets of
+// colours (a colours-only layer over one half) takes the colours laid last,
+// the lead's if both were laid by the same layer. Cells outside the area
+// count as not showing, so only cells clear of its left and right edges, or
+// at the canvas's, come out right.
+void settlePairs(const std::vector<LayerView>& views, CellRect area, Canvas& out, int ox, int oy,
+                 const std::vector<Source>& src) {
+    struct Fix {
+        int x, y;
+        Cell c;
+    };
+    std::vector<Fix> fixes;
+    const auto at = [&](int x, int y) -> const Source& {
+        return src[static_cast<std::size_t>(y - area.y) * area.width + (x - area.x)];
+    };
+    const auto blank = [](Cell c) {
+        c.ch = Glyph(U' ');
+        return c;
+    };
+    const int right = area.x + area.width;
+    for (int y = area.y; y < area.y + area.height; ++y)
+        for (int x = area.x; x < right; ++x) {
+            const Source& s = at(x, y);
+            if (!s.glyph)
+                continue;
+            const LayerView& v = views[s.glyph - 1];
+            const Cell& shown = out.at(x - ox, y - oy);
+            if (continuation(*v.at(x, y))) {
+                const Cell* lead = v.at(x - 1, y);
+                const bool whole = x > area.x && at(x - 1, y).glyph == s.glyph && lead && !continuation(*lead);
+                if (!whole)
+                    fixes.push_back({x, y, blank(shown)});
+                continue;
+            }
+            const Cell* next = v.at(x + 1, y);
+            if (!next || !continuation(*next))
+                continue;
+            if (x + 1 >= right || at(x + 1, y).glyph != s.glyph) {
+                fixes.push_back({x, y, blank(shown)});
+                continue;
+            }
+            const Cell& cont = out.at(x + 1 - ox, y - oy);
+            if (shown.fg == cont.fg && shown.bg == cont.bg && shown.attrs == cont.attrs)
+                continue;
+            const bool contWins = at(x + 1, y).colours > s.colours;
+            const Cell& from = contWins ? cont : shown;
+            Cell to = contWins ? shown : cont;
+            to.fg = from.fg;
+            to.bg = from.bg;
+            to.attrs = from.attrs;
+            fixes.push_back({contWins ? x : x + 1, y, to});
+        }
+    for (const Fix& f : fixes)
+        out.at(f.x - ox, f.y - oy) = f.c;
+}
+
+// Composites `area` (on the canvas, not empty) into `out` and settles the
+// pairs in it; only cells clear of the area's left and right edges, or at
+// the canvas's, come out right.
+void compositeArea(const std::vector<LayerView>& views, CellRect area, Canvas& out, int ox, int oy,
+                   const CompositeOptions& options) {
+    if (!compositeCells(views, area, out, ox, oy, options, nullptr))
+        return;
+    std::vector<Source> src(static_cast<std::size_t>(area.width) * area.height);
+    compositeCells(views, area, out, ox, oy, options, &src);
+    settlePairs(views, area, out, ox, oy, src);
+}
+
+// Composites the cells of `rect` (on the canvas, not empty) into `out`,
+// canvas cell (x, y) at (x - ox, y - oy). A cell's neighbours on its row
+// decide whether a pair there shows, so the cells are composited with a
+// column more each side, where the canvas has one.
+void compositeInto(const LayerStack& stack, CellRect rect, Canvas& out, int ox, int oy,
+                   const CompositeOptions& options) {
+    const CellRect outer = intersect({rect.x - 1, rect.y, rect.width + 2, rect.height}, stack.canvasRect());
+    // a style the compositor draws is drawn once for the whole layer
+    std::deque<Canvas> styled;
+    std::vector<LayerView> views;
+    for (const Layer& l : stack.layers()) {
+        if (!composites(l) || intersect(outer, l.bounds()).empty())
+            continue;
+        const bool s = styledAtComposite(l.props);
+        if (s)
+            styled.push_back(styledCells(l, options.ice));
+        views.push_back({&l.props, s ? &styled.back() : &l.cells, l.props.x, l.props.y, s});
+    }
+    if (outer == rect) {
+        compositeArea(views, rect, out, ox, oy, options);
+        return;
+    }
+    Canvas work(outer.width, outer.height);
+    compositeArea(views, outer, work, outer.x, outer.y, options);
+    for (int y = rect.y; y < rect.y + rect.height; ++y)
+        for (int x = rect.x; x < rect.x + rect.width; ++x)
+            out.at(x - ox, y - oy) = work.at(x - outer.x, y - outer.y);
 }
 
 } // namespace
@@ -200,7 +362,10 @@ HalfPair halvesUnder(const Cell& below, bool ice) {
 void recomposite(const LayerStack& stack, Canvas& out, CellRect rect, const CompositeOptions& options) {
     if (out.width() != stack.width() || out.height() != stack.height())
         throw LayerError("recomposite: the canvas is not the stack's size");
+    // a change to one half of a pair shows in the other (PLAN §16)
     rect = intersect(rect, stack.canvasRect());
+    if (!rect.empty())
+        rect = intersect({rect.x - 1, rect.y, rect.width + 2, rect.height}, stack.canvasRect());
     if (!rect.empty())
         compositeInto(stack, rect, out, 0, 0, options);
 }
@@ -290,20 +455,49 @@ Cell compositeCellBelow(const LayerStack& stack, std::size_t index, int x, int y
     Cell acc = options.ground;
     if (!stack.canvasRect().contains(x, y))
         return acc;
-    bool text = false;
+    bool text = false, pairs = false;
     const auto& layers = stack.layers();
-    for (std::size_t i = 0; i < std::min(index, layers.size()); ++i)
-        if (composites(layers[i]))
-            if (const Cell* c = layers[i].cellAt(x, y)) {
-                if (styledAtComposite(layers[i].props)) {
-                    const Canvas& cells = cachedStyledCells(layers[i], options.ice);
-                    overStyled(acc, text, layers[i].props, cells.at(x - layers[i].props.x, y - layers[i].props.y),
-                               options.ice);
-                } else {
-                    over(acc, text, layers[i].props, *c, options.ice);
-                }
-            }
-    return acc;
+    const std::size_t n = std::min(index, layers.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const Layer& l = layers[i];
+        if (!composites(l))
+            continue;
+        const bool styled = styledAtComposite(l.props);
+        const LayerView v{&l.props, styled ? &cachedStyledCells(l, options.ice) : &l.cells, l.props.x, l.props.y,
+                          styled};
+        if (const Cell* c = v.at(x, y))
+            v.lay(acc, text, *c, options.ice);
+        for (int dx = -1; dx <= 1; ++dx)
+            if (const Cell* c = v.at(x + dx, y))
+                pairs |= continuation(*c);
+    }
+    if (!pairs)
+        return acc;
+    // A pair beside it: the three cells around it composited and settled.
+    // A styled layer's cells there are copied, as styling the next layer may
+    // drop this one's from the cache.
+    const CellRect around{x - 1, y, 3, 1};
+    std::deque<Canvas> copies;
+    std::vector<LayerView> views;
+    for (std::size_t i = 0; i < n; ++i) {
+        const Layer& l = layers[i];
+        const CellRect b = intersect(around, l.bounds());
+        if (!composites(l) || b.empty())
+            continue;
+        if (!styledAtComposite(l.props)) {
+            views.push_back({&l.props, &l.cells, l.props.x, l.props.y, false});
+            continue;
+        }
+        const Canvas& cells = cachedStyledCells(l, options.ice);
+        Canvas& copy = copies.emplace_back(b.width, 1);
+        for (int cx = b.x; cx < b.x + b.width; ++cx)
+            copy.at(cx - b.x, 0) = cells.at(cx - l.props.x, y - l.props.y);
+        views.push_back({&l.props, &copy, b.x, y, true});
+    }
+    const CellRect area = intersect(around, stack.canvasRect());
+    Canvas work(area.width, 1);
+    compositeArea(views, area, work, area.x, area.y, options);
+    return work.at(x - area.x, 0);
 }
 
 } // namespace bw

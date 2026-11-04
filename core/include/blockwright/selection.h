@@ -147,7 +147,10 @@ enum class Transform { FlipHorizontal, FlipVertical, RotateClockwise, RotateCoun
 // The block flipped or turned 90 degrees, each cell's glyph remapped.
 // Rotation swaps width and height. Cells are twice as tall as they are wide,
 // so a rotated block looks stretched; the glyph remap is about which way a
-// glyph faces, not its shape.
+// glyph faces, not its shape. Wide pairs (PLAN §16): a horizontal flip
+// puts a pair back as lead then continuation, a vertical flip keeps it
+// whole, and a rotation of a block holding either half of one returns the
+// block as it is (blockHoldsPair; the editor refuses it with a message).
 CellBlock transformed(const CellBlock& block, Transform t);
 
 // An edit and where the selection is after it.
@@ -160,7 +163,9 @@ struct SelectionEdit {
 // rotation keeps its top-left corner and swaps its sides, clearing the cells
 // of the old rectangle the new one doesn't cover. Cells turned past the
 // canvas edge are dropped, and the selection is clipped to match. Cleared
-// cells become `blank`.
+// cells become `blank`. A rotation of a selection holding either half of a
+// wide pair (selectionHoldsPair) does nothing: an empty edit and the same
+// selection.
 SelectionEdit transformSelection(const Canvas& canvas, const Selection& sel, Transform t,
                                  const Cell& blank = Cell{});
 
@@ -175,7 +180,20 @@ SelectionEdit moveSelection(const Canvas& canvas, const Selection& sel, int dx, 
 // horizontally. Where the edit itself changes the mirrored cell (the centre
 // column of an odd width, or an edit spanning both halves) the edit's own
 // change wins. Integer columns only; no rounding.
+//
+// The edit is settled first (settleWide, edit.h). A wide pair at (x, x + 1)
+// is mirrored whole, its lead at mirrorColumn(x + 1) and its continuation
+// at mirrorColumn(x), as a pair reads left to right (PLAN §16). On an even
+// width a pair across the axis is its own image. On an odd width a pair
+// over the centre column overlaps its own image and gets no copy;
+// `pairsUnmirrored`, when given, is set to how many did.
 int mirrorColumn(int width, int x);
-CellEdit mirrorEdit(const Canvas& canvas, const CellEdit& edit);
+CellEdit mirrorEdit(const Canvas& canvas, const CellEdit& edit, int* pairsUnmirrored = nullptr);
+// Whether the selected cells hold either half of a wide pair (a lead with
+// its continuation beside it, or that continuation): what a rotation
+// refuses. A lone wide cell is no pair.
+bool selectionHoldsPair(const Canvas& canvas, const Selection& sel);
+// The same for a block's cells.
+bool blockHoldsPair(const CellBlock& block);
 
 } // namespace bw
