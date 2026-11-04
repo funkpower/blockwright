@@ -277,40 +277,58 @@ void save(const std::string& out, const std::string& bytes) {
 // before it got here (openAsEditor), counted with what writeAnsi drops.
 // Warns once per kind of loss in what writeAnsi wrote for `in`, with a count.
 void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
-    // The first cell written as '?' whose byte is (or isn't) a control code in .ans.
-    const auto first = [&](bool control) {
-        return *std::find_if(res.unwritable.begin(), res.unwritable.end(),
-                             [&](const bw::Unwritable& u) { return bw::ansControlByte(u.ch).has_value() == control; });
+    using bw::Loss;
+    const auto count = [&](auto which) {
+        return int(std::count_if(res.unwritable.begin(), res.unwritable.end(), which));
     };
-    // A control or bidi override is shown by its code point alone, never raw.
+    const auto first = [&](auto which) { return *std::find_if(res.unwritable.begin(), res.unwritable.end(), which); };
+    const auto is = [](Loss loss) { return [loss](const bw::Unwritable& u) { return u.loss == loss; }; };
+    // A control or bidi override is shown by its code point alone, never raw;
+    // a glyph not written '?' says what it is written as.
     const auto where = [](const bw::Unwritable& u) {
         const std::optional<char32_t> cp = u.ch.codePoint();
         const std::string glyph = cp && bw::unprintableCodePoint(*cp) ? "" : " '" + bw::quotedGlyph(u.ch) + "'";
         return "(first: " + bw::codePointNames(u.ch) + glyph + " at column " + std::to_string(u.x + 1) + ", row " +
-               std::to_string(u.y + 1) + ")";
+               std::to_string(u.y + 1) + (u.written == U'?' ? "" : ", written as " + bw::quotedGlyph(u.written)) +
+               ")";
     };
+    const auto warn = [&](int n, const std::string& one, const std::string& many, const bw::Unwritable& u,
+                          const std::string& after = {}) {
+        std::cerr << "blockwright-cli: warning: " << in << ": " << n << (n == 1 ? one : many) << " " << where(u)
+                  << after << "\n";
+    };
+    const auto wide = is(Loss::Wide);
+    const auto notWide = [](const bw::Unwritable& u) { return u.loss != Loss::Wide; };
     if (res.encoding == bw::TextEncoding::Utf8) {
-        // Only control characters: shown by their code point alone.
-        if (const int n = int(res.unwritable.size())) {
-            const std::string code = bw::codePointNames(res.unwritable.front().ch);
-            std::cerr << "blockwright-cli: warning: " << in << ": " << n
-                      << (n == 1 ? " cell holds a control character a UTF-8 .ans can't hold and is"
-                                 : " cells hold control characters a UTF-8 .ans can't hold and are")
-                      << " written as '?' (first: " << code << " at column " << res.unwritable.front().x + 1
-                      << ", row " << res.unwritable.front().y + 1 << ")\n";
-        }
+        // A control character, and a lead a terminal wouldn't draw over both cells.
+        if (const int n = count(notWide))
+            warn(n, " cell holds a control character a UTF-8 .ans can't hold and is written as '?'",
+                 " cells hold control characters a UTF-8 .ans can't hold and are written as '?'", first(notWide));
+        if (const int n = count(wide))
+            warn(n,
+                 " cell holds a glyph a terminal doesn't draw two columns wide before a continuation and is "
+                 "written as '?' and a space",
+                 " cells hold glyphs a terminal doesn't draw two columns wide before a continuation and are "
+                 "written as '?' and a space",
+                 first(wide));
+    } else {
+        if (const int n = count(is(Loss::NoCode)))
+            warn(n, " glyph has no CP437 code and is written as '?'", " glyphs have no CP437 code and are written as '?'",
+                 first(is(Loss::NoCode)));
+        if (const int n = count(wide))
+            warn(n, " wide glyph is written as '?' and a space", " wide glyphs are written as '?' and a space",
+                 first(wide));
+        if (const int n = count(is(Loss::MarksDropped)))
+            warn(n, " glyph loses its combining marks", " glyphs lose their combining marks",
+                 first(is(Loss::MarksDropped)));
+        if (const int n = count(is(Loss::Control)))
+            warn(n,
+                 (" glyph has a CP437 byte .ans reads as a control code (" + bw::ansControlNames(res.unwritable) +
+                  ") and is written as '?'"),
+                 (" glyphs have CP437 bytes .ans reads as control codes (" + bw::ansControlNames(res.unwritable) +
+                  ") and are written as '?'"),
+                 first(is(Loss::Control)), std::string("; XBIN and BIN keep ") + (n == 1 ? "it" : "them"));
     }
-    const int controls = res.encoding == bw::TextEncoding::Utf8 ? 0 : bw::ansControlCount(res.unwritable);
-    if (const int n = res.encoding == bw::TextEncoding::Utf8 ? 0 : int(res.unwritable.size()) - controls)
-        std::cerr << "blockwright-cli: warning: " << in << ": " << n
-                  << (n == 1 ? " glyph has no CP437 code and is" : " glyphs have no CP437 code and are")
-                  << " written as '?' " << where(first(false)) << "\n";
-    if (const int n = controls)
-        std::cerr << "blockwright-cli: warning: " << in << ": " << n
-                  << (n == 1 ? " glyph has a CP437 byte .ans reads as a control code ("
-                             : " glyphs have CP437 bytes .ans reads as control codes (")
-                  << bw::ansControlNames(res.unwritable) << ") and " << (n == 1 ? "is" : "are") << " written as '?' "
-                  << where(first(true)) << "; XBIN and BIN keep " << (n == 1 ? "it" : "them") << "\n";
     if (const int n = res.blinkDropped)
         std::cerr << "blockwright-cli: warning: " << in << ": " << n
                   << (n == 1 ? " blinking cell loses its blink" : " blinking cells lose their blink")

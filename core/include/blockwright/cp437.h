@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -22,6 +23,21 @@ inline char32_t cp437ToUnicode(std::uint8_t byte) { return cp437Table()[byte]; }
 std::optional<std::uint8_t> unicodeToCp437(char32_t cp);
 
 void appendUtf8(std::string& out, char32_t cp);
+
+// A cluster of a base and one mark that NFC composes to one CP437 glyph
+// (e U+0301 → é, 0x82).
+struct Cp437Composition {
+    char32_t base, mark;
+    std::uint8_t byte;
+};
+// Every such pair, sorted by base then mark: a fixed table generated from
+// Unicode's normalization data (core/src/cp437_compose.inc says how), so
+// what the writers write doesn't depend on the build's Qt.
+std::span<const Cp437Composition> cp437Compositions();
+// The CP437 byte a cluster's NFC form is, when it is one CP437 glyph;
+// nothing for any other glyph (a single code point, the continuation, a
+// cluster of three or more).
+std::optional<std::uint8_t> cp437Composed(Glyph g);
 
 // Whether `cp`, printed on its own, acts or shows nothing visible: a C0 or
 // C1 control or DEL (general category Cc), a format character (Cf: the bidi

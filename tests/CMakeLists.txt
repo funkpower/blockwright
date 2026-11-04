@@ -106,6 +106,7 @@ add_executable(blockwright-tests
   test_text_presets.cpp
   test_text_style.cpp
   test_wide_pairs.cpp
+  test_wide_writers.cpp
   util.h
 )
 if(WIN32)

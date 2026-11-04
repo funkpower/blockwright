@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <charconv>
 #include <map>
+#include <utility>
 
 namespace bw {
 
@@ -372,10 +373,33 @@ private:
 // blinking space written without iCE is not one: read back with iCE on it is
 // a bright-black background. With iCE on its blink is dropped, so it is
 // written as a plain black space and goes like one. A continuation is
-// written as a space (interimCodePoint), so it goes like one too.
+// written as a space (cp437Glyph), so it goes like one too.
 bool blankBlack(const Cell& c, bool ice) {
     return c.transparent || ((c.ch == U' ' || c.ch.isContinuation()) && c.bg.paletteIndex() == Black &&
                              (ice || !(c.attrs & attr::Blink)));
+}
+
+// Whether a UTF-8 .ans writes lead `c` as its glyph, which a terminal draws
+// over its continuation's column too: every code point utf8Writable and two
+// columns wide (glyphColumns).
+bool utf8WideLead(const Cell& c) {
+    const GlyphCodePoints cps = codePoints(c.ch);
+    return !c.transparent && glyphColumns(c.ch) == 2 && std::all_of(cps.begin(), cps.end(), utf8Writable);
+}
+
+// Whether the trailing trim may drop cell `x` of row `y` (blankBlack), as
+// written: a lead never, as its glyph is written ('?' in CP437); in UTF-8, a
+// continuation whose lead's glyph takes its column neither, as the row is
+// full.
+bool trimmable(const Canvas& cv, int x, int y, bool ice, bool utf8) {
+    const Cell& c = cv.at(x, y);
+    if (c.transparent)
+        return true;
+    if (!blankBlack(c, ice))
+        return false;
+    if (c.ch.isContinuation())
+        return !(utf8 && x > 0 && !cv.at(x - 1, y).ch.isContinuation() && utf8WideLead(cv.at(x - 1, y)));
+    return !(x + 1 < cv.width() && cv.at(x + 1, y).ch.isContinuation());
 }
 
 bool writableByte(std::uint8_t b) { return !ansControlName(b); }
@@ -406,11 +430,24 @@ std::optional<std::uint8_t> ansControlByte(Glyph g) {
     return cp ? ansControlByte(*cp) : std::nullopt;
 }
 
+namespace {
+
+// The control byte a cell lost as a control has: its glyph's, or its
+// cluster's base's.
+std::optional<std::uint8_t> lostControlByte(const Unwritable& u) {
+    if (u.loss != Loss::Control)
+        return std::nullopt;
+    const GlyphCodePoints cps = codePoints(u.ch);
+    return cps.empty() ? std::nullopt : ansControlByte(cps[0]);
+}
+
+} // namespace
+
 std::string ansControlNames(const std::vector<Unwritable>& cells) {
     std::vector<std::string_view> seen;
     std::string names;
     for (const Unwritable& u : cells)
-        if (const std::optional<std::uint8_t> b = ansControlByte(u.ch)) {
+        if (const std::optional<std::uint8_t> b = lostControlByte(u)) {
             const std::string_view name = ansControlName(*b);
             if (std::find(seen.begin(), seen.end(), name) != seen.end())
                 continue;
@@ -424,7 +461,7 @@ std::string ansControlNames(const std::vector<Unwritable>& cells) {
 
 int ansControlCount(const std::vector<Unwritable>& cells) {
     return static_cast<int>(std::count_if(cells.begin(), cells.end(),
-                                          [](const Unwritable& u) { return ansControlByte(u.ch).has_value(); }));
+                                          [](const Unwritable& u) { return u.loss == Loss::Control; }));
 }
 
 bool isWritableGlyph(char32_t ch) {
@@ -445,20 +482,38 @@ int lostBlinkCount(const AnsiDocument& doc) {
     return n;
 }
 
-bool writesAlike(const Cell& a, const Cell& b) {
+char32_t Cp437Glyph::written() const { return loss == Loss::MarksDropped ? cp437ToUnicode(byte) : U'?'; }
+
+Cp437Glyph cp437Glyph(Glyph g, Glyph right, bool ans) {
+    if (g.isContinuation())
+        return {' ', std::nullopt};
+    if (right.isContinuation())
+        return {'?', Loss::Wide};
+    const GlyphCodePoints cps = codePoints(g);
+    const std::optional<std::uint8_t> b = cps.empty() ? std::nullopt : unicodeToCp437(cps[0]);
+    const bool control = b && ans && !writableByte(*b);
+    if (cps.size == 1) {
+        if (!b)
+            return {'?', Loss::NoCode};
+        if (*b == 0x00)
+            return {ans ? std::uint8_t(' ') : std::uint8_t(0x00), std::nullopt};  // NUL draws as a blank
+        return control ? Cp437Glyph{'?', Loss::Control} : Cp437Glyph{*b, std::nullopt};
+    }
+    if (const std::optional<std::uint8_t> composed = cp437Composed(g))
+        return {*composed, std::nullopt};
+    if (!b)
+        return {'?', Loss::NoCode};
+    return control ? Cp437Glyph{'?', Loss::Control} : Cp437Glyph{*b, Loss::MarksDropped};
+}
+
+bool writesAlike(const Cell& a, const Cell& b) { return writesAlike(a, Glyph(), b, Glyph()); }
+
+bool writesAlike(const Cell& a, Glyph aRight, const Cell& b, Glyph bRight) {
     if (a.transparent || b.transparent)
         return a.transparent == b.transparent;
-    // as the CP437 writer writes it (interimCodePoint): a continuation a
-    // space, a cluster '?' (a lead holds a glyph CP437 hasn't got, so its '?'
-    // is the glyph's own)
-    const auto byte = [](Glyph g) {
-        if (g.isContinuation())
-            return std::uint8_t(' ');
-        const std::optional<char32_t> cp = g.codePoint();
-        return cp && isWritableGlyph(*cp) ? *unicodeToCp437(*cp) : std::uint8_t('?');
-    };
-    return byte(a.ch) == byte(b.ch) && a.fg.paletteIndex() == b.fg.paletteIndex() &&
-           a.bg.paletteIndex() == b.bg.paletteIndex() && (a.attrs & attr::Blink) == (b.attrs & attr::Blink);
+    return cp437Glyph(a.ch, aRight, true).byte == cp437Glyph(b.ch, bRight, true).byte &&
+           a.fg.paletteIndex() == b.fg.paletteIndex() && a.bg.paletteIndex() == b.bg.paletteIndex() &&
+           (a.attrs & attr::Blink) == (b.attrs & attr::Blink);
 }
 
 Cell iceCell(Cell c, bool ice) {
@@ -588,10 +643,13 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
     s = "\x1b[0m";
     for (int y = 0; y < cv.height(); ++y) {
         int end = cv.width();
-        while (end > 0 && blankBlack(cv.at(end - 1, y), ice))
+        while (end > 0 && trimmable(cv, end - 1, y, ice, utf8))
             --end;
         int cur = -1;
+        bool covered = false;  // UTF-8: the cell is the continuation of a glyph written two columns wide
         for (int x = 0; x < end; ++x) {
+            if (std::exchange(covered, false))
+                continue;
             const Cell& c = cv.at(x, y).transparent ? blank : cv.at(x, y);
             const std::uint8_t fg = c.fg.paletteIndex(), bg = c.bg.paletteIndex();
             const bool blink = bg >= 8 || (!ice && (c.attrs & attr::Blink));
@@ -610,24 +668,39 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
                 cur = key;
             }
             const Glyph right = x + 1 < cv.width() && !cv.at(x, y).transparent ? cv.at(x + 1, y).ch : Glyph();
-            const std::optional<char32_t> cp = interimCodePoint(c.ch, right);
             if (utf8) {
-                if (!cp || !utf8Writable(*cp)) {
-                    out.unwritable.push_back({x, y, c.ch});
+                // A continuation not covered by its lead's glyph is a space.
+                if (c.ch.isContinuation()) {
+                    s += ' ';
+                    continue;
+                }
+                const GlyphCodePoints cps = codePoints(c.ch);
+                const bool writable = std::all_of(cps.begin(), cps.end(), utf8Writable);
+                if (right.isContinuation()) {
+                    // A lead: its glyph and nothing for the continuation when a
+                    // terminal draws it two columns wide; else '?', and the
+                    // continuation a space, so the columns hold.
+                    if (utf8WideLead(c)) {
+                        for (const char32_t cp : cps)
+                            appendUtf8(s, cp);
+                        covered = true;
+                    } else {
+                        out.unwritable.push_back({x, y, c.ch, writable ? Loss::Wide : Loss::Control});
+                        s += '?';
+                    }
+                } else if (!writable) {
+                    out.unwritable.push_back({x, y, c.ch, Loss::Control});
                     s += '?';
                 } else {
-                    appendUtf8(s, *cp ? *cp : U' ');  // NUL draws as a blank
+                    for (const char32_t cp : cps)
+                        appendUtf8(s, cp ? cp : U' ');  // NUL draws as a blank
                 }
                 continue;
             }
-            std::optional<std::uint8_t> b = cp ? unicodeToCp437(*cp) : std::nullopt;
-            if (b && *b == 0x00)
-                b = ' ';  // NUL draws as a blank
-            if (!b || !writableByte(*b)) {
-                out.unwritable.push_back({x, y, c.ch});
-                b = '?';
-            }
-            s += static_cast<char>(*b);
+            const Cp437Glyph g = cp437Glyph(c.ch, right, true);
+            if (g.loss)
+                out.unwritable.push_back({x, y, c.ch, *g.loss, g.written()});
+            s += static_cast<char>(g.byte);
         }
         // A row never starts with its line break: after a full-width row the
         // cursor may be waiting to wrap, and a bare CR LF would end that row.

@@ -20,8 +20,8 @@ void CellEdit::revert(Canvas& canvas) const {
             canvas.at(it->x, it->y) = it->before;
 }
 
-Cell writtenOver(const Cell& under, Cell c) {
-    c.lostBlink = c.lostBlink || (under.lostBlink && writesAlike(under, c));
+Cell writtenOver(const Cell& under, Cell c, Glyph underRight, Glyph cRight) {
+    c.lostBlink = c.lostBlink || (under.lostBlink && writesAlike(under, underRight, c, cRight));
     c.dithered = c.dithered || (under.dithered && under == c);
     return c;
 }
@@ -32,14 +32,23 @@ CellEdit settleMarks(CellEdit edit) {
                    (!edit.dithers && (c.before.dithered || c.after.dithered));
         }))
         return edit;
-    std::map<std::pair<int, int>, Cell> was;  // (y, x) -> the cell before the edit
-    for (const CellChange& c : edit.changes)
+    std::map<std::pair<int, int>, Cell> was, now;  // (y, x) -> the cell before and after the edit
+    for (const CellChange& c : edit.changes) {
         was.emplace(std::pair{c.y, c.x}, c.before);
+        now[{c.y, c.x}] = c.after;
+    }
+    // A cell's right neighbour, before and after, as far as the edit knows
+    // it: a cell it leaves alone counts as none, so a lead it doesn't touch
+    // the continuation of is judged as a single cell.
+    const auto right = [](const std::map<std::pair<int, int>, Cell>& cells, int x, int y) {
+        const auto it = cells.find({y, x + 1});
+        return it != cells.end() ? it->second.ch : Glyph();
+    };
     for (CellChange& c : edit.changes) {
         const bool dithered = c.after.dithered;
         c.after.lostBlink = false;
         c.after.dithered = false;
-        c.after = writtenOver(was.at({c.y, c.x}), c.after);
+        c.after = writtenOver(was.at({c.y, c.x}), c.after, right(was, c.x, c.y), right(now, c.x, c.y));
         if (edit.dithers)
             c.after.dithered = dithered;
     }
@@ -109,10 +118,10 @@ CellEdit settleWide(const Canvas& canvas, CellEdit edit) {
         for (const int x : xs) {
             const Cell& here = after(x, y);
             if (!cont(here)) {
-                // a lead whose continuation the edit wrote over, the lead
-                // itself untouched: a space in its own colours
-                if (onCanvasCont(x + 1, y) && !cont(canvas.at(x, y)) && !edited(x, y) && edited(x + 1, y) &&
-                    !cont(after(x + 1, y)))
+                // a lead whose continuation the edit wrote a glyph on, its
+                // own glyph left (recoloured or not): a space in its colours
+                if (onCanvasCont(x + 1, y) && !cont(canvas.at(x, y)) && here.ch == canvas.at(x, y).ch &&
+                    edited(x + 1, y) && !cont(after(x + 1, y)))
                     set(x, y, space(here));
                 continue;
             }
@@ -128,10 +137,12 @@ CellEdit settleWide(const Canvas& canvas, CellEdit edit) {
                 continue;
             const Cell& lead = after(x - 1, y);
             const bool wasPair = cont(canvas.at(x, y)) && !cont(canvas.at(x - 1, y));
-            if (wasPair && !contEdited && lead.ch != canvas.at(x - 1, y).ch) {
-                // its lead written over: the continuation a space in the
-                // pair's colours
-                set(x, y, space(here));
+            if (wasPair && lead.ch != canvas.at(x - 1, y).ch) {
+                // its lead written over: the continuation a space in its
+                // colours, unless the edit wrote a new pair there whole (a
+                // continuation in the new lead's values)
+                if (!last.contains({y, x}) || !sameValues(lead, here))
+                    set(x, y, space(here));
             } else if (wasPair && !leadEdited) {
                 // only the continuation recoloured: the lead takes it
                 if (!sameValues(lead, here)) {

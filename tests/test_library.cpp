@@ -231,7 +231,7 @@ TEST_CASE("stampLossMessage counts each loss as one cell or as cells") {
     CHECK(stampLossMessage(out).empty());
     out.unwritable = {{0, 0, U'★'}};
     CHECK(stampLossMessage(out) == "1 cell holds a glyph with no CP437 code, which .ans can't store");
-    out.unwritable = {{0, 0, U'◙'}, {1, 0, U'○'}};
+    out.unwritable = {{0, 0, U'◙', Loss::Control}, {1, 0, U'○', Loss::Control}};
     CHECK(stampLossMessage(out) ==
           "2 cells hold a glyph whose CP437 byte .ans reads as a control code (LF, TAB), which .ans can't store");
     // the glyphs come first; blink is told once every glyph can be written

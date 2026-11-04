@@ -198,6 +198,54 @@ TEST_CASE("settleWide: a new pair written whole stays whole", "[wide][settle]") 
     CHECK(pairsWhole(out));
 }
 
+TEST_CASE("settleWide: a new pair written over an old one stays whole", "[wide][settle]") {
+    // a paste of 日 over 中: its continuation the same as the old one's
+    Canvas c = blank(6);
+    putPair(c, 1, 0, Yellow, Blue);
+    CellEdit e = change(c, 1, 0, cell(U'日', Yellow, Blue));
+    e.changes.push_back({2, 0, c.at(2, 0), cell(kCont, Yellow, Blue)});
+    Canvas out = settled(c, e);
+    CHECK(out.at(1, 0).ch == U'日');
+    CHECK(out.at(2, 0).ch.isContinuation());
+    // and in other colours
+    e = change(c, 1, 0, cell(U'日', Red, Green));
+    e.changes.push_back({2, 0, c.at(2, 0), cell(kCont, Red, Green)});
+    out = settled(c, e);
+    CHECK(out.at(1, 0).ch == U'日');
+    CHECK(out.at(2, 0).ch.isContinuation());
+    CHECK(pairsWhole(out));
+}
+
+TEST_CASE("settleWide: a glyph written on one half breaks the pair, whatever the edit does to the other's colours", "[wide][settle]") {
+    // review of #338, findings A and B: rule 1 asks whether the edit wrote a
+    // glyph on a half, not whether it changed the cell
+    Canvas c = blank(4);
+    putPair(c, 1, 0, Yellow, Blue);
+    SECTION("A on the continuation, the lead recoloured: the lead a space") {
+        CellEdit e = change(c, 1, 0, cell(U'中', Red, Blue));
+        e.changes.push_back({2, 0, c.at(2, 0), cell(U'A', White, Black)});
+        const Canvas out = settled(c, e);
+        CHECK(glyphs(out) == "  A ");
+        CHECK(out.at(1, 0).fg == Color::indexed(Red));
+    }
+    SECTION("A on the continuation, the lead left alone: the same") {
+        const Canvas out = settled(c, change(c, 2, 0, cell(U'A', White, Black)));
+        CHECK(glyphs(out) == "  A ");
+    }
+    SECTION("A on the lead, the continuation recoloured: the continuation a space") {
+        CellEdit e = change(c, 1, 0, cell(U'A', White, Black));
+        e.changes.push_back({2, 0, c.at(2, 0), cell(kCont, Red, Blue)});
+        const Canvas out = settled(c, e);
+        CHECK(glyphs(out) == " A  ");
+        CHECK(out.at(2, 0).fg == Color::indexed(Red));
+        CHECK(pairsWhole(out));
+    }
+    SECTION("A on the lead, the continuation left alone: the same") {
+        const Canvas out = settled(c, change(c, 1, 0, cell(U'A', White, Black)));
+        CHECK(glyphs(out) == " A  ");
+    }
+}
+
 TEST_CASE("settleWide: a lone wide cell is an ordinary glyph", "[wide][settle][lone]") {
     Canvas c = blank(6);
     c.at(2, 0) = cell(U'中', Yellow, Blue);

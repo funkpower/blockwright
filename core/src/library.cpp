@@ -836,16 +836,28 @@ StampFiles encodeStamp(const std::string& name, const std::string& category, con
 
 std::string stampLossMessage(const AnsiOutput& out) {
     if (!out.unwritable.empty()) {
-        const int controls = ansControlCount(out.unwritable);
+        const auto count = [&](Loss loss) {
+            return int(std::count_if(out.unwritable.begin(), out.unwritable.end(),
+                                     [&](const Unwritable& u) { return u.loss == loss; }));
+        };
+        const auto cells = [](int n) { return std::to_string(n) + (n == 1 ? " cell holds" : " cells hold"); };
+        const int uncoded = count(Loss::NoCode), controls = count(Loss::Control), marks = count(Loss::MarksDropped),
+                  wide = count(Loss::Wide);
         std::string why;
-        if (const int n = int(out.unwritable.size()) - controls)
-            why = std::to_string(n) + (n == 1 ? " cell holds" : " cells hold") + " a glyph with no CP437 code";
+        const auto add = [&](const std::string& clause) { why += (why.empty() ? "" : " and ") + clause; };
+        if (uncoded)
+            add(cells(uncoded) + " a glyph with no CP437 code");
         if (controls)
-            why += (why.empty() ? "" : " and ") + std::to_string(controls) +
-                   (controls == 1 ? " cell holds" : " cells hold") +
-                   " a glyph whose CP437 byte .ans reads as a control code (" + ansControlNames(out.unwritable) +
-                   ")";
-        return why + ", which .ans can't store";
+            add(cells(controls) + " a glyph whose CP437 byte .ans reads as a control code (" +
+                ansControlNames(out.unwritable) + ")");
+        if (marks)
+            add(cells(marks) + " a glyph whose marks CP437 drops");
+        if (!why.empty())
+            why += ", which .ans can't store";
+        if (wide)
+            why += (why.empty() ? "" : "; ") + std::to_string(wide) +
+                   (wide == 1 ? " wide glyph written as ?" : " wide glyphs written as ?");
+        return why;
     }
     if (out.blinkDropped)
         return std::to_string(out.blinkDropped) +

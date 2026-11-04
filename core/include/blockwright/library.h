@@ -127,9 +127,11 @@ StampFiles encodeStamp(const std::string& name, const std::string& category,
                        const std::vector<std::string>& tags, const CellBlock& cells, bool ice);
 
 // Why encodeStamp refuses what writeAnsi wrote, in English with each count
-// in the singular or the plural: the cells written as '?' (those with no
-// CP437 code, then those whose byte .ans reads as a control code), else the
-// blinking cells that lost their blink. Empty when nothing was lost.
+// in the singular or the plural: the cells it lost a glyph of (those with
+// no CP437 code, those whose byte .ans reads as a control code, the
+// clusters written as their base, then the wide glyphs, counted: "3 wide
+// glyphs written as ?"), else the blinking cells that lost their blink.
+// Empty when nothing was lost.
 std::string stampLossMessage(const AnsiOutput& out);
 
 // Writes both files (the sidecar at pairedSidecar(ans)), replacing a stamp

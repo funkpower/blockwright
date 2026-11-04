@@ -84,9 +84,20 @@ inline constexpr int kMaxRows = 5000;
 // can't make a canvas from.
 AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts = {});
 
+// What a writer loses of a cell's glyph (PLAN §16, Writing).
+enum class Loss : std::uint8_t {
+    NoCode,        // no byte for it (CP437), written '?'
+    MarksDropped,  // a cluster written as its base (`written`), its marks dropped
+    Wide,          // a lead, written '?' and its continuation a space
+    Control,       // a byte .ans reads as a control code (CP437), or a code
+                   // point utf8Writable refuses (UTF-8), written '?'
+};
+
 struct Unwritable {
     int x, y;
     Glyph ch;  // never the continuation, which is written as a space
+    Loss loss = Loss::NoCode;
+    char32_t written = U'?';  // what the cell was written as
 };
 
 
@@ -95,10 +106,12 @@ struct AnsiOutput {
     // The text encoding the glyphs were written in: UTF-8 only for an .ans
     // writeAnsi wrote as UTF-8. XBIN and BIN are CP437 bytes.
     TextEncoding encoding = TextEncoding::Cp437;
-    // Cells written as '?', in cell order. CP437: a glyph with no CP437
-    // code, or (.ans only) one whose byte .ans reads as a control code
-    // (ansControlByte). UTF-8: a code point utf8Writable refuses. Either: a
-    // lead or a cluster of more than one code point (interimCodePoint).
+    // Cells not written as their glyph, in cell order. CP437 (cp437Glyph):
+    // a lead, a glyph or cluster base with no CP437 code, a cluster written
+    // as its base, and (.ans only) a glyph or base whose byte .ans reads as
+    // a control code. UTF-8: a cell holding a code point utf8Writable
+    // refuses, and a lead whose glyph doesn't take two columns
+    // (glyphColumns), written '?' and its continuation a space.
     std::vector<Unwritable> unwritable;
     // Blinking cells written without their blink: the file is written with
     // iCE colours on, where blink means a bright background. Only cells whose
@@ -200,11 +213,33 @@ Opened openAsEditor(AnsiDocument& doc);
 // with something else, or erased, isn't marked any more.
 int lostBlinkCount(const AnsiDocument& doc);
 
+// The CP437 byte a writer writes for a cell holding `g` whose right
+// neighbour holds `right`, and what it loses (PLAN §16, Writing): a
+// continuation is a space; a lead (any glyph before a continuation) '?',
+// Wide; a code point with no byte '?', NoCode; NUL a space in an .ans and
+// 0x00 in XBIN and BIN; a cluster whose NFC form is one CP437 glyph
+// (cp437Composed) that byte; any other cluster its base's byte,
+// MarksDropped, or '?', NoCode, when the base has none. With `ans`, a byte
+// .ans reads as a control code (ansControlName), a glyph's or a cluster
+// base's, is '?', Control; XBIN and BIN keep it.
+struct Cp437Glyph {
+    std::uint8_t byte;
+    std::optional<Loss> loss;
+    // What the cell reads as: the base for MarksDropped, else '?'.
+    char32_t written() const;
+};
+Cp437Glyph cp437Glyph(Glyph g, Glyph right, bool ans);
+
 // Whether writeAnsi writes `a` and `b` alike with any iCE setting: the same
-// CP437 byte (so ß and β are one glyph, and a glyph it can't write is '?'
-// either way), the same palette colours and blink, and both transparent or
-// neither. Other attribute bits and the lost-blink mark don't count.
+// CP437 byte (cp437Glyph: so ß and β are one glyph, and a glyph it can't
+// write is '?' either way), the same palette colours and blink, and both
+// transparent or neither. Other attribute bits and the lost-blink mark don't
+// count.
 bool writesAlike(const Cell& a, const Cell& b);
+// The same, with the glyph each cell has on its right, so a lead (a cell
+// before a continuation) is judged as written: '?'. The two-cell form judges
+// both as having none.
+bool writesAlike(const Cell& a, Glyph aRight, const Cell& b, Glyph bRight);
 
 // Whether writeAnsi writes `ch` as itself: it has a CP437 byte and that byte
 // isn't one the parser acts on (TAB, LF, CR, SUB, ESC) or NUL.
@@ -222,13 +257,13 @@ std::optional<std::uint8_t> ansControlByte(char32_t ch);
 // The same for a cell's glyph: nothing for a cluster or the continuation.
 std::optional<std::uint8_t> ansControlByte(Glyph g);
 
-// The names (ansControlName) of the control codes the glyphs in `cells` have
-// bytes for, each once, in the order they are first met, joined by ", "
-// ("TAB, ESC, LF"); empty if none has one.
+// The names (ansControlName) of the control codes the cells in `cells` lost
+// as a control have bytes for (a cluster by its base's), each once, in the
+// order they are first met, joined by ", " ("TAB, ESC, LF"); empty if none
+// has one.
 std::string ansControlNames(const std::vector<Unwritable>& cells);
 
-// How many of `cells` hold a glyph ansControlByte has a byte for; the rest
-// have no CP437 code.
+// How many of `cells` were lost as a control (Loss::Control).
 int ansControlCount(const std::vector<Unwritable>& cells);
 
 // Whether `ch` draws no foreground: a space, NUL or 0xFF (U+00A0). Blink

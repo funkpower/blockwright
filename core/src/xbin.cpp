@@ -57,8 +57,9 @@ Cell cellOf(std::uint8_t ch, std::uint8_t a, bool ice) {
 }
 
 // Cells to character/attribute pairs, row by row, as writeAnsi would write
-// them with iCE `ice`: transparent cells blank, '?' for a glyph CP437 hasn't
-// got. `width` may be the canvas's width + 1, a blank column.
+// them with iCE `ice`: transparent cells blank, each glyph as cp437Glyph has
+// it, keeping the bytes .ans reads as control codes. `width` may be the
+// canvas's width + 1, a blank column.
 std::vector<std::uint8_t> pairsOf(const Canvas& cv, int width, bool ice, AnsiOutput& out) {
     std::vector<std::uint8_t> pairs;
     pairs.reserve(static_cast<size_t>(width) * cv.height() * 2);
@@ -69,13 +70,10 @@ std::vector<std::uint8_t> pairsOf(const Canvas& cv, int width, bool ice, AnsiOut
             const std::uint8_t fg = c.fg.paletteIndex(), bg = c.bg.paletteIndex();
             const bool high = bg >= 8 || (!ice && (c.attrs & attr::Blink));
             const Glyph right = x + 1 < cv.width() && !cv.at(x, y).transparent ? cv.at(x + 1, y).ch : Glyph();
-            const std::optional<char32_t> cp = interimCodePoint(c.ch, right);
-            std::optional<std::uint8_t> b = cp ? unicodeToCp437(*cp) : std::nullopt;
-            if (!b) {
-                out.unwritable.push_back({x, y, c.ch});
-                b = '?';
-            }
-            pairs.push_back(*b);
+            const Cp437Glyph g = cp437Glyph(c.ch, right, false);
+            if (g.loss)
+                out.unwritable.push_back({x, y, c.ch, *g.loss, g.written()});
+            pairs.push_back(g.byte);
             pairs.push_back(static_cast<std::uint8_t>(fg | ((bg & 7) << 4) | (high ? 0x80 : 0)));
         }
     return pairs;

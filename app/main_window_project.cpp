@@ -124,7 +124,7 @@ int MainWindow::snapshot(QString* error, bool allowLossy) {
     if (!doc_.nextSnapshot(&s, &out, error))
         return 0;
     if (out.lossy() && !allowLossy) {
-        *error = lossDescription(out);
+        *error = lossDescription(out, true);
         return 0;
     }
     const int round = s.round;
@@ -143,7 +143,7 @@ void MainWindow::takeSnapshot() {
     }
     if (out.lossy() &&
         QMessageBox::warning(this, tr("Take Snapshot"),
-                             tr("Snapshot r%1, as .ans:\n%2.\n\nTake it anyway?").arg(s.round).arg(lossDescription(out)),
+                             tr("Snapshot r%1, as .ans:\n%2.\n\nTake it anyway?").arg(s.round).arg(lossDescription(out, true)),
                              QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
         return;
     const int round = s.round;

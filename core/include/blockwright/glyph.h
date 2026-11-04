@@ -138,8 +138,8 @@ ClusterPool& clusterPool();
 GlyphCodePoints codePoints(Glyph g);
 int glyphColumns(Glyph g);
 
-// What a writer that doesn't yet write pairs or clusters (PLAN §16, slice 1)
-// writes for a cell holding `g` whose right neighbour holds `right`: a
+// What the IRC writer, which doesn't yet write pairs or clusters (PLAN §16,
+// until slice 4; the .ans, XBIN and BIN writers do since slice 3), writes for a cell holding `g` whose right neighbour holds `right`: a
 // continuation as a space in its own colours, so the columns hold; a lead (a
 // cell whose right neighbour is a continuation) or a cluster of more than
 // one code point as nothing, which the writer writes as '?' and lists;

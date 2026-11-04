@@ -38,7 +38,7 @@ const QString kWipKey = QStringLiteral("pipeline/wipDir");
 QString roundKey(const QString& slug) { return QStringLiteral("pipeline/rounds/") + slug; }
 
 QString lossRefusal(const AnsiOutput& out) {
-    return QObject::tr("The .ans would lose data:\n%1.").arg(lossDescription(out));
+    return QObject::tr("The .ans would lose data:\n%1.").arg(lossDescription(out, true));
 }
 
 QDialog* formDialog(QWidget* parent, const QString& title, QFormLayout** form, QDialogButtonBox** buttons) {

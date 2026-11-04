@@ -140,6 +140,27 @@ bool unprintableCodePoint(char32_t cp) {
     }
 }
 
+namespace {
+#include "cp437_compose.inc"
+} // namespace
+
+std::span<const Cp437Composition> cp437Compositions() { return kCp437Compositions; }
+
+std::optional<std::uint8_t> cp437Composed(Glyph g) {
+    if (!g.isCluster())
+        return std::nullopt;
+    const GlyphCodePoints cps = codePoints(g);
+    if (cps.size != 2)
+        return std::nullopt;
+    const auto it = std::lower_bound(std::begin(kCp437Compositions), std::end(kCp437Compositions), cps,
+                                     [](const Cp437Composition& c, const GlyphCodePoints& k) {
+                                         return std::pair(c.base, c.mark) < std::pair(k[0], k[1]);
+                                     });
+    if (it == std::end(kCp437Compositions) || it->base != cps[0] || it->mark != cps[1])
+        return std::nullopt;
+    return it->byte;
+}
+
 std::string quotedGlyph(char32_t cp) {
     if (unprintableCodePoint(cp)) {
         char code[16];

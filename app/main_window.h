@@ -81,14 +81,19 @@ QStringList openNameFilters();
 // (detectEncoding) for any other.
 std::optional<TextEncoding> openFilterEncoding(const QString& filter);
 
-// What a lossy save or snapshot loses, one line per kind of loss. Cells
-// written as '?' are glyphs with no CP437 code or whose byte .ans reads as a
-// control code for a CP437 .ans (out.encoding), and control characters for
-// a UTF-8 one, which holds every glyph. The glyphs with no CP437 code, and
-// the control characters, are named: up to three distinct ones, each with
+// What a lossy save or snapshot loses, one line per kind of loss
+// (Unwritable::loss). For a CP437 .ans (out.encoding), XBIN or BIN: glyphs
+// with no CP437 code; glyphs it can't hold whole, a lead (a wide glyph) and
+// a cluster written as its base, each with what it is written as ("中 at
+// 3,0 written as ?", "♥ U+FE0F at 0,1 written as ♥"); glyphs whose byte
+// .ans reads as a control code. For a UTF-8 one, which holds every glyph:
+// control characters, and leads whose glyph a terminal wouldn't draw two
+// columns wide. The glyphs are named: up to three distinct ones, each with
 // its cell (column,row from 0) or its count and first cell, then "and N
-// more"; a control or format character as U+XXXX, never raw.
-QString lossDescription(const AnsiOutput& out);
+// more"; a control, format or combining character as U+XXXX, never raw.
+// With `countWide` (Publish, Send and snapshots), the leads are counted
+// rather than named: "12 wide glyphs written as ?".
+QString lossDescription(const AnsiOutput& out, bool countWide = false);
 
 // The status-bar message for typed or committed `text` whose glyphs
 // isTypeable refuses: for each glyph CP437 has but .ans can't hold, its byte
@@ -107,7 +112,7 @@ QString rejectedGlyphsMessage(const QString& text);
 QString saveWarning(const AnsiOutput& out, bool project = false, ArtFormat format = ArtFormat::Ansi);
 // The question Publish to Library and Send to WeeChat ask before a lossy
 // CP437 payload (PLAN §9): "Before publishing:" or "Before sending:", the
-// loss (lossDescription), then "Publish anyway?" or "Send anyway?". There is
+// loss (lossDescription, counting wide glyphs), then "Publish anyway?" or "Send anyway?". There is
 // no hint to Save As UTF-8, since both always write CP437 whatever the
 // document is saved as.
 enum class PipelineAction { Publish, Send };

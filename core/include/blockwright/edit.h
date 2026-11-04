@@ -44,13 +44,17 @@ struct CellEdit {
 // and the dither mark (Cell::dithered) `c` carries, or else `under`'s, when
 // the two look the same. A cell the same edit lifts off (a move, flip or
 // turn) takes its marks with it, so what it leaves under is a blank.
-Cell writtenOver(const Cell& under, Cell c);
+// `underRight` and `cRight` are the glyphs right of each, so that a lead is
+// judged as written ('?'); none (the default) judges it a single cell.
+Cell writtenOver(const Cell& under, Cell c, Glyph underRight = {}, Glyph cRight = {});
 
 // The marks `edit` leaves. A drawn cell carries no mark of its own,
 // whatever a brush built it from (a copy of the cell, of a neighbour, of a
 // mirror image), and takes the marks of the cell it is drawn over by
 // writtenOver; a cell changed twice is judged against what it was before
-// the edit. An edit that moves cells (CellEdit::moves) is left as its
+// the edit, and its right neighbour as the edit has it before and after (a
+// neighbour the edit doesn't change counts as none: settleMarks has no
+// canvas). An edit that moves cells (CellEdit::moves) is left as its
 // builder made it, and the ramp gradient's (CellEdit::dithers) keeps the
 // dither marks it set. Document::edit and cli shade settle every edit.
 CellEdit settleMarks(CellEdit edit);
@@ -59,8 +63,10 @@ CellEdit settleMarks(CellEdit edit);
 // It reads `edit` against `canvas`, the canvas it applies to (a layer's own
 // cells in the editor), and looks at the cells it changes and their
 // neighbours only, going by continuations, never by width:
-// - a pair one half of which is written over (a glyph, a clear) keeps the
-//   other half as a space in the pair's colours;
+// - a pair one half of which has a glyph written on it (a glyph, a clear)
+//   keeps the other half as a space in that half's colours, whatever the
+//   edit does to its colours; a new pair written over the old one, its
+//   continuation in the new lead's values, stays whole;
 // - a continuation in column 0 or right of another continuation is a stray
 //   and becomes a space in its own colours;
 // - a colour, attribute or mark (Cell::lostBlink, Cell::dithered) changed on

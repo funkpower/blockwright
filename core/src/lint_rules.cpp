@@ -367,26 +367,46 @@ void noCp437(const Canvas& canvas, std::vector<Finding>& out) {
     for (int y = 0; y < canvas.height(); ++y)
         for (int x = 0; x < canvas.width(); ++x) {
             const Cell& c = canvas.at(x, y);
-            // a continuation is saved as a space (interimCodePoint); a lead
-            // holds a glyph with no CP437 code, as a cluster does
-            if (c.transparent || c.ch.isContinuation())
+            if (c.transparent)
+                continue;
+            // as a CP437 .ans writes it (cp437Glyph): a continuation is a
+            // space, a lead '?', a cluster its composed byte or its base
+            const Glyph right = x + 1 < canvas.width() ? canvas.at(x + 1, y).ch : Glyph();
+            const Cp437Glyph written = cp437Glyph(c.ch, right, true);
+            if (!written.loss)
                 continue;
             const std::optional<char32_t> cp = c.ch.codePoint();
-            const std::optional<std::uint8_t> control = ansControlByte(c.ch);
-            if (cp && (*cp < 0x20 || *cp == 0x7f || (unicodeToCp437(*cp) && !control)))
+            if (*written.loss != Loss::Wide && cp && (*cp < 0x20 || *cp == 0x7f))
                 continue;
             // A control or bidi override is named by its code alone, never
             // echoed: a terminal would act on it.
             std::string message = codePointNames(c.ch);
             if (!cp || !unprintableCodePoint(*cp))
                 message += " " + quotedGlyph(c.ch);
-            if (control) {
+            const GlyphCodePoints cps = codePoints(c.ch);
+            switch (*written.loss) {
+            case Loss::Wide: message += " takes two cells: an .ans saves it as '?' and a space"; break;
+            case Loss::MarksDropped: {
+                std::string marks;
+                for (int i = 1; i < cps.size; ++i)
+                    marks += (i > 1 ? " " : "") + codePointNames(Glyph(cps[i]));
+                message += " has no CP437 code: an .ans saves it as " + quotedGlyph(written.written()) +
+                           ", dropping " + marks;
+                break;
+            }
+            case Loss::Control: {
+                const std::uint8_t control = *ansControlByte(cps[0]);
                 char byte[8];
-                std::snprintf(byte, sizeof byte, "0x%02X", unsigned(*control));
-                message += std::string(" is CP437 ") + byte + ", which .ans reads as " + ansControlName(*control) +
-                           ": an .ans saves it as '?' (XBIN and BIN keep it)";
-            } else {
-                message += " has no CP437 code: an .ans saves it as '?'";
+                std::snprintf(byte, sizeof byte, "0x%02X", unsigned(control));
+                message += cps.size == 1
+                               ? std::string(" is CP437 ") + byte + ", which .ans reads as " +
+                                     ansControlName(control) + ": an .ans saves it as '?' (XBIN and BIN keep it)"
+                               : std::string(" has a base whose CP437 byte ") + byte + " .ans reads as " +
+                                     ansControlName(control) +
+                                     ": an .ans saves it as '?' (XBIN and BIN keep its base)";
+                break;
+            }
+            case Loss::NoCode: message += " has no CP437 code: an .ans saves it as '?'"; break;
             }
             out.push_back(make(Kind::NoCp437, x, y, x, y, message));
         }
