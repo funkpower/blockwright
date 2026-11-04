@@ -115,11 +115,13 @@ TEST_CASE("UTF-8 .ans: a cluster is written as its code points, byte for byte", 
     CHECK(out.unwritable.empty());
 }
 
-TEST_CASE("UTF-8 .ans: a lone wide cell is written as it was", "[wide][writers]") {
+TEST_CASE("UTF-8 .ans: a lone wide cell is written as '?' and listed", "[wide][writers]") {
+    // read back it would be a pair and push the A right (PLAN §16, Writing)
     const AnsiOutput out = writeAnsi(row({cell(U'中'), cell(U'A')}), TextEncoding::Utf8);
-    CHECK(content(out) == "\x1b[0m\x1b[0;37;40m\xE4\xB8\xAD"
-                          "A\x1b[0m");
-    CHECK(out.unwritable.empty());
+    CHECK(content(out) == "\xEF\xBB\xBF\x1b[0m\x1b[0;37;40m?A\x1b[0m");  // ASCII only, so a byte order mark
+    REQUIRE(out.unwritable.size() == 1);
+    CHECK(out.unwritable[0].loss == Loss::LoneWide);
+    CHECK_FALSE(out.unwritable[0].lead);
 }
 
 TEST_CASE("UTF-8 .ans: a pair at the row's end fills it, so no line break follows", "[wide][writers]") {

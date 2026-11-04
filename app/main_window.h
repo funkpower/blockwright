@@ -95,6 +95,11 @@ std::optional<TextEncoding> openFilterEncoding(const QString& filter);
 // rather than named: "12 wide glyphs written as ?".
 QString lossDescription(const AnsiOutput& out, bool countWide = false);
 
+// What reading a UTF-8 .ans dropped (ReadLoss), as openFile shows it in the
+// status bar: "3 combining code points past 16 dropped at 4,0; 12 clusters
+// read as their base: too many distinct clusters". Empty when nothing was.
+QString readLossDescription(const ReadLoss& loss);
+
 // The same for IRC text's losses (irc::unwritable), worded as a UTF-8
 // .ans's with "IRC text" for "a UTF-8 .ans"; empty when nothing is lost.
 QString ircLossDescription(const std::vector<Unwritable>& lost);

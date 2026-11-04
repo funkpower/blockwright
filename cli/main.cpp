@@ -123,11 +123,15 @@ bw::AnsiDocument load(const std::string& path) {
     const std::string data = readFile(path);
     if (data.empty())
         throw Failure{path + ": empty file"};
+    bw::AnsiDocument doc;
     try {
-        return bw::parseArt(data, bw::artFormatOf(path, data), {.encoding = gEncoding});
+        doc = bw::parseArt(data, bw::artFormatOf(path, data), {.encoding = gEncoding});
     } catch (const bw::AnsiError& e) {
         throw Failure{path + ": " + e.what()};
     }
+    for (const std::string& w : bwcli::readWarnings(doc.readLoss))
+        std::cerr << "blockwright-cli: warning: " << path << ": " << w << "\n";
+    return doc;
 }
 
 std::string text(const std::string& cp437) { return bw::cp437ToUtf8(cp437); }

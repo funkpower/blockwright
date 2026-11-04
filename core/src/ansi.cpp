@@ -1,6 +1,7 @@
 #include "blockwright/ansi.h"
 
 #include "blockwright/cp437.h"
+#include "blockwright/width.h"
 
 #include <algorithm>
 #include <charconv>
@@ -75,7 +76,8 @@ std::uint8_t clampByte(int v) { return static_cast<std::uint8_t>(std::clamp(v, 0
 // other escape wraps first, as libansilove does on every ESC.
 class Parser {
 public:
-    Parser(int width, bool ice, bool utf8) : width_(width), ice_(ice), utf8_(utf8) {}
+    Parser(int width, bool ice, bool utf8, std::size_t poolCap)
+        : width_(width), ice_(ice), utf8_(utf8), cluster_(poolCap) {}
 
     void run(std::string_view data) {
         const size_t n = data.size();
@@ -95,8 +97,10 @@ public:
                     if (k >= n)
                         break;  // cut off mid-sequence
                     const auto f = static_cast<unsigned char>(data[k]);
-                    if (k != j || (f != 'm' && f != 't'))
+                    if (k != j || (f != 'm' && f != 't')) {
+                        finishCluster();
                         wrapIfPending();
+                    }
                     if (f < 0x40 || f > 0x7e) {
                         // No final byte: the sequence is malformed. Drop what
                         // was read and handle this byte as ordinary input, so
@@ -111,6 +115,7 @@ public:
                 }
                 // Any other ESC is skipped on its own and the bytes after it
                 // are read as usual, as libansilove does (loaders/ansi.c:172-178).
+                finishCluster();
                 wrapIfPending();
                 ++i;
                 continue;
@@ -118,6 +123,7 @@ public:
             ++i;
             switch (b) {
             case 0x0a:
+                finishCluster();
                 if (!glyphWrap_)
                     wrapIfPending();
                 row_ = std::min(kMaxRows, row_ + 1);
@@ -125,28 +131,37 @@ public:
                 glyphWrap_ = false;
                 break;
             case 0x0d:
-                // CR doesn't move the cursor, as in libansilove (loaders/ansi.c:164-165)
+                // CR doesn't move the cursor, as in libansilove (loaders/ansi.c:164-165),
+                // but a terminal's, so a mark after it isn't joined
+                finishCluster();
                 if (!glyphWrap_)
                     wrapIfPending();
                 break;
             case 0x09:
                 // libansilove (loaders/ansi.c:166-167): to the next multiple of
                 // 8, which may be the width or past it, so the next glyph wraps
+                finishCluster();
                 wrapIfPending();
                 col_ = std::min(width_, col_ + 8 - col_ % 8);
                 break;
             case 0x00:
-                put(U' ');
+                if (utf8_)
+                    read(U' ');
+                else
+                    put(U' ');
                 break;
             default:
                 if (utf8_ && b >= 0x80) {
                     --i;
-                    put(nextUtf8(data, i).value_or(U'\uFFFD'));
+                    read(nextUtf8(data, i).value_or(U'\uFFFD'));
+                } else if (utf8_) {
+                    read(cp437ToUnicode(b));
                 } else {
                     put(cp437ToUnicode(b));
                 }
             }
         }
+        finishCluster();
     }
 
     Canvas canvas() const {
@@ -159,6 +174,8 @@ public:
 
     bool empty() const { return rows_.empty(); }
 
+    const ReadLoss& loss() const { return loss_; }
+
 private:
     // At or past the width the cursor waits to wrap; this takes it to the
     // start of the next row.
@@ -170,7 +187,61 @@ private:
         }
     }
 
-    void put(char32_t ch) {
+    // A UTF-8 code point, laid out by its width (PLAN §16, Reading).
+    void read(char32_t ch) {
+        int width = codePointWidth(ch);
+        if (width == 0 && cluster_.open()) {
+            // a zero-width code point joins the cluster before it
+            if (!cluster_.join(ch)) {
+                ++loss_.marksDropped;
+                if (!clusterCounted_) {
+                    clusterCounted_ = true;
+                    if (loss_.markClusters++ == 0)
+                        loss_.markX = clusterX_, loss_.markY = clusterY_;
+                }
+            }
+            return;
+        }
+        finishCluster();
+        if (width == 2 && width_ == 1) {
+            ch = U'\uFFFD';
+            width = 1;
+        }
+        if (width == 2) {
+            wrapIfPending();
+            if (col_ == width_ - 1) {
+                // a wide glyph on the last column wraps first, as xterm's
+                // does, leaving that column as it was
+                row_ = std::min(kMaxRows, row_ + 1);
+                col_ = 0;
+                glyphWrap_ = false;
+            }
+        }
+        const int columns = width == 2 ? 2 : 1;
+        clusterCell_ = &put(ch, columns);
+        clusterX_ = col_ - columns;
+        clusterY_ = row_;
+        clusterCounted_ = false;
+        cluster_.start(ch);
+    }
+
+    // The open cluster into its cell, or its base kept there, counted, when
+    // the pool is full.
+    void finishCluster() {
+        if (!cluster_.open())
+            return;
+        bool refused = false;
+        if (const std::optional<Glyph> g = cluster_.finish(&refused))
+            clusterCell_->ch = *g;
+        else if (refused)
+            ++loss_.poolRefused;
+    }
+
+    // Writes `ch` at the cursor, and the continuation after it when `columns`
+    // is 2 (the caller keeps it on the row), in the current colours, and
+    // returns the cell `ch` is in. Half of a pair written over leaves the
+    // other half a space.
+    Cell& put(char32_t ch, int columns = 1) {
         wrapIfPending();
         if (row_ >= kMaxRows)
             throw AnsiError("draws below row " + std::to_string(kMaxRows));
@@ -184,7 +255,15 @@ private:
             curRowIndex_ = row_;
         }
         height_ = std::max(height_, row_ + 1);
-        Cell& c = (*curRow_)[static_cast<size_t>(col_)];
+        std::vector<Cell>& row = *curRow_;
+        const auto x = static_cast<size_t>(col_);
+        if (utf8_) {
+            if (col_ > 0 && row[x].ch.isContinuation())
+                row[x - 1].ch = U' ';
+            if (col_ + columns < width_ && row[x + static_cast<size_t>(columns)].ch.isContinuation())
+                row[x + static_cast<size_t>(columns)].ch = U' ';
+        }
+        Cell& c = row[x];
         c.ch = ch;
         // While reversed, PabloDraw 24-bit colours are ignored and the colours
         // they replaced are swapped, as libansilove does (loaders/ansi.c:201-209).
@@ -207,8 +286,13 @@ private:
         c.bg = Color::indexed(static_cast<std::uint8_t>(bg));
         c.attrs = blink_ && !ice_ ? attr::Blink : 0;
         c.transparent = false;
-        ++col_;
+        if (columns == 2) {
+            row[x + 1] = c;
+            row[x + 1].ch = Glyph::continuation();
+        }
+        col_ += columns;
         glyphWrap_ = col_ == width_;
+        return c;
     }
 
     void sgr(const std::vector<int>& p) {
@@ -367,6 +451,13 @@ private:
     int xfg_ = -1, xbg_ = -1;  // palette indices set by 9x/10x, 38/48 or CSI t; -1 = none
     bool xfgPablo_ = false, xbgPablo_ = false;  // xfg_/xbg_ came from CSI t
     int savedRow_ = 0, savedCol_ = 0;
+    // UTF-8: the cluster in the last cell read, while a mark may join it,
+    // and that cell (a pair's lead)
+    ClusterReader cluster_;
+    Cell* clusterCell_ = nullptr;
+    int clusterX_ = 0, clusterY_ = 0;
+    bool clusterCounted_ = false;  // its dropped marks are counted in markClusters
+    ReadLoss loss_;
 };
 
 // A cell the trailing trim may drop, written with iCE colours `ice`. A
@@ -583,8 +674,9 @@ AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts) {
     }
     if (width < 1 || width > kMaxColumns)
         throw AnsiError("width " + std::to_string(width) + " is outside 1-" + std::to_string(kMaxColumns) + " columns");
-    Parser parser(width, doc.ice, doc.encoding == TextEncoding::Utf8);
+    Parser parser(width, doc.ice, doc.encoding == TextEncoding::Utf8, opts.poolCap);
     parser.run(split.content);
+    doc.readLoss = parser.loss();
     if (parser.empty())
         throw AnsiError("no ANSI content (nothing is drawn)");
     doc.canvas = parser.canvas();
@@ -629,6 +721,15 @@ bool utf8WideGlyph(Glyph g) {
     return glyphColumns(g) == 2 && std::all_of(cps.begin(), cps.end(), utf8Writable);
 }
 
+std::optional<Loss> utf8LoneLoss(Glyph g, bool afterCluster) {
+    if (glyphColumns(g) == 2)
+        return Loss::LoneWide;
+    const GlyphCodePoints cps = codePoints(g);
+    if (afterCluster && !cps.empty() && codePointWidth(cps[0]) == 0)
+        return Loss::LoneMark;
+    return std::nullopt;
+}
+
 AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
     AnsiOutput out;
     out.encoding = encoding;
@@ -645,6 +746,7 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
     out.paletteDropped = customPalette(doc);
     out.fontDropped = doc.font.has_value();
     s = "\x1b[0m";
+    bool wrapPending = false;  // the row before was written full width, with no line break
     for (int y = 0; y < cv.height(); ++y) {
         int end = cv.width();
         while (end > 0 && trimmable(cv, end - 1, y, ice, utf8))
@@ -695,6 +797,9 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
                 } else if (!writable) {
                     out.unwritable.push_back({x, y, c.ch, Loss::Control});
                     s += '?';
+                } else if (const std::optional<Loss> lone = utf8LoneLoss(c.ch, x > 0 || wrapPending)) {
+                    out.unwritable.push_back({x, y, c.ch, *lone});
+                    s += '?';
                 } else {
                     for (const char32_t cp : cps)
                         appendUtf8(s, cp ? cp : U' ');  // NUL draws as a blank
@@ -711,7 +816,8 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
         if (!end)
             s += ' ';
         s += "\x1b[0m";
-        if (end < cv.width())  // a full-width row wraps on its own
+        wrapPending = end == cv.width();
+        if (!wrapPending)  // a full-width row wraps on its own
             s += "\r\n";
     }
     // Only a byte order mark says UTF-8 for content with no sequence of

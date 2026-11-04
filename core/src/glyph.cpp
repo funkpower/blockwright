@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 namespace bw {
 
@@ -169,6 +170,29 @@ int glyphColumns(Glyph g) {
     if (const std::optional<char32_t> cp = g.codePoint())
         return codePointWidth(*cp);
     return clusterPool().width(g);
+}
+
+void ClusterReader::start(char32_t cp) {
+    size_ = 0;
+    if (cp >= 0x20 && clusterMayHold(cp))
+        cps_[size_++] = cp;
+}
+
+bool ClusterReader::join(char32_t cp) {
+    if (size_ >= kMaxClusterCodePoints)
+        return false;
+    cps_[static_cast<std::size_t>(size_++)] = cp;
+    return true;
+}
+
+std::optional<Glyph> ClusterReader::finish(bool* refused) {
+    const int n = std::exchange(size_, 0);
+    if (n < 2)
+        return std::nullopt;
+    std::optional<Glyph> g = clusterPool().intern(std::span(cps_.data(), static_cast<std::size_t>(n)), cap_);
+    if (!g && refused)
+        *refused = true;
+    return g;
 }
 
 std::ostream& operator<<(std::ostream& os, Glyph g) {

@@ -17,4 +17,9 @@ std::vector<std::string> unwritableWarnings(const bw::AnsiOutput& res);
 // UTF-8 .ans warnings are.
 std::vector<std::string> ircUnwritableWarnings(const std::vector<bw::Unwritable>& lost);
 
+// What a UTF-8 .ans read dropped (bw::ReadLoss): "3 combining code points
+// past 16 dropped at 4,0", "12 clusters read as their base: too many
+// distinct clusters".
+std::vector<std::string> readWarnings(const bw::ReadLoss& loss);
+
 } // namespace bwcli

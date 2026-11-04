@@ -1,6 +1,7 @@
 // Timings for the cell glyph (PLAN §16, Storage): the composite and
 // renderCanvas of a 400x2000 canvas, the parse of a large UTF-8 .ans with and
-// without combining marks, and the cluster pool's lookup. Hidden ([.perf]);
+// without combining marks and with and without pairs and clusters, and the
+// cluster pool's lookup. Hidden ([.perf]);
 // run in a RelWithDebInfo or Release tree with
 // `blockwright-render-tests "[perf]"` and compare against the same build of
 // the commit before.
@@ -106,6 +107,39 @@ TEST_CASE("timing: parsing a large UTF-8 .ans with and without combining marks",
         const double ms = msSince(t0) / kParses;
         std::printf("perf: parse UTF-8 .ans, 80x2400, %s: %.2f ms (%zu bytes)\n",
                     marks ? "with marks" : "without marks", ms, file.size());
+        CHECK(doc.canvas.height() >= 2400);
+    }
+}
+
+// A UTF-8 .ans of `rows` rows of 80 columns. With `clusters`, each 10
+// columns hold a pair (中), a narrow cluster (e U+0301), a wide one (👨
+// U+200D), another pair (👩), one of three code points (a U+0301 U+0302) and
+// two shades; without, 10 shades and letters. A colour change every 10.
+std::string clusterAns(int rows, bool clusters) {
+    std::string out;
+    for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < 80; x += 10) {
+            out += "\x1b[" + std::to_string(30 + (x / 10 + y) % 8) + ";" + std::to_string(40 + (x / 10 * 3 + y) % 8) + "m";
+            out += clusters ? "中e\u0301░👨\u200D👩a\u0301\u0302▓" : "░▒▓█eé─░▒▓";
+        }
+        out += "\x1b[0m\r\n";
+    }
+    return out;
+}
+
+TEST_CASE("timing: parsing a large UTF-8 .ans with and without pairs and clusters", "[.perf]") {
+    for (const bool clusters : {false, true}) {
+        const std::string file = clusterAns(2400, clusters);
+        ParseOptions opts;
+        opts.encoding = TextEncoding::Utf8;
+        AnsiDocument doc = parseAnsi(file, opts);
+        constexpr int kParses = 5;
+        const auto t0 = Clock::now();
+        for (int i = 0; i < kParses; ++i)
+            doc = parseAnsi(file, opts);
+        const double ms = msSince(t0) / kParses;
+        std::printf("perf: parse UTF-8 .ans, 80x2400, %s: %.2f ms (%zu bytes)\n",
+                    clusters ? "with pairs and clusters" : "without", ms, file.size());
         CHECK(doc.canvas.height() >= 2400);
     }
 }

@@ -150,4 +150,35 @@ ClusterPool& clusterPool();
 GlyphCodePoints codePoints(Glyph g);
 int glyphColumns(Glyph g);
 
+// The cluster a reader is building (PLAN §16, Reading): the code points of
+// the last cell it wrote, while a zero-width code point may still join them.
+// It goes into the pool once, when it is finished, so no prefix of it is
+// interned. The UTF-8 .ans reader and the IRC view's decodeLine share it;
+// each decides when its cursor has moved, which finishes it.
+class ClusterReader {
+public:
+    // `poolCap`: the cap intern is given (ClusterPool::kLossyCap, lowered by
+    // tests).
+    explicit ClusterReader(std::size_t poolCap = ClusterPool::kLossyCap) : cap_(poolCap) {}
+
+    // Whether a zero-width code point read now joins a cluster.
+    bool open() const { return size_ > 0; }
+    // Starts a cluster on `cp`, the cell just written, unless `cp` is a
+    // control (C0, NUL included, DEL, C1, U+2028, U+2029), which no mark
+    // joins. Finish the one before first.
+    void start(char32_t cp);
+    // Adds zero-width `cp` to the open cluster; false when it already holds
+    // kMaxClusterCodePoints, and `cp` is dropped.
+    bool join(char32_t cp);
+    // Ends the cluster. A cluster of two or more code points the pool takes
+    // is its glyph; one it refuses (past the cap) sets `*refused` and gives
+    // nothing, the cell keeping its base. A lone code point gives nothing.
+    std::optional<Glyph> finish(bool* refused);
+
+private:
+    std::size_t cap_;
+    std::array<char32_t, kMaxClusterCodePoints> cps_{};
+    int size_ = 0;
+};
+
 } // namespace bw

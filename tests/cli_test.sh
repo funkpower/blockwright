@@ -306,30 +306,48 @@ expect "lint: control bytes are no-cp437, with why" 4 "^0,0 no-cp437 - U\+25CB �
   "$cli" lint "$tmp/ctl.xb"
 expect "lint: each control byte is found" 4 '^3 findings \(3 no-cp437\)' -- "$cli" lint "$tmp/ctl.xb"
 # a C1 CSI (U+009B) and a right-to-left override (U+202E) from a UTF-8 file
-# are named by their code points, never echoed raw (#327 finding 3)
+# are named by their code points, never echoed raw (#327 finding 3); the
+# U+202E is zero-width, so it joins the J before it
 printf '\xe2\x96\x88\xc2\x9b2J\xe2\x80\xae!\r\n' > "$tmp/c1-bidi.ans"
 hexout() { "$@" 2>&1 | od -An -v -tx1 | tr -s ' \n' '  '; }
 for json in "" --json; do
   out=$("$cli" lint $json "$tmp/c1-bidi.ans" 2>&1); st=$?
   hex=$(hexout "$cli" lint $json "$tmp/c1-bidi.ans")
-  if [[ $st -eq 4 && $out == *"U+009B has no CP437 code"* && $out == *"U+202E has no CP437 code"* ]]; then ok "lint $json: U+009B and U+202E named"; else bad "lint $json of C1 and bidi controls (exit $st): $out"; fi
+  if [[ $st -eq 4 && $out == *"U+009B has no CP437 code"* && $out == *"U+004A U+202E J U+202E has no CP437 code"* && $out == *"holds the bidi control U+202E"* ]]; then ok "lint $json: U+009B and U+202E named"; else bad "lint $json of C1 and bidi controls (exit $st): $out"; fi
   if [[ $hex != *" c2 9b "* && $hex != *" e2 80 ae "* ]]; then ok "lint $json: no raw U+009B or U+202E"; else bad "lint $json echoes a raw control: $hex"; fi
 done
 expect "convert: a C1 control is named by its code point alone" 1 \
-  "warning: .*c1-bidi\.ans: 2 glyphs have no CP437 code and are written as '\?' \(first: U\+009B at column 2, row 1\)$" -- \
+  "warning: .*c1-bidi\.ans: 1 glyph has no CP437 code and is written as '\?' \(first: U\+009B at column 2, row 1\)$" -- \
   "$cli" convert "$tmp/c1-bidi.ans" "$tmp/c1-bidi-cp.ans"
 hex=$(hexout "$cli" convert "$tmp/c1-bidi.ans" "$tmp/c1-bidi-cp.ans")
 if [[ $hex != *" c2 9b "* && $hex != *" e2 80 ae "* ]]; then ok "convert: no raw U+009B or U+202E in the warning"; else bad "convert echoes a raw control: $hex"; fi
-# ❤️ (U+2764 U+FE0F), a lone U+0301, the Hangul filler U+3164 and the
+# ❤️ (U+2764 U+FE0F), U+0301, the Hangul filler U+3164 and the
 # noncharacter U+FFFE show nothing on their own: lint gives their
-# code alone (review of #332, N1 and N2)
+# code alone (review of #332, N1 and N2). The three zero-width ones
+# join the ❤ in one cluster cell; U+FFFE takes a cell of its own
 printf '\xe2\x96\x88\xe2\x9d\xa4\xef\xb8\x8f\xcc\x81\xe3\x85\xa4\xef\xbf\xbe\r\n' > "$tmp/invisible.ans"
 for json in "" --json; do
   out=$("$cli" lint $json "$tmp/invisible.ans" 2>&1); st=$?
   hex=$(hexout "$cli" lint $json "$tmp/invisible.ans")
-  if [[ $st -eq 4 && $out == *"U+2764 ❤ has no CP437 code"* && $out == *"U+FE0F has no CP437 code"* && $out == *"U+0301 has no CP437 code"* && $out == *"U+3164 has no CP437 code"* && $out == *"U+FFFE has no CP437 code"* ]]; then ok "lint $json: invisible glyphs named by code"; else bad "lint $json of invisible glyphs (exit $st): $out"; fi
+  if [[ $st -eq 4 && $out == *"U+2764 U+FE0F U+0301 U+3164 ❤ U+FE0F U+0301 U+3164 has no CP437 code"* && $out == *"U+FFFE has no CP437 code"* ]]; then ok "lint $json: invisible glyphs named by code"; else bad "lint $json of invisible glyphs (exit $st): $out"; fi
   if [[ $hex != *" ef b8 8f "* && $hex != *" cc 81 "* && $hex != *" e3 85 a4 "* && $hex != *" ef bf be "* ]]; then ok "lint $json: no raw invisible glyph"; else bad "lint $json echoes an invisible glyph: $hex"; fi
 done
+# #334 slice 6: a cluster keeps 16 code points; reading says what it dropped
+{ printf '   \xe2\x96\x88a'; for i in $(seq 18); do printf '\xcc\x81'; done; printf '\r\n'; } > "$tmp/marks.ans"
+expect "reading: marks past 16 are reported" 0 \
+  "^blockwright-cli: warning: .*marks\.ans: 3 combining code points past 16 dropped at 4,0$" -- "$cli" info "$tmp/marks.ans"
+# review of #348, M1 and M2: a lone mark after a cell (here after a cursor
+# move) and a lone wide cell are written as '?' to UTF-8, with a warning,
+# so the row keeps its columns
+printf '\xe2\x96\x88b\x1b[D\x1b[C\xcc\x81c\r\n' > "$tmp/lone-mark.ans"
+expect "convert --output-encoding utf-8 warns of a lone mark" 1 \
+  "warning: .*lone-mark\.ans: 1 cell holds a zero-width glyph a terminal would draw on the cell before it and is written as '\?', so the row keeps its columns \(first: U\+0301 at column 3, row 1\)$" -- \
+  "$cli" convert --output-encoding utf-8 "$tmp/lone-mark.ans" "$tmp/lone-mark-u8.ans"
+"$cli" convert --allow-lossy --output-encoding utf-8 "$tmp/lone-mark.ans" "$tmp/lone-mark-u8.ans" 2> /dev/null
+hex=$(od -An -v -tx1 "$tmp/lone-mark-u8.ans" | tr -s ' \n' '  ')
+if [[ $hex == *" e2 96 88 62 3f 63 "* ]]; then ok "the lone mark written as '?' keeps the c in column 4"; else bad "lone mark written as: $hex"; fi
+expect "shade --output-encoding utf-8 warns of a lone mark" 1 "lone-mark\.ans: 1 cell holds a zero-width glyph" -- \
+  "$cli" shade --ramp steel --output-encoding utf-8 "$tmp/lone-mark.ans" "$tmp/lone-mark-shade.ans"
 expect "a glyph with no CP437 code says so" 1 \
   "warning: .*unwritable\.bwp: 1 glyph has no CP437 code and is written as '\?' \(first: U\+2605 '★' at column 1, row 1\)$" -- \
   "$cli" convert "$data/projects/unwritable.bwp" "$tmp/unwritable.ans"

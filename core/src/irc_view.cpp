@@ -324,22 +324,19 @@ std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& op
     bool reverse = false;
     int col = 0;  // the cursor's column, opts.columns when a wrap is pending
     // The last cluster written, while a zero-width code point may still join
-    // it: its code points, and its cell (its lead, for a pair). It goes into
-    // the pool once, when it is done, so no prefix of it is interned.
-    std::vector<char32_t> cluster;
+    // it, and its cell (its lead, for a pair).
+    ClusterReader cluster(opts.poolCap);
     std::size_t at = 0;
     const auto finish = [&] {
-        if (cluster.size() > 1) {
-            if (const std::optional<Glyph> g = clusterPool().intern(cluster, opts.poolCap)) {
-                out[at].cell.ch = *g;
-            } else if (loss) {
-                // past the pool's cap: the cell keeps its base
-                ++loss->poolRefused;
-                if (loss->firstRefused < 0)
-                    loss->firstRefused = int(at);
-            }
+        bool refused = false;
+        if (const std::optional<Glyph> g = cluster.finish(&refused)) {
+            out[at].cell.ch = *g;
+        } else if (refused && loss) {
+            // past the pool's cap: the cell keeps its base
+            ++loss->poolRefused;
+            if (loss->firstRefused < 0)
+                loss->firstRefused = int(at);
         }
-        cluster.clear();
     };
     const auto put = [&](Glyph g, std::size_t end) {
         MircCell c{g, fg, bg};
@@ -385,11 +382,9 @@ std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& op
             const std::size_t start = i;
             char32_t ch = glyph(line, i);
             int width = codePointWidth(ch);
-            if (width == 0 && !cluster.empty()) {
+            if (width == 0 && cluster.open()) {
                 // a zero-width code point joins the cluster before it
-                if (cluster.size() < kMaxClusterCodePoints) {
-                    cluster.push_back(ch);
-                } else if (loss) {
+                if (!cluster.join(ch) && loss) {
                     ++loss->marksDropped;
                     if (loss->firstDropped < 0)
                         loss->firstDropped = int(at);
@@ -421,8 +416,7 @@ std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& op
             if (columns == 2)
                 put(Glyph::continuation(), i);
             // a control (or NUL) is never joined
-            if (takesMarks(ch))
-                cluster.push_back(ch);
+            cluster.start(ch);
             break;
         }
         }

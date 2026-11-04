@@ -42,7 +42,8 @@ auto is(Loss loss) {
 
 // A UTF-8 writer's losses, `holder` naming what it writes: a control
 // character, the same before a continuation (a lead, whose continuation is
-// written as a space), and a lead a terminal wouldn't draw over both cells.
+// written as a space), a lead a terminal wouldn't draw over both cells, and
+// (a UTF-8 .ans only) a lone wide cell and a lone mark (utf8LoneLoss).
 void utf8Warnings(Warnings& w, const std::string& holder) {
     w.add([](const Unwritable& u) { return u.loss == Loss::Control && !u.lead; },
           " cell holds a control character " + holder + " can't hold and is written as '?'",
@@ -57,6 +58,16 @@ void utf8Warnings(Warnings& w, const std::string& holder) {
           "written as '?' and a space",
           " cells hold glyphs a terminal doesn't draw two columns wide before a continuation and are "
           "written as '?' and a space");
+    w.add(is(Loss::LoneWide),
+          " cell holds a glyph two columns wide with no continuation after it and is written as '?', so the row "
+          "keeps its columns",
+          " cells hold glyphs two columns wide with no continuation after them and are written as '?', so the row "
+          "keeps its columns");
+    w.add(is(Loss::LoneMark),
+          " cell holds a zero-width glyph a terminal would draw on the cell before it and is written as '?', so the "
+          "row keeps its columns",
+          " cells hold zero-width glyphs a terminal would draw on the cell before them and are written as '?', so "
+          "the row keeps its columns");
 }
 
 } // namespace
@@ -83,6 +94,22 @@ std::vector<std::string> ircUnwritableWarnings(const std::vector<Unwritable>& lo
     Warnings w{lost, {}};
     utf8Warnings(w, "IRC text");
     return w.out;
+}
+
+std::vector<std::string> readWarnings(const bw::ReadLoss& loss) {
+    std::vector<std::string> out;
+    if (const int n = loss.marksDropped) {
+        const std::string at = std::to_string(loss.markX) + "," + std::to_string(loss.markY);
+        out.push_back(std::to_string(n) + (n == 1 ? " combining code point" : " combining code points") + " past " +
+                      std::to_string(bw::kMaxClusterCodePoints) + " dropped " +
+                      (loss.markClusters > 1
+                           ? "in " + std::to_string(loss.markClusters) + " clusters, the first at " + at
+                           : "at " + at));
+    }
+    if (const int n = loss.poolRefused)
+        out.push_back(std::to_string(n) + (n == 1 ? " cluster read as its base" : " clusters read as their base") +
+                      ": too many distinct clusters");
+    return out;
 }
 
 } // namespace bwcli

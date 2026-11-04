@@ -942,6 +942,15 @@ TEST_CASE("the loss warning names a wide glyph and a cluster's dropped marks") {
                          "U+009B at 2,0;\n1 cell holds a glyph that a terminal doesn't draw two columns wide before "
                          "a continuation, and will be written as '?' and a space: A at 0,0"));
 
+    // and a lone wide cell and a lone mark after a cell as '?', so the row
+    // keeps its columns (review of #348, M1 and M2)
+    out.unwritable = {{1, 0, Glyph(U'中'), Loss::LoneWide}, {3, 0, Glyph(U'\u0301'), Loss::LoneMark}};
+    CHECK(lossDescription(out) ==
+          QStringLiteral("1 cell holds a glyph two columns wide with no continuation after it, and will be written "
+                         "as '?' so the row keeps its columns: 中 at 1,0;\n1 cell holds a zero-width glyph that a "
+                         "terminal would draw on the cell before it, and will be written as '?' so the row keeps "
+                         "its columns: U+0301 at 3,0"));
+
     // the editor's own save: a pair a UTF-8 .ans keeps, and a narrow lead it doesn't
     AnsiDocument d;
     d.canvas = Canvas(6, 1);
@@ -959,17 +968,59 @@ TEST_CASE("the loss warning names a wide glyph and a cluster's dropped marks") {
     // Publish and Send write CP437 and count them
     CHECK(pipelineWarning(writeAnsi(d, TextEncoding::Cp437), PipelineAction::Publish) ==
           QStringLiteral("Before publishing:\n2 wide glyphs written as ?.\n\nPublish anyway?"));
+    // a lone wide cell a UTF-8 .ans writes as '?' too, so no hint to it
+    AnsiDocument lone;
+    lone.canvas = Canvas(4, 1);
+    lone.canvas.at(1, 0).ch = Glyph(U'中');
+    const QString loneCp = saveWarning(writeAnsi(lone, TextEncoding::Cp437));
+    CHECK(loneCp.contains(QStringLiteral("中 at 1,0")));
+    CHECK_FALSE(loneCp.contains(QStringLiteral("UTF-8")));
+}
+
+TEST_CASE("opening a UTF-8 .ans says what the read dropped") {
+    // #334 slice 6: marks past a cluster's 16 code points
+    ReadLoss loss;
+    CHECK(readLossDescription(loss).isEmpty());
+    loss.marksDropped = 3;
+    loss.markClusters = 1;
+    loss.markX = 4;
+    loss.markY = 0;
+    CHECK(readLossDescription(loss) == QStringLiteral("3 combining code points past 16 dropped at 4,0"));
+    loss.marksDropped = 1;
+    loss.markClusters = 2;
+    loss.poolRefused = 12;
+    CHECK(readLossDescription(loss) ==
+          QStringLiteral("1 combining code point past 16 dropped in 2 clusters, the first at 4,0; "
+                         "12 clusters read as their base: too many distinct clusters"));
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString path = tmp.filePath(QStringLiteral("marks.ans"));
+    {
+        QFile f(path);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        QByteArray bytes("   \xe2\x96\x88" "a");  // the █ says UTF-8
+        for (int i = 0; i < 18; ++i)
+            bytes += "\xcc\x81";  // U+0301
+        f.write(bytes + "\r\n");
+    }
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(path, &error));
+    CHECK(w.statusBar()->currentMessage() ==
+          QStringLiteral("Opened %1: 3 combining code points past 16 dropped at 4,0").arg(QDir::toNativeSeparators(path)));
 }
 
 TEST_CASE("the loss warning names an invisible glyph by its code point, never as nothing") {
-    // review of #332, N1: ❤️ in a UTF-8 document is U+2764 U+FE0F, two
-    // cells; Publish and Send write CP437 and name the second as U+FE0F
+    // review of #332, N1: ❤️ in a UTF-8 document is U+2764 U+FE0F, one
+    // cluster cell; Publish and Send write CP437 and name the U+FE0F by its
+    // code point
     const AnsiDocument d = parseAnsi("\xe2\x9d\xa4\xef\xb8\x8f\r\n", {.encoding = TextEncoding::Utf8});
-    REQUIRE(d.canvas.at(0, 0).ch == U'\u2764');
-    REQUIRE(d.canvas.at(1, 0).ch == char32_t(0xFE0F));
+    const GlyphCodePoints cps = codePoints(d.canvas.at(0, 0).ch);
+    REQUIRE(std::u32string(cps.begin(), cps.end()) == U"\u2764\uFE0F");
+    REQUIRE(d.canvas.at(1, 0).ch == Glyph(U' '));
     const AnsiOutput heart = writeAnsi(d, TextEncoding::Cp437);
-    CHECK(lossDescription(heart) == QStringLiteral("2 cells hold a glyph with no CP437 code and will be written as "
-                                                   "'?': ❤ at 0,0; U+FE0F at 1,0"));
+    CHECK(lossDescription(heart) == QStringLiteral("1 cell holds a glyph with no CP437 code and will be written as "
+                                                   "'?': ❤ U+FE0F at 0,0"));
     // a lone combining accent and a Hangul filler: a mark on the space
     // before it, and nothing
     AnsiOutput out;

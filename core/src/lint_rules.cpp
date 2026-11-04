@@ -5,6 +5,7 @@
 #include "blockwright/halfblock.h"
 #include "blockwright/irc.h"
 #include "blockwright/ramp.h"
+#include "blockwright/width.h"
 
 #include <algorithm>
 #include <array>
@@ -407,9 +408,102 @@ void noCp437(const Canvas& canvas, std::vector<Finding>& out) {
                 break;
             }
             case Loss::NoCode: message += " has no CP437 code: an .ans saves it as '?'"; break;
+            case Loss::LoneWide:
+            case Loss::LoneMark: break;  // UTF-8 only: cp437Glyph never gives them
             }
             out.push_back(make(Kind::NoCp437, x, y, x, y, message));
         }
+}
+
+// A cell's glyph as the loss warnings name it: its code points, then the
+// glyph unless it is one unprintable code point (a control, bidi or
+// invisible character), which is never echoed.
+std::string named(Glyph g) {
+    std::string s = codePointNames(g);
+    const std::optional<char32_t> cp = g.codePoint();
+    if (!cp || !unprintableCodePoint(*cp))
+        s += " " + quotedGlyph(g);
+    return s;
+}
+
+bool bidiControl(char32_t cp) {
+    return cp == 0x061C || cp == 0x200E || cp == 0x200F || (cp >= 0x202A && cp <= 0x202E) ||
+           (cp >= 0x2066 && cp <= 0x2069);
+}
+
+bool skinTone(char32_t cp) { return cp >= 0x1F3FB && cp <= 0x1F3FF; }
+bool regionalIndicator(char32_t cp) { return cp >= 0x1F1E6 && cp <= 0x1F1FF; }
+
+// width-varies, lone-mark and bidi-control (PLAN §16, Lint), cell by cell.
+void unicodeRules(const Canvas& canvas, std::vector<Finding>& out) {
+    const std::string floor = widthVariesFloor();
+    for (int y = 0; y < canvas.height(); ++y) {
+        int flagAt = -1;  // a regional indicator waiting for the one after it
+        for (int x = 0; x < canvas.width(); ++x) {
+            const Cell& c = canvas.at(x, y);
+            if (c.transparent || c.ch.isContinuation()) {
+                if (c.transparent)
+                    flagAt = -1;
+                continue;
+            }
+            const GlyphCodePoints cps = codePoints(c.ch);
+            const char32_t base = cps[0];
+            std::string reasons;
+            const auto reason = [&](const std::string& r) { reasons += (reasons.empty() ? "" : "; ") + r; };
+            for (const char32_t cp : cps) {
+                if (!widthVaries(cp))
+                    continue;
+                const std::string who = cps.size > 1 ? codePointNames(Glyph(cp)) : std::string("it");
+                reason(codePointWidth(cp) == 2
+                           ? who + " takes two columns here, but only since a Unicode version after " + floor +
+                                 ": a client on an older table may draw it in one"
+                           : who + " is zero-width here, but only since a Unicode version after " + floor +
+                                 ": a client on an older table may give it a column of its own");
+            }
+            if (std::find(cps.begin() + 1, cps.end(), U'\u200D') != cps.end())
+                reason("U+200D joins it to the glyph after it in a terminal that joins graphemes, which draws the "
+                       "two narrower than their cells");
+            if (codePointWidth(base) == 1 && std::find(cps.begin() + 1, cps.end(), U'\uFE0F') != cps.end())
+                reason("U+FE0F makes it two columns wide in a terminal that joins graphemes, one more than its cell");
+            if (std::any_of(cps.begin(), cps.end(), skinTone))
+                reason("a terminal that joins graphemes draws a skin tone modifier inside the emoji before it, "
+                       "narrower than their cells");
+            if (!reasons.empty())
+                out.push_back(make(Kind::WidthVaries, x, y, x, y, named(c.ch) + ": " + reasons));
+            if (regionalIndicator(base)) {
+                if (flagAt >= 0) {
+                    out.push_back(make(Kind::WidthVaries, flagAt, y, x, y,
+                                       named(canvas.at(flagAt, y).ch) + " and " + named(c.ch) +
+                                           " make a flag: a terminal that joins graphemes draws one glyph over "
+                                           "both cells, which other terminals and clients count differently"));
+                    flagAt = -1;
+                } else {
+                    flagAt = x;
+                }
+            } else {
+                flagAt = -1;
+            }
+            const bool lead = x + 1 < canvas.width() && canvas.at(x + 1, y).ch.isContinuation();
+            if (codePointWidth(base) == 0)
+                out.push_back(make(Kind::LoneMark, x, y, x, y,
+                                   named(c.ch) + " is zero-width in a cell of its own: a terminal draws it on the "
+                                                 "cell before it, or not at all"));
+            else if (glyphColumns(c.ch) == 2 && !lead)
+                out.push_back(make(Kind::LoneMark, x, y, x, y,
+                                   named(c.ch) + " is two columns wide with no continuation after it: a terminal "
+                                                 "draws it over the next cell too"));
+            for (const char32_t cp : cps)
+                if (bidiControl(cp)) {
+                    out.push_back(make(Kind::BidiControl, x, y, x, y,
+                                       (cps.size > 1 ? named(c.ch) + " holds the bidi control " : std::string()) +
+                                           codePointNames(Glyph(cp)) +
+                                           (cps.size > 1 ? "" : " is a bidi control") +
+                                           ": a UTF-8 .ans or IRC text writes it as it is, and a client that "
+                                           "applies bidi (HexChat, mIRC) reorders the rest of the line"));
+                    break;
+                }
+        }
+    }
 }
 
 Kind fromLadder(LadderFinding::Kind k) {
@@ -467,6 +561,9 @@ std::string_view kindName(Finding::Kind kind) {
     case Kind::TrailingBlack: return "trailing-black";
     case Kind::BlankEdgeRows: return "blank-edge-rows";
     case Kind::NoCp437: return "no-cp437";
+    case Kind::WidthVaries: return "width-varies";
+    case Kind::LoneMark: return "lone-mark";
+    case Kind::BidiControl: return "bidi-control";
     }
     return "?";
 }
@@ -518,6 +615,7 @@ std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options
             flats(canvas, options.ice, *b, std::max(1, options.minFlatCells), out);
     ircDrops(canvas, out);
     noCp437(canvas, out);
+    unicodeRules(canvas, out);
     std::stable_sort(out.begin(), out.end(), readingOrder);
     return out;
 }

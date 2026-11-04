@@ -34,6 +34,9 @@ struct Finding {
         TrailingBlack,   // black cells at a row's end beside rows that reach the edge: IRC drops them
         BlankEdgeRows,   // blank rows above or below the art: IRC trims them
         NoCp437,         // a glyph an .ans saves as '?': no CP437 code, or a control byte there
+        WidthVaries,     // a glyph whose columns a client or terminal may count differently
+        LoneMark,        // a zero-width code point in a cell of its own, or a lone wide cell
+        BidiControl,     // a bidi control, which reorders the rest of the line in some clients
     };
     Kind kind = Kind::Noise;
     std::string ramp;  // the ramp a ladder finding came from; empty for the rest
@@ -98,7 +101,18 @@ struct RuleOptions {
 //   (a margin needs a black-on-black █).
 // - NoCp437: a glyph an .ans saves as '?': one with no CP437 code, or one
 //   whose CP437 byte .ans reads as a control code (ansControlByte: ○ ◙ ♪ → ←),
-//   which XBIN and BIN keep.
+//   which XBIN and BIN keep. A cluster is named by its code points.
+// - WidthVaries (PLAN §16, Lint): a cell holding a code point of width 0
+//   or 2 whose width varies since widthVariesFloor() (widthVaries), a
+//   joiner (U+200D) in a cluster, VS16 (U+FE0F) on a narrow base, or a
+//   skin tone modifier; and two regional indicators in a row (a flag), from
+//   the first to the second. What a terminal that joins graphemes, or a
+//   client on an older width table, draws in other columns than the cells.
+//   One finding a cell, its reasons joined by "; ".
+// - LoneMark: a cell whose glyph (or cluster base) is zero-width, or a
+//   two-column glyph with no continuation right of it (a lone wide cell).
+// - BidiControl: a cell holding U+061C, U+200E-200F, U+202A-202E or
+//   U+2066-2069, alone or in a cluster.
 std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options = {});
 
 // Whether hand shading goes between the two colours, either way round,

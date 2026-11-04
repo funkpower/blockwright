@@ -7,12 +7,33 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
 #include <cstring>
 #include <initializer_list>
 
 using namespace bw;
 
 namespace {
+
+// The generated table itself, to check codePointWidth's fast path against.
+struct WidthRun {
+    std::uint32_t first, last;
+    int width;
+};
+
+struct VariesRun {
+    std::uint32_t first, last;
+};
+
+#include "../core/src/width.inc"
+
+// The width the table gives `cp` (1 outside every run).
+int tableWidth(char32_t cp) {
+    for (const WidthRun& r : kWidthRuns)
+        if (cp >= r.first && cp <= r.last)
+            return r.width;
+    return 1;
+}
 
 void checkAll(std::initializer_list<char32_t> cps, int want) {
     for (const char32_t cp : cps) {
@@ -32,6 +53,17 @@ TEST_CASE("every CP437 glyph is one column") {
         CHECK(codePointWidth(cp) == 1);
     }
     checkAll({U'░', U'▒', U'▓', U'█', U'▀', U'▄', U'▌', U'▐', U'■', U'·', U'☺', U'♥', U'⌂'}, 1);
+}
+
+TEST_CASE("box drawing, blocks and geometric shapes take the table's width") {
+    // codePointWidth answers U+2500-25FC without the search: each code point
+    // of U+2500-25FF as the table has it, U+25FD and U+25FE wide
+    for (char32_t cp = 0x2500; cp <= 0x25FF; ++cp) {
+        INFO("U+" << std::hex << std::uppercase << unsigned(cp));
+        CHECK(codePointWidth(cp) == tableWidth(cp));
+    }
+    checkAll({char32_t(0x2500), char32_t(0x2588), char32_t(0x25FC), char32_t(0x25FF)}, 1);
+    checkAll({char32_t(0x25FD), char32_t(0x25FE)}, 2);
 }
 
 TEST_CASE("East Asian wide and fullwidth code points and emoji are two columns") {

@@ -109,6 +109,7 @@ add_executable(blockwright-tests
   test_wide_cells.cpp
   test_wide_irc.cpp
   test_wide_writers.cpp
+  test_wide_read.cpp
   util.h
 )
 if(WIN32)

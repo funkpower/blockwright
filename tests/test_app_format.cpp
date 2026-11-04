@@ -1430,6 +1430,42 @@ TEST_CASE("UTF-8 saves glyphs a CP437 save loses, with no warning", "[app][utf8]
     CHECK(f.readAll().contains("\xE2\x98\x85\xE2\x96\x88"));
 }
 
+TEST_CASE("a UTF-8 save asks before writing a lone wide cell or a lone mark as '?'", "[app][utf8]") {
+    // review of #348, M1 and M2: the row keeps its columns, and the save says so
+    MainWindow w;
+    QString error;
+    QTemporaryDir tmp;
+    const QString path = tmp.filePath(QStringLiteral("lone.ans"));
+    {
+        QFile f(path);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        f.write("\xe2\x96\x88" "b\x1b[D\x1b[C\xcc\x81" "c\r\n");  // █ b, CUB, CUF, U+0301, c
+    }
+    REQUIRE(w.openFile(path, &error));
+    REQUIRE(w.document()->textEncoding() == TextEncoding::Utf8);
+    REQUIRE(w.document()->canvas().at(2, 0).ch == U'\u0301');
+    CellEdit e;
+    e.changes.push_back({5, 0, w.document()->canvas().at(5, 0), Cell{U'中'}});  // lone wide, as typing makes it
+    REQUIRE(w.document()->edit(e));
+    const AnsiOutput out = w.document()->encode();
+    REQUIRE(out.encoding == TextEncoding::Utf8);
+    REQUIRE(out.unwritable.size() == 2);
+    const QString warning = saveWarning(out);
+    CHECK(warning.contains(QStringLiteral("U+0301 at 2,0")));
+    CHECK(warning.contains(QStringLiteral("中 at 5,0")));
+    CHECK(warning.contains(QStringLiteral("so the row keeps its columns")));
+    CHECK_FALSE(w.saveFile(path, &error));
+    CHECK(error.contains(QStringLiteral("'?'")));
+    REQUIRE(w.saveFile(path, &error, true));
+    QFile f(path);
+    REQUIRE(f.open(QIODevice::ReadOnly));
+    const AnsiDocument back = parseAnsi(f.readAll().toStdString());
+    CHECK(back.canvas.height() == w.document()->canvas().height());
+    CHECK(back.canvas.at(2, 0).ch == U'?');
+    CHECK(back.canvas.at(3, 0).ch == U'c');
+    CHECK(back.canvas.at(5, 0).ch == U'?');
+}
+
 namespace {
 
 std::string fileBytes(const QString& path) {

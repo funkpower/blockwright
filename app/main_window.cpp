@@ -117,7 +117,8 @@ QString namedGlyphs(const std::vector<Unwritable>& cells, bool written = false) 
 // of `lost`. UTF-8 holds every glyph, so that is a control character (C0,
 // DEL, C1, U+2028 or U+2029) a cell holds, never a glyph CP437 lacks, the
 // same before a continuation, and a lead whose glyph a terminal wouldn't
-// draw over both cells; a lead's continuation is written as a space.
+// draw over both cells; a lead's continuation is written as a space. A
+// UTF-8 .ans also lists a lone wide cell and a lone mark (utf8LoneLoss).
 QStringList utf8LossParts(const std::vector<Unwritable>& lost, const QString& holder) {
     QStringList parts;
     // `one` and `many` name the holder %1, where they name it, and the
@@ -145,6 +146,18 @@ QStringList utf8LossParts(const std::vector<Unwritable>& lost, const QString& ho
         QObject::tr("%n cells hold glyphs that a terminal doesn't draw two columns wide before a continuation, "
                     "and will be written as '?' and a space: %1"),
         false);
+    add([](const Unwritable& u) { return u.loss == Loss::LoneWide; },
+        QObject::tr("%n cell holds a glyph two columns wide with no continuation after it, and will be written as "
+                    "'?' so the row keeps its columns: %1"),
+        QObject::tr("%n cells hold glyphs two columns wide with no continuation after them, and will be written as "
+                    "'?' so the row keeps its columns: %1"),
+        false);
+    add([](const Unwritable& u) { return u.loss == Loss::LoneMark; },
+        QObject::tr("%n cell holds a zero-width glyph that a terminal would draw on the cell before it, and will be "
+                    "written as '?' so the row keeps its columns: %1"),
+        QObject::tr("%n cells hold zero-width glyphs that a terminal would draw on the cell before them, and will "
+                    "be written as '?' so the row keeps its columns: %1"),
+        false);
     return parts;
 }
 
@@ -152,6 +165,28 @@ QStringList utf8LossParts(const std::vector<Unwritable>& lost, const QString& ho
 
 QString ircLossDescription(const std::vector<Unwritable>& lost) {
     return utf8LossParts(lost, QObject::tr("IRC text")).join(QStringLiteral(";\n"));
+}
+
+QString readLossDescription(const ReadLoss& loss) {
+    QStringList parts;
+    if (loss.marksDropped) {
+        const QString at = QStringLiteral("%1,%2").arg(loss.markX).arg(loss.markY);
+        parts << (loss.markClusters > 1
+                      ? plural(loss.marksDropped,
+                               QObject::tr("%n combining code point past %1 dropped in %2 clusters, the first at %3"),
+                               QObject::tr("%n combining code points past %1 dropped in %2 clusters, the first at %3"))
+                            .arg(kMaxClusterCodePoints)
+                            .arg(loss.markClusters)
+                            .arg(at)
+                      : plural(loss.marksDropped, QObject::tr("%n combining code point past %1 dropped at %2"),
+                               QObject::tr("%n combining code points past %1 dropped at %2"))
+                            .arg(kMaxClusterCodePoints)
+                            .arg(at));
+    }
+    if (loss.poolRefused)
+        parts << plural(loss.poolRefused, QObject::tr("%n cluster read as its base: too many distinct clusters"),
+                        QObject::tr("%n clusters read as their base: too many distinct clusters"));
+    return parts.join(QStringLiteral("; "));
 }
 
 QString lossDescription(const AnsiOutput& out, bool countWide) {
@@ -261,11 +296,13 @@ QString lossQuestion(const AnsiOutput& out, bool project, ArtFormat format) {
     QString hint;
     if (!project && format == ArtFormat::Ansi && out.encoding == TextEncoding::Cp437) {
         // what a UTF-8 .ans writes as it is: every code point it can hold,
-        // and a lead only when its glyph takes both cells
+        // a lead only when its glyph takes both cells, and no lone wide cell
+        // or lone mark (utf8LoneLoss; a mark in column 0 is taken as after a
+        // line break, which misses only the row after a full-width one)
         const auto kept = std::count_if(out.unwritable.begin(), out.unwritable.end(), [](const Unwritable& u) {
             const GlyphCodePoints cps = codePoints(u.ch);
             return std::all_of(cps.begin(), cps.end(), utf8Writable) &&
-                   (u.loss != Loss::Wide || glyphColumns(u.ch) == 2);
+                   (u.lead ? glyphColumns(u.ch) == 2 : !utf8LoneLoss(u.ch, u.x > 0));
         });
         // No hint at all when nothing lost would survive: a save that only
         // drops blink, a palette or a font gains nothing from UTF-8.
@@ -735,8 +772,11 @@ bool MainWindow::openFile(const QString& path, QString* error, std::optional<Tex
         *error = tr("the canvas is too large to display");
         return false;
     }
+    const QString dropped = readLossDescription(candidate.readLoss);
     doc_.replace(std::move(candidate), path);
     addRecentFile(path);
+    if (!dropped.isEmpty())
+        statusBar()->showMessage(tr("Opened %1: %2").arg(QDir::toNativeSeparators(path), dropped));
     return true;
 }
 

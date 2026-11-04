@@ -15,4 +15,14 @@ int codePointWidth(char32_t cp);
 // The Unicode version the table was generated from ("18.0.0").
 const char* widthUnicodeVersion();
 
+// Whether `cp` is zero-width or wide (codePointWidth 0 or 2) and a terminal
+// or IRC client on an older table may give it another width: it was
+// assigned after widthVariesFloor() (DerivedAge.txt), isn't assigned yet, or
+// that version's rules give it another width (lint's width-varies).
+bool widthVaries(char32_t cp);
+
+// The oldest Unicode version widthVaries allows for ("9.0.0", which made
+// emoji wide).
+const char* widthVariesFloor();
+
 } // namespace bw

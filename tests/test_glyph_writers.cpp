@@ -101,13 +101,15 @@ TEST_CASE("a lead is a lead whatever it holds, and a continuation whatever is be
     CHECK(listedColumns(got.bin) == std::vector{1});
 }
 
-TEST_CASE("a wide glyph alone in a cell is written as it was") {
-    // what every project saved before §16 holds: an ordinary one-cell glyph
+TEST_CASE("a wide glyph alone in a cell is written in one column") {
+    // what every project saved before §16 holds: an ordinary one-cell glyph,
+    // which a UTF-8 .ans writes as '?' (read back it would be a pair) and
+    // CP437 has no code for
     const AnsiDocument doc = row({cell(U'中', 7, 0), cell(U'A', 7, 0)});
     const AnsiOutput utf8 = writeAnsi(doc, TextEncoding::Utf8);
-    CHECK_THAT(utf8.bytes, Catch::Matchers::ContainsSubstring("\xE4\xB8\xAD"
-                                                              "A"));
-    CHECK(utf8.unwritable.empty());
+    CHECK_THAT(utf8.bytes, Catch::Matchers::ContainsSubstring("?A"));
+    CHECK(listedColumns(utf8) == std::vector{0});
+    CHECK(utf8.unwritable[0].loss == Loss::LoneWide);
     const AnsiOutput cp437 = writeAnsi(doc, TextEncoding::Cp437);
     CHECK(listedColumns(cp437) == std::vector{0});
     CHECK_FALSE(cp437.unwritable[0].lead);  // no continuation follows it

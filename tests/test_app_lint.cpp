@@ -1046,11 +1046,14 @@ TEST_CASE("the Lint dock names a control or bidi override from a file by its cod
     dock->refresh();
     REQUIRE(waitFor([&] { return !dock->stale(); }));
     QTreeWidgetItem* csi = rowAt(dock->list(), QStringLiteral("1,0"), QStringLiteral("no-cp437"));
-    QTreeWidgetItem* rlo = rowAt(dock->list(), QStringLiteral("4,0"), QStringLiteral("no-cp437"));
+    // U+202E is zero-width, so it joins the J before it (PLAN §16, Reading)
+    QTreeWidgetItem* rlo = rowAt(dock->list(), QStringLiteral("3,0"), QStringLiteral("bidi-control"));
     REQUIRE(csi);
     REQUIRE(rlo);
     CHECK(csi->text(3) == QStringLiteral("U+009B has no CP437 code: an .ans saves it as '?'"));
-    CHECK(rlo->text(3) == QStringLiteral("U+202E has no CP437 code: an .ans saves it as '?'"));
+    CHECK(rlo->text(3) == QStringLiteral("U+004A U+202E J U+202E holds the bidi control U+202E: a UTF-8 .ans or IRC "
+                                         "text writes it as it is, and a client that applies bidi (HexChat, mIRC) "
+                                         "reorders the rest of the line"));
     for (int i = 0; i < dock->list()->topLevelItemCount(); ++i) {
         const QString text = dock->list()->topLevelItem(i)->text(3);
         CHECK_FALSE(text.contains(QChar(0x9B)));
@@ -1059,7 +1062,8 @@ TEST_CASE("the Lint dock names a control or bidi override from a file by its cod
 }
 
 TEST_CASE("the Lint dock names an invisible glyph or a noncharacter by its code point") {
-    // review of #332, N1 and N2: a UTF-8 .ans with ❤️ (U+2764 U+FE0F) and U+FFFE
+    // review of #332, N1 and N2: a UTF-8 .ans with ❤️ (U+2764 U+FE0F, one
+    // cluster cell) and U+FFFE
     QTemporaryDir tmp;
     REQUIRE(tmp.isValid());
     const QString path = tmp.filePath(QStringLiteral("invisible.ans"));
@@ -1076,12 +1080,14 @@ TEST_CASE("the Lint dock names an invisible glyph or a noncharacter by its code 
     dock->refresh();
     REQUIRE(waitFor([&] { return !dock->stale(); }));
     QTreeWidgetItem* heart = rowAt(dock->list(), QStringLiteral("0,0"), QStringLiteral("no-cp437"));
-    QTreeWidgetItem* vs16 = rowAt(dock->list(), QStringLiteral("1,0"), QStringLiteral("no-cp437"));
-    QTreeWidgetItem* fffe = rowAt(dock->list(), QStringLiteral("2,0"), QStringLiteral("no-cp437"));
+    QTreeWidgetItem* fffe = rowAt(dock->list(), QStringLiteral("1,0"), QStringLiteral("no-cp437"));
     REQUIRE(heart);
-    REQUIRE(vs16);
     REQUIRE(fffe);
-    CHECK(heart->text(3) == QStringLiteral("U+2764 ❤ has no CP437 code: an .ans saves it as '?'"));
-    CHECK(vs16->text(3) == QStringLiteral("U+FE0F has no CP437 code: an .ans saves it as '?'"));
+    CHECK(heart->text(3) == QStringLiteral("U+2764 U+FE0F ❤ U+FE0F has no CP437 code: an .ans saves it as '?'"));
     CHECK(fffe->text(3) == QStringLiteral("U+FFFE has no CP437 code: an .ans saves it as '?'"));
+    for (int i = 0; i < dock->list()->topLevelItemCount(); ++i) {
+        const QString text = dock->list()->topLevelItem(i)->text(3);
+        CHECK_FALSE(text.contains(QChar(0xFE0F)));
+        CHECK_FALSE(text.contains(QChar(0xFFFE)));
+    }
 }

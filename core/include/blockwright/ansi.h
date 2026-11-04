@@ -26,6 +26,20 @@ struct FileFont {
 // UTF-8, the way a terminal (or a paste from one) writes it.
 enum class TextEncoding { Cp437, Utf8 };
 
+// What a UTF-8 .ans read couldn't keep (PLAN §16, Reading). Every other
+// read keeps everything.
+struct ReadLoss {
+    // Zero-width code points dropped past a cluster's kMaxClusterCodePoints,
+    // the clusters they would have joined, and the first one's cell.
+    int marksDropped = 0;
+    int markClusters = 0;
+    int markX = -1, markY = -1;
+    // Clusters read as their base, their marks dropped: the pool was full.
+    int poolRefused = 0;
+
+    bool lossy() const { return marksDropped || poolRefused; }
+};
+
 struct AnsiDocument {
     Canvas canvas{Canvas::kDefaultWidth, 1};
     // What parseAnsi read the text as. writeAnsi doesn't follow it: its
@@ -39,6 +53,8 @@ struct AnsiDocument {
     // the other writers report them lost (AnsiOutput, customPalette).
     std::optional<std::array<Rgb, 16>> palette;
     std::optional<FileFont> font;
+    // What parseAnsi dropped reading it.
+    ReadLoss readLoss;
 };
 
 // Whether `doc` has a palette other than kPalette, which only XBIN can write.
@@ -53,6 +69,9 @@ struct ParseOptions {
     int defaultWidth = 80;  // when there is no SAUCE width
     // The text's character set; nothing: what detectEncoding finds.
     std::optional<TextEncoding> encoding;
+    // The cap on the cluster pool a UTF-8 read interns with
+    // (ClusterPool::intern), lowered by tests.
+    std::size_t poolCap = ClusterPool::kLossyCap;
 };
 
 // The character set of an .ans file's text, `content` being the bytes
@@ -77,9 +96,20 @@ inline constexpr int kMaxRows = 5000;
 // finds it (AnsiDocument::encoding says which). As UTF-8, a byte under 0x80
 // is read as it is in CP437 (escapes and controls act, 0x01-0x1F and 0x7F
 // other than those are the CP437 pictographs, NUL a space); each well-formed
-// sequence of two to four bytes is one cell holding its code point; any
-// other byte from 0x80 up is one cell holding U+FFFD; and a byte order mark
-// at the start of the content is skipped. SAUCE's text fields are CP437
+// sequence of two to four bytes is a code point, and any other byte from
+// 0x80 up is U+FFFD; and a byte order mark at the start of the content is
+// skipped. Code points are laid out by their width (codePointWidth, PLAN §16,
+// Reading): a narrow one, or a control, takes a cell; a wide one a pair, its
+// lead and the continuation, wrapping first when the cursor is on the last
+// column (as xterm does) and read as U+FFFD on a one-column canvas; and a
+// zero-width one joins the cluster in the last cell written (a pair's lead)
+// unless the cursor has moved since (a line break, CR, TAB, any escape but
+// SGR and CSI t), nothing has been written yet, or that cell holds a C1
+// control, U+2028 or U+2029: then it takes a cell of its own. A cluster keeps at most
+// kMaxClusterCodePoints; the code points past that are dropped, and a
+// cluster the pool refuses (past opts.poolCap) is read as its base. Both
+// are counted in readLoss. A glyph written over half of a pair leaves the
+// other half a space. SAUCE's text fields are CP437
 // either way, as the SAUCE spec has them. Throws AnsiError on input it
 // can't make a canvas from.
 AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts = {});
@@ -91,6 +121,9 @@ enum class Loss : std::uint8_t {
     Wide,          // a lead, written '?' and its continuation a space
     Control,       // a byte .ans reads as a control code (CP437), or a code
                    // point utf8Writable refuses (UTF-8), written '?'
+    // UTF-8 only (utf8LoneLoss), each written '?' so the row keeps its columns:
+    LoneWide,  // a two-column glyph with no continuation after it
+    LoneMark,  // a zero-width base the reader would join to the cluster before it
 };
 
 struct Unwritable {
@@ -114,8 +147,9 @@ struct AnsiOutput {
     // a lead, a glyph or cluster base with no CP437 code, a cluster written
     // as its base, and (.ans only) a glyph or base whose byte .ans reads as
     // a control code. UTF-8: a cell holding a code point utf8Writable
-    // refuses, and a lead whose glyph doesn't take two columns
-    // (glyphColumns), written '?' and its continuation a space.
+    // refuses, a lead whose glyph doesn't take two columns (glyphColumns),
+    // written '?' and its continuation a space, and a lone wide cell or a
+    // lone mark (utf8LoneLoss), written '?'.
     std::vector<Unwritable> unwritable;
     // Blinking cells written without their blink: the file is written with
     // iCE colours on, where blink means a bright background. Only cells whose
@@ -159,7 +193,9 @@ struct AnsiOutput {
 // anything else utf8Writable takes as its code point's sequence (so every
 // CP437 glyph, ○ ◙ ♪ → ← included, and any code point CP437 lacks), and
 // the rest (C0 and C1 controls, DEL, surrogates) as '?', listed in
-// `unwritable`. The content starts with a byte
+// `unwritable`. So are a lone wide cell and a lone mark the reader would
+// join to the cell before it (utf8LoneLoss), so the row keeps its columns
+// when it is read back or drawn by a terminal. The content starts with a byte
 // order mark only when it would not be read back as UTF-8 without one
 // (detectEncoding: no sequence of three bytes or more), so parseAnsi of the
 // bytes always gives the cells back, read as UTF-8. SAUCE's text fields stay
@@ -180,6 +216,18 @@ bool utf8Writable(char32_t ch);
 // width table makes it two columns and utf8Writable takes every code point
 // of it. The table changes only what is written, never the columns.
 bool utf8WideGlyph(Glyph g);
+
+// What a UTF-8 .ans (writeAnsi) loses of a cell holding `g` that isn't a
+// lead and whose code points utf8Writable all takes (PLAN §16, Writing):
+// Loss::LoneWide when the table makes it two columns, which a terminal draws
+// over the next cell too and the reader lays out as a pair, and
+// Loss::LoneMark when its base is zero-width and `afterCluster` (something
+// was written before it on the row, or the row before it was written full
+// width, with its wrap pending), as the reader joins it to the cluster
+// before it and a terminal draws it there. Either way the cell is written
+// '?'. A lone mark at the start of the file or of a row after a line break
+// is written as it is: it reads back as a cell of its own.
+std::optional<Loss> utf8LoneLoss(Glyph g, bool afterCluster);
 
 // The iCE colours writeAnsi, writeXbin and writeBin write `doc` with: its
 // own, or on when a cell has a bright background. With them on, the cells

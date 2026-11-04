@@ -455,9 +455,11 @@ TEST_CASE("no-cp437 names an invisible glyph or a noncharacter by its code point
 }
 
 TEST_CASE("lint text and JSON name a noncharacter from a UTF-8 file by its code point alone", "[lint][rules]") {
-    // review of #332, N2: a UTF-8 .ans of █, U+FFFE, U+FE0F and U+3164
-    const AnsiDocument doc =
-        parseAnsi("\xe2\x96\x88\xef\xbf\xbe\xef\xb8\x8f\xe3\x85\xa4\r\n", {.encoding = TextEncoding::Utf8});
+    // review of #332, N2: a UTF-8 .ans of █, U+FFFE, U+FE0F and U+3164, a
+    // save cursor (ESC[s) between them so the two zero-width ones don't join
+    // the glyph before them and each keeps a cell of its own
+    const AnsiDocument doc = parseAnsi("\xe2\x96\x88\xef\xbf\xbe\x1b[s\xef\xb8\x8f\x1b[s\xe3\x85\xa4\r\n",
+                                       {.encoding = TextEncoding::Utf8});
     const lint::LintReport r = bwcli::lintDocument(doc, {});
     const std::string text = bwcli::lintText(r);
     CHECK(text.find("1,0 no-cp437 - U+FFFE has no CP437 code: an .ans saves it as '?'\n") != std::string::npos);
@@ -508,9 +510,9 @@ TEST_CASE("a glyph whose CP437 byte .ans reads as a control code is found, with 
 
 TEST_CASE("kinds have distinct names and only the ladder's name a ramp", "[lint][rules]") {
     std::set<std::string_view> names;
-    for (int k = int(Kind::NonNeighbourShade); k <= int(Kind::NoCp437); ++k)
+    for (int k = int(Kind::NonNeighbourShade); k <= int(Kind::BidiControl); ++k)
         names.insert(lint::kindName(Kind(k)));
-    CHECK(names.size() == 15);
+    CHECK(names.size() == 18);
     CHECK(lint::kindName(Kind::RungSkip) == "rung-skip");
     CHECK(lint::ladderKind(Kind::OneGlyph));
     CHECK_FALSE(lint::ladderKind(Kind::Noise));

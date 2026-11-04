@@ -100,7 +100,10 @@ TEST_CASE("every CP437 glyph's UTF-8 form reads as that one glyph", "[utf8]") {
 TEST_CASE("UTF-8 text keeps every code point, not only CP437's", "[utf8]") {
     const AnsiDocument d = parseAnsi("\xE2\x96\x88\xCE\xBB\xE2\x82\xAC\xF0\x9F\x98\x80!");
     REQUIRE(d.encoding == TextEncoding::Utf8);
-    CHECK(row(d, 0, 5) == U"█λ€\U0001F600!");
+    CHECK(row(d, 0, 4) == U"█λ€\U0001F600");
+    // a wide glyph reads as a lead and its continuation (PLAN §16, Reading)
+    CHECK(d.canvas.at(4, 0).ch.isContinuation());
+    CHECK(d.canvas.at(5, 0).ch == Glyph(U'!'));
 }
 
 TEST_CASE("invalid UTF-8", "[utf8]") {
@@ -150,8 +153,11 @@ TEST_CASE("a byte order mark", "[utf8]") {
         CHECK(row(d, 0, 4) == U"∩╗┐A");
     }
     SECTION("only at the start") {
+        // zero-width there, so it joins the A before it
         const AnsiDocument d = parseAs("A\xEF\xBB\xBF", TextEncoding::Utf8);
-        CHECK(row(d, 0, 2) == U"A﻿");
+        const GlyphCodePoints cps = codePoints(d.canvas.at(0, 0).ch);
+        CHECK(std::u32string(cps.begin(), cps.end()) == U"A\uFEFF");
+        CHECK(d.canvas.at(1, 0).ch == Glyph(U' '));
     }
 }
 
@@ -367,8 +373,16 @@ TEST_CASE("a byte order mark only when the bytes wouldn't say UTF-8", "[utf8]") 
 TEST_CASE("UTF-8 keeps glyphs CP437 has no code for", "[utf8]") {
     const std::u32string glyphs = U"★λ€\U0001F600☺";
     const AnsiOutput out = writeAnsi(oneRow(glyphs), TextEncoding::Utf8);
-    CHECK(out.unwritable.empty());
-    CHECK(row(parseAnsi(out.bytes), 0, 5) == glyphs);
+    // the lone wide 😀 (no continuation after it) is written '?' and listed,
+    // since read back it would be a pair and push the ☺ a column right
+    // (PLAN §16, Writing); the other four are kept
+    REQUIRE(out.unwritable.size() == 1);
+    CHECK(out.unwritable[0].x == 3);
+    CHECK(out.unwritable[0].loss == Loss::LoneWide);
+    const AnsiDocument back = parseAnsi(out.bytes);
+    CHECK(back.canvas.width() == oneRow(glyphs).canvas.width());
+    CHECK(back.canvas.height() == 1);
+    CHECK(row(back, 0, 5) == U"★λ€?☺");
     // CP437 loses the four with no code
     CHECK(writeAnsi(oneRow(glyphs)).unwritable.size() == 4);
 }
