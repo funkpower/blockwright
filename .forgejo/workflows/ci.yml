@@ -74,6 +74,7 @@ jobs:
           SHA: ${{ forgejo.sha }}
         run: |
           set -eu
+          : "${HOME:?}"
           cd "$HOME"
           git init -q src
           cd src
@@ -86,19 +87,27 @@ jobs:
           git log -1 --format='%h %s'
 
       - name: Configure
-        run: cmake -S "$HOME/src" -B "$HOME/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        run: |
+          : "${HOME:?}"
+          cmake -S "$HOME/src" -B "$HOME/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
       - name: Build
-        run: cmake --build "$HOME/build" -j8
+        run: |
+          : "${HOME:?}"
+          cmake --build "$HOME/build" -j8
 
       # The install_notices tests each configure and build Blockwright again
       # at -j8. Run beside each other and the rest of the suite, they need more
       # than the job's 12 GB, so they run after it, one at a time.
       - name: Test
-        run: ctest --test-dir "$HOME/build" -j8 --output-on-failure --timeout 300 --no-tests=error -E '^install_notices'
+        run: |
+          : "${HOME:?}"
+          ctest --test-dir "$HOME/build" -j8 --output-on-failure --timeout 300 --no-tests=error -E '^install_notices'
 
       - name: Test (nested builds)
-        run: ctest --test-dir "$HOME/build" -j1 --output-on-failure --timeout 300 --no-tests=error -R '^install_notices'
+        run: |
+          : "${HOME:?}"
+          ctest --test-dir "$HOME/build" -j1 --output-on-failure --timeout 300 --no-tests=error -R '^install_notices'
 
   freebsd:
     name: freebsd (14, packaged Qt 6)
@@ -118,6 +127,7 @@ jobs:
           SHA: ${{ forgejo.sha }}
         run: |
           set -eu
+          : "${WS:?}"
           rm -rf "$WS/src" "$WS/build"
           mkdir -p "$WS"
           cd "$WS"
@@ -133,19 +143,29 @@ jobs:
 
       # Catch2 comes from the system's package, as the port has it.
       - name: Configure
-        run: cmake -S "$WS/src" -B "$WS/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBW_FETCH_CATCH2=OFF
+        run: |
+          : "${WS:?}"
+          cmake -S "$WS/src" -B "$WS/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBW_FETCH_CATCH2=OFF
 
       - name: Build
-        run: cmake --build "$WS/build" -j4
+        run: |
+          : "${WS:?}"
+          cmake --build "$WS/build" -j4
 
       # Four processors and 6 GB: the suite runs two at a time, and the nested
       # builds one at a time after it.
       - name: Test
-        run: ctest --test-dir "$WS/build" -j2 --output-on-failure --timeout 900 --no-tests=error -E '^install_notices'
+        run: |
+          : "${WS:?}"
+          ctest --test-dir "$WS/build" -j2 --output-on-failure --timeout 900 --no-tests=error -E '^install_notices'
 
       - name: Test (nested builds)
-        run: ctest --test-dir "$WS/build" -j1 --output-on-failure --timeout 900 --no-tests=error -R '^install_notices'
+        run: |
+          : "${WS:?}"
+          ctest --test-dir "$WS/build" -j1 --output-on-failure --timeout 900 --no-tests=error -R '^install_notices'
 
       - name: Clean up
         if: always()
-        run: rm -rf "$WS/src" "$WS/build"
+        run: |
+          : "${WS:?}"
+          rm -rf "$WS/src" "$WS/build"
