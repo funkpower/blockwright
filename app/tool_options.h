@@ -45,6 +45,7 @@ QIcon rampIcon(const Ramp& ramp);
 
 class CanvasView;
 class CloneTool;
+class FrameTool;
 class SprayTool;
 class TextOptions;
 class TransformOptions;
@@ -83,6 +84,7 @@ public:
         Spray = 1 << 20,         // the glyph spray's kind, density and seed
         Text = 1 << 21,          // the text tool's face, case, spacing, alignment, wrap and colour
         Transform = 1 << 22,     // the Move/Transform tool's place, size and scale of a reference layer
+        FrameStyle = 1 << 23,    // the Frame tool's style and colours
     };
     Q_DECLARE_FLAGS(Options, Option)
 
@@ -140,6 +142,8 @@ public:
     QComboBox* gradientBandingBox() const { return gradientBanding_; }
     QCheckBox* cloneAlignedBox() const { return cloneAligned_; }
     QComboBox* sprayKindBox() const { return sprayKind_; }
+    QComboBox* frameStyleBox() const { return frameStyle_; }
+    QComboBox* frameColoursBox() const { return frameColours_; }
     QSpinBox* sprayDensityBox() const { return sprayDensity_; }
     QSpinBox* spraySeedBox() const { return spraySeed_; }
     QCheckBox* rimLintBox() const { return rimLint_; }
@@ -177,6 +181,7 @@ private:
     GradientTool* gradientTool_;
     CloneTool* cloneTool_;
     SprayTool* sprayTool_;
+    FrameTool* frameTool_;
     RimLightTool* rimTool_;
     QFormLayout* form_layout_;
     QBoxLayout* titleBlock_;
@@ -225,6 +230,8 @@ private:
     QComboBox* gradientBanding_;
     QCheckBox* cloneAligned_;
     QComboBox* sprayKind_;
+    QComboBox* frameStyle_;
+    QComboBox* frameColours_;
     QSpinBox* sprayDensity_;
     QSpinBox* spraySeed_;
     QCheckBox* rimLint_;

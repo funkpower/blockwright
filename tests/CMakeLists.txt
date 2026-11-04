@@ -64,6 +64,7 @@ add_executable(blockwright-tests
   test_draw.cpp
   test_edit.cpp
   test_face.cpp
+  test_frame.cpp
   test_tdf.cpp
   test_font_store.cpp
   test_form_brush.cpp
@@ -531,6 +532,7 @@ add_executable(blockwright-app-tests
   test_app_layer_move.cpp
   test_app_cli_shade.cpp
   test_app_draw.cpp
+  test_app_frame.cpp
   test_app_format.cpp
   test_app_irc.cpp
   test_app_irc_target.cpp

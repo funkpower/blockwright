@@ -6,6 +6,7 @@
 #include "document.h"
 #include "draw_tools.h"
 #include "flow_row.h"
+#include "frame_tool.h"
 #include "help_text.h"
 #include "select_tool.h"
 #include "settings.h"
@@ -16,7 +17,9 @@
 #include "transform_options.h"
 #include "whats_this.h"
 
+#include "blockwright/frame.h"
 #include "blockwright/palette.h"
+#include "blockwright/render.h"
 
 #include <QAction>
 #include <QBoxLayout>
@@ -90,6 +93,7 @@ ToolOptions::Options ToolOptions::optionsFor(const QString& toolId, bool* known)
         {QStringLiteral("line"), draw},
         {QStringLiteral("rectangle"), draw | O::Filled},
         {QStringLiteral("ellipse"), draw | O::Filled},
+        {QStringLiteral("frame"), draw | O::FrameStyle},
         {QStringLiteral("fill"), draw | O::SampleMerged},
         // The gradient fills every cell it may paint, so mirror mode has
         // nothing to add (GradientTool).
@@ -132,6 +136,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
       gradientTool_(qobject_cast<GradientTool*>(tools->find(QStringLiteral("gradient")))),
       cloneTool_(qobject_cast<CloneTool*>(tools->find(QStringLiteral("clone")))),
       sprayTool_(qobject_cast<SprayTool*>(tools->find(QStringLiteral("spray")))),
+      frameTool_(qobject_cast<FrameTool*>(tools->find(QStringLiteral("frame")))),
       rimTool_(qobject_cast<RimLightTool*>(tools->find(QStringLiteral("rimLight")))) {
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("toolOptionsTitle"));
@@ -335,6 +340,27 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     cloneAligned_->setToolTip(tr("Clone stamp: keep the distance to the source from stroke to stroke; off, "
                                  "each stroke copies from the source again (Ctrl+click sets it)"));
 
+    frameStyle_ = new QComboBox;
+    frameStyle_->setObjectName(QStringLiteral("frameStyle"));
+    frameStyle_->setIconSize(QSize(40, 48));
+    // the names are long; the list opens wide enough to show them
+    frameStyle_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    frameStyle_->setMinimumContentsLength(8);
+    for (const FrameStyle& st : bundledFrameStyles()) {
+        // the style drawn small, its open middle shown as the canvas shows it
+        const auto thumb = drawFrame(st, std::max(5, st.minimumWidth()), std::max(3, st.minimumHeight()));
+        const QIcon icon = thumb ? QIcon(QPixmap::fromImage(renderCanvas(*thumb, 8))) : QIcon();
+        frameStyle_->addItem(icon, QString::fromStdString(st.name), QString::fromStdString(st.id));
+    }
+    frameStyle_->setToolTip(tr("Frame: the border drawn to fit the drag"));
+    frameColours_ = new QComboBox;
+    frameColours_->setObjectName(QStringLiteral("frameColours"));
+    frameColours_->addItem(tr("Style colours"), false);
+    frameColours_->addItem(tr("Pen colours"), true);
+    frameColours_->setItemData(0, tr("The frame in the colours it was drawn in"), Qt::ToolTipRole);
+    frameColours_->setItemData(1, tr("The frame recoloured to the pen's foreground and background; line, half-block and shaded cells keep the background under them"), Qt::ToolTipRole);
+    frameColours_->setToolTip(tr("Frame: its own colours, or the pen's"));
+
     sprayKind_ = new QComboBox;
     sprayKind_->setObjectName(QStringLiteral("sprayKind"));
     for (const SprayKind k : {SprayKind::Stars, SprayKind::Haze, SprayKind::Smoke})
@@ -431,6 +457,8 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     form->addRow(tr("Texture"), textureKind_);
     pairRow(tr("Density"), textureDensity_, {{tr("Seed"), textureSeed_}});
     form->addRow(cloneAligned_);
+    form->addRow(tr("Frame"), frameStyle_);
+    form->addRow(tr("Colours"), frameColours_);
     form->addRow(tr("Spray"), sprayKind_);
     pairRow(tr("Density"), sprayDensity_, {{tr("Seed"), spraySeed_}});
     if (text_)
@@ -484,6 +512,17 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
         connect(spraySeed_, &QSpinBox::valueChanged, this, [this](int v) {
             if (!syncing_)
                 sprayTool_->setSeed(v);
+        });
+    }
+    if (frameTool_) {
+        connect(frameTool_, &Tool::changed, this, &ToolOptions::sync);
+        connect(frameStyle_, &QComboBox::currentIndexChanged, this, [this] {
+            if (!syncing_)
+                frameTool_->setStyle(frameStyle_->currentData().toString());
+        });
+        connect(frameColours_, &QComboBox::currentIndexChanged, this, [this] {
+            if (!syncing_)
+                frameTool_->setPenColours(frameColours_->currentData().toBool());
         });
     }
     if (rimTool_) {
@@ -579,6 +618,8 @@ void ToolOptions::showFor(Tool* tool) {
     show(textureDensity_, o.testFlag(O::Texture));
     show(textureSeed_, o.testFlag(O::Texture));
     show(cloneAligned_, o.testFlag(O::CloneAligned));
+    show(frameStyle_, o.testFlag(O::FrameStyle));
+    show(frameColours_, o.testFlag(O::FrameStyle));
     show(sprayKind_, o.testFlag(O::Spray));
     show(sprayDensity_, o.testFlag(O::Spray));
     show(spraySeed_, o.testFlag(O::Spray));
@@ -681,6 +722,10 @@ void ToolOptions::sync() {
         sprayKind_->setCurrentIndex(sprayKind_->findData(int(o.kind)));
         sprayDensity_->setValue(o.density);
         spraySeed_->setValue(o.seed);
+    }
+    if (frameTool_) {
+        frameStyle_->setCurrentIndex(frameStyle_->findData(frameTool_->styleId()));
+        frameColours_->setCurrentIndex(frameColours_->findData(frameTool_->penColours()));
     }
     if (rimTool_)
         rimLint_->setChecked(rimTool_->keepLint());

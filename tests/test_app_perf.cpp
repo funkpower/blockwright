@@ -6,9 +6,11 @@
 
 #include "canvas_view.h"
 #include "document.h"
+#include "frame_tool.h"
 #include "main_window.h"
 #include "tool.h"
 
+#include "blockwright/layer.h"
 #include "blockwright/selection.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -114,5 +116,50 @@ TEST_CASE("timing: fill and a filled rectangle on 400x2000", "[.perf]") {
         std::printf("perf: gradient in a 20x10 selection, press + first move %.3f s, 200 moves %.3f s (%.2f ms a "
                     "move), with release %.3f s\n",
                     first, moves, moves * 1000 / 200, s);
+    }
+}
+
+// A 400x200 single frame dragged through five moves onto the clear middle
+// of three cells layers, the bottom one painted, the top one with a patch:
+// each clear cell the frame keeps the background of reads what shows below
+// it (Document::shownBelow). On 80x50, where most of the frame is off the
+// canvas, and on 400x2000.
+TEST_CASE("timing: a 400x200 frame over three layers", "[.perf]") {
+    for (const auto& [cw, ch] : {std::pair{80, 50}, std::pair{400, 2000}}) {
+        MainWindow w;
+        AnsiDocument a;
+        a.canvas = Canvas(cw, ch);
+        for (int y = 0; y < ch; ++y)
+            for (int x = 0; x < cw; ++x)
+                a.canvas.at(x, y) = Cell{U' ', Color::indexed(7), Color::indexed(4)};
+        w.document()->replace(std::move(a), QString());
+        w.resize(1200, 900);
+        w.show();
+        QApplication::processEvents();
+        Document* doc = w.document();
+        const LayerId mid = doc->addLayer(LayerKind::Cells);
+        doc->addLayer(LayerKind::Cells);
+        CellEdit patch;
+        for (int y = 0; y < 40; ++y)
+            for (int x = 0; x < 20; ++x)
+                patch.changes.push_back({x, y, doc->layerCanvas().at(x, y), Cell{U' ', Color::indexed(7), Color::indexed(1)}});
+        REQUIRE(doc->edit(patch));
+        REQUIRE(doc->setActiveLayer(mid));
+        w.findChild<QAction*>(QStringLiteral("frameTool"))->trigger();
+        auto* t = qobject_cast<FrameTool*>(w.tools()->active());
+        REQUIRE(t);
+        t->setStyle(QStringLiteral("single"));
+        CanvasView* v = w.canvasView();
+        const int steps = doc->undoStack()->count();
+        const auto t0 = std::chrono::steady_clock::now();
+        mouse(v, QEvent::MouseButtonPress, 0, 0);
+        for (int i = 1; i <= 5; ++i)
+            mouse(v, QEvent::MouseMove, 80 * i - 1, 2 * (40 * i - 1));
+        const double moves = since(t0);
+        mouse(v, QEvent::MouseButtonRelease, 399, 2 * 199);
+        const double s = since(t0);
+        CHECK(doc->undoStack()->count() == steps + 1);
+        CHECK(doc->layerCanvas().at(0, 0).bg == Color::indexed(4));
+        std::printf("perf: frame 400x200 on %dx%d, 3 layers: 5 moves %.3f s, total %.3f s\n", cw, ch, moves, s);
     }
 }

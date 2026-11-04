@@ -228,6 +228,17 @@ void drawOutline(QPainter& p, const Tones& t) {
     p.fillPath(shape, t.towardPaper(0.5));
 }
 
+void drawFrameTool(QPainter& p, const Tones& t) {
+    // a double-line border with solid corner blocks
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(t.ink, 2, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+    p.drawRect(QRectF(3, 4, 18, 16));
+    p.setPen(QPen(t.towardPaper(0.35), 1.5, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+    p.drawRect(QRectF(6.5, 7.5, 11, 9));
+    for (const QPointF& c : {QPointF(3, 4), QPointF(21, 4), QPointF(3, 20), QPointF(21, 20)})
+        p.fillRect(QRectF(c.x() - 2, c.y() - 2, 4, 4), t.ink);
+}
+
 void drawRimLight(QPainter& p, const Tones& t) {
     // a form whose edge towards the light is lit
     const QPointF c(13.5, 13.5);
@@ -282,7 +293,7 @@ const QHash<QString, Draw>& drawn() {
         {QStringLiteral("soft"), drawSoft},           {QStringLiteral("despeckle"), drawDespeckle},
         {QStringLiteral("smudge"), drawSmudge},       {QStringLiteral("outline"), drawOutline},
         {QStringLiteral("rimLight"), drawRimLight},   {QStringLiteral("texture"), drawTexture},
-        {QStringLiteral("gradient"), drawGradient},
+        {QStringLiteral("gradient"), drawGradient},  {QStringLiteral("frame"), drawFrameTool},
     };
     return d;
 }

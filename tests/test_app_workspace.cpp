@@ -412,10 +412,12 @@ TEST_CASE("the toolbox has a button for every tool, with the Tools menu's action
     QToolButton* shapes = box->buttonFor(QStringLiteral("line"));
     CHECK(shapes == box->buttonFor(QStringLiteral("rectangle")));
     CHECK(shapes == box->buttonFor(QStringLiteral("ellipse")));
+    CHECK(shapes == box->buttonFor(QStringLiteral("frame")));
     REQUIRE(shapes->menu());
     CHECK(shapes->menu()->actions() == QList<QAction*>{toolAction(w, QStringLiteral("line")),
                                                        toolAction(w, QStringLiteral("rectangle")),
-                                                       toolAction(w, QStringLiteral("ellipse"))});
+                                                       toolAction(w, QStringLiteral("ellipse")),
+                                                       toolAction(w, QStringLiteral("frame"))});
     CHECK(shapes->popupMode() == QToolButton::MenuButtonPopup);
     CHECK(toolAction(w, QStringLiteral("ellipse"))->toolTip().contains(QStringLiteral("right-click")));
     CHECK_FALSE(toolAction(w, QStringLiteral("eyedropper"))->toolTip().contains(QStringLiteral("right-click")));

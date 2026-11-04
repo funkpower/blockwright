@@ -6,6 +6,7 @@
 #include "action_list.h"
 #include "canvas_view.h"
 #include "draw_tools.h"
+#include "frame_tool.h"
 #include "help_text.h"
 #include "whats_this.h"
 #include "reference_scale.h"
@@ -121,6 +122,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     tools_->add(new ShapeTool(ShapeTool::Shape::Line));
     tools_->add(fillable.emplace_back(new ShapeTool(ShapeTool::Shape::Rectangle)));
     tools_->add(fillable.emplace_back(new ShapeTool(ShapeTool::Shape::Ellipse)));
+    tools_->add(new FrameTool);
     tools_->add(new FillTool);
     tools_->add(new GradientTool);
     tools_->add(new EyedropperTool);
@@ -263,6 +265,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         {QStringLiteral("line"), QKeySequence(Qt::CTRL | Qt::Key_L)},
         {QStringLiteral("rectangle"), QKeySequence(Qt::CTRL | Qt::Key_U)},
         {QStringLiteral("ellipse"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O)},
+        {QStringLiteral("frame"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I)},
         {QStringLiteral("fill"), QKeySequence(Qt::CTRL | Qt::Key_J)},
         {QStringLiteral("gradient"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G)},
         {QStringLiteral("eyedropper"), QKeySequence(Qt::CTRL | Qt::Key_I)},

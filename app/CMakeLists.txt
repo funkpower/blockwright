@@ -19,6 +19,8 @@ add_library(blockwright_app STATIC
   font_scanner.cpp
   flow_row.cpp
   flow_row.h
+  frame_tool.cpp
+  frame_tool.h
   font_scanner.h
   generator_form.cpp
   generator_form.h
@@ -107,6 +109,7 @@ qt_add_resources(blockwright_app "help" PREFIX "/help" BASE help FILES
   help/tools/ellipse.md
   help/tools/eyedropper.md
   help/tools/fill.md
+  help/tools/frame.md
   help/tools/form.md
   help/tools/glyph.md
   help/tools/gradient.md

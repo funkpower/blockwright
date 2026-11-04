@@ -3,6 +3,7 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "draw_tools.h"
+#include "frame_tool.h"
 #include "select_tool.h"
 #include "settings.h"
 #include "text_tool.h"
@@ -248,6 +249,22 @@ const std::vector<Script>& scripts() {
                      [](Document&, CanvasView& v) { setPen(v, Yellow); }, {drag({1, 1}, {14, 10})}});
         s.push_back({QStringLiteral("ellipse"), [] { return new ShapeTool(ShapeTool::Shape::Ellipse); }, {},
                      [](Document&, CanvasView& v) { setPen(v, LightMagenta); }, {drag({1, 0}, {14, 11})}});
+
+        // A double-line frame over a field of dots, whose open middle it leaves.
+        s.push_back({QStringLiteral("frame"),
+                     [] {
+                         auto* t = new FrameTool;
+                         t->setStyle(QStringLiteral("double"));
+                         t->setPenColours(true);
+                         return t;
+                     },
+                     [](Canvas& c) {
+                         for (int y = 0; y < c.height(); ++y)
+                             for (int x = 0; x < c.width(); ++x)
+                                 if ((x + y) % 2)
+                                     c.at(x, y) = Cell{U'·', Color::indexed(DarkGrey), Color::indexed(Black)};
+                     },
+                     [](Document&, CanvasView& v) { setPen(v, Yellow); }, {cellDrag(1, 0, 14, 5)}});
 
         // An outline, flooded from inside.
         s.push_back({QStringLiteral("fill"), [] { return new FillTool; },

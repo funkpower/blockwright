@@ -125,7 +125,8 @@ const QList<QStringList>& Toolbox::groups() {
         // clone stamp and the glyph spray.
         {QStringLiteral("outline"), QStringLiteral("rimLight"), QStringLiteral("texture"),
          QStringLiteral("clone"), QStringLiteral("spray")},
-        {QStringLiteral("line"), QStringLiteral("rectangle"), QStringLiteral("ellipse")},
+        {QStringLiteral("line"), QStringLiteral("rectangle"), QStringLiteral("ellipse"),
+         QStringLiteral("frame")},
         // The fills: the bucket and the ramp gradient.
         {QStringLiteral("fill"), QStringLiteral("gradient")},
         {QStringLiteral("eyedropper")},
