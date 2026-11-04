@@ -16,6 +16,11 @@
 // codes around it, so the encoder searches all of them for the line with the
 // fewest bytes. Colour numbers are written with one digit wherever the next
 // character can't be read as part of the number.
+//
+// A pair's lead is written as its cluster's UTF-8 bytes in its own colours,
+// one way only, and its continuation as nothing: the continuation costs no
+// byte and takes the line through unchanged, so no code goes between them.
+// A cluster of one cell is likewise written whole, one way.
 
 namespace bw::irc {
 
@@ -31,12 +36,28 @@ struct State {
     auto operator<=>(const State&) const = default;
 };
 
+std::uint32_t utf8Length(char32_t ch) { return ch < 0x80 ? 1 : ch < 0x800 ? 2 : ch < 0x10000 ? 3 : 4; }
+
 // What a way of drawing a cell needs: a colour, or kDefault for "anything".
+// `first` is the glyph's first code point, which decides how a colour number
+// before it is written; `bytes` its UTF-8 length, every code point of a
+// cluster summed.
 struct Way {
-    char32_t glyph;
+    Glyph glyph;
+    char32_t first;
+    std::uint32_t bytes;
     int fg;
     int bg;
 };
+
+Way way(Glyph g, int fg, int bg) {
+    std::uint32_t bytes = 0;
+    for (const char32_t cp : codePoints(g))
+        bytes += utf8Length(cp);
+    return {g, *codePoints(g).begin(), bytes, fg, bg};
+}
+
+Way way(char32_t ch, int fg, int bg) { return {ch, ch, utf8Length(ch), fg, bg}; }
 
 struct Ways {
     std::array<Way, 2> way;
@@ -45,16 +66,22 @@ struct Ways {
 
 bool blank(char32_t ch) { return ch == U' ' || ch == U' '; }
 
-// The ways to draw a cell: at most two.
-Ways ways(const MircCell& cell, bool swapShades) {
-    const int f = cell.fg, b = cell.bg;
-    const auto solid = [](int c) { return Ways{{{{U' ', kDefault, c}, {U'█', c, kDefault}}}, 2}; };
-    if (blank(cell.ch))
+// The ways to draw a cell: at most two. A lead (`lead`: a continuation
+// follows) and a cluster have one, their own glyph in their own colours.
+Ways ways(const MircCell& mc, bool swapShades, bool lead) {
+    const int f = mc.fg, b = mc.bg;
+    if (lead || !mc.ch.codePoint()) {
+        const Way w = way(mc.ch, f, b);
+        return Ways{{{w, w}}, 1};
+    }
+    const char32_t ch = *mc.ch.codePoint();
+    const auto solid = [](int c) { return Ways{{{way(U' ', kDefault, c), way(U'█', c, kDefault)}}, 2}; };
+    if (blank(ch))
         return solid(b);
-    if (cell.ch == U'█' || f == b)
+    if (ch == U'█' || f == b)
         return solid(f);
-    const auto pair = [&](char32_t a, char32_t z) { return Ways{{{{a, f, b}, {z, b, f}}}, 2}; };
-    switch (cell.ch) {
+    const auto pair = [&](char32_t a, char32_t z) { return Ways{{{way(a, f, b), way(z, b, f)}}, 2}; };
+    switch (ch) {
     case U'▀': return pair(U'▀', U'▄');
     case U'▄': return pair(U'▄', U'▀');
     case U'▌': return pair(U'▌', U'▐');
@@ -64,8 +91,8 @@ Ways ways(const MircCell& cell, bool swapShades) {
     case U'▒': if (swapShades) return pair(U'▒', U'▒'); break;
     default: break;
     }
-    const Way way{cell.ch, f, b};
-    return Ways{{{way, way}}, 1};
+    const Way w = way(ch, f, b);
+    return Ways{{{w, w}}, 1};
 }
 
 bool asciiDigit(char32_t ch) { return ch >= U'0' && ch <= U'9'; }
@@ -109,7 +136,7 @@ struct Move {
 // The ways to get from `cur` to colours that draw `way`: (codes, new state).
 void moves(State cur, const Way& way, std::vector<Move>& out) {
     out.clear();
-    const char32_t g = way.glyph;
+    const char32_t g = way.first;
     const bool bgChange = way.bg != kDefault && cur.bg != way.bg;
     const bool fgChange = way.fg != kDefault && cur.fg != way.fg;
     if (bgChange) {
@@ -172,10 +199,9 @@ struct Entry {
     // 100 foregrounds (the 99 and the default) x 100 backgrounds x 2.
     std::uint32_t prev = 0;
     Code code;
-    char32_t glyph = U' ';
+    // the continuation for a pair's second half, which writes nothing
+    Glyph glyph = U' ';
 };
-
-std::uint32_t utf8Length(char32_t ch) { return ch < 0x80 ? 1 : ch < 0x800 ? 2 : ch < 0x10000 ? 3 : 4; }
 
 bool scalar(char32_t ch) { return ch <= 0x10ffff && (ch < 0xd800 || ch > 0xdfff); }
 
@@ -204,9 +230,17 @@ std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades, bool
 bool detail::withinSlack(Cost cost, Cost best) { return cost - best <= kSlack; }
 
 std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swapShades, Cost start, bool solidEnd) {
-    for (const MircCell& c : cells)
-        if (!scalar(c.ch) || c.fg >= kMircRgb.size() || c.bg >= kMircRgb.size())
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        const MircCell& c = cells[i];
+        bool valid = c.fg < kMircRgb.size() && c.bg < kMircRgb.size();
+        if (c.ch.isContinuation())
+            valid = valid && i > 0 && !cells[i - 1].ch.isContinuation();
+        else
+            for (const char32_t cp : codePoints(c.ch))
+                valid = valid && scalar(cp);
+        if (!valid)
             throw IrcError("the IRC encoder was given an invalid cell");
+    }
     if (cells.empty())
         return {};
     // One layer of reachable (state, cost) entries per cell, each pointing
@@ -219,21 +253,31 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
     std::vector<Entry> next;
     std::vector<Move> mv;
     mv.reserve(3);
-    for (const MircCell& cell : cells) {
-        Ways options = ways(cell, swapShades);
+    for (std::size_t c = 0; c < cells.size(); ++c) {
+        const MircCell& cell = cells[c];
+        next.clear();
+        if (cell.ch.isContinuation()) {
+            // the lead drew both columns: every entry goes on as it is
+            for (std::size_t i = 0; i < cur.size(); ++i)
+                next.push_back({cur[i].key, cur[i].cost, static_cast<std::uint32_t>(i), Code{}, cell.ch});
+            std::swap(cur, next);
+            layers.push_back(cur);
+            continue;
+        }
+        const bool lead = c + 1 < cells.size() && cells[c + 1].ch.isContinuation();
+        Ways options = ways(cell, swapShades, lead);
         // solid() lists the space first
-        if (solidEnd && &cell == &cells.back() && options.n == 2 && options.way[0].glyph == U' ') {
+        if (solidEnd && c + 1 == cells.size() && options.n == 2 && options.way[0].glyph == U' ') {
             options.way[0] = options.way[1];
             options.n = 1;
         }
-        next.clear();
         for (size_t i = 0; i < cur.size(); ++i) {
             const Entry& e = cur[i];
             for (int w = 0; w < options.n; ++w) {
                 const Way& way = options.way[w];
                 moves(e.key.state, way, mv);
                 for (const Move& m : mv) {
-                    const detail::Cost cost = e.cost + m.code.len + utf8Length(way.glyph);
+                    const detail::Cost cost = e.cost + m.code.len + way.bytes;
                     const Key key{m.state, way.glyph == U' '};
                     const Entry entry{key, cost, static_cast<std::uint32_t>(i), m.code, way.glyph};
                     const auto x = std::find_if(next.begin(), next.end(), [&](const Entry& n) { return n.key == key; });
@@ -266,7 +310,9 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
     line.reserve(static_cast<size_t>(finish(*last) - start));
     for (const Entry* e : path) {
         line.append(e->code.buf.data(), e->code.len);
-        appendUtf8(line, e->glyph);
+        if (!e->glyph.isContinuation())
+            for (const char32_t cp : codePoints(e->glyph))
+                appendUtf8(line, cp);
     }
     if (last->key.space)
         line += kEndGuard;

@@ -113,7 +113,46 @@ QString namedGlyphs(const std::vector<Unwritable>& cells, bool written = false) 
     return text;
 }
 
+// What a UTF-8 writer (`holder`: "a UTF-8 .ans", "IRC text") can't write
+// of `lost`. UTF-8 holds every glyph, so that is a control character (C0,
+// DEL, C1, U+2028 or U+2029) a cell holds, never a glyph CP437 lacks, the
+// same before a continuation, and a lead whose glyph a terminal wouldn't
+// draw over both cells; a lead's continuation is written as a space.
+QStringList utf8LossParts(const std::vector<Unwritable>& lost, const QString& holder) {
+    QStringList parts;
+    // `one` and `many` name the holder %1, where they name it, and the
+    // glyphs after it
+    const auto add = [&](auto which, const QString& one, const QString& many, bool named) {
+        std::vector<Unwritable> cells;
+        std::copy_if(lost.begin(), lost.end(), std::back_inserter(cells), which);
+        if (cells.empty())
+            return;
+        const QString text = plural(int(cells.size()), one, many);
+        parts << (named ? text.arg(holder) : text).arg(namedGlyphs(cells));
+    };
+    add([](const Unwritable& u) { return u.loss == Loss::Control && !u.lead; },
+        QObject::tr("%n cell holds a control character %1 can't hold and will be written as '?': %2"),
+        QObject::tr("%n cells hold control characters %1 can't hold and will be written as '?': %2"), true);
+    add([](const Unwritable& u) { return u.loss == Loss::Control && u.lead; },
+        QObject::tr("%n cell holds a control character %1 can't hold before a continuation, and will be written "
+                    "as '?' and a space: %2"),
+        QObject::tr("%n cells hold control characters %1 can't hold before a continuation, and will be written "
+                    "as '?' and a space: %2"),
+        true);
+    add([](const Unwritable& u) { return u.loss == Loss::Wide; },
+        QObject::tr("%n cell holds a glyph that a terminal doesn't draw two columns wide before a continuation, "
+                    "and will be written as '?' and a space: %1"),
+        QObject::tr("%n cells hold glyphs that a terminal doesn't draw two columns wide before a continuation, "
+                    "and will be written as '?' and a space: %1"),
+        false);
+    return parts;
+}
+
 } // namespace
+
+QString ircLossDescription(const std::vector<Unwritable>& lost) {
+    return utf8LossParts(lost, QObject::tr("IRC text")).join(QStringLiteral(";\n"));
+}
 
 QString lossDescription(const AnsiOutput& out, bool countWide) {
     QStringList parts;
@@ -125,25 +164,7 @@ QString lossDescription(const AnsiOutput& out, bool countWide) {
     const bool utf8 = out.encoding == TextEncoding::Utf8;
     const int controls = utf8 ? 0 : ansControlCount(out.unwritable);
     if (utf8) {
-        // UTF-8 holds every glyph, so what it can't write is a control
-        // character (C0, DEL or C1) a cell holds, never a glyph CP437 lacks,
-        // and a lead whose glyph a terminal wouldn't draw over both cells.
-        if (const std::vector<Unwritable> c = lost([](const Unwritable& u) { return u.loss != Loss::Wide; });
-            !c.empty())
-            parts << plural(int(c.size()),
-                            QObject::tr("%n cell holds a control character a UTF-8 .ans can't hold and will be "
-                                        "written as '?': %1"),
-                            QObject::tr("%n cells hold control characters a UTF-8 .ans can't hold and will be "
-                                        "written as '?': %1"))
-                         .arg(namedGlyphs(c));
-        if (const std::vector<Unwritable> w = lost([](const Unwritable& u) { return u.loss == Loss::Wide; });
-            !w.empty())
-            parts << plural(int(w.size()),
-                            QObject::tr("%n cell holds a glyph that a terminal doesn't draw two columns wide before "
-                                        "a continuation, and will be written as '?' and a space: %1"),
-                            QObject::tr("%n cells hold glyphs that a terminal doesn't draw two columns wide before "
-                                        "a continuation, and will be written as '?' and a space: %1"))
-                         .arg(namedGlyphs(w));
+        parts << utf8LossParts(out.unwritable, QObject::tr("a UTF-8 .ans"));
     } else {
         if (const std::vector<Unwritable> c = lost([](const Unwritable& u) { return u.loss == Loss::NoCode; });
             !c.empty())

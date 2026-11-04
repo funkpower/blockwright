@@ -72,7 +72,7 @@ std::vector<std::uint8_t> pairsOf(const Canvas& cv, int width, bool ice, AnsiOut
             const Glyph right = x + 1 < cv.width() && !cv.at(x, y).transparent ? cv.at(x + 1, y).ch : Glyph();
             const Cp437Glyph g = cp437Glyph(c.ch, right, false);
             if (g.loss)
-                out.unwritable.push_back({x, y, c.ch, *g.loss, g.written()});
+                out.unwritable.push_back({x, y, c.ch, *g.loss, g.written(), right.isContinuation()});
             pairs.push_back(g.byte);
             pairs.push_back(static_cast<std::uint8_t>(fg | ((bg & 7) << 4) | (high ? 0x80 : 0)));
         }

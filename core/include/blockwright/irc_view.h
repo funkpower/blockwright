@@ -29,12 +29,40 @@ struct ShownCell {
     std::size_t end = 0;
 };
 
+struct DecodeOptions {
+    // The client's columns, where a wide cluster on the last one wraps
+    // first; 0 for a row that doesn't wrap.
+    int columns = 0;
+    // The cluster pool's cap on this path (ClusterPool::kLossyCap), which
+    // tests set low.
+    std::size_t poolCap = ClusterPool::kLossyCap;
+};
+
+// What decodeLine couldn't keep of a line's clusters.
+struct DecodeLoss {
+    int marksDropped = 0;   // zero-width code points past kMaxClusterCodePoints
+    int firstDropped = -1;  // the cell the first of them was to join
+    int poolRefused = 0;    // clusters kept as their base: the pool was full
+    int firstRefused = -1;  // the cell of the first of them
+};
+
 // A line of IRC text read as a client reads it: ^C sets colours (up to two
 // digits each, 99 the client's own; ^C alone resets them), ^O resets every
 // attribute, ^V swaps foreground and background, and ^B ^] ^_ ^^ ^Q are
-// read and leave the colours alone. Other bytes are UTF-8 glyphs, one cell
-// each; a byte that isn't valid UTF-8 is one U+FFFD cell.
-std::vector<ShownCell> decodeLine(std::string_view line);
+// read and leave the colours alone. Other bytes are UTF-8, laid out by the
+// width table as a terminal lays them out (PLAN §16, Reading): a wide code
+// point is a pair (a lead and a continuation in the same colours), wrapping
+// first when it would start on the last of `opts.columns` (the column left
+// is a blank in the client's colours) and U+FFFD on a one-column row; a
+// zero-width code point joins the cluster before it unless it starts the
+// line or follows a control (NUL and the rest of C0, DEL, C1, U+2028,
+// U+2029), and takes a cell of
+// its own then. A cluster keeps 16 code points and drops the rest, and one
+// the pool can't take keeps its base; both are counted in `loss`. A byte
+// that isn't valid UTF-8 is one U+FFFD cell. Each cell's `end` is the byte
+// offset after its whole cluster, the same for a lead and its continuation.
+std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& opts = {},
+                                  DecodeLoss* loss = nullptr);
 
 // One canvas row in the view.
 struct ViewRow {
@@ -54,14 +82,16 @@ struct View {
 };
 
 // The view of `canvas` sent as IRC text with `opts`, each line cut to fit
-// `budget` bytes as the sender cuts it (ascii.fit): a line that fits is sent
-// whole; a longer one the sender encodes again in its own way (two-digit
-// colour codes, a space or a full block for a solid cell, whichever is
-// shorter), sends that whole if it fits, and otherwise keeps the cells
-// whose glyph ends within budget - 1 bytes of it, the last byte for the
-// reset after them, and loses the rest. The view is the canvas's size, the
-// cells shown as the export draws them, the lost ones blank in the client's
-// background.
+// `budget` bytes as the ascii.py sender script 1.32.2 or later cuts it
+// (ascii.fit): a line with a colour code inside a cluster the sender first
+// encodes again (encode_irc); a line that then fits is sent whole; a longer
+// one the sender encodes again in its own way (two-digit colour codes, a
+// space or a full block for a solid one-code-point cell, whichever is
+// shorter, a cluster's glyph never traded and no code inside it), sends that
+// whole if it fits, and otherwise keeps the clusters whose glyph ends within
+// budget - 1 bytes of it, the last byte for the reset after them, and loses
+// the rest. The view is the canvas's size, the cells shown as the export
+// draws them, the lost ones blank in the client's background.
 View ircView(const Canvas& canvas, std::size_t budget = kEfnetWeechatBudget, const EncodeOptions& opts = {});
 
 } // namespace bw::irc

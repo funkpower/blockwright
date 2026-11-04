@@ -98,6 +98,10 @@ struct Unwritable {
     Glyph ch;  // never the continuation, which is written as a space
     Loss loss = Loss::NoCode;
     char32_t written = U'?';  // what the cell was written as
+    // A lead written '?', its continuation as a space, by any writer
+    // (Loss::Wide; in UTF-8 and IRC text Loss::Control when a code point is a
+    // control, which CP437, XBIN and BIN don't tell apart)
+    bool lead = false;
 };
 
 
@@ -168,8 +172,14 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding = TextEncodi
 // nothing past U+10FFFF). The other C0 controls and DEL are not: a byte
 // under 0x80 reads back as its CP437 glyph or acts as a control. Nor are
 // the C1 controls U+0080-U+009F, which a terminal that honours them acts on
-// (C2 9B is a CSI), as the IRC export writes them as '?'.
+// (C2 9B is a CSI), as the IRC export writes them as '?', nor U+2028 and
+// U+2029, which the width table refuses as it does C1 (PLAN §16, Width).
 bool utf8Writable(char32_t ch);
+
+// Whether a UTF-8 .ans (and IRC text) writes a lead holding `g` whole: the
+// width table makes it two columns and utf8Writable takes every code point
+// of it. The table changes only what is written, never the columns.
+bool utf8WideGlyph(Glyph g);
 
 // The iCE colours writeAnsi, writeXbin and writeBin write `doc` with: its
 // own, or on when a cell has a bright background. With them on, the cells

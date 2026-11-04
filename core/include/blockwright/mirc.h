@@ -2,6 +2,8 @@
 // mIRC's 99 colours and the row encoder: cells in mIRC colours to the
 // shortest IRC line that draws them. irc.h maps canvas cells onto it.
 
+#include "blockwright/glyph.h"
+
 #include <array>
 #include <cstdint>
 #include <span>
@@ -36,9 +38,11 @@ inline constexpr std::array<std::uint32_t, 99> kMircRgb = {
 // lower number). Bits above the 24 are ignored.
 std::uint8_t nearestMirc(std::uint32_t rgb);
 
-// One cell in mIRC colours 0-98.
+// One cell in mIRC colours 0-98. Its glyph may be a cluster, a lead (a
+// cell whose right neighbour holds the continuation) or the continuation
+// (PLAN §16).
 struct MircCell {
-    char32_t ch = U' ';
+    Glyph ch = U' ';
     std::uint8_t fg = 0;
     std::uint8_t bg = 1;
 };
@@ -48,8 +52,11 @@ struct MircCell {
 // and ▒ as itself reversed; the patterns differ a little, so it is opt-in.
 // With `solidEnd` a last cell of one colour (a blank, a full block, or a glyph
 // in its own background) is drawn as █ rather than as a space, so a client
-// that drops trailing blanks keeps it. Throws IrcError for a code point that
-// is not a Unicode scalar value or a colour over 98.
+// that drops trailing blanks keeps it. A lead is written as its cluster's
+// UTF-8 bytes in one way (its own colours, whatever they are) and its
+// continuation as nothing, with no code between them. Throws IrcError for a
+// code point that is not a Unicode scalar value, a continuation in the first
+// cell or right of another continuation, or a colour over 98.
 std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades = false, bool solidEnd = false);
 
 namespace detail {

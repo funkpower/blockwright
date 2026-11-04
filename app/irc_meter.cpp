@@ -135,8 +135,13 @@ irc::Line IrcMeter::encoded(const std::vector<irc::MircCell>& cells) {
     put(o.fit, 8);
     put(o.pad, 1);
     put(o.swapShades, 1);
+    // A cluster by its code points, not its id: the key says what is drawn
+    // whatever pool the id came from (PLAN §16, Storage).
     for (const irc::MircCell& c : cells) {
-        put(c.ch, 4);
+        const GlyphCodePoints cps = codePoints(c.ch);
+        put(std::uint64_t(cps.size), 1);
+        for (const char32_t cp : cps)
+            put(cp, 4);
         put(c.fg, 1);
         put(c.bg, 1);
     }

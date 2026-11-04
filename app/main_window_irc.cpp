@@ -109,6 +109,12 @@ void MainWindow::exportIrc() {
         if (answer != QMessageBox::Save)
             return;
     }
+    // what IRC text writes as '?', named as Save names a UTF-8 .ans's losses
+    if (const QString lost = ircLossDescription(irc::unwritable(irc::sentCanvas(doc_.canvas(), doc_.ansi().ice)));
+        !lost.isEmpty() &&
+        QMessageBox::warning(this, tr("Export IRC Text"), tr("Before exporting IRC text:\n%1.\n\nExport anyway?").arg(lost),
+                             QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Save)
+        return;
     QString start;
     if (!doc_.path().isEmpty()) {
         const QFileInfo fi(doc_.path());

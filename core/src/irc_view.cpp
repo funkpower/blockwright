@@ -2,6 +2,7 @@
 
 #include "blockwright/cp437.h"
 #include "blockwright/ramp.h"
+#include "blockwright/width.h"
 
 #include <QChar>
 
@@ -47,28 +48,43 @@ Cell clientBlank() {
     return c;
 }
 
-// The sender's re-encoding of a line over the budget, as ascii.py
-// (1.32.1) does it in fit(): parse_irc, then encode_irc_min.
-// (ascii.py falls back on a plainer encoding for a line of more than 2000
-// cells or one with attributes; the export's lines have at most kMaxColumns
-// cells, and their only attributes are the ^B pairs that cancel out.)
-// A colour is -1 where the line sets none (the client's own).
+// A code point a client draws on the one before it, joining its cluster:
+// the width table's 0 (ascii.py's zero_width is the same rule, with Mn and Me
+// from its Python's Unicode, so it lacks the marks assigned since).
+bool zeroWidth(char32_t cp) { return codePointWidth(cp) == 0; }
+
+// Whether zero-width code points after `cp` join it (ascii.py's takes_marks):
+// not after a control (C0, NUL included, DEL, C1) or U+2028 and U+2029.
+bool takesMarks(char32_t cp) { return !(cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x2028 || cp == 0x2029); }
+
+// The sender's handling of a line, as the ascii.py sender script (1.32.2 or
+// later) does it in fit(): a line with a code inside a cluster is encoded
+// again first (parse_irc, then encode_irc), and one still over the budget
+// again in as few bytes as it can (parse_irc, then encode_irc_min). Both see
+// a cluster (a base and the zero-width code points after it, any codes
+// between them skipped) as one cell in its base's colours, whose glyph
+// neither changes. (ascii.py falls back on a plainer encoding for a line of
+// more than 2000 cells or one with attributes; the export's lines have at
+// most kMaxColumns cells, and their only attributes are the ^B pairs that
+// cancel out.) A colour is -1 where the line sets none (the client's own).
 namespace sender {
 
 constexpr int kNone = -1;
 constexpr int kAny = -2;  // encode_irc_min: whatever the colour is now
 
 struct SentCell {
-    char32_t ch;
+    std::u32string ch;  // a cluster: its base, then its zero-width code points
     int fg, bg;
+    bool is(char32_t c) const { return ch.size() == 1 && ch[0] == c; }
 };
 
 // Python's str.isdigit(): a code point with a digit value (², not only 0-9).
 bool pyDigit(char32_t ch) { return QChar::digitValue(ch) >= 0; }
 
-std::string utf8(char32_t ch) {
+std::string utf8(std::u32string_view cps) {
     std::string s;
-    appendUtf8(s, ch);
+    for (const char32_t cp : cps)
+        appendUtf8(s, cp);
     return s;
 }
 
@@ -81,17 +97,21 @@ std::string colourCode(int fg, int bg = kNone) {
     return buf;
 }
 
-// parse_irc, for the export's lines: no ^D colours, tabs or other control
-// bytes, and attributes that leave the cells as they are.
-std::vector<SentCell> parse(std::string_view line) {
+// parse_irc and cluster_cells, for the export's lines: no ^D colours, tabs
+// or other control bytes, and attributes that leave the cells as they are.
+// `codeInCluster` is set when a code sits between a cluster's base and a
+// zero-width code point of it (code_in_cluster).
+std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr) {
     std::vector<SentCell> cells;
     int fg = kNone, bg = kNone;
+    bool code = false;  // a code since the last code point
     auto mirc = [](std::uint8_t n) { return n < 99 ? int(n) : kNone; };
     std::size_t i = 0;
     while (i < line.size()) {
         switch (line[i]) {
         case '\x03': {
             ++i;
+            code = true;
             const auto f = number(line, i);
             if (!f) {
                 fg = bg = kNone;
@@ -106,6 +126,7 @@ std::vector<SentCell> parse(std::string_view line) {
         }
         case '\x0f':
             ++i;
+            code = true;
             fg = bg = kNone;
             break;
         case '\x02':
@@ -115,12 +136,76 @@ std::vector<SentCell> parse(std::string_view line) {
         case '\x1e':
         case '\x1f':
             ++i;
+            code = true;
             break;
-        default:
-            cells.push_back({glyph(line, i), fg, bg});
+        default: {
+            const char32_t cp = glyph(line, i);
+            if (!cells.empty() && zeroWidth(cp) && takesMarks(cells.back().ch[0])) {
+                cells.back().ch += cp;
+                if (code && codeInCluster)
+                    *codeInCluster = true;
+            } else {
+                cells.push_back({std::u32string(1, cp), fg, bg});
+            }
+            code = false;
+        }
         }
     }
     return cells;
+}
+
+// Whether a cell is one encode_irc drops at the end of a line.
+bool blank(const SentCell& c) { return c.is(U' ') && c.bg == kNone; }
+
+// encode_irc: as few codes as it can, a space's foreground left as it is.
+std::string encode(const std::vector<SentCell>& cells) {
+    std::size_t end = cells.size();
+    while (end && blank(cells[end - 1]))
+        --end;
+    std::string out;
+    int curFg = kNone, curBg = kNone;
+    for (std::size_t i = 0; i < end; ++i) {
+        const SentCell& c = cells[i];
+        const std::string text = utf8(c.ch);
+        const bool space = c.is(U' ');
+        int wantFg = c.fg;
+        if (space) {
+            if (c.bg == curBg) {
+                out += text;
+                continue;
+            }
+            if (c.fg == kNone)
+                wantFg = curFg;
+        }
+        if (wantFg == curFg && c.bg == curBg) {
+            out += text;
+            continue;
+        }
+        if ((wantFg == kNone && curFg != kNone) || (c.bg == kNone && curBg != kNone)) {
+            out += '\x03';
+            curFg = curBg = kNone;
+            if (space)
+                wantFg = kNone;
+            if (wantFg == kNone && c.bg == kNone) {
+                if (pyDigit(c.ch[0]) || c.ch[0] == U',')
+                    out += "\x02\x02";
+                out += text;
+                continue;
+            }
+        }
+        if (c.bg != kNone && c.bg != curBg) {
+            out += colourCode(wantFg, c.bg);
+            curFg = wantFg;
+            curBg = c.bg;
+        } else if (wantFg != curFg) {
+            out += colourCode(wantFg);
+            curFg = wantFg;
+            if (c.ch[0] == U',')
+                out += "\x02\x02";
+        }
+        out += text;
+    }
+    return out;
 }
 
 struct Colours {
@@ -151,7 +236,8 @@ std::pair<std::string, Colours> code(Colours cur, int fg, int bg, char32_t ch) {
 }
 
 // encode_irc_min: the shortest encoding over the ways each cell can be
-// drawn (a space or a full block of the same colour). Kept in ascii.py's
+// drawn (a space or a full block of the same colour; a cluster has one way,
+// its own glyph in its own colours). Kept in ascii.py's
 // order throughout, so that of two encodings of one length it picks the one
 // it picks, which decides where a cut falls.
 std::string encodeMin(const std::vector<SentCell>& cells) {
@@ -165,31 +251,33 @@ std::string encodeMin(const std::vector<SentCell>& cells) {
     std::vector<Entry> states{{{kNone, kNone}, 0, 0, {}}};
     // trailing spaces in the client's colours aren't sent
     std::size_t end = cells.size();
-    while (end && cells[end - 1].ch == U' ' && cells[end - 1].bg == kNone)
+    while (end && blank(cells[end - 1]))
         --end;
     for (std::size_t i = 0; i < end; ++i) {
         const SentCell& c = cells[i];
         struct Option {
-            char32_t glyph;
+            std::u32string_view glyph;
             int fg, bg;
         };
+        static constexpr char32_t kSpaceCp[] = {U' '}, kBlockCp[] = {kFullBlock};
+        constexpr std::u32string_view space(kSpaceCp, 1), block(kBlockCp, 1);
         std::vector<Option> options;
-        if (c.ch == U' ') {
-            options.push_back({U' ', kAny, c.bg});
-            options.push_back({U' ', c.fg, c.bg});
+        if (c.is(U' ')) {
+            options.push_back({space, kAny, c.bg});
+            options.push_back({space, c.fg, c.bg});
             if (c.bg != kNone)
-                options.push_back({kFullBlock, c.bg, kAny});
-        } else if (c.ch == kFullBlock && c.fg != kNone) {
-            options.push_back({kFullBlock, c.fg, kAny});
-            options.push_back({kFullBlock, c.fg, c.bg});
-            options.push_back({U' ', kAny, c.fg});
+                options.push_back({block, c.bg, kAny});
+        } else if (c.is(kFullBlock) && c.fg != kNone) {
+            options.push_back({block, c.fg, kAny});
+            options.push_back({block, c.fg, c.bg});
+            options.push_back({space, kAny, c.fg});
         } else {
             options.push_back({c.ch, c.fg, c.bg});
         }
         std::vector<Entry> next;
         for (std::size_t s = 0; s < states.size(); ++s)
             for (const Option& o : options) {
-                auto [codes, after] = code(states[s].state, o.fg, o.bg, o.glyph);
+                auto [codes, after] = code(states[s].state, o.fg, o.bg, o.glyph[0]);
                 const std::string glyphText = utf8(o.glyph);
                 const std::size_t total = states[s].cost + codes.size() + glyphText.size();
                 const auto at = std::find_if(next.begin(), next.end(), [&](const Entry& e) { return e.state == after; });
@@ -230,10 +318,35 @@ std::size_t sentSize(const std::string& line) { return line.size() + (!line.empt
 
 } // namespace
 
-std::vector<ShownCell> decodeLine(std::string_view line) {
+std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& opts, DecodeLoss* loss) {
     std::vector<ShownCell> out;
     std::uint8_t fg = kClientColour, bg = kClientColour;
     bool reverse = false;
+    int col = 0;  // the cursor's column, opts.columns when a wrap is pending
+    // The last cluster written, while a zero-width code point may still join
+    // it: its code points, and its cell (its lead, for a pair). It goes into
+    // the pool once, when it is done, so no prefix of it is interned.
+    std::vector<char32_t> cluster;
+    std::size_t at = 0;
+    const auto finish = [&] {
+        if (cluster.size() > 1) {
+            if (const std::optional<Glyph> g = clusterPool().intern(cluster, opts.poolCap)) {
+                out[at].cell.ch = *g;
+            } else if (loss) {
+                // past the pool's cap: the cell keeps its base
+                ++loss->poolRefused;
+                if (loss->firstRefused < 0)
+                    loss->firstRefused = int(at);
+            }
+        }
+        cluster.clear();
+    };
+    const auto put = [&](Glyph g, std::size_t end) {
+        MircCell c{g, fg, bg};
+        if (reverse)
+            std::swap(c.fg, c.bg);
+        out.push_back({c, end});
+    };
     std::size_t i = 0;
     while (i < line.size()) {
         switch (line[i]) {
@@ -269,15 +382,52 @@ std::vector<ShownCell> decodeLine(std::string_view line) {
             ++i;
             break;
         default: {
-            const char32_t ch = glyph(line, i);
-            MircCell c{ch, fg, bg};
-            if (reverse)
-                std::swap(c.fg, c.bg);
-            out.push_back({c, i});
+            const std::size_t start = i;
+            char32_t ch = glyph(line, i);
+            int width = codePointWidth(ch);
+            if (width == 0 && !cluster.empty()) {
+                // a zero-width code point joins the cluster before it
+                if (cluster.size() < kMaxClusterCodePoints) {
+                    cluster.push_back(ch);
+                } else if (loss) {
+                    ++loss->marksDropped;
+                    if (loss->firstDropped < 0)
+                        loss->firstDropped = int(at);
+                }
+                // a pair's lead and continuation both end after it
+                for (std::size_t k = at; k < out.size(); ++k)
+                    out[k].end = i;
+                break;
+            }
+            finish();
+            if (width == 2 && opts.columns == 1) {
+                ch = U'\uFFFD';
+                width = 1;
+            }
+            const int columns = std::max(width, 1);
+            if (opts.columns > 0) {
+                if (col >= opts.columns)
+                    col = 0;
+                if (col + columns > opts.columns) {
+                    // a wide cluster on the last column wraps first, leaving
+                    // that column blank
+                    out.push_back({MircCell{U' ', kClientColour, kClientColour}, start});
+                    col = 0;
+                }
+            }
+            col += columns;
+            at = out.size();
+            put(ch, i);
+            if (columns == 2)
+                put(Glyph::continuation(), i);
+            // a control (or NUL) is never joined
+            if (takesMarks(ch))
+                cluster.push_back(ch);
             break;
         }
         }
     }
+    finish();
     return out;
 }
 
@@ -305,25 +455,38 @@ View ircView(const Canvas& canvas, std::size_t budget, const EncodeOptions& opts
         const std::string& line = lines[std::size_t(y)];
         row.bytes = line.size();
         row.trimmed = y < top || y >= bottom;
-        const std::vector<ShownCell> cells = decodeLine(line);
-        row.kept = static_cast<int>(cells.size());
+        // laid out in the canvas's columns, as a client as wide as the art
+        // lays it out: a lone wide cell takes two, and pushes the rest right
+        const DecodeOptions layout{canvas.width()};
+        const std::vector<ShownCell> cells = decodeLine(line, layout);
+        row.kept = static_cast<int>(std::min(cells.size(), std::size_t(canvas.width())));
         int sent = row.kept;
-        if (sender::sentSize(line) > budget) {
+        // a code inside a cluster (a lone zero-width cell after a cell in
+        // other colours) has the sender encode the line again first
+        bool codeInCluster = false;
+        const std::vector<sender::SentCell> parsed = sender::parse(line, &codeInCluster);
+        const std::string sentLine = codeInCluster ? sender::encode(parsed) : line;
+        if (sender::sentSize(sentLine) > budget) {
             // over the budget, the sender encodes the line again in as few
             // bytes as it can, and cuts that if it is still over, keeping a
             // byte for the reset it ends the line with. The encoding again can
             // be the shorter one and fit: a padded line ends on a
             // black-on-black █ that the sender sends as a space.
-            const std::string again = sender::encodeMin(sender::parse(line));
+            const std::string again = sender::encodeMin(parsed);
             if (sender::sentSize(again) > budget) {
                 const std::size_t limit = budget == 0 ? 0 : budget - 1;
-                const std::vector<ShownCell> carried = decodeLine(again);
-                sent = static_cast<int>(std::count_if(carried.begin(), carried.end(),
-                                                      [limit](const ShownCell& s) { return s.end <= limit; }));
+                // the sender cuts between clusters, dropping one that doesn't
+                // fit whole, and a cell is carried when its cluster is: a
+                // pair's halves end together, after the cluster's last byte
+                const std::vector<ShownCell> carried = decodeLine(again, layout);
+                sent = std::min(row.kept, static_cast<int>(std::count_if(carried.begin(), carried.end(), [limit](const ShownCell& s) {
+                                                          return s.end <= limit;
+                                                      })));
             }
         }
-        // the cells are drawn as the export has them: the encoding again
-        // only trades a space for a full block of the same colour
+        // the cells are drawn as the export has them: the encodings again
+        // only trade a space for a full block of the same colour, and keep a
+        // cluster in its base's colours, as a client draws it from the export
         for (const ShownCell& s : cells) {
             if (row.shown >= sent || row.shown >= canvas.width())
                 break;

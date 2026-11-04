@@ -110,6 +110,7 @@ void writeBudgetProject(const QString& path, std::size_t bytes) {
 struct CliRun {
     int status = -1;
     QString out;  // what it printed
+    QString err;  // what it warned
     std::optional<std::string> written;  // the file, if it wrote one
 };
 
@@ -131,6 +132,7 @@ CliRun runCliExport(const QString& path, bool fit, bool allowOver) {
     CliRun r;
     r.status = p.exitCode();
     r.out = QString::fromUtf8(p.readAllStandardOutput());
+    r.err = QString::fromUtf8(p.readAllStandardError());
     if (QFile::exists(txt))
         r.written = readAll(txt).toStdString();
     return r;
@@ -1072,4 +1074,99 @@ TEST_CASE("with Fit on, a budget change and its undo and redo fit the rows to th
     const QString txt = dir.filePath(QStringLiteral("budget.txt"));
     REQUIRE(w.exportIrcText(txt, &error));
     CHECK(readAll(txt).toStdString() == irc::joinLines(cli));
+}
+
+// --- pairs and clusters (PLAN §16, slice 4) ---------------------------------
+
+TEST_CASE("IRC text's losses are described as a UTF-8 .ans's are") {
+    Canvas c(6, 2);
+    c.at(0, 0).ch = U'A';
+    c.at(1, 0).ch = Glyph::continuation();
+    c.at(2, 0).ch = char32_t(0x1B);
+    c.at(3, 0).ch = Glyph::continuation();
+    c.at(4, 1).ch = char32_t(0x85);
+    const std::vector<Unwritable> lost = irc::unwritable(c);
+    REQUIRE(lost.size() == 3);
+    CHECK(ircLossDescription(lost) ==
+          QStringLiteral("1 cell holds a control character IRC text can't hold and will be written as '?': "
+                         "U+0085 at 4,1;\n"
+                         "1 cell holds a control character IRC text can't hold before a continuation, and will be "
+                         "written as '?' and a space: U+001B at 2,0;\n"
+                         "1 cell holds a glyph that a terminal doesn't draw two columns wide before a "
+                         "continuation, and will be written as '?' and a space: A at 0,0"));
+    CHECK(ircLossDescription({}).isEmpty());
+    // a UTF-8 .ans says the same of a control-holding lead
+    AnsiDocument d;
+    d.canvas = c;
+    CHECK(lossDescription(writeAnsi(d, TextEncoding::Utf8))
+              .contains(QStringLiteral("1 cell holds a control character a UTF-8 .ans can't hold before a "
+                                       "continuation, and will be written as '?' and a space: U+001B at 2,0")));
+}
+
+TEST_CASE("Export IRC Text names the cells IRC text can't hold and asks first") {
+    MainWindow w;
+    AnsiDocument d = blankDoc(80, 25);
+    d.canvas.at(5, 2).ch = char32_t(0x85);
+    w.document()->replace(d, QString());
+    bool asked = false;
+    QString text;
+    answer(&w, QMessageBox::Cancel, &asked, &text);
+    act(w, "exportIrc")->trigger();
+    REQUIRE(asked);
+    CHECK(text == QStringLiteral("Before exporting IRC text:\n1 cell holds a control character IRC text can't hold "
+                                 "and will be written as '?': U+0085 at 5,2.\n\nExport anyway?"));
+}
+
+TEST_CASE("the IRC meter counts a pair and clusters as the encoder writes them") {
+    MainWindow w;
+    AnsiDocument d = blankDoc(20, 6);
+    const auto at = [&](int x, int y, Glyph g, std::uint8_t fg, std::uint8_t bg) {
+        d.canvas.at(x, y) = cell(U' ', fg, bg);
+        d.canvas.at(x, y).ch = g;
+    };
+    const std::vector<char32_t> two{U'e', 0x301}, three{U'e', 0x301, 0x302};
+    const Glyph e2 = *clusterPool().intern(two, PoolCap::Capped);
+    const Glyph e3 = *clusterPool().intern(three, PoolCap::Capped);
+    // rows 0 and 1 differ only in how long their cluster is
+    for (int y = 0; y < 2; ++y) {
+        at(2, y, U'中', 4, 1);
+        at(3, y, Glyph::continuation(), 4, 1);
+        at(6, y, y == 0 ? e2 : e3, 9, 2);
+    }
+    at(0, 2, U'A', 4, 1);  // a lead '?' and a space
+    at(1, 2, Glyph::continuation(), 4, 1);
+    at(18, 3, U'中', 4, 1);  // a pair on the last two columns
+    at(19, 3, Glyph::continuation(), 4, 1);
+    at(5, 4, U'中', 4, 1);  // a lone wide cell
+    at(5, 5, char32_t(0x9B), 4, 1);  // a control, sent as '?'
+    w.document()->replace(d, QString());
+    // a CP437 save would lose the pair, so the canvas as IRC text sends it
+    const Canvas sent = irc::sentCanvas(w.document()->canvas(), w.document()->ansi().ice);
+    IrcMeter* m = w.ircMeter();
+    for (int y = 0; y < 6; ++y) {
+        INFO("row " << y);
+        CHECK(m->bytes(y) == irc::encodeLine(sent, y, m->options()).text.size());
+    }
+    CHECK(m->bytes(1) == m->bytes(0) + 2);
+}
+
+TEST_CASE("blockwright-cli export --irc warns of the cells IRC text can't hold") {
+    QTemporaryDir dir;
+    const QString in = dir.filePath(QStringLiteral("c1.ans"));
+    {
+        QFile f(in);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        REQUIRE(f.write("AB\xc2\x85" "CD") == 6);
+    }
+    const QString txt = dir.filePath(QStringLiteral("c1.txt"));
+    QProcess p;
+    p.start(QStringLiteral(BW_CLI), {QStringLiteral("export"), QStringLiteral("--irc"), QStringLiteral("--encoding"), QStringLiteral("utf-8"), in, txt});
+    REQUIRE(p.waitForFinished(60000));
+    const QString err = QString::fromUtf8(p.readAllStandardError());
+    INFO(err.toStdString());
+    CHECK(p.exitCode() == 0);
+    CHECK(err.contains(QStringLiteral("blockwright-cli: warning: ") + in +
+                       QStringLiteral(": 1 cell holds a control character IRC text can't hold and is written as "
+                                      "'?' (first: U+0085 at column 3, row 1)")));
+    CHECK(readAll(txt).contains("AB?CD"));
 }

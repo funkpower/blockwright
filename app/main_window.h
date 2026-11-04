@@ -95,6 +95,10 @@ std::optional<TextEncoding> openFilterEncoding(const QString& filter);
 // rather than named: "12 wide glyphs written as ?".
 QString lossDescription(const AnsiOutput& out, bool countWide = false);
 
+// The same for IRC text's losses (irc::unwritable), worded as a UTF-8
+// .ans's with "IRC text" for "a UTF-8 .ans"; empty when nothing is lost.
+QString ircLossDescription(const std::vector<Unwritable>& lost);
+
 // The status-bar message for typed or committed `text` whose glyphs
 // isTypeable refuses: for each glyph CP437 has but .ans can't hold, its byte
 // and the control code .ans reads it as ("○ is CP437 0x09, which .ans reads

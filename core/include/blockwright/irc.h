@@ -63,13 +63,26 @@ struct EncodeOptions {
 std::uint8_t mircColor(const Color& c);
 
 // The shortest IRC line that draws `cells`, without a line ending. A
-// transparent cell is drawn blank, a C0 control or DEL as its CP437 glyph,
-// and a C1 control (U+0080-U+009F) or a non-scalar code point as '?'.
+// transparent cell is drawn blank, NUL as a space, a C0 control or DEL as
+// its CP437 glyph, and a C1 control (U+0080-U+009F), U+2028, U+2029 or a
+// non-scalar code point as '?'. A lead is written as its cluster when a
+// UTF-8 .ans would write it whole (utf8WideGlyph), its continuation as
+// nothing; any other lead as '?' and its continuation as a space, each in
+// its own colours, so the columns stay (PLAN §16, Writing).
 std::string encodeRow(std::span<const Cell> cells, const EncodeOptions& opts = {});
 
 // The cells as the row encoder takes them: drawn as encodeRow draws them,
-// in mIRC colours.
-std::vector<MircCell> mircRow(std::span<const Cell> cells);
+// in mIRC colours, a pair written whole in its lead's colours. Each cell
+// not written as its glyph that a UTF-8 .ans would list is added to `lost`,
+// if given, at column x and row `y`, as the UTF-8 .ans writer lists it: a
+// lead written '?' (Loss::Wide, or Loss::Control when a code point isn't
+// writable; `lead` set), or a control written '?' (Loss::Control). A C0
+// control or DEL, which IRC draws as its CP437 glyph, isn't listed.
+std::vector<MircCell> mircRow(std::span<const Cell> cells, std::vector<Unwritable>* lost = nullptr, int y = 0);
+
+// The cells of `canvas` that IRC text writes as something else, in cell
+// order (mircRow's `lost`, row by row).
+std::vector<Unwritable> unwritable(const Canvas& canvas);
 
 // A cell of the editor's canvas as it is sent: as it shows, and is saved,
 // with iCE colours `ice` (iceCell). With iCE off a bright background goes as
@@ -118,7 +131,7 @@ void trimBlankLines(std::vector<Line>& lines);
 // first, with the changes right of it that took its colour. So every cell
 // fit changes ends up showing only colours it showed before or its left
 // neighbour shows in the result. A glyph other than a blank, a block, a half block or a shade is
-// never changed. Rows that fit already, or that can't be made to fit, come
+// never changed, and neither is either half of a pair. Rows that fit already, or that can't be made to fit, come
 // back unchanged.
 std::vector<MircCell> fitCells(std::span<const MircCell> cells, std::size_t budget, const EncodeOptions& opts = {});
 

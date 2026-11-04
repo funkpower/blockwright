@@ -62,6 +62,7 @@
 #include "blockwright/xbin.h"
 #include "generators.h"
 #include "lint.h"
+#include "loss.h"
 #include "read_file.h"
 #include "shade.h"
 
@@ -277,58 +278,8 @@ void save(const std::string& out, const std::string& bytes) {
 // before it got here (openAsEditor), counted with what writeAnsi drops.
 // Warns once per kind of loss in what writeAnsi wrote for `in`, with a count.
 void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
-    using bw::Loss;
-    const auto count = [&](auto which) {
-        return int(std::count_if(res.unwritable.begin(), res.unwritable.end(), which));
-    };
-    const auto first = [&](auto which) { return *std::find_if(res.unwritable.begin(), res.unwritable.end(), which); };
-    const auto is = [](Loss loss) { return [loss](const bw::Unwritable& u) { return u.loss == loss; }; };
-    // A control or bidi override is shown by its code point alone, never raw;
-    // a glyph not written '?' says what it is written as.
-    const auto where = [](const bw::Unwritable& u) {
-        const std::optional<char32_t> cp = u.ch.codePoint();
-        const std::string glyph = cp && bw::unprintableCodePoint(*cp) ? "" : " '" + bw::quotedGlyph(u.ch) + "'";
-        return "(first: " + bw::codePointNames(u.ch) + glyph + " at column " + std::to_string(u.x + 1) + ", row " +
-               std::to_string(u.y + 1) + (u.written == U'?' ? "" : ", written as " + bw::quotedGlyph(u.written)) +
-               ")";
-    };
-    const auto warn = [&](int n, const std::string& one, const std::string& many, const bw::Unwritable& u,
-                          const std::string& after = {}) {
-        std::cerr << "blockwright-cli: warning: " << in << ": " << n << (n == 1 ? one : many) << " " << where(u)
-                  << after << "\n";
-    };
-    const auto wide = is(Loss::Wide);
-    const auto notWide = [](const bw::Unwritable& u) { return u.loss != Loss::Wide; };
-    if (res.encoding == bw::TextEncoding::Utf8) {
-        // A control character, and a lead a terminal wouldn't draw over both cells.
-        if (const int n = count(notWide))
-            warn(n, " cell holds a control character a UTF-8 .ans can't hold and is written as '?'",
-                 " cells hold control characters a UTF-8 .ans can't hold and are written as '?'", first(notWide));
-        if (const int n = count(wide))
-            warn(n,
-                 " cell holds a glyph a terminal doesn't draw two columns wide before a continuation and is "
-                 "written as '?' and a space",
-                 " cells hold glyphs a terminal doesn't draw two columns wide before a continuation and are "
-                 "written as '?' and a space",
-                 first(wide));
-    } else {
-        if (const int n = count(is(Loss::NoCode)))
-            warn(n, " glyph has no CP437 code and is written as '?'", " glyphs have no CP437 code and are written as '?'",
-                 first(is(Loss::NoCode)));
-        if (const int n = count(wide))
-            warn(n, " wide glyph is written as '?' and a space", " wide glyphs are written as '?' and a space",
-                 first(wide));
-        if (const int n = count(is(Loss::MarksDropped)))
-            warn(n, " glyph loses its combining marks", " glyphs lose their combining marks",
-                 first(is(Loss::MarksDropped)));
-        if (const int n = count(is(Loss::Control)))
-            warn(n,
-                 (" glyph has a CP437 byte .ans reads as a control code (" + bw::ansControlNames(res.unwritable) +
-                  ") and is written as '?'"),
-                 (" glyphs have CP437 bytes .ans reads as control codes (" + bw::ansControlNames(res.unwritable) +
-                  ") and are written as '?'"),
-                 first(is(Loss::Control)), std::string("; XBIN and BIN keep ") + (n == 1 ? "it" : "them"));
-    }
+    for (const std::string& w : bwcli::unwritableWarnings(res))
+        std::cerr << "blockwright-cli: warning: " << in << ": " << w << "\n";
     if (const int n = res.blinkDropped)
         std::cerr << "blockwright-cli: warning: " << in << ": " << n
                   << (n == 1 ? " blinking cell loses its blink" : " blinking cells lose their blink")
@@ -570,7 +521,8 @@ IrcSend ircSend(const std::string& in, const IrcArgs& args) {
 
 // Writes the piece as IRC text and reports every line's size in bytes, as
 // the row encoder writes it with the options (ircSend). A line still over
-// the budget is listed and nothing is written, unless allowOver.
+// the budget is listed and nothing is written, unless allowOver. The cells
+// IRC text writes as '?' (irc::unwritable) are warned of; they don't stop it.
 int exportIrc(const std::string& in, const std::string& out, const IrcArgs& args, bool allowOver) {
     refuseSameFile(in, out);
     const IrcSend send = ircSend(in, args);
@@ -602,6 +554,10 @@ int exportIrc(const std::string& in, const std::string& out, const IrcArgs& args
     if (fit)
         std::cout << "fit: " << merged << (merged == 1 ? " cell" : " cells") << " merged in " << fitted
                   << (fitted == 1 ? " line" : " lines") << "\n";
+    // what IRC text writes as '?', as a UTF-8 .ans's losses are told; the
+    // lines are written all the same
+    for (const std::string& w : bwcli::ircUnwritableWarnings(bw::irc::unwritable(doc.canvas)))
+        std::cerr << "blockwright-cli: warning: " << in << ": " << w << "\n";
     if (!over.empty()) {
         for (const auto& o : over)
             std::cerr << "blockwright-cli: " << in << ": line " << o.line << " is " << o.bytes << " bytes, over the "

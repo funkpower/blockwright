@@ -118,6 +118,9 @@ public:
     // control anywhere (C0 but U+0000, DEL, C1, U+2028, U+2029); its base
     // may be zero-width (a lone mark, which lint names).
     std::optional<Glyph> intern(std::span<const char32_t> cps, PoolCap cap);
+    // intern with a cap of `limit` clusters in place of kLossyCap, for a
+    // capped path whose tests can't fill 65,536 entries.
+    std::optional<Glyph> intern(std::span<const char32_t> cps, std::size_t limit);
 
     // The code points of `g` (GlyphCodePoints).
     GlyphCodePoints codePoints(Glyph g) const;
@@ -137,13 +140,5 @@ ClusterPool& clusterPool();
 // The process-wide pool's codePoints and width.
 GlyphCodePoints codePoints(Glyph g);
 int glyphColumns(Glyph g);
-
-// What the IRC writer, which doesn't yet write pairs or clusters (PLAN §16,
-// until slice 4; the .ans, XBIN and BIN writers do since slice 3), writes for a cell holding `g` whose right neighbour holds `right`: a
-// continuation as a space in its own colours, so the columns hold; a lead (a
-// cell whose right neighbour is a continuation) or a cluster of more than
-// one code point as nothing, which the writer writes as '?' and lists;
-// anything else, a lone wide cell included, as its code point.
-std::optional<char32_t> interimCodePoint(Glyph g, Glyph right);
 
 } // namespace bw

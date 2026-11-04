@@ -108,7 +108,7 @@ TEST_CASE("an encoded row reads back as the cells it was made from", "[irc][view
             const Cell& src = c.at(x, y);
             const MircCell& got = cells[std::size_t(x)].cell;
             const auto want = shown(src.ch == U'\0' ? U' ' : src.ch.codePoint().value(), mircColor(src.fg), mircColor(src.bg));
-            const auto have = shown(got.ch, got.fg, got.bg);
+            const auto have = shown(got.ch.codePoint().value(), got.fg, got.bg);
             // a solid cell shows one colour, whatever its other one is
             if (std::get<1>(want) == std::get<2>(want) && std::get<0>(want) == U'▀')
                 CHECK((std::get<1>(have) == std::get<1>(want) && std::get<2>(have) == std::get<2>(want)));

@@ -1,5 +1,6 @@
 #include "blockwright/irc.h"
 
+#include "blockwright/ansi.h"
 #include "blockwright/cp437.h"
 
 #include <algorithm>
@@ -37,26 +38,16 @@ Cell drawn(const Cell& c) {
     return d;
 }
 
-// The cell as the row encoder takes it, its right neighbour `right` on the
-// canvas. A continuation is a space, a lead or a cluster of more than one
-// code point '?' (interimCodePoint: the encoder doesn't write pairs or
-// clusters yet). Not a Unicode scalar value: drawn as '?' rather than fail.
-// A C1 control too: some clients read C2 9B as a CSI introducer.
-MircCell encodable(const Cell& c, Glyph right) {
-    const Cell d = drawn(c);
-    const std::optional<char32_t> cp = interimCodePoint(d.ch, c.transparent ? Glyph() : right);
-    MircCell m{cp.value_or(U'?'), mircColor(d.fg), mircColor(d.bg)};
-    if (m.ch > 0x10ffff || (m.ch >= 0xd800 && m.ch <= 0xdfff) || (m.ch >= 0x80 && m.ch <= 0x9f))
-        m.ch = U'?';
-    return m;
-}
-
 bool same(const MircCell& a, const MircCell& b) { return a.ch == b.ch && a.fg == b.fg && a.bg == b.bg; }
 
-bool blank(char32_t ch) { return ch == U' ' || ch == U'\u00a0'; }
+bool blank(Glyph ch) { return ch == U' ' || ch == U'\u00a0'; }
 
 // The one colour a cell shows, if it shows one: as the row encoder's ways().
+// A continuation shows none of its own (its lead draws it), and a cluster
+// is drawn as itself.
 std::optional<std::uint8_t> solidColour(const MircCell& c) {
+    if (!c.ch.codePoint())
+        return std::nullopt;
     if (blank(c.ch))
         return c.bg;
     if (c.ch == U'█' || c.fg == c.bg)
@@ -98,8 +89,8 @@ bool ownOrLeft(std::span<const MircCell> cells, const std::vector<MircCell>& row
 
 // The quarters of a two-colour cell its foreground covers; 0 for a glyph fit
 // leaves alone.
-int fgQuarters(char32_t ch) {
-    switch (ch) {
+int fgQuarters(Glyph g) {
+    switch (g.codePointOr(kNoCodePoint)) {
     case U'▀': case U'▄': case U'▌': case U'▐': case U'▒': return 2;
     case U'░': return 1;
     case U'▓': return 3;
@@ -141,6 +132,9 @@ struct Step {
 // neighbour's.
 void stepsFor(const std::vector<MircCell>& row, std::size_t x, std::vector<Step>& out) {
     const MircCell& c = row[x];
+    // either half of a pair is left alone, so neither ever changes alone
+    if (c.ch.isContinuation() || (x + 1 < row.size() && row[x + 1].ch.isContinuation()))
+        return;
     std::array<std::uint8_t, 2> left{};
     const int nLeft = x > 0 ? shownColours(row[x - 1], left) : 0;
     // A colour swapped for itself changes nothing; one swapped for another
@@ -202,9 +196,15 @@ std::vector<MircCell> fitCells(std::span<const MircCell> cells, std::size_t budg
                 stepsFor(row, x, steps);
         if (steps.empty())
             break;
+        // never on a Glyph, whose cluster ids depend on what the process
+        // read before: its code points
         std::sort(steps.begin(), steps.end(), [](const Step& a, const Step& b) {
-            return std::tie(a.cost, a.x, a.cell.ch, a.cell.fg, a.cell.bg) <
-                   std::tie(b.cost, b.x, b.cell.ch, b.cell.fg, b.cell.bg);
+            if (std::tuple(a.cost, a.x) != std::tuple(b.cost, b.x))
+                return std::tuple(a.cost, a.x) < std::tuple(b.cost, b.x);
+            const GlyphCodePoints ca = codePoints(a.cell.ch), cb = codePoints(b.cell.ch);
+            if (!std::ranges::equal(ca, cb))
+                return std::ranges::lexicographical_compare(ca, cb);
+            return std::tuple(a.cell.fg, a.cell.bg) < std::tuple(b.cell.fg, b.cell.bg);
         });
         // A twelfth of the steps at a time, as ascii.py's fit_halves, so a
         // wide row takes a few encodes rather than one per cell. A cell
@@ -265,12 +265,68 @@ std::uint8_t mircColor(const Color& c) {
     return nearestMirc(std::uint32_t(c.rgb.r) << 16 | std::uint32_t(c.rgb.g) << 8 | c.rgb.b);
 }
 
-std::vector<MircCell> mircRow(std::span<const Cell> cells) {
-    std::vector<MircCell> raw;
-    raw.reserve(cells.size());
-    for (std::size_t x = 0; x < cells.size(); ++x)
-        raw.push_back(encodable(cells[x], x + 1 < cells.size() ? cells[x + 1].ch : Glyph()));
-    return raw;
+// The row as the encoder takes it: the cells as drawn, a pair's lead as its
+// glyph when a UTF-8 .ans would write it whole (utf8WideGlyph) and its
+// continuation in the lead's colours, else as a UTF-8 .ans writes them:
+// the lead '?' and the continuation a space in its own colours. A cluster
+// is itself, '?' when a code point of it isn't utf8Writable, with a NUL as
+// a space. A single code point utf8Writable refuses after drawn() (a C1
+// control, U+2028, U+2029, a surrogate) is '?': some clients read C2 9B as
+// a CSI introducer. What is written '?' is listed in `lost`, as the UTF-8
+// .ans writer lists it.
+std::vector<MircCell> mircRow(std::span<const Cell> cells, std::vector<Unwritable>* lost, int y) {
+    std::vector<MircCell> out;
+    out.reserve(cells.size());
+    const auto colours = [](const Cell& d, Glyph g) { return MircCell{g, mircColor(d.fg), mircColor(d.bg)}; };
+    for (std::size_t x = 0; x < cells.size(); ++x) {
+        const Cell& c = cells[x];
+        const Cell d = drawn(c);
+        MircCell m = colours(d, d.ch);
+        const GlyphCodePoints cps = codePoints(c.ch);
+        const bool writable = std::all_of(cps.begin(), cps.end(), utf8Writable);
+        const auto refuse = [&](Loss loss, bool lead) {
+            if (lost)
+                lost->push_back({int(x), y, c.ch, loss, U'?', lead});
+            m.ch = U'?';
+        };
+        if (!c.transparent && !c.ch.isContinuation() && x + 1 < cells.size() && cells[x + 1].ch.isContinuation()) {
+            if (utf8WideGlyph(c.ch)) {
+                out.push_back(m);
+                out.push_back({Glyph::continuation(), m.fg, m.bg});
+            } else {
+                refuse(writable ? Loss::Wide : Loss::Control, true);
+                out.push_back(m);
+                out.push_back(colours(drawn(cells[x + 1]), U' '));
+            }
+            ++x;
+            continue;
+        }
+        if (d.ch.isContinuation()) {
+            m.ch = U' ';
+        } else if (const std::optional<char32_t> cp = d.ch.codePoint()) {
+            if (!utf8Writable(*cp))
+                refuse(Loss::Control, false);
+        } else if (!writable) {
+            refuse(Loss::Control, false);
+        } else if (std::find(cps.begin(), cps.end(), U'\0') != cps.end()) {
+            std::vector<char32_t> spaced(cps.begin(), cps.end());
+            std::replace(spaced.begin(), spaced.end(), U'\0', U' ');
+            m.ch = clusterPool().intern(spaced, PoolCap::Uncapped).value_or(Glyph(U'?'));
+        }
+        out.push_back(m);
+    }
+    return out;
+}
+
+std::vector<Unwritable> unwritable(const Canvas& canvas) {
+    std::vector<Unwritable> lost;
+    std::vector<Cell> row(static_cast<std::size_t>(canvas.width()));
+    for (int y = 0; y < canvas.height(); ++y) {
+        for (int x = 0; x < canvas.width(); ++x)
+            row[std::size_t(x)] = canvas.at(x, y);
+        mircRow(row, &lost, y);
+    }
+    return lost;
 }
 
 Cell sentCell(const Cell& c, bool ice) { return c.transparent ? c : iceCell(c, ice); }

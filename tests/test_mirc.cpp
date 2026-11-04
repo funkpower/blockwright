@@ -108,7 +108,7 @@ void sameLook(const std::vector<MircCell>& row, const std::string& line) {
     REQUIRE(got.size() == row.size());
     for (size_t i = 0; i < row.size(); ++i) {
         INFO("cell " << i);
-        CHECK(look(row[i].ch, row[i].fg, row[i].bg) == look(got[i].ch, got[i].fg, got[i].bg));
+        CHECK(look(row[i].ch.codePoint().value(), row[i].fg, row[i].bg) == look(got[i].ch, got[i].fg, got[i].bg));
     }
 }
 
@@ -202,7 +202,12 @@ TEST_CASE("encodeMircRow refuses cells it cannot write") {
     CHECK_THROWS_AS(irc::encodeMircRow(cells({{U'a', 99, 1}})), irc::IrcError);
     CHECK_THROWS_AS(irc::encodeMircRow(cells({{U'a', 4, 99}})), irc::IrcError);
     CHECK_THROWS_AS(irc::encodeMircRow(cells({{char32_t(0xd800), 4, 1}})), irc::IrcError);
-    CHECK_THROWS_AS(irc::encodeMircRow(cells({{U'a', 4, 1}, {char32_t(0x110000), 4, 1}})), irc::IrcError);
+    // a continuation with no lead: first, or right of another continuation
+    // (0x110000 was this test's stray value; a Glyph makes it U+FFFD now)
+    CHECK_THROWS_AS(irc::encodeMircRow(cells({{bw::Glyph::continuation(), 4, 1}})), irc::IrcError);
+    CHECK_THROWS_AS(irc::encodeMircRow(cells({{U'a', 4, 1}, {bw::Glyph::continuation(), 4, 1},
+                                              {bw::Glyph::continuation(), 4, 1}})),
+                    irc::IrcError);
     // the other C0 controls and C1 are scalar values: written as they are
     CHECK(irc::encodeMircRow(cells({{char32_t(0x85), 4, 1}})) == "\x03" "4,1\xc2\x85");
 }

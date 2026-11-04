@@ -281,20 +281,6 @@ TEST_CASE("a cluster or continuation is quoted by its code points") {
     CHECK(codePointNames(Glyph::continuation()).empty());
 }
 
-TEST_CASE("a writer that doesn't know pairs yet writes a lead and a cluster as nothing and a continuation as a space") {
-    const Glyph cont = Glyph::continuation();
-    const auto e = clusterPool().intern(std::vector<char32_t>{U'e', 0x301}, PoolCap::Capped);
-    REQUIRE(e);
-    CHECK(interimCodePoint(U'A', U'B') == U'A');
-    CHECK(interimCodePoint(U'中', U'B') == U'中');  // a lone wide cell, as today
-    CHECK_FALSE(interimCodePoint(U'中', cont));     // a lead
-    CHECK_FALSE(interimCodePoint(U'A', cont));      // a lead is a lead whatever it holds
-    CHECK(interimCodePoint(cont, U'A') == U' ');
-    CHECK(interimCodePoint(cont, cont) == U' ');
-    CHECK_FALSE(interimCodePoint(*e, U'A'));
-    CHECK_FALSE(interimCodePoint(*e, cont));
-}
-
 TEST_CASE("a cluster or continuation passes no glyph test and has no mirror") {
     const Glyph cont = Glyph::continuation();
     const auto shade = clusterPool().intern(std::vector<char32_t>{kShadeMedium, 0x301}, PoolCap::Capped);

@@ -82,6 +82,7 @@ TEST_CASE("a CP437 writer writes a pair as '?' and a space in their colours, and
         CHECK(g->unwritable[0].y == 0);
         CHECK(g->unwritable[0].ch == U'中');
         CHECK(g->unwritable[0].loss == Loss::Wide);
+        CHECK(g->unwritable[0].lead);  // as a UTF-8 .ans and IRC text mark one
     }
 }
 
@@ -110,6 +111,7 @@ TEST_CASE("a wide glyph alone in a cell is written as it was") {
     CHECK(utf8.unwritable.empty());
     const AnsiOutput cp437 = writeAnsi(doc, TextEncoding::Cp437);
     CHECK(listedColumns(cp437) == std::vector{0});
+    CHECK_FALSE(cp437.unwritable[0].lead);  // no continuation follows it
 }
 
 TEST_CASE("a transparent cell is written blank, never as a lead") {
@@ -121,11 +123,11 @@ TEST_CASE("a transparent cell is written blank, never as a lead") {
     CHECK(utf8.bytes == writeAnsi(plain, TextEncoding::Utf8).bytes);
 }
 
-TEST_CASE("IRC text writes a pair as '?' and a space and a cluster as '?'") {
+TEST_CASE("IRC text writes a pair whole and a cluster as its code points") {
     const Glyph e = cluster({U'e', 0x301});
     const std::vector<Cell> got{cell(U'中', 15, 1), cell(kCont, 14, 4), cell(e, 7, 0), cell(U'A', 7, 0)};
-    const std::vector<Cell> want{cell(U'?', 15, 1), cell(U' ', 14, 4), cell(U'?', 7, 0), cell(U'A', 7, 0)};
-    CHECK(irc::encodeRow(got) == irc::encodeRow(want));
+    // the continuation is drawn by its lead, in the lead's colours
+    CHECK(irc::encodeRow(got) == "\x03" "0,2\xE4\xB8\xAD\x03" "15,1e\xCC\x81" "A");
     // a lone wide glyph is itself, as before
     const std::string lone = irc::encodeRow(std::vector{cell(U'中', 7, 0)});
     CHECK_THAT(lone, Catch::Matchers::ContainsSubstring("\xE4\xB8\xAD"));

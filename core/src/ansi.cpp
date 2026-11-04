@@ -382,10 +382,7 @@ bool blankBlack(const Cell& c, bool ice) {
 // Whether a UTF-8 .ans writes lead `c` as its glyph, which a terminal draws
 // over its continuation's column too: every code point utf8Writable and two
 // columns wide (glyphColumns).
-bool utf8WideLead(const Cell& c) {
-    const GlyphCodePoints cps = codePoints(c.ch);
-    return !c.transparent && glyphColumns(c.ch) == 2 && std::all_of(cps.begin(), cps.end(), utf8Writable);
-}
+bool utf8WideLead(const Cell& c) { return !c.transparent && utf8WideGlyph(c.ch); }
 
 // Whether the trailing trim may drop cell `x` of row `y` (blankBlack), as
 // written: a lead never, as its glyph is written ('?' in CP437); in UTF-8, a
@@ -621,8 +618,15 @@ bool utf8Writable(char32_t ch) {
     if (ch < 0x80)
         return ch == 0 || (ch >= 0x20 && ch < 0x7f);
     // C1 controls: a terminal that honours them takes C2 9B for a CSI, as
-    // the IRC export has it (irc::encodeCanvas writes them as '?' too).
-    return ch >= 0xa0 && ch <= 0x10ffff && (ch < 0xd800 || ch > 0xdfff);
+    // the IRC export has it (irc::mircRow writes them as '?' too). U+2028
+    // and U+2029 break a line in some clients; the width table refuses
+    // them as it does C1.
+    return ch >= 0xa0 && ch <= 0x10ffff && (ch < 0xd800 || ch > 0xdfff) && ch != 0x2028 && ch != 0x2029;
+}
+
+bool utf8WideGlyph(Glyph g) {
+    const GlyphCodePoints cps = codePoints(g);
+    return glyphColumns(g) == 2 && std::all_of(cps.begin(), cps.end(), utf8Writable);
 }
 
 AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
@@ -685,7 +689,7 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
                             appendUtf8(s, cp);
                         covered = true;
                     } else {
-                        out.unwritable.push_back({x, y, c.ch, writable ? Loss::Wide : Loss::Control});
+                        out.unwritable.push_back({x, y, c.ch, writable ? Loss::Wide : Loss::Control, U'?', true});
                         s += '?';
                     }
                 } else if (!writable) {
@@ -699,7 +703,7 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
             }
             const Cp437Glyph g = cp437Glyph(c.ch, right, true);
             if (g.loss)
-                out.unwritable.push_back({x, y, c.ch, *g.loss, g.written()});
+                out.unwritable.push_back({x, y, c.ch, *g.loss, g.written(), right.isContinuation()});
             s += static_cast<char>(g.byte);
         }
         // A row never starts with its line break: after a full-width row the

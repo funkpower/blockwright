@@ -80,6 +80,10 @@ ClusterPool::ClusterPool() : d_(std::make_unique<Impl>()) {}
 ClusterPool::~ClusterPool() = default;
 
 std::optional<Glyph> ClusterPool::intern(std::span<const char32_t> cps, PoolCap cap) {
+    return intern(cps, cap == PoolCap::Capped ? kLossyCap : kMaxEntries);
+}
+
+std::optional<Glyph> ClusterPool::intern(std::span<const char32_t> cps, std::size_t limit) {
     if (cps.empty() || cps.size() > std::size_t(kMaxClusterCodePoints))
         throw std::invalid_argument("a cluster holds 1 to 16 code points");
     for (char32_t cp : cps)
@@ -95,7 +99,7 @@ std::optional<Glyph> ClusterPool::intern(std::span<const char32_t> cps, PoolCap 
     if (const auto it = d_->index.find(key); it != d_->index.end())
         return Glyph(Glyph::Raw{}, it->second);
     const std::size_t n = d_->count.load(std::memory_order_relaxed);
-    if (n >= kMaxEntries || (cap == PoolCap::Capped && n >= kLossyCap))
+    if (n >= kMaxEntries || n >= limit)
         return std::nullopt;
     try {
         const Place p = place(n);
@@ -161,14 +165,6 @@ int glyphColumns(Glyph g) {
     if (const std::optional<char32_t> cp = g.codePoint())
         return codePointWidth(*cp);
     return clusterPool().width(g);
-}
-
-std::optional<char32_t> interimCodePoint(Glyph g, Glyph right) {
-    if (g.isContinuation())
-        return U' ';
-    if (right.isContinuation())
-        return std::nullopt;
-    return g.codePoint();
 }
 
 std::ostream& operator<<(std::ostream& os, Glyph g) {
