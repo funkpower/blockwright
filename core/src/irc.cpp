@@ -329,13 +329,17 @@ std::vector<Unwritable> unwritable(const Canvas& canvas) {
     return lost;
 }
 
-Cell sentCell(const Cell& c, bool ice) { return c.transparent ? c : iceCell(c, ice); }
+Cell sentCell(const Cell& c, bool ice, Target target) {
+    if (c.transparent || (target == Target::Irc && !c.bg.isIndexed()))
+        return c;
+    return iceCell(c, ice);
+}
 
-Canvas sentCanvas(const Canvas& canvas, bool ice) {
+Canvas sentCanvas(const Canvas& canvas, bool ice, Target target) {
     Canvas out = canvas;
     for (int y = 0; y < out.height(); ++y)
         for (int x = 0; x < out.width(); ++x)
-            out.at(x, y) = sentCell(out.at(x, y), ice);
+            out.at(x, y) = sentCell(out.at(x, y), ice, target);
     return out;
 }
 

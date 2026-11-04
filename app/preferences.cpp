@@ -3,6 +3,7 @@
 #include "settings.h"
 #include "font_scanner.h"
 
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QDir>
@@ -51,6 +52,15 @@ void setFontsFolderSetting(const QString& folder) {
     appSettings()->setValue(QLatin1String(kFontsFolderKey), folder);
 }
 
+Target defaultTargetSetting() {
+    const QString name = appSettings()->value(QLatin1String(kDefaultTargetKey)).toString();
+    return parseTarget(name.toStdString()).value_or(Target::Ansi);
+}
+
+void setDefaultTargetSetting(Target target) {
+    appSettings()->setValue(QLatin1String(kDefaultTargetKey), QString::fromLatin1(targetName(target).data()));
+}
+
 std::shared_ptr<const FontCatalogue> loadFontsFolder(const QString& folder) {
     if (folder.isEmpty())
         return nullptr;
@@ -92,6 +102,17 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
     pages_ = new QTabWidget(this);
     pages_->setObjectName(QStringLiteral("preferencesPages"));
     pages_->addTab(fonts, tr("Fonts"));
+    auto* documents = new QWidget(this);
+    documents->setObjectName(QStringLiteral("documentsPage"));
+    target_ = new QComboBox(documents);
+    target_->setObjectName(QStringLiteral("defaultTarget"));
+    target_->addItem(tr("ANSI (.ans)"), int(Target::Ansi));
+    target_->addItem(tr("IRC"), int(Target::Irc));
+    target_->setCurrentIndex(target_->findData(int(defaultTargetSetting())));
+    target_->setToolTip(tr("What File > New and a new canvas offer: the 16 colours an .ans holds, or IRC's 99"));
+    auto* docForm = new QFormLayout(documents);
+    docForm->addRow(tr("&Target for new documents:"), target_);
+    pages_->addTab(documents, tr("Documents"));
     auto* layout = new QVBoxLayout(this);
     layout->addWidget(pages_, 1);
     layout->addWidget(buttons_);
@@ -138,6 +159,8 @@ QString PreferencesDialog::fontsFolder() const { return folder_->text().trimmed(
 bool PreferencesDialog::fontsFolderChanged() const {
     return folderChosen_ || fontsFolder() != initialFolder_;
 }
+
+Target PreferencesDialog::defaultTarget() const { return Target(target_->currentData().toInt()); }
 
 void PreferencesDialog::rescan(bool always) {
     if (!always && fontsFolder() == scanned_)

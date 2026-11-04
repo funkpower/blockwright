@@ -46,6 +46,7 @@ add_library(blockwright_core STATIC
   src/ramp.cpp
   src/samples.cpp
   src/sauce.cpp
+  src/target.cpp
   src/scene_import.cpp
   src/selection.cpp
   src/shapes.cpp

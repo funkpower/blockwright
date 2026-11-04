@@ -67,6 +67,7 @@
 #include "blockwright/font_store.h"
 #include "blockwright/irc.h"
 #include "blockwright/layer.h"
+#include "blockwright/target.h"
 
 #include <cstddef>
 #include <filesystem>
@@ -186,6 +187,11 @@ struct Project {
     // unless an option says). The manifest's "ansEncoding", "utf-8" or
     // "cp437", written only when UTF-8; a project without it is CP437.
     TextEncoding ansEncoding = TextEncoding::Cp437;
+    // What the project is drawn for (#350): ANSI (an .ans, 16 colours) or
+    // IRC (mIRC's 99 colours too). The manifest's "target", "irc" or "ansi",
+    // written only for IRC; a project without it, or with a value this build
+    // doesn't know, is ANSI. Like ansEncoding it is a preference, not art.
+    Target target = Target::Ansi;
     IrcBudget ircBudget;
     std::string notes;               // notes.md
     std::vector<Snapshot> snapshots;  // by round, first first

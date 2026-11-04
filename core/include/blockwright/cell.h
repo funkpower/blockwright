@@ -35,6 +35,8 @@ namespace attr {
 // off. With iCE on, blink means a bright background and the parser folds it
 // into the background index instead.
 inline constexpr std::uint8_t Blink = 1u << 0;
+// Bits 1-3 are kept for IRC's bold, italic and underline and bit 4 for
+// strikethrough (#350); nothing sets them yet.
 } // namespace attr
 
 struct Cell {

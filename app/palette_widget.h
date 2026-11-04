@@ -1,11 +1,14 @@
 #pragma once
-// The 16-colour palette, for the palette dock: two rows of eight swatches
-// in CGA order and, beside them, the pen as GIMP shows it: the foreground
-// swatch over the background one, a swap arrow in the corner between them
-// and the default colours in the other. A left click on a swatch picks the
-// foreground, a right click the background.
+// The palette, for the palette dock: two rows of eight swatches in CGA
+// order and, beside them, the pen as GIMP shows it: the foreground swatch
+// over the background one, a swap arrow in the corner between them and the
+// default colours in the other. Under the IRC target, mIRC's colours 16-98
+// follow below in mIRC's layout, smaller: six rows of 12, then the 11
+// greys. A left click on a swatch picks the foreground, a right click the
+// background; a swatch is its index 0-98 (swatchColor).
 
 #include "blockwright/edit.h"
+#include "blockwright/target.h"
 
 #include <QPointer>
 #include <QWidget>
@@ -21,9 +24,12 @@ public:
 
     const Pen& pen() const { return pen_; }
     void setPen(const Pen& pen);
+    // The target: which swatches show (swatchCount).
+    Target target() const { return target_; }
+    void setTarget(Target target);
 
-    // Swatch `index` (0-15) in widget pixels, and the swatch at a point
-    // (-1 when there is none).
+    // Swatch `index` (0-15, or 0-98 under IRC) in widget pixels, and the
+    // swatch at a point (-1 when there is none).
     QRect swatchRect(int index) const;
     int indexAt(QPoint p) const;
     // Where the pen is shown, and its parts: the foreground swatch (top
@@ -55,6 +61,7 @@ protected:
 
 private:
     Pen pen_;
+    Target target_ = Target::Ansi;
     QPointer<QAction> swap_;
     QPointer<QAction> reset_;
 };

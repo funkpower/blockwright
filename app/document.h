@@ -65,14 +65,16 @@ FileForm fileFormFor(const QString& path);
 // and, kept without showing them, notes.md, the snapshots and the files kept
 // byte for byte (refs/, scripts/, thumbnail.png, what a newer minor version
 // added), and the TheDraw font files its text layers are set in (the
-// project's copies, fonts/…). Opened with a project and saved back with it;
-// a flat file and a new canvas have the defaults.
+// project's copies, fonts/…), and the target (Project::target). Opened with
+// a project and saved back with it; a flat file has the defaults, a new
+// canvas the target it was made with.
 struct ProjectExtras {
     project::IrcBudget ircBudget;
     std::string notes;
     std::vector<project::Snapshot> snapshots;
     std::map<std::string, std::string> files;
     FontStore fonts;
+    Target target = Target::Ansi;
 
     bool operator==(const ProjectExtras&) const = default;
 };
@@ -105,9 +107,11 @@ public:
     // Starts over on a blank default-size canvas (one blank Background
     // layer) with no file and an empty undo stack.
     void clear();
-    // The same on a blank `width` x `height` canvas with iCE colours `ice`.
-    // The caller sees that the renderer can show it (MainWindow::newCanvas).
-    void clear(int width, int height, bool ice);
+    // The same on a blank `width` x `height` canvas with iCE colours `ice`
+    // and target `target`. An IRC document's .ans encoding is UTF-8, which
+    // keeps its glyphs; else CP437. The caller sees that the renderer can
+    // show it (MainWindow::newCanvas).
+    void clear(int width, int height, bool ice, Target target = Target::Ansi);
 
     // Reads the project (a .bwp zip or a project directory) at `path` into
     // `out` without touching any document; false and `error` (what
@@ -200,6 +204,12 @@ public:
     // can't hold it, so a flat save no longer holds all of the document
     // (flatHoldsAll) unless it is the default.
     bool setIrcBudget(const project::IrcBudget& budget);
+    // The target (extras().target): what the editor offers, ANSI's 16
+    // colours or IRC's 99. Set as one undo command ("Target"), as
+    // setIrcBudget is; false if it changes nothing. An .ans can't hold it,
+    // so an IRC target leaves a flat save not holding all (flatHoldsAll).
+    Target target() const { return extras_.target; }
+    bool setTarget(Target target);
 
     // The SAUCE record, iCE and the composite as one flat document.
     const AnsiDocument& ansi() const { return doc_; }
@@ -457,6 +467,9 @@ signals:
     // extras().ircBudget changed (setIrcBudget, its undo and redo; not on
     // open or new, see reset).
     void ircBudgetChanged();
+    // target() changed (setTarget, its undo and redo; not on open or new,
+    // see reset).
+    void targetChanged();
     // A command (a layer panel change, a text source, a format, the IRC
     // budget, a snapshot) is about to be pushed: emitted first, before the
     // command reads the document and outside any undo command, so a handler
@@ -482,6 +495,7 @@ private:
     friend class LayerPropsCommand;
     friend class SnapshotCommand;
     friend class IrcBudgetCommand;
+    friend class TargetCommand;
     friend class FormatCommand;
 
     void setModified(bool on);
@@ -492,6 +506,7 @@ private:
     // `pattern` ("Layer %1") with the first number no layer's name takes.
     std::string freeLayerName(const QString& pattern) const;
     void applyIrcBudget(const project::IrcBudget& budget);
+    void applyTarget(Target target);
     CompositeOptions compositeOptions() const { return {doc_.ice, Cell{}}; }
     // shownBelow, for fitLayerEdit
     std::function<Cell(int, int)> below() const;

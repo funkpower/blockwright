@@ -169,10 +169,13 @@ struct AnsiOutput {
     bool letterSpacingDropped = false;
     int aspectDropped = 0;
     std::string fontNameDropped;
+    // Cells whose 24-bit colour was written as the nearest of the 16
+    // (quantisedColourCount).
+    int coloursQuantised = 0;
 
     bool lossy() const {
         return !unwritable.empty() || blinkDropped || paletteDropped || fontDropped || letterSpacingDropped ||
-               aspectDropped || !fontNameDropped.empty();
+               aspectDropped || !fontNameDropped.empty() || coloursQuantised;
     }
 };
 
@@ -328,5 +331,12 @@ int ansControlCount(const std::vector<Unwritable>& cells);
 // (with iCE off) hides and shows the foreground, so on these it shows nothing.
 // A cluster or the continuation is never blank.
 bool blankGlyph(Glyph g);
+
+// How many cells of `canvas` show a 24-bit colour that isn't exactly one of
+// the 16 (kPalette), which .ans, XBIN and BIN write as the nearest: a
+// foreground on a glyph that draws one (not blankGlyph), a background on a
+// glyph that isn't a full block. Transparent cells don't count, and a
+// wide pair counts once, at its lead.
+int quantisedColourCount(const Canvas& canvas);
 
 } // namespace bw

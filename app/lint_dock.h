@@ -128,9 +128,10 @@ inline constexpr int kMaxLintRows = 1000;
 // The lint the Lint dock runs: lint::lintCanvas of `canvas`, the document's
 // composite as stored (its cells raw, iCE read through `ice`), under every
 // named ramp with the craft pairs (rampPick 0) or the one named ramp
-// rampPick - 1. The Layer Style dialog lints its preview through it too, so
-// the two never disagree.
-lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick = 0);
+// rampPick - 1, for the document's `target` (LintOptions::target). The
+// Layer Style dialog lints its preview through it too, so the two never
+// disagree.
+lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick = 0, Target target = Target::Ansi);
 
 class LintDock : public FollowsDocument {
     Q_OBJECT

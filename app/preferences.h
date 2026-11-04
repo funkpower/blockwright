@@ -1,18 +1,21 @@
 #pragma once
 // Edit > Preferences...: a tab per page. Fonts is the fonts folder (PLAN
-// §15), where TheDraw fonts for text layers are read from; the window adds
+// §15), where TheDraw fonts for text layers are read from; Documents is the
+// target new documents take (kDefaultTargetKey); the window adds
 // Shortcuts (shortcut_settings.h). The local collection is the default; the folder is
 // kept in the settings (appSettings) under kFontsFolderKey, and the dialog
 // lists what a background scan of it finds: each font, and each .tdf file it couldn't
 // read with the reason.
 
 #include "blockwright/font_store.h"
+#include "blockwright/target.h"
 
 #include <QDialog>
 #include <QString>
 
 #include <memory>
 
+class QComboBox;
 class QDialogButtonBox;
 class QLabel;
 class QLineEdit;
@@ -23,6 +26,12 @@ class QTabWidget;
 namespace bw {
 
 inline constexpr char kFontsFolderKey[] = "fonts/folder";
+inline constexpr char kDefaultTargetKey[] = "document/defaultTarget";
+
+// The target File > New and a new canvas take: the setting ("ansi" or
+// "irc"), ANSI when it is unset or names no target.
+Target defaultTargetSetting();
+void setDefaultTargetSetting(Target target);
 
 // The explicit setting, including empty, or the existing default under home.
 // A null home resolves through testing::home, or QDir::homePath() when that
@@ -54,6 +63,9 @@ public:
     QString fontsFolder() const;
     // An edited value or an explicit Browse/Clear choice; OK alone keeps defaults implicit.
     bool fontsFolderChanged() const;
+    // The target chosen for new documents, shown as defaultTargetSetting().
+    Target defaultTarget() const;
+    QComboBox* defaultTargetBox() const { return target_; }
     // The catalogue of fontsFolder(); null while scanning or for no folder.
     std::shared_ptr<const FontCatalogue> catalogue() const { return catalogue_; }
     bool scanning() const;
@@ -87,6 +99,7 @@ private:
     QPlainTextEdit* list_;
     QDialogButtonBox* buttons_;
     QTabWidget* pages_;
+    QComboBox* target_;
 };
 
 } // namespace bw

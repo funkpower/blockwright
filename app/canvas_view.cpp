@@ -357,9 +357,9 @@ void CanvasView::brushSettingsChanged() {
         tool_->settingsChanged();
 }
 
-void CanvasView::setForeground(int index) { setPen({Color::indexed(std::uint8_t(index & 15)), pen_.bg}); }
+void CanvasView::setForeground(int index) { setPen({swatchColor(index), pen_.bg}); }
 
-void CanvasView::setBackground(int index) { setPen({pen_.fg, Color::indexed(std::uint8_t(index & 15))}); }
+void CanvasView::setBackground(int index) { setPen({pen_.fg, swatchColor(index)}); }
 
 void CanvasView::setGlyphSet(int set) {
     set = ((set % kGlyphSetCount) + kGlyphSetCount) % kGlyphSetCount;

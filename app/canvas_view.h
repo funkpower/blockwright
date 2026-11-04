@@ -60,7 +60,8 @@ public:
     // pen/background).
     const Pen& pen() const { return pen_; }
     void setPen(const Pen& pen);
-    // The pen's colours one at a time, as palette indices.
+    // The pen's colours one at a time, as swatches 0-98 (swatchColor): 0-15
+    // the palette's indices, 16-98 mIRC's colours as their exact RGB.
     void setForeground(int index);
     void setBackground(int index);
 

@@ -255,6 +255,20 @@ private:
     project::IrcBudget before_, after_;
 };
 
+// A change of the document's target.
+class TargetCommand : public QUndoCommand {
+public:
+    TargetCommand(Document* doc, Target before, Target after)
+        : QUndoCommand(Document::tr("Target")), doc_(doc), before_(before), after_(after) {}
+
+    void redo() override { doc_->applyTarget(after_); }
+    void undo() override { doc_->applyTarget(before_); }
+
+private:
+    Document* doc_;
+    Target before_, after_;
+};
+
 // One format change (SAUCE, iCE, letter spacing) on the stack. An iCE
 // toggle also redraws each live text layer's style (iceEdit), its cells
 // before and after kept, so undo and redo put back exactly what was shown.
@@ -350,7 +364,7 @@ void Document::replace(project::Project p, const QString& path, FileForm form) {
     doc_.encoding = p.ansEncoding;
     resetLayers(std::move(p.layers));
     extras_ = {std::move(p.ircBudget), std::move(p.notes), std::move(p.snapshots), std::move(p.files),
-               std::move(p.fonts)};
+               std::move(p.fonts), p.target};
     countLostBlink_ = false;
     path_ = path;
     form_ = form;
@@ -377,6 +391,7 @@ project::Project Document::project() const {
     p.snapshots = extras_.snapshots;
     p.files = extras_.files;
     p.fonts = extras_.fonts;
+    p.target = extras_.target;
     p.ansEncoding = doc_.encoding;
     return p;
 }
@@ -430,6 +445,19 @@ bool Document::setIrcBudget(const project::IrcBudget& budget) {
 void Document::applyIrcBudget(const project::IrcBudget& budget) {
     extras_.ircBudget = budget;
     emit ircBudgetChanged();
+}
+
+bool Document::setTarget(Target target) {
+    emit commandAboutToPush();
+    if (target == extras_.target)
+        return false;
+    undo_.push(new TargetCommand(this, extras_.target, target));
+    return true;
+}
+
+void Document::applyTarget(Target target) {
+    extras_.target = target;
+    emit targetChanged();
 }
 
 bool Document::setFormat(const DocumentFormat& format, const QString& text) {
@@ -530,13 +558,16 @@ void Document::replace(AnsiDocument doc, const QString& path) {
 
 void Document::clear() { clear(Canvas::kDefaultWidth, Canvas::kDefaultHeight, true); }
 
-void Document::clear(int width, int height, bool ice) {
+void Document::clear(int width, int height, bool ice, Target target) {
     undo_.clear();
     doc_ = AnsiDocument{};
     doc_.canvas = Canvas(width, height);
     doc_.ice = ice;
+    if (target == Target::Irc)
+        doc_.encoding = TextEncoding::Utf8;
     resetLayers(LayerStack::fromCanvas(doc_.canvas));
     extras_ = {};
+    extras_.target = target;
     countLostBlink_ = false;
     path_.clear();
     form_ = FileForm::Ansi;
@@ -633,7 +664,8 @@ bool Document::flatHoldsAll() const {
     // cells layer uses none: those left are kept for a redo, not art
     const ProjectExtras none;
     if (stack_.size() != 1 || !(extras_.ircBudget == none.ircBudget && extras_.notes == none.notes &&
-                                extras_.snapshots == none.snapshots && extras_.files == none.files))
+                                extras_.snapshots == none.snapshots && extras_.files == none.files &&
+                                extras_.target == none.target))
         return false;
     // an .ans holds a styled layer's look, not its cells and style
     const Layer& l = stack_[0];

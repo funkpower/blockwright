@@ -556,6 +556,42 @@ TEST_CASE("a project keeps the encoding of the .ans it was made from, and an old
     CHECK(project::toAnsi(everything()).encoding == TextEncoding::Cp437);
 }
 
+TEST_CASE("a project keeps its target, and one without the key is ANSI", "[project][target]") {
+    Project p = everything();
+    CHECK(p.target == Target::Ansi);
+    Entries e = project::encode(p);
+    const QJsonObject ansi = object(e.at("manifest.json"));
+    CHECK_FALSE(ansi.contains("target"));
+
+    p.target = Target::Irc;
+    e = project::encode(p);
+    QJsonObject m = object(e.at("manifest.json"));
+    CHECK(m.value("target").toString() == QStringLiteral("irc"));
+    CHECK(m.value("version") == ansi.value("version"));
+    const Project back = project::decode(e);
+    CHECK(back.target == Target::Irc);
+    CHECK(back.layers == p.layers);
+    // the target is a preference, not art: the flat .ans is the same
+    CHECK(project::toAnsi(back).canvas == project::toAnsi(everything()).canvas);
+
+    // "ansi", or a value this build doesn't know, is ANSI
+    for (const char* other : {"ansi", "IRC", "mirc", ""}) {
+        INFO(other);
+        m["target"] = other;
+        e["manifest.json"] = json(m);
+        Project read;
+        REQUIRE_NOTHROW(read = project::decode(e));
+        CHECK(read.target == Target::Ansi);
+        CHECK(read.layers == p.layers);
+    }
+    for (const QJsonValue bad : {QJsonValue(1), QJsonValue(true), QJsonValue(QJsonValue::Null)}) {
+        INFO(json(QJsonObject{{"v", bad}}));
+        m["target"] = bad;
+        e["manifest.json"] = json(m);
+        CHECK_THROWS_AS(project::decode(e), ProjectError);
+    }
+}
+
 TEST_CASE("decode refuses a manifest and layers that disagree", "[project]") {
     const Project p = everything();
     const Entries good = project::encode(p);

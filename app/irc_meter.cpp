@@ -52,6 +52,7 @@ IrcMeter::IrcMeter(Document* doc, CanvasView* view, GutterScrollArea* scroll)
     connect(doc_, &Document::reset, this, &IrcMeter::resetRows);
     connect(doc_, &Document::formatChanged, this, &IrcMeter::resetRows);
     connect(doc_, &Document::ircBudgetChanged, this, &IrcMeter::resetRows);
+    connect(doc_, &Document::targetChanged, this, &IrcMeter::resetRows);
     connect(view_, &CanvasView::toolChanged, this, &IrcMeter::toolChanged);
     toolChanged();
     // The rows follow the canvas as it scrolls, zooms and moves.
@@ -118,7 +119,7 @@ const IrcMeter::Row& IrcMeter::row(int y) {
                 cells[std::size_t(c->x)] = c->after;
         const bool ice = doc_->ansi().ice;
         for (Cell& k : cells)
-            k = irc::sentCell(k, ice);
+            k = irc::sentCell(k, ice, doc_->target());
         r = {encoded(irc::mircRow(cells)), true};
     }
     return r;

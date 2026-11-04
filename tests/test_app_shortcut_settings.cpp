@@ -376,9 +376,10 @@ TEST_CASE("Edit > Preferences has a Shortcuts page, and OK applies it", "[shortc
         if (!d)
             return;
         shown = true;
-        CHECK(d->pages()->count() == 2);
+        CHECK(d->pages()->count() == 3);
         CHECK(d->pages()->tabText(0) == QStringLiteral("Fonts"));
-        CHECK(d->pages()->tabText(1) == QStringLiteral("Shortcuts"));
+        CHECK(d->pages()->tabText(1) == QStringLiteral("Documents"));
+        CHECK(d->pages()->tabText(2) == QStringLiteral("Shortcuts"));
         auto* e = d->findChild<ShortcutsEditor*>();
         REQUIRE(e);
         e->select(swap);

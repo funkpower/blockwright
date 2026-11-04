@@ -168,6 +168,9 @@ public:
     // The status bar's "CP437" or "UTF-8": the encoding Save writes an .ans
     // in (Document::textEncoding).
     QLabel* encodingLabel() const { return encodingLabel_; }
+    // The status bar's "ANSI" or "IRC": the document's target
+    // (Document::target), beside the encoding label.
+    QLabel* targetLabel() const { return targetLabel_; }
     const CanvasRenderer& renderer() const { return renderer_; }
     ToolRegistry* tools() const { return tools_; }
     SelectTool* selectTool() const { return selectTool_; }
@@ -365,6 +368,14 @@ private:
     void fillSamplesMenu();
     // The iCE and letter-spacing toggles (main_window_format.cpp).
     void createFormatActions(QMenu* view);
+    // Format > Target (main_window_format.cpp).
+    void createTargetActions(QMenu* format);
+    // The target label, Format > Target and the palette follow the
+    // document's target.
+    void updateTarget();
+    // Ctrl+arrows: the pen's foreground or background one swatch on, over
+    // the target's swatches (swatchCount), wrapping.
+    void stepColour(bool foreground, int step);
     // The renderer and the toggles follow the document's format.
     void formatChanged();
     void syncFormatActions();
@@ -512,6 +523,9 @@ private:
     SelectTool* selectTool_ = nullptr;
     QLabel* glyphSetLabel_ = nullptr;
     QLabel* encodingLabel_ = nullptr;
+    QLabel* targetLabel_ = nullptr;
+    QAction* ansiTargetAction_ = nullptr;
+    QAction* ircTargetAction_ = nullptr;
     QMenu* reopenMenu_ = nullptr;
     QList<QAction*> glyphSetActions_;
     QAction* iceAction_ = nullptr;

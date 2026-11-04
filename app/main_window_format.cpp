@@ -1,16 +1,20 @@
 // The MainWindow parts for the document format: File > SAUCE..., the
-// View menu's iCE colours and letter-spacing toggles, and Edit > Preferences...
-// (the fonts folder TheDraw faces come from).
+// View menu's iCE colours and letter-spacing toggles, Format > Target, and
+// Edit > Preferences... (the fonts folder TheDraw faces come from, the
+// target new documents take).
 
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "palette_widget.h"
 #include "library_dock.h"
 #include "preferences.h"
 #include "shortcut_settings.h"
 #include "sauce_dialog.h"
 
 #include <QAction>
+#include <QActionGroup>
+#include <QLabel>
 #include <QMenu>
 #include <QStatusBar>
 
@@ -31,6 +35,49 @@ void MainWindow::createFormatActions(QMenu* view) {
     ninePxAction_->setToolTip(tr("9 px cells, line-drawing glyphs 0xC0-0xDF joined as on VGA; off, 8 px"));
     connect(ninePxAction_, &QAction::triggered, this, &MainWindow::setNinePx);
     syncFormatActions();
+}
+
+void MainWindow::createTargetActions(QMenu* format) {
+    QMenu* target = format->addMenu(tr("&Target"));
+    target->setObjectName(QStringLiteral("targetMenu"));
+    auto* group = new QActionGroup(this);
+    const auto add = [&](const QString& text, const char* name, Target t, const QString& tip) {
+        QAction* a = target->addAction(text);
+        a->setObjectName(QString::fromLatin1(name));
+        a->setCheckable(true);
+        a->setToolTip(tip);
+        group->addAction(a);
+        connect(a, &QAction::triggered, this, [this, t] { doc_.setTarget(t); });
+        return a;
+    };
+    ansiTargetAction_ = add(tr("&ANSI (.ans)"), "targetAnsi", Target::Ansi,
+                            tr("The 16 colours and the glyphs an .ans holds"));
+    ircTargetAction_ = add(tr("&IRC"), "targetIrc", Target::Irc,
+                           tr("mIRC's 99 colours; saving as .ans, XBIN or BIN reports what it can't hold"));
+    updateTarget();
+}
+
+void MainWindow::updateTarget() {
+    const Target t = doc_.target();
+    if (targetLabel_)
+        targetLabel_->setText(t == Target::Irc ? tr("IRC") : tr("ANSI"));
+    if (ansiTargetAction_) {
+        ansiTargetAction_->setChecked(t == Target::Ansi);
+        ircTargetAction_->setChecked(t == Target::Irc);
+    }
+    if (palette_)
+        palette_->setTarget(t);
+}
+
+void MainWindow::stepColour(bool foreground, int step) {
+    const Target t = doc_.target();
+    const int n = swatchCount(t);
+    const Color& c = foreground ? view_->pen().fg : view_->pen().bg;
+    const int next = ((swatchOf(c, t) % n) + step + n) % n;
+    if (foreground)
+        view_->setForeground(next);
+    else
+        view_->setBackground(next);
 }
 
 void MainWindow::syncFormatActions() {
@@ -58,6 +105,7 @@ void MainWindow::editPreferences() {
     if (dialog.exec() != QDialog::Accepted)
         return;
     keys->apply();
+    setDefaultTargetSetting(dialog.defaultTarget());
     if (dialog.fontsFolderChanged())
         setFontsFolderSetting(dialog.fontsFolder());
     doc_.scanFontsFolder(dialog.fontsFolder());

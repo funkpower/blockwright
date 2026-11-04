@@ -251,6 +251,10 @@ QString lossDescription(const AnsiOutput& out, bool countWide) {
     if (!out.fontNameDropped.empty())
         parts << QObject::tr("the SAUCE font name %1 is left out (XBIN names no font)")
                      .arg(QString::fromStdString(cp437ToUtf8(out.fontNameDropped)));
+    if (out.coloursQuantised)
+        parts << plural(out.coloursQuantised,
+                        QObject::tr("%n cell is in a colour the file can't hold, saved as the nearest of the 16"),
+                        QObject::tr("%n cells are in colours the file can't hold, saved as the nearest of the 16"));
     return parts.join(QStringLiteral(";\n"));
 }
 
@@ -428,6 +432,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     glyphSetLabel_ = new QLabel;
     glyphSetLabel_->setObjectName(QStringLiteral("glyphSetLabel"));
     statusBar()->addPermanentWidget(glyphSetLabel_);
+    targetLabel_ = new QLabel;
+    targetLabel_->setObjectName(QStringLiteral("targetLabel"));
+    targetLabel_->setToolTip(tr("The document's target: ANSI's 16 colours or IRC's 99 (Format > Target)"));
+    statusBar()->addPermanentWidget(targetLabel_);
     encodingLabel_ = new QLabel;
     encodingLabel_->setObjectName(QStringLiteral("encodingLabel"));
     encodingLabel_->setToolTip(tr("The text encoding Save writes an .ans in"));
@@ -446,6 +454,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(&doc_, &Document::pathChanged, this, &MainWindow::updateTitle);
     connect(&doc_, &Document::pathChanged, this, &MainWindow::updateEncoding);
     connect(&doc_, &Document::encodingChanged, this, &MainWindow::updateEncoding);
+    connect(&doc_, &Document::reset, this, &MainWindow::updateTarget);
+    connect(&doc_, &Document::targetChanged, this, &MainWindow::updateTarget);
     connect(&doc_, &Document::fileWritten, this, [](const QString& path) { addRecentFile(path); });
     connect(view_, &CanvasView::cursorMoved, this, [this] {
         const QRect r = view_->toWidget(view_->cellRect(view_->cellCursor()));
@@ -491,8 +501,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         connect(findChild<QAction*>(QString::fromLatin1(name)), &QAction::changed, this, &MainWindow::updateGlyphSet);
     for (QAction* set : std::as_const(glyphSetActions_))
         connect(set, &QAction::changed, this, &MainWindow::updateGlyphSet);
+    // the first document is a new one, so it takes the default target
+    if (defaultTargetSetting() != doc_.target())
+        doc_.clear(Canvas::kDefaultWidth, Canvas::kDefaultHeight, true, defaultTargetSetting());
     updateTitle();
     updateEncoding();
+    updateTarget();
     updateStatus();
     updateGlyphSet();
     resize(initialSize(screen()->availableGeometry().size()));
@@ -599,6 +613,7 @@ void MainWindow::createActions() {
     a->setObjectName(QStringLiteral("zoomReset"));
     a->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     createFormatActions(view);
+    createTargetActions(menuBar()->addMenu(tr("F&ormat")));
     createIrcActions(file, view);
 
     // Colours and glyph sets: Moebius's keys.
@@ -610,13 +625,13 @@ void MainWindow::createActions() {
     };
     QMenu* colours = menuBar()->addMenu(tr("&Colours"));
     add(colours, tr("&Previous Foreground"), "previousForeground", QKeySequence(Qt::CTRL | Qt::Key_Up),
-        [this] { view_->setForeground(view_->pen().fg.paletteIndex() + 15); });
+        [this] { stepColour(true, -1); });
     add(colours, tr("&Next Foreground"), "nextForeground", QKeySequence(Qt::CTRL | Qt::Key_Down),
-        [this] { view_->setForeground(view_->pen().fg.paletteIndex() + 1); });
+        [this] { stepColour(true, 1); });
     add(colours, tr("P&revious Background"), "previousBackground", QKeySequence(Qt::CTRL | Qt::Key_Left),
-        [this] { view_->setBackground(view_->pen().bg.paletteIndex() + 15); });
+        [this] { stepColour(false, -1); });
     add(colours, tr("N&ext Background"), "nextBackground", QKeySequence(Qt::CTRL | Qt::Key_Right),
-        [this] { view_->setBackground(view_->pen().bg.paletteIndex() + 1); });
+        [this] { stepColour(false, 1); });
     colours->addSeparator();
     add(colours, tr("&Default Colours"), "defaultColours", QKeySequence(Qt::CTRL | Qt::Key_D),
         [this] { view_->setPen(Pen{}); });
@@ -794,7 +809,7 @@ bool MainWindow::newCanvas(QSize size, bool ice, QString* error) {
         *error = tr("the canvas is too large to display");
         return false;
     }
-    doc_.clear(size.width(), size.height(), ice);
+    doc_.clear(size.width(), size.height(), ice, defaultTargetSetting());
     return true;
 }
 
@@ -814,7 +829,7 @@ void MainWindow::fillRecentMenu() {
 void MainWindow::showStartScreen() {
     if (!maybeSave())
         return;
-    doc_.clear();
+    doc_.clear(Canvas::kDefaultWidth, Canvas::kDefaultHeight, true, defaultTargetSetting());
     auto* screen = new StartScreen(this);
     screen->setAttribute(Qt::WA_DeleteOnClose);
     screen->open();
@@ -828,7 +843,7 @@ bool MainWindow::saveFile(const QString& path, QString* error, bool allowLossy,
 
 void MainWindow::newFile() {
     if (maybeSave())
-        doc_.clear();
+        doc_.clear(Canvas::kDefaultWidth, Canvas::kDefaultHeight, true, defaultTargetSetting());
 }
 
 void MainWindow::open() {

@@ -1,6 +1,7 @@
 #include "blockwright/ansi.h"
 
 #include "blockwright/cp437.h"
+#include "blockwright/ramp.h"
 #include "blockwright/width.h"
 
 #include <algorithm>
@@ -559,6 +560,20 @@ bool isWritableGlyph(char32_t ch) {
 
 bool blankGlyph(Glyph g) { return g == U' ' || g == U'\0' || g == U'\u00a0'; }
 
+int quantisedColourCount(const Canvas& canvas) {
+    const auto off = [](const Color& c) { return !c.isIndexed() && kPalette[nearestPaletteIndex(c.rgb)] != c.rgb; };
+    int n = 0;
+    for (int y = 0; y < canvas.height(); ++y)
+        for (int x = 0; x < canvas.width(); ++x) {
+            const Cell& c = canvas.at(x, y);
+            // a wide pair is counted at its lead
+            if (!c.transparent && !c.ch.isContinuation() &&
+                ((off(c.fg) && !blankGlyph(c.ch)) || (off(c.bg) && c.ch != Glyph(kFullBlock))))
+                ++n;
+        }
+    return n;
+}
+
 int lostBlinkCount(const AnsiDocument& doc) {
     int n = 0;
     for (int y = 0; y < doc.canvas.height(); ++y)
@@ -745,6 +760,7 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
     const bool ice = writtenIce(doc, &out.blinkDropped);
     out.paletteDropped = customPalette(doc);
     out.fontDropped = doc.font.has_value();
+    out.coloursQuantised = quantisedColourCount(cv);
     s = "\x1b[0m";
     bool wrapPending = false;  // the row before was written full width, with no line break
     for (int y = 0; y < cv.height(); ++y) {

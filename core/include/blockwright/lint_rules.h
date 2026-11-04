@@ -5,6 +5,7 @@
 // flat areas, what IRC drops, glyphs an .ans saves as '?'). The lint panel and
 // `blockwright-cli lint` both run lintCanvas, so they agree.
 #include "blockwright/lint.h"
+#include "blockwright/target.h"
 
 #include <optional>
 #include <string>
@@ -37,6 +38,7 @@ struct Finding {
         WidthVaries,     // a glyph whose columns a client or terminal may count differently
         LoneMark,        // a zero-width code point in a cell of its own, or a lone wide cell
         BidiControl,     // a bidi control, which reorders the rest of the line in some clients
+        AnsLoss,         // IRC target: what an .ans save would drop, one finding per kind
     };
     Kind kind = Kind::Noise;
     std::string ramp;  // the ramp a ladder finding came from; empty for the rest
@@ -66,6 +68,8 @@ struct RuleOptions {
     std::optional<Box> box;
     // Flat areas of fewer cells than this aren't reported.
     int minFlatCells = 48;
+    // The document's target: under IRC, NoCp437 is off and AnsLoss runs.
+    Target target = Target::Ansi;
 };
 
 // The craft rules over the whole canvas, in reading order (by y, then x).
@@ -102,6 +106,7 @@ struct RuleOptions {
 // - NoCp437: a glyph an .ans saves as '?': one with no CP437 code, or one
 //   whose CP437 byte .ans reads as a control code (ansControlByte: ○ ◙ ♪ → ←),
 //   which XBIN and BIN keep. A cluster is named by its code points.
+//   ANSI target only.
 // - WidthVaries (PLAN §16, Lint): a cell holding a code point of width 0
 //   or 2 whose width varies since widthVariesFloor() (widthVaries), a
 //   joiner (U+200D) in a cluster, VS16 (U+FE0F) on a narrow base, or a
@@ -113,6 +118,11 @@ struct RuleOptions {
 //   two-column glyph with no continuation right of it (a lone wide cell).
 // - BidiControl: a cell holding U+061C, U+200E-200F, U+202A-202E or
 //   U+2066-2069, alone or in a cluster.
+// - AnsLoss: IRC target only, where the art is fine for IRC and an .ans is
+//   the lossy save. One finding per kind of loss, at the first cell it
+//   covers, counting the cells: glyphs a CP437 .ans saves as '?' (the cells
+//   NoCp437 would report) and 24-bit colours saved as the nearest of the 16
+//   (quantisedColourCount).
 std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options = {});
 
 // Whether hand shading goes between the two colours, either way round,
@@ -131,6 +141,7 @@ struct LintOptions {
     std::optional<Box> box;   // only findings at a cell in the box, and Flat judged there; the lint still reads the whole canvas
     bool ice = true;
     double maxNoise = 0.02;
+    Target target = Target::Ansi;  // RuleOptions::target
 };
 
 struct LintReport {

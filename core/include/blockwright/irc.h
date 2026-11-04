@@ -4,6 +4,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/mirc.h"
+#include "blockwright/target.h"
 
 #include <array>
 #include <cstddef>
@@ -87,11 +88,15 @@ std::vector<Unwritable> unwritable(const Canvas& canvas);
 // A cell of the editor's canvas as it is sent: as it shows, and is saved,
 // with iCE colours `ice` (iceCell). With iCE off a bright background goes as
 // blink on its dark colour, which IRC shows as the dark colour. A
-// transparent cell is left as it is; the encoder draws it blank. The row
-// meter, File > Export IRC Text and the IRC View dock all send these.
-Cell sentCell(const Cell& c, bool ice);
+// transparent cell is left as it is; the encoder draws it blank. Under the
+// IRC target a cell with an RGB background (an mIRC colour past 15, or the
+// eyedropper's) is left as it is too: iCE is the .ans's, and folding it
+// would send mIRC 80 as CGA green (#350); an indexed cell folds as under
+// ANSI, so it sends the same bytes. The row meter, File > Export IRC Text,
+// the IRC View dock and `cli export --irc` all send these.
+Cell sentCell(const Cell& c, bool ice, Target target = Target::Ansi);
 // The canvas with every cell as sentCell has it.
-Canvas sentCanvas(const Canvas& canvas, bool ice);
+Canvas sentCanvas(const Canvas& canvas, bool ice, Target target = Target::Ansi);
 
 // A canvas row as one IRC line, and how many of its cells fit changed.
 struct Line {

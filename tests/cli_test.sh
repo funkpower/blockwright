@@ -592,7 +592,7 @@ if [[ -e $tmp/x.ans ]]; then bad "a refused shade mode wrote $tmp/x.ans"; else o
 
 # lint: the whole lint, one planted fault a piece (#106)
 expect "--help lists lint" 0 '^  lint <in> +the ladder check' -- "$cli" --help
-expect "usage lists lint" 2 'lint \[--ramp R\]\.\.\. \[--box x0,y0,x1,y1\] \[--json\] <in>' -- "$cli" lint
+expect "usage lists lint" 2 'lint \[--ramp R\]\.\.\. \[--box x0,y0,x1,y1\] \[--target ansi\|irc\] \[--json\] <in>' -- "$cli" lint
 k='\033[0;40m '; K='\033[0;1;30;40m\xdb'; w='\033[0;37;40m\xdb'
 s1='\033[0;1;30;40m\xb0'; s2='\033[0;1;30;40m\xb1'; s3='\033[0;1;30;40m\xb2'; Wk='\033[0;1;37;40m\xb1'
 cells() { local o=; for c in "$@"; do o+=$c; done; printf "$o"; }
@@ -881,6 +881,41 @@ ln -s ../victim "$proj/linked/.manifest.json.bw-tmp"
 # a hidden entry isn't the project's, whatever it is: skipped, never written through
 expect "snapshot skips a hidden link in a project" 0 '^r1$' -- "$cli" snapshot "$proj/linked"
 if [[ $(cat "$proj/victim") == precious && -L $proj/linked/.manifest.json.bw-tmp && -f $proj/linked/snapshots/r1.ans ]]; then ok "the link's target is untouched"; else bad "snapshot wrote through a link"; fi
+
+# the target (#350): a project keeps it, pack and unpack set it, lint
+# follows it, and a colour an .ans can't hold is a loss under either
+rgb=$tmp/rgb
+cp -R "$data/irc-target/rgb" "$rgb"
+expect "info: a project without a target is ANSI" 0 '^target: +ansi$' -- "$cli" info "$rgb"
+expect "info: a flat file has no target" 0 '^size: ' -- "$cli" info "$piece"
+if "$cli" info "$piece" | grep -q '^target:'; then bad "info printed a target for a flat file"; else ok "info prints no target for a flat file"; fi
+expect "pack --target irc" 0 '^$' -- "$cli" pack --target irc "$rgb" "$tmp/rgb-irc.bwp"
+expect "info reads the target back" 0 '^target: +irc$' -- "$cli" info "$tmp/rgb-irc.bwp"
+expect "pack keeps a project's target" 0 '^$' -- "$cli" pack "$tmp/rgb-irc.bwp" "$tmp/rgb-irc2.bwp"
+expect "info: the target is kept" 0 '^target: +irc$' -- "$cli" info "$tmp/rgb-irc2.bwp"
+expect "unpack --target in any case" 0 '^$' -- "$cli" unpack --target ANSI "$tmp/rgb-irc.bwp" "$tmp/rgb-ansi"
+expect "info: unpack set ANSI" 0 '^target: +ansi$' -- "$cli" info "$tmp/rgb-ansi"
+if grep -q '"target"' "$tmp/rgb-ansi/manifest.json"; then bad "an ANSI manifest names its target"; else ok "an ANSI manifest has no target key"; fi
+expect "unpack --target irc of an .ans" 0 '^$' -- "$cli" unpack --target irc "$piece" "$tmp/tux-irc"
+if grep -Eq '"target": *"irc"' "$tmp/tux-irc/manifest.json"; then ok "an IRC manifest says so"; else bad "an IRC manifest has no target"; fi
+expect "a bad --target is a usage error" 2 "--target takes ansi or irc, not 'mirc'" -- "$cli" pack --target mirc "$piece" "$tmp/x.bwp"
+expect "--target needs a value" 2 '.' -- "$cli" lint "$piece" --target
+expect "convert takes no --target" 2 '.' -- "$cli" convert --target irc "$piece" "$tmp/x.ans"
+expect "lint under ANSI: no ans-loss" 0 '^clean' -- "$cli" lint "$rgb"
+expect "lint --target irc: ans-loss" 4 '^0,0 ans-loss - 1 cell is in a colour an \.ans can.t hold, saved as the nearest of the 16 \(fine for IRC\)$' -- "$cli" lint --target irc "$rgb"
+expect "lint follows the project's target" 4 'ans-loss' -- "$cli" lint "$tmp/rgb-irc.bwp"
+expect "lint --target ansi overrides it" 0 '^clean' -- "$cli" lint --target ansi "$tmp/rgb-irc.bwp"
+expect "lint --json names ans-loss" 4 '"kind": *"ans-loss"' -- "$cli" lint --json --target irc "$rgb"
+if [[ $("$cli" lint --target irc "$piece" 2>&1) == $("$cli" lint "$piece" 2>&1) ]]; then ok "lint --target irc of an .ans that loses nothing says what ANSI does"; else bad "lint --target irc of tux differs"; fi
+expect "convert refuses a colour it can't hold" 1 'warning: .*rgb: 1 cell is in a colour the file can.t hold, written as the nearest of the 16' -- "$cli" convert "$rgb" "$tmp/rgb.ans"
+if [[ -e $tmp/rgb.ans ]]; then bad "refused RGB convert wrote a file"; else ok "refused RGB convert writes nothing"; fi
+expect "convert --allow-lossy writes the nearest" 0 'nearest of the 16' -- "$cli" convert --allow-lossy "$rgb" "$tmp/rgb.ans"
+expect "convert to XBIN counts it too" 1 'nearest of the 16' -- "$cli" convert "$rgb" "$tmp/rgb.xb"
+expect "snapshot refuses it" 1 'r1 not saved: the snapshot loses data' -- "$cli" snapshot "$tmp/rgb-ansi"
+# IRC carries the colour: mIRC 77, its own code
+expect "export --irc sends mIRC 77" 0 '1 line' -- "$cli" export --irc "$tmp/rgb-irc.bwp" "$tmp/rgb.txt"
+printf '\00377,1X\00315BCD\n' >"$tmp/rgb-want.txt"
+if cmp -s "$tmp/rgb.txt" "$tmp/rgb-want.txt"; then ok "export --irc writes ^C77"; else bad "export --irc wrote $(od -An -c "$tmp/rgb.txt")"; fi
 
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]

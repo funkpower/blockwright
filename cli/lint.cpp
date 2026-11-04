@@ -47,6 +47,7 @@ bw::lint::LintReport lintDocument(const bw::AnsiDocument& doc, const LintCliOpti
     lo.craftPairs = o.ramps.empty();
     lo.box = o.box;
     lo.ice = doc.ice;
+    lo.target = o.target;
     return bw::lint::lintCanvas(doc.canvas, lo);
 }
 

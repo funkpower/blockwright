@@ -45,6 +45,7 @@ FollowsDocument::FollowsDocument(Document* doc, const QString& staleText, QWidge
     connect(doc_, &Document::cellsChanged, this, &FollowsDocument::schedule);
     connect(doc_, &Document::reset, this, &FollowsDocument::schedule);
     connect(doc_, &Document::formatChanged, this, &FollowsDocument::schedule);
+    connect(doc_, &Document::targetChanged, this, &FollowsDocument::schedule);
     connect(watcher_, &QFutureWatcher<Show>::finished, this, &FollowsDocument::finished);
 }
 
@@ -158,7 +159,7 @@ LintDock::LintDock(Document* doc, QWidget* parent) :
     });
 }
 
-lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick) {
+lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick, Target target) {
     lint::LintOptions o;
     if (rampPick <= 0) {
         o.ramps = namedRamps();
@@ -167,12 +168,14 @@ lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick) {
         o.ramps = {namedRamps()[std::size_t(rampPick - 1)]};
     }
     o.ice = ice;
+    o.target = target;
     return lint::lintCanvas(canvas, o);
 }
 
 FollowsDocument::Work LintDock::snapshot() {
-    return [this, canvas = doc_->canvas(), ice = doc_->ansi().ice, pick = ramps_->currentIndex()]() -> Show {
-        auto report = std::make_shared<lint::LintReport>(dockLint(canvas, ice, pick));
+    return [this, canvas = doc_->canvas(), ice = doc_->ansi().ice, pick = ramps_->currentIndex(),
+            target = doc_->target()]() -> Show {
+        auto report = std::make_shared<lint::LintReport>(dockLint(canvas, ice, pick, target));
         return [this, report] { showReport(std::move(*report)); };
     };
 }
@@ -234,8 +237,8 @@ FollowsDocument::Work IrcViewDock::snapshot() {
     // the cells and options Export sends (IrcMeter::lines): as saved with
     // the document's iCE setting, with the row meter's options
     return [this, canvas = doc_->canvas(), ice = doc_->ansi().ice, opts = meter_->options(), budget = budget(),
-            glyph = glyphWidth(doc_->ansi())]() -> Show {
-        auto view = std::make_shared<irc::View>(irc::ircView(irc::sentCanvas(canvas, ice), budget, opts));
+            glyph = glyphWidth(doc_->ansi()), target = doc_->target()]() -> Show {
+        auto view = std::make_shared<irc::View>(irc::ircView(irc::sentCanvas(canvas, ice, target), budget, opts));
         QImage image = renderIrcView(*view, glyph);
         return [this, view, image, budget] {
             view_ = std::move(*view);

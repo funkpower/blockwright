@@ -74,6 +74,7 @@ add_executable(blockwright-tests
   test_gradient.cpp
   test_irc.cpp
   test_irc_fit.cpp
+  test_irc_target.cpp
   test_layers.cpp
   test_library.cpp
   test_library_bundled.cpp
@@ -532,6 +533,7 @@ add_executable(blockwright-app-tests
   test_app_draw.cpp
   test_app_format.cpp
   test_app_irc.cpp
+  test_app_irc_target.cpp
   test_app_library.cpp
   test_app_library_styles.cpp
   test_app_style_apply.cpp

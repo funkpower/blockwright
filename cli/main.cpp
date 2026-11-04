@@ -12,13 +12,13 @@
 //   blockwright-cli shade --form dome|cylinder|plane [--glint] | --despeckle | --rim
 //                         --ramp NAME|c,c,... [--light N|NE|...|NW] --box x0,y0,x1,y1 and/or
 //                         --mask <mask.ans> [--ice] [--allow-lossy] <in.ans> <out.ans>
-//   blockwright-cli lint [--ramp NAME|c,c,...]... [--box x0,y0,x1,y1] [--json] <in.ans>
+//   blockwright-cli lint [--ramp NAME|c,c,...]... [--box x0,y0,x1,y1] [--target ansi|irc] [--json] <in.ans>
 //   blockwright-cli render --irc [--budget N] [--fit] [--pad] [--swap-shades]
 //                          [--scale N] [--font-width 8|9] <in.ans|project> <out.png>
 //   blockwright-cli library list [dir]
 //   blockwright-cli library check <dir>
-//   blockwright-cli pack [--allow-lossy] <in.ans|project> <out.bwp>
-//   blockwright-cli unpack [--allow-lossy] <in.ans|project> <dir>
+//   blockwright-cli pack [--allow-lossy] [--target ansi|irc] <in.ans|project> <out.bwp>
+//   blockwright-cli unpack [--allow-lossy] [--target ansi|irc] <in.ans|project> <dir>
 //   blockwright-cli snapshot [--allow-lossy] <project>
 //   blockwright-cli add-generator [--name NAME] [--timeout S] <project> <generator-dir>
 //   blockwright-cli run-generators [--layer ID]... [--timeout S] <project>
@@ -45,6 +45,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/shading.h"
+#include "blockwright/composite.h"
 #include "blockwright/cp437.h"
 #include "blockwright/credits.h"
 #include "blockwright/generator.h"
@@ -134,6 +135,19 @@ bw::AnsiDocument load(const std::string& path) {
     return doc;
 }
 
+// A project as IRC text sends it: its composite as the editor saves it
+// (toAnsi), except that under the IRC target an RGB colour is sent as it is,
+// not folded by iCE (irc::sentCell).
+bw::AnsiDocument sentDocument(const bw::project::Project& p) {
+    bw::AnsiDocument doc = bw::project::toAnsi(p);
+    if (p.target == bw::Target::Irc) {
+        bw::CompositeOptions o;
+        o.ice = p.ice;
+        doc.canvas = bw::irc::sentCanvas(bw::flatten(p.layers, o), p.ice, p.target);
+    }
+    return doc;
+}
+
 std::string text(const std::string& cp437) { return bw::cp437ToUtf8(cp437); }
 
 const char* spacingName(int v) {
@@ -164,6 +178,7 @@ int projectInfo(const std::string& path) {
               << "size:        " << s.width() << "x" << s.height() << "\n"
               << "ice:         " << (p.ice ? "on" : "off") << "\n"
               << "encoding:    " << (p.ansEncoding == bw::TextEncoding::Utf8 ? "UTF-8" : "CP437") << "\n"
+              << "target:      " << bw::targetName(p.target) << "\n"
               << "irc budget:  " << p.ircBudget.bytes << " bytes (" << p.ircBudget.profile << ")\n"
               << "layers:      " << s.size() << " (next id " << s.nextId() << ")\n";
     // top first, as the layer panel lists them
@@ -301,6 +316,10 @@ void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
     if (!res.fontNameDropped.empty())
         std::cerr << "blockwright-cli: warning: " << in << ": its SAUCE font name (" << text(res.fontNameDropped)
                   << ") is left out: XBIN names no font\n";
+    if (const int n = res.coloursQuantised)
+        std::cerr << "blockwright-cli: warning: " << in << ": " << n
+                  << (n == 1 ? " cell is in a colour" : " cells are in colours")
+                  << " the file can't hold, written as the nearest of the 16\n";
 }
 
 void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocument& doc, bool allowLossy,
@@ -348,10 +367,15 @@ void refuseSameFile(const std::string& in, const std::string& out) {
 // it (a warning for blink that loses), or a project as it is. A project
 // doesn't keep an XBIN's palette or font: a warning for each, and nothing is
 // written to `out` without allowLossy, as convert refuses. Blink is lost on
-// opening, as the editor loses it, so it is only warned of.
-bw::project::Project asProject(const std::string& in, const std::string& out, bool allowLossy) {
-    if (bw::project::isProject(in))
-        return loadProject(in);
+// opening, as the editor loses it, so it is only warned of. `target`, when
+// given, is the project's target (a flat file's is ANSI).
+bw::project::Project asProject(const std::string& in, const std::string& out, bool allowLossy,
+                               std::optional<bw::Target> target) {
+    if (bw::project::isProject(in)) {
+        bw::project::Project p = loadProject(in);
+        p.target = target.value_or(p.target);
+        return p;
+    }
     bw::Opened opened;
     bw::AnsiDocument doc = load(in);
     bw::AnsiOutput loss;
@@ -362,6 +386,7 @@ bw::project::Project asProject(const std::string& in, const std::string& out, bo
     warnLoss(in, loss);
     if ((loss.paletteDropped || loss.fontDropped) && !allowLossy)
         throw Failure{out + ": not written: the project loses data (--allow-lossy writes it anyway)"};
+    p.target = target.value_or(bw::Target::Ansi);
     return p;
 }
 
@@ -376,9 +401,10 @@ void writeProject(const bw::project::Project& p, const std::string& out, bool di
     }
 }
 
-int pack(const std::string& in, const std::string& out, bool directory, bool allowLossy) {
+int pack(const std::string& in, const std::string& out, bool directory, bool allowLossy,
+         std::optional<bw::Target> target) {
     refuseSameFile(in, out);
-    writeProject(asProject(in, out, allowLossy), out, directory);
+    writeProject(asProject(in, out, allowLossy, target), out, directory);
     return kOk;
 }
 
@@ -513,7 +539,7 @@ IrcSend ircSend(const std::string& in, const IrcArgs& args) {
     if (bw::project::isProject(in)) {
         const bw::project::Project p = loadProject(in);
         budget = budget.value_or(p.ircBudget.bytes);
-        s.doc = bw::project::toAnsi(p);
+        s.doc = sentDocument(p);
     } else {
         s.doc = load(in);
     }
@@ -769,10 +795,19 @@ int render(const std::string& in, const std::string& out, const bw::RenderOption
     return kOk;
 }
 
-// The whole lint of the piece (lint_rules.h) with its own iCE colours: one
-// line per finding and a summary, or JSON. Findings exit kFindings.
-int lint(const std::string& in, const bwcli::LintCliOptions& o) {
-    const bw::AnsiDocument doc = load(in);
+// The whole lint of the piece (lint_rules.h) with its own iCE colours, for
+// `target`, else a project's own, else ANSI: one line per finding and a
+// summary, or JSON. Findings exit kFindings.
+int lint(const std::string& in, bwcli::LintCliOptions o, std::optional<bw::Target> target) {
+    bw::AnsiDocument doc;
+    if (bw::project::isProject(in)) {
+        const bw::project::Project p = loadProject(in);
+        o.target = target.value_or(p.target);
+        doc = o.target == bw::Target::Irc ? sentDocument(p) : bw::project::toAnsi(p);
+    } else {
+        o.target = target.value_or(bw::Target::Ansi);
+        doc = load(in);
+    }
     const bw::lint::LintReport r = bwcli::lintDocument(doc, o);
     std::cout << (o.json ? bwcli::lintJson(r) : bwcli::lintText(r));
     return r.findings.empty() ? kOk : kFindings;
@@ -911,7 +946,10 @@ int main(int argc, char** argv) {
         "                       named ramp and the craft pairs\n"
         "                       between), pixel noise and the craft rules; one\n"
         "                       line per finding (x,y kind ramp message) and a\n"
-        "                       summary, or --json. Exits 4 when there are findings\n"
+        "                       summary, or --json. Exits 4 when there are findings.\n"
+        "                       --target irc (default: a project's own, else\n"
+        "                       ansi) turns no-cp437 off and counts what an .ans\n"
+        "                       save drops instead (ans-loss)\n"
         "  render --irc <in> <out.png>\n"
         "                       draw the IRC view: the mIRC palette, what IRC\n"
         "                       drops, and each line cut at --budget bytes, 1 to\n"
@@ -929,7 +967,9 @@ int main(int argc, char** argv) {
         "  unpack <in> <dir>    write an .ans or a project as a project directory;\n"
         "                       <dir> must be empty or a project already. A\n"
         "                       project can't hold an XBIN's palette or font:\n"
-        "                       pack and unpack drop them only with --allow-lossy\n"
+        "                       pack and unpack drop them only with --allow-lossy.\n"
+        "                       --target ansi|irc sets the project's target\n"
+        "                       (default: a project's own, else ansi)\n"
         "  snapshot <project>   save the flattened composite as the project's next\n"
         "                       round (snapshots/rN.ans) and print rN\n"
         "  add-generator <project> <dir>\n"
@@ -1094,6 +1134,12 @@ int main(int argc, char** argv) {
         QStringLiteral("convert, shade: write an .ans output as cp437 or utf-8 (default: cp437; SAUCE stays CP437)"),
         QStringLiteral("enc"), QStringLiteral("cp437"));
     parser.addOption(outputEncodingOpt);
+    const QCommandLineOption targetOpt(
+        QStringLiteral("target"),
+        QStringLiteral("lint: lint for ansi or irc (default: a project's own, else ansi); pack, unpack: the "
+                       "project's target (default: a project's own, else ansi)"),
+        QStringLiteral("target"));
+    parser.addOption(targetOpt);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators or import-scene"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
@@ -1123,11 +1169,12 @@ int main(int argc, char** argv) {
                   << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--mask <mask>] [--ice] [--allow-lossy] <in> <out>\n"
                   << "       | shade --form dome|cylinder|plane [--glint] | --despeckle | --rim --ramp R [--light N|NE|...|NW]\n"
                   << "         --box x0,y0,x1,y1 and/or --mask <mask> [--ice] [--allow-lossy] <in> <out>\n"
-                  << "       | lint [--ramp R]... [--box x0,y0,x1,y1] [--json] <in>\n"
+                  << "       | lint [--ramp R]... [--box x0,y0,x1,y1] [--target ansi|irc] [--json] <in>\n"
                   << "       | render --irc [--budget N] [--fit] [--pad] [--swap-shades] [--scale N] [--font-width 8|9]\n"
                   << "         <in> <out.png>\n"
                   << "       | library list [dir] | library check <dir>\n"
-                  << "       | pack <in> <out.bwp> | unpack <in> <dir> | snapshot [--allow-lossy] <project>\n"
+                  << "       | pack [--target ansi|irc] <in> <out.bwp> | unpack [--target ansi|irc] <in> <dir>\n"
+                  << "       | snapshot [--allow-lossy] <project>\n"
                   << "       | add-generator [--name NAME] [--timeout S] <project> <dir>\n"
                   << "       | run-generators [--layer ID]... [--timeout S] <project>\n"
                   << "       | import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]\n"
@@ -1154,6 +1201,7 @@ int main(int argc, char** argv) {
         {&bakeOpt, {"import-scene"}},      {&authorOpt, {"import-scene"}}, {&dateOpt, {"import-scene"}},
         {&encodingOpt, {"info", "convert", "render", "export", "shade", "lint", "pack", "unpack"}},
         {&outputEncodingOpt, {"convert", "shade"}},
+        {&targetOpt, {"lint", "pack", "unpack"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
@@ -1173,6 +1221,15 @@ int main(int argc, char** argv) {
                           " option, not a " + cmd.toStdString() + " option")
                              .c_str());
         }
+    // --target, read the same way for lint, pack and unpack.
+    const auto targetValue = [&]() -> std::optional<bw::Target> {
+        if (!parser.isSet(targetOpt))
+            return std::nullopt;
+        const QString v = parser.value(targetOpt);
+        if (const std::optional<bw::Target> t = bw::parseTarget(v.toStdString()))
+            return t;
+        throw Usage{"--target takes ansi or irc, not '" + v.toStdString() + "'"};
+    };
     // export --irc's and render --irc's options, read the same way for both.
     const auto ircArgs = [&] {
         IrcArgs a;
@@ -1303,14 +1360,14 @@ int main(int argc, char** argv) {
             if (parser.isSet(boxOpt))
                 o.box = boxValue(parser.value(boxOpt));
             o.json = parser.isSet(jsonOpt);
-            return lint(args[1].toStdString(), o);
+            return lint(args[1].toStdString(), o, targetValue());
         }
         if (cmd == QLatin1String("pack") || cmd == QLatin1String("unpack")) {
             if (args.size() != 3)
                 return usage(cmd == QLatin1String("pack") ? "pack takes an input and an output .bwp"
                                                           : "unpack takes an input and an output directory");
             return pack(args[1].toStdString(), args[2].toStdString(), cmd == QLatin1String("unpack"),
-                        parser.isSet(lossyOpt));
+                        parser.isSet(lossyOpt), targetValue());
         }
         if (cmd == QLatin1String("snapshot")) {
             if (args.size() != 2)

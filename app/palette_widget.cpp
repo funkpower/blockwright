@@ -8,11 +8,15 @@
 #include <QPainterPath>
 #include <QToolTip>
 
+#include <algorithm>
+
 namespace bw {
 
 namespace {
 
 constexpr int kSwatch = 22, kGap = 2, kColumns = 8;
+// mIRC's 16-98: rows of 12, so the greys (88-98) make a row of their own.
+constexpr int kSmall = 16, kMircColumns = 12;
 // The pen's swatches overlap by a third; the corners left over hold the
 // swap arrow and the reset.
 constexpr int kPen = 2 * kSwatch + kGap, kPenSwatch = kPen * 2 / 3;
@@ -34,6 +38,14 @@ PaletteWidget::PaletteWidget(QWidget* parent) : QWidget(parent) {
 void PaletteWidget::setKeyActions(QAction* swap, QAction* reset) {
     swap_ = swap;
     reset_ = reset;
+}
+
+void PaletteWidget::setTarget(Target target) {
+    if (target == target_)
+        return;
+    target_ = target;
+    updateGeometry();
+    update();
 }
 
 void PaletteWidget::setPen(const Pen& pen) {
@@ -64,21 +76,31 @@ QRect PaletteWidget::resetRect() const {
 }
 
 QRect PaletteWidget::swatchRect(int index) const {
-    if (index < 0 || index > 15)
+    if (index < 0 || index >= swatchCount(target_))
         return {};
+    if (index >= 16) {
+        const int top = penRect().bottom() + 1 + 2 * kGap;
+        const int at = index - 16;
+        return QRect(kGap + (at % kMircColumns) * (kSmall + kGap), top + (at / kMircColumns) * (kSmall + kGap),
+                     kSmall, kSmall);
+    }
     const int left = penRect().right() + 1 + 3 * kGap;
     return QRect(left + (index % kColumns) * (kSwatch + kGap), kGap + (index / kColumns) * (kSwatch + kGap), kSwatch,
                  kSwatch);
 }
 
 int PaletteWidget::indexAt(QPoint p) const {
-    for (int i = 0; i < 16; ++i)
+    for (int i = 0; i < swatchCount(target_); ++i)
         if (swatchRect(i).contains(p))
             return i;
     return -1;
 }
 
-QSize PaletteWidget::sizeHint() const { return QSize(swatchRect(15).right() + 1 + kGap, penRect().bottom() + 1 + kGap); }
+QSize PaletteWidget::sizeHint() const {
+    const int w = std::max(swatchRect(15).right(), swatchRect(swatchCount(target_) - 1).right()) + 1 + kGap;
+    const int last = target_ == Target::Irc ? swatchRect(swatchCount(target_) - 1).bottom() : penRect().bottom();
+    return QSize(w, last + 1 + kGap);
+}
 
 void PaletteWidget::paintEvent(QPaintEvent*) {
     QPainter p(this);
@@ -118,14 +140,18 @@ void PaletteWidget::paintEvent(QPaintEvent*) {
         p.drawRect(front.adjusted(0, 0, -1, -1));
     }
 
-    const int fg = pen_.fg.paletteIndex(), bg = pen_.bg.paletteIndex();
+    const int fg = swatchOf(pen_.fg, target_), bg = swatchOf(pen_.bg, target_);
     QFont f = font();
     f.setBold(true);
     f.setPixelSize(kSwatch / 2);
     p.setFont(f);
-    for (int i = 0; i < 16; ++i) {
+    for (int i = 0; i < swatchCount(target_); ++i) {
+        if (i == 16) {
+            f.setPixelSize(kSmall / 2);
+            p.setFont(f);
+        }
         const QRect r = swatchRect(i);
-        const QColor c = toQColor(Color::indexed(std::uint8_t(i)));
+        const QColor c = toQColor(swatchColor(i));
         p.fillRect(r, c);
         // F and B mark the pen's colours, in black or white for contrast.
         const QColor mark = c.lightness() > 110 ? Qt::black : Qt::white;
@@ -157,6 +183,8 @@ bool PaletteWidget::event(QEvent* e) {
             tip = tr("The foreground colour");
         else if (backgroundRect().contains(at))
             tip = tr("The background colour");
+        else if (const int i = indexAt(at); i >= 16)
+            tip = tr("mIRC %1 (%2)").arg(i).arg(toQColor(swatchColor(i)).name());
         else
             tip = toolTip();
         QToolTip::showText(static_cast<QHelpEvent*>(e)->globalPos(), tip, this);

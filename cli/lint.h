@@ -16,9 +16,10 @@ struct LintCliOptions {
     std::vector<bw::Ramp> ramps;
     std::optional<bw::lint::Box> box;
     bool json = false;
+    bw::Target target = bw::Target::Ansi;  // LintOptions::target
 };
 
-// The lint of the document with its own iCE colours. Throws Failure when
+// The lint of the document with its own iCE colours, for o.target. Throws Failure when
 // the box is off the canvas, as shade does.
 bw::lint::LintReport lintDocument(const bw::AnsiDocument& doc, const LintCliOptions& o);
 

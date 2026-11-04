@@ -506,6 +506,32 @@ void unicodeRules(const Canvas& canvas, std::vector<Finding>& out) {
     }
 }
 
+// What an .ans save drops from an IRC-target canvas, one finding per kind.
+void ansLoss(const Canvas& canvas, std::vector<Finding>& out) {
+    std::vector<Finding> glyphs;
+    noCp437(canvas, glyphs);
+    if (!glyphs.empty()) {
+        const std::size_t n = glyphs.size();
+        out.push_back(make(Kind::AnsLoss, glyphs.front().x, glyphs.front().y, glyphs.front().x, glyphs.front().y,
+                           std::to_string(n) + (n == 1 ? " cell holds a glyph" : " cells hold glyphs") +
+                               " a CP437 .ans saves as '?' (fine for IRC)"));
+    }
+    if (const int n = quantisedColourCount(canvas)) {
+        // the first cell it counts
+        Canvas one(1, 1);
+        for (int y = 0; y < canvas.height(); ++y)
+            for (int x = 0; x < canvas.width(); ++x) {
+                one.at(0, 0) = canvas.at(x, y);
+                if (quantisedColourCount(one)) {
+                    out.push_back(make(Kind::AnsLoss, x, y, x, y,
+                                       std::to_string(n) + (n == 1 ? " cell is in a colour" : " cells are in colours") +
+                                           " an .ans can't hold, saved as the nearest of the 16 (fine for IRC)"));
+                    return;
+                }
+            }
+    }
+}
+
 Kind fromLadder(LadderFinding::Kind k) {
     switch (k) {
     case LadderFinding::Kind::NonNeighbourShade: return Kind::NonNeighbourShade;
@@ -564,6 +590,7 @@ std::string_view kindName(Finding::Kind kind) {
     case Kind::WidthVaries: return "width-varies";
     case Kind::LoneMark: return "lone-mark";
     case Kind::BidiControl: return "bidi-control";
+    case Kind::AnsLoss: return "ans-loss";
     }
     return "?";
 }
@@ -614,7 +641,10 @@ std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options
         if (const auto b = clip(canvas, *options.box))
             flats(canvas, options.ice, *b, std::max(1, options.minFlatCells), out);
     ircDrops(canvas, out);
-    noCp437(canvas, out);
+    if (options.target == Target::Irc)
+        ansLoss(canvas, out);
+    else
+        noCp437(canvas, out);
     unicodeRules(canvas, out);
     std::stable_sort(out.begin(), out.end(), readingOrder);
     return out;
@@ -666,6 +696,7 @@ LintReport lintCanvas(const Canvas& canvas, const LintOptions& options) {
     RuleOptions ro;
     ro.ice = options.ice;
     ro.box = options.box;
+    ro.target = options.target;
     for (Finding& f : checkRules(canvas, ro))
         all.push_back(std::move(f));
     if (options.box) {

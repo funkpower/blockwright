@@ -560,7 +560,7 @@ void LayerStyleDialog::refresh() {
     if (cells_.width() > 0 && cells_.height() > 0) {
         for (const std::string& line : irc::encodeCanvas(cells_))
             widest_ = std::max(widest_, line.size());
-        report_ = dockLint(raw, ice);
+        report_ = dockLint(raw, ice, 0, doc_->target());
     }
 
     // the widgets
