@@ -3,7 +3,7 @@
 # Help > Samples and the start screen find them (samples.h). They are
 # written by bw-make-samples, not by the build:
 # `ninja bw-make-samples && ./samples/bw-make-samples <source>/samples`.
-set(BW_SAMPLE_NAMES 01-layers-showcase 02-text-style-logo)
+set(BW_SAMPLE_NAMES 01-layers-showcase 02-text-style-logo 03-still-life)
 foreach(name ${BW_SAMPLE_NAMES})
   install(DIRECTORY ${name} DESTINATION ${CMAKE_INSTALL_DATADIR}/blockwright/samples)
 endforeach()

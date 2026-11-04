@@ -8,6 +8,7 @@
 // run (python3 fog.py), as Add Generator makes them.
 #include "blockwright/composite.h"
 #include "blockwright/generator.h"
+#include "blockwright/brushes/form.h"
 #include "blockwright/brushes/gradient.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
@@ -26,6 +27,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -489,6 +491,310 @@ project::Project logo(const fs::path& makerDir) {
     return p;
 }
 
+// ---- the still life ---------------------------------------------------------
+
+constexpr int kLifeW = 80, kLifeH = 30;
+// the row the table's back edge is on
+constexpr int kTableTop = 17;
+
+// A mask of the canvas from a test on each cell.
+template <class F> Mask maskOf(F inside) {
+    Mask m(kLifeW, kLifeH);
+    for (int y = 0; y < kLifeH; ++y)
+        for (int x = 0; x < kLifeW; ++x)
+            if (inside(x, y))
+                m.set(x, y);
+    return m;
+}
+
+// An ellipse of cells, its centre and radii in cells (a cell is twice as tall
+// as wide, so rx = 2 ry looks round).
+bool inEllipse(double cx, double cy, double rx, double ry, int x, int y) {
+    const double dx = (x + 0.5 - cx) / rx, dy = (y + 0.5 - cy) / ry;
+    return dx * dx + dy * dy <= 1.0;
+}
+
+const Mask& sphereShape() {
+    static const Mask m = maskOf([](int x, int y) { return inEllipse(62, 20, 11, 5.5, x, y); });
+    return m;
+}
+// a pillar on a round foot
+const Mask& cylinderShape() {
+    static const Mask m = maskOf([](int x, int y) {
+        return (x >= 9 && x <= 22 && y >= 5 && y <= 20) || inEllipse(16, 20.5, 7, 1.5, x, y);
+    });
+    return m;
+}
+// the box: its front face, its top leaning back to the right, and its
+// right side
+bool boxFront(int x, int y) { return x >= 27 && x <= 44 && y >= 13 && y <= 23; }
+bool boxTop(int x, int y) {
+    if (y < 10 || y > 12)
+        return false;
+    const int k = 13 - y;  // 1 to 3 rows back
+    return x >= 27 + 2 * k && x <= 44 + 2 * k;
+}
+bool boxSide(int x, int y) {
+    if (x < 45 || x > 50)
+        return false;
+    const int k = (x - 45) / 2 + 1;  // 1 to 3 columns back
+    return y >= 13 - k && y <= 23 - k;
+}
+
+// Keeps a field of rungs a ladder: no cell more than a rung below a
+// neighbour on the field (-1 is off it), lifting the darker one, so an
+// edge between two tones steps a rung at a time.
+void keepLadder(std::vector<int>& rung, int w, int h) {
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                int& r = rung[std::size_t(y * w + x)];
+                if (r < 0)
+                    continue;
+                for (const auto& [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+                    const int nx = x + dx, ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h)
+                        continue;
+                    const int n = rung[std::size_t(ny * w + nx)];
+                    if (r < n - 1) {
+                        r = n - 1;
+                        changed = true;
+                    }
+                }
+            }
+    }
+}
+
+// A layer just big enough for the rungs set in a canvas-sized field, placed
+// by its offset.
+Layer rungLayer(const std::string& name, const std::vector<int>& rung, const Ramp& r) {
+    int x0 = kLifeW, y0 = kLifeH, x1 = -1, y1 = -1;
+    for (int y = 0; y < kLifeH; ++y)
+        for (int x = 0; x < kLifeW; ++x)
+            if (rung[std::size_t(y * kLifeW + x)] >= 0)
+                x0 = std::min(x0, x), y0 = std::min(y0, y), x1 = std::max(x1, x), y1 = std::max(y1, y);
+    Layer l = makeLayer(LayerKind::Cells, x1 - x0 + 1, y1 - y0 + 1, name, x0, y0);
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+            if (const int t = rung[std::size_t(y * kLifeW + x)]; t >= 0)
+                l.cells.at(x - x0, y - y0) = rungCell(r, t);
+    return l;
+}
+
+std::vector<int> maskRungs(const Mask& m, int rung) {
+    std::vector<int> out(std::size_t(kLifeW * kLifeH), -1);
+    for (int y = 0; y < kLifeH; ++y)
+        for (int x = 0; x < kLifeW; ++x)
+            if (m.contains(x, y))
+                out[std::size_t(y * kLifeW + x)] = rung;
+    return out;
+}
+
+// How many cells in from the east edge of a shape each cell is, stepping
+// through the shape a cell at a time (a cell whose east neighbour is
+// outside it is 0), so the band it gives falls a rung a cell every way.
+std::vector<int> rimDistances(const Mask& shape) {
+    std::vector<int> d(std::size_t(kLifeW * kLifeH), 1 << 20);
+    std::deque<std::pair<int, int>> todo;
+    for (int cy = 0; cy < kLifeH; ++cy)
+        for (int cx = 0; cx < kLifeW; ++cx)
+            if (shape.contains(cx, cy) && (cx + 1 >= kLifeW || !shape.contains(cx + 1, cy))) {
+                d[std::size_t(cy * kLifeW + cx)] = 0;
+                todo.emplace_back(cx, cy);
+            }
+    while (!todo.empty()) {
+        const auto [cx, cy] = todo.front();
+        todo.pop_front();
+        for (const auto& [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+            const int nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= kLifeW || ny >= kLifeH || !shape.contains(nx, ny))
+                continue;
+            int& n = d[std::size_t(ny * kLifeW + nx)];
+            if (n > d[std::size_t(cy * kLifeW + cx)] + 1) {
+                n = d[std::size_t(cy * kLifeW + cx)] + 1;
+                todo.emplace_back(nx, ny);
+            }
+        }
+    }
+    return d;
+}
+
+// The box's tones on the wood ramp: solid faces, the top yellow where the
+// light falls, the front brown at a slant to it and the side red, facing
+// away. Where two faces meet, the front steps up toward the top a rung a
+// row, and the lighter face steps down toward the side a rung a column, so
+// the edges stay a ladder.
+std::vector<int> boxRungs() {
+    std::vector<int> out(std::size_t(kLifeW * kLifeH), -1);
+    const auto at = [&](int x, int y) -> int& { return out[std::size_t(y * kLifeW + x)]; };
+    for (int y = 0; y < kLifeH; ++y)
+        for (int x = 0; x < kLifeW; ++x)
+            at(x, y) = boxTop(x, y) ? 8 : boxFront(x, y) ? 4 : boxSide(x, y) ? 0 : -1;
+    for (int y = 0; y < kLifeH; ++y)
+        for (int x = 0; x < kLifeW; ++x)
+            if (boxFront(x, y))
+                at(x, y) = std::max(at(x, y), 8 - (y - 12));
+    // lighter cells come down to a rung over their darkest neighbour
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int y = 1; y < kLifeH - 1; ++y)
+            for (int x = 1; x < kLifeW - 1; ++x) {
+                int& r = at(x, y);
+                if (r < 0)
+                    continue;
+                for (const auto& [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+                    const int n = at(x + dx, y + dy);
+                    if (n >= 0 && r > n + 1) {
+                        r = n + 1;
+                        changed = true;
+                    }
+                }
+            }
+    }
+    return out;
+}
+
+// The back wall, a flat dark grey, locked: dark enough to set the lit
+// sides off, light enough that the black on each shadow side still reads.
+Layer wall() {
+    Layer l = makeLayer(LayerKind::Cells, kLifeW, kTableTop, "wall");
+    for (int y = 0; y < kTableTop; ++y)
+        for (int x = 0; x < kLifeW; ++x)
+            l.cells.at(x, y) = rungCell(ramp("steel"), 4);
+    l.props.locked = true;
+    return l;
+}
+
+// The table top on the steel ramp, lighter toward the front where the
+// light falls.
+int tableRung(int y) {
+    static const int rungs[] = {5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 8};
+    return rungs[std::min<int>(y - kTableTop, int(std::size(rungs)) - 1)];
+}
+
+Layer table() {
+    Layer l = makeLayer(LayerKind::Cells, kLifeW, kLifeH - kTableTop, "table", 0, kTableTop);
+    for (int y = kTableTop; y < kLifeH; ++y)
+        for (int x = 0; x < kLifeW; ++x)
+            l.cells.at(x, y - kTableTop) = rungCell(ramp("steel"), tableRung(y));
+    l.props.locked = true;
+    return l;
+}
+
+// The shadows the objects cast on the table, away from the light: the
+// table's own rungs taken down, deepest at each object's foot and lifting
+// back to the table a rung at a time.
+Layer shadows() {
+    struct Fall {
+        double cx, cy, rx, ry;
+    };
+    // an ellipse each, east of the object's foot
+    const Fall falls[] = {{24, 21.0, 9, 1.6}, {50, 23.0, 9, 1.6}, {72, 25.5, 10, 1.6}};
+    std::vector<int> rung(std::size_t(kLifeW * kLifeH), -1);
+    std::vector<int> table(rung.size(), -1);
+    for (int y = kTableTop; y < kLifeH; ++y)
+        for (int x = 0; x < kLifeW; ++x) {
+            double depth = 0;
+            for (const Fall& f : falls) {
+                const double dx = (x + 0.5 - f.cx) / f.rx, dy = (y + 0.5 - f.cy) / f.ry;
+                depth = std::max(depth, 1.0 - std::sqrt(dx * dx + dy * dy));
+            }
+            const int down = depth <= 0 ? 0 : std::min(tableRung(y) - 1, 1 + int(depth * 4));
+            rung[std::size_t(y * kLifeW + x)] = tableRung(y) - down;
+            table[std::size_t(y * kLifeW + x)] = tableRung(y);
+        }
+    keepLadder(rung, kLifeW, kLifeH);
+    for (std::size_t i = 0; i < rung.size(); ++i)
+        if (rung[i] == table[i])
+            rung[i] = -1;
+    return rungLayer("shadows", rung, ramp("steel"));
+}
+
+project::Project stillLife(const fs::path& makerDir) {
+    project::Project p;
+    p.layers = LayerStack(kLifeW, kLifeH);
+    p.ice = true;
+    p.sauce = sauceFor("Still life");
+
+    const Ramp& sea = ramp("sea");
+    const Ramp& violet = ramp("violet");
+    // the box's ramp without its black: its side is a face turned from the
+    // light, not a shadow, and stays red against the dark wall
+    const Ramp wood = [] {
+        Ramp r = ramp("wood");
+        r.colours.erase(r.colours.begin());
+        return r;
+    }();
+    const Mask box = maskOf([](int x, int y) { return boxFront(x, y) || boxTop(x, y) || boxSide(x, y); });
+
+    p.layers.add(wall());
+    p.layers.add(table());
+    // the first round: each object in flat colours on its own layer
+    p.layers.add(rungLayer("cylinder", maskRungs(cylinderShape(), 4), violet));
+    p.layers.add(rungLayer("box", maskRungs(box, 4), wood));
+    p.layers.add(rungLayer("sphere", maskRungs(sphereShape(), 4), sea));
+    project::takeSnapshot(p);
+
+    // the second: each shaded inside its own shape, alpha-locked
+    const auto form = [](const Mask& shape, const Ramp& r, FormShape kind) {
+        return formRungs(r, shape, {kind, false, true}, Compass::NW);
+    };
+    for (auto [name, cells] : {std::pair{"cylinder", rungLayer("cylinder", form(cylinderShape(), violet,
+                                                                                 FormShape::Cylinder), violet)},
+                               {"box", rungLayer("box", boxRungs(), wood)},
+                               {"sphere", rungLayer("sphere", form(sphereShape(), sea, FormShape::Dome), sea)}}) {
+        Layer& l = layerNamed(p.layers, name);
+        l.cells = cells.cells;
+        l.props.alphaLocked = true;
+    }
+    project::takeSnapshot(p);
+
+    // the third: the shadows between the table and the objects, and a rim
+    // light from the east, on a layer of its own over them, picking out
+    // each object's shadow side from the dark wall
+    LayerStack st(kLifeW, kLifeH);
+    for (std::size_t i = 0; i < p.layers.size(); ++i) {
+        Layer l = p.layers[i];
+        l.props.id = 0;
+        const bool table = l.props.name == "table";
+        st.add(std::move(l));
+        if (table)
+            st.add(shadows());
+    }
+    p.layers = st;
+    // the rim light comes from the east, catching each object's shadow side:
+    // a band along its east edge, brightest at the edge and a rung dimmer a
+    // cell further in, kept where it is lighter than the shading under it
+    std::vector<int> changed(std::size_t(kLifeW * kLifeH), -1);
+    Canvas lit(kLifeW, kLifeH);
+    for (const auto& [shape, shaded, r, peak] :
+         {std::tuple{&cylinderShape(), form(cylinderShape(), violet, FormShape::Cylinder), &violet, 5},
+          std::tuple{&box, boxRungs(), &wood, 4},
+          std::tuple{&sphereShape(), form(sphereShape(), sea, FormShape::Dome), &sea, 7}}) {
+        const std::vector<int> dist = rimDistances(*shape);
+        for (int y = 0; y < kLifeH; ++y)
+            for (int x = 0; x < kLifeW; ++x) {
+                const int band = peak - dist[std::size_t(y * kLifeW + x)];
+                const int under = shaded[std::size_t(y * kLifeW + x)];
+                if (shape->contains(x, y) && band > under) {
+                    changed[std::size_t(y * kLifeW + x)] = 0;
+                    lit.at(x, y) = rungCell(*r, band);
+                }
+            }
+    }
+    Layer rim = rungLayer("rim light", changed, wood);
+    for (int y = 0; y < rim.cells.height(); ++y)
+        for (int x = 0; x < rim.cells.width(); ++x)
+            if (!rim.cells.at(x, y).transparent)
+                rim.cells.at(x, y) = lit.at(rim.props.x + x, rim.props.y + y);
+    p.layers.add(std::move(rim));
+
+    p.notes = readFile(makerDir / "notes" / "03-still-life.md");
+    project::takeSnapshot(p);
+    return p;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -503,6 +809,7 @@ int main(int argc, char** argv) {
         project::writeDirectory(showcase(BW_MAKER_DIR),
                                 out / "01-layers-showcase");
         project::writeDirectory(logo(BW_MAKER_DIR), out / "02-text-style-logo");
+        project::writeDirectory(stillLife(BW_MAKER_DIR), out / "03-still-life");
     } catch (const std::exception& e) {
         std::cerr << "bw-make-samples: " << e.what() << "\n";
         return 1;

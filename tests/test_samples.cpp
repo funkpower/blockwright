@@ -492,3 +492,78 @@ TEST_CASE("the text-style logo sample holds big styled text, its saved stacks an
     project::writeZip(p, out / "logo.bwp");
     CHECK(project::read(out / "logo.bwp") == p);
 }
+
+TEST_CASE("the still life sample keeps each object, its shadows and its rim light on layers of their own") {
+    const fs::path dir = kSamples / "03-still-life";
+    const project::Project p = project::read(dir);
+    CHECK(p.ice);
+    REQUIRE(names(p.layers) ==
+            std::vector<std::string>{"wall", "table", "shadows", "cylinder", "box", "sphere", "rim light"});
+    for (const Layer& l : p.layers.layers()) {
+        INFO(l.props.name);
+        CHECK(l.props.kind == LayerKind::Cells);
+        CHECK(l.props.visible);
+    }
+    CHECK(named(p.layers, "wall").props.locked);
+    CHECK(named(p.layers, "table").props.locked);
+
+    // each object shaded inside its own shape: alpha-locked, on a layer
+    // smaller than the canvas, placed by its offset
+    for (const char* name : {"cylinder", "box", "sphere"}) {
+        INFO(name);
+        const Layer& l = named(p.layers, name);
+        CHECK(l.props.alphaLocked);
+        CHECK_FALSE(l.props.locked);
+        CHECK(l.cells.width() < p.layers.width());
+        CHECK(l.cells.height() < p.layers.height());
+        CHECK((l.props.x > 0 && l.props.y > 0));
+    }
+
+    // a cell of a layer at canvas cell x,y, if it holds one there
+    const auto opaqueAt = [](const Layer& l, int x, int y) {
+        const int lx = x - l.props.x, ly = y - l.props.y;
+        return lx >= 0 && ly >= 0 && lx < l.cells.width() && ly < l.cells.height() && !l.cells.at(lx, ly).transparent;
+    };
+    // the rim light lies over the objects only, and the shadows on the table
+    const Layer& rim = named(p.layers, "rim light");
+    const Layer& table = named(p.layers, "table");
+    int rimCells = 0, shadowCells = 0;
+    for (int y = 0; y < p.layers.height(); ++y)
+        for (int x = 0; x < p.layers.width(); ++x) {
+            INFO(x << "," << y);
+            if (opaqueAt(rim, x, y)) {
+                ++rimCells;
+                CHECK((opaqueAt(named(p.layers, "cylinder"), x, y) || opaqueAt(named(p.layers, "box"), x, y) ||
+                       opaqueAt(named(p.layers, "sphere"), x, y)));
+            }
+            if (opaqueAt(named(p.layers, "shadows"), x, y)) {
+                ++shadowCells;
+                CHECK(opaqueAt(table, x, y));
+            }
+        }
+    CHECK(rimCells > 0);
+    CHECK(shadowCells > 0);
+
+    // turning either off changes the picture
+    const Canvas whole = project::toAnsi(p).canvas;
+    for (const char* name : {"rim light", "shadows"}) {
+        INFO(name);
+        project::Project off = p;
+        REQUIRE_NOTHROW(applyVariant(off.layers, {"off", {"hide " + std::string(name)}}));
+        CHECK_FALSE(project::toAnsi(off).canvas == whole);
+    }
+
+    // three rounds: flat, shaded, lit
+    REQUIRE(p.snapshots.size() == 3);
+    for (int i = 0; i < 3; ++i)
+        CHECK(p.snapshots[std::size_t(i)].round == i + 1);
+    CHECK(p.snapshots[0].ans != p.snapshots[1].ans);
+    CHECK(p.snapshots[1].ans != p.snapshots[2].ans);
+
+    // it saves back as it reads, as a directory and as a zip
+    const fs::path out = scratch("still-life-round-trip");
+    project::writeDirectory(p, out / "dir");
+    CHECK(project::read(out / "dir") == p);
+    project::writeZip(p, out / "still-life.bwp");
+    CHECK(project::read(out / "still-life.bwp") == p);
+}
