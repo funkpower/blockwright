@@ -1,14 +1,18 @@
 // The bundled Library (PLAN §12 "What ships"): every stamp in the repo's
-// library/ reads and checks clean, fits one IRC line, is signed funkpower,
-// sits in library/<category>/, has a shape of its own and can be found.
+// library/ reads and checks clean, lints clean, fits one IRC line, is signed
+// funkpower, sits in library/<category>/, has a shape of its own and can be
+// found.
 
 #include "blockwright/irc.h"
 #include "blockwright/library.h"
 #include "blockwright/selection.h"
 
+#include "../cli/lint.h"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <map>
 #include <set>
 #include <string>
 #include <utility>
@@ -92,7 +96,8 @@ TEST_CASE("the bundled library checks clean and holds the first set") {
         UNSCOPED_INFO(p.path.string() << ": " << p.message);
     CHECK(r.problems.empty());
     CHECK(r.stamps.size() >= 20);
-    const std::set<std::string> expected{"buildings", "fire", "frames", "land", "smoke", "sky", "trees", "water"};
+    const std::set<std::string> expected{"buildings", "fire",    "frames", "land",  "plants", "smoke",
+                                         "sky",       "symbols", "things", "trees", "water"};
     const std::vector<std::string> cats = categories(r.stamps);
     CHECK(std::set<std::string>(cats.begin(), cats.end()) == expected);
 }
@@ -103,6 +108,40 @@ TEST_CASE("every bundled stamp's widest IRC row is under the budget") {
         CHECK(s.meta.ircBytes == widestRowBytes(s.art.canvas));
         CHECK(s.meta.ircBytes < irc::kEfnetWeechatBudget);
     }
+}
+
+// The lint (`blockwright-cli lint`) of every stamp, but for trailing black:
+// a stamp's blank cells are its transparent area, so a part that isn't a
+// rectangle has black at the ends of its shorter rows by design. The stamps
+// library-maker/make_stamps.cpp writes lint clean; the ones cut from
+// pieces before it carry the findings counted below, pinned exactly: a
+// stamp that improves fails until its pin is lowered, so it can't slip back.
+TEST_CASE("every bundled stamp lints clean but for its transparent area") {
+    const std::map<std::string, size_t> handCut{
+        {"buildings/log-cabin", 15},    {"fire/wall-of-fire", 105},  {"land/boulder", 25},
+        {"land/far-range", 7},          {"land/grey-peaks", 82},     {"land/snowy-range", 6},
+        {"sky/cloud-wisp", 48},         {"sky/lightning", 1},        {"smoke/chimney-smoke", 69},
+        {"smoke/smoke-column", 11},     {"smoke/smoke-pall", 16},    {"trees/spruce-line-mid", 37},
+        {"trees/spruce-line-near", 47}, {"trees/tall-spruce", 5},    {"water/surf", 71},
+        {"water/whitewater", 6},
+    };
+    std::set<std::string> seen;
+    for (const Stamp& s : scan(kBundled).stamps) {
+        const std::string rel = s.meta.category + "/" + s.path.stem().string();
+        INFO(rel);
+        lint::LintReport r = bwcli::lintDocument(s.art, {});
+        std::erase_if(r.findings, [](const lint::Finding& f) { return f.kind == lint::Finding::Kind::TrailingBlack; });
+        INFO(bwcli::lintText(r));
+        const auto pinned = handCut.find(rel);
+        const size_t allowed = pinned == handCut.end() ? 0 : pinned->second;
+        if (r.findings.size() < allowed)
+            FAIL_CHECK(rel << " improved to " << r.findings.size() << " findings from its pin of " << allowed
+                           << ": lower the pin in handCut to " << r.findings.size());
+        CHECK(r.findings.size() <= allowed);
+        if (pinned != handCut.end())
+            seen.insert(rel);
+    }
+    CHECK(seen.size() == handCut.size());  // a pinned stamp that is gone comes off the list
 }
 
 TEST_CASE("every bundled stamp is signed and filed under its category") {

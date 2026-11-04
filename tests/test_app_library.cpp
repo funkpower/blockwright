@@ -772,7 +772,7 @@ TEST_CASE("a stamp replaced under an upper-case extension stays in the dock") {
 // shows on the default black canvas, and the test checks the render changed.
 TEST_CASE("a bundled tree is placed on a blank canvas, moved, then committed") {
     Fixture f;
-    const fs::path tree = fs::path(BW_BUNDLED_LIBRARY) / "trees" / "golden-tree.ans";
+    const fs::path tree = fs::path(BW_BUNDLED_LIBRARY) / "trees" / "oak-tree.ans";
     const library::Stamp stamp = library::readStamp(tree);
     const Canvas& art = stamp.art.canvas;
     const QImage before = renderCanvas(f.w.document()->canvas(), 8);
