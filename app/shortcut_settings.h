@@ -27,6 +27,19 @@ namespace bw {
 
 inline constexpr char kShortcutsGroup[] = "shortcuts";
 
+// The dynamic property an action given a standard key (QKeySequence::Quit,
+// ::Undo, ...) carries it in, as the enum's int.
+inline constexpr char kStandardKeyProperty[] = "bwStandardKey";
+
+// The keys the platform theme gives standard key `key`, as
+// QKeySequence::keyBindings() has them; `a` is marked with the key
+// (kStandardKeyProperty). After useLinuxStandardKeys(), the keys a generic
+// Linux desktop's theme gives it (Qt's X11 and GNOME schemes) instead,
+// whatever the platform and its theme: --list-actions runs offscreen, and
+// that theme has the Windows keys.
+QList<QKeySequence> standardKeys(QAction* a, QKeySequence::StandardKey key);
+void useLinuxStandardKeys(bool on = true);
+
 // The windowActions() a key can be given: visible, not a separator or a
 // submenu, with an objectName of their own (not Qt's "_q_" ones), each once.
 QList<QAction*> bindableActions(QWidget* window);

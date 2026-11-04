@@ -554,6 +554,7 @@ add_executable(blockwright-app-tests
   test_app_font_collection.cpp
   test_app_shortcuts.cpp
   test_app_shortcut_settings.cpp
+  test_app_list_actions.cpp
   test_app_help.cpp
   test_app_scene.cpp
   test_app_branding.cpp
@@ -793,6 +794,15 @@ endif()
 add_test(NAME gui_version
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh ${BW_GUI_COMMAND})
 set_property(TEST gui_version APPEND PROPERTY ENVIRONMENT "BW_LOGO=${PROJECT_SOURCE_DIR}/branding/logo.txt")
+
+# blockwright --list-actions (#209) with no display and an empty HOME and XDG
+# profile: JSON, unique ids, nothing written. The profile is the host's, so a
+# cross build leaves it out.
+if(BW_PYTHON3 AND NOT CMAKE_CROSSCOMPILING)
+  add_test(NAME gui_list_actions
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/list_actions_test.sh ${CMAKE_CURRENT_BINARY_DIR}/list-actions-check
+            ${BW_PYTHON3} ${BW_GUI_COMMAND})
+endif()
 
 # The app bundle (macOS, BLOCKWRIGHT_MACOS_BUNDLE): its Info.plist, and the
 # notices --version names inside it.

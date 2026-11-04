@@ -484,10 +484,10 @@ void MainWindow::createActions() {
     QMenu* file = menuBar()->addMenu(tr("&File"));
     QAction* a = file->addAction(tr("&New"), this, &MainWindow::newFile);
     a->setObjectName(QStringLiteral("newFile"));
-    a->setShortcut(QKeySequence::New);
+    a->setShortcut(standardKeys(a, QKeySequence::New).value(0));
     a = file->addAction(tr("&Open..."), this, &MainWindow::open);
     a->setObjectName(QStringLiteral("open"));
-    a->setShortcut(QKeySequence::Open);
+    a->setShortcut(standardKeys(a, QKeySequence::Open).value(0));
     a = file->addAction(tr("Open Project Di&rectory..."), this, &MainWindow::openDirectory);
     a->setObjectName(QStringLiteral("openDirectory"));
     a = file->addAction(tr("Open S&cene..."), this, &MainWindow::openScene);
@@ -511,10 +511,10 @@ void MainWindow::createActions() {
     a->setObjectName(QStringLiteral("startScreen"));
     a = file->addAction(tr("&Save"), this, &MainWindow::save);
     a->setObjectName(QStringLiteral("save"));
-    a->setShortcut(QKeySequence::Save);
+    a->setShortcut(standardKeys(a, QKeySequence::Save).value(0));
     a = file->addAction(tr("Save &As..."), this, &MainWindow::saveAs);
     a->setObjectName(QStringLiteral("saveAs"));
-    a->setShortcut(QKeySequence::SaveAs);
+    a->setShortcut(standardKeys(a, QKeySequence::SaveAs).value(0));
     createProjectActions(file);
     file->addSeparator();
     a = file->addAction(tr("SA&UCE..."), this, &MainWindow::editSauce);
@@ -526,17 +526,17 @@ void MainWindow::createActions() {
     a->setObjectName(QStringLiteral("quit"));
     // Qt 6.10's generic theme gives Quit only the bare Exit key, which keyboard
     // mode would take; Ctrl+Q there, as the other desktops have it.
-    const QKeySequence quit(QKeySequence::Quit);
+    const QKeySequence quit = standardKeys(a, QKeySequence::Quit).value(0);
     a->setShortcut(shortcutRefusal(quit).isEmpty() ? quit : QKeySequence(Qt::CTRL | Qt::Key_Q));
 
     QMenu* edit = menuBar()->addMenu(tr("&Edit"));
     a = doc_.undoStack()->createUndoAction(this, tr("&Undo"));
     a->setObjectName(QStringLiteral("undo"));
-    a->setShortcuts(QKeySequence::Undo);
+    a->setShortcuts(standardKeys(a, QKeySequence::Undo));
     edit->addAction(a);
     a = doc_.undoStack()->createRedoAction(this, tr("&Redo"));
     a->setObjectName(QStringLiteral("redo"));
-    a->setShortcuts(QKeySequence::Redo);
+    a->setShortcuts(standardKeys(a, QKeySequence::Redo));
     // A snapshot redone into an .ans drops itself from the stack (#115), and
     // Qt before 6.9 drops it without updating this action. Connected after
     // the stack's own redo, this runs once the redo is done.

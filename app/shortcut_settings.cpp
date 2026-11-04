@@ -59,6 +59,37 @@ QList<QAction*> bindableActions(QWidget* window) {
     return out;
 }
 
+namespace {
+bool linuxStandardKeys = false;
+} // namespace
+
+void useLinuxStandardKeys(bool on) { linuxStandardKeys = on; }
+
+QList<QKeySequence> standardKeys(QAction* a, QKeySequence::StandardKey key) {
+    a->setProperty(kStandardKeyProperty, int(key));
+    if (!linuxStandardKeys)
+        return QKeySequence::keyBindings(key);
+    // Qt's X11 table for the keys the window uses; a test holds it to Qt's.
+    const auto keys = [](std::initializer_list<const char*> names) {
+        QList<QKeySequence> out;
+        for (const char* n : names)
+            out << QKeySequence::fromString(QLatin1String(n), QKeySequence::PortableText);
+        return out;
+    };
+    switch (key) {
+    case QKeySequence::New: return keys({"Ctrl+N", "New"});
+    case QKeySequence::Open: return keys({"Ctrl+O", "Open"});
+    case QKeySequence::Save: return keys({"Ctrl+S", "Save"});
+    case QKeySequence::SaveAs: return keys({"Ctrl+Shift+S", "Shift+Save"});
+    case QKeySequence::Quit: return keys({"Ctrl+Q", "Exit"});
+    case QKeySequence::Undo: return keys({"Ctrl+Z", "F14", "Undo"});
+    case QKeySequence::Redo: return keys({"Ctrl+Shift+Z", "Redo"});
+    default:
+        Q_ASSERT_X(false, "standardKeys", "a standard key the Linux table lacks");
+        return QKeySequence::keyBindings(key);
+    }
+}
+
 QList<QKeySequence> defaultShortcuts(QAction* a) {
     rememberDefault(a);
     return keyList(a->property(kDefaultKeys).toString());

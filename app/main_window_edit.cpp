@@ -3,6 +3,7 @@
 
 #include "main_window.h"
 
+#include "action_list.h"
 #include "canvas_view.h"
 #include "draw_tools.h"
 #include "help_text.h"
@@ -276,6 +277,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         const QKeySequence key = toolKeys.value(t->id());
         QAction* a = add(toolsMenu, t->name(), "", key, [this, t] { tools_->setActive(t); });
         a->setObjectName(t->id() + QStringLiteral("Tool"));
+        a->setProperty(kToolIdProperty, t->id());  // for --list-actions (action_list.h)
         a->setIcon(toolIcon(t->id()));
         const QString name = QString(t->name()).remove(QLatin1Char('&'));
         const QString summary = help::toolSummary(t->id());
