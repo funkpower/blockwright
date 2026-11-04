@@ -100,6 +100,10 @@ QString rejectedGlyphsMessage(const QString& text);
 // A CP437 .ans whose '?' cells a UTF-8 one would keep says how many, and to
 // Save As "ANSI art, UTF-8 (*.ans)".
 QString saveWarning(const AnsiOutput& out, bool project = false, ArtFormat format = ArtFormat::Ansi);
+// The loss text Publish to Library and Send to WeeChat show (PLAN §9): what
+// saveWarning says for a CP437 .ans, without the hint to Save As UTF-8,
+// since both always write CP437 whatever the document is saved as.
+QString pipelineWarning(const AnsiOutput& out);
 
 class SelectTool;
 class GlyphBar;

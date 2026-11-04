@@ -38,7 +38,7 @@ const QString kWipKey = QStringLiteral("pipeline/wipDir");
 QString roundKey(const QString& slug) { return QStringLiteral("pipeline/rounds/") + slug; }
 
 QString lossRefusal(const AnsiOutput& out) {
-    return QObject::tr("The .ans would lose data:\n%1").arg(saveWarning(out));
+    return QObject::tr("The .ans would lose data:\n%1").arg(pipelineWarning(out));
 }
 
 QDialog* formDialog(QWidget* parent, const QString& title, QFormLayout** form, QDialogButtonBox** buttons) {
@@ -82,7 +82,7 @@ std::optional<pipeline::PublishPlan> Publisher::planPublish(const QString& libra
                                                             bool allowLossy) {
     // A floating selection is published where it floats, as Save does.
     window_->canvasView()->finishTool();
-    const AnsiOutput out = window_->document()->encode();
+    const AnsiOutput out = payload();
     if (out.lossy() && !allowLossy) {
         *error = lossRefusal(out);
         return std::nullopt;
@@ -111,13 +111,19 @@ bool Publisher::publish(const pipeline::PublishPlan& plan, QString* error) {
     }
 }
 
+AnsiOutput Publisher::payload() const {
+    // CP437 whatever the document is saved as: the library and WeeChat's
+    // ascii script read CP437, and so does the IRC text Publish makes from it.
+    return window_->document()->encode(ArtFormat::Ansi, TextEncoding::Cp437);
+}
+
 int Publisher::nextRound(const QString& slug) const { return appSettings()->value(roundKey(slug), 0).toInt() + 1; }
 
 Publisher::SendResult Publisher::sendToWeechat(const QString& host, const QString& wipDir, const QString& slug,
                                                int round, bool allowLossy) {
     SendResult result;
     window_->canvasView()->finishTool();
-    const AnsiOutput out = window_->document()->encode();
+    const AnsiOutput out = payload();
     if (out.lossy() && !allowLossy) {
         result.message = lossRefusal(out);
         return result;
@@ -222,9 +228,9 @@ void Publisher::publishInteractive() {
             .arg(plan->replaces ? tr("Replace") : tr("Publish"), QString::fromStdString(plan->key),
                  tagList.join(QStringLiteral(", ")), qpath(plan->ansPath), qpath(plan->txtPath),
                  qpath(plan->tagsPath), qpath(plan->datesPath));
-    const AnsiOutput out = window_->document()->encode();
+    const AnsiOutput out = payload();
     if (out.lossy())
-        question += QStringLiteral("\n\n") + saveWarning(out);
+        question += QStringLiteral("\n\n") + pipelineWarning(out);
     else
         question += tr("\n\nPublish?");
     if (QMessageBox::question(window_, tr("Publish to Library"), question, QMessageBox::Yes | QMessageBox::No,
@@ -280,9 +286,9 @@ void Publisher::sendInteractive() {
                                .arg(hostName, wipDir,
                                     QString::fromStdString(pipeline::wipName(name.toStdString(), roundNo)));
     QString question = tr("Copy the piece to %1 and reload WeeChat's ascii script?").arg(target);
-    const AnsiOutput out = window_->document()->encode();
+    const AnsiOutput out = payload();
     if (out.lossy())
-        question += QStringLiteral("\n\n") + saveWarning(out);
+        question += QStringLiteral("\n\n") + pipelineWarning(out);
     if (QMessageBox::question(window_, tr("Send to WeeChat"), question, QMessageBox::Yes | QMessageBox::No,
                               QMessageBox::No) != QMessageBox::Yes)
         return;

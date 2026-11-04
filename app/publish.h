@@ -4,6 +4,7 @@
 // for what it needs, shows every path it will write and asks before writing.
 // The folders, the host and each piece's last round are remembered.
 
+#include "blockwright/ansi.h"
 #include "blockwright/pipeline.h"
 
 #include <QObject>
@@ -26,6 +27,12 @@ public:
     // Adds both actions to `file` (objectNames publishToLibrary and
     // sendToWeechat).
     void addActions(QMenu* file);
+
+    // The .ans Publish writes and Send to WeeChat sends: the document's
+    // cells as Save writes them, always as CP437 (PLAN §9), whatever its own
+    // encoding. A floating selection is not stamped here; both actions stamp
+    // it first.
+    AnsiOutput payload() const;
 
     // The piece name suggested for the document: pipeline::slugFrom its
     // file's base name, empty for an unsaved document.

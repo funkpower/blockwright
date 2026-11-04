@@ -139,14 +139,16 @@ QString rejectedGlyphsMessage(const QString& text) {
     return QObject::tr("%1; not typed").arg(parts.join(QStringLiteral("; ")));
 }
 
-QString saveWarning(const AnsiOutput& out, bool project, ArtFormat format) {
+namespace {
+
+QString lossQuestion(const AnsiOutput& out, bool project, ArtFormat format, bool utf8Hint) {
     const QString before = project                       ? QObject::tr("Before saving the project:")
                            : format == ArtFormat::Xbin ? QObject::tr("Before saving as XBIN:")
                            : format == ArtFormat::Bin  ? QObject::tr("Before saving as BIN:")
                                                        : QObject::tr("Before saving as .ans:");
     QString hint;
     // A CP437 .ans that loses glyphs a UTF-8 one would hold says so.
-    if (!project && format == ArtFormat::Ansi && out.encoding == TextEncoding::Cp437) {
+    if (utf8Hint && !project && format == ArtFormat::Ansi && out.encoding == TextEncoding::Cp437) {
         const auto kept = std::count_if(out.unwritable.begin(), out.unwritable.end(),
                                         [](const Unwritable& u) { return utf8Writable(u.ch); });
         // No hint at all when nothing lost would survive: a save that only
@@ -165,6 +167,14 @@ QString saveWarning(const AnsiOutput& out, bool project, ArtFormat format) {
     }
     return QObject::tr("%1\n%2.%3\n\nSave anyway?").arg(before, lossDescription(out), hint);
 }
+
+} // namespace
+
+QString saveWarning(const AnsiOutput& out, bool project, ArtFormat format) {
+    return lossQuestion(out, project, format, true);
+}
+
+QString pipelineWarning(const AnsiOutput& out) { return lossQuestion(out, false, ArtFormat::Ansi, false); }
 
 SavePath resolveSavePath(const QString& chosen, const QString& suffix) {
     if (!QFileInfo(chosen).suffix().isEmpty())

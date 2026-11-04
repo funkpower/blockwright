@@ -14,7 +14,9 @@
 #include "publish.h"
 #include "select_tool.h"
 
+#include "blockwright/ansi.h"
 #include "blockwright/irc.h"
+#include "blockwright/sauce.h"
 
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -627,6 +629,169 @@ TEST_CASE("Send to WeeChat through its dialogs remembers the host and the round"
 
     CHECK(appSettings()->value(QStringLiteral("pipeline/host")).toString() == QStringLiteral("irc-host"));
     CHECK(f.p->nextRound(QStringLiteral("neon-skull")) == 2);
+}
+
+namespace {
+
+// The same piece as a CP437 .ans and as a UTF-8 one (tux-utf8.ans is
+// golden/tux.ans written as UTF-8).
+QByteArray tux(const char* file) { return QByteArray::fromStdString(bwtest::readFile(bwtest::dataDir() / file)); }
+
+// The first .txt line of tux: its first row's half blocks, read right.
+const QString kTuxBlocks = QStringLiteral("▄▄▄▄▄▄");
+
+// The document with a ★ (no CP437 code) at 0,0.
+void putStar(Fixture& f) {
+    AnsiDocument doc = f.w.document()->ansi();
+    doc.canvas.at(0, 0).ch = U'★';
+    f.w.document()->replace(doc, f.w.document()->path());
+}
+
+const QString kStarLoss = QStringLiteral("Before saving as .ans:\n1 cell holds a glyph with no CP437 code and will "
+                                         "be written as '?'.\n\nSave anyway?");
+
+} // namespace
+
+TEST_CASE("Publish to Library writes a UTF-8 document as CP437, as it publishes the same art from a CP437 one") {
+    Fixture u(tux("utf8/tux-utf8.ans"), QStringLiteral("tux.ans"));
+    Fixture c(tux("golden/tux.ans"), QStringLiteral("tux.ans"));
+    REQUIRE(u.w.document()->textEncoding() == TextEncoding::Utf8);
+    REQUIRE(c.w.document()->textEncoding() == TextEncoding::Cp437);
+    const auto published = [](Fixture& f) {
+        const QString lib = f.library();
+        QString error;
+        const auto plan = f.p->planPublish(lib, QStringLiteral("tux"), {}, &error);
+        INFO(error.toStdString());
+        REQUIRE(plan);
+        REQUIRE(f.p->publish(*plan, &error));
+        return std::pair{readAll(lib + QStringLiteral("/funkpower/tux.ans")),
+                         QString::fromUtf8(readAll(lib + QStringLiteral("/funkpower/tux.txt")))};
+    };
+    const auto [uAns, uTxt] = published(u);
+    const auto [cAns, cTxt] = published(c);
+
+    CHECK(uAns == cAns);
+    CHECK(uAns.toStdString() == u.w.document()->encode(ArtFormat::Ansi, TextEncoding::Cp437).bytes);
+    CHECK(detectEncoding(splitSauce(uAns.toStdString()).content) == TextEncoding::Cp437);
+    // Read back as the library reads it, it is the art the document opened with.
+    const Canvas art = parseAnsi(tux("utf8/tux-utf8.ans").toStdString(), {.encoding = TextEncoding::Utf8}).canvas;
+    CHECK(parseAnsi(uAns.toStdString(), {.encoding = TextEncoding::Cp437}).canvas == art);
+    CHECK(uTxt == cTxt);
+    CHECK(uTxt.toStdString() == irc::joinLines(irc::exportCanvas(art)));
+    CHECK(uTxt.section(QLatin1Char('\n'), 0, 0).endsWith(kTuxBlocks));
+    // The document's own encoding is left as it was.
+    CHECK(u.w.document()->textEncoding() == TextEncoding::Utf8);
+}
+
+TEST_CASE("Send to WeeChat sends a UTF-8 document as CP437") {
+    Fixture u(tux("utf8/tux-utf8.ans"), QStringLiteral("tux.ans"));
+    Fixture c(tux("golden/tux.ans"), QStringLiteral("tux.ans"));
+    REQUIRE(u.w.document()->textEncoding() == TextEncoding::Utf8);
+    const AnsiOutput out = u.p->payload();
+    CHECK(out.encoding == TextEncoding::Cp437);
+    CHECK_FALSE(out.lossy());
+    CHECK(out.bytes == c.p->payload().bytes);
+    CHECK(out.bytes == u.w.document()->encode(ArtFormat::Ansi, TextEncoding::Cp437).bytes);
+
+    // And what ssh is handed is that payload, its length included.
+    RecordingSsh ssh("RELOADED\n");
+    u.p->setSshProgram(ssh.program);
+    const auto r = u.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                      QStringLiteral("tux"), 1);
+    INFO(r.message.toStdString());
+    CHECK(r.ok);
+    CHECK(ssh.input().toStdString() == out.bytes);
+    CHECK(ssh.args() == sshArguments(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"), QStringLiteral("tux"),
+                                     1, out.bytes.size()));
+}
+
+TEST_CASE("Publish to Library and Send to WeeChat warn of loss without the Save As UTF-8 hint") {
+    SECTION("the hint is Save's alone") {
+        Fixture f;
+        putStar(f);
+        CHECK(saveWarning(f.w.document()->encode()).contains(QStringLiteral("Save As")));
+        CHECK(pipelineWarning(f.w.document()->encode()) == kStarLoss);
+    }
+    SECTION("a UTF-8 document with a glyph CP437 lacks loses it, and says so") {
+        Fixture f(tux("utf8/tux-utf8.ans"), QStringLiteral("tux.ans"));
+        putStar(f);
+        REQUIRE_FALSE(f.w.document()->encode().lossy());  // its own Save keeps the star
+        QString error;
+        CHECK_FALSE(f.p->planPublish(f.library(), QStringLiteral("tux"), {}, &error));
+        CHECK(error == QStringLiteral("The .ans would lose data:\n") + kStarLoss);
+        RecordingSsh ssh("RELOADED\n");
+        f.p->setSshProgram(ssh.program);
+        const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                          QStringLiteral("tux"), 1);
+        CHECK_FALSE(r.ok);
+        CHECK(r.message == QStringLiteral("The .ans would lose data:\n") + kStarLoss);
+        CHECK_FALSE(ssh.ran());
+    }
+    SECTION("refused without allowLossy") {
+        Fixture f;
+        putStar(f);
+        QString error;
+        CHECK_FALSE(f.p->planPublish(f.library(), QStringLiteral("x"), {}, &error));
+        CHECK(error == QStringLiteral("The .ans would lose data:\n") + kStarLoss);
+        RecordingSsh ssh("RELOADED\n");
+        f.p->setSshProgram(ssh.program);
+        const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                          QStringLiteral("x"), 1);
+        CHECK(r.message == QStringLiteral("The .ans would lose data:\n") + kStarLoss);
+        CHECK_FALSE(ssh.ran());
+    }
+    SECTION("Publish's question") {
+        Fixture f;
+        putStar(f);
+        const QString lib = f.library();
+        appSettings()->remove(QStringLiteral("pipeline"));
+        QString error;
+        const auto plan = f.p->planPublish(lib, QStringLiteral("neon-skull"), {}, &error, true);
+        REQUIRE(plan);
+        const auto q = [](const fs::path& p) { return QFile::decodeName(QByteArray::fromStdString(p.string())); };
+        const QString expected = QStringLiteral("Publish funkpower/neon-skull, tagged funkpower.\n\nThis writes:\n") +
+                                 q(plan->ansPath) + QLatin1Char('\n') + q(plan->txtPath) + QLatin1Char('\n') +
+                                 q(plan->tagsPath) + QLatin1Char('\n') + q(plan->datesPath) + QStringLiteral("\n\n") +
+                                 kStarLoss;
+        bool asked = false, confirmed = false;
+        QString question;
+        QTimer::singleShot(0, &f.w, [&] {
+            auto* d = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(d);
+            asked = true;
+            d->findChild<QLineEdit*>(QStringLiteral("publishLibrary"))->setText(lib);
+            answer(&f.w, QMessageBox::No, &question, &confirmed);
+            d->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        });
+        f.p->publishInteractive();
+        CHECK(asked);
+        CHECK(confirmed);
+        CHECK(question == expected);
+    }
+    SECTION("Send's question") {
+        Fixture f;
+        putStar(f);
+        RecordingSsh ssh("RELOADED\n");
+        f.p->setSshProgram(ssh.program);
+        appSettings()->remove(QStringLiteral("pipeline"));
+        bool asked = false, confirmed = false;
+        QString question;
+        QTimer::singleShot(0, &f.w, [&] {
+            auto* d = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(d);
+            asked = true;
+            d->findChild<QLineEdit*>(QStringLiteral("sendHost"))->setText(QStringLiteral("irc-host"));
+            answer(&f.w, QMessageBox::No, &question, &confirmed);
+            d->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        });
+        f.p->sendInteractive();
+        CHECK(asked);
+        CHECK(confirmed);
+        CHECK(question == QStringLiteral("Copy the piece to irc-host:~/ascii/wip/neon-skull-r1.ans and reload "
+                                         "WeeChat's ascii script?\n\n") +
+                              kStarLoss);
+        CHECK_FALSE(ssh.ran());
+    }
 }
 
 int main(int argc, char** argv) {
