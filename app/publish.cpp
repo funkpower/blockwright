@@ -38,7 +38,7 @@ const QString kWipKey = QStringLiteral("pipeline/wipDir");
 QString roundKey(const QString& slug) { return QStringLiteral("pipeline/rounds/") + slug; }
 
 QString lossRefusal(const AnsiOutput& out) {
-    return QObject::tr("The .ans would lose data:\n%1").arg(pipelineWarning(out));
+    return QObject::tr("The .ans would lose data:\n%1.").arg(lossDescription(out));
 }
 
 QDialog* formDialog(QWidget* parent, const QString& title, QFormLayout** form, QDialogButtonBox** buttons) {
@@ -230,7 +230,7 @@ void Publisher::publishInteractive() {
                  qpath(plan->tagsPath), qpath(plan->datesPath));
     const AnsiOutput out = payload();
     if (out.lossy())
-        question += QStringLiteral("\n\n") + pipelineWarning(out);
+        question += QStringLiteral("\n\n") + pipelineWarning(out, PipelineAction::Publish);
     else
         question += tr("\n\nPublish?");
     if (QMessageBox::question(window_, tr("Publish to Library"), question, QMessageBox::Yes | QMessageBox::No,
@@ -288,7 +288,7 @@ void Publisher::sendInteractive() {
     QString question = tr("Copy the piece to %1 and reload WeeChat's ascii script?").arg(target);
     const AnsiOutput out = payload();
     if (out.lossy())
-        question += QStringLiteral("\n\n") + pipelineWarning(out);
+        question += QStringLiteral("\n\n") + pipelineWarning(out, PipelineAction::Send);
     if (QMessageBox::question(window_, tr("Send to WeeChat"), question, QMessageBox::Yes | QMessageBox::No,
                               QMessageBox::No) != QMessageBox::Yes)
         return;

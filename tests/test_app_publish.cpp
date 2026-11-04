@@ -647,8 +647,14 @@ void putStar(Fixture& f) {
     f.w.document()->replace(doc, f.w.document()->path());
 }
 
-const QString kStarLoss = QStringLiteral("Before saving as .ans:\n1 cell holds a glyph with no CP437 code and will "
-                                         "be written as '?'.\n\nSave anyway?");
+// What putStar's ★ costs a CP437 .ans, named with its cell.
+const QString kStarLoss =
+    QStringLiteral("1 cell holds a glyph with no CP437 code and will be written as '?': ★ at 0,0");
+// Publish's and Send's own questions about it, and the refusal without one.
+const QString kPublishStarLoss =
+    QStringLiteral("Before publishing:\n") + kStarLoss + QStringLiteral(".\n\nPublish anyway?");
+const QString kSendStarLoss = QStringLiteral("Before sending:\n") + kStarLoss + QStringLiteral(".\n\nSend anyway?");
+const QString kStarRefusal = QStringLiteral("The .ans would lose data:\n") + kStarLoss + QLatin1Char('.');
 
 } // namespace
 
@@ -710,7 +716,10 @@ TEST_CASE("Publish to Library and Send to WeeChat warn of loss without the Save 
         Fixture f;
         putStar(f);
         CHECK(saveWarning(f.w.document()->encode()).contains(QStringLiteral("Save As")));
-        CHECK(pipelineWarning(f.w.document()->encode()) == kStarLoss);
+        CHECK(pipelineWarning(f.w.document()->encode(), PipelineAction::Publish) == kPublishStarLoss);
+        CHECK(pipelineWarning(f.w.document()->encode(), PipelineAction::Send) == kSendStarLoss);
+        CHECK_FALSE(kPublishStarLoss.contains(QStringLiteral("sav"), Qt::CaseInsensitive));
+        CHECK_FALSE(kSendStarLoss.contains(QStringLiteral("sav"), Qt::CaseInsensitive));
     }
     SECTION("a UTF-8 document with a glyph CP437 lacks loses it, and says so") {
         Fixture f(tux("utf8/tux-utf8.ans"), QStringLiteral("tux.ans"));
@@ -718,13 +727,13 @@ TEST_CASE("Publish to Library and Send to WeeChat warn of loss without the Save 
         REQUIRE_FALSE(f.w.document()->encode().lossy());  // its own Save keeps the star
         QString error;
         CHECK_FALSE(f.p->planPublish(f.library(), QStringLiteral("tux"), {}, &error));
-        CHECK(error == QStringLiteral("The .ans would lose data:\n") + kStarLoss);
+        CHECK(error == kStarRefusal);
         RecordingSsh ssh("RELOADED\n");
         f.p->setSshProgram(ssh.program);
         const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
                                           QStringLiteral("tux"), 1);
         CHECK_FALSE(r.ok);
-        CHECK(r.message == QStringLiteral("The .ans would lose data:\n") + kStarLoss);
+        CHECK(r.message == kStarRefusal);
         CHECK_FALSE(ssh.ran());
     }
     SECTION("refused without allowLossy") {
@@ -732,12 +741,12 @@ TEST_CASE("Publish to Library and Send to WeeChat warn of loss without the Save 
         putStar(f);
         QString error;
         CHECK_FALSE(f.p->planPublish(f.library(), QStringLiteral("x"), {}, &error));
-        CHECK(error == QStringLiteral("The .ans would lose data:\n") + kStarLoss);
+        CHECK(error == kStarRefusal);
         RecordingSsh ssh("RELOADED\n");
         f.p->setSshProgram(ssh.program);
         const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
                                           QStringLiteral("x"), 1);
-        CHECK(r.message == QStringLiteral("The .ans would lose data:\n") + kStarLoss);
+        CHECK(r.message == kStarRefusal);
         CHECK_FALSE(ssh.ran());
     }
     SECTION("Publish's question") {
@@ -752,7 +761,7 @@ TEST_CASE("Publish to Library and Send to WeeChat warn of loss without the Save 
         const QString expected = QStringLiteral("Publish funkpower/neon-skull, tagged funkpower.\n\nThis writes:\n") +
                                  q(plan->ansPath) + QLatin1Char('\n') + q(plan->txtPath) + QLatin1Char('\n') +
                                  q(plan->tagsPath) + QLatin1Char('\n') + q(plan->datesPath) + QStringLiteral("\n\n") +
-                                 kStarLoss;
+                                 kPublishStarLoss;
         bool asked = false, confirmed = false;
         QString question;
         QTimer::singleShot(0, &f.w, [&] {
@@ -789,8 +798,83 @@ TEST_CASE("Publish to Library and Send to WeeChat warn of loss without the Save 
         CHECK(confirmed);
         CHECK(question == QStringLiteral("Copy the piece to irc-host:~/ascii/wip/neon-skull-r1.ans and reload "
                                          "WeeChat's ascii script?\n\n") +
-                              kStarLoss);
+                              kSendStarLoss);
         CHECK_FALSE(ssh.ran());
+    }
+}
+
+TEST_CASE("Publish to Library and Send to WeeChat write a UTF-8 document's ★ as '?' once told to go ahead") {
+    // A UTF-8 document's own Save keeps the ★; Publish and Send write CP437,
+    // ask, and on Yes write it as '?' and leave the document as it was.
+    const Canvas art = parseAnsi(tux("utf8/tux-utf8.ans").toStdString(), {.encoding = TextEncoding::Utf8}).canvas;
+    Canvas starless = art;
+    starless.at(0, 0).ch = U'?';
+
+    SECTION("Publish") {
+        Fixture f(tux("utf8/tux-utf8.ans"), QStringLiteral("tux.ans"));
+        putStar(f);
+        REQUIRE(f.w.document()->textEncoding() == TextEncoding::Utf8);
+        REQUIRE_FALSE(f.w.document()->encode().lossy());
+        const QString lib = f.library();
+        appSettings()->remove(QStringLiteral("pipeline"));
+        bool asked = false, confirmed = false;
+        QString question;
+        QTimer::singleShot(0, &f.w, [&] {
+            auto* d = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(d);
+            asked = true;
+            d->findChild<QLineEdit*>(QStringLiteral("publishLibrary"))->setText(lib);
+            answer(&f.w, QMessageBox::Yes, &question, &confirmed);
+            d->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        });
+        f.p->publishInteractive();
+        CHECK(asked);
+        CHECK(confirmed);
+        CHECK(question.endsWith(QStringLiteral("\n\n") + kPublishStarLoss));
+
+        const QByteArray ans = readAll(lib + QStringLiteral("/funkpower/tux.ans"));
+        CHECK(detectEncoding(splitSauce(ans.toStdString()).content) == TextEncoding::Cp437);
+        CHECK(ans.toStdString() == f.w.document()->encode(ArtFormat::Ansi, TextEncoding::Cp437).bytes);
+        CHECK(parseAnsi(ans.toStdString(), {.encoding = TextEncoding::Cp437}).canvas == starless);
+        const QString txt = QString::fromUtf8(readAll(lib + QStringLiteral("/funkpower/tux.txt")));
+        CHECK(txt.toStdString() == irc::joinLines(irc::exportCanvas(starless)));
+        CHECK(txt.section(QLatin1Char('\n'), 0, 0).endsWith(kTuxBlocks));
+        CHECK_FALSE(txt.contains(QStringLiteral("Γ")));  // no UTF-8 bytes read as CP437
+        // The document keeps its ★ and its encoding.
+        CHECK(f.w.document()->canvas().at(0, 0).ch == U'★');
+        CHECK(f.w.document()->textEncoding() == TextEncoding::Utf8);
+    }
+    SECTION("Send") {
+        Fixture f(tux("utf8/tux-utf8.ans"), QStringLiteral("tux.ans"));
+        putStar(f);
+        RecordingSsh ssh("RELOADED\n");
+        f.p->setSshProgram(ssh.program);
+        appSettings()->remove(QStringLiteral("pipeline"));
+        bool asked = false, confirmed = false;
+        QString question;
+        QTimer::singleShot(0, &f.w, [&] {
+            auto* d = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(d);
+            asked = true;
+            d->findChild<QLineEdit*>(QStringLiteral("sendHost"))->setText(QStringLiteral("irc-host"));
+            answer(&f.w, QMessageBox::Yes, &question, &confirmed);
+            d->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        });
+        f.p->sendInteractive();
+        CHECK(asked);
+        CHECK(confirmed);
+        CHECK(question.endsWith(QStringLiteral("\n\n") + kSendStarLoss));
+
+        REQUIRE(ssh.ran());
+        const std::string cp437 = f.w.document()->encode(ArtFormat::Ansi, TextEncoding::Cp437).bytes;
+        const QByteArray sent = ssh.input();
+        CHECK(sent.toStdString() == cp437);
+        CHECK(std::size_t(sent.size()) < f.w.document()->encode().bytes.size());  // not the UTF-8 bytes
+        CHECK(detectEncoding(splitSauce(sent.toStdString()).content) == TextEncoding::Cp437);
+        CHECK(ssh.args() == sshArguments(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                         QStringLiteral("tux"), 1, cp437.size()));
+        CHECK(parseAnsi(sent.toStdString(), {.encoding = TextEncoding::Cp437}).canvas == starless);
+        CHECK(f.w.document()->canvas().at(0, 0).ch == U'★');
     }
 }
 

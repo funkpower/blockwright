@@ -1026,3 +1026,34 @@ TEST_CASE("a refresh asked for while one runs takes the note down once its resul
     CHECK_FALSE(dock->stale());
     CHECK(label->isHidden());
 }
+
+TEST_CASE("the Lint dock names a control or bidi override from a file by its code point") {
+    // #327 finding 3: a UTF-8 .ans with █, U+009B (a C1 CSI), "2J", U+202E
+    // (right-to-left override) and "!"
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString path = tmp.filePath(QStringLiteral("controls.ans"));
+    {
+        QFile f(path);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        f.write("\xe2\x96\x88\xc2\x9b" "2J\xe2\x80\xae!\r\n");
+    }
+    MainWindow w;
+    w.show();
+    QString error;
+    REQUIRE(w.openFile(path, &error));
+    LintDock* dock = w.lintWidget();
+    dock->refresh();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    QTreeWidgetItem* csi = rowAt(dock->list(), QStringLiteral("1,0"), QStringLiteral("no-cp437"));
+    QTreeWidgetItem* rlo = rowAt(dock->list(), QStringLiteral("4,0"), QStringLiteral("no-cp437"));
+    REQUIRE(csi);
+    REQUIRE(rlo);
+    CHECK(csi->text(3) == QStringLiteral("U+009B has no CP437 code: an .ans saves it as '?'"));
+    CHECK(rlo->text(3) == QStringLiteral("U+202E has no CP437 code: an .ans saves it as '?'"));
+    for (int i = 0; i < dock->list()->topLevelItemCount(); ++i) {
+        const QString text = dock->list()->topLevelItem(i)->text(3);
+        CHECK_FALSE(text.contains(QChar(0x9B)));
+        CHECK_FALSE(text.contains(QChar(0x202E)));
+    }
+}

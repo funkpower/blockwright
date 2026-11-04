@@ -1328,13 +1328,14 @@ TEST_CASE("a count picks the English form, with no translator installed (#304)")
     out.unwritable = {{0, 0, U'\u263A'}};
     out.blinkDropped = 1;
     CHECK(lossDescription(out) ==
-          QStringLiteral("1 cell holds a glyph with no CP437 code and will be written as '?';\n"
+          QStringLiteral("1 cell holds a glyph with no CP437 code and will be written as '?': ☺ at 0,0;\n"
                          "1 cell lost its blink when the file was opened with iCE colours, and this save doesn't "
                          "put it back"));
     out.unwritable.push_back({1, 0, U'\u263B'});
     out.blinkDropped = 2;
     CHECK(lossDescription(out) ==
-          QStringLiteral("2 cells hold a glyph with no CP437 code and will be written as '?';\n"
+          QStringLiteral("2 cells hold a glyph with no CP437 code and will be written as '?': ☺ at 0,0; "
+                         "☻ at 1,0;\n"
                          "2 cells lost their blink when the file was opened with iCE colours, and this save doesn't "
                          "put it back"));
 }
@@ -1580,12 +1581,14 @@ TEST_CASE("the loss warning words a UTF-8 save's '?' cells as controls, and a CP
     const AnsiOutput u8 = writeAnsi(d, TextEncoding::Utf8);
     REQUIRE(u8.unwritable.size() == 2);
     CHECK(lossDescription(u8) ==
-          QStringLiteral("2 cells hold control characters a UTF-8 .ans can't hold and will be written as '?'"));
+          QStringLiteral("2 cells hold control characters a UTF-8 .ans can't hold and will be written as '?': "
+                         "U+0001 at 1,0; U+0085 at 2,0"));
     CHECK_FALSE(lossDescription(u8).contains(QStringLiteral("CP437")));
     CHECK_FALSE(saveWarning(u8).contains(QStringLiteral("UTF-8 .ans keeps")));
     d.canvas.at(2, 0).ch = U' ';
     CHECK(lossDescription(writeAnsi(d, TextEncoding::Utf8)) ==
-          QStringLiteral("1 cell holds a control character a UTF-8 .ans can't hold and will be written as '?'"));
+          QStringLiteral("1 cell holds a control character a UTF-8 .ans can't hold and will be written as '?': "
+                         "U+0001 at 1,0"));
     d.canvas.at(2, 0).ch = U'\u0085';
 
     // CP437 loses all four; UTF-8 would keep ★ and ○
@@ -1647,11 +1650,11 @@ TEST_CASE("the UTF-8 hint is its own paragraph, for glyphs all kept, some kept a
     d.canvas.at(0, 0).ch = U'★';  // no CP437 code, fine in UTF-8
     CHECK(saveWarning(writeAnsi(d)) ==
           QStringLiteral("Before saving as .ans:\n1 cell holds a glyph with no CP437 code and will be written as "
-                         "'?'.\n\nA UTF-8 .ans keeps that cell's glyph") + hintEnd);
+                         "'?': ★ at 0,0.\n\nA UTF-8 .ans keeps that cell's glyph") + hintEnd);
     d.canvas.at(1, 0).ch = U'☆';
     CHECK(saveWarning(writeAnsi(d)) ==
           QStringLiteral("Before saving as .ans:\n2 cells hold a glyph with no CP437 code and will be written as "
-                         "'?'.\n\nA UTF-8 .ans keeps all 2 of those glyphs") + hintEnd);
+                         "'?': ★ at 0,0; ☆ at 1,0.\n\nA UTF-8 .ans keeps all 2 of those glyphs") + hintEnd);
 
     // a C1 control: no CP437 code, and no UTF-8 .ans holds it either
     d.canvas.at(1, 0).ch = U'\u0085';
@@ -1659,13 +1662,14 @@ TEST_CASE("the UTF-8 hint is its own paragraph, for glyphs all kept, some kept a
     REQUIRE(some.unwritable.size() == 2);
     CHECK(saveWarning(some) ==
           QStringLiteral("Before saving as .ans:\n2 cells hold a glyph with no CP437 code and will be written as "
-                         "'?'.\n\nA UTF-8 .ans keeps the glyph of 1 of those cells") + hintEnd);
+                         "'?': ★ at 0,0; U+0085 at 1,0.\n\nA UTF-8 .ans keeps the glyph of 1 of those cells") +
+              hintEnd);
     // beside a loss UTF-8 doesn't help with, the list ends first
     some.paletteDropped = true;
     some.blinkDropped = 1;
     CHECK(saveWarning(some) ==
           QStringLiteral("Before saving as .ans:\n2 cells hold a glyph with no CP437 code and will be written as "
-                         "'?';\n1 cell lost its blink when the file was opened with iCE colours, and this save "
+                         "'?': ★ at 0,0; U+0085 at 1,0;\n1 cell lost its blink when the file was opened with iCE colours, and this save "
                          "doesn't put it back;\nthe file's own palette is left out (only XBIN keeps one)."
                          "\n\nA UTF-8 .ans keeps the glyph of 1 of those cells") + hintEnd);
 }

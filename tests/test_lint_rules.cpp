@@ -404,6 +404,29 @@ TEST_CASE("a glyph with no CP437 code is found; CP437's own aren't", "[lint][rul
     CHECK(found[0].message == "U+2603 ☃ has no CP437 code: an .ans saves it as '?'");
 }
 
+TEST_CASE("no-cp437 names a control or bidi override by its code point and never echoes it", "[lint][rules]") {
+    // #327 finding 3: a UTF-8 .ans can put these in cells. U+009B is a CSI
+    // to a terminal that honours C1; U+202E reverses the rest of the line.
+    Canvas c = filled(6, 1, cell(U' ', Grey, Black));
+    c.at(0, 0) = cell(char32_t(0x9B), White, Black);
+    c.at(1, 0) = cell(char32_t(0x202E), White, Black);
+    c.at(2, 0) = cell(char32_t(0x2066), White, Black);
+    c.at(3, 0) = cell(char32_t(0x200F), White, Black);
+    c.at(4, 0) = cell(char32_t(0x2028), White, Black);
+    c.at(5, 0) = cell(U'★', White, Black);
+    const auto found = rules(c, Kind::NoCp437);
+    REQUIRE(found.size() == 6);
+    CHECK(found[0].message == "U+009B has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[1].message == "U+202E has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[2].message == "U+2066 has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[3].message == "U+200F has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[4].message == "U+2028 has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[5].message == "U+2605 ★ has no CP437 code: an .ans saves it as '?'");
+    for (std::size_t i = 0; i < 5; ++i)
+        CHECK(std::all_of(found[i].message.begin(), found[i].message.end(),
+                          [](char ch) { return ch >= 0x20 && ch < 0x7F; }));
+}
+
 TEST_CASE("a glyph whose CP437 byte .ans reads as a control code is found, with why", "[lint][rules]") {
     // #300: an .ans save writes these as '?', so no-cp437 flags them too
     Canvas c = filled(7, 1, cell(U' ', Grey, Black));

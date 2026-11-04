@@ -84,7 +84,10 @@ std::optional<TextEncoding> openFilterEncoding(const QString& filter);
 // What a lossy save or snapshot loses, one line per kind of loss. Cells
 // written as '?' are glyphs with no CP437 code or whose byte .ans reads as a
 // control code for a CP437 .ans (out.encoding), and control characters for
-// a UTF-8 one, which holds every glyph.
+// a UTF-8 one, which holds every glyph. The glyphs with no CP437 code, and
+// the control characters, are named: up to three distinct ones, each with
+// its cell (column,row from 0) or its count and first cell, then "and N
+// more"; a control or format character as U+XXXX, never raw.
 QString lossDescription(const AnsiOutput& out);
 
 // The status-bar message for typed or committed `text` whose glyphs
@@ -100,10 +103,13 @@ QString rejectedGlyphsMessage(const QString& text);
 // A CP437 .ans whose '?' cells a UTF-8 one would keep says how many, and to
 // Save As "ANSI art, UTF-8 (*.ans)".
 QString saveWarning(const AnsiOutput& out, bool project = false, ArtFormat format = ArtFormat::Ansi);
-// The loss text Publish to Library and Send to WeeChat show (PLAN §9): what
-// saveWarning says for a CP437 .ans, without the hint to Save As UTF-8,
-// since both always write CP437 whatever the document is saved as.
-QString pipelineWarning(const AnsiOutput& out);
+// The question Publish to Library and Send to WeeChat ask before a lossy
+// CP437 payload (PLAN §9): "Before publishing:" or "Before sending:", the
+// loss (lossDescription), then "Publish anyway?" or "Send anyway?". There is
+// no hint to Save As UTF-8, since both always write CP437 whatever the
+// document is saved as.
+enum class PipelineAction { Publish, Send };
+QString pipelineWarning(const AnsiOutput& out, PipelineAction action);
 
 class SelectTool;
 class GlyphBar;

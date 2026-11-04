@@ -282,12 +282,12 @@ void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
         return *std::find_if(res.unwritable.begin(), res.unwritable.end(),
                              [&](const bw::Unwritable& u) { return bw::ansControlByte(u.ch).has_value() == control; });
     };
+    // A control or bidi override is shown by its code point alone, never raw.
     const auto where = [](const bw::Unwritable& u) {
-        std::string glyph;
-        bw::appendUtf8(glyph, u.ch);
         char code[16];
         std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(u.ch));
-        return "(first: " + std::string(code) + " '" + glyph + "' at column " + std::to_string(u.x + 1) + ", row " +
+        const std::string glyph = bw::unprintableCodePoint(u.ch) ? "" : " '" + bw::quotedGlyph(u.ch) + "'";
+        return "(first: " + std::string(code) + glyph + " at column " + std::to_string(u.x + 1) + ", row " +
                std::to_string(u.y + 1) + ")";
     };
     if (res.encoding == bw::TextEncoding::Utf8) {

@@ -36,6 +36,7 @@
 #include <QWhatsThis>
 
 #include <algorithm>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -70,6 +71,40 @@ std::optional<TextEncoding> openFilterEncoding(const QString& filter) {
     return std::nullopt;
 }
 
+namespace {
+
+// The distinct glyphs of `cells`, in the order they are first met, each
+// with its cell (column,row from 0, as the status bar and the Lint dock give
+// it), or how many cells hold it and the first: the first few, then how
+// many more. A control or format character is named by its code point
+// (quotedGlyph), never shown raw.
+QString namedGlyphs(const std::vector<Unwritable>& cells) {
+    constexpr std::size_t kNamed = 3;
+    std::vector<std::pair<Unwritable, int>> glyphs;  // first cell, cells holding it
+    for (const Unwritable& u : cells) {
+        const auto it = std::find_if(glyphs.begin(), glyphs.end(), [&](const auto& g) { return g.first.ch == u.ch; });
+        if (it == glyphs.end())
+            glyphs.emplace_back(u, 1);
+        else
+            ++it->second;
+    }
+    QStringList named;
+    for (std::size_t i = 0; i < std::min(glyphs.size(), kNamed); ++i) {
+        const auto& [u, n] = glyphs[i];
+        const QString glyph = QString::fromStdString(quotedGlyph(u.ch));
+        const QString at = QStringLiteral("%1,%2").arg(u.x).arg(u.y);
+        named << (n == 1 ? QObject::tr("%1 at %2").arg(glyph, at)
+                         : QObject::tr("%1 in %2 cells, first at %3").arg(glyph, QString::number(n), at));
+    }
+    QString text = named.join(QStringLiteral("; "));
+    if (glyphs.size() > kNamed)
+        text += plural(int(glyphs.size() - kNamed), QObject::tr("; and %n more glyph"),
+                       QObject::tr("; and %n more glyphs"));
+    return text;
+}
+
+} // namespace
+
 QString lossDescription(const AnsiOutput& out) {
     QStringList parts;
     // UTF-8 holds every glyph, so what it can't write is a control character
@@ -79,12 +114,18 @@ QString lossDescription(const AnsiOutput& out) {
     if (utf8 && !out.unwritable.empty())
         parts << plural(int(out.unwritable.size()),
                         QObject::tr("%n cell holds a control character a UTF-8 .ans can't hold and will be written "
-                                    "as '?'"),
+                                    "as '?': %1"),
                         QObject::tr("%n cells hold control characters a UTF-8 .ans can't hold and will be written "
-                                    "as '?'"));
-    else if (const int n = int(out.unwritable.size()) - controls)
-        parts << plural(n, QObject::tr("%n cell holds a glyph with no CP437 code and will be written as '?'"),
-                        QObject::tr("%n cells hold a glyph with no CP437 code and will be written as '?'"));
+                                    "as '?': %1"))
+                     .arg(namedGlyphs(out.unwritable));
+    else if (const int n = int(out.unwritable.size()) - controls) {
+        std::vector<Unwritable> uncoded;
+        std::copy_if(out.unwritable.begin(), out.unwritable.end(), std::back_inserter(uncoded),
+                     [](const Unwritable& u) { return !ansControlByte(u.ch); });
+        parts << plural(n, QObject::tr("%n cell holds a glyph with no CP437 code and will be written as '?': %1"),
+                        QObject::tr("%n cells hold a glyph with no CP437 code and will be written as '?': %1"))
+                     .arg(namedGlyphs(uncoded));
+    }
     if (controls)
         parts << plural(controls,
                         QObject::tr("%n cell holds a glyph whose CP437 byte .ans reads as a control code (%1) and "
@@ -141,14 +182,15 @@ QString rejectedGlyphsMessage(const QString& text) {
 
 namespace {
 
-QString lossQuestion(const AnsiOutput& out, bool project, ArtFormat format, bool utf8Hint) {
+// Save's question: the loss, then, for a CP437 .ans that loses glyphs a
+// UTF-8 one would hold, the hint to Save As UTF-8.
+QString lossQuestion(const AnsiOutput& out, bool project, ArtFormat format) {
     const QString before = project                       ? QObject::tr("Before saving the project:")
                            : format == ArtFormat::Xbin ? QObject::tr("Before saving as XBIN:")
                            : format == ArtFormat::Bin  ? QObject::tr("Before saving as BIN:")
                                                        : QObject::tr("Before saving as .ans:");
     QString hint;
-    // A CP437 .ans that loses glyphs a UTF-8 one would hold says so.
-    if (utf8Hint && !project && format == ArtFormat::Ansi && out.encoding == TextEncoding::Cp437) {
+    if (!project && format == ArtFormat::Ansi && out.encoding == TextEncoding::Cp437) {
         const auto kept = std::count_if(out.unwritable.begin(), out.unwritable.end(),
                                         [](const Unwritable& u) { return utf8Writable(u.ch); });
         // No hint at all when nothing lost would survive: a save that only
@@ -171,10 +213,14 @@ QString lossQuestion(const AnsiOutput& out, bool project, ArtFormat format, bool
 } // namespace
 
 QString saveWarning(const AnsiOutput& out, bool project, ArtFormat format) {
-    return lossQuestion(out, project, format, true);
+    return lossQuestion(out, project, format);
 }
 
-QString pipelineWarning(const AnsiOutput& out) { return lossQuestion(out, false, ArtFormat::Ansi, false); }
+QString pipelineWarning(const AnsiOutput& out, PipelineAction action) {
+    return action == PipelineAction::Publish
+               ? QObject::tr("Before publishing:\n%1.\n\nPublish anyway?").arg(lossDescription(out))
+               : QObject::tr("Before sending:\n%1.\n\nSend anyway?").arg(lossDescription(out));
+}
 
 SavePath resolveSavePath(const QString& chosen, const QString& suffix) {
     if (!QFileInfo(chosen).suffix().isEmpty())

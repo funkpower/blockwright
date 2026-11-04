@@ -840,6 +840,52 @@ TEST_CASE("the typing refusal says why each glyph can't be typed") {
                          "★… has no CP437 code; not typed"));
 }
 
+TEST_CASE("the loss warning names the glyphs it loses, with a cell, and never shows a control raw") {
+    // #331 N1: up to three glyphs, each with its cell (column,row from 0) or
+    // its count and first cell, then how many more
+    AnsiOutput out;
+    out.encoding = TextEncoding::Cp437;
+    out.unwritable = {{0, 0, U'★'}};
+    CHECK(lossDescription(out) ==
+          QStringLiteral("1 cell holds a glyph with no CP437 code and will be written as '?': ★ at 0,0"));
+    out.unwritable = {{5, 0, U'★'}, {1, 2, U'☃'}, {7, 0, U'★'}, {0, 3, char32_t(0x202E)}};
+    CHECK(lossDescription(out) ==
+          QStringLiteral("4 cells hold a glyph with no CP437 code and will be written as '?': ★ in 2 cells, first "
+                         "at 5,0; ☃ at 1,2; U+202E at 0,3"));
+    out.unwritable.push_back({2, 3, U'✓'});
+    CHECK(lossDescription(out).endsWith(QStringLiteral("U+202E at 0,3; and 1 more glyph")));
+    out.unwritable.push_back({3, 3, char32_t(0x9B)});
+    out.unwritable.push_back({4, 3, U'✓'});
+    CHECK(lossDescription(out) ==
+          QStringLiteral("7 cells hold a glyph with no CP437 code and will be written as '?': ★ in 2 cells, first "
+                         "at 5,0; ☃ at 1,2; U+202E at 0,3; and 2 more glyphs"));
+    // a control byte's glyph is counted with the controls, not named among these
+    out.unwritable = {{0, 0, U'○'}, {1, 0, U'★'}};
+    CHECK(lossDescription(out).startsWith(
+        QStringLiteral("1 cell holds a glyph with no CP437 code and will be written as '?': ★ at 1,0;\n")));
+
+    // a UTF-8 .ans names its control characters by their code points
+    out.encoding = TextEncoding::Utf8;
+    out.unwritable = {{0, 0, char32_t(0x9B)}, {1, 0, char32_t(0x1B)}, {2, 1, char32_t(0x9B)}};
+    CHECK(lossDescription(out) == QStringLiteral("3 cells hold control characters a UTF-8 .ans can't hold and will "
+                                                 "be written as '?': U+009B in 2 cells, first at 0,0; U+001B at 1,0"));
+
+    // the editor's own save of a document holding them
+    AnsiDocument d;
+    d.canvas = Canvas(3, 1);
+    d.canvas.at(0, 0).ch = char32_t(0x202E);
+    d.canvas.at(1, 0).ch = char32_t(0x9B);
+    d.canvas.at(2, 0).ch = U'★';
+    const QString cp = saveWarning(writeAnsi(d, TextEncoding::Cp437));
+    CHECK(cp.contains(QStringLiteral("'?': U+202E at 0,0; U+009B at 1,0; ★ at 2,0.")));
+    const QString u8 = saveWarning(writeAnsi(d, TextEncoding::Utf8));
+    CHECK(u8.contains(QStringLiteral("'?': U+009B at 1,0.")));
+    for (const QString& text : {cp, u8}) {
+        CHECK_FALSE(text.contains(QChar(0x202E)));
+        CHECK_FALSE(text.contains(QChar(0x9B)));
+    }
+}
+
 TEST_CASE("the save warning tells glyphs with no CP437 code from control bytes") {
     // #300: the cells writeAnsi lists as '?' for either reason
     AnsiOutput out;
@@ -853,7 +899,8 @@ TEST_CASE("the save warning tells glyphs with no CP437 code from control bytes")
                                                  "(TAB) and will be written as '?' (XBIN and BIN keep it)"));
     out.unwritable = {{0, 0, U'★'}, {1, 0, U'★'}};
     CHECK(lossDescription(out) ==
-          QStringLiteral("2 cells hold a glyph with no CP437 code and will be written as '?'"));
+          QStringLiteral("2 cells hold a glyph with no CP437 code and will be written as '?': ★ in 2 cells, first at "
+                         "0,0"));
 
     // the editor's own save of #300's XBIN: .ans loses the bytes and says
     // which, XBIN keeps them

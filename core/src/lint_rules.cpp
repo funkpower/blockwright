@@ -366,10 +366,11 @@ void noCp437(const Canvas& canvas, std::vector<Finding>& out) {
                 continue;
             char code[16];
             std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(c.ch));
-            std::string glyph;
-            if (c.ch <= 0x10ffff && !(c.ch >= 0xd800 && c.ch <= 0xdfff))
-                appendUtf8(glyph, c.ch);
-            std::string message = std::string(code) + (glyph.empty() ? "" : " " + glyph);
+            // A control or bidi override is named by its code alone, never
+            // echoed: a terminal would act on it.
+            std::string message = code;
+            if (!unprintableCodePoint(c.ch))
+                message += " " + quotedGlyph(c.ch);
             if (control) {
                 char byte[8];
                 std::snprintf(byte, sizeof byte, "0x%02X", unsigned(*control));
@@ -409,9 +410,7 @@ bool craftShade(const LintOptions& o, const Cell& c) {
 }
 
 std::string shadeMessage(int x, int y, const Cell& c) {
-    std::string glyph;
-    appendUtf8(glyph, c.ch);
-    return "cell " + std::to_string(x) + "," + std::to_string(y) + ": " + glyph + " of " +
+    return "cell " + std::to_string(x) + "," + std::to_string(y) + ": " + quotedGlyph(c.ch) + " of " +
            std::to_string(c.fg.index) + " on " + std::to_string(c.bg.index) +
            ", colours no ramp linted has as neighbours";
 }

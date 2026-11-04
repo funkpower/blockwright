@@ -305,6 +305,21 @@ if [[ $(head -c 8 "$tmp/ctl.bin" | od -An -tx1 | tr -d ' \n') == 09071b070a07410
 expect "lint: control bytes are no-cp437, with why" 4 "^0,0 no-cp437 - U\+25CB ○ is CP437 0x09, which \.ans reads as TAB: an \.ans saves it as '\?' \(XBIN and BIN keep it\)$" -- \
   "$cli" lint "$tmp/ctl.xb"
 expect "lint: each control byte is found" 4 '^3 findings \(3 no-cp437\)' -- "$cli" lint "$tmp/ctl.xb"
+# a C1 CSI (U+009B) and a right-to-left override (U+202E) from a UTF-8 file
+# are named by their code points, never echoed raw (#327 finding 3)
+printf '\xe2\x96\x88\xc2\x9b2J\xe2\x80\xae!\r\n' > "$tmp/c1-bidi.ans"
+hexout() { "$@" 2>&1 | od -An -v -tx1 | tr -s ' \n' '  '; }
+for json in "" --json; do
+  out=$("$cli" lint $json "$tmp/c1-bidi.ans" 2>&1); st=$?
+  hex=$(hexout "$cli" lint $json "$tmp/c1-bidi.ans")
+  if [[ $st -eq 4 && $out == *"U+009B has no CP437 code"* && $out == *"U+202E has no CP437 code"* ]]; then ok "lint $json: U+009B and U+202E named"; else bad "lint $json of C1 and bidi controls (exit $st): $out"; fi
+  if [[ $hex != *" c2 9b "* && $hex != *" e2 80 ae "* ]]; then ok "lint $json: no raw U+009B or U+202E"; else bad "lint $json echoes a raw control: $hex"; fi
+done
+expect "convert: a C1 control is named by its code point alone" 1 \
+  "warning: .*c1-bidi\.ans: 2 glyphs have no CP437 code and are written as '\?' \(first: U\+009B at column 2, row 1\)$" -- \
+  "$cli" convert "$tmp/c1-bidi.ans" "$tmp/c1-bidi-cp.ans"
+hex=$(hexout "$cli" convert "$tmp/c1-bidi.ans" "$tmp/c1-bidi-cp.ans")
+if [[ $hex != *" c2 9b "* && $hex != *" e2 80 ae "* ]]; then ok "convert: no raw U+009B or U+202E in the warning"; else bad "convert echoes a raw control: $hex"; fi
 expect "a glyph with no CP437 code says so" 1 \
   "warning: .*unwritable\.bwp: 1 glyph has no CP437 code and is written as '\?' \(first: U\+2605 '★' at column 1, row 1\)$" -- \
   "$cli" convert "$data/projects/unwritable.bwp" "$tmp/unwritable.ans"

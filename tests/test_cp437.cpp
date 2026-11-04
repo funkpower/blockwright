@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <set>
 
 using namespace bw;
@@ -59,4 +60,32 @@ TEST_CASE("CP437 bytes convert to UTF-8", "[cp437]") {
     std::string s;
     appendUtf8(s, U'\U0001F600');
     CHECK(s == "\xF0\x9F\x98\x80");
+}
+
+TEST_CASE("Controls and format characters are quoted by their code point, never raw", "[cp437]") {
+    // C0, DEL, C1 (U+009B is a CSI to a terminal that honours C1), the
+    // zero-width and bidi marks, embeddings, overrides and isolates, the line
+    // and paragraph separators, the byte order mark, a soft hyphen, a tag,
+    // a surrogate and past U+10FFFF
+    for (const char32_t cp : {0x00u, 0x09u, 0x1Bu, 0x7Fu, 0x80u, 0x85u, 0x9Bu, 0x9Fu, 0xADu, 0x200Bu, 0x200Du, 0x200Eu,
+                              0x200Fu, 0x202Au, 0x202Bu, 0x202Cu, 0x202Du, 0x202Eu, 0x2028u, 0x2029u, 0x2060u, 0x2066u,
+                              0x2067u, 0x2068u, 0x2069u, 0xFEFFu, 0xE0001u, 0xD800u, 0x110000u}) {
+        INFO(std::hex << unsigned(cp));
+        CHECK(unprintableCodePoint(cp));
+        const std::string q = quotedGlyph(cp);
+        CHECK(q.rfind("U+", 0) == 0);
+        CHECK(std::all_of(q.begin(), q.end(), [](char c) { return c > 0x20 && c < 0x7F; }));
+    }
+    CHECK(quotedGlyph(0x9B) == "U+009B");
+    CHECK(quotedGlyph(0x202E) == "U+202E");
+    CHECK(quotedGlyph(0xE0001) == "U+E0001");
+    CHECK(quotedGlyph(0x110000) == "U+110000");
+    // what shows is shown as itself
+    for (const char32_t cp : {char32_t('A'), U'é', U'★', U'░', U'中', U'\u00A0', U'\U0001F600'}) {
+        INFO(std::hex << unsigned(cp));
+        CHECK_FALSE(unprintableCodePoint(cp));
+        std::string utf8;
+        appendUtf8(utf8, cp);
+        CHECK(quotedGlyph(cp) == utf8);
+    }
 }

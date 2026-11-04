@@ -1,6 +1,9 @@
 #include "blockwright/cp437.h"
 
+#include <QChar>
+
 #include <algorithm>
+#include <cstdio>
 #include <utility>
 
 namespace bw {
@@ -116,6 +119,29 @@ std::string cp437ToUtf8(std::string_view bytes) {
     out.reserve(bytes.size());
     for (unsigned char b : bytes)
         appendUtf8(out, kTable[b]);
+    return out;
+}
+
+bool unprintableCodePoint(char32_t cp) {
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+        return true;
+    switch (QChar::category(cp)) {
+    case QChar::Other_Control:
+    case QChar::Other_Format:
+    case QChar::Separator_Line:
+    case QChar::Separator_Paragraph: return true;
+    default: return false;
+    }
+}
+
+std::string quotedGlyph(char32_t cp) {
+    if (unprintableCodePoint(cp)) {
+        char code[16];
+        std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(cp));
+        return code;
+    }
+    std::string out;
+    appendUtf8(out, cp);
     return out;
 }
 

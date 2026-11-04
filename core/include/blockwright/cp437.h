@@ -21,6 +21,18 @@ std::optional<std::uint8_t> unicodeToCp437(char32_t cp);
 
 void appendUtf8(std::string& out, char32_t cp);
 
+// Whether `cp` shows nothing or acts when printed: a C0 or C1 control or
+// DEL (general category Cc), a format character (Cf: the bidi marks,
+// embeddings, overrides and isolates U+200E-F, U+202A-E, U+2066-9, the
+// zero-width characters, the byte order mark ...), the line and paragraph
+// separators U+2028 and U+2029, a surrogate or anything past U+10FFFF.
+bool unprintableCodePoint(char32_t cp);
+
+// `cp` as text to quote in a message: its UTF-8, or "U+XXXX" (at least four
+// hex digits) when it is unprintableCodePoint, so a control or bidi override
+// taken from a file is never printed raw.
+std::string quotedGlyph(char32_t cp);
+
 // The UTF-8 sequence at `i` in `s`, advancing `i` past it. Only well-formed
 // sequences count (RFC 3629: no overlong forms, no surrogates, nothing past
 // U+10FFFF, none cut short by the end of `s`); for any other byte, nothing,
