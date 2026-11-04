@@ -1057,3 +1057,31 @@ TEST_CASE("the Lint dock names a control or bidi override from a file by its cod
         CHECK_FALSE(text.contains(QChar(0x202E)));
     }
 }
+
+TEST_CASE("the Lint dock names an invisible glyph or a noncharacter by its code point") {
+    // review of #332, N1 and N2: a UTF-8 .ans with ❤️ (U+2764 U+FE0F) and U+FFFE
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString path = tmp.filePath(QStringLiteral("invisible.ans"));
+    {
+        QFile f(path);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        f.write("\xe2\x9d\xa4\xef\xb8\x8f\xef\xbf\xbe\r\n");
+    }
+    MainWindow w;
+    w.show();
+    QString error;
+    REQUIRE(w.openFile(path, &error));
+    LintDock* dock = w.lintWidget();
+    dock->refresh();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    QTreeWidgetItem* heart = rowAt(dock->list(), QStringLiteral("0,0"), QStringLiteral("no-cp437"));
+    QTreeWidgetItem* vs16 = rowAt(dock->list(), QStringLiteral("1,0"), QStringLiteral("no-cp437"));
+    QTreeWidgetItem* fffe = rowAt(dock->list(), QStringLiteral("2,0"), QStringLiteral("no-cp437"));
+    REQUIRE(heart);
+    REQUIRE(vs16);
+    REQUIRE(fffe);
+    CHECK(heart->text(3) == QStringLiteral("U+2764 ❤ has no CP437 code: an .ans saves it as '?'"));
+    CHECK(vs16->text(3) == QStringLiteral("U+FE0F has no CP437 code: an .ans saves it as '?'"));
+    CHECK(fffe->text(3) == QStringLiteral("U+FFFE has no CP437 code: an .ans saves it as '?'"));
+}

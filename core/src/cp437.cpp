@@ -123,13 +123,19 @@ std::string cp437ToUtf8(std::string_view bytes) {
 }
 
 bool unprintableCodePoint(char32_t cp) {
-    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) || QChar::isNonCharacter(cp))
+        return true;
+    // The Hangul fillers: letters (Lo) that are default ignorable and draw nothing.
+    if (cp == 0x115F || cp == 0x1160 || cp == 0x3164 || cp == 0xFFA0)
         return true;
     switch (QChar::category(cp)) {
     case QChar::Other_Control:
     case QChar::Other_Format:
+    case QChar::Other_NotAssigned:
     case QChar::Separator_Line:
-    case QChar::Separator_Paragraph: return true;
+    case QChar::Separator_Paragraph:
+    case QChar::Mark_NonSpacing:
+    case QChar::Mark_Enclosing: return true;
     default: return false;
     }
 }

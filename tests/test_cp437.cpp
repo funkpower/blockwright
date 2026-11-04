@@ -89,3 +89,33 @@ TEST_CASE("Controls and format characters are quoted by their code point, never 
         CHECK(quotedGlyph(cp) == utf8);
     }
 }
+
+TEST_CASE("Glyphs that show nothing on their own are quoted by their code point", "[cp437]") {
+    // review of #332, N1 and N2: variation selectors (the second half
+    // of ❤️), the combining grapheme joiner, a lone combining accent and an
+    // enclosing mark, the Hangul fillers, noncharacters and an unassigned code
+    // point print as nothing or land on the character before them.
+    for (const char32_t cp : {0xFE00u, 0xFE0Eu, 0xFE0Fu, 0xE0100u, 0xE01EFu, 0x034Fu, 0x0301u, 0x0300u, 0x20DDu,
+                              0x115Fu, 0x1160u, 0x3164u, 0xFFA0u, 0xFDD0u, 0xFDEFu, 0xFFFEu, 0xFFFFu, 0x1FFFEu,
+                              0x10FFFFu, 0x0378u}) {
+        INFO(std::hex << unsigned(cp));
+        CHECK(unprintableCodePoint(cp));
+        const std::string q = quotedGlyph(cp);
+        CHECK(q.rfind("U+", 0) == 0);
+        CHECK(std::all_of(q.begin(), q.end(), [](char c) { return c > 0x20 && c < 0x7F; }));
+    }
+    CHECK(quotedGlyph(0xFE0F) == "U+FE0F");
+    CHECK(quotedGlyph(0x0301) == "U+0301");
+    CHECK(quotedGlyph(0x3164) == "U+3164");
+    CHECK(quotedGlyph(0xFFFE) == "U+FFFE");
+    CHECK(quotedGlyph(0xE0100) == "U+E0100");
+    // the visible ones stay themselves: ❤ (the first half of ❤️), a box line,
+    // a Hangul syllable, a spacing mark (U+0903), a private-use glyph
+    for (const char32_t cp : {U'\u2764', U'─', U'╬', U'한', U'\u0903', U'\uE0A0', U'z'}) {
+        INFO(std::hex << unsigned(cp));
+        CHECK_FALSE(unprintableCodePoint(cp));
+        std::string utf8;
+        appendUtf8(utf8, cp);
+        CHECK(quotedGlyph(cp) == utf8);
+    }
+}

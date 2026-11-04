@@ -320,6 +320,16 @@ expect "convert: a C1 control is named by its code point alone" 1 \
   "$cli" convert "$tmp/c1-bidi.ans" "$tmp/c1-bidi-cp.ans"
 hex=$(hexout "$cli" convert "$tmp/c1-bidi.ans" "$tmp/c1-bidi-cp.ans")
 if [[ $hex != *" c2 9b "* && $hex != *" e2 80 ae "* ]]; then ok "convert: no raw U+009B or U+202E in the warning"; else bad "convert echoes a raw control: $hex"; fi
+# ❤️ (U+2764 U+FE0F), a lone U+0301, the Hangul filler U+3164 and the
+# noncharacter U+FFFE show nothing on their own: lint gives their
+# code alone (review of #332, N1 and N2)
+printf '\xe2\x96\x88\xe2\x9d\xa4\xef\xb8\x8f\xcc\x81\xe3\x85\xa4\xef\xbf\xbe\r\n' > "$tmp/invisible.ans"
+for json in "" --json; do
+  out=$("$cli" lint $json "$tmp/invisible.ans" 2>&1); st=$?
+  hex=$(hexout "$cli" lint $json "$tmp/invisible.ans")
+  if [[ $st -eq 4 && $out == *"U+2764 ❤ has no CP437 code"* && $out == *"U+FE0F has no CP437 code"* && $out == *"U+0301 has no CP437 code"* && $out == *"U+3164 has no CP437 code"* && $out == *"U+FFFE has no CP437 code"* ]]; then ok "lint $json: invisible glyphs named by code"; else bad "lint $json of invisible glyphs (exit $st): $out"; fi
+  if [[ $hex != *" ef b8 8f "* && $hex != *" cc 81 "* && $hex != *" e3 85 a4 "* && $hex != *" ef bf be "* ]]; then ok "lint $json: no raw invisible glyph"; else bad "lint $json echoes an invisible glyph: $hex"; fi
+done
 expect "a glyph with no CP437 code says so" 1 \
   "warning: .*unwritable\.bwp: 1 glyph has no CP437 code and is written as '\?' \(first: U\+2605 '★' at column 1, row 1\)$" -- \
   "$cli" convert "$data/projects/unwritable.bwp" "$tmp/unwritable.ans"

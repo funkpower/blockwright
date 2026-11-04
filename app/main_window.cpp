@@ -76,8 +76,8 @@ namespace {
 // The distinct glyphs of `cells`, in the order they are first met, each
 // with its cell (column,row from 0, as the status bar and the Lint dock give
 // it), or how many cells hold it and the first: the first few, then how
-// many more. A control or format character is named by its code point
-// (quotedGlyph), never shown raw.
+// many more. A control, format or invisible character (unprintableCodePoint)
+// is named by its code point (quotedGlyph), never shown raw.
 QString namedGlyphs(const std::vector<Unwritable>& cells) {
     constexpr std::size_t kNamed = 3;
     std::vector<std::pair<Unwritable, int>> glyphs;  // first cell, cells holding it
@@ -162,18 +162,27 @@ QString lossDescription(const AnsiOutput& out) {
 QString rejectedGlyphsMessage(const QString& text) {
     QStringList parts;
     QString uncoded;
+    bool lastNamed = false;      // whether `uncoded` ends in a U+XXXX
     std::vector<char32_t> seen;  // each glyph's reason once, however often it was typed
     for (const char32_t ch : text.toUcs4()) {
         if (std::find(seen.begin(), seen.end(), ch) != seen.end())
             continue;
         seen.push_back(ch);
-        const QString glyph = QString::fromUcs4(&ch, 1);
+        // A control, bidi override or invisible character is named by its
+        // code point (quotedGlyph), never put in the status bar raw.
+        const QString glyph = QString::fromStdString(quotedGlyph(ch));
         if (const std::optional<std::uint8_t> b = ansControlByte(ch))
             parts << QObject::tr("%1 is CP437 0x%2, which .ans reads as %3")
                          .arg(glyph, QStringLiteral("%1").arg(uint(*b), 2, 16, QLatin1Char('0')).toUpper(),
                               QString::fromLatin1(ansControlName(*b)));
-        else
+        else {
+            // glyphs run together (★…); a code point is set off by spaces
+            const bool named = unprintableCodePoint(ch);
+            if (!uncoded.isEmpty() && (named || lastNamed))
+                uncoded += QLatin1Char(' ');
             uncoded += glyph;
+            lastNamed = named;
+        }
     }
     if (!uncoded.isEmpty())
         parts << QObject::tr("%1 has no CP437 code").arg(uncoded);

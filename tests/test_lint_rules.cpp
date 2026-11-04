@@ -8,6 +8,12 @@
 #include "blockwright/lint_rules.h"
 #include "util.h"
 
+#include "../cli/lint.h"
+
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -425,6 +431,57 @@ TEST_CASE("no-cp437 names a control or bidi override by its code point and never
     for (std::size_t i = 0; i < 5; ++i)
         CHECK(std::all_of(found[i].message.begin(), found[i].message.end(),
                           [](char ch) { return ch >= 0x20 && ch < 0x7F; }));
+}
+
+TEST_CASE("no-cp437 names an invisible glyph or a noncharacter by its code point alone", "[lint][rules]") {
+    // review of #332, N1 and N2: U+FE0F (the second half of ❤️), a
+    // lone U+0301, the Hangul filler U+3164 and the noncharacter U+FFFE show
+    // nothing, or a mark on the cell before, so only their code is given
+    Canvas c = filled(6, 1, cell(U' ', Grey, Black));
+    c.at(0, 0) = cell(U'\u2764', White, Black);
+    c.at(1, 0) = cell(char32_t(0xFE0F), White, Black);
+    c.at(2, 0) = cell(char32_t(0x0301), White, Black);
+    c.at(3, 0) = cell(char32_t(0x3164), White, Black);
+    c.at(4, 0) = cell(char32_t(0xFFFE), White, Black);
+    c.at(5, 0) = cell(char32_t(0x034F), White, Black);
+    const auto found = rules(c, Kind::NoCp437);
+    REQUIRE(found.size() == 6);
+    CHECK(found[0].message == "U+2764 ❤ has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[1].message == "U+FE0F has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[2].message == "U+0301 has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[3].message == "U+3164 has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[4].message == "U+FFFE has no CP437 code: an .ans saves it as '?'");
+    CHECK(found[5].message == "U+034F has no CP437 code: an .ans saves it as '?'");
+}
+
+TEST_CASE("lint text and JSON name a noncharacter from a UTF-8 file by its code point alone", "[lint][rules]") {
+    // review of #332, N2: a UTF-8 .ans of █, U+FFFE, U+FE0F and U+3164
+    const AnsiDocument doc =
+        parseAnsi("\xe2\x96\x88\xef\xbf\xbe\xef\xb8\x8f\xe3\x85\xa4\r\n", {.encoding = TextEncoding::Utf8});
+    const lint::LintReport r = bwcli::lintDocument(doc, {});
+    const std::string text = bwcli::lintText(r);
+    CHECK(text.find("1,0 no-cp437 - U+FFFE has no CP437 code: an .ans saves it as '?'\n") != std::string::npos);
+    CHECK(text.find("2,0 no-cp437 - U+FE0F has no CP437 code") != std::string::npos);
+    CHECK(text.find("3,0 no-cp437 - U+3164 has no CP437 code") != std::string::npos);
+    const std::string json = bwcli::lintJson(r);
+    for (const std::string& out : {text, json}) {
+        INFO(out);
+        CHECK(out.find("\xef\xbf\xbe") == std::string::npos);  // U+FFFE
+        CHECK(out.find("\xef\xb8\x8f") == std::string::npos);  // U+FE0F
+        CHECK(out.find("\xe3\x85\xa4") == std::string::npos);  // U+3164
+    }
+    // still one valid JSON document, the code given once, not escaped again
+    QJsonParseError error;
+    const QJsonDocument parsed = QJsonDocument::fromJson(QByteArray::fromStdString(json), &error);
+    REQUIRE(error.error == QJsonParseError::NoError);
+    std::vector<std::string> messages;
+    for (const QJsonValue& f : parsed.object().value(QStringLiteral("findings")).toArray())
+        if (f.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("no-cp437"))
+            messages.push_back(f.toObject().value(QStringLiteral("message")).toString().toStdString());
+    REQUIRE(messages.size() == 3);
+    CHECK(messages[0] == "U+FFFE has no CP437 code: an .ans saves it as '?'");
+    CHECK(messages[1] == "U+FE0F has no CP437 code: an .ans saves it as '?'");
+    CHECK(messages[2] == "U+3164 has no CP437 code: an .ans saves it as '?'");
 }
 
 TEST_CASE("a glyph whose CP437 byte .ans reads as a control code is found, with why", "[lint][rules]") {

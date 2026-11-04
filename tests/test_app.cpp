@@ -838,6 +838,18 @@ TEST_CASE("the typing refusal says why each glyph can't be typed") {
     CHECK(rejectedGlyphsMessage(QStringLiteral("★○←○★…")) ==
           QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ← is CP437 0x1B, which .ans reads as ESC; "
                          "★… has no CP437 code; not typed"));
+    // review of #332, N3: a typed or committed right-to-left override, or an
+    // invisible glyph, is named by its code point, never put in the status
+    // bar raw, and set off from the glyphs beside it
+    CHECK(rejectedGlyphsMessage(QString(QChar(0x202E))) == QStringLiteral("U+202E has no CP437 code; not typed"));
+    CHECK(rejectedGlyphsMessage(QChar(0x202E) + QStringLiteral("★…")) ==
+          QStringLiteral("U+202E ★… has no CP437 code; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("★") + QChar(0x202E) + QChar(0xFE0F) + QStringLiteral("…")) ==
+          QStringLiteral("★ U+202E U+FE0F … has no CP437 code; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("○") + QChar(0x0301)) ==
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; U+0301 has no CP437 code; not typed"));
+    for (const QChar ch : {QChar(0x202E), QChar(0xFE0F), QChar(0x0301)})
+        CHECK_FALSE(rejectedGlyphsMessage(QStringLiteral("★") + ch).contains(ch));
 }
 
 TEST_CASE("the loss warning names the glyphs it loses, with a cell, and never shows a control raw") {
@@ -884,6 +896,28 @@ TEST_CASE("the loss warning names the glyphs it loses, with a cell, and never sh
         CHECK_FALSE(text.contains(QChar(0x202E)));
         CHECK_FALSE(text.contains(QChar(0x9B)));
     }
+}
+
+TEST_CASE("the loss warning names an invisible glyph by its code point, never as nothing") {
+    // review of #332, N1: ❤️ in a UTF-8 document is U+2764 U+FE0F, two
+    // cells; Publish and Send write CP437 and name the second as U+FE0F
+    const AnsiDocument d = parseAnsi("\xe2\x9d\xa4\xef\xb8\x8f\r\n", {.encoding = TextEncoding::Utf8});
+    REQUIRE(d.canvas.at(0, 0).ch == U'\u2764');
+    REQUIRE(d.canvas.at(1, 0).ch == char32_t(0xFE0F));
+    const AnsiOutput heart = writeAnsi(d, TextEncoding::Cp437);
+    CHECK(lossDescription(heart) == QStringLiteral("2 cells hold a glyph with no CP437 code and will be written as "
+                                                   "'?': ❤ at 0,0; U+FE0F at 1,0"));
+    // a lone combining accent and a Hangul filler: a mark on the space
+    // before it, and nothing
+    AnsiOutput out;
+    out.encoding = TextEncoding::Cp437;
+    out.unwritable = {{3, 0, char32_t(0x0301)}, {4, 1, char32_t(0x3164)}, {5, 1, char32_t(0x034F)}};
+    const QString lost = lossDescription(out);
+    CHECK(lost == QStringLiteral("3 cells hold a glyph with no CP437 code and will be written as '?': U+0301 at 3,0; "
+                                 "U+3164 at 4,1; U+034F at 5,1"));
+    for (const QString& text : {lossDescription(heart), lost})
+        for (const char32_t ch : {char32_t(0xFE0F), char32_t(0x0301), char32_t(0x3164), char32_t(0x034F)})
+            CHECK_FALSE(text.contains(QString::fromUcs4(&ch, 1)));
 }
 
 TEST_CASE("the save warning tells glyphs with no CP437 code from control bytes") {

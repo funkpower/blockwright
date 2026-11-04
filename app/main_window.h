@@ -93,7 +93,9 @@ QString lossDescription(const AnsiOutput& out);
 // The status-bar message for typed or committed `text` whose glyphs
 // isTypeable refuses: for each glyph CP437 has but .ans can't hold, its byte
 // and the control code .ans reads it as ("○ is CP437 0x09, which .ans reads
-// as TAB"), then the glyphs with no CP437 code; then "; not typed".
+// as TAB"), then the glyphs with no CP437 code; then "; not typed". A
+// control, bidi override or invisible character is named as U+XXXX
+// (quotedGlyph), set off from the glyphs beside it by a space.
 QString rejectedGlyphsMessage(const QString& text);
 // The question Save asks before a lossy save (AnsiOutput::lossy) as .ans
 // (or the XBIN or BIN `format` names), or, with `project`, as a project
