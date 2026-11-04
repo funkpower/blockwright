@@ -370,7 +370,7 @@ std::vector<std::vector<std::optional<std::uint8_t>>> pixels(const Canvas& canva
             const Cell& c = canvas.at(x, y);
             const std::uint8_t fg = c.fg.paletteIndex(), bg = c.bg.paletteIndex();
             std::optional<std::uint8_t> t, u;
-            switch (c.ch) {
+            switch (c.ch.codePointOr(kNoCodePoint)) {
             case kFullBlock: t = u = fg; break;
             case U' ': t = u = bg; break;
             case kUpperHalf: t = fg, u = bg; break;
@@ -451,7 +451,7 @@ Detail detail(const Canvas& canvas, std::optional<Box> box) {
     }
     // a look: the background of a space, the foreground of a full block,
     // or the glyph and both colours
-    using Look = std::tuple<char32_t, int, int>;
+    using Look = std::tuple<Glyph, int, int>;
     auto look = [&](int x, int y) {
         const Cell& c = canvas.at(x, y);
         if (c.ch == U' ')
@@ -475,8 +475,10 @@ Detail detail(const Canvas& canvas, std::optional<Box> box) {
                 }
             if (dark > 4)
                 continue;
-            std::sort(std::begin(win), std::end(win));
-            const int distinct = static_cast<int>(std::unique(std::begin(win), std::end(win)) - std::begin(win));
+            // distinct looks by equality: a glyph has no order (PLAN §16)
+            int distinct = 0;
+            for (int i = 0; i < 8; ++i)
+                distinct += std::find(std::begin(win), std::begin(win) + i, win[i]) == std::begin(win) + i;
             ++d.windows;
             d.flat += distinct == 1;
             total += distinct;
@@ -519,7 +521,7 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
                 ++r.ladderCells;
                 if (*g % kRungsPerStep) {
                     ++r.shadeCells;
-                    glyphs.insert(c.ch);
+                    glyphs.insert(c.ch.codePoint().value());  // a shade: a code point
                 }
             }
             if (nonNeighbourShade(ramp, c))
@@ -640,7 +642,7 @@ namespace {
 // A cell's top (half 0) or bottom (half 1) pixel, as pixels() reads it.
 std::optional<std::uint8_t> pixelOf(const Cell& c, int half) {
     const std::uint8_t fg = c.fg.paletteIndex(), bg = c.bg.paletteIndex();
-    switch (c.ch) {
+    switch (c.ch.codePointOr(kNoCodePoint)) {
     case kFullBlock: return fg;
     case U' ': return bg;
     case kUpperHalf: return half ? bg : fg;
@@ -656,7 +658,7 @@ bool blank(const Cell& c) { return c.ch == U' ' && c.bg.paletteIndex() == Black;
 std::optional<char32_t> shadeGlyph(const Ramp& ramp, const Cell& c) {
     const auto g = rungOf(ramp, c);
     if (g && *g % kRungsPerStep)
-        return c.ch;
+        return c.ch.codePoint();  // a shade: a code point
     return std::nullopt;
 }
 

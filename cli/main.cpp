@@ -284,17 +284,15 @@ void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
     };
     // A control or bidi override is shown by its code point alone, never raw.
     const auto where = [](const bw::Unwritable& u) {
-        char code[16];
-        std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(u.ch));
-        const std::string glyph = bw::unprintableCodePoint(u.ch) ? "" : " '" + bw::quotedGlyph(u.ch) + "'";
-        return "(first: " + std::string(code) + glyph + " at column " + std::to_string(u.x + 1) + ", row " +
+        const std::optional<char32_t> cp = u.ch.codePoint();
+        const std::string glyph = cp && bw::unprintableCodePoint(*cp) ? "" : " '" + bw::quotedGlyph(u.ch) + "'";
+        return "(first: " + bw::codePointNames(u.ch) + glyph + " at column " + std::to_string(u.x + 1) + ", row " +
                std::to_string(u.y + 1) + ")";
     };
     if (res.encoding == bw::TextEncoding::Utf8) {
         // Only control characters: shown by their code point alone.
         if (const int n = int(res.unwritable.size())) {
-            char code[16];
-            std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(res.unwritable.front().ch));
+            const std::string code = bw::codePointNames(res.unwritable.front().ch);
             std::cerr << "blockwright-cli: warning: " << in << ": " << n
                       << (n == 1 ? " cell holds a control character a UTF-8 .ans can't hold and is"
                                  : " cells hold control characters a UTF-8 .ans can't hold and are")

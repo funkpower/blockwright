@@ -730,7 +730,7 @@ TEST_CASE("each symmetry mode from the Edit menu repeats a brush stroke as its e
         landed(w, shown, steps);
         std::map<Point, char32_t> out;
         for (const auto& [p, cell] : written(shown))
-            out[p] = cell.ch;
+            out[p] = cell.ch.codePoint().value();
         w.document()->undoStack()->undo();
         return out;
     };
@@ -792,7 +792,7 @@ TEST_CASE("each symmetry mode from the Edit menu repeats a brush stroke as its e
         landed(w, shown, steps);
         std::map<Point, char32_t> out;
         for (const auto& [p, cell] : written(shown))
-            out[p] = cell.ch;
+            out[p] = cell.ch.codePoint().value();
         // two cells across is one cell down: cells are twice as tall as
         // wide; a quarter turn turns the glyph as Rotate does (▀ to ▐)
         CHECK(out == std::map<Point, char32_t>{{{8, 3}, U'▀'}, {{6, 4}, U'▐'}, {{4, 3}, U'▄'}, {{6, 2}, U'▌'}});

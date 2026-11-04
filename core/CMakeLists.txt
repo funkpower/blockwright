@@ -26,6 +26,7 @@ add_library(blockwright_core STATIC
   src/font_store.cpp
   src/tdf.cpp
   src/generator.cpp
+  src/glyph.cpp
   src/glyph_sets.cpp
   src/composite.cpp
   src/halfblock.cpp
@@ -51,6 +52,7 @@ add_library(blockwright_core STATIC
   src/big_text.cpp
   src/text.cpp
   src/text_style.cpp
+  src/width.cpp
   src/xbin.cpp
 )
 add_library(blockwright::core ALIAS blockwright_core)

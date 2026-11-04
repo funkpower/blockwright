@@ -46,7 +46,7 @@ public:
     std::string_view name() const override { return face_.name(); }
     int height() const override { return face_.height(); }
     int letterSpacing() const override { return face_.letterSpacing() + extra_; }
-    std::optional<Glyph> glyph(char32_t ch) const override { return face_.glyph(ch); }
+    std::optional<FaceGlyph> glyph(char32_t ch) const override { return face_.glyph(ch); }
     std::vector<ConfusablePair> confusables() const override { return face_.confusables(); }
 
 private:
@@ -137,7 +137,7 @@ Laid lay(const TextSource& s, const Face& face) {
     const SpacedFace spaced(face, s.letterSpacing);
     const std::u32string text = casedText(s);
     const TextLayout layout = layoutText(spaced, text, {s.wrapWidth});
-    const std::optional<Glyph> space = face.glyph(U' ');
+    const std::optional<FaceGlyph> space = face.glyph(U' ');
     const int spaceWidth = space ? space->mask.width : 0;
     Laid out;
     out.rows = std::max(1, face.height() / 2);
@@ -158,7 +158,7 @@ Laid lay(const TextSource& s, const Face& face) {
         int x = 0;
         line.columns.push_back(0);
         for (size_t i = 0; i < src.count; ++i) {
-            const std::optional<Glyph> g = face.glyph(text[src.first + i]);
+            const std::optional<FaceGlyph> g = face.glyph(text[src.first + i]);
             x += (g ? g->mask.width : spaceWidth) + spaced.letterSpacing();
             line.columns.push_back(x);
         }

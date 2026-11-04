@@ -949,7 +949,7 @@ std::set<char32_t> shadeGlyphs(const Canvas& c, const Mask& m) {
         for (int x = 0; x < m.width(); ++x)
             if (m.contains(x, y) && (c.at(x, y).ch == kShadeLight || c.at(x, y).ch == kShadeMedium ||
                                      c.at(x, y).ch == kShadeDark))
-                out.insert(c.at(x, y).ch);
+                out.insert(c.at(x, y).ch.codePoint().value());
     return out;
 }
 

@@ -789,7 +789,7 @@ TEST_CASE("input-method commits type like keys") {
     e.setCommitString(QStringLiteral("é"));
     QApplication::sendEvent(v, &e);
     CHECK(w.document()->canvas().at(0, 0).ch == U'é');
-    CHECK(unicodeToCp437(w.document()->canvas().at(0, 0).ch) == 0x82);
+    CHECK(unicodeToCp437(w.document()->canvas().at(0, 0).ch.codePoint().value()) == 0x82);
     CHECK(v->cellCursor() == Cursor{1, 0});
     CHECK(w.document()->isModified());
 

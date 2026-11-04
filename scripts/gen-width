@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Generate core/src/width.inc, the cell width of every code point (PLAN §16).
+
+    gen-width VERSION [-o FILE] [--ucd DIR]
+        Writes the table for Unicode VERSION (18.0.0, say) to FILE
+        (core/src/width.inc by default).
+    gen-width VERSION --check-libc LIBC_VERSION [--ucd DIR]
+        Compares the table with the host C library's wcwidth (C.UTF-8) for
+        every code point, LIBC_VERSION being the Unicode version that C
+        library builds its table from (17.0.0 for glibc 2.44). Every
+        difference must be one of PLAN §16's deliberate ones (U+0000, which a
+        cell holds as a blank, U+3248-324F, code points VERSION leaves
+        unassigned) or one the two Unicode versions give differently (the
+        table built from LIBC_VERSION agrees with the C library there).
+        Prints a summary; exits 1 on any other difference.
+
+The UCD files are read from DIR/<VERSION>/, or downloaded from unicode.org
+into ~/.cache/blockwright/ucd/<VERSION>/ the first time.
+
+The rules are glibc's localedata/unicode-gen ones, first match wins:
+  -1  the controls a cell refuses: U+0001-001F, U+007F, the C1 controls
+      U+0080-009F, U+2028 and U+2029; and the surrogates
+   1  U+0000 (a cell's blank), U+00AD
+   2  U+115F
+   0  Hangul jamo of syllable type V or T, general categories Mn and Me,
+      Default_Ignorable_Code_Point
+   1  U+3248-324F (Ambiguous; glibc gives them 2)
+   2  East Asian Width W or F, the unassigned code points taking the
+      defaults EastAsianWidth.txt states (@missing)
+   1  everything else
+"""
+
+import argparse
+import ctypes
+import os
+import re
+import sys
+import urllib.request
+
+FILES = [
+    "UnicodeData.txt",
+    "EastAsianWidth.txt",
+    "DerivedCoreProperties.txt",
+    "HangulSyllableType.txt",
+]
+MAX = 0x10FFFF
+
+
+def ucd_dir(version, base):
+    d = os.path.join(base or os.path.expanduser("~/.cache/blockwright/ucd"), version)
+    os.makedirs(d, exist_ok=True)
+    for f in FILES:
+        path = os.path.join(d, f)
+        if not os.path.exists(path):
+            url = f"https://www.unicode.org/Public/{version}/ucd/{f}"
+            sys.stderr.write(f"gen-width: fetching {url}\n")
+            with urllib.request.urlopen(url) as r:
+                data = r.read()
+            with open(path + ".part", "wb") as out:
+                out.write(data)
+            os.replace(path + ".part", path)
+    return d
+
+
+def ranges(path):
+    """(first, last, value) for each data line of a UCD property file."""
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            cps, value = [p.strip() for p in line.split(";")[:2]]
+            a, _, b = cps.partition("..")
+            yield int(a, 16), int(b or a, 16), value
+
+
+def missing(path):
+    """The @missing defaults of a UCD file, in file order."""
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"#\s*@missing:\s*([0-9A-F]+)\.\.([0-9A-F]+)\s*;\s*(\w+)", line)
+            if m:
+                yield int(m.group(1), 16), int(m.group(2), 16), m.group(3)
+
+
+def load(version, base):
+    d = ucd_dir(version, base)
+    gc = {}
+    first = None
+    with open(os.path.join(d, "UnicodeData.txt"), encoding="utf-8") as f:
+        for line in f:
+            fields = line.split(";")
+            cp, name, cat = int(fields[0], 16), fields[1], fields[2]
+            if name.endswith(", First>"):
+                first = cp
+                continue
+            if name.endswith(", Last>"):
+                for c in range(first, cp + 1):
+                    gc[c] = cat
+                continue
+            gc[cp] = cat
+    eaw = [None] * (MAX + 1)
+    path = os.path.join(d, "EastAsianWidth.txt")
+    for a, b, v in missing(path):  # later @missing lines override earlier ones
+        eaw[a : b + 1] = [v] * (b - a + 1)
+    for a, b, v in ranges(path):
+        eaw[a : b + 1] = [v] * (b - a + 1)
+    di = set()
+    for a, b, v in ranges(os.path.join(d, "DerivedCoreProperties.txt")):
+        if v == "Default_Ignorable_Code_Point":
+            di.update(range(a, b + 1))
+    vt = set()
+    for a, b, v in ranges(os.path.join(d, "HangulSyllableType.txt")):
+        if v in ("V", "T"):
+            vt.update(range(a, b + 1))
+    return gc, eaw, di, vt
+
+
+def widths(version, base):
+    gc, eaw, di, vt = load(version, base)
+    out = [1] * (MAX + 1)
+    for cp in range(MAX + 1):
+        if 0x01 <= cp <= 0x1F or 0x7F <= cp <= 0x9F or cp in (0x2028, 0x2029) or 0xD800 <= cp <= 0xDFFF:
+            w = -1
+        elif cp in (0x0000, 0x00AD):
+            w = 1
+        elif cp == 0x115F:
+            w = 2
+        elif cp in vt or gc.get(cp) in ("Mn", "Me") or cp in di:
+            w = 0
+        elif 0x3248 <= cp <= 0x324F:
+            w = 1
+        elif eaw[cp] in ("W", "F"):
+            w = 2
+        else:
+            w = 1
+        out[cp] = w
+    return out, gc
+
+
+def runs(table):
+    """(first, last, width) for each run of code points whose width isn't 1."""
+    result = []
+    start = 0
+    for cp in range(1, MAX + 2):
+        if cp == MAX + 1 or table[cp] != table[start]:
+            if table[start] != 1:
+                result.append((start, cp - 1, table[start]))
+            start = cp
+    return result
+
+
+def write(version, base, path):
+    table, _ = widths(version, base)
+    rs = runs(table)
+    with open(path + ".part", "w", encoding="utf-8", newline="\n") as f:
+        f.write(f"// Generated by scripts/gen-width {version} from the Unicode {version} UCD. Do not edit:\n")
+        f.write("// run the script with a new version instead (PLAN §16, Width).\n")
+        f.write("// The code points whose cell width isn't 1, as sorted, disjoint\n")
+        f.write("// {first, last, width} runs: 0 (zero width), 2 (wide) or -1 (a control\n")
+        f.write("// a cell refuses, or a surrogate).\n")
+        f.write(f'inline constexpr char kWidthUnicodeVersion[] = "{version}";\n')
+        f.write("inline constexpr WidthRun kWidthRuns[] = {\n")
+        for a, b, w in rs:
+            f.write(f"    {{0x{a:04X}, 0x{b:04X}, {w}}},\n")
+        f.write("};\n")
+    os.replace(path + ".part", path)
+    print(f"gen-width: {len(rs)} runs for Unicode {version} written to {path}")
+
+
+def check_libc(version, libc_version, base):
+    libc = ctypes.CDLL(None)
+    libc.setlocale.restype = ctypes.c_char_p
+    if not libc.setlocale(6, b"C.UTF-8"):  # LC_ALL
+        sys.exit("gen-width: no C.UTF-8 locale")
+    wcwidth = libc.wcwidth
+    wcwidth.argtypes = [ctypes.c_uint32]
+    ours, gc = widths(version, base)
+    old, old_gc = widths(libc_version, base)
+    deliberate = {"U+0000": [], "U+3248-324F": [], f"unassigned in {version}": []}
+    moved, unexpected = [], []
+    for cp in range(MAX + 1):
+        theirs = wcwidth(cp)
+        if theirs == ours[cp]:
+            continue
+        if cp == 0:
+            deliberate["U+0000"].append(cp)
+        elif 0x3248 <= cp <= 0x324F:
+            deliberate["U+3248-324F"].append(cp)
+        elif cp not in gc and theirs == -1:
+            deliberate[f"unassigned in {version}"].append(cp)
+        elif old[cp] == theirs or (cp not in old_gc and theirs == -1):
+            moved.append(cp)
+        else:
+            unexpected.append((cp, ours[cp], theirs))
+    for k, v in deliberate.items():
+        print(f"deliberate, {k}: {len(v)} code points")
+    print(f"given differently by Unicode {libc_version} and {version}: {len(moved)} code points")
+    for cp in moved[:40]:
+        print(f"  U+{cp:04X}: ours {ours[cp]}, libc {wcwidth(cp)}, Unicode {libc_version} rules {old[cp]}")
+    if len(moved) > 40:
+        print(f"  ... and {len(moved) - 40} more")
+    if unexpected:
+        print(f"UNEXPECTED: {len(unexpected)} code points")
+        for cp, a, b in unexpected[:100]:
+            print(f"  U+{cp:04X}: ours {a}, libc {b}")
+        return 1
+    print("no other differences")
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("version", help="Unicode version, e.g. 18.0.0")
+    p.add_argument("-o", "--output", default=None)
+    p.add_argument("--ucd", default=None, help="directory holding <version>/ UCD files")
+    p.add_argument("--check-libc", metavar="LIBC_VERSION", default=None)
+    a = p.parse_args()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", a.version):
+        sys.exit("gen-width: the version is three numbers, e.g. 18.0.0")
+    if a.check_libc:
+        sys.exit(check_libc(a.version, a.check_libc, a.ucd))
+    out = a.output or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "core", "src", "width.inc")
+    write(a.version, a.ucd, os.path.normpath(out))
+
+
+if __name__ == "__main__":
+    main()

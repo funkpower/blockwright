@@ -127,8 +127,8 @@ struct SprayOptions {
     bool operator==(const SprayOptions&) const = default;
 };
 
-// The six star glyphs.
-bool isSprayStar(char32_t ch);
+// The six star glyphs (never a cluster or the continuation).
+bool isSprayStar(Glyph g);
 
 // The field's star at cell (x, y) of a canvas `width` x `height` (0: no edge
 // that way), or empty; always empty for haze and smoke. `foldX` (`foldY`)

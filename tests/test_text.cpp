@@ -70,16 +70,16 @@ public:
     std::string_view name() const override { return "test"; }
     int height() const override { return 4; }
     int letterSpacing() const override { return 0; }
-    std::optional<Glyph> glyph(char32_t ch) const override {
+    std::optional<FaceGlyph> glyph(char32_t ch) const override {
         switch (ch) {
-        case U'A': return Glyph{mask({"#.", ".#", "##", "##"}), std::nullopt};
-        case U'B': return Glyph{mask({".", ".", ".", "."}), std::nullopt};
-        case U' ': return Glyph{mask({".", ".", ".", "."}), std::nullopt};
+        case U'A': return FaceGlyph{mask({"#.", ".#", "##", "##"}), std::nullopt};
+        case U'B': return FaceGlyph{mask({".", ".", ".", "."}), std::nullopt};
+        case U' ': return FaceGlyph{mask({".", ".", ".", "."}), std::nullopt};
         case U'C': {
             CellBlock cells(1, 2);
             cells.at(0, 0) = kSourceCell;
             cells.at(0, 1) = transparentCell();
-            return Glyph{mask({"#", "#", "#", "#"}), cells};
+            return FaceGlyph{mask({"#", "#", "#", "#"}), cells};
         }
         default: return std::nullopt;
         }
@@ -102,7 +102,7 @@ std::vector<std::u32string> rowsOf(const Canvas& c) {
     for (int y = 0; y < c.height(); ++y) {
         std::u32string r;
         for (int x = 0; x < c.width(); ++x)
-            r += c.at(x, y).transparent ? U'.' : c.at(x, y).ch;
+            r += c.at(x, y).transparent ? U'.' : c.at(x, y).ch.codePoint().value();
         out.push_back(r);
     }
     return out;

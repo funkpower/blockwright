@@ -2,6 +2,8 @@
 // CP437 <-> Unicode, as the glyphs are drawn on screen: 0x01-0x1F and 0x7F
 // are the DOS pictographs (☺ ♥ ► ⌂ …), not control characters.
 
+#include "blockwright/glyph.h"
+
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -39,6 +41,13 @@ bool unprintableCodePoint(char32_t cp);
 // hex digits) when it is unprintableCodePoint, so a control, bidi override
 // or invisible character taken from a file is never printed raw.
 std::string quotedGlyph(char32_t cp);
+// A cell's glyph quoted the same way: a cluster as its code points run
+// together, set off by a space either side of a U+XXXX ("e U+0301");
+// empty for the continuation.
+std::string quotedGlyph(Glyph g);
+// A cell's glyph as its code points' "U+XXXX", space separated; empty for the
+// continuation.
+std::string codePointNames(Glyph g);
 
 // The UTF-8 sequence at `i` in `s`, advancing `i` past it. Only well-formed
 // sequences count (RFC 3629: no overlong forms, no surrogates, nothing past

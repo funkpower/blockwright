@@ -29,7 +29,7 @@ Canvas canvasOf(const std::vector<std::u32string>& rows) {
 std::u32string row(const Canvas& cv, int y) {
     std::u32string s;
     for (int x = 0; x < cv.width(); ++x)
-        s += cv.at(x, y).ch;
+        s += cv.at(x, y).ch.codePoint().value();
     return s;
 }
 

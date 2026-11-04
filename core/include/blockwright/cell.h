@@ -1,8 +1,10 @@
 #pragma once
-// One character cell: a Unicode codepoint (CP437 mapping happens only at
-// the file edges), a foreground and background colour, attribute bits, a
+// One character cell: a glyph (a Unicode code point, or the continuation of a
+// wide glyph or a cluster, glyph.h; CP437 mapping happens only at the file
+// edges), a foreground and background colour, attribute bits, a
 // transparent flag for layers and the editor's lost-blink mark.
 
+#include "blockwright/glyph.h"
 #include "blockwright/palette.h"
 
 #include <cstdint>
@@ -36,7 +38,7 @@ inline constexpr std::uint8_t Blink = 1u << 0;
 } // namespace attr
 
 struct Cell {
-    char32_t ch = U' ';
+    Glyph ch = U' ';
     Color fg = Color::indexed(Grey);
     Color bg = Color::indexed(Black);
     std::uint8_t attrs = 0;
@@ -63,6 +65,8 @@ struct Cell {
         return ch == o.ch && fg == o.fg && bg == o.bg && attrs == o.attrs && transparent == o.transparent;
     }
 };
+// Canvases, undo steps and the clipboard hold millions of these.
+static_assert(sizeof(Cell) == 20);
 
 // Whether `a` and `b` are the same cell, the lost-blink and dither marks
 // included: how an edit tells whether it changes a cell, so moving a marked

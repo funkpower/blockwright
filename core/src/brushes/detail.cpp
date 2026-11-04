@@ -20,7 +20,7 @@ namespace bw {
 
 namespace {
 
-bool halfBlock(char32_t ch) { return ch == kUpperHalf || ch == kLowerHalf || ch == U'▌' || ch == U'▐'; }
+bool halfBlock(Glyph g) { return g == kUpperHalf || g == kLowerHalf || g == U'▌' || g == U'▐'; }
 
 // The ramp's ground: its first colour when that is black (the ground a
 // piece is drawn on), never part of the shape; -1 when the ramp doesn't

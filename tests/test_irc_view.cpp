@@ -107,7 +107,7 @@ TEST_CASE("an encoded row reads back as the cells it was made from", "[irc][view
         for (int x = 0; x < int(cells.size()); ++x) {
             const Cell& src = c.at(x, y);
             const MircCell& got = cells[std::size_t(x)].cell;
-            const auto want = shown(src.ch == 0 ? U' ' : src.ch, mircColor(src.fg), mircColor(src.bg));
+            const auto want = shown(src.ch == U'\0' ? U' ' : src.ch.codePoint().value(), mircColor(src.fg), mircColor(src.bg));
             const auto have = shown(got.ch, got.fg, got.bg);
             // a solid cell shows one colour, whatever its other one is
             if (std::get<1>(want) == std::get<2>(want) && std::get<0>(want) == U'▀')
@@ -154,7 +154,7 @@ TEST_CASE("the view shows the mIRC palette and the client's background where IRC
     const auto px = halfBlocks(c.at(2, 2));
     REQUIRE(px);
     const Cell& h = v.canvas.at(2, 2);
-    const auto [ch, top, bottom] = shown(h.ch, int(rgb(h.fg)), int(rgb(h.bg)));
+    const auto [ch, top, bottom] = shown(h.ch.codePoint().value(), int(rgb(h.fg)), int(rgb(h.bg)));
     CHECK(ch == U'▀');
     CHECK(std::uint32_t(top) == kMircRgb[4]);
     CHECK(std::uint32_t(bottom) == kMircRgb[2]);

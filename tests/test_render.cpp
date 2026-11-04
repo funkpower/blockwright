@@ -10,6 +10,7 @@
 #include <QCryptographicHash>
 
 #include <stdexcept>
+#include <vector>
 
 using namespace bw;
 
@@ -194,4 +195,22 @@ TEST_CASE("the bundled font table is the one in VileR's pack, byte for byte") {
     const QByteArray bytes(reinterpret_cast<const char*>(f.bits.data()), static_cast<qsizetype>(f.bits.size()));
     CHECK(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex().toStdString() ==
           "a8bad6fd78475a6bc2a05438c19207a9bb8c0f4f4099f60384e158cdc3eba580");
+}
+
+TEST_CASE("a continuation draws as a space and a cluster as '?' until the renderer draws them") {
+    const Color fg = Color::indexed(15), bg = Color::indexed(1);
+    const std::optional<Glyph> e = clusterPool().intern(std::vector<char32_t>{U'e', 0x301}, PoolCap::Capped);
+    REQUIRE(e);
+    CHECK(glyphIndex(Glyph::continuation()) == ' ');
+    CHECK(glyphIndex(*e) == '?');
+    CHECK(glyphIndex(Glyph(U'░')) == 0xB0);
+    CHECK(glyphIndex(Glyph(U'中')) == '?');
+    Canvas pair(3, 1), plain(3, 1);
+    pair.at(0, 0) = Cell{U'中', fg, bg, 0, false};
+    pair.at(1, 0) = Cell{Glyph::continuation(), bg, fg, 0, false};
+    pair.at(2, 0) = Cell{*e, fg, bg, 0, false};
+    plain.at(0, 0) = Cell{U'?', fg, bg, 0, false};
+    plain.at(1, 0) = Cell{U' ', bg, fg, 0, false};
+    plain.at(2, 0) = Cell{U'?', fg, bg, 0, false};
+    CHECK(renderCanvas(pair, 9) == renderCanvas(plain, 9));
 }

@@ -305,7 +305,7 @@ public:
                 CellBlock cells(g->width, rows);
                 std::fill(cells.cells.begin(), cells.cells.end(), transparentCell());
                 std::copy(g->cells.begin(), g->cells.end(), cells.cells.begin());
-                glyphs_[k] = Glyph{maskOfCells(cells), std::move(cells)};
+                glyphs_[k] = FaceGlyph{maskOfCells(cells), std::move(cells)};
             }
         // The space, which TheDraw fonts don't have: half the letters'
         // average width, rounded up.
@@ -318,7 +318,7 @@ public:
         const int spaceWidth = letters ? std::max(1, (sum + 2 * letters - 1) / (2 * letters)) : 1;
         CellBlock blank(spaceWidth, rows);
         std::fill(blank.cells.begin(), blank.cells.end(), transparentCell());
-        space_ = Glyph{InkMask(spaceWidth, height_), std::move(blank)};
+        space_ = FaceGlyph{InkMask(spaceWidth, height_), std::move(blank)};
         // the glyphs as read are in glyphs_ now; only the name and spacing
         // are kept
         font_.glyphs = {};
@@ -329,7 +329,7 @@ public:
     std::string_view name() const override { return font_.name; }
     int height() const override { return height_; }
     int letterSpacing() const override { return font_.spacing; }
-    std::optional<Glyph> glyph(char32_t ch) const override {
+    std::optional<FaceGlyph> glyph(char32_t ch) const override {
         if (ch == U' ')
             return space_;
         if (ch < TdfFont::kFirst || ch > TdfFont::kLast)
@@ -341,8 +341,8 @@ public:
 private:
     TdfFont font_;
     int height_ = 2;
-    std::array<std::optional<Glyph>, TdfFont::kLast - TdfFont::kFirst + 1> glyphs_;
-    Glyph space_;
+    std::array<std::optional<FaceGlyph>, TdfFont::kLast - TdfFont::kFirst + 1> glyphs_;
+    FaceGlyph space_;
     std::vector<ConfusablePair> confusables_;
 };
 

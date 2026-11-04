@@ -77,7 +77,7 @@ void write(MainWindow& w, int x, int y, const QString& text) {
         press(w.canvasView(), c.toUpper().unicode(), QString(c));
 }
 
-QChar at(MainWindow& w, int x, int y) { return QChar(char16_t(w.document()->canvas().at(x, y).ch)); }
+QChar at(MainWindow& w, int x, int y) { return QChar(char16_t(w.document()->canvas().at(x, y).ch.codePoint().value())); }
 
 // A window whose libraries are the test data's (bundled) and a scratch
 // directory (user).
@@ -834,12 +834,12 @@ TEST_CASE("Save to Library on a float lifted off a pixel layer writes its pixels
     const library::Stamp read = library::readStamp(fspath(path));
     REQUIRE_FALSE(read.art.ice);
     const Cell a = read.art.canvas.at(0, 0), b = read.art.canvas.at(1, 0);
-    INFO("a: ch " << int(a.ch) << " fg " << int(a.fg.paletteIndex()) << " bg " << int(a.bg.paletteIndex())
+    INFO("a: ch " << a.ch << " fg " << int(a.fg.paletteIndex()) << " bg " << int(a.bg.paletteIndex())
                   << " attrs " << int(a.attrs));
     // as the pixel layer showed it with iCE off: the bottom goes dark, nothing blinks
     CHECK_FALSE(a.attrs & attr::Blink);
     CHECK(halfBlocks(a, false) == HalfPair{LightRed, Brown});
     // the half pixel is kept, over black
-    INFO("b: ch " << int(b.ch) << " fg " << int(b.fg.paletteIndex()) << " bg " << int(b.bg.paletteIndex()));
+    INFO("b: ch " << b.ch << " fg " << int(b.fg.paletteIndex()) << " bg " << int(b.bg.paletteIndex()));
     CHECK(halfBlocks(b, false) == HalfPair{Red, Black});
 }

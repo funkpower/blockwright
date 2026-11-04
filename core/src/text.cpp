@@ -52,7 +52,7 @@ public:
     std::string_view name() const override { return face_.name(); }
     int height() const override { return face_.height(); }
     int letterSpacing() const override { return face_.letterSpacing() + extra_; }
-    std::optional<Glyph> glyph(char32_t ch) const override { return face_.glyph(ch); }
+    std::optional<FaceGlyph> glyph(char32_t ch) const override { return face_.glyph(ch); }
     std::vector<ConfusablePair> confusables() const override { return face_.confusables(); }
 
 private:

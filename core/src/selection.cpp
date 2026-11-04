@@ -250,6 +250,16 @@ char32_t flipGlyph(char32_t ch, Flip flip) {
     return flip == Flip::Horizontal ? swapPair(kFlipH, ch) : swapPair(kFlipV, ch);
 }
 
+Glyph flipGlyph(Glyph g, Flip flip) {
+    const std::optional<char32_t> cp = g.codePoint();
+    return cp ? Glyph(flipGlyph(*cp, flip)) : g;
+}
+
+Glyph rotateGlyph(Glyph g, bool clockwise) {
+    const std::optional<char32_t> cp = g.codePoint();
+    return cp ? Glyph(rotateGlyph(*cp, clockwise)) : g;
+}
+
 char32_t rotateGlyph(char32_t ch, bool clockwise) {
     if (const Box* box = findBox(ch)) {
         const auto& a = box->arms;

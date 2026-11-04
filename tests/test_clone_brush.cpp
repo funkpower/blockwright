@@ -37,7 +37,7 @@ Canvas row(const std::u32string& text, int height = 1) {
 std::u32string rowText(const Canvas& c, int y = 0) {
     std::u32string out;
     for (int x = 0; x < c.width(); ++x)
-        out += c.at(x, y).ch;
+        out += c.at(x, y).ch.codePoint().value();
     return out;
 }
 
@@ -83,21 +83,21 @@ Canvas symmetric(int w, int h, Axes axes, unsigned seed) {
             if (xx > ox || yy > oy)
                 continue;
             Cell a = cell(glyphs[rng() % 8], std::uint8_t(rng() % 16), std::uint8_t(rng() % 8));
-            if ((xx == ox && mx && mirrorGlyph(a.ch, true) != a.ch) ||
-                (yy == oy && my && mirrorGlyph(a.ch, false) != a.ch))
+            if ((xx == ox && mx && mirrorGlyph(a.ch.codePoint().value(), true) != a.ch) ||
+                (yy == oy && my && mirrorGlyph(a.ch.codePoint().value(), false) != a.ch))
                 a.ch = U'█';
             Cell m = a;
             c.at(xx, yy) = a;
             if (mx) {
-                m.ch = mirrorGlyph(a.ch, true);
+                m.ch = mirrorGlyph(a.ch.codePoint().value(), true);
                 c.at(ox, yy) = m;
             }
             if (my) {
                 Cell n = a;
-                n.ch = mirrorGlyph(a.ch, false);
+                n.ch = mirrorGlyph(a.ch.codePoint().value(), false);
                 c.at(xx, oy) = n;
                 if (mx) {
-                    n.ch = mirrorGlyph(m.ch, false);
+                    n.ch = mirrorGlyph(m.ch.codePoint().value(), false);
                     c.at(ox, oy) = n;
                 }
             }
@@ -118,7 +118,7 @@ bool isSymmetric(const Canvas& c, Axes axes) {
                 const int mx = x ? c.width() - 1 - xx : xx, my = x ? yy : c.height() - 1 - yy;
                 Cell m = c.at(xx, yy);
                 if (mx != xx || my != yy)
-                    m.ch = mirrorGlyph(m.ch, x);
+                    m.ch = mirrorGlyph(m.ch.codePoint().value(), x);
                 if (!(c.at(mx, my) == m))
                     return false;
             }

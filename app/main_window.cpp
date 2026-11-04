@@ -201,7 +201,10 @@ QString lossQuestion(const AnsiOutput& out, bool project, ArtFormat format) {
     QString hint;
     if (!project && format == ArtFormat::Ansi && out.encoding == TextEncoding::Cp437) {
         const auto kept = std::count_if(out.unwritable.begin(), out.unwritable.end(),
-                                        [](const Unwritable& u) { return utf8Writable(u.ch); });
+                                        [](const Unwritable& u) {
+                                            const std::optional<char32_t> cp = u.ch.codePoint();
+                                            return cp && utf8Writable(*cp);
+                                        });
         // No hint at all when nothing lost would survive: a save that only
         // drops blink, a palette or a font gains nothing from UTF-8.
         if (kept > 0) {

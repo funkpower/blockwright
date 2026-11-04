@@ -601,7 +601,7 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
                     const Cell c = rungCell(ramp, t);
                     box.at(x - minX, y - minY) = c;
                     if (t % kRungsPerStep)
-                        glyphs.insert(c.ch);
+                        glyphs.insert(c.ch.codePoint().value());  // a shade: a code point
                     atPlane += t == plane;
                     lit += t >= plane;
                     dark += t == 0;

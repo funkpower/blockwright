@@ -52,7 +52,7 @@ InkMask maskOfCells(const CellBlock& cells);
 // face's baseline row (descenders included). `cells`, for faces built from
 // cells (TheDraw), holds the glyph's source cells, width x height/2, and
 // `mask` is maskOfCells(*cells).
-struct Glyph {
+struct FaceGlyph {
     InkMask mask;
     std::optional<CellBlock> cells;
 };
@@ -74,7 +74,7 @@ public:
     // Blank columns between two glyphs.
     virtual int letterSpacing() const = 0;
     // The glyph for `ch`, or nothing when the face can't draw it.
-    virtual std::optional<Glyph> glyph(char32_t ch) const = 0;
+    virtual std::optional<FaceGlyph> glyph(char32_t ch) const = 0;
     // The confusable pairs of this face in kConfusableSets: shipped as data
     // for the bundled faces, screened on load for a user font.
     virtual std::vector<ConfusablePair> confusables() const = 0;

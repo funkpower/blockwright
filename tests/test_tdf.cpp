@@ -41,7 +41,7 @@ TdfFont onlyFont(const std::string& name) {
 std::u32string rowText(const CellBlock& b, int y) {
     std::u32string out;
     for (int x = 0; x < b.width; ++x)
-        out += b.at(x, y).transparent ? U'.' : b.at(x, y).ch;
+        out += b.at(x, y).transparent ? U'.' : b.at(x, y).ch.codePoint().value();
     return out;
 }
 

@@ -181,7 +181,7 @@ std::optional<std::uint8_t> groundOf(const Cell& cell, bool ice) {
 
 } // namespace
 
-bool isSprayStar(char32_t ch) { return std::find(std::begin(kStars), std::end(kStars), ch) != std::end(kStars); }
+bool isSprayStar(Glyph g) { return std::find(std::begin(kStars), std::end(kStars), g.codePointOr(kNoCodePoint)) != std::end(kStars); }
 
 std::optional<char32_t> sprayStar(const SprayOptions& options, int x, int y, int width, int height, bool foldX,
                                   bool foldY) {

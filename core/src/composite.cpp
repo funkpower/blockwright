@@ -188,7 +188,7 @@ HalfPair halvesUnder(const Cell& below, bool ice) {
         return *pair;
     const Cell shown = iceCell(below, ice);
     const std::uint8_t fg = shown.fg.paletteIndex(), bg = shown.bg.paletteIndex();
-    switch (shown.ch) {
+    switch (shown.ch.codePointOr(kNoCodePoint)) {
     case kShadeLight: return {bg, bg};
     case kShadeDark: return {fg, fg};
     case kShadeMedium:

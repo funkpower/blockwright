@@ -84,7 +84,7 @@ namespace {
 // columns) and the characters the face can't draw. Widths are counted in
 // 64 bits, so a text far too wide to draw is measured, not wrapped round.
 struct Broken {
-    std::vector<std::optional<Glyph>> glyphs;
+    std::vector<std::optional<FaceGlyph>> glyphs;
     std::vector<int> widths;
     std::vector<TextLayout::Line> lines;
     std::int64_t widest = 0;  // the widest line's columns
@@ -221,10 +221,10 @@ public:
     std::string_view name() const override { return name_; }
     int height() const override { return height_; }
     int letterSpacing() const override { return spacing_; }
-    std::optional<Glyph> glyph(char32_t ch) const override {
+    std::optional<FaceGlyph> glyph(char32_t ch) const override {
         if (ch < kFirst || ch > kLast)
             return std::nullopt;
-        return Glyph{masks_[ch - kFirst], std::nullopt};
+        return FaceGlyph{masks_[ch - kFirst], std::nullopt};
     }
     std::vector<ConfusablePair> confusables() const override { return confusables_; }
 

@@ -1090,7 +1090,7 @@ TEST_CASE("a half pixel pasted onto a cells layer lands on top and punches no ho
     // over the cells layer's B: the pixel replaces it, B's background below
     pasteAt(2);
     const Cell& overB = layerById(doc, cells).cells.at(2, 0);
-    INFO("ch " << int(overB.ch) << " transparent " << overB.transparent);
+    INFO("ch " << overB.ch << " transparent " << overB.transparent);
     CHECK_FALSE(overB.transparent);
     auto h = halfBlocks(doc->canvas().at(2, 0));
     REQUIRE(h);
@@ -1218,7 +1218,7 @@ TEST_CASE("with iCE off a pasted half pixel writes no bright background on a cel
     w.selectTool()->paste();
     w.selectTool()->stamp();
     const Cell got = layerById(doc, cells).cells.at(2, 0);
-    INFO("(a) ch " << int(got.ch) << " fg " << int(got.fg.paletteIndex()) << " bg " << int(got.bg.paletteIndex()));
+    INFO("(a) ch " << got.ch << " fg " << int(got.fg.paletteIndex()) << " bg " << int(got.bg.paletteIndex()));
     CHECK(got.bg.paletteIndex() < 8);
     CHECK(got == brushed);
     // what the save writes there (Document::encode applies iceCell)
@@ -1231,7 +1231,7 @@ TEST_CASE("with iCE off a pasted half pixel writes no bright background on a cel
     w.selectTool()->paste();
     w.selectTool()->stamp();
     const Cell got2 = doc->layers()[0].cells.at(2, 0);
-    INFO("(b) ch " << int(got2.ch) << " fg " << int(got2.fg.paletteIndex()) << " bg " << int(got2.bg.paletteIndex()));
+    INFO("(b) ch " << got2.ch << " fg " << int(got2.fg.paletteIndex()) << " bg " << int(got2.bg.paletteIndex()));
     CHECK(got2.bg.paletteIndex() < 8);
     CHECK(got2 == brushed);
 }
@@ -1299,7 +1299,7 @@ TEST_CASE("a move the alpha lock would cut is refused whole", "[layers][selectio
     const auto& cells = layerById(doc, upper).cells;
     std::string row;
     for (int x = 0; x < 3; ++x)
-        row += cells.at(x, 0).transparent ? '.' : char(cells.at(x, 0).ch);
+        row += cells.at(x, 0).transparent ? '.' : char(cells.at(x, 0).ch.codePoint().value());
     INFO("upper row after the move: " << row);
     CHECK(row == "BC.");
     CHECK(doc->undoStack()->count() == steps);
@@ -1358,7 +1358,7 @@ TEST_CASE("with iCE off an opaque pixel cell pasted onto a cells layer writes no
     w.selectTool()->paste();
     w.selectTool()->stamp();
     const Cell got = doc->layers()[0].cells.at(2, 0);
-    INFO("(a) ch " << int(got.ch) << " fg " << int(got.fg.paletteIndex()) << " bg " << int(got.bg.paletteIndex()));
+    INFO("(a) ch " << got.ch << " fg " << int(got.fg.paletteIndex()) << " bg " << int(got.bg.paletteIndex()));
     CHECK(got.bg.paletteIndex() < 8);
     // what the save writes there (Document::encode applies iceCell)
     CHECK_FALSE(iceCell(doc->canvas().at(2, 0), false).attrs & attr::Blink);
@@ -1372,7 +1372,7 @@ TEST_CASE("with iCE off an opaque pixel cell pasted onto a cells layer writes no
     w.selectTool()->paste();
     w.selectTool()->stamp();
     const Cell got2 = layerById(doc, cells).cells.at(8, 0);
-    INFO("(b) ch " << int(got2.ch) << " fg " << int(got2.fg.paletteIndex()) << " bg " << int(got2.bg.paletteIndex()));
+    INFO("(b) ch " << got2.ch << " fg " << int(got2.fg.paletteIndex()) << " bg " << int(got2.bg.paletteIndex()));
     CHECK_FALSE(got2.transparent);
     CHECK(got2.bg.paletteIndex() < 8);
     CHECK_FALSE(iceCell(doc->canvas().at(8, 0), false).attrs & attr::Blink);
@@ -1430,7 +1430,7 @@ TEST_CASE("with iCE off a pixel block flipped or turned and pasted onto a cells 
     act(w, QStringLiteral("selectTool"))->trigger();
     const auto blinkFree = [&](int x, const char* what) {
         const Cell got = doc->layers()[0].cells.at(x, 0);
-        INFO(what << ": ch " << int(got.ch) << " fg " << int(got.fg.paletteIndex()) << " bg "
+        INFO(what << ": ch " << got.ch << " fg " << int(got.fg.paletteIndex()) << " bg "
                   << int(got.bg.paletteIndex()));
         CHECK(got.bg.paletteIndex() < 8);
         CHECK_FALSE(iceCell(doc->canvas().at(x, 0), false).attrs & attr::Blink);

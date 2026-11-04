@@ -77,13 +77,13 @@ public:
     std::string_view name() const override { return "test"; }
     int height() const override { return height_; }
     int letterSpacing() const override { return spacing_; }
-    std::optional<Glyph> glyph(char32_t ch) const override {
+    std::optional<FaceGlyph> glyph(char32_t ch) const override {
         const auto it = glyphs.find(ch);
-        return it == glyphs.end() ? std::nullopt : std::optional<Glyph>(it->second);
+        return it == glyphs.end() ? std::nullopt : std::optional<FaceGlyph>(it->second);
     }
     std::vector<ConfusablePair> confusables() const override { return screenConfusables(*this); }
 
-    std::map<char32_t, Glyph> glyphs;
+    std::map<char32_t, FaceGlyph> glyphs;
 
 private:
     int height_, spacing_;
@@ -96,9 +96,9 @@ TestFace blockyFace(int width, int spacing, std::u32string_view letters) {
     for (char32_t ch : letters) {
         InkMask m(width, 2);
         std::fill(m.ink.begin(), m.ink.end(), 1);
-        f.glyphs[ch] = Glyph{m, std::nullopt};
+        f.glyphs[ch] = FaceGlyph{m, std::nullopt};
     }
-    f.glyphs[U' '] = Glyph{InkMask(width, 2), std::nullopt};
+    f.glyphs[U' '] = FaceGlyph{InkMask(width, 2), std::nullopt};
     return f;
 }
 
@@ -265,9 +265,9 @@ TEST_CASE("fixture words lay out at the faces' own widths and wrap at spaces") {
 
 TEST_CASE("layout places glyphs with the face's letter spacing, lines a face height apart") {
     TestFace f(2, 1);
-    f.glyphs[U'a'] = Glyph{maskFrom({"#.", ".#"}), std::nullopt};
-    f.glyphs[U'b'] = Glyph{maskFrom({"###", "#.."}), std::nullopt};
-    f.glyphs[U' '] = Glyph{InkMask(2, 2), std::nullopt};
+    f.glyphs[U'a'] = FaceGlyph{maskFrom({"#.", ".#"}), std::nullopt};
+    f.glyphs[U'b'] = FaceGlyph{maskFrom({"###", "#.."}), std::nullopt};
+    f.glyphs[U' '] = FaceGlyph{InkMask(2, 2), std::nullopt};
     const auto l = layoutText(f, U"ab\nb a");
     REQUIRE(l.lines.size() == 2);
     CHECK(l.lines[0].width == 6);
@@ -391,8 +391,8 @@ TEST_CASE("layout carries a cell face's source cells, holes elsewhere") {
     CellBlock x(2, 1);
     x.at(0, 0) = cell(U'▓', Red);
     x.at(1, 0) = cell(U' ', Black);
-    f.glyphs[U'x'] = Glyph{maskOfCells(x), x};
-    f.glyphs[U' '] = Glyph{InkMask(1, 2), std::nullopt};
+    f.glyphs[U'x'] = FaceGlyph{maskOfCells(x), x};
+    f.glyphs[U' '] = FaceGlyph{InkMask(1, 2), std::nullopt};
     const auto l = layoutText(f, U"x x\nx", {});
     REQUIRE(l.cells);
     CHECK(l.cells->width == l.mask.width);
@@ -444,7 +444,7 @@ TEST_CASE("the confusable rule: at most 2 pixels apart, or a one-pixel shift") {
 TEST_CASE("screening finds confusable pairs within each set, once, skipping what the face lacks") {
     TestFace f(4, 1);
     const auto put = [&](char32_t ch, std::vector<std::string> rows) {
-        f.glyphs[ch] = Glyph{maskFrom(rows), std::nullopt};
+        f.glyphs[ch] = FaceGlyph{maskFrom(rows), std::nullopt};
     };
     put(U'Z', {"###", "..#", ".#.", "###"});
     put(U'B', {"##.", "#.#", "###", "#.#"});

@@ -802,7 +802,7 @@ TEST_CASE("a sphere painted with the shade brush passes the speckle and ladder c
             if (*rungOf(r, c.at(x, y)) > 0) {
                 ++ball;
                 if (*rungOf(r, c.at(x, y)) % kRungsPerStep)
-                    glyphs.insert(c.at(x, y).ch);
+                    glyphs.insert(c.at(x, y).ch.codePoint().value());
             }
     CHECK(rep.shadeCells * 5 >= ball);
     CHECK(glyphs.size() == 3);

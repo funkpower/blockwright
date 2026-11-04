@@ -83,8 +83,11 @@ TEST_CASE("encodeRow draws palette cells through the row encoder") {
 TEST_CASE("encodeRow writes a non-scalar code point as '?'") {
     CHECK(irc::encodeRow(std::vector{cell(char32_t(0xd800), Grey, Black)}) ==
           irc::encodeRow(std::vector{cell(U'?', Grey, Black)}));
+    // a value past U+10FFFF never reaches a cell: a glyph made from one is
+    // U+FFFD (PLAN §16, Storage), which is written as itself
+    CHECK(cell(char32_t(0x110000), Grey, Black).ch == U'\uFFFD');
     CHECK(irc::encodeRow(std::vector{cell(char32_t(0x110000), Grey, Black)}) ==
-          irc::encodeRow(std::vector{cell(U'?', Grey, Black)}));
+          irc::encodeRow(std::vector{cell(U'\uFFFD', Grey, Black)}));
 }
 
 TEST_CASE("encodeRow writes C1 controls as '?'") {

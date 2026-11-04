@@ -41,6 +41,9 @@ int glyphWidth(const AnsiDocument& doc, const RenderOptions& opts = {});
 
 // The CP437 glyph a cell shows: its codepoint's byte, '?' if CP437 has none.
 std::uint8_t glyphIndex(char32_t ch);
+// A cell's glyph: a cluster as '?' and the continuation as a space (its
+// background) until the renderer draws them (PLAN §16, slice 7).
+std::uint8_t glyphIndex(Glyph g);
 
 // The colour a cell colour renders as: a palette entry or its 24-bit value.
 Rgb resolveColor(const Color& c);

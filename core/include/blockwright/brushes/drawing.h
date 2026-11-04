@@ -8,8 +8,8 @@
 namespace bw {
 
 // The shade level of a cell's glyph: 0 for a space (NUL, 0xFF), 1-3 for
-// ░ ▒ ▓, 4 for █; empty for any other glyph.
-std::optional<int> shadeLevel(char32_t ch);
+// ░ ▒ ▓, 4 for █; empty for any other glyph, a cluster and the continuation included.
+std::optional<int> shadeLevel(Glyph g);
 
 // Shade brush: builds a cell up one step of space → ░ → ▒ → ▓ → █ in the
 // pen's colours, or with `reduce` takes it one step back down to a space.

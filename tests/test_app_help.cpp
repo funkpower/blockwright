@@ -563,8 +563,10 @@ namespace {
 // The glyphs of row `y`.
 QString rowText(const Canvas& c, int y) {
     QString row;
-    for (int x = 0; x < c.width(); ++x)
-        row += QString::fromUcs4(&c.at(x, y).ch, 1);
+    for (int x = 0; x < c.width(); ++x) {
+        const char32_t ch = c.at(x, y).ch.codePoint().value();
+        row += QString::fromUcs4(&ch, 1);
+    }
     return row;
 }
 

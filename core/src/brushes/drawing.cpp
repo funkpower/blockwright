@@ -8,8 +8,11 @@
 
 namespace bw {
 
-std::optional<int> shadeLevel(char32_t ch) {
-    switch (ch) {
+std::optional<int> shadeLevel(Glyph g) {
+    const std::optional<char32_t> ch = g.codePoint();
+    if (!ch)
+        return std::nullopt;
+    switch (*ch) {
     case U' ':
     case U'\0':
     case U' ': return 0;
@@ -53,7 +56,8 @@ std::optional<Cell> GlyphBrush::paintCell(const Stroke& stroke, int, int, double
     // a mirrored image of the stroke writes the glyph mirrored, and a
     // radial image a quarter turn round writes it turned
     Cell c = cell_;
-    c.ch = dabGlyph(c.ch, stroke.currentDab());
+    if (const std::optional<char32_t> cp = c.ch.codePoint())  // a brush holds a narrow glyph
+        c.ch = dabGlyph(*cp, stroke.currentDab());
     return c;
 }
 

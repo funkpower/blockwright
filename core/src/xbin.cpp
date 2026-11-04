@@ -68,7 +68,9 @@ std::vector<std::uint8_t> pairsOf(const Canvas& cv, int width, bool ice, AnsiOut
             const Cell& c = x >= cv.width() || cv.at(x, y).transparent ? blank : cv.at(x, y);
             const std::uint8_t fg = c.fg.paletteIndex(), bg = c.bg.paletteIndex();
             const bool high = bg >= 8 || (!ice && (c.attrs & attr::Blink));
-            std::optional<std::uint8_t> b = unicodeToCp437(c.ch);
+            const Glyph right = x + 1 < cv.width() && !cv.at(x, y).transparent ? cv.at(x + 1, y).ch : Glyph();
+            const std::optional<char32_t> cp = interimCodePoint(c.ch, right);
+            std::optional<std::uint8_t> b = cp ? unicodeToCp437(*cp) : std::nullopt;
             if (!b) {
                 out.unwritable.push_back({x, y, c.ch});
                 b = '?';

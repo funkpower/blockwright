@@ -34,7 +34,7 @@ Cell written(const Cell& from, HalfPair pair, bool ice) {
 std::optional<HalfPair> halfBlocks(const Cell& cell, bool ice) {
     const Cell shown = iceCell(cell, ice);
     const std::uint8_t fg = shown.fg.paletteIndex(), bg = shown.bg.paletteIndex();
-    switch (shown.ch) {
+    switch (shown.ch.codePointOr(kNoCodePoint)) {
     case U' ':
     case U'\0':
     case U'\u00a0': return HalfPair{bg, bg};

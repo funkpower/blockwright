@@ -151,4 +151,29 @@ std::string quotedGlyph(char32_t cp) {
     return out;
 }
 
+std::string quotedGlyph(Glyph g) {
+    std::string out;
+    bool lastNamed = false;
+    for (const char32_t cp : codePoints(g)) {
+        const bool named = unprintableCodePoint(cp);
+        if (!out.empty() && (named || lastNamed))
+            out += ' ';
+        out += quotedGlyph(cp);
+        lastNamed = named;
+    }
+    return out;
+}
+
+std::string codePointNames(Glyph g) {
+    std::string out;
+    for (const char32_t cp : codePoints(g)) {
+        char code[16];
+        std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(cp));
+        if (!out.empty())
+            out += ' ';
+        out += code;
+    }
+    return out;
+}
+
 } // namespace bw

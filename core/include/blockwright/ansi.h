@@ -86,17 +86,19 @@ AnsiDocument parseAnsi(std::string_view file, const ParseOptions& opts = {});
 
 struct Unwritable {
     int x, y;
-    char32_t ch;
+    Glyph ch;  // never the continuation, which is written as a space
 };
+
 
 struct AnsiOutput {
     std::string bytes;
     // The text encoding the glyphs were written in: UTF-8 only for an .ans
     // writeAnsi wrote as UTF-8. XBIN and BIN are CP437 bytes.
     TextEncoding encoding = TextEncoding::Cp437;
-    // Cells written as '?'. CP437: a glyph with no CP437 code, or (.ans
-    // only) one whose byte .ans reads as a control code (ansControlByte).
-    // UTF-8: a code point utf8Writable refuses.
+    // Cells written as '?', in cell order. CP437: a glyph with no CP437
+    // code, or (.ans only) one whose byte .ans reads as a control code
+    // (ansControlByte). UTF-8: a code point utf8Writable refuses. Either: a
+    // lead or a cluster of more than one code point (interimCodePoint).
     std::vector<Unwritable> unwritable;
     // Blinking cells written without their blink: the file is written with
     // iCE colours on, where blink means a bright background. Only cells whose
@@ -217,6 +219,8 @@ const char* ansControlName(std::uint8_t b);
 // glyph (○ ◙ ♪ → ←) but .ans can't hold its byte, so writeAnsi writes '?'
 // for it. XBIN and BIN keep it. Nothing for any other glyph.
 std::optional<std::uint8_t> ansControlByte(char32_t ch);
+// The same for a cell's glyph: nothing for a cluster or the continuation.
+std::optional<std::uint8_t> ansControlByte(Glyph g);
 
 // The names (ansControlName) of the control codes the glyphs in `cells` have
 // bytes for, each once, in the order they are first met, joined by ", "
@@ -229,6 +233,7 @@ int ansControlCount(const std::vector<Unwritable>& cells);
 
 // Whether `ch` draws no foreground: a space, NUL or 0xFF (U+00A0). Blink
 // (with iCE off) hides and shows the foreground, so on these it shows nothing.
-bool blankGlyph(char32_t ch);
+// A cluster or the continuation is never blank.
+bool blankGlyph(Glyph g);
 
 } // namespace bw

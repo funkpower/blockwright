@@ -152,7 +152,7 @@ TEST_CASE("a replacement range off the row is clamped to it") {
         r.edit.apply(out);
         std::u32string s;
         for (int x = 0; x < 4; ++x)
-            s += out.at(x, 0).ch;
+            s += out.at(x, 0).ch.codePoint().value();
         return s;
     };
 

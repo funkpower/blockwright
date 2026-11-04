@@ -118,7 +118,7 @@ std::string row(const Document& d, LayerId id) {
     REQUIRE(l);
     std::string s;
     for (int x = 0; x < l->cells.width(); ++x)
-        s += char(l->cells.at(x, 0).ch);
+        s += char(l->cells.at(x, 0).ch.codePoint().value());
     while (!s.empty() && s.back() == ' ')
         s.pop_back();
     return s;

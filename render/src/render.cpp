@@ -32,6 +32,13 @@ int glyphWidth(const AnsiDocument& doc, const RenderOptions& opts) {
 
 std::uint8_t glyphIndex(char32_t ch) { return unicodeToCp437(ch).value_or('?'); }
 
+std::uint8_t glyphIndex(Glyph g) {
+    if (g.isContinuation())
+        return ' ';
+    const std::optional<char32_t> cp = g.codePoint();
+    return cp ? glyphIndex(*cp) : std::uint8_t('?');
+}
+
 Rgb resolveColor(const Color& c) { return c.isIndexed() ? kPalette[c.index & 15] : c.rgb; }
 
 QImage renderCanvas(const Canvas& canvas, int gw, int scale, const BitmapFont& font) {

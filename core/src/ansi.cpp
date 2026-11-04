@@ -371,9 +371,11 @@ private:
 // A cell the trailing trim may drop, written with iCE colours `ice`. A
 // blinking space written without iCE is not one: read back with iCE on it is
 // a bright-black background. With iCE on its blink is dropped, so it is
-// written as a plain black space and goes like one.
+// written as a plain black space and goes like one. A continuation is
+// written as a space (interimCodePoint), so it goes like one too.
 bool blankBlack(const Cell& c, bool ice) {
-    return c.transparent || (c.ch == U' ' && c.bg.paletteIndex() == Black && (ice || !(c.attrs & attr::Blink)));
+    return c.transparent || ((c.ch == U' ' || c.ch.isContinuation()) && c.bg.paletteIndex() == Black &&
+                             (ice || !(c.attrs & attr::Blink)));
 }
 
 bool writableByte(std::uint8_t b) { return !ansControlName(b); }
@@ -397,6 +399,11 @@ std::optional<std::uint8_t> ansControlByte(char32_t ch) {
     if (b && ansControlName(*b))
         return b;
     return std::nullopt;
+}
+
+std::optional<std::uint8_t> ansControlByte(Glyph g) {
+    const std::optional<char32_t> cp = g.codePoint();
+    return cp ? ansControlByte(*cp) : std::nullopt;
 }
 
 std::string ansControlNames(const std::vector<Unwritable>& cells) {
@@ -425,7 +432,7 @@ bool isWritableGlyph(char32_t ch) {
     return b && *b != 0x00 && writableByte(*b);
 }
 
-bool blankGlyph(char32_t ch) { return ch == U' ' || ch == U'\0' || ch == U'\u00a0'; }
+bool blankGlyph(Glyph g) { return g == U' ' || g == U'\0' || g == U'\u00a0'; }
 
 int lostBlinkCount(const AnsiDocument& doc) {
     int n = 0;
@@ -441,7 +448,15 @@ int lostBlinkCount(const AnsiDocument& doc) {
 bool writesAlike(const Cell& a, const Cell& b) {
     if (a.transparent || b.transparent)
         return a.transparent == b.transparent;
-    const auto byte = [](char32_t ch) { return isWritableGlyph(ch) ? *unicodeToCp437(ch) : std::uint8_t('?'); };
+    // as the CP437 writer writes it (interimCodePoint): a continuation a
+    // space, a cluster '?' (a lead holds a glyph CP437 hasn't got, so its '?'
+    // is the glyph's own)
+    const auto byte = [](Glyph g) {
+        if (g.isContinuation())
+            return std::uint8_t(' ');
+        const std::optional<char32_t> cp = g.codePoint();
+        return cp && isWritableGlyph(*cp) ? *unicodeToCp437(*cp) : std::uint8_t('?');
+    };
     return byte(a.ch) == byte(b.ch) && a.fg.paletteIndex() == b.fg.paletteIndex() &&
            a.bg.paletteIndex() == b.bg.paletteIndex() && (a.attrs & attr::Blink) == (b.attrs & attr::Blink);
 }
@@ -594,16 +609,18 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
                 s += 'm';
                 cur = key;
             }
+            const Glyph right = x + 1 < cv.width() && !cv.at(x, y).transparent ? cv.at(x + 1, y).ch : Glyph();
+            const std::optional<char32_t> cp = interimCodePoint(c.ch, right);
             if (utf8) {
-                if (!utf8Writable(c.ch)) {
+                if (!cp || !utf8Writable(*cp)) {
                     out.unwritable.push_back({x, y, c.ch});
                     s += '?';
                 } else {
-                    appendUtf8(s, c.ch ? c.ch : U' ');  // NUL draws as a blank
+                    appendUtf8(s, *cp ? *cp : U' ');  // NUL draws as a blank
                 }
                 continue;
             }
-            std::optional<std::uint8_t> b = unicodeToCp437(c.ch);
+            std::optional<std::uint8_t> b = cp ? unicodeToCp437(*cp) : std::nullopt;
             if (b && *b == 0x00)
                 b = ' ';  // NUL draws as a blank
             if (!b || !writableByte(*b)) {

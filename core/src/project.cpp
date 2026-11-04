@@ -1736,7 +1736,14 @@ std::string encodeCells(const Canvas& cells) {
     for (int y = 0; y < cells.height(); ++y)
         for (int x = 0; x < cells.width(); ++x) {
             const Cell& c = cells.at(x, y);
-            put32(raw, std::uint32_t(c.ch));
+            // an id is never written; version 2, which holds pairs and
+            // clusters, is PLAN §16's slice 5
+            const std::optional<char32_t> cp = c.ch.codePoint();
+            if (!cp)
+                fail("cell " + std::to_string(x) + "," + std::to_string(y) + " holds " +
+                     (c.ch.isContinuation() ? "the right half of a wide glyph" : "a cluster of code points") +
+                     ", which a layer's cells can't hold yet");
+            put32(raw, std::uint32_t(*cp));
             putColour(raw, c.fg);
             putColour(raw, c.bg);
             raw += char(c.attrs);

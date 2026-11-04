@@ -85,7 +85,7 @@ QAction* act(MainWindow& w, const char* name) {
 QString row(MainWindow& w, int x, int y, int n) {
     QString s;
     for (int i = 0; i < n; ++i) {
-        const char32_t ch = w.document()->canvas().at(x + i, y).ch;
+        const char32_t ch = w.document()->canvas().at(x + i, y).ch.codePoint().value();
         s += QString::fromUcs4(&ch, 1);
     }
     return s;

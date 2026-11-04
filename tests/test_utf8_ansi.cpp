@@ -27,7 +27,7 @@ AnsiDocument parseAs(std::string_view ansi, TextEncoding enc, int width = 80) {
 std::u32string row(const AnsiDocument& d, int y, int n) {
     std::u32string s;
     for (int x = 0; x < n; ++x)
-        s += d.canvas.at(x, y).ch;
+        s += d.canvas.at(x, y).ch.codePoint().value();
     return s;
 }
 

@@ -137,6 +137,10 @@ CellEdit stampBlock(const Canvas& canvas, const CellBlock& block, int x, int y, 
 enum class Flip { Horizontal, Vertical };
 char32_t flipGlyph(char32_t ch, Flip flip);
 char32_t rotateGlyph(char32_t ch, bool clockwise);
+// The same for a cell's glyph: a cluster and the continuation have no mirror
+// or turned form and are kept.
+Glyph flipGlyph(Glyph g, Flip flip);
+Glyph rotateGlyph(Glyph g, bool clockwise);
 
 enum class Transform { FlipHorizontal, FlipVertical, RotateClockwise, RotateCounterClockwise };
 

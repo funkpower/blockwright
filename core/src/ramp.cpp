@@ -49,8 +49,8 @@ std::string rampProblem(const Ramp& ramp) {
 
 namespace {
 
-int shadeQuarters(char32_t ch) {
-    switch (ch) {
+int shadeQuarters(Glyph g) {
+    switch (g.codePointOr(kNoCodePoint)) {
     case kShadeLight: return 1;
     case kShadeMedium: return 2;
     case kShadeDark: return 3;
@@ -67,7 +67,7 @@ char32_t shadeGlyph(int quarters) {
 std::optional<std::uint8_t> solidColour(const Cell& cell) {
     const bool fgOk = cell.fg.isIndexed(), bgOk = cell.bg.isIndexed();
     const std::uint8_t fg = cell.fg.paletteIndex(), bg = cell.bg.paletteIndex();
-    switch (cell.ch) {
+    switch (cell.ch.codePointOr(kNoCodePoint)) {
     case U' ': return bgOk ? std::optional<std::uint8_t>(bg) : std::nullopt;
     case kFullBlock: return fgOk ? std::optional<std::uint8_t>(fg) : std::nullopt;
     case kUpperHalf:

@@ -29,22 +29,23 @@ Cell drawn(const Cell& c) {
     if (c.transparent)
         return Cell{};
     Cell d = c;
-    if (d.ch == 0)
+    const char32_t cp = d.ch.codePointOr(kNoCodePoint);
+    if (cp == 0)
         d.ch = U' ';
-    else if (d.ch < 0x20 || d.ch == 0x7f)
-        d.ch = cp437ToUnicode(static_cast<std::uint8_t>(d.ch));
+    else if (cp < 0x20 || cp == 0x7f)
+        d.ch = cp437ToUnicode(static_cast<std::uint8_t>(cp));
     return d;
 }
 
-MircCell toMirc(const Cell& c) {
-    return {c.ch, mircColor(c.fg), mircColor(c.bg)};
-}
-
-// The cell as the row encoder takes it. Not a Unicode scalar value: drawn as
-// '?' rather than fail. A C1 control too: some clients read C2 9B as a CSI
-// introducer.
-MircCell encodable(const Cell& c) {
-    MircCell m = toMirc(drawn(c));
+// The cell as the row encoder takes it, its right neighbour `right` on the
+// canvas. A continuation is a space, a lead or a cluster of more than one
+// code point '?' (interimCodePoint: the encoder doesn't write pairs or
+// clusters yet). Not a Unicode scalar value: drawn as '?' rather than fail.
+// A C1 control too: some clients read C2 9B as a CSI introducer.
+MircCell encodable(const Cell& c, Glyph right) {
+    const Cell d = drawn(c);
+    const std::optional<char32_t> cp = interimCodePoint(d.ch, c.transparent ? Glyph() : right);
+    MircCell m{cp.value_or(U'?'), mircColor(d.fg), mircColor(d.bg)};
     if (m.ch > 0x10ffff || (m.ch >= 0xd800 && m.ch <= 0xdfff) || (m.ch >= 0x80 && m.ch <= 0x9f))
         m.ch = U'?';
     return m;
@@ -267,8 +268,8 @@ std::uint8_t mircColor(const Color& c) {
 std::vector<MircCell> mircRow(std::span<const Cell> cells) {
     std::vector<MircCell> raw;
     raw.reserve(cells.size());
-    for (const Cell& c : cells)
-        raw.push_back(encodable(c));
+    for (std::size_t x = 0; x < cells.size(); ++x)
+        raw.push_back(encodable(cells[x], x + 1 < cells.size() ? cells[x + 1].ch : Glyph()));
     return raw;
 }
 

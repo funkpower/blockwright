@@ -18,7 +18,7 @@ class BigFace final : public Face {
     int height() const override { return 16; }
     int letterSpacing() const override { return 0; }
     std::vector<ConfusablePair> confusables() const override { return {}; }
-    std::optional<Glyph> glyph(char32_t ch) const override {
+    std::optional<FaceGlyph> glyph(char32_t ch) const override {
         auto base = blockFace().glyph(ch);
         if (!base)
             return std::nullopt;
@@ -33,7 +33,7 @@ class BigFace final : public Face {
                 delta = d;
                 break;
             }
-        Glyph out{InkMask(8, 16), std::nullopt};
+        FaceGlyph out{InkMask(8, 16), std::nullopt};
         for (int y = 0; y < 8; ++y)
             for (int x = 0; x < 8; ++x)
                 if (base->mask.at(x, y) != bool((delta >> (8 * (7 - y))) & (0x80 >> x))) {
@@ -49,7 +49,7 @@ class SpacedBigFace final : public Face {
     std::string_view name() const override { return bigTextFace().name(); }
     int height() const override { return 16; }
     int letterSpacing() const override { return spacing_; }
-    std::optional<Glyph> glyph(char32_t ch) const override { return bigTextFace().glyph(ch); }
+    std::optional<FaceGlyph> glyph(char32_t ch) const override { return bigTextFace().glyph(ch); }
     std::vector<ConfusablePair> confusables() const override { return {}; }
 
   private:

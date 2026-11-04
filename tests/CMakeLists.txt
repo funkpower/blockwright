@@ -69,6 +69,8 @@ add_executable(blockwright-tests
   test_form_brush.cpp
   test_golden.cpp
   test_generator.cpp
+  test_glyph.cpp
+  test_glyph_writers.cpp
   test_gradient.cpp
   test_irc.cpp
   test_irc_fit.cpp
@@ -96,6 +98,7 @@ add_executable(blockwright-tests
   test_scene_import.cpp
   scene_env.h
   test_xbin.cpp
+  test_width.cpp
   test_selection.cpp
   test_symmetry_stroke.cpp
   test_big_text.cpp
@@ -484,6 +487,7 @@ add_executable(blockwright-render-tests
   test_render.cpp
   test_render_golden.cpp
   test_irc_render.cpp
+  test_glyph_perf.cpp
   util.h
 )
 target_link_libraries(blockwright-render-tests PRIVATE blockwright::render Catch2::Catch2WithMain)

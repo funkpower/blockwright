@@ -35,6 +35,12 @@ bool blankGlyph(char32_t ch) { return ch == U' ' || ch == 0 || ch == U' '; }
 bool blockGlyph(char32_t ch) { return ch >= 0x2580 && ch <= 0x259f; }
 // Text and line drawing: a glyph drawn in its foreground on its background.
 bool textGlyph(char32_t ch) { return !blankGlyph(ch) && !blockGlyph(ch); }
+// A cell's: a cluster is text, and so is the continuation, the right half of
+// one.
+bool textGlyph(Glyph g) {
+    const std::optional<char32_t> cp = g.codePoint();
+    return !cp || textGlyph(*cp);
+}
 
 // The background a cell shows: with iCE off a bright one blinks on its dark
 // colour.
@@ -76,7 +82,7 @@ private:
 // What a cell looks like: a flat colour (one-colour pixel cells and blanks)
 // as (' ', colour, -1), a two-colour pixel cell as ('▀', top, bottom), and
 // anything else as its glyph and colours. Off the canvas: a look no cell has.
-using Look = std::tuple<char32_t, int, int>;
+using Look = std::tuple<Glyph, int, int>;
 const Look kNoLook{U'￿', -2, -2};
 
 Look lookOf(const Canvas& canvas, int x, int y, bool ice) {
@@ -361,15 +367,18 @@ void noCp437(const Canvas& canvas, std::vector<Finding>& out) {
     for (int y = 0; y < canvas.height(); ++y)
         for (int x = 0; x < canvas.width(); ++x) {
             const Cell& c = canvas.at(x, y);
-            const std::optional<std::uint8_t> control = ansControlByte(c.ch);
-            if (c.transparent || c.ch < 0x20 || c.ch == 0x7f || (unicodeToCp437(c.ch) && !control))
+            // a continuation is saved as a space (interimCodePoint); a lead
+            // holds a glyph with no CP437 code, as a cluster does
+            if (c.transparent || c.ch.isContinuation())
                 continue;
-            char code[16];
-            std::snprintf(code, sizeof code, "U+%04X", static_cast<unsigned>(c.ch));
+            const std::optional<char32_t> cp = c.ch.codePoint();
+            const std::optional<std::uint8_t> control = ansControlByte(c.ch);
+            if (cp && (*cp < 0x20 || *cp == 0x7f || (unicodeToCp437(*cp) && !control)))
+                continue;
             // A control or bidi override is named by its code alone, never
             // echoed: a terminal would act on it.
-            std::string message = code;
-            if (!unprintableCodePoint(c.ch))
+            std::string message = codePointNames(c.ch);
+            if (!cp || !unprintableCodePoint(*cp))
                 message += " " + quotedGlyph(c.ch);
             if (control) {
                 char byte[8];

@@ -238,7 +238,8 @@ QStringList LibraryDock::shownNames() const {
 QByteArray LibraryDock::thumbnailKey(const library::Stamp& s) {
     const Canvas& cv = s.art.canvas;
     // What renderCanvas reads: the glyph width, the size and each cell's
-    // glyph and colours.
+    // glyph and colours. A key in this process's cache only, so a glyph's
+    // bits() will do.
     QCryptographicHash h(QCryptographicHash::Sha1);
     const int head[] = {glyphWidth(s.art), cv.width(), cv.height()};
     h.addData(QByteArrayView(reinterpret_cast<const char*>(head), sizeof head));
@@ -246,7 +247,7 @@ QByteArray LibraryDock::thumbnailKey(const library::Stamp& s) {
         for (int x = 0; x < cv.width(); ++x) {
             const Cell& c = cv.at(x, y);
             const Rgb fg = resolveColor(c.fg), bg = resolveColor(c.bg);
-            const std::uint32_t v[] = {std::uint32_t(c.ch), std::uint32_t(fg.r), std::uint32_t(fg.g),
+            const std::uint32_t v[] = {c.ch.bits(), std::uint32_t(fg.r), std::uint32_t(fg.g),
                                        std::uint32_t(fg.b), std::uint32_t(bg.r), std::uint32_t(bg.g),
                                        std::uint32_t(bg.b)};
             h.addData(QByteArrayView(reinterpret_cast<const char*>(v), sizeof v));

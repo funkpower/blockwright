@@ -150,13 +150,13 @@ private:
         // glyph (the lint's one-glyph finding). One more rung past the end, or
         // else before the start, shows another.
         const auto glyphs = [&](const std::vector<int>& rungs) {
-            std::vector<char32_t> out;
+            std::vector<Glyph> out;
             for (const int r : rungs)
                 if (r % kRungsPerStep != 0 && std::find(out.begin(), out.end(), rungCell(ramp_, r).ch) == out.end())
                     out.push_back(rungCell(ramp_, r).ch);
             return out;
         };
-        const std::vector<char32_t> shown = glyphs(ladder);
+        const std::vector<Glyph> shown = glyphs(ladder);
         const auto shades = std::count_if(ladder.begin(), ladder.end(), [](int r) { return r % kRungsPerStep != 0; });
         if (shades < 2 || shown.size() != 1)
             return;

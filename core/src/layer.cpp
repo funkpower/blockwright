@@ -155,7 +155,7 @@ bool layerPixelPaintable(const Layer& layer, int cx, int py) {
 LayerPixels layerPixels(const Cell& cell) {
     if (cell.transparent) {
         const std::uint8_t fg = cell.fg.paletteIndex();
-        switch (cell.ch) {
+        switch (cell.ch.codePointOr(kNoCodePoint)) {
         case kUpperHalf: return {fg, std::nullopt};
         case kLowerHalf: return {std::nullopt, fg};
         default: return {};
