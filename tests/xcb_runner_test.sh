@@ -28,7 +28,8 @@ cat >"$tmp/bin/env-probe" <<'EOF'
 for v in HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_RUNTIME_DIR QT_QPA_PLATFORM DISPLAY; do
   echo "$v=${!v:-}"
 done
-echo "runtime mode=$(stat -c %a "$XDG_RUNTIME_DIR")"
+# POSIX find, not stat, whose options differ between systems
+if [[ -n $(find "$XDG_RUNTIME_DIR" -prune -perm 700) ]]; then echo "runtime mode=700"; else echo "runtime mode=$(ls -ld "$XDG_RUNTIME_DIR")"; fi
 EOF
 cat >"$tmp/bin/writer" <<'EOF'
 #!/usr/bin/env bash

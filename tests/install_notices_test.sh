@@ -192,8 +192,8 @@ desktop=$home/.local/share/applications/blockwright-dev.desktop
 want=$(printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Blockwright (dev)' 'GenericName=ANSI art editor' \
   'Comment=Blockwright dev build 0123456' "Exec=\"$home/.local/bin/blockwright-dev\" %f" 'Terminal=false' \
   'Categories=Graphics;2DGraphics;')
-# and on Linux the installed icon, by its path (#205)
-[[ $(uname -s) == Linux ]] && want+=$'\n'"Icon=$prefix/share/icons/hicolor/256x256/apps/blockwright.png"
+# and the installed icon, by its path (#205), everywhere but on a Mac
+[[ $(uname -s) != Darwin ]] && want+=$'\n'"Icon=$prefix/share/icons/hicolor/256x256/apps/blockwright.png"
 if [[ -f $desktop && $(<"$desktop") == "$want" ]]; then
   ok "install-dev writes the launcher entry"
 else
@@ -245,7 +245,7 @@ else
   bad "install-dev took an install without the sample projects (exit $st): $out"
 fi
 if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the sample-less install keeps the old dev build"; else bad "the sample-less install replaced the old dev build"; fi
-if [[ $(uname -s) == Linux ]]; then
+if [[ $(uname -s) != Darwin ]]; then
   out=$(NOICON=1 dev); st=$?
   if [[ $st -ne 0 ]] && grep -q 'left out the icon' <<<"$out"; then
     ok "install-dev refuses an install without the icon"

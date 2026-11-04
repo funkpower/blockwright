@@ -370,7 +370,7 @@ void SprayBrush::dab(Stroke& stroke, const Dab& d, int size, double) const {
             foot[size_t(y - n.y0) * n.w + (x - n.x0)] = 1;
         // a cell is in when a footprint cell is within R of it along the
         // row, then when such a cell is within R of it up the column
-        const auto grow = [R](const std::vector<char>& from, std::vector<char>& to, int lines, int len,
+        const auto grow = [](const std::vector<char>& from, std::vector<char>& to, int lines, int len,
                               size_t line, size_t step) {
             for (int l = 0; l < lines; ++l) {
                 int last = -R - 1;  // the last set cell at or before the next R ahead

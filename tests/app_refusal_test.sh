@@ -8,7 +8,13 @@ set -uo pipefail
 tmp=$1; shift
 fails=0
 conf='[window]\ngeometry=keepme\n[fonts]\nfolder=/some/real/folder\n[recent]\nfiles=a.ans\n'
-snapshot() { (cd "$1" && find . -mindepth 1 -printf '%y %p\n' | sort && find . -type f -print0 | sort -z | xargs -0 sha256sum); }
+# each entry's type and path, then each file's hash; POSIX find (no -printf),
+# which BSD find lacks
+type_of() { if [[ -L $1 ]]; then echo l; elif [[ -d $1 ]]; then echo d; elif [[ -f $1 ]]; then echo f; else echo o; fi; }
+snapshot() {
+  (cd "$1" && find . -mindepth 1 | LC_ALL=C sort | while IFS= read -r p; do echo "$(type_of "$p") $p"; done &&
+     find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)
+}
 for bin in "$@"; do
   name=$(basename "$bin")
   profile=$tmp/$name

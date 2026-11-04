@@ -389,10 +389,11 @@ inline std::function<void(std::string_view step, const std::filesystem::path& at
 // Called before some system calls a directory save makes, POSIX systems
 // only, with the call and the path it acts on. Tests only. A result other
 // than 0 is an errno the call fails with, and the call isn't made.
-// - "renameat2", Linux: renaming a file to `at` unless something is there.
+// - "renameat2", Linux and macOS: renaming a file to `at` unless something
+//   is there (renameat2, or renameatx_np on macOS).
 // - "noreplace": renameat2 can't refuse to replace there (or the system
-//   has none), and the save is about to move a file to `at` without
-//   replacing what is there.
+//   has none, as on FreeBSD), and the save is about to move a file to `at`
+//   without replacing what is there.
 // - "linkat": that move giving the file the second name `at`; if this
 //   fails, the move is refused.
 // - "unlinkat": removing the file or empty directory `at`, the old name of
@@ -403,6 +404,10 @@ inline std::function<void(std::string_view step, const std::filesystem::path& at
 // - "openat": creating the temporary file `at`, the save's or, on a
 //   failure, the one holding a replaced file's old bytes.
 inline std::function<int(std::string_view call, const std::filesystem::path& at)> systemCall;
+// The call above that moves a file to a name where nothing may be
+// replaced: "renameat2" where the system has such a rename, else "linkat"
+// (empty off POSIX systems). Tests only.
+std::string_view noReplaceMove();
 // Windows only: the longest path, in UTF-16 units with its terminator, a
 // directory save writes; 0 for the system's own. Tests only.
 inline std::size_t pathLimit = 0;

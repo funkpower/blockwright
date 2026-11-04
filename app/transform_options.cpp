@@ -88,7 +88,7 @@ bool covers(QSize a, QSize b) { return a.width() >= b.width() && a.height() >= b
 // gives the size uncut.
 std::pair<double, double> rounding(QSize own, QSize size, bool cut) {
     double lo = 0, hi = std::numeric_limits<double>::infinity();
-    for (const auto [c, n] : {std::pair(size.width(), own.width()), std::pair(size.height(), own.height())}) {
+    for (const auto& [c, n] : {std::pair(size.width(), own.width()), std::pair(size.height(), own.height())}) {
         if (c > 1)
             lo = std::max(lo, 100.0 * (c - 0.5) / n);
         if (!cut || c < kMax)

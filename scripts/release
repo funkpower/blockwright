@@ -14,8 +14,9 @@
 #
 # Writes <out>/blockwright-<version>.tar.gz, whose files sit under
 # blockwright-<version>/, <out>/blockwright-<version>.tar.gz.sha256
-# (sha256sum's format), and the AUR package's <out>/aur/blockwright/PKGBUILD
-# for that tarball with its .SRCINFO (where makepkg runs). The tarball is
+# (sha256sum's format), the AUR package's <out>/aur/blockwright/PKGBUILD
+# for that tarball with its .SRCINFO (where makepkg runs), and the FreeBSD
+# port <out>/freebsd/blockwright/ with its distinfo. The tarball is
 # `git archive` of the commit, so only committed, tracked files go in;
 # untracked and modified ones never do. The same commit
 # gives the same bytes: the entries carry the commit's time, gzip records no
@@ -95,6 +96,27 @@ if git -C "$repo" cat-file -e "$commit:packaging/aur/blockwright/PKGBUILD" 2>/de
          "make its .SRCINFO with makepkg --printsrcinfo as a user who isn't root)"
     rm -f "$aur/.SRCINFO.new" "$aur/.SRCINFO.err"
   fi
+fi
+
+# The FreeBSD port of this tarball: the commit's packaging/freebsd with
+# DISTVERSION filled in and a distinfo for the tarball, as `make makesum`
+# writes it but with the commit's time, so the same commit gives the same port.
+if git -C "$repo" cat-file -e "$commit:packaging/freebsd/Makefile" 2>/dev/null; then
+  port=$out/freebsd/blockwright
+  rm -rf "$port"
+  mkdir -p "$port"
+  for f in Makefile pkg-descr pkg-plist; do
+    git -C "$repo" show "$commit:packaging/freebsd/$f" > "$port/$f"
+  done
+  tab=$'\t'
+  sed "s/^DISTVERSION=.*/DISTVERSION=$tab$version/" "$port/Makefile" > "$port/Makefile.new"
+  mv "$port/Makefile.new" "$port/Makefile"
+  {
+    echo "TIMESTAMP = $(git -C "$repo" show -s --format=%ct "$commit")"
+    echo "SHA256 ($name.tar.gz) = $(cut -d' ' -f1 "$tarball.sha256")"
+    echo "SIZE ($name.tar.gz) = $(wc -c < "$tarball" | tr -d ' ')"
+  } > "$port/distinfo"
+  echo "release: $port"
 fi
 
 [[ -n $check ]] || exit 0

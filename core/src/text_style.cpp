@@ -588,7 +588,7 @@ private:
         while (!queue.empty()) {
             const auto [x, y] = queue.front();
             queue.pop_front();
-            for (const auto [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+            for (const auto& [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
                 const int nx = x + dx, ny = y + dy;
                 if (nx < 0 || ny < 0 || nx >= w_ || ny >= h_ || open[cell(nx, ny)] || !fades(nx, ny))
                     continue;

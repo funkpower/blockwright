@@ -7,6 +7,7 @@
 - Linux: a source tarball made by `scripts/release`, and the distribution
   packages built from it (below): Arch (AUR), Debian and Ubuntu, Fedora, and
   an AppImage.
+- FreeBSD: a port built from the same tarball (below).
 
 PLAN §14 records the decisions behind them, and [RELEASING.md](RELEASING.md)
 is the checklist for publishing a version.
@@ -219,6 +220,27 @@ checks with `ldd` that nothing in it loads Qt or Qt's libraries from the
 system, and checks that every bundled library has its notice; with
 `-DBW_APPIMAGE=<file>`, `ctest` runs it as the `appimage` test, which skips
 the Wayland run where weston isn't installed. `appimage_apprun` tests `packaging/linux/AppRun`.
+
+## FreeBSD
+
+`packaging/freebsd/` is a port of the release tarball: `Makefile`,
+`pkg-descr`, `pkg-plist` and `distinfo`. It builds with the system's clang,
+packaged Qt 6 and libzip, and zstd (linked statically, so a build dependency
+only), and `make test` runs the suite offscreen with `BW_FETCH_CATCH2=OFF`
+against `devel/catch2`; `x11-fonts/noto-basic` is a test dependency for the
+same reason as `noto-fonts` on Arch. The install block that
+serves Linux (desktop entry, metainfo, icons, man pages) applies unchanged,
+and the man pages land in `share/man`. The `distinfo` in the tree is a
+template: `scripts/release` writes the port for its tarball, with
+`DISTVERSION` and the `distinfo` (the commit's time, the tarball's SHA-256 and
+size) filled in, to `dist/freebsd/blockwright/`. `MAINTAINER` is left unset,
+so the ports collection's default stands, until the port is submitted. To try
+it, copy that directory to `graphics/blockwright` in a ports tree, put the
+tarball in `DISTDIR`, and run `make stage check-plist`, `make test` and
+`portlint -AC`.
+
+The CI's `freebsd` job builds and tests every push on FreeBSD 14 with the
+same packages.
 
 ## macOS: Blockwright.app, the disk image and the Homebrew cask
 

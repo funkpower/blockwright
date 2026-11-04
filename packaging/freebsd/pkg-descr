@@ -1,0 +1,8 @@
+Blockwright is an editor for ANSI art in CP437 block characters and for
+IRC colour art. It has half-block, shade and form brushes, layers, text
+faces and styles, a library of stamps, and generator layers that run
+scripts.
+
+It reads and writes .ans with SAUCE, XBIN and BIN, exports IRC text within
+a line budget and checks a piece against lint rules. The blockwright-cli
+command renders, converts and checks pieces without a display.

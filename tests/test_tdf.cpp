@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -670,4 +671,28 @@ TEST_CASE("reading a .tdf file: missing or over the size limit is a TdfError") {
     std::filesystem::resize_file(big, kMaxTdfBytes);
     CHECK(readTdfFile(big).size() == 1);
     std::filesystem::remove(big);
+}
+
+TEST_CASE("a .tdf file's bytes as read hold no more than the file") {
+    // A fonts folder keeps every file's bytes: a buffer of the 4 MiB limit
+    // for each made a folder of 1500 small files 6 GB.
+    const auto path = bwtest::dataDir() / "tdf" / "bw-all.tdf";
+    const std::string bytes = readTdfBytes(path);
+    CHECK(bytes.size() == std::filesystem::file_size(path));
+    INFO("capacity " << bytes.capacity());
+    CHECK(bytes.capacity() < 2 * bytes.size());
+
+    // a file with more in it than its size says (as one that grew after
+    // its size was taken) is still read whole, up to the limit: Linux gives
+    // its /proc files a size of 0
+#ifdef __linux__
+    const std::filesystem::path proc = "/proc/self/cmdline";
+    REQUIRE(std::filesystem::file_size(proc) == 0);
+    std::ifstream in(proc, std::ios::binary);
+    const std::string want{std::istreambuf_iterator<char>(in), {}};
+    REQUIRE(!want.empty());
+    const std::string grown = readTdfBytes(proc);
+    CHECK(grown == want);
+    CHECK(grown.capacity() < 2 * grown.size() + 64);
+#endif
 }

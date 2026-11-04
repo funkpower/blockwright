@@ -1,5 +1,8 @@
-# CI for Linux: build and run the whole test suite in the blockwright-ci image
-# (.forgejo/ci/arch.Dockerfile), on the project's own self-hosted runner.
+# CI: build and run the whole test suite on Linux, in the blockwright-ci image
+# (.forgejo/ci/arch.Dockerfile), and on FreeBSD, on the project's own
+# self-hosted runners. The FreeBSD runner is a virtual machine that runs jobs
+# directly on its host, with no container; it has the packages the port
+# depends on (packaging/freebsd) installed, and handles one job at a time.
 #
 # Trigger policy: pushes to this repository's branches only. Only people with
 # write access can push here, and maintainers' PR branches live in this
@@ -34,18 +37,19 @@
 # branch, push to it or update it. Pull the commits into a branch of this
 # repository instead.
 #
-# The job needs no secrets. Forgejo gives each job a token that can write to
+# The jobs need no secrets. Forgejo gives each job a token that can write to
 # this repository and that every step can read; main's branch protection
 # refuses direct pushes, so it can't push to main.
 #
 # Network: jobs have outbound internet access, including to the project's own
 # public address. A job reaches whatever that address publishes, and its
 # traffic leaves from that address, so anything that trusts the address trusts
-# a job. The maintainer accepts this. The runner puts every job on one fixed
-# docker network that the dev machine firewalls: nothing in the private,
+# a job. The maintainer accepts this. The Linux runner puts every job on one
+# fixed docker network that the dev machine firewalls: nothing in the private,
 # carrier-grade NAT, link-local or multicast ranges is reachable directly,
 # nothing over IPv6, and nothing on the dev machine itself. Names resolve
-# through the host's resolver.
+# through the host's resolver. The FreeBSD machine's traffic is fenced the
+# same way, outside it.
 name: ci
 
 on:
@@ -95,3 +99,53 @@ jobs:
 
       - name: Test (nested builds)
         run: ctest --test-dir "$HOME/build" -j1 --output-on-failure --timeout 300 --no-tests=error -R '^install_notices'
+
+  freebsd:
+    name: freebsd (14, packaged Qt 6)
+    runs-on: bw-freebsd
+    # The runner stops any job at an hour; the suite takes about half that.
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+      # Jobs run on the machine itself, so each works under its own workspace
+      # and the last step clears what it built.
+      WS: ${{ forgejo.workspace }}
+    steps:
+      - name: Check out
+        env:
+          TOKEN: ${{ forgejo.token }}
+          URL: ${{ forgejo.server_url }}/${{ forgejo.repository }}.git
+          SHA: ${{ forgejo.sha }}
+        run: |
+          set -eu
+          rm -rf "$WS/src" "$WS/build"
+          mkdir -p "$WS"
+          cd "$WS"
+          git init -q src
+          cd src
+          git remote add origin "$URL"
+          # The token goes in through the environment, not the command line.
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
+            GIT_CONFIG_VALUE_0="Authorization: token $TOKEN" \
+            git fetch -q --depth=1 origin "$SHA"
+          git checkout -q --detach FETCH_HEAD
+          git log -1 --format='%h %s'
+
+      # Catch2 comes from the system's package, as the port has it.
+      - name: Configure
+        run: cmake -S "$WS/src" -B "$WS/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBW_FETCH_CATCH2=OFF
+
+      - name: Build
+        run: cmake --build "$WS/build" -j4
+
+      # Four processors and 6 GB: the suite runs two at a time, and the nested
+      # builds one at a time after it.
+      - name: Test
+        run: ctest --test-dir "$WS/build" -j2 --output-on-failure --timeout 900 --no-tests=error -E '^install_notices'
+
+      - name: Test (nested builds)
+        run: ctest --test-dir "$WS/build" -j1 --output-on-failure --timeout 900 --no-tests=error -R '^install_notices'
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$WS/src" "$WS/build"

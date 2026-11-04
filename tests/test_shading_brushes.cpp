@@ -566,7 +566,10 @@ TEST_CASE("edge distance is the exact distance to the nearest cell off the shape
 TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]") {
     // Codex round 1, finding 1: a 160x1000 canvas, everything selected
     // The budgets are CPU time in an optimised build; cpuBudget scales them
-    // for a Debug one (#285).
+    // for a Debug one (#285). 1.5 s covers the slowest machine seen, a
+    // FreeBSD VM built with clang (1.16 s, #288), where GCC on the dev
+    // machine takes 0.18 s; a dab that grows with the canvas's square still
+    // fails.
     const int w = 160, h = 1000;
     const Ramp r = steel();
     FormShadeBrush brush(r);
@@ -582,7 +585,7 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
         const auto edit = paintStroke(c, brush, s, {{40, 250}}, o);
         const double t = bwtest::cpuSeconds() - t0;
         INFO(t << " s");
-        CHECK(t < bwtest::cpuBudget(0.3));
+        CHECK(t < bwtest::cpuBudget(1.5));
         CHECK(!edit.empty());
     }
     SECTION("every other cell transparent, under the alpha lock") {
@@ -594,7 +597,7 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
         const auto edit = paintStroke(c, brush, s, {{80, 500}}, o);
         const double t = bwtest::cpuSeconds() - t0;
         INFO(t << " s");
-        CHECK(t < bwtest::cpuBudget(0.3));
+        CHECK(t < bwtest::cpuBudget(1.5));
         // every cell alone among black: no form on it is lint-clean, so
         // none is laid
         CHECK(edit.empty());

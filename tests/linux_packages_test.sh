@@ -45,7 +45,7 @@ else
   bad "blockwright.spec's Version is '$spec_version', the tree is $version"
 fi
 # * Sat Oct 31 2026 funkpower - 0.1.0-1
-entry=$(sed -n '/^%changelog/,${/^\* /{p;q}}' "$spec")
+entry=$(awk '/^%changelog/ { on = 1; next } on && /^\* / { print; exit }' "$spec")
 if [[ $entry == *" - $spec_version-$release" ]]; then
   ok "blockwright.spec: %changelog starts at $spec_version-$release"
 else
@@ -81,14 +81,15 @@ done
 commands=$(sed -n 's/.*addPositionalArgument(QStringLiteral("command"), QStringLiteral("\([^"]*\)").*/\1/p' "$src/cli/main.cpp")
 commands=${commands//,/}
 commands=${commands// or / }
-if [[ $(wc -w <<<"$commands") -lt 10 ]]; then
+count=$(wc -w <<<"$commands" | tr -d ' ')
+if [[ $count -lt 10 ]]; then
   bad "no command list in cli/main.cpp's --help: '$commands'"
 else
   missing=
   for cmd in $commands; do
     grep -Eq "^\.BI \"?$cmd[ \"]" "$src/packaging/linux/blockwright-cli.1" || missing+=" $cmd"
   done
-  [[ -z $missing ]] && ok "blockwright-cli.1 describes all $(wc -w <<<"$commands") commands" ||
+  [[ -z $missing ]] && ok "blockwright-cli.1 describes all $count commands" ||
     bad "blockwright-cli.1 doesn't describe:$missing"
 fi
 

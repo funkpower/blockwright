@@ -206,7 +206,10 @@ bool outputPipe(Fd& read, Fd& write) {
     ::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
     ::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
 #endif
-    const bool ok = read.take(fds[0]) & write.take(fds[1]);
+    // both taken, whether or not the first is
+    const bool tookRead = read.take(fds[0]);
+    const bool tookWrite = write.take(fds[1]);
+    const bool ok = tookRead && tookWrite;
     return ok && ::fcntl(read.fd, F_SETFL, ::fcntl(read.fd, F_GETFL) | O_NONBLOCK) == 0;
 }
 

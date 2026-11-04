@@ -10,6 +10,9 @@ release=$1 src=$2 tmp=$3
 rm -rf "$tmp" && mkdir -p "$tmp"
 tmp=$(cd "$tmp" && pwd)
 fails=0
+# whether the permission bits of $1 are $2 (octal), with POSIX find: stat's
+# options differ between systems
+mode_is() { [[ -n $(find "$1" -prune -perm "$2") ]]; }
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 command -v git >/dev/null || { echo "skip: no git"; exit 77; }
@@ -26,6 +29,11 @@ printf 'project(blockwright VERSION 1.2.3 LANGUAGES CXX)\n' > "$repo/CMakeLists.
 mkdir -p "$repo/packaging/aur/blockwright"
 printf 'pkgname=blockwright\npkgver=0.0.1\npkgrel=4\nsource=("x.tar.gz")\nsha256sums=(\x27%s\x27)\n' \
   0000000000000000000000000000000000000000000000000000000000000000 > "$repo/packaging/aur/blockwright/PKGBUILD"
+mkdir -p "$repo/packaging/freebsd"
+printf 'PORTNAME=\tblockwright\nDISTVERSION=\t0.0.1\n' > "$repo/packaging/freebsd/Makefile"
+printf 'descr\n' > "$repo/packaging/freebsd/pkg-descr"
+printf 'bin/blockwright\n' > "$repo/packaging/freebsd/pkg-plist"
+printf 'TIMESTAMP = 0\n' > "$repo/packaging/freebsd/distinfo"
 printf 'tracked\n' > "$repo/sub/file.txt"
 printf '#!/bin/sh\n' > "$repo/sub/run.sh"; chmod 755 "$repo/sub/run.sh"
 git -C "$repo" init -q && git -C "$repo" add -A &&
@@ -44,7 +52,7 @@ else
 fi
 tarball=$tmp/a/blockwright-1.2.3.tar.gz
 list=$(tar -tzf "$tarball" | LC_ALL=C sort | tr '\n' ' ')
-want='blockwright-1.2.3/ blockwright-1.2.3/.gitattributes blockwright-1.2.3/CMakeLists.txt blockwright-1.2.3/packaging/ blockwright-1.2.3/packaging/aur/ blockwright-1.2.3/packaging/aur/blockwright/ blockwright-1.2.3/packaging/aur/blockwright/PKGBUILD blockwright-1.2.3/packaging/tarball-commit blockwright-1.2.3/sub/ blockwright-1.2.3/sub/file.txt blockwright-1.2.3/sub/run.sh '
+want='blockwright-1.2.3/ blockwright-1.2.3/.gitattributes blockwright-1.2.3/CMakeLists.txt blockwright-1.2.3/packaging/ blockwright-1.2.3/packaging/aur/ blockwright-1.2.3/packaging/aur/blockwright/ blockwright-1.2.3/packaging/aur/blockwright/PKGBUILD blockwright-1.2.3/packaging/freebsd/ blockwright-1.2.3/packaging/freebsd/Makefile blockwright-1.2.3/packaging/freebsd/distinfo blockwright-1.2.3/packaging/freebsd/pkg-descr blockwright-1.2.3/packaging/freebsd/pkg-plist blockwright-1.2.3/packaging/tarball-commit blockwright-1.2.3/sub/ blockwright-1.2.3/sub/file.txt blockwright-1.2.3/sub/run.sh '
 if [[ $list == "$want" ]]; then ok "the committed files only, under blockwright-1.2.3/"; else bad "the tarball holds: $list"; fi
 mkdir -p "$tmp/x" && tar -xzf "$tarball" -C "$tmp/x"
 if [[ $(cat "$tmp/x/blockwright-1.2.3/sub/file.txt") == tracked ]]; then
@@ -57,10 +65,10 @@ if [[ $(cat "$tmp/x/blockwright-1.2.3/packaging/tarball-commit") == "$short" ]];
 else
   bad "packaging/tarball-commit holds '$(cat "$tmp/x/blockwright-1.2.3/packaging/tarball-commit")', not $short"
 fi
-if [[ -x $tmp/x/blockwright-1.2.3/sub/run.sh && $(stat -c %a "$tmp/x/blockwright-1.2.3/sub/file.txt") == 644 ]]; then
+if [[ -x $tmp/x/blockwright-1.2.3/sub/run.sh ]] && mode_is "$tmp/x/blockwright-1.2.3/sub/file.txt" 644; then
   ok "file modes 755 and 644"
 else
-  bad "file modes: run.sh $(stat -c %a "$tmp/x/blockwright-1.2.3/sub/run.sh"), file.txt $(stat -c %a "$tmp/x/blockwright-1.2.3/sub/file.txt")"
+  bad "file modes: $(ls -l "$tmp/x/blockwright-1.2.3/sub/run.sh" "$tmp/x/blockwright-1.2.3/sub/file.txt")"
 fi
 if [[ $(od -An -tx1 -j4 -N4 "$tarball" | tr -d ' \n') == 00000000 ]]; then
   ok "gzip records no time"
@@ -80,6 +88,20 @@ if [[ -f $pkgbuild ]] && grep -qx 'pkgver=1.2.3' "$pkgbuild" && grep -qx 'pkgrel
   ok "the AUR PKGBUILD names this version and the tarball's sum"
 else
   bad "the AUR PKGBUILD: $(cat "$pkgbuild" 2>&1)"
+fi
+
+port=$tmp/a/freebsd/blockwright
+size=$(wc -c < "$tmp/a/blockwright-1.2.3.tar.gz" | tr -d ' ')
+want_distinfo="TIMESTAMP = $(git -C "$repo" show -s --format=%ct v1.2.3)
+SHA256 (blockwright-1.2.3.tar.gz) = $sum
+SIZE (blockwright-1.2.3.tar.gz) = $size"
+if [[ $(printf 'PORTNAME=\tblockwright\nDISTVERSION=\t1.2.3') == "$(cat "$port/Makefile" 2>&1)" ]] &&
+   [[ $(cat "$port/distinfo" 2>&1) == "$want_distinfo" ]] &&
+   [[ $(cat "$port/pkg-descr" "$port/pkg-plist" 2>&1) == $'descr\nbin/blockwright' ]] &&
+   [[ $(LC_ALL=C ls "$port") == $'Makefile\ndistinfo\npkg-descr\npkg-plist' ]]; then
+  ok "the FreeBSD port names this version, and its distinfo the tarball's sum and size"
+else
+  bad "the FreeBSD port: $(ls -A "$port" 2>&1; cat "$port/Makefile" "$port/distinfo" 2>&1)"
 fi
 
 # the .SRCINFO comes from makepkg where it runs; where makepkg fails, as it

@@ -150,7 +150,7 @@ public:
         // the seam: where a lump drawn later covers a neighbour (so no two
         // lumps' lit cells meet along a row or a column), and the lump's
         // rim on the side away from the light
-        for (const auto [dx, dy] : {std::pair{-1, 0}, {1, 0}, {0, -1}, {0, 1}})
+        for (const auto& [dx, dy] : {std::pair{-1, 0}, {1, 0}, {0, -1}, {0, 1}})
             if (const auto n = owner(x + dx, y + dy); n && n->above(*lump))
                 return 0;
         const double u = (x + 0.5 - lump->cx) / lump->rx, v = (y + 0.5 - lump->cy) / lump->ry;
@@ -207,7 +207,7 @@ public:
             if (r <= 0 || r == rampTop_)
                 return r;
             int most = -1, least = rampTop_ + 1, count = 0;
-            for (const auto [dx, dy] : kSides) {
+            for (const auto& [dx, dy] : kSides) {
                 const int n = rungAt(dx, dy);
                 if (n < 0)
                     continue;
@@ -228,7 +228,7 @@ public:
         // the first pass only darkens, so a neighbour no lighter than the
         // cell before it is none after: no darker speck, and the cells two
         // steps away needn't be read
-        for (const auto [dx, dy] : kSides)
+        for (const auto& [dx, dy] : kSides)
             if (const int n = base(dx, dy); n >= 0 && n <= r)
                 return r;
         return clear(r, [&](int dx, int dy) { return base(dx, dy) < 0 ? -1 : unlit(dx, dy); }, false);

@@ -2136,8 +2136,11 @@ TEST_CASE("a failed directory save without a no-replace rename names what it cou
     } reset;
     int asides = 0;
     fs::path aside;
+    // the call that sets a file aside where the system has no renameat2 is
+    // linkat, and it can't fail before the move is done
+    const std::string_view move = project::testing::noReplaceMove();
     project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
-        if (call == "renameat2" && at.filename().string().starts_with(".bw-old-")) {
+        if (call == move && at.filename().string().starts_with(".bw-old-")) {
             if (++asides == 1) {
                 aside = at;
                 return 0;
@@ -2584,8 +2587,9 @@ TEST_CASE("allocation failure while recording an aside restores the original pro
         }
     } reset;
     bool armed = false;
+    const std::string_view move = project::testing::noReplaceMove();
     project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
-        if (call == "renameat2" && !armed && at.filename().string().starts_with(".bw-old-"))
+        if (call == move && !armed && at.filename().string().starts_with(".bw-old-"))
             armed = bwtest::failNextAllocation = true;
         return 0;
     };
@@ -2603,8 +2607,10 @@ TEST_CASE("allocation failure after any change a directory save makes leaves the
     // rename into place or aside), in which the first allocation after it
     // fails: the save either fails and leaves the directory as it found it,
     // or (the failure falling after it is done) succeeds.
+    // `links`: renameat2 can't refuse to replace (as on a disk without it,
+    // or a system without one), so files are moved by linkat and unlinkat
     const auto sweep = [](const fs::path& root, const fs::path& dir, const std::optional<Project>& old,
-                          const Project& q) {
+                          const Project& q, bool links = false) {
         struct Reset {
             ~Reset() {
                 project::testing::systemCall = nullptr;
@@ -2622,6 +2628,8 @@ TEST_CASE("allocation failure after any change a directory save makes leaves the
             int seen = 0;
             std::string at;
             project::testing::systemCall = [&](std::string_view call, const fs::path& path) {
+                if (links && call == "renameat2")
+                    return ENOSYS;
                 if (changes.count(call) && seen++ == run) {
                     at = std::string(call) + " " + path.lexically_relative(root).generic_string();
                     bwtest::failNextAllocation = true;
@@ -2654,17 +2662,21 @@ TEST_CASE("allocation failure after any change a directory save makes leaves the
         return failed;
     };
 
+    // files replaced and added, directories made in it, and a layer and a
+    // reference set aside
+    Project p = everything();
+    p.files["refs/old/gone"] = "dropped";
+    Project q = edited(p);
+    REQUIRE(q.layers.remove(3));
+    q.files.erase("refs/old/gone");
+    q.files["refs/new/sub/file"] = "added";
     SECTION("over a project") {
-        // files replaced and added, directories made in it, and a layer
-        // and a reference set aside
         const fs::path root = scratch("alloc-sweep-over");
-        Project p = everything();
-        p.files["refs/old/gone"] = "dropped";
-        Project q = edited(p);
-        REQUIRE(q.layers.remove(3));
-        q.files.erase("refs/old/gone");
-        q.files["refs/new/sub/file"] = "added";
         CHECK(sweep(root, root / "piece", p, q) > 10);
+    }
+    SECTION("over a project, without a no-replace rename") {
+        const fs::path root = scratch("alloc-sweep-links");
+        CHECK(sweep(root, root / "piece", p, q, true) > 10);
     }
     SECTION("a first save, its parents made") {
         const fs::path root = scratch("alloc-sweep-first");

@@ -236,8 +236,9 @@ expect "a scene without \"ice\"" 0 '' -- "$cli" import-scene "$tmp/a/iceon.py" "
 expect "a scene without \"ice\" is iCE on" 0 '^ice: +on$' -- "$cli" info "$tmp/iceon.bwp"
 expect "render the iCE-on project" 0 '' -- "$cli" render "$tmp/iceon.bwp" "$tmp/iceon.png"
 differ "iCE on shows the blink as a bright background" "$tmp/iceon.png" "$tmp/flat.png"
-sed 's/listing\["ice"\] = False/listing["ice"] = "no"/' "$tmp/a/iceoff.py" > "$tmp/a/badice.py"
-sed -i 's/endswith("iceoff.py")/endswith("badice.py")/' "$tmp/a/badice.py"
+# one sed, not sed -i, whose argument differs between GNU and BSD sed
+sed -e 's/listing\["ice"\] = False/listing["ice"] = "no"/' \
+    -e 's/endswith("iceoff.py")/endswith("badice.py")/' "$tmp/a/iceoff.py" > "$tmp/a/badice.py"
 expect "an \"ice\" that isn't true or false is refused" 1 '"ice" that is neither true nor false' \
   -- "$cli" import-scene "$tmp/a/badice.py" "$tmp/badice.bwp"
 [[ ! -e $tmp/badice.bwp ]] && ok "a bad \"ice\" writes nothing" || bad "badice.bwp written"

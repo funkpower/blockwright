@@ -1324,6 +1324,16 @@ std::size_t maxPathChars() {
 }
 #endif
 
+std::string_view testing::noReplaceMove() {
+#if BW_PROJECT_POSIX && (defined(RENAME_NOREPLACE) || defined(RENAME_EXCL))
+    return "renameat2";
+#elif BW_PROJECT_POSIX
+    return "linkat";
+#else
+    return {};
+#endif
+}
+
 namespace {
 
 long processId() {
@@ -1638,8 +1648,17 @@ Renamed renameFresh(const Folder& in, const std::string& from, const std::string
         err = errno;
     if (err)
         return {{err, std::generic_category()}};
-    if (const std::error_code e = removeIn(in, from, false))
-        return {e, bool(removeIn(in, to, false))};
+    // the caller records the move only once this returns, so if anything
+    // throws before the first name is gone (a test's fault hook, which
+    // allocates) the second name is taken back first, leaving the file as
+    // it was
+    try {
+        if (const std::error_code e = removeIn(in, from, false))
+            return {e, bool(removeIn(in, to, false))};
+    } catch (...) {
+        ::unlinkat(in.fd, to.c_str(), 0);
+        throw;
+    }
     return {};
 #elif defined(_WIN32)
     // MoveFileEx without MOVEFILE_REPLACE_EXISTING refuses, as one step,

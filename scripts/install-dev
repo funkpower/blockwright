@@ -152,10 +152,10 @@ for f in blockwright blockwright-cli; do
     rm -rf "$stage"; exit 1
   fi
 done
-# The app icon (#205), which the launcher entry names by its path; only a
-# Linux install has the freedesktop icons
+# The app icon (#205), which the launcher entry names by its path; every
+# install but a Mac's (Linux, FreeBSD) has the freedesktop icons
 icon_rel=share/icons/hicolor/256x256/apps/blockwright.png
-if [[ $(uname -s) == Linux && ! -f $stage/$icon_rel ]]; then
+if [[ $(uname -s) != Darwin && ! -f $stage/$icon_rel ]]; then
   echo "install-dev: the install left out the icon ($icon_rel); keeping the old dev build" >&2
   rm -rf "$stage"; exit 1
 fi

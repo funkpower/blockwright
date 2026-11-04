@@ -279,12 +279,23 @@ std::string readTdfBytes(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in)
         throw TdfError("can't read " + path.string());
-    // Read at most one byte over the limit, whatever the file grew to.
-    std::string bytes(static_cast<std::size_t>(kMaxTdfBytes) + 1, '\0');
+    // Read at most one byte over the limit, whatever the file grew to: one
+    // byte past the size first, and the rest up to the limit only if that
+    // byte is there. The bytes are kept (a FontFile holds them for as long as
+    // the folder is open), so what's returned holds no more than the file:
+    // a buffer of the limit for every file kept 4 MiB for each.
+    std::string bytes(static_cast<std::size_t>(size) + 1, '\0');
     in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    bytes.resize(static_cast<std::size_t>(in.gcount()));
+    std::size_t got = static_cast<std::size_t>(in.gcount());
+    if (got == bytes.size()) {
+        bytes.resize(static_cast<std::size_t>(kMaxTdfBytes) + 1);
+        in.read(bytes.data() + got, static_cast<std::streamsize>(bytes.size() - got));
+        got += static_cast<std::size_t>(in.gcount());
+    }
+    bytes.resize(got);
     if (bytes.size() > kMaxTdfBytes)
         throw TdfError(path.string() + " is over " + std::to_string(kMaxTdfBytes >> 20) + " MiB");
+    bytes.shrink_to_fit();
     return bytes;
 }
 

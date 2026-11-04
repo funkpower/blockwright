@@ -6,7 +6,7 @@
 
 A native editor for ANSI and IRC block art, with layers, generator scripts and
 a live IRC byte budget, and a headless `blockwright-cli` built from the same
-core. C++20 and Qt 6, for Linux, macOS and Windows.
+core. C++20 and Qt 6, for Linux, macOS, Windows and FreeBSD.
 
 ## Building
 
