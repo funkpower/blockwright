@@ -563,6 +563,59 @@ TEST_CASE("edge distance is the exact distance to the nearest cell off the shape
     }
 }
 
+TEST_CASE("edge distance counts its steps", "[shading][form]") {
+    // A 3x3 mask with its middle cell on: the mask's 9 cells, then the
+    // padded box round the shape, 3x3, filled (9). Each envelope over 3
+    // cells takes 6 steps for its two loops, 3 columns and 3 rows (36).
+    // Down the outer columns, all three cells sites (f = 0): no parabola
+    // dropped, the output moving to the next one at q = 1 and q = 2 (2
+    // each). Down the middle column, sites at 0 and 2 meeting at z = 1: it
+    // moves on at q = 2 (1). Along the outer rows, all zero: 2 each. Along
+    // the middle row, f = 0, 4, 0: q = 2 drops the parabola at 1 (its
+    // meeting point -0.5 isn't past 2.5) (1 dropped) and the output moves
+    // on at q = 2 (1). 9 + 9 + 36 + 1 + (2 + 1 + 2) + (2 + 1 + 2) = 65.
+    Mask m(3, 3);
+    m.set(1, 1);
+    long long steps = 0;
+    const auto d = edgeDistance(m, &steps);
+    CHECK(d[4] == 1.0);
+    CHECK(steps == 65);
+    // with nothing on, the mask's cells alone, added to what was there
+    long long more = 7;
+    edgeDistance(Mask(3, 3), &more);
+    CHECK(more == 7 + 9);
+}
+
+TEST_CASE("form brush counts the work of a dab", "[shading][form]") {
+    const Ramp r = steel();
+    FormShadeBrush brush(r);
+    BrushSettings s;
+    s.size = 9;
+    StrokeOptions o;
+    o.selection = shared(Mask(3, 3, true));
+    Canvas c = black(3, 3);
+    // A first dab works out the selection's form: it reads the canvas's
+    // cells for the shape (9) and does the form's passes.
+    const long long n0 = FormShadeBrush::operations();
+    paintStroke(c, brush, s, {{1, 1}}, o);
+    const long long first = FormShadeBrush::operations() - n0;
+    CHECK(first > 9);
+    // The same selection and canvas again: the brush has the form, so the
+    // stroke's first dab reads the 9 cells for the shape and nothing else.
+    const long long n1 = FormShadeBrush::operations();
+    paintStroke(c, brush, s, {{1, 1}}, o);
+    CHECK(FormShadeBrush::operations() - n1 == 9);
+    // and the same first dab with a new brush does the same work again
+    FormShadeBrush other(r);
+    const long long n2 = FormShadeBrush::operations();
+    paintStroke(c, other, s, {{1, 1}}, o);
+    CHECK(FormShadeBrush::operations() - n2 == first);
+    // a dab off the canvas covers nothing: none
+    const long long n3 = FormShadeBrush::operations();
+    paintStroke(c, FormShadeBrush(r), s, {{-50, -50}}, o);
+    CHECK(FormShadeBrush::operations() - n3 == 0);
+}
+
 TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]") {
     // Codex round 1, finding 1: a 160x1000 canvas, everything selected
     // The budgets are CPU time in an optimised build; cpuBudget scales them
@@ -572,6 +625,25 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
     // with the brush doing the same work. 6 s covers that; a dab that grows
     // with the canvas's square, thousands of times the work, still fails.
     const double bigDab = 6.0;
+    // The work, counted (FormShadeBrush::operations), doesn't depend on
+    // the machine (#367). It is the passes made once, then a pass for each
+    // try: the shape, the crop and the geometry (the distance transform's
+    // 7 of them) read each cell of the box about 22 times, and the two
+    // sorts, the arcs and the glint's spots, compare each about 21 times
+    // (41 a cell); a try that gets to the reading (one despeckle pass and
+    // lint::detail's reads, 9 of them) about 19, and one that gets to the
+    // lint 12 more. Tries stop past kWork, 2 million cells: 13 here with
+    // everything selected, 2 of them linted, 26 for the checkerboard's
+    // 80,000, all of them at the glint, which finds no spot (3 a cell of
+    // the box), and its arcs sorted in 20 comparisons each. 334 a cell and
+    // 229 a selected cell, so 600 a selected cell leaves room for 20 more
+    // despeckle passes a try, or the sorts taking twice the comparisons
+    // (libc++ takes fewer than libstdc++). The border scan 55ce9b8
+    // replaced, a distance from each cell to each cell off the shape beside
+    // it, adds 2,324 a cell (371,840,000 over 160,000) and 82,322 a
+    // selected cell (6,585,760,000 over 80,000); a selection sort of the
+    // arcs adds n²/2 comparisons, 80,000 a cell and 40,000 a selected cell.
+    const long long perCell = 600;
     const int w = 160, h = 1000;
     const Ramp r = steel();
     FormShadeBrush brush(r);
@@ -583,10 +655,13 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
     Canvas c = black(w, h);
     SECTION("everything selected") {
         // on the lit side: the middle of the ball is past the turn, black
+        const long long n0 = FormShadeBrush::operations();
         const double t0 = bwtest::cpuSeconds();
         const auto edit = paintStroke(c, brush, s, {{40, 250}}, o);
         const double t = bwtest::cpuSeconds() - t0;
-        INFO(t << " s");
+        const long long n = FormShadeBrush::operations() - n0;
+        INFO(t << " s, " << n << " steps, " << double(n) / (w * h) << " a cell");
+        CHECK(n <= perCell * w * h);
         CHECK(t < bwtest::cpuBudget(bigDab));
         CHECK(!edit.empty());
     }
@@ -595,20 +670,26 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
             for (int x = 0; x < w; ++x)
                 c.at(x, y).transparent = (x + y) % 2 != 0;
         o.lockTransparent = true;
+        const long long cells = w * h / 2;
+        const long long n0 = FormShadeBrush::operations();
         const double t0 = bwtest::cpuSeconds();
         const auto edit = paintStroke(c, brush, s, {{80, 500}}, o);
         const double t = bwtest::cpuSeconds() - t0;
-        INFO(t << " s");
+        const long long n = FormShadeBrush::operations() - n0;
+        INFO(t << " s, " << n << " steps, " << double(n) / cells << " a cell");
+        CHECK(n <= perCell * cells);
         CHECK(t < bwtest::cpuBudget(bigDab));
         // every cell alone among black: no form on it is lint-clean, so
         // none is laid
         CHECK(edit.empty());
     }
     SECTION("a dab off the canvas does no form work") {
+        const long long n0 = FormShadeBrush::operations();
         const double t0 = bwtest::cpuSeconds();
         const auto edit = paintStroke(c, brush, s, {{-50, -50}}, o);
         const double t = bwtest::cpuSeconds() - t0;
         INFO(t << " s");
+        CHECK(FormShadeBrush::operations() == n0);
         CHECK(t < bwtest::cpuBudget(0.05));
         CHECK(edit.empty());
     }

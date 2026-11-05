@@ -342,8 +342,9 @@ std::vector<LadderFinding> addedFindingsOnce(const Canvas& before, const Canvas&
                                              const LadderOptions& options = {});
 
 // How many reads the lint has made on this thread so far (a cell, its rung,
-// a pixel, a run's bucket, a step of comparing a line's skips): a work counter, for tests of what a change costs
-// to judge.
+// a pixel, a run's bucket, a step of comparing a line's skips; checkLadder's
+// rungs and runs as its rules walk them, detail's cells): a work counter, for
+// tests of what a change costs to judge.
 long long cellsRead();
 
 #ifdef BW_TEST_HOOKS

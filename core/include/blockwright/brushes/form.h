@@ -175,6 +175,15 @@ public:
     // The cells every form brush has worked through so far, each try's box
     // and each lay counted: a measure of its work.
     static long long cellsVisited();
+    // The steps every form brush's passes over a shape have taken so far: each
+    // cell a pass reads (the distance transform's included, edgeDistance)
+    // and each step of a loop the tones decide the length of. It doesn't
+    // depend on the machine: a pass that grew with the shape's square would
+    // show here, where cellsVisited counts only boxes. Only in builds with
+    // the tests (BW_TEST_HOOKS).
+#ifdef BW_TEST_HOOKS
+    static long long operations();
+#endif
 
 private:
     struct Paint {

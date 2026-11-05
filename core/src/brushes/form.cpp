@@ -36,6 +36,23 @@ struct Grid {
 
 constexpr int kNeighbours[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
 
+// The steps the form's passes over a shape have taken
+// (FormShadeBrush::operations): each pass adds the cells it reads (one that
+// can stop short, all of them), a loop whose length the tones decide counts
+// each of its steps, a sort its comparisons and the lint its reads
+// (lint::cellsRead). Only in builds with the tests (BW_TEST_HOOKS).
+#ifdef BW_TEST_HOOKS
+long long operations = 0;
+#endif
+
+// Adds n steps to operations; without the test hooks it does nothing and
+// the counting compiles away.
+inline void tally([[maybe_unused]] long long n) {
+#ifdef BW_TEST_HOOKS
+    operations += n;
+#endif
+}
+
 // Each shape cell's surface normal, (x, y, z) with z out of the canvas, in
 // screen units. A dome is a ball about the shape's centre: a cell's
 // distance from the centre over that plus its distance to the shape's edge
@@ -54,6 +71,7 @@ std::vector<Normal> normals(const Mask& shape, const Grid& g, const std::vector<
         return Normal{rho * ux, rho * uy, std::sqrt(1.0 - rho * rho)};
     };
     if (across == 0) {
+        tally(2LL * g.w * g.h);
         double cx = 0, cy = 0;
         int cells = 0;
         for (int y = 0; y < g.h; ++y)
@@ -80,6 +98,7 @@ std::vector<Normal> normals(const Mask& shape, const Grid& g, const std::vector<
     }
     const int lines = across == 1 ? g.h : g.w, len = across == 1 ? g.w : g.h;
     const double unit = across == 1 ? 1.0 : kAspect;
+    tally(static_cast<long long>(lines) * len);
     for (int l = 0; l < lines; ++l)
         for (int i = 0; i < len;) {
             auto cell = [&](int k) { return across == 1 ? std::pair{k, l} : std::pair{l, k}; };
@@ -92,6 +111,7 @@ std::vector<Normal> normals(const Mask& shape, const Grid& g, const std::vector<
                 ++end;
             // the run's middle and half its width, to its cells' outer edges
             const double mid = (i + end - 1) / 2.0, half = (end - i) * unit / 2.0;
+            tally(end - i);
             for (int k = i; k < end; ++k) {
                 const double v = (k - mid) * unit;
                 const double s = v < 0 ? -1.0 : 1.0;
@@ -113,11 +133,13 @@ bool blackRung(const Ramp& ramp, int rung) {
 // so each cell is raised once.
 void ladder(std::vector<int>& v, const Mask& shape, const Grid& g, int top) {
     std::vector<std::vector<std::pair<int, int>>> at(static_cast<size_t>(top) + 1);
+    tally(static_cast<long long>(g.w) * g.h);
     for (int y = 0; y < g.h; ++y)
         for (int x = 0; x < g.w; ++x)
             if (shape.contains(x, y))
                 at[static_cast<size_t>(std::clamp(v[g.at(x, y)], 0, top))].emplace_back(x, y);
-    for (int r = top; r > 0; --r)
+    for (int r = top; r > 0; --r) {
+        tally(static_cast<long long>(at[r].size()));
         for (size_t i = 0; i < at[r].size(); ++i) {
             const auto [x, y] = at[r][i];
             if (v[g.at(x, y)] != r)
@@ -130,6 +152,7 @@ void ladder(std::vector<int>& v, const Mask& shape, const Grid& g, int top) {
                 }
             }
         }
+    }
 }
 
 // The lint's speckle rule over the tones (lint::checkLadder): a cell with
@@ -140,6 +163,7 @@ void ladder(std::vector<int>& v, const Mask& shape, const Grid& g, int top) {
 // two as near. Repeats until none is left.
 void despeckle(std::vector<int>& v, const Ramp& ramp, const Mask& shape, const Grid& g, int top) {
     for (int pass = 0; pass < 64; ++pass) {
+        tally(static_cast<long long>(g.w) * g.h);
         bool changed = false;
         for (int y = 0; y < g.h; ++y)
             for (int x = 0; x < g.w; ++x) {
@@ -194,6 +218,7 @@ void despeckle(std::vector<int>& v, const Ramp& ramp, const Mask& shape, const G
 // on a form" judges every rung, where the lint judges only shades.
 int widestTurn(const std::vector<int>& v, const Mask& shape, const Grid& g, int plane) {
     auto at = [&](int x, int y) { return shape.contains(x, y) ? v[g.at(x, y)] : -1; };
+    tally(2LL * g.w * g.h);
     auto runLen = [&](int x, int y, int dx, int dy) {
         const int t = at(x, y);
         int n = 1;
@@ -201,6 +226,7 @@ int widestTurn(const std::vector<int>& v, const Mask& shape, const Grid& g, int 
             ++n;
         for (int k = 1; at(x + k * dx, y + k * dy) == t; ++k)
             ++n;
+        tally(n);
         return n;
     };
     int widest = 0;
@@ -213,6 +239,7 @@ int widestTurn(const std::vector<int>& v, const Mask& shape, const Grid& g, int 
                 int len = 1;
                 while (at(x + len * dx, y + len * dy) == t)
                     ++len;
+                tally(len);
                 const int lo = at(x - dx, y - dy), hi = at(x + len * dx, y + len * dy);
                 if (lo < 0 || hi < 0 || (lo < t) == (hi < t))
                     continue;
@@ -288,6 +315,7 @@ std::optional<Geometry> geometry(const Mask& shape, const FormOptions& options, 
     geo.g = Grid{shape.width(), shape.height()};
     const Grid& g = geo.g;
     int minX = g.w, minY = g.h, maxX = -1, maxY = -1;
+    tally(static_cast<long long>(g.w) * g.h);
     for (int y = 0; y < g.h; ++y)
         for (int x = 0; x < g.w; ++x)
             if (shape.contains(x, y)) {
@@ -325,7 +353,11 @@ std::optional<Geometry> geometry(const Mask& shape, const FormOptions& options, 
     geo.lx = lx, geo.ly = ly;
     const double ll = std::sqrt(lx * lx + ly * ly + kLightZ * kLightZ);
     const double Lx = lx / ll, Ly = ly / ll, Lz = kLightZ / ll;
+#ifdef BW_TEST_HOOKS
+    geo.dist = edgeDistance(shape, &operations);
+#else
     geo.dist = edgeDistance(shape);
+#endif
     const std::vector<Normal> normal =
         options.shape == FormShape::Plane ? std::vector<Normal>{} : normals(shape, g, geo.dist, across, ox, oy);
 
@@ -335,6 +367,9 @@ std::optional<Geometry> geometry(const Mask& shape, const FormOptions& options, 
     // form's radius; on a plane the distance along the light. And where the
     // form turns from the light: on a dome or a cylinder the terminator, a
     // right angle from the light; on a plane the middle of its span.
+    const long long box = static_cast<long long>(maxX - minX + 1) * (maxY - minY + 1);
+    // this pass, the arc's and a plane's light
+    tally((options.shape == FormShape::Plane ? 3 : 2) * box);
     int cells = 0, runs = 0;
     for (int y = minY; y <= maxY; ++y)
         for (int x = minX; x <= maxX; ++x)
@@ -385,6 +420,7 @@ std::optional<Geometry> geometry(const Mask& shape, const FormOptions& options, 
 // rungs from black to `top` taken as the light from none to full.
 FormLight lightOf(const Geometry& geo, const Mask& shape, int plane, int top) {
     int dark = 0, lit = 0;
+    tally(static_cast<long long>(geo.maxX - geo.minX + 1) * (geo.maxY - geo.minY + 1));
     for (int y = geo.minY; y <= geo.maxY; ++y)
         for (int x = geo.minX; x <= geo.maxX; ++x)
             if (shape.contains(x, y)) {
@@ -426,6 +462,7 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
     const Geometry& geo = *found;
     const Grid& g = geo.g;
     const int minX = geo.minX, minY = geo.minY, maxX = geo.maxX, maxY = geo.maxY, cells = geo.cells;
+    const long long boxCells = static_cast<long long>(maxX - minX + 1) * (maxY - minY + 1);
     const std::vector<double>& arc = geo.arc;
     const std::vector<double>& dist = geo.dist;
 
@@ -452,6 +489,7 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
         auto offMiddle = [&](int x, int y) {
             return geo.across == 2 ? std::abs(x - midX) : geo.across == 1 ? std::abs(y - midY) : 0.0;
         };
+        tally(boxCells);
         for (int y = minY; y <= maxY; ++y)
             for (int x = minX; x <= maxX; ++x)
                 if (shape.contains(x, y) && dist[g.at(x, y)] > kGlintInset)
@@ -460,7 +498,11 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
             return std::tuple{std::llround(arc[g.at(c.first, c.second)] * 1e6), offMiddle(c.first, c.second),
                               c.second, c.first};
         };
-        std::sort(spots.begin(), spots.end(), [&](const auto& a, const auto& b) { return key(a) < key(b); });
+        // the sort's comparisons, each one
+        std::sort(spots.begin(), spots.end(), [&](const auto& a, const auto& b) {
+            tally(1);
+            return key(a) < key(b);
+        });
         if (spots.size() > 256)
             spots.resize(256);
     }
@@ -479,6 +521,7 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
         const int steps = top - plane;
         const int rx = static_cast<int>(std::ceil(falloff * steps)) + steps + 2, ry = rx / 2 + steps + 2;
         for (const auto& [bx, by] : spots) {
+            tally(1);
             if (v[g.at(bx, by)] < plane)
                 continue;
             int nx = clear(bx + side, by) ? bx + side : bx - side;
@@ -488,6 +531,10 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
                 continue;
             const int x0 = std::min(bx, nx) - rx, x1 = std::max(bx, nx) + rx, y0 = by - ry, y1 = by + ry;
             const int ww = x1 - x0 + 1;
+            const long long window = static_cast<long long>(ww) * (y1 - y0 + 1);
+            // the window's cells and the room check's, which can stop
+            // short, as all of them
+            tally(2 * window);
             std::vector<int> u(static_cast<size_t>(ww) * (y1 - y0 + 1), plane);
             auto at = [&](int x, int y) -> int& { return u[static_cast<size_t>(y - y0) * ww + (x - x0)]; };
             for (int y = y0; y <= y1; ++y)
@@ -499,6 +546,7 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
             // the ladder in the window, a rung less a cell out
             for (bool moved = true; moved;) {
                 moved = false;
+                tally(window);
                 for (int y = y0; y <= y1; ++y)
                     for (int x = x0; x <= x1; ++x)
                         for (const auto& d : kNeighbours) {
@@ -520,6 +568,7 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
                     }
             if (!room)
                 continue;
+            tally(window);
             for (int y = y0; y <= y1; ++y)
                 for (int x = x0; x <= x1; ++x)
                     if (at(x, y) > plane)
@@ -539,6 +588,8 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
     // glint has no room, or the despeckle took it off the plane.
     auto shadeAt = [&](double band, double start, bool lit, double falloff) -> std::optional<std::vector<int>> {
         std::vector<int> v(static_cast<size_t>(g.w) * g.h, -1);
+        // v's cells and the fall's
+        tally(static_cast<long long>(g.w) * g.h + boxCells);
         const int plane = planeOf(lit);
         for (int y = minY; y <= maxY; ++y)
             for (int x = minX; x <= maxX; ++x)
@@ -554,6 +605,7 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
         // that edge, and not on a ramp that doesn't start with black.
         if (geo.across && !options.rim && blackRung(ramp, 0)) {
             const int ex = geo.across == 1 ? (geo.lx > 0 ? -1 : 1) : 0, ey = geo.across == 2 ? (geo.ly > 0 ? -1 : 1) : 0;
+            tally(boxCells);
             for (int y = minY; y <= maxY; ++y)
                 for (int x = minX; x <= maxX; ++x)
                     if (shape.contains(x, y) && !shape.contains(x + ex, y + ey))
@@ -563,6 +615,7 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
             return std::nullopt;
         if (options.rim) {
             // the edge cells facing away from the light, a rung lighter
+            tally(boxCells);
             for (int y = minY; y <= maxY; ++y)
                 for (int x = minX; x <= maxX; ++x) {
                     if (!shape.contains(x, y))
@@ -578,19 +631,23 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
             ladder(v, shape, g, top);
         }
         despeckle(v, ramp, shape, g, ramp.topRung());
-        if (lit)
+        if (lit) {
+            tally(boxCells);
             for (int y = minY; y <= maxY; ++y)
                 for (int x = minX; x <= maxX; ++x)
                     if (shape.contains(x, y) && v[g.at(x, y)] > plane)
                         for (const auto& d : kNeighbours)
                             if (!shape.contains(x + d[0], y + d[1]) || v[g.at(x + d[0], y + d[1])] < plane)
                                 return std::nullopt;
+        }
         return v;
     };
     // The cheap half of a reading first (detail, widest rung, glyphs, the
     // plane, the shares); the lint only for a try that could be kept.
     auto read = [&](const std::vector<int>& v, int plane) {
         Reading r;
+        // the box's cells and the seams'; lint::detail's reads below
+        tally(2 * boxCells);
         Canvas box(maxX - minX + 1, maxY - minY + 1);
         std::set<char32_t> glyphs;
         int atPlane = 0, lit = 0, dark = 0;
@@ -622,6 +679,9 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
         r.plane = atPlane >= std::max(2, cells / 20);
         r.black = double(dark) / cells;
         r.lit = double(lit) / cells;
+#ifdef BW_TEST_HOOKS
+        const long long read0 = lint::cellsRead();
+#endif
         r.corner = lint::detail(box);
         int n = 0;
         for (int dy = 0; dy < 2; ++dy)
@@ -633,12 +693,17 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
                 r.flat += d.flatPercent;
                 ++n;
             }
+#ifdef BW_TEST_HOOKS
+        operations += lint::cellsRead() - read0;
+#endif
         r.windows = n > 0;
         if (n)
             r.mean /= n, r.flat /= n;
         return std::pair{r, box};
     };
     auto clean = [&](const Canvas& box) {
+        // the grid's cells and the box's for the copy; the lint's reads below
+        tally(static_cast<long long>(g.w) * g.h + boxCells);
         Canvas grid(g.w, g.h);
         for (int y = minY; y <= maxY; ++y)
             for (int x = minX; x <= maxX; ++x)
@@ -646,7 +711,14 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
                     grid.at(x, y) = box.at(x - minX, y - minY);
         lint::LadderOptions atCells;
         atCells.whole = false;
-        return lint::checkLadder(grid, ramp, lint::Box{minX, minY, maxX, maxY}, atCells).findings.empty();
+#ifdef BW_TEST_HOOKS
+        const long long read0 = lint::cellsRead();
+#endif
+        const bool none = lint::checkLadder(grid, ramp, lint::Box{minX, minY, maxX, maxY}, atCells).findings.empty();
+#ifdef BW_TEST_HOOKS
+        operations += lint::cellsRead() - read0;
+#endif
+        return none;
     };
 
     // Where a try's fall starts: centred on the turn or a little either
@@ -655,11 +727,16 @@ FormResult shadeCrop(const Ramp& ramp, const Mask& shape, int ox, int oy, const 
     // least that share.
     std::vector<double> sortedArc;
     sortedArc.reserve(static_cast<size_t>(cells));
+    // the box's cells, and below the sort's comparisons
+    tally(boxCells);
     for (int y = minY; y <= maxY; ++y)
         for (int x = minX; x <= maxX; ++x)
             if (shape.contains(x, y))
                 sortedArc.push_back(arc[g.at(x, y)]);
-    std::sort(sortedArc.begin(), sortedArc.end());
+    std::sort(sortedArc.begin(), sortedArc.end(), [&](double a, double b) {
+        tally(1);
+        return a < b;
+    });
     struct Try {
         double band, start, falloff;
     };
@@ -765,6 +842,8 @@ struct Crop {
 template <class Cells>
 std::optional<Crop> crop(int w, int h, const Cells& cells) {
     int x0 = w, y0 = h, x1 = -1, y1 = -1;
+    // two reads of the cells
+    tally(2 * static_cast<long long>(std::size(cells)));
     for (const auto& [x, y] : cells) {
         x0 = std::min(x0, x), x1 = std::max(x1, x);
         y0 = std::min(y0, y), y1 = std::max(y1, y);
@@ -785,6 +864,7 @@ FormResult formShade(const Ramp& ramp, const Mask& shape, const FormOptions& opt
                      int highest) {
     const int w = shape.width(), h = shape.height();
     std::vector<std::pair<int, int>> cells;
+    tally(static_cast<long long>(w) * h);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
             if (shape.contains(x, y))
@@ -797,6 +877,7 @@ FormResult formShade(const Ramp& ramp, const Mask& shape, const FormOptions& opt
     FormResult in = shadeCrop(ramp, c->shape, c->ox, c->oy, options, light, highest, kWork);
     out.reading = in.reading;
     const int cw = c->shape.width();
+    tally(static_cast<long long>(cw) * c->shape.height());
     for (int y = 0; y < c->shape.height(); ++y)
         for (int x = 0; x < cw; ++x)
             out.tones[static_cast<size_t>(y + c->oy) * w + (x + c->ox)] = in.tones[static_cast<size_t>(y) * cw + x];
@@ -811,6 +892,10 @@ std::vector<int> formRungs(const Ramp& ramp, const Mask& shape, const FormOption
 FormShadeBrush::FormShadeBrush(Ramp ramp, FormOptions options) : ramp_(std::move(ramp)), options_(options) {}
 
 long long FormShadeBrush::cellsVisited() { return visited; }
+
+#ifdef BW_TEST_HOOKS
+long long FormShadeBrush::operations() { return bw::operations; }
+#endif
 
 int FormShadeBrush::highest(const Stroke& stroke) const {
     if (stroke.options().ice)
@@ -1006,6 +1091,7 @@ void FormShadeBrush::dab(Stroke& stroke, const Dab& d, int size, double strength
                     if (stroke.paintable(x, y))
                         shape.set(x, y);
             visited += static_cast<long long>(w) * h;
+            tally(static_cast<long long>(w) * h);
             if (!cached_ || cached_->highest != high || cached_->light != light || !(cached_->shape == shape))
                 cached_ = Cached{shape, high, light, formRungs(ramp_, shape, options_, light, high)};
             state.selection = std::move(shape);

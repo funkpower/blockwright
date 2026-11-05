@@ -339,9 +339,20 @@ private:
 struct BoxGrid {
     int w, h;
     std::vector<int> rungs, acrossRun, downRun;
-    int rung(int x, int y) const { return rungs[static_cast<size_t>(y) * w + x]; }
-    int across(int x, int y, int cap) const { return std::min(acrossRun[static_cast<size_t>(y) * w + x], cap); }
-    int down(int x, int y, int cap) const { return std::min(downRun[static_cast<size_t>(y) * w + x], cap); }
+    // the reads so far, for readCount when the walk is done
+    mutable long long reads = 0;
+    int rung(int x, int y) const {
+        ++reads;
+        return rungs[static_cast<size_t>(y) * w + x];
+    }
+    int across(int x, int y, int cap) const {
+        ++reads;
+        return std::min(acrossRun[static_cast<size_t>(y) * w + x], cap);
+    }
+    int down(int x, int y, int cap) const {
+        ++reads;
+        return std::min(downRun[static_cast<size_t>(y) * w + x], cap);
+    }
 };
 
 } // namespace
@@ -421,13 +432,14 @@ double noise(const Canvas& canvas, std::optional<Box> box) {
 
 Detail detail(const Canvas& canvas, std::optional<Box> box) {
     Detail d;
+    long long reads = 0;  // for readCount
     // The rows as in the written file: the writer trims
     // each row's trailing black spaces, and blank rows at the top and the
     // bottom go. The box indexes what is left.
     std::vector<int> trimmed;
     for (int y = 0; y < canvas.height(); ++y) {
         int n = canvas.width();
-        while (n > 0 && canvas.at(n - 1, y).ch == U' ' && canvas.at(n - 1, y).bg.paletteIndex() == Black)
+        while (n > 0 && (++reads, canvas.at(n - 1, y).ch == U' ' && canvas.at(n - 1, y).bg.paletteIndex() == Black))
             --n;
         trimmed.push_back(n);
     }
@@ -440,8 +452,10 @@ Detail detail(const Canvas& canvas, std::optional<Box> box) {
     if (box)
         b = Box{std::max(0, box->x0), std::max(0, box->y0), std::min(canvas.width() - 1, box->x1),
                 std::min(bottom - top - 1, box->y1)};
-    if (b.x0 > b.x1 || b.y0 > b.y1)
+    if (b.x0 > b.x1 || b.y0 > b.y1) {
+        readCount += reads;
         return d;
+    }
     b.y0 += top, b.y1 += top;
     std::vector<int> len;
     int longest = 0;
@@ -453,6 +467,7 @@ Detail detail(const Canvas& canvas, std::optional<Box> box) {
     // or the glyph and both colours
     using Look = std::tuple<Glyph, int, int>;
     auto look = [&](int x, int y) {
+        ++reads;
         const Cell& c = canvas.at(x, y);
         if (c.ch == U' ')
             return Look{U' ', c.bg.paletteIndex(), -1};
@@ -487,6 +502,7 @@ Detail detail(const Canvas& canvas, std::optional<Box> box) {
         d.mean = std::nearbyint(100.0 * double(total) / d.windows) / 100.0;
         d.flatPercent = static_cast<int>(std::nearbyint(100.0 * d.flat / d.windows));
     }
+    readCount += reads;
     return d;
 }
 
@@ -509,7 +525,10 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
     // rung per box cell, -1 off the ladder
     BoxGrid grid{w, h, std::vector<int>(static_cast<size_t>(w) * h, -1), {}, {}};
     auto& rung = grid.rungs;
-    auto rungAt = [&](int x, int y) { return rung[static_cast<size_t>(y) * w + x]; };
+    auto rungAt = [&](int x, int y) {
+        ++grid.reads;
+        return rung[static_cast<size_t>(y) * w + x];
+    };
     std::set<char32_t> glyphs;
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
@@ -627,6 +646,7 @@ LadderReport checkLadder(const Canvas& canvas, const Ramp& ramp, std::optional<B
                 r.findings.push_back(fallback::finding(b->x0 + x, y));
     }
 
+    readCount += grid.reads;
     if (!options.whole)
         return r;
     if (r.shadeCells >= 4 && glyphs.size() == 1)
