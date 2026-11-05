@@ -16,6 +16,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/sauce.h"
 
 #include <catch2/catch_session.hpp>
@@ -37,6 +38,9 @@
 #include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTimer>
+
+#include <optional>
+#include <string>
 
 #include <sys/stat.h>
 
@@ -140,10 +144,11 @@ struct RecordingSsh {
     QByteArray input() const { return readAll(file("stdin")); }
 };
 
-QStringList sshArguments(const QString& host, const QString& wip, const QString& slug, int round, std::size_t size) {
+QStringList sshArguments(const QString& host, const QString& wip, const QString& slug, int round, std::size_t size,
+                         std::optional<std::size_t> textSize = {}) {
     QStringList out;
     for (const std::string& a : pipeline::sshArguments({host.toStdString(), wip.toStdString()}, slug.toStdString(),
-                                                       round, size))
+                                                       round, size, textSize))
         out << QString::fromStdString(a);
     return out;
 }
@@ -655,6 +660,37 @@ const QString kPublishStarLoss =
     QStringLiteral("Before publishing:\n") + kStarLoss + QStringLiteral(".\n\nPublish anyway?");
 const QString kSendStarLoss = QStringLiteral("Before sending:\n") + kStarLoss + QStringLiteral(".\n\nSend anyway?");
 const QString kStarRefusal = QStringLiteral("The .ans would lose data:\n") + kStarLoss + QLatin1Char('.');
+// The questions when a .txt from the canvas goes beside the .ans.
+const QString kCanvasText =
+    QStringLiteral("\n\nThat is the .ans only: the .txt is made from the canvas, and WeeChat's ascii script plays "
+                   "the .txt.");
+const QString kPublishStarLossText =
+    QStringLiteral("Before publishing:\n") + kStarLoss + QLatin1Char('.') + kCanvasText + QStringLiteral("\n\nPublish anyway?");
+const QString kSendStarLossText =
+    QStringLiteral("Before sending:\n") + kStarLoss + QLatin1Char('.') + kCanvasText + QStringLiteral("\n\nSend anyway?");
+
+// The .txt the document's cells make, as File > Export IRC Text and
+// `cli export --irc` write them.
+std::string canvasText(const Document& doc) {
+    return irc::joinLines(irc::exportCanvas(irc::sentCanvas(doc.canvas(), doc.ansi().ice, doc.target())));
+}
+
+// mIRC colour `n` as a cell colour.
+Color mirc(int n) {
+    const std::uint32_t c = irc::kMircRgb[n];
+    return Color::fromRgb({std::uint8_t(c >> 16), std::uint8_t(c >> 8), std::uint8_t(c)});
+}
+
+// kPiece under the IRC target with a ★ in mIRC 77 at 0,0, where the 'H' was:
+// a glyph and a colour the CP437 .ans can't hold.
+void ircStar(Fixture& f) {
+    AnsiDocument doc = f.w.document()->ansi();
+    doc.canvas.at(0, 0).ch = U'★';
+    doc.canvas.at(0, 0).fg = mirc(77);
+    f.w.document()->replace(doc, f.w.document()->path());
+    REQUIRE(f.w.document()->setTarget(Target::Irc));
+    REQUIRE(f.w.document()->target() == Target::Irc);
+}
 
 } // namespace
 
@@ -699,16 +735,21 @@ TEST_CASE("Send to WeeChat sends a UTF-8 document as CP437") {
     CHECK(out.bytes == c.p->payload().bytes);
     CHECK(out.bytes == u.w.document()->encode(ArtFormat::Ansi, TextEncoding::Cp437).bytes);
 
-    // And what ssh is handed is that payload, its length included.
+    // And what ssh is handed is that payload, then the .txt the canvas
+    // makes (#336 slice 3), their lengths included.
+    const std::string txt = canvasText(*u.w.document());
+    REQUIRE(u.p->ircText());
+    CHECK(irc::joinLines(*u.p->ircText()) == txt);
+    CHECK_FALSE(c.p->ircText());
     RecordingSsh ssh("RELOADED\n");
     u.p->setSshProgram(ssh.program);
     const auto r = u.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
                                       QStringLiteral("tux"), 1);
     INFO(r.message.toStdString());
     CHECK(r.ok);
-    CHECK(ssh.input().toStdString() == out.bytes);
+    CHECK(ssh.input().toStdString() == out.bytes + txt);
     CHECK(ssh.args() == sshArguments(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"), QStringLiteral("tux"),
-                                     1, out.bytes.size()));
+                                     1, out.bytes.size(), txt.size()));
 }
 
 TEST_CASE("Publish to Library and Send to WeeChat warn of loss without the Save As UTF-8 hint") {
@@ -830,14 +871,15 @@ TEST_CASE("Publish to Library and Send to WeeChat write a UTF-8 document's ★ a
         f.p->publishInteractive();
         CHECK(asked);
         CHECK(confirmed);
-        CHECK(question.endsWith(QStringLiteral("\n\n") + kPublishStarLoss));
+        CHECK(question.endsWith(QStringLiteral("\n\n") + kPublishStarLossText));
 
         const QByteArray ans = readAll(lib + QStringLiteral("/funkpower/tux.ans"));
         CHECK(detectEncoding(splitSauce(ans.toStdString()).content) == TextEncoding::Cp437);
         CHECK(ans.toStdString() == f.w.document()->encode(ArtFormat::Ansi, TextEncoding::Cp437).bytes);
         CHECK(parseAnsi(ans.toStdString(), {.encoding = TextEncoding::Cp437}).canvas == starless);
         const QString txt = QString::fromUtf8(readAll(lib + QStringLiteral("/funkpower/tux.txt")));
-        CHECK(txt.toStdString() == irc::joinLines(irc::exportCanvas(starless)));
+        // The .txt is the canvas's, ★ and all (#336 slice 3).
+        CHECK(txt.toStdString() == canvasText(*f.w.document()));
         CHECK(txt.section(QLatin1Char('\n'), 0, 0).endsWith(kTuxBlocks));
         CHECK_FALSE(txt.contains(QStringLiteral("Γ")));  // no UTF-8 bytes read as CP437
         // The document keeps its ★ and its encoding.
@@ -863,19 +905,225 @@ TEST_CASE("Publish to Library and Send to WeeChat write a UTF-8 document's ★ a
         f.p->sendInteractive();
         CHECK(asked);
         CHECK(confirmed);
-        CHECK(question.endsWith(QStringLiteral("\n\n") + kSendStarLoss));
+        CHECK(question.startsWith(QStringLiteral("Copy the piece to irc-host:~/ascii/wip/tux-r1.ans and tux-r1.txt "
+                                                 "and reload WeeChat's ascii script?")));
+        CHECK(question.endsWith(QStringLiteral("\n\n") + kSendStarLossText));
 
         REQUIRE(ssh.ran());
         const std::string cp437 = f.w.document()->encode(ArtFormat::Ansi, TextEncoding::Cp437).bytes;
-        const QByteArray sent = ssh.input();
+        const std::string txt = canvasText(*f.w.document());
+        const QByteArray input = ssh.input();
+        REQUIRE(std::size_t(input.size()) == cp437.size() + txt.size());
+        const QByteArray sent = input.left(qsizetype(cp437.size()));
         CHECK(sent.toStdString() == cp437);
+        CHECK(input.mid(qsizetype(cp437.size())).toStdString() == txt);
         CHECK(std::size_t(sent.size()) < f.w.document()->encode().bytes.size());  // not the UTF-8 bytes
         CHECK(detectEncoding(splitSauce(sent.toStdString()).content) == TextEncoding::Cp437);
         CHECK(ssh.args() == sshArguments(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
-                                         QStringLiteral("tux"), 1, cp437.size()));
+                                         QStringLiteral("tux"), 1, cp437.size(), txt.size()));
         CHECK(parseAnsi(sent.toStdString(), {.encoding = TextEncoding::Cp437}).canvas == starless);
         CHECK(f.w.document()->canvas().at(0, 0).ch == U'★');
     }
+}
+
+TEST_CASE("Publish to Library writes an IRC-target document's .txt from its canvas, glyphs and mIRC colours kept",
+          "[utf8]") {
+    // #336 slice 3, #350 slice 4: the .ans stays CP437 and loses the ★ and
+    // mIRC 77; the .txt, which WeeChat's ascii script plays, keeps both.
+    Fixture f;
+    ircStar(f);
+    const std::string txt = canvasText(*f.w.document());
+    REQUIRE(txt.find("\xE2\x98\x85") != std::string::npos);  // ★
+    REQUIRE(txt.find("\x03" "77") != std::string::npos);
+    REQUIRE(f.p->ircText());
+    CHECK(irc::joinLines(*f.p->ircText()) == txt);
+    // The .txt is what File > Export IRC Text writes too.
+    const QString exported = f.dir.filePath(QStringLiteral("export.txt"));
+    QString error;
+    REQUIRE(f.w.exportIrcText(exported, &error));
+    CHECK(readAll(exported).toStdString() == txt);
+
+    const AnsiOutput out = f.p->payload();
+    REQUIRE(out.lossy());
+    const QString lib = f.library();
+    CHECK_FALSE(f.p->planPublish(lib, QStringLiteral("star"), {}, &error));
+    CHECK(error.startsWith(QStringLiteral("The .ans would lose data:\n")));
+    const auto plan = f.p->planPublish(lib, QStringLiteral("star"), {}, &error, true);
+    INFO(error.toStdString());
+    REQUIRE(plan);
+    REQUIRE(f.p->publish(*plan, &error));
+    const QByteArray ans = readAll(lib + QStringLiteral("/funkpower/star.ans"));
+    CHECK(ans.toStdString() == out.bytes);
+    CHECK(detectEncoding(splitSauce(ans.toStdString()).content) == TextEncoding::Cp437);
+    CHECK(parseAnsi(ans.toStdString(), {.encoding = TextEncoding::Cp437}).canvas.at(0, 0).ch == U'?');
+    CHECK(readAll(lib + QStringLiteral("/funkpower/star.txt")).toStdString() == txt);
+    CHECK(txt != irc::joinLines(pipeline::ircLines(out.bytes)));  // not the .ans read back
+}
+
+TEST_CASE("Publish to Library keeps an ANSI-target CP437 document's .txt as the .ans read back", "[utf8]") {
+    Fixture f;
+    CHECK_FALSE(f.p->ircText());
+    const QString lib = f.library();
+    QString error;
+    const auto plan = f.p->planPublish(lib, QStringLiteral("neon-skull"), {}, &error);
+    REQUIRE(plan);
+    CHECK(plan->txt == irc::joinLines(pipeline::ircLines(f.p->payload().bytes)));
+}
+
+TEST_CASE("Send to WeeChat puts an IRC-target document's .txt beside the .ans", "[utf8]") {
+    Fixture f;
+    ircStar(f);
+    const std::string txt = canvasText(*f.w.document());
+    const AnsiOutput out = f.p->payload();
+
+    SECTION("what ssh is handed") {
+        RecordingSsh ssh("RELOADED\n");
+        f.p->setSshProgram(ssh.program);
+        CHECK(f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"), QStringLiteral("star"), 1)
+                  .message == QStringLiteral("The .ans would lose data:\n") + lossDescription(out, true) +
+                                  QLatin1Char('.'));
+        CHECK_FALSE(ssh.ran());
+        const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                          QStringLiteral("star"), 1, true);
+        INFO(r.message.toStdString());
+        CHECK(r.ok);
+        CHECK(ssh.input().toStdString() == out.bytes + txt);
+        CHECK(ssh.args() == sshArguments(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                         QStringLiteral("star"), 1, out.bytes.size(), txt.size()));
+    }
+    SECTION("what lands in wip, and what a later ANSI send of the round leaves") {
+        FakeSsh ssh;
+        f.p->setSshProgram(ssh.script);
+        auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                    QStringLiteral("star"), 1, true);
+        INFO(r.message.toStdString());
+        CHECK(r.ok);
+        const auto entries = [&] {
+            return QDir(ssh.wip({})).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        };
+        CHECK(entries() == QStringList{QStringLiteral("star-r1.ans"), QStringLiteral("star-r1.txt")});
+        CHECK(readAll(ssh.wip(QStringLiteral("star-r1.ans"))).toStdString() == out.bytes);
+        CHECK(readAll(ssh.wip(QStringLiteral("star-r1.txt"))).toStdString() == txt);
+        const mode_t mask = ::umask(0);
+        ::umask(mask);
+        for (const char* name : {"star-r1.ans", "star-r1.txt"}) {
+            struct stat st {};
+            REQUIRE(::stat(QFile::encodeName(ssh.wip(QLatin1String(name))).constData(), &st) == 0);
+            CHECK((st.st_mode & 0777) == (0666 & ~mask));
+        }
+
+        // Back on the ANSI target the document is CP437 again: the round
+        // sent again goes without a .txt, and the old one goes, since the
+        // ascii script would play it instead.
+        REQUIRE(f.w.document()->setTarget(Target::Ansi));
+        REQUIRE(f.w.document()->textEncoding() == TextEncoding::Cp437);
+        REQUIRE_FALSE(f.p->ircText());
+        r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"), QStringLiteral("star"), 1,
+                               true);
+        CHECK(r.ok);
+        CHECK(entries() == QStringList{QStringLiteral("star-r1.ans")});
+        CHECK(readAll(ssh.wip(QStringLiteral("star-r1.ans"))).toStdString() == f.p->payload().bytes);
+    }
+    SECTION("the question") {
+        RecordingSsh ssh("RELOADED\n");
+        f.p->setSshProgram(ssh.program);
+        appSettings()->remove(QStringLiteral("pipeline"));
+        bool asked = false, confirmed = false;
+        QString question;
+        QTimer::singleShot(0, &f.w, [&] {
+            auto* d = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(d);
+            asked = true;
+            d->findChild<QLineEdit*>(QStringLiteral("sendHost"))->setText(QStringLiteral("irc-host"));
+            answer(&f.w, QMessageBox::No, &question, &confirmed);
+            d->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        });
+        f.p->sendInteractive();
+        CHECK(asked);
+        CHECK(confirmed);
+        CHECK(question == QStringLiteral("Copy the piece to irc-host:~/ascii/wip/neon-skull-r1.ans and "
+                                         "neon-skull-r1.txt and reload WeeChat's ascii script?\n\n") +
+                              pipelineWarning(out, PipelineAction::Send, true));
+        CHECK(question.contains(kCanvasText + QStringLiteral("\n\nSend anyway?")));
+        CHECK_FALSE(ssh.ran());
+    }
+}
+
+TEST_CASE("Publish to Library and Send to WeeChat refuse an IRC-target .txt line over the ascii script's budget",
+          "[utf8]") {
+    // A row of ★ alternating mIRC 16 and 17: a colour code and three bytes
+    // of glyph every cell on IRC, while the CP437 .ans brings both colours
+    // to one ANSI colour and the ★ to '?'.
+    Fixture f;
+    AnsiDocument doc = f.w.document()->ansi();
+    doc.canvas.resize(80, doc.canvas.height());
+    for (int x = 0; x < doc.canvas.width(); ++x) {
+        doc.canvas.at(x, 1).ch = U'★';
+        doc.canvas.at(x, 1).fg = mirc(16 + x % 2);
+    }
+    f.w.document()->replace(doc, f.w.document()->path());
+    REQUIRE(f.w.document()->setTarget(Target::Irc));
+    REQUIRE(f.p->ircText());
+    REQUIRE_FALSE(irc::overBudget(*f.p->ircText(), irc::kEfnetWeechatBudget).empty());
+    const AnsiOutput out = f.p->payload();
+    REQUIRE(irc::overBudget(pipeline::ircLines(out.bytes), irc::kEfnetWeechatBudget).empty());
+
+    QString error;
+    CHECK_FALSE(f.p->planPublish(f.library(), QStringLiteral("bars"), {}, &error, true));
+    CHECK(error.startsWith(QStringLiteral("over the 407-byte IRC budget as WeeChat's ascii script sends it, so it would be cut on IRC: line 2 is ")));
+    CHECK_FALSE(QFile::exists(f.library() + QStringLiteral("/funkpower/bars.txt")));
+
+    RecordingSsh ssh("RELOADED\n");
+    f.p->setSshProgram(ssh.program);
+    const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                      QStringLiteral("bars"), 1, true);
+    CHECK_FALSE(r.ok);
+    CHECK(r.message == error);
+    CHECK_FALSE(ssh.ran());
+}
+
+TEST_CASE("Publish to Library and Send to WeeChat refuse a .txt the ascii script cuts though its lines fit as "
+          "written",
+          "[utf8]") {
+    // Codex's repro on #362: an IRC-target row of ★, mIRC 4 and 5 by turns on
+    // 1. The encoder writes one-digit colour codes, 402 bytes; WeeChat's ascii
+    // script reads the .txt back and writes them with two (compact), 483
+    // bytes, and cuts the line at 407 to 67 stars.
+    Fixture f;
+    AnsiDocument doc = f.w.document()->ansi();
+    doc.canvas.resize(80, 1);
+    for (int x = 0; x < doc.canvas.width(); ++x) {
+        doc.canvas.at(x, 0).ch = U'★';
+        doc.canvas.at(x, 0).fg = mirc(4 + x % 2);
+        doc.canvas.at(x, 0).bg = mirc(1);
+    }
+    f.w.document()->replace(doc, f.w.document()->path());
+    REQUIRE(f.w.document()->setTarget(Target::Irc));
+    const auto lines = f.p->ircText();
+    REQUIRE(lines);
+    REQUIRE(lines->size() == 1);
+    std::string want = "\x03" "4,1\xE2\x98\x85";
+    for (int x = 1; x < 80; ++x)
+        want += (x % 2 ? "\x03" "5" : "\x03" "4") + std::string("\xE2\x98\x85");
+    REQUIRE(lines->front() == want);
+    REQUIRE(want.size() == 402);
+    CHECK(irc::overBudget(*lines, irc::kEfnetWeechatBudget).empty());
+    CHECK(irc::txtSentBytes(want) == 483);
+    REQUIRE(f.p->payload().lossy());
+
+    QString error;
+    CHECK_FALSE(f.p->planPublish(f.library(), QStringLiteral("stars"), {}, &error, true));
+    CHECK(error == QStringLiteral("over the 407-byte IRC budget as WeeChat's ascii script sends it, so it would be "
+                                  "cut on IRC: line 1 is 483 bytes"));
+    CHECK_FALSE(QFile::exists(f.library() + QStringLiteral("/funkpower/stars.txt")));
+
+    RecordingSsh ssh("RELOADED\n");
+    f.p->setSshProgram(ssh.program);
+    const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                      QStringLiteral("stars"), 1, true);
+    CHECK_FALSE(r.ok);
+    CHECK(r.message == error);
+    CHECK_FALSE(ssh.ran());
 }
 
 int main(int argc, char** argv) {

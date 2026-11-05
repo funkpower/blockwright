@@ -8,16 +8,19 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/pipeline.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <csignal>
 #include <cstdlib>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -327,15 +330,23 @@ TEST_CASE("Publish to Library refuses what it can't publish cleanly", "[pipeline
     SECTION("a line over the budget") {
         PublishRequest r = request(lib);
         r.ans = piece(80);
-        const std::size_t longest = ircLines(r.ans)[1].size();
-        r.budget = longest - 1;
+        // The budget is the line's as the ascii script sends it, which writes
+        // the colour codes again with two digits: a budget the line fits as
+        // written is not enough.
+        const std::string line = ircLines(r.ans)[1];
+        const std::size_t sent = irc::txtSentBytes(line);
+        REQUIRE(sent > line.size());
+        r.budget = line.size();
         try {
             planPublish(r);
             FAIL("no error");
         } catch (const PipelineError& e) {
-            CHECK(std::string(e.what()).find("line 2 is " + std::to_string(longest) + " bytes") != std::string::npos);
+            CHECK(std::string(e.what()).find("line 2 is " + std::to_string(irc::txtSentBytes(line, r.budget)) +
+                                             " bytes") != std::string::npos);
         }
-        r.budget = longest;
+        r.budget = sent - 1;
+        CHECK_THROWS_AS(planPublish(r), PipelineError);
+        r.budget = sent;
         CHECK_NOTHROW(planPublish(r));
     }
     SECTION("a link at a temporary name is skipped, never written through") {
@@ -481,7 +492,7 @@ TEST_CASE("Send to WeeChat's ssh arguments never prompt and carry one command", 
     CHECK(cmd.find("\"$d/neon-skull-r2.ans\"") != std::string::npos);
     // The length is checked before the rename.
     CHECK(cmd.find("-eq 1234 ]") != std::string::npos);
-    CHECK(cmd.find("-eq 1234 ]") < cmd.find("mv -f"));
+    CHECK(cmd.find("-eq 1234 ]") < cmd.find("mv -f \"$a\""));
     CHECK(cmd.find("pgrep -x weechat") != std::string::npos);
     CHECK(cmd.find("timeout 5") != std::string::npos);
     CHECK(cmd.find("core.weechat */ascii reload") != std::string::npos);
@@ -513,10 +524,12 @@ fs::path onPath(const std::string& name) {
 // Runs `command` under `shell` (with `sh` first for busybox) as sshd runs a
 // login shell's -c, after the client has gone: stdin holds `sent` and ends,
 // and stdout and stderr are a pipe with no reader, as they are once the
-// connection drops. SIGPIPE is the default action in the shell, as sshd
-// leaves it, and HOME is `home`, so the command's '~' is under it. Returns
-// the wait status.
-int runDropped(const fs::path& shell, const std::string& command, const fs::path& sent, const fs::path& home) {
+// connection drops (or /dev/null, when not `dropped`). SIGPIPE is the
+// default action in the shell, as sshd leaves it, and HOME is `home`, so
+// the command's '~' is under it. Not `dropped`, stdout and stderr go to
+// `output` when it is given. Returns the wait status.
+int runDropped(const fs::path& shell, const std::string& command, const fs::path& sent, const fs::path& home,
+               bool dropped = true, const fs::path& output = {}) {
     // The child's environment is built before the fork: this one's, with HOME
     // replaced.
     const std::string homeVar = "HOME=" + home.string();
@@ -541,7 +554,10 @@ int runDropped(const fs::path& shell, const std::string& command, const fs::path
     if (pid == 0) {
         std::signal(SIGPIPE, SIG_DFL);
         const int in = ::open(sent.c_str(), O_RDONLY);
-        if (in < 0 || ::dup2(in, 0) < 0 || ::dup2(out[1], 1) < 0 || ::dup2(out[1], 2) < 0)
+        const int to = dropped          ? out[1]
+                       : output.empty() ? ::open("/dev/null", O_WRONLY)
+                                        : ::open(output.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (in < 0 || to < 0 || ::dup2(in, 0) < 0 || ::dup2(to, 1) < 0 || ::dup2(to, 2) < 0)
             ::_exit(127);
         ::execve(shell.c_str(), argv.data(), env.data());
         ::_exit(127);
@@ -552,7 +568,237 @@ int runDropped(const fs::path& shell, const std::string& command, const fs::path
     return status;
 }
 
+// The names in `dir`, sorted.
+std::vector<std::string> listed(const fs::path& dir) {
+    std::vector<std::string> out;
+    for (const auto& e : fs::directory_iterator(dir))
+        out.push_back(e.path().filename().string());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 } // namespace
+
+TEST_CASE("Send to WeeChat's command puts the .txt beside the .ans, or removes an earlier round's, in any sh",
+          "[pipeline][utf8]") {
+    // #336 slice 3, #350 slice 4: the .ans and the .txt arrive as one
+    // upload, the .ans first, and are split by the sizes the command names.
+    const fs::path root = fs::path(BW_TEST_TMP) / "pipeline-text";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const std::string ans = piece(), txt = "\x03" "77\xE2\x98\x85 \xE2\x96\x9A\n";
+    writeFile(root / "both", ans + txt);
+    writeFile(root / "ans", ans);
+    writeFile(root / "short", ans + txt.substr(0, 3));
+    int ran = 0;
+    for (const std::string name : {"sh", "bash", "dash", "zsh", "ksh", "mksh", "busybox"}) {
+        const fs::path shell = onPath(name);
+        if (shell.empty())
+            continue;
+        ++ran;
+        INFO(shell.string());
+        const std::string dir = "~/wip-" + name;
+        const fs::path wip = root / ("wip-" + name);
+        const std::string both = remoteCommand(dir, "neon-skull-r1.ans", ans.size(), txt.size());
+        int status = runDropped(shell, both, root / "both", root, false);
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == 0);
+        CHECK(listed(wip) == std::vector<std::string>{"neon-skull-r1.ans", "neon-skull-r1.txt"});
+        CHECK(bwtest::readFile(wip / "neon-skull-r1.ans") == ans);
+        CHECK(bwtest::readFile(wip / "neon-skull-r1.txt") == txt);
+
+        // An upload cut short leaves both as they were.
+        writeFile(wip / "neon-skull-r1.ans", "old ans");
+        writeFile(wip / "neon-skull-r1.txt", "old txt");
+        status = runDropped(shell, both, root / "short", root, false);
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == 1);
+        CHECK(listed(wip) == std::vector<std::string>{"neon-skull-r1.ans", "neon-skull-r1.txt"});
+        CHECK(bwtest::readFile(wip / "neon-skull-r1.ans") == "old ans");
+        CHECK(bwtest::readFile(wip / "neon-skull-r1.txt") == "old txt");
+
+        // A connection that drops leaves no temporary file either.
+        status = runDropped(shell, both, root / "short", root);
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == 1);
+        CHECK(listed(wip) == std::vector<std::string>{"neon-skull-r1.ans", "neon-skull-r1.txt"});
+
+        // The same round sent again with no .txt loses the old one, which
+        // the ascii script would play instead of the new .ans.
+        status = runDropped(shell, remoteCommand(dir, "neon-skull-r1.ans", ans.size()), root / "ans", root, false);
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == 0);
+        CHECK(listed(wip) == std::vector<std::string>{"neon-skull-r1.ans"});
+        CHECK(bwtest::readFile(wip / "neon-skull-r1.ans") == ans);
+    }
+    CHECK(ran > 0);
+    fs::remove_all(root);
+}
+
+TEST_CASE("Send to WeeChat's command puts the round back as it was when the pair fails half way, in any sh",
+          "[pipeline][utf8]") {
+    // Codex's finding 2 on #362: with the .ans or the .txt in place and the
+    // other not, a failure or a HUP must leave both as they were, since the
+    // ascii script plays a .txt before an .ans. mv and rm on PATH are
+    // wrappers that count their calls in the folder they are in and fail, or
+    // raise HUP in the shell that ran them, on the call the test names.
+    const fs::path root = fs::path(BW_TEST_TMP) / "pipeline-pair";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const fs::path realMv = onPath("mv"), realRm = onPath("rm");
+    REQUIRE_FALSE(realMv.empty());
+    REQUIRE_FALSE(realRm.empty());
+    const std::string ans = piece(), txt = "\x03" "77\xE2\x98\x85\n";
+    writeFile(root / "both", ans + txt);
+    writeFile(root / "ans", ans);
+    // `when` runs with the call's number in $n and the real command in $real
+    const auto wrapper = [&](const std::string& dir, const std::string& tool, const fs::path& real,
+                             const std::string& when) {
+        const fs::path bin = root / dir;
+        fs::create_directories(bin);
+        writeFile(bin / tool, "#!/bin/sh\nc=\"$(dirname \"$0\")/" + tool + ".calls\"\n"
+                                  "n=$(($(cat \"$c\" 2>/dev/null || echo 0) + 1)); echo $n > \"$c\"\nreal=" +
+                                  real.string() + "\n" + when + "\nexec \"$real\" \"$@\"\n");
+        fs::permissions(bin / tool, fs::perms::owner_all);
+        return bin;
+    };
+    const fs::path failSecondMv = wrapper("fail-mv-2", "mv", realMv, "[ $n -ne 2 ] || exit 1");
+    const fs::path hupAfterMv = wrapper("hup-mv-1", "mv", realMv,
+                                        "if [ $n -eq 1 ]; then \"$real\" \"$@\" || exit; kill -HUP $PPID; exit 0; fi");
+    const fs::path failRmText = wrapper("fail-rm-txt", "rm", realRm,
+                                        "for f; do case $f in */neon-skull-r1.txt) exit 1 ;; esac; done");
+    const std::string oldPath = std::getenv("PATH") ? std::getenv("PATH") : "";
+    struct Case {
+        const char* name;
+        fs::path bin;
+        const char* tool;
+        bool text;  // the send carries a .txt
+        bool seeded;  // the round has an .ans and a .txt already
+    };
+    const std::vector<Case> cases{
+        {"the .txt's rename fails", failSecondMv, "mv", true, true},
+        {"HUP between the renames", hupAfterMv, "mv", true, true},
+        {"the .txt's rename fails in a new round", failSecondMv, "mv", true, false},
+        {"HUP after the .ans of an .ans-only send", hupAfterMv, "mv", false, true},
+        {"removing the earlier .txt fails", failRmText, "rm", false, true},
+    };
+    int ran = 0;
+    for (const std::string name : {"sh", "bash", "dash", "zsh", "ksh", "mksh", "busybox"}) {
+        const fs::path shell = onPath(name);
+        if (shell.empty())
+            continue;
+        INFO(shell.string());
+        for (const Case& c : cases) {
+            INFO(c.name);
+            const std::string dir = "~/wip-" + name;
+            const fs::path wip = root / ("wip-" + name);
+            fs::remove_all(wip);
+            fs::create_directories(wip);
+            if (c.seeded) {
+                writeFile(wip / "neon-skull-r1.ans", "old ans");
+                writeFile(wip / "neon-skull-r1.txt", "old txt");
+            }
+            const fs::path calls = c.bin / (std::string(c.tool) + ".calls");
+            fs::remove(calls);
+            const std::string cmd = c.text ? remoteCommand(dir, "neon-skull-r1.ans", ans.size(), txt.size())
+                                           : remoteCommand(dir, "neon-skull-r1.ans", ans.size());
+            ::setenv("PATH", (c.bin.string() + ":" + oldPath).c_str(), 1);
+            const int status = runDropped(shell, cmd, root / (c.text ? "both" : "ans"), root, false);
+            ::setenv("PATH", oldPath.c_str(), 1);
+            if (!fs::exists(calls)) {
+                // busybox built with its applets preferred never runs PATH's
+                WARN(shell.string() + " ran its own " + c.tool + ", not PATH's");
+                continue;
+            }
+            ++ran;
+            CHECK(WIFEXITED(status));
+            CHECK(WEXITSTATUS(status) == 1);
+            if (c.seeded) {
+                CHECK(listed(wip) == std::vector<std::string>{"neon-skull-r1.ans", "neon-skull-r1.txt"});
+                CHECK(bwtest::readFile(wip / "neon-skull-r1.ans") == "old ans");
+                CHECK(bwtest::readFile(wip / "neon-skull-r1.txt") == "old txt");
+            } else {
+                CHECK(listed(wip) == std::vector<std::string>{});
+            }
+        }
+    }
+    CHECK(ran > 0);
+    fs::remove_all(root);
+}
+
+TEST_CASE("Send to WeeChat's rollback runs once, and keeps a backup it couldn't put back, in any sh",
+          "[pipeline][utf8]") {
+    // Codex's re-check of #362: a HUP while the rollback put the .ans back
+    // ran the cleanup again, which saw no rollback pending and removed both
+    // backups. The .txt's rename (mv's second call) fails; on the third, the
+    // .ans put back, the shell gets a HUP, and that mv then fails (Codex's
+    // repro) or does its work.
+    const fs::path root = fs::path(BW_TEST_TMP) / "pipeline-rollback";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const fs::path realMv = onPath("mv");
+    REQUIRE_FALSE(realMv.empty());
+    const std::string ans = piece(), txt = "\x03" "77\xE2\x98\x85\n";
+    writeFile(root / "both", ans + txt);
+    const auto wrapper = [&](const std::string& dir, const std::string& third) {
+        const fs::path bin = root / dir;
+        fs::create_directories(bin);
+        writeFile(bin / "mv", "#!/bin/sh\nc=\"$(dirname \"$0\")/mv.calls\"\n"
+                              "n=$(($(cat \"$c\" 2>/dev/null || echo 0) + 1)); echo $n > \"$c\"\n"
+                              "[ $n -ne 2 ] || exit 1\nif [ $n -eq 3 ]; then kill -HUP $PPID; " +
+                                  third + "fi\nexec " + realMv.string() + " \"$@\"\n");
+        fs::permissions(bin / "mv", fs::perms::owner_all);
+        return bin;
+    };
+    const fs::path hupThenFail = wrapper("hup-fail", "exit 1; "), hupThenMove = wrapper("hup-move", "");
+    const std::string oldPath = std::getenv("PATH") ? std::getenv("PATH") : "";
+    int ran = 0;
+    for (const std::string name : {"sh", "bash", "dash", "zsh", "ksh", "mksh", "busybox"}) {
+        const fs::path shell = onPath(name);
+        if (shell.empty())
+            continue;
+        INFO(shell.string());
+        for (const fs::path& bin : {hupThenFail, hupThenMove}) {
+            const bool fails = bin == hupThenFail;
+            INFO((fails ? "the .ans can't be put back" : "the .ans is put back"));
+            const std::string dir = "~/wip-" + name;
+            const fs::path wip = root / ("wip-" + name);
+            fs::remove_all(wip);
+            fs::create_directories(wip);
+            writeFile(wip / "neon-skull-r1.ans", "old ans");
+            writeFile(wip / "neon-skull-r1.txt", "old txt");
+            fs::remove(bin / "mv.calls");
+            ::setenv("PATH", (bin.string() + ":" + oldPath).c_str(), 1);
+            const int status = runDropped(shell, remoteCommand(dir, "neon-skull-r1.ans", ans.size(), txt.size()),
+                                          root / "both", root, false, root / "said");
+            ::setenv("PATH", oldPath.c_str(), 1);
+            if (!fs::exists(bin / "mv.calls")) {
+                WARN(shell.string() + " ran its own mv, not PATH's");
+                continue;
+            }
+            ++ran;
+            CHECK(WIFEXITED(status));
+            CHECK(WEXITSTATUS(status) == 1);
+            CHECK(bwtest::readFile(wip / "neon-skull-r1.txt") == "old txt");
+            std::vector<std::string> names = listed(wip);
+            if (!fails) {
+                CHECK(names == std::vector<std::string>{"neon-skull-r1.ans", "neon-skull-r1.txt"});
+                CHECK(bwtest::readFile(wip / "neon-skull-r1.ans") == "old ans");
+                continue;
+            }
+            // The new .ans stays, and the old one is kept beside it, named in
+            // the message.
+            CHECK(bwtest::readFile(wip / "neon-skull-r1.ans") == ans);
+            REQUIRE(names.size() == 3);
+            CHECK(names[0].rfind(".neon-skull-r1.ans.", 0) == 0);
+            CHECK(bwtest::readFile(wip / names[0]) == "old ans");
+            const std::string said = bwtest::readFile(root / "said");
+            CHECK(said.find("wip-" + name + "/" + names[0]) != std::string::npos);
+        }
+    }
+    CHECK(ran > 0);
+    fs::remove_all(root);
+}
 
 TEST_CASE("Send to WeeChat's command removes its temporary file when the connection drops, in any sh",
           "[pipeline]") {
@@ -591,6 +837,266 @@ TEST_CASE("Send to WeeChat's command removes its temporary file when the connect
     fs::remove_all(root);
 }
 #endif
+
+TEST_CASE("A .txt line is held to the budget as WeeChat's ascii script sends it", "[pipeline][utf8]") {
+    // Each row is what the ascii script (1.32.2, 3f16708) does
+    // with the line as a .txt at 407 bytes. Derived by loading it with
+    // python3 -I and a stub weechat module, then running text_to_irc on the
+    // line and a '\n' and fit_lines on the result: the size of the line it
+    // sends when fit_lines cuts nothing, and when it cuts, the shorter of
+    // compact's line and encode_irc_min's, each with fit's reset after a
+    // trailing space. Not from txtSentBytes.
+    const std::string star = "\xE2\x98\x85", block = "\xE2\x96\x88";
+    const auto stars = [&](int n) {  // ★ in mIRC 4 and 5 by turns, on 1
+        std::string s = "\x03" "4,1" + star;
+        for (int i = 1; i < n; ++i)
+            s += (i % 2 ? "\x03" "5" : "\x03" "4") + star;
+        return s;
+    };
+    std::string solid = "\x03" "0,4 ";  // a space on 4 and a 4 █ on 5 by turns
+    for (int i = 1; i < 140; ++i)
+        solid += i % 2 ? "\x03" "4,5" + block : std::string("\x03" "0,4 ");
+    std::string pairs = "\x03" "3,2";
+    for (int i = 0; i < 200; ++i)
+        pairs += "ab";
+    struct Row {
+        const char* name;
+        std::string line;
+        std::size_t written, sent;
+        bool cut;
+    };
+    const std::vector<Row> rows{
+        {"Codex's repro: 80 stars", stars(80), 402, 483, true},
+        {"68 stars", stars(68), 342, 411, true},
+        {"67 stars", stars(67), 337, 405, false},
+        {"spaces and blocks, sent as encode_irc_min has them", solid, 840, 147, false},
+        {"a trailing space on a colour", pairs + " ", 405, 408, true},
+        {"a digit after a reset", "\x03" "4,1x\x03\x02\x02" "1" + std::string(398, 'y'), 407, 409, true},
+    };
+    for (const Row& r : rows) {
+        INFO(r.name);
+        REQUIRE(r.line.size() == r.written);
+        CHECK(irc::txtSentBytes(r.line, irc::kEfnetWeechatBudget) == r.sent);
+        CHECK(irc::txtOverBudget({r.line}, irc::kEfnetWeechatBudget).empty() == !r.cut);
+        if (r.cut)
+            CHECK_THROWS_AS(requireBudget({r.line}, irc::kEfnetWeechatBudget), PipelineError);
+        else
+            CHECK_NOTHROW(requireBudget({r.line}, irc::kEfnetWeechatBudget));
+    }
+    // The repro and the last two fit as written, which is what the budget
+    // used to measure.
+    CHECK(irc::overBudget({stars(80), pairs + " ", rows.back().line}, irc::kEfnetWeechatBudget).empty());
+}
+
+TEST_CASE("A .txt line's formatting is costed as the ascii script sends it", "[pipeline][utf8]") {
+    // Codex's re-check of #362: the script keeps bold, italic, underline,
+    // reverse, strikethrough and monospace, writing each again where it
+    // changes, and leaves a line with any of them to encode_irc, never
+    // encode_irc_min. Recorded as the rows of the test above, from the
+    // script (1.32.2, 3f16708). Not from txtSentBytes.
+    std::string solid = "\x03" "0,4 ";  // as the test above has it
+    for (int i = 1; i < 140; ++i)
+        solid += i % 2 ? "\x03" "4,5\xE2\x96\x88" : std::string("\x03" "0,4 ");
+    struct Row {
+        std::string name, line;
+        std::size_t written, sent;
+        bool cut;
+    };
+    std::vector<Row> rows;
+    for (const auto& [code, name] : std::vector<std::pair<std::string, std::string>>{
+             {"\x02", "bold"}, {"\x1d", "italic"}, {"\x1f", "underline"}, {"\x16", "reverse"},
+             {"\x1e", "strikethrough"}, {"\x11", "monospace"}}) {
+        rows.push_back({name + ", 400 x", code + "\x03" "4,1" + std::string(400, 'x'), 405, 407, false});
+        rows.push_back({name + ", 401 x", code + "\x03" "4,1" + std::string(401, 'x'), 406, 408, true});
+    }
+    rows.push_back({"bold on spaces and blocks: no shortest encoding", "\x02" + solid, 841, 1121, true});
+    rows.push_back({"bold cancelled: the shortest encoding again", "\x02\x02" + solid, 842, 147, false});
+    rows.push_back({"underlined trailing spaces are sent",
+                    "\x1f\x03" "4" + std::string(395, 'x') + "    ", 402, 404, false});
+    rows.push_back({"plain trailing spaces are not", "\x03" "4" + std::string(395, 'x') + "    ", 401, 398, false});
+    rows.push_back({"a reset ends bold", "\x02\x03" "4,1x\x0f" + std::string(401, 'y'), 408, 411, true});
+    rows.push_back({"a tab is spaces to the next stop", "\x03" "4,1" + std::string(396, 'x') + "\ty", 402, 407, false});
+    rows.push_back({"other controls are dropped", "\x03" "4,1" + std::string(401, 'x') + "\x01\x01", 407, 407, false});
+    rows.push_back({"a ^D colour is the nearest mIRC one",
+                    "\x04" "FF0000,000000" + std::string(401, 'x'), 415, 407, false});
+    rows.push_back({"a bare ^D resets the colours", "\x03" "4,1x\x04" + std::string(400, 'y'), 406, 408, true});
+    for (const Row& r : rows) {
+        INFO(r.name);
+        REQUIRE(r.line.size() == r.written);
+        CHECK(irc::txtSentBytes(r.line, irc::kEfnetWeechatBudget) == r.sent);
+        if (r.cut)
+            CHECK_THROWS_AS(requireBudget({r.line}, irc::kEfnetWeechatBudget), PipelineError);
+        else
+            CHECK_NOTHROW(requireBudget({r.line}, irc::kEfnetWeechatBudget));
+    }
+}
+
+TEST_CASE("A .txt line is held to the budget whatever Unicode the ascii script's Python has", "[pipeline][utf8]") {
+    // Codex's re-checks of #362: the script joins a code point to the
+    // character before it only if its Python's unicodedata makes it a mark
+    // (Mn or Me), and Blockwright's width table is Unicode 18.0. Each row was
+    // recorded from the script (1.32.2, 3f16708) with its
+    // unicodedata giving every category from the UnicodeData.txt of 14.0,
+    // 15.0, 15.1, 16.0, 17.0 and 18.0 in turn, and natively under Python
+    // 3.11, 3.12, 3.13 and 3.14 (14.0, 15.0, 15.1 and 16.0), which agreed: the
+    // size it sends whole, or the shorter of its two encodings when it cuts,
+    // under each. Not from txtSentBytes.
+    const std::string m14 = "\xE0\xA2\x98", m15 = "\xE0\xBB\x8E", m16 = "\xE0\xA2\x97", m17 = "\xE1\xAB\x8F",
+                      m18 = "\xD7\x88", block = "\xE2\x96\x88";
+    // U+1171E, Mn until Unicode 15.1 and Mc from 16.0: a mark only the older
+    // Pythons join
+    const std::string was = "\xF0\x91\x9C\x9E";
+    const auto repeat = [](const std::string& s, int n) {
+        std::string out;
+        for (int i = 0; i < n; ++i)
+            out += s;
+        return out;
+    };
+    // x in 4 with a mark in 5 after each: one cell in 4 where the script's
+    // Python has the mark, two cells and a colour code each where it hasn't
+    const auto marked = [&](const std::string& mark, int n) {
+        return "\x03" "4,1" + repeat("x\x03" "5" + mark + "\x03" "4", n);
+    };
+    struct Row {
+        const char* name;
+        std::string line;
+        std::size_t written;
+        std::array<std::size_t, 6> sent;  // under 14.0, 15.0, 15.1, 16.0, 17.0, 18.0
+        std::array<bool, 6> cut;
+    };
+    const std::vector<Row> rows{
+        {"Codex's row: blocks with a 17.0 mark, swapped for spaces only before 17.0",
+         "\x03" "4,4" + repeat(block + m17, 67), 406, {276, 276, 276, 276, 408, 408},
+         {false, false, false, false, true, true}},
+        {"Codex's row: a 17.0 mark in another colour, cut before 17.0", marked(m17, 41), 332,
+         {413, 413, 413, 413, 170, 170}, {true, true, true, true, false, false}},
+        {"a 16.0 mark in another colour", marked(m16, 41), 332, {413, 413, 413, 170, 170, 170},
+         {true, true, true, false, false, false}},
+        {"a 15.0 mark in another colour", marked(m15, 41), 332, {413, 170, 170, 170, 170, 170},
+         {true, false, false, false, false, false}},
+        {"a 14.0 mark, which every Python since 3.11 has", marked(m14, 41), 332, {170, 170, 170, 170, 170, 170},
+         {false, false, false, false, false, false}},
+        {"15.0 and 17.0 marks, sent whole under each",
+         marked(m15, 20) + "\x03" "4,4" + repeat(block + m17, 30), 348, {389, 272, 272, 272, 272, 272},
+         {false, false, false, false, false, false}},
+        {"16.0 and 18.0 marks in the base's colours", "\x03" "4,1" + repeat("x" + m16 + "y" + m18, 50), 354,
+         {356, 356, 356, 356, 356, 356}, {false, false, false, false, false, false}},
+        {"Codex's row: blocks with U+1171E, swapped for spaces only from 16.0",
+         "\x03" "4,4" + repeat(block + was, 57) + "xxx", 406, {408, 408, 408, 296, 296, 296},
+         {true, true, true, false, false, false}},
+        {"blocks with U+1171E, a pair fewer: whole under each", "\x03" "4,4" + repeat(block + was, 56) + "xxx", 399,
+         {401, 401, 401, 401, 401, 401}, {false, false, false, false, false, false}},
+        {"U+1171E in another colour, cut from 16.0", marked(was, 41), 373, {211, 211, 211, 454, 454, 454},
+         {false, false, false, true, true, true}},
+    };
+    for (const Row& r : rows) {
+        INFO(r.name);
+        REQUIRE(r.line.size() == r.written);
+        const std::size_t worst = *std::max_element(r.sent.begin(), r.sent.end());
+        const bool cut = std::find(r.cut.begin(), r.cut.end(), true) != r.cut.end();
+        CHECK(irc::txtSentBytes(r.line, irc::kEfnetWeechatBudget) == worst);
+        if (!cut) {
+            CHECK_NOTHROW(requireBudget({r.line}, irc::kEfnetWeechatBudget));
+            continue;
+        }
+        try {
+            requireBudget({r.line}, irc::kEfnetWeechatBudget);
+            FAIL("accepted a line a Python of another Unicode cuts");
+        } catch (const PipelineError& e) {
+            INFO(e.what());
+            CHECK(std::string(e.what()).find("line 1 is " + std::to_string(worst) + " bytes where ") !=
+                  std::string::npos);
+        }
+    }
+    // The refusal says which Python cuts the line.
+    const auto refusal = [](const std::string& line) {
+        try {
+            requireBudget({"", line}, irc::kEfnetWeechatBudget);
+        } catch (const PipelineError& e) {
+            return std::string(e.what());
+        }
+        return std::string();
+    };
+    const std::string over = "over the 407-byte IRC budget as WeeChat's ascii script sends it, so it would be cut on IRC: ";
+    CHECK(refusal(marked(m17, 41)) == over + "line 2 is 413 bytes where the script's Python has Unicode 16.0 or older, "
+                                             "which sends U+1ACF as a character of its own");
+    CHECK(refusal("\x03" "4,4" + repeat(block + m17, 67)) ==
+          over + "line 2 is 408 bytes where the script's Python has Unicode 17.0 or later, which joins U+1ACF to the "
+                 "character before it");
+    CHECK(refusal("\x03" "4,4" + repeat(block + was, 57) + "xxx") ==
+          over + "line 2 is 408 bytes where the script's Python has Unicode 15.1 or older, which joins U+1171E to the "
+                 "character before it");
+    CHECK(refusal(marked(was, 41)) == over + "line 2 is 454 bytes where the script's Python has Unicode 16.0 or later, "
+                                             "which sends U+1171E as a character of its own");
+    // Each mark keeps its own versions: U+1171E joins until 15.1, U+0ECE from
+    // 15.0, so 15.0 and 15.1 join both and the 14.0 receiver alone sends
+    // U+0ECE apart.
+    CHECK(refusal(marked(m15, 41) + repeat(block + was, 2)).ends_with(
+        "line 2 is 430 bytes where the script's Python has Unicode 14.0 or older, which sends U+0ECE as a character "
+        "of its own"));
+    // A line over under every Unicode needs no word on it.
+    CHECK(refusal("\x03" "4,1" + repeat(block + m17, 140)).ends_with("line 2 is 846 bytes"));
+}
+
+TEST_CASE("Publish to Library takes the .txt from the lines it is given, and holds them to the budget",
+          "[pipeline][utf8]") {
+    // #336 slice 3, #350 slice 4: an IRC-target or UTF-8 document's .txt
+    // comes from its canvas, not from the CP437 .ans read back.
+    Library lib("lines");
+    PublishRequest r = request(lib);
+    r.lines = std::vector<std::string>{"\x03" "77\xE2\x98\x85", std::string(irc::kEfnetWeechatBudget, 'x')};
+    const PublishPlan plan = planPublish(r);
+    CHECK(plan.ans == r.ans);
+    CHECK(plan.txt == irc::joinLines(*r.lines));
+    CHECK(plan.txt != irc::joinLines(ircLines(r.ans)));
+    publish(plan);
+    CHECK(bwtest::readFile(plan.txtPath) == plan.txt);
+    CHECK(bwtest::readFile(plan.ansPath) == r.ans);
+
+    // The budget is the given lines', whatever the .ans would make.
+    r.lines->push_back(std::string(irc::kEfnetWeechatBudget + 1, 'x'));
+    REQUIRE(irc::overBudget(ircLines(r.ans), r.budget).empty());
+    try {
+        planPublish(r);
+        FAIL("published a line over the budget");
+    } catch (const PipelineError& e) {
+        CHECK(std::string(e.what()) == "over the 407-byte IRC budget as WeeChat's ascii script sends it, so it would be cut on IRC: "
+                                    "line 3 is 408 bytes");
+    }
+    CHECK_THROWS_AS(requireBudget(*r.lines, r.budget), PipelineError);
+    CHECK_NOTHROW(requireBudget(*r.lines, r.budget + 1));
+}
+
+TEST_CASE("Send to WeeChat's arguments carry the .txt's size and its name", "[pipeline][utf8]") {
+    CHECK(wipTextName("neon-skull", 3) == "neon-skull-r3.txt");
+    const auto args = sshArguments({"irc-host", "~/ascii/wip"}, "neon-skull", 2, 1234, 56);
+    REQUIRE(args.size() == 6);
+    CHECK(args[5] == remoteCommand("~/ascii/wip", "neon-skull-r2.ans", 1234, 56));
+    const std::string& cmd = args[5];
+    // One length for the two together, checked before anything is renamed;
+    // both are backed up first, and the .txt, which the ascii script plays,
+    // goes into place after the .ans; WeeChat is reloaded once both are.
+    const std::string ansIn = "mv -f \"$a\" \"$d/neon-skull-r2.ans\"", textIn = "mv -f \"$x\" \"$d/neon-skull-r2.txt\"";
+    CHECK(cmd.find("-eq 1290 ]") != std::string::npos);
+    CHECK(cmd.find("-eq 1290 ]") < cmd.find(ansIn));
+    CHECK(cmd.find("tail -c +1235 ") != std::string::npos);
+    CHECK(cmd.find("head -c 1234 ") != std::string::npos);
+    CHECK(cmd.find("cp -p \"$d/neon-skull-r2.ans\" \"$ba\"") < cmd.find("r=1;"));
+    CHECK(cmd.find("cp -p \"$d/neon-skull-r2.txt\" \"$bx\"") < cmd.find("r=1;"));
+    CHECK(cmd.find("r=1;") < cmd.find(ansIn));
+    CHECK(cmd.find(ansIn) < cmd.find(textIn));
+    CHECK(cmd.find(textIn) < cmd.find("r=; c;"));
+    CHECK(cmd.find("r=; c;") < cmd.find("pgrep -x weechat"));
+    CHECK(cmd.find("core.weechat */ascii reload") != std::string::npos);
+    // With no .txt, an earlier one of the round is removed after the .ans is
+    // in place, and put back if that fails.
+    const std::string ansOnly = sshArguments({"irc-host", "~/ascii/wip"}, "neon-skull", 2, 1234)[5];
+    CHECK(ansOnly == remoteCommand("~/ascii/wip", "neon-skull-r2.ans", 1234));
+    CHECK(ansOnly.rfind("rm -f \"$d/neon-skull-r2.txt\"; r=; c;") > ansOnly.find(ansIn));
+    CHECK(ansOnly.find("cp -p \"$d/neon-skull-r2.txt\" \"$bx\"") < ansOnly.find(ansIn));
+    CHECK(ansOnly.find("r=; c;") < ansOnly.find("pgrep -x weechat"));
+    CHECK(ansOnly.find("tail -c") == std::string::npos);
+}
 
 // Publish writes the .ans as CP437 (writeAnsi's default), so ircLines reads it
 // as CP437 even when its bytes would pass for UTF-8: changing it to detect

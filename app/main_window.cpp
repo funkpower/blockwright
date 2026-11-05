@@ -356,10 +356,15 @@ QString saveWarning(const AnsiOutput& out, bool project, ArtFormat format) {
     return lossQuestion(out, project, format);
 }
 
-QString pipelineWarning(const AnsiOutput& out, PipelineAction action) {
+QString pipelineWarning(const AnsiOutput& out, PipelineAction action, bool canvasText) {
+    const QString text =
+        canvasText ? QStringLiteral("\n\n") +
+                         QObject::tr("That is the .ans only: the .txt is made from the canvas, and WeeChat's ascii "
+                                     "script plays the .txt.")
+                   : QString();
     return action == PipelineAction::Publish
-               ? QObject::tr("Before publishing:\n%1.\n\nPublish anyway?").arg(lossDescription(out, true))
-               : QObject::tr("Before sending:\n%1.\n\nSend anyway?").arg(lossDescription(out, true));
+               ? QObject::tr("Before publishing:\n%1.%2\n\nPublish anyway?").arg(lossDescription(out, true), text)
+               : QObject::tr("Before sending:\n%1.%2\n\nSend anyway?").arg(lossDescription(out, true), text);
 }
 
 SavePath resolveSavePath(const QString& chosen, const QString& suffix) {

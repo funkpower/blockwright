@@ -17,6 +17,11 @@ struct VariesRun {
     std::uint32_t first, last;
 };
 
+struct JoinRun {
+    std::uint32_t first, last;
+    unsigned mask;
+};
+
 #include "width.inc"
 
 constexpr bool sortedAndDisjoint() {
@@ -35,6 +40,17 @@ constexpr bool variesSortedAndDisjoint() {
     return true;
 }
 static_assert(variesSortedAndDisjoint());
+
+constexpr unsigned kJoinAll = (2u << std::size(kJoinUnicodes)) - 1;
+
+constexpr bool joinsSortedAndDisjoint() {
+    for (std::size_t i = 0; i < std::size(kJoinRuns); ++i)
+        if ((i && kJoinRuns[i].first <= kJoinRuns[i - 1].last) || kJoinRuns[i].first > kJoinRuns[i].last ||
+            !kJoinRuns[i].mask || kJoinRuns[i].mask >= kJoinAll)
+            return false;
+    return true;
+}
+static_assert(joinsSortedAndDisjoint());
 
 // Box drawing, block elements and the geometric shapes before U+25FD, the
 // glyphs ANSI art is mostly made of: one column each, looked up without the
@@ -77,5 +93,17 @@ bool widthVaries(char32_t cp) {
 }
 
 const char* widthVariesFloor() { return kWidthVariesFloor; }
+
+int joinUnicodeCount() { return static_cast<int>(std::size(kJoinUnicodes)); }
+
+const char* joinUnicode(int i) { return i >= 0 && i < joinUnicodeCount() ? kJoinUnicodes[i] : nullptr; }
+
+unsigned joinMask(char32_t cp) {
+    const auto it = std::upper_bound(std::begin(kJoinRuns), std::end(kJoinRuns), std::uint32_t(cp),
+                                     [](std::uint32_t c, const JoinRun& r) { return c < r.first; });
+    if (it != std::begin(kJoinRuns) && cp <= (it - 1)->last)
+        return (it - 1)->mask;
+    return codePointWidth(cp) == 0 ? kJoinAll : 0;
+}
 
 } // namespace bw

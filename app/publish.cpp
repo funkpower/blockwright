@@ -93,6 +93,7 @@ std::optional<pipeline::PublishPlan> Publisher::planPublish(const QString& libra
         r.slug = slug.toStdString();
         r.tags = pipeline::parseTags(tags.toStdString());
         r.ans = out.bytes;
+        r.lines = ircText();
         r.now = QDateTime::currentSecsSinceEpoch();
         return pipeline::planPublish(r);
     } catch (const pipeline::PipelineError& e) {
@@ -117,6 +118,13 @@ AnsiOutput Publisher::payload() const {
     return window_->document()->encode(ArtFormat::Ansi, TextEncoding::Cp437);
 }
 
+std::optional<std::vector<std::string>> Publisher::ircText() const {
+    const Document* doc = window_->document();
+    if (doc->target() != Target::Irc && doc->textEncoding() != TextEncoding::Utf8)
+        return std::nullopt;
+    return irc::exportCanvas(irc::sentCanvas(doc->canvas(), doc->ansi().ice, doc->target()));
+}
+
 int Publisher::nextRound(const QString& slug) const { return appSettings()->value(roundKey(slug), 0).toInt() + 1; }
 
 Publisher::SendResult Publisher::sendToWeechat(const QString& host, const QString& wipDir, const QString& slug,
@@ -128,11 +136,15 @@ Publisher::SendResult Publisher::sendToWeechat(const QString& host, const QStrin
         result.message = lossRefusal(out);
         return result;
     }
+    const auto ircLines = ircText();
+    const std::string text = ircLines ? irc::joinLines(*ircLines) : std::string();
     QStringList args;
     try {
+        if (ircLines)
+            pipeline::requireBudget(*ircLines, irc::kEfnetWeechatBudget);
         for (const std::string& a :
              pipeline::sshArguments({host.toStdString(), wipDir.toStdString()}, slug.toStdString(), round,
-                                    out.bytes.size()))
+                                    out.bytes.size(), ircLines ? std::optional(text.size()) : std::nullopt))
             args << QString::fromStdString(a);
     } catch (const pipeline::PipelineError& e) {
         result.message = QString::fromStdString(e.what());
@@ -146,6 +158,7 @@ Publisher::SendResult Publisher::sendToWeechat(const QString& host, const QStrin
         return result;
     }
     ssh.write(out.bytes.data(), qint64(out.bytes.size()));
+    ssh.write(text.data(), qint64(text.size()));
     ssh.closeWriteChannel();
     // The connect timeout is 10 s and the fifo write 5 s.
     if (!ssh.waitForFinished(30000)) {
@@ -230,7 +243,7 @@ void Publisher::publishInteractive() {
                  qpath(plan->tagsPath), qpath(plan->datesPath));
     const AnsiOutput out = payload();
     if (out.lossy())
-        question += QStringLiteral("\n\n") + pipelineWarning(out, PipelineAction::Publish);
+        question += QStringLiteral("\n\n") + pipelineWarning(out, PipelineAction::Publish, ircText().has_value());
     else
         question += tr("\n\nPublish?");
     if (QMessageBox::question(window_, tr("Publish to Library"), question, QMessageBox::Yes | QMessageBox::No,
@@ -282,13 +295,15 @@ void Publisher::sendInteractive() {
 
     // Stamped before the loss check below, so the warning covers it.
     window_->canvasView()->finishTool();
-    const QString target = QStringLiteral("%1:%2/%3")
-                               .arg(hostName, wipDir,
-                                    QString::fromStdString(pipeline::wipName(name.toStdString(), roundNo)));
+    QString target = QStringLiteral("%1:%2/%3")
+                         .arg(hostName, wipDir, QString::fromStdString(pipeline::wipName(name.toStdString(), roundNo)));
+    const bool text = ircText().has_value();
+    if (text)
+        target = tr("%1 and %2").arg(target, QString::fromStdString(pipeline::wipTextName(name.toStdString(), roundNo)));
     QString question = tr("Copy the piece to %1 and reload WeeChat's ascii script?").arg(target);
     const AnsiOutput out = payload();
     if (out.lossy())
-        question += QStringLiteral("\n\n") + pipelineWarning(out, PipelineAction::Send);
+        question += QStringLiteral("\n\n") + pipelineWarning(out, PipelineAction::Send, text);
     if (QMessageBox::question(window_, tr("Send to WeeChat"), question, QMessageBox::Yes | QMessageBox::No,
                               QMessageBox::No) != QMessageBox::Yes)
         return;

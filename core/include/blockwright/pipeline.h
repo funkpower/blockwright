@@ -66,11 +66,20 @@ std::string dateIndexJson(const DateIndex& index, bool newline);
 // makes them from the file: parsed, then irc::exportCanvas.
 std::vector<std::string> ircLines(std::string_view ans);
 
+// Throws PipelineError naming every line of a .txt the ascii script would
+// cut on IRC: over `budget` bytes as it sends the line (irc::txtSentBytes),
+// not as the line is written.
+void requireBudget(const std::vector<std::string>& lines, std::size_t budget);
+
 struct PublishRequest {
     std::filesystem::path library;  // the ascii library's root
     std::string slug;
     std::vector<std::string> tags;  // besides kArtist, from parseTags
     std::string ans;                // the .ans bytes, as Save writes them
+    // The .txt's lines when they come from the canvas rather than the .ans
+    // (an IRC-target or UTF-8 document, which the CP437 .ans can't hold;
+    // #336, #350). Without them the .txt is ircLines(ans).
+    std::optional<std::vector<std::string>> lines;
     std::int64_t now = 0;           // the date a piece new to the index gets
     std::size_t budget = irc::kEfnetWeechatBudget;
 };
@@ -133,6 +142,9 @@ bool validHost(std::string_view host);
 bool validRemoteDir(std::string_view dir);
 // A round's name in wip: "<slug>-r<round>.ans".
 std::string wipName(std::string_view slug, int round);
+// The name of the IRC text sent beside it: "<slug>-r<round>.txt", which the
+// ascii script plays rather than the .ans.
+std::string wipTextName(std::string_view slug, int round);
 
 // What the remote command prints last: kReloaded once WeeChat's fifo took
 // the reload, kNoFifo when no live WeeChat has one (the file is copied
@@ -149,11 +161,21 @@ inline constexpr std::string_view kNoFifo = "NOFIFO";
 // $XDG_RUNTIME_DIR, or /run/user/<uid>, /weechat), under a 5 second
 // timeout: a fifo left by a WeeChat that has exited has no reader and
 // would block forever.
-std::string remoteCommand(std::string_view dir, std::string_view name, std::size_t size);
+// With `textSize` stdin carries the .ans and then the round's IRC text,
+// `textSize` bytes, which goes to <dir>/<name> with ".txt" for ".ans";
+// the length checked is the two together. Without it, a .txt of the round
+// left by an earlier send is removed, since the ascii script would play it
+// instead of the new .ans. The two change as a pair: the round's .ans and
+// .txt are backed up first, the .txt changes after the .ans, and a failure
+// or a HUP, INT, TERM or PIPE before both are done puts both back as they
+// were; WeeChat is reloaded only once both are. `name` ends in ".ans".
+std::string remoteCommand(std::string_view dir, std::string_view name, std::size_t size,
+                          std::optional<std::size_t> textSize = {});
 // ssh's arguments: batch mode (it never asks for a password), a connect
-// timeout, the host and remoteCommand for an .ans of `size` bytes. Throws
-// PipelineError for a bad host, folder, slug or a round under 1.
+// timeout, the host and remoteCommand for an .ans of `size` bytes (and a
+// .txt of `textSize`). Throws PipelineError for a bad host, folder, slug or
+// a round under 1.
 std::vector<std::string> sshArguments(const WeechatTarget& target, std::string_view slug, int round,
-                                      std::size_t size);
+                                      std::size_t size, std::optional<std::size_t> textSize = {});
 
 } // namespace bw::pipeline

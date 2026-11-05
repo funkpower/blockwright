@@ -1,6 +1,7 @@
 #include "blockwright/irc_view.h"
 
 #include "blockwright/cp437.h"
+#include "blockwright/mirc.h"
 #include "blockwright/ramp.h"
 #include "blockwright/width.h"
 
@@ -48,10 +49,16 @@ Cell clientBlank() {
     return c;
 }
 
+// The table's own clusters, as a receiver (joinUnicode) of zeroWidth.
+constexpr int kTableMarks = -1;
+
 // A code point a client draws on the one before it, joining its cluster:
-// the width table's 0 (ascii.py's zero_width is the same rule, with Mn and Me
-// from its Python's Unicode, so it lacks the marks assigned since).
-bool zeroWidth(char32_t cp) { return codePointWidth(cp) == 0; }
+// the width table's 0. ascii.py's zero_width is the same rule with Mn and Me
+// from its Python's Unicode, so a reader on joinUnicode(unicode) joins what
+// that version's own categories make a mark (joinMask).
+bool zeroWidth(char32_t cp, int unicode = kTableMarks) {
+    return unicode == kTableMarks ? codePointWidth(cp) == 0 : (joinMask(cp) >> unicode & 1) != 0;
+}
 
 // Whether zero-width code points after `cp` join it (ascii.py's takes_marks):
 // not after a control (C0, NUL included, DEL, C1) or U+2028 and U+2029.
@@ -64,10 +71,12 @@ bool takesMarks(char32_t cp) { return !(cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) 
 // a cluster (a base and the zero-width code points after it, any codes
 // between them skipped) as one cell in its base's colours, whose glyph
 // neither changes. Formatting is toggled per code as parse_irc toggles it,
-// and a line with any on a cell gets encode_irc where encode_irc_min would
-// run (ascii.py's fallback for it; the other, for a line of more than 2000
-// cells, never applies: the export's lines have at most kMaxColumns cells).
-// A colour is -1 where the line sets none (the client's own).
+// and a line with any on a cell, or with more than 2000 cells, gets
+// encode_irc where encode_irc_min would run (ascii.py's fallback; the
+// export's lines have at most kMaxColumns cells, so for them only the
+// formatting half can apply). A colour is -1 where the line sets none (the
+// client's own). For a .txt (txtSentBytes) it also models what the export
+// never writes: ^D colours, tabs and other control bytes.
 namespace sender {
 
 constexpr int kNone = -1;
@@ -85,7 +94,19 @@ struct SentCell {
     int fg, bg;
     int attrs = 0;
     bool is(char32_t c) const { return ch.size() == 1 && ch[0] == c; }
+    // a space only shows its background
+    bool space() const { return is(U' ') && !(attrs & kSpaceVisible); }
 };
+
+// Six hex digits at `i` as an RGB colour (advancing `i`); empty if there
+// aren't six there.
+std::optional<std::uint32_t> hexColour(std::string_view s, std::size_t& i) {
+    if (s.size() - i < 6 || !std::all_of(s.begin() + i, s.begin() + i + 6, [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); }))
+        return std::nullopt;
+    const std::uint32_t rgb = std::stoul(std::string(s.substr(i, 6)), nullptr, 16);
+    i += 6;
+    return rgb;
+}
 
 // Python's str.isdigit(): a code point with a digit value (², not only 0-9).
 bool pyDigit(char32_t ch) { return QChar::digitValue(ch) >= 0; }
@@ -106,12 +127,15 @@ std::string colourCode(int fg, int bg = kNone) {
     return buf;
 }
 
-// parse_irc and cluster_cells, for the export's lines: no ^D colours, tabs
-// or other control bytes. Each attribute code toggles its bit.
-// `codeInCluster` is set when a code sits between a cluster's base and a
-// zero-width code point of it (code_in_cluster).
-std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr) {
+// parse_irc and cluster_cells, clustered as a reader on Unicode `unicode`
+// does (zeroWidth). Each attribute code toggles its bit, a ^D colour is read
+// as the nearest mIRC one, a tab is spaces to the next stop of eight and the
+// other control bytes are dropped. `codeInCluster` is set when a code sits
+// between a cluster's base and a zero-width code point of it
+// (code_in_cluster).
+std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr, int unicode = kTableMarks) {
     std::vector<SentCell> cells;
+    std::size_t unjoined = 0;  // parse_irc's cells, before cluster_cells joins them
     int fg = kNone, bg = kNone, attrs = 0;
     bool code = false;  // a code since the last code point
     auto mirc = [](std::uint8_t n) { return n < 99 ? int(n) : kNone; };
@@ -133,6 +157,25 @@ std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr
             }
             break;
         }
+        case '\x04': {
+            // an RGB colour, as the nearest mIRC one
+            ++i;
+            code = true;
+            const auto f = hexColour(line, i);
+            if (!f) {
+                fg = bg = kNone;
+                break;
+            }
+            fg = nearestMirc(*f);
+            if (i < line.size() && line[i] == ',') {
+                std::size_t at = i + 1;
+                if (const auto b = hexColour(line, at)) {
+                    bg = nearestMirc(*b);
+                    i = at;
+                }
+            }
+            break;
+        }
         case '\x0f':
             ++i;
             code = true;
@@ -145,15 +188,29 @@ std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr
         case '\x1d':
         case '\x1e':
         case '\x1f':
+            code = true;
             for (const auto& [bit, c] : kAttrCodes)
                 if (c == line[i])
                     attrs ^= bit;
             ++i;
-            code = true;
+            break;
+        case '\t':
+            // spaces to the next stop of eight, counted in unjoined cells
+            ++i;
+            do {
+                cells.push_back({U" ", fg, bg, attrs});
+            } while (++unjoined % 8);
+            code = false;
             break;
         default: {
+            if (static_cast<unsigned char>(line[i]) < 0x20 || line[i] == '\x7f') {
+                // the other controls are dropped
+                ++i;
+                break;
+            }
             const char32_t cp = glyph(line, i);
-            if (!cells.empty() && zeroWidth(cp) && takesMarks(cells.back().ch[0])) {
+            ++unjoined;
+            if (!cells.empty() && zeroWidth(cp, unicode) && takesMarks(cells.back().ch[0])) {
                 cells.back().ch += cp;
                 if (code && codeInCluster)
                     *codeInCluster = true;
@@ -168,7 +225,7 @@ std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr
 }
 
 // Whether a cell is one encode_irc drops at the end of a line.
-bool blank(const SentCell& c) { return c.is(U' ') && c.bg == kNone && !(c.attrs & kSpaceVisible); }
+bool blank(const SentCell& c) { return c.space() && c.bg == kNone; }
 
 // encode_irc: as few codes as it can, a space's foreground left as it is.
 std::string encode(const std::vector<SentCell>& cells) {
@@ -186,7 +243,7 @@ std::string encode(const std::vector<SentCell>& cells) {
             curAttrs = c.attrs;
         }
         const std::string text = utf8(c.ch);
-        const bool space = c.is(U' ') && !(c.attrs & kSpaceVisible);
+        const bool space = c.space();
         int wantFg = c.fg;
         if (space) {
             if (c.bg == curBg) {
@@ -258,10 +315,10 @@ std::pair<std::string, Colours> code(Colours cur, int fg, int bg, char32_t ch) {
 // drawn (a space or a full block of the same colour; a cluster has one way,
 // its own glyph in its own colours). Kept in ascii.py's
 // order throughout, so that of two encodings of one length it picks the one
-// it picks, which decides where a cut falls. A line with any attribute on a
-// cell is left to encode_irc, as ascii.py leaves it.
+// it picks, which decides where a cut falls. As ascii.py, a line with any
+// attribute on a cell or more than 2000 cells is left to encode.
 std::string encodeMin(const std::vector<SentCell>& cells) {
-    if (std::any_of(cells.begin(), cells.end(), [](const SentCell& c) { return c.attrs != 0; }))
+    if (cells.size() > 2000 || std::any_of(cells.begin(), cells.end(), [](const SentCell& c) { return c.attrs != 0; }))
         return encode(cells);
     struct Entry {
         Colours state;
@@ -524,6 +581,120 @@ View ircView(const Canvas& canvas, std::size_t budget, const EncodeOptions& opts
         }
     }
     return v;
+}
+
+namespace {
+
+// What the ascii script sends of a .txt line when its Python's Unicode is
+// joinUnicode(unicode) (txtSentBytes).
+std::size_t sentAt(std::string_view line, std::size_t budget, int unicode) {
+    const std::vector<sender::SentCell> cells = sender::parse(line, nullptr, unicode);
+    const std::size_t loaded = sender::sentSize(sender::encode(cells));
+    if (loaded <= budget)
+        return loaded;
+    return std::min(loaded, sender::sentSize(sender::encodeMin(cells)));
+}
+
+std::string codePoint(char32_t cp) {
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "U+%04X", static_cast<unsigned>(cp));
+    return buf;
+}
+
+struct TxtSize {
+    std::size_t bytes;
+    std::string where;
+};
+
+// joinUnicode(i), or a later version than the table's.
+std::string unicodeName(int i) { return joinUnicode(i) ? joinUnicode(i) : "a later one"; }
+
+// The line's size under each Unicode a supported Python can have, once for
+// each way of clustering the line they make (receivers whose joinMask bits
+// agree on every code point of the line cluster it alike). Its size is the
+// largest; where only some of them have it over `budget`, `where` names them
+// and a code point that sets them apart.
+TxtSize txtSize(std::string_view line, std::size_t budget) {
+    const int n = joinUnicodeCount() + 1;  // and a later one
+    const unsigned all = (1u << n) - 1;
+    std::vector<std::pair<unsigned, char32_t>> varying;  // the line's masks other than none and all, each's first
+    for (std::size_t i = 0; i < line.size();) {
+        const char32_t cp = glyph(line, i);
+        if (const unsigned m = joinMask(cp);
+            m && m != all && std::none_of(varying.begin(), varying.end(), [m](const auto& v) { return v.first == m; }))
+            varying.push_back({m, cp});
+    }
+    const auto bit = [](unsigned m, int r) { return (m >> r & 1) != 0; };
+    const auto alike = [&](int a, int b) {
+        return std::all_of(varying.begin(), varying.end(), [&](const auto& v) { return bit(v.first, a) == bit(v.first, b); });
+    };
+    std::size_t worst = 0;
+    int at = 0;
+    bool fits = false;
+    for (int r = 0; r < n; ++r) {
+        bool seen = false;  // clustered as an earlier receiver does
+        for (int q = 0; q < r && !seen; ++q)
+            seen = alike(q, r);
+        if (seen)
+            continue;
+        const std::size_t bytes = sentAt(line, budget, r);
+        fits = fits || bytes <= budget;
+        if (bytes > worst) {
+            worst = bytes;
+            at = r;
+        }
+    }
+    TxtSize out{worst, {}};
+    if (worst <= budget || !fits)
+        return out;
+    std::vector<int> members;
+    for (int r = 0; r < n; ++r)
+        if (alike(at, r))
+            members.push_back(r);
+    // a code point the receiver just past them clusters otherwise, or else
+    // the one just before them (they are not all, as one fits)
+    const int other = members.back() + 1 < n ? members.back() + 1 : members.front() - 1;
+    const auto [mask, cp] = *std::find_if(varying.begin(), varying.end(),
+                                          [&](const auto& v) { return bit(v.first, at) != bit(v.first, other); });
+    const bool joins = bit(mask, at);
+    const bool contiguous = members.back() - members.front() + 1 == static_cast<int>(members.size());
+    if (members == std::vector<int>{n - 1}) {
+        out.where = "where the script's Python has a Unicode later than the width table's that makes " + codePoint(cp) +
+                    " a mark, which joins it to the character before it";
+        return out;
+    }
+    if (contiguous && members.front() == 0 && members.back() == n - 2) {
+        out.where = "where the script's Python has a Unicode that has no mark at " + codePoint(cp) +
+                    ", which sends it as a character of its own";
+        return out;
+    }
+    std::string which;
+    if (!contiguous) {
+        for (std::size_t k = 0; k < members.size(); ++k)
+            which += (k ? k + 1 == members.size() ? " or " : ", " : "") + unicodeName(members[k]);
+    } else if (members.front() == 0) {
+        which = unicodeName(members.back()) + " or older";
+    } else if (members.back() == n - 1) {
+        which = unicodeName(members.front()) + " or later";
+    } else {
+        which = unicodeName(members.front()) + " to " + unicodeName(members.back());
+    }
+    out.where = "where the script's Python has Unicode " + which + ", which " +
+                (joins ? "joins " + codePoint(cp) + " to the character before it"
+                       : "sends " + codePoint(cp) + " as a character of its own");
+    return out;
+}
+
+} // namespace
+
+std::size_t txtSentBytes(std::string_view line, std::size_t budget) { return txtSize(line, budget).bytes; }
+
+std::vector<TxtLineSize> txtOverBudget(const std::vector<std::string>& lines, std::size_t budget) {
+    std::vector<TxtLineSize> out;
+    for (std::size_t i = 0; i < lines.size(); ++i)
+        if (TxtSize t = txtSize(lines[i], budget); t.bytes > budget)
+            out.push_back({static_cast<int>(i) + 1, t.bytes, std::move(t.where)});
+    return out;
 }
 
 } // namespace bw::irc

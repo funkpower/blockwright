@@ -11,6 +11,8 @@
 #include <QString>
 
 #include <optional>
+#include <string>
+#include <vector>
 
 class QMenu;
 
@@ -34,6 +36,17 @@ public:
     // it first.
     AnsiOutput payload() const;
 
+    // The lines of the .txt Publish writes and Send to WeeChat sends beside
+    // the .ans when the document holds what the CP437 .ans can't (#336,
+    // #350): under the IRC target or for a UTF-8 document, the cells as
+    // File > Export IRC Text and `cli export --irc` send them
+    // (irc::exportCanvas of irc::sentCanvas), so its glyphs, mIRC colours
+    // and anything else the IRC encoder carries reach WeeChat's ascii
+    // script, which plays a .txt before an .ans. Empty for an ANSI-target
+    // CP437 document, whose .txt Publish reads back from the .ans as before
+    // and which Send sends no .txt for.
+    std::optional<std::vector<std::string>> ircText() const;
+
     // The piece name suggested for the document: pipeline::slugFrom its
     // file's base name, empty for an unsaved document.
     QString defaultSlug() const;
@@ -55,9 +68,12 @@ public:
         QString message;        // what failed, or what to do on no fifo
     };
     // Copies the document's .ans to <wipDir>/<slug>-r<round>.ans on `host`
-    // over ssh and reloads WeeChat's ascii script; waits for ssh to finish.
+    // over ssh, with ircText as <slug>-r<round>.txt beside it when there is
+    // one, and reloads WeeChat's ascii script; waits for ssh to finish.
     // A floating selection is stamped first. An .ans that would lose data is
-    // refused unless `allowLossy`.
+    // refused unless `allowLossy`, and a .txt with a line over the ascii
+    // script's EFnet budget (irc::kEfnetWeechatBudget) is refused, as
+    // Publish refuses it.
     SendResult sendToWeechat(const QString& host, const QString& wipDir, const QString& slug, int round,
                              bool allowLossy = false);
     // The ssh program run ("ssh" unless set).

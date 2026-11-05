@@ -1,6 +1,7 @@
 #include "blockwright/pipeline.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/library.h"
 #include "blockwright/links.h"
 
@@ -551,6 +552,18 @@ std::vector<std::string> ircLines(std::string_view ans) {
     return irc::exportCanvas(parseAnsi(ans, {.encoding = TextEncoding::Cp437}).canvas);
 }
 
+void requireBudget(const std::vector<std::string>& lines, std::size_t budget) {
+    const auto over = irc::txtOverBudget(lines, budget);
+    if (over.empty())
+        return;
+    std::string why = "over the " + std::to_string(budget) +
+                      "-byte IRC budget as WeeChat's ascii script sends it, so it would be cut on IRC:";
+    for (std::size_t i = 0; i < over.size(); ++i)
+        why += (i ? ", line " : " line ") + std::to_string(over[i].line) + " is " + std::to_string(over[i].bytes) +
+               " bytes" + (over[i].where.empty() ? "" : " " + over[i].where);
+    throw PipelineError(why);
+}
+
 PublishPlan planPublish(const PublishRequest& r) {
     if (!validSlug(r.slug))
         throw PipelineError("\"" + r.slug + "\" is not a piece name: use 1-64 of a-z, 0-9, '-' and '_', "
@@ -578,19 +591,16 @@ PublishPlan planPublish(const PublishRequest& r) {
     }
 
     std::vector<std::string> lines;
-    try {
-        lines = ircLines(r.ans);
-    } catch (const std::exception& e) {
-        throw PipelineError(std::string("the piece can't be read back as IRC text: ") + e.what());
+    if (r.lines) {
+        lines = *r.lines;
+    } else {
+        try {
+            lines = ircLines(r.ans);
+        } catch (const std::exception& e) {
+            throw PipelineError(std::string("the piece can't be read back as IRC text: ") + e.what());
+        }
     }
-    const auto over = irc::overBudget(lines, r.budget);
-    if (!over.empty()) {
-        std::string why = "over the " + std::to_string(r.budget) + "-byte IRC budget, so it would be cut on IRC:";
-        for (std::size_t i = 0; i < over.size(); ++i)
-            why += (i ? ", line " : " line ") + std::to_string(over[i].line) + " is " +
-                   std::to_string(over[i].bytes) + " bytes";
-        throw PipelineError(why);
-    }
+    requireBudget(lines, r.budget);
     plan.ans = r.ans;
     plan.txt = irc::joinLines(lines);
 
@@ -708,35 +718,92 @@ bool validRemoteDir(std::string_view dir) {
     return true;
 }
 
-std::string wipName(std::string_view slug, int round) {
-    return std::string(slug) + "-r" + std::to_string(round) + ".ans";
-}
+namespace {
 
-std::string remoteCommand(std::string_view dir, std::string_view name, std::size_t size) {
-    const std::string d(dir), n(name), z = std::to_string(size);
-    // The temporary file is mktemp's own (created exclusively, a dot name
-    // the ascii script skips), and the traps remove it if anything fails or
-    // the connection drops. cat stops at the end of its input whether the
-    // upload finished or the connection dropped, so the length decides
-    // whether the round is renamed into place. It gets the mode `cat >`
-    // would have given it. PIPE is trapped because the client gone leaves
-    // the "only N bytes" message no reader, and dash, zsh and busybox ash
-    // run no EXIT trap for a signal that kills them. The signal trap removes
-    // the file itself: bash 5.3 on macOS runs no EXIT trap for the `exit` in
-    // it. BSD wc pads the count with spaces, which $(( )) drops.
-    return "set -e; d=" + d + "; mkdir -p \"$d\"; t=; trap '[ -z \"$t\" ] || rm -f \"$t\"' EXIT; "
-           "trap '[ -z \"$t\" ] || rm -f \"$t\"; exit 1' HUP INT TERM PIPE; t=$(mktemp \"$d/." + n + ".XXXXXX\"); cat > \"$t\"; "
-           "got=$(($(wc -c < \"$t\"))); [ $got -eq " + z + " ] || { echo \"only $got of " + z + " bytes arrived, so $d/" + n +
-           " was left as it was\" >&2; exit 1; }; "
-           "chmod \"$(umask -S | tr -d x)\" \"$t\"; mv -f \"$t\" \"$d/" + n + "\"; t=; "
-           "f=\"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/weechat/weechat_fifo_$(pgrep -x weechat | head -n 1)\"; "
+// The end of the remote command: the reload, written to the running
+// WeeChat's fifo under a timeout, and kReloaded or kNoFifo.
+std::string reloadCommand() {
+    return "f=\"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/weechat/weechat_fifo_$(pgrep -x weechat | head -n 1)\"; "
            "if [ -p \"$f\" ] && timeout 5 sh -c 'echo \"core.weechat */ascii reload\" > \"$1\"' sh \"$f\"; "
            "then echo " +
            std::string(kReloaded) + "; else echo " + std::string(kNoFifo) + "; fi";
 }
 
+} // namespace
+
+std::string wipName(std::string_view slug, int round) {
+    return std::string(slug) + "-r" + std::to_string(round) + ".ans";
+}
+
+std::string wipTextName(std::string_view slug, int round) {
+    return std::string(slug) + "-r" + std::to_string(round) + ".txt";
+}
+
+std::string remoteCommand(std::string_view dir, std::string_view name, std::size_t size,
+                          std::optional<std::size_t> textSize) {
+    // The temporary files are mktemp's own (created exclusively, dot names
+    // the ascii script skips), and the traps remove them if anything fails or
+    // the connection drops. cat stops at the end of its input whether the
+    // upload finished or the connection dropped, so the length decides
+    // whether the round is renamed into place. The new files get the mode
+    // `cat >` would have given them. PIPE is trapped because the client gone
+    // leaves the "only N bytes" message no reader, and dash, zsh and busybox
+    // ash run no EXIT trap for a signal that kills them. The signal trap
+    // cleans up itself (c, which the EXIT trap then finds done): bash 5.3 on macOS runs
+    // no EXIT trap for the `exit` in it. BSD wc pads the count with spaces,
+    // which $(( )) drops.
+    //
+    // The round's .ans and .txt change as a pair. Each one there already is
+    // copied to a dot-named backup first (cp -p, so the live file stays in
+    // place), and from the first rename until both are done (r set) a failure
+    // or a HUP, INT, TERM or PIPE puts both back: the backup over its file, or
+    // the file removed when there was none before. The cleanup runs once (g):
+    // it ignores those signals from its first step, so one arriving while it
+    // puts the files back can't start it again, and it clears r only once
+    // both are back. A backup it couldn't put back is kept and named, and the
+    // command exits 1 (set +e, so a failed step doesn't end the rest of the
+    // rollback). The .txt, which the ascii
+    // script plays before an .ans, changes last (renamed in, or an earlier
+    // send's removed when this one has none), so until the pair is complete
+    // the script plays the round as it was. The backups go once both are in
+    // place, and only then is WeeChat reloaded.
+    const std::string d(dir), n(name), txt = n.substr(0, n.size() - std::min<std::size_t>(n.size(), 4)) + ".txt";
+    const std::string z = std::to_string(size + textSize.value_or(0));
+    const std::string ans = "\"$d/" + n + "\"", text = "\"$d/" + txt + "\"";
+    std::string cmd =
+        "set -e; d=" + d + "; mkdir -p \"$d\"; t=; a=; x=; ba=; bx=; r=; g=; k=; "
+        "c() { trap '' HUP INT TERM PIPE; [ -z \"$g\" ] || return 0; g=1; set +e; if [ -n \"$r\" ]; then "
+        "if [ -n \"$ba\" ]; then mv -f \"$ba\" " + ans + " && ba= || { k=1; echo \"could not put back $d/" + n +
+        ": the earlier one is kept as $ba\" >&2; }; else rm -f " + ans + " || { k=1; echo \"could not remove $d/" +
+        n + "\" >&2; }; fi; "
+        "if [ -n \"$bx\" ]; then mv -f \"$bx\" " + text + " && bx= || { k=1; echo \"could not put back $d/" + txt +
+        ": the earlier one is kept as $bx\" >&2; }; else rm -f " + text + " || { k=1; echo \"could not remove $d/" +
+        txt + "\" >&2; }; fi; r=; "
+        "[ -z \"$k\" ] || ba= bx=; fi; "
+        "for f in \"$t\" \"$a\" \"$x\" \"$ba\" \"$bx\"; do [ -z \"$f\" ] || rm -f \"$f\"; done; t=; a=; x=; ba=; bx=; "
+        "[ -z \"$k\" ] || exit 1; }; "
+        "trap c EXIT; trap 'c; exit 1' HUP INT TERM PIPE; t=$(mktemp \"$d/." + n + ".XXXXXX\"); cat > \"$t\"; "
+        "got=$(($(wc -c < \"$t\"))); [ $got -eq " + z + " ] || { echo \"only $got of " + z + " bytes arrived, so $d/" + n +
+        (textSize ? " and $d/" + txt + " were left as they were" : std::string(" was left as it was")) +
+        "\" >&2; exit 1; }; m=$(umask -S | tr -d x); ";
+    if (textSize) {
+        // The .ans and the .txt arrive as one upload, checked as one, then
+        // split into a temporary file each.
+        cmd += "x=$(mktemp \"$d/." + txt + ".XXXXXX\"); tail -c +" + std::to_string(size + 1) + " \"$t\" > \"$x\"; "
+               "a=$(mktemp \"$d/." + n + ".XXXXXX\"); head -c " + std::to_string(size) + " \"$t\" > \"$a\"; "
+               "rm -f \"$t\"; t=; chmod \"$m\" \"$a\" \"$x\"; ";
+    } else {
+        cmd += "a=$t; t=; chmod \"$m\" \"$a\"; ";
+    }
+    cmd += "if [ -e " + ans + " ]; then ba=$(mktemp \"$d/." + n + ".XXXXXX\"); cp -p " + ans + " \"$ba\"; fi; "
+           "if [ -e " + text + " ]; then bx=$(mktemp \"$d/." + txt + ".XXXXXX\"); cp -p " + text + " \"$bx\"; fi; "
+           "r=1; mv -f \"$a\" " + ans + "; a=; " +
+           (textSize ? "mv -f \"$x\" " + text + "; x=; " : "rm -f " + text + "; ") + "r=; c; " + reloadCommand();
+    return cmd;
+}
+
 std::vector<std::string> sshArguments(const WeechatTarget& target, std::string_view slug, int round,
-                                      std::size_t size) {
+                                      std::size_t size, std::optional<std::size_t> textSize) {
     if (!validHost(target.host))
         throw PipelineError("\"" + target.host + "\" is not an ssh host: use letters, digits and . _ - @");
     if (!validRemoteDir(target.wipDir))
@@ -747,7 +814,7 @@ std::vector<std::string> sshArguments(const WeechatTarget& target, std::string_v
     if (round < 1)
         throw PipelineError("a round is 1 or more");
     return {"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target.host,
-            remoteCommand(target.wipDir, wipName(slug, round), size)};
+            remoteCommand(target.wipDir, wipName(slug, round), size, textSize)};
 }
 
 } // namespace bw::pipeline

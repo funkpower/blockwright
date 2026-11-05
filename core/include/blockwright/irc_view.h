@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -94,5 +95,34 @@ struct View {
 // the rest. The view is the canvas's size, the cells shown as the export
 // draws them, the lost ones blank in the client's background.
 View ircView(const Canvas& canvas, std::size_t budget = kEfnetWeechatBudget, const EncodeOptions& opts = {});
+
+// A line of a .txt as the ascii script sends it, which is not the line as
+// written: the script reads each .txt line into cells (parse_irc, which also
+// takes formatting, ^D colours, tabs and other control bytes) and writes
+// them again (compact, which is encode_irc: two-digit colour codes, so a
+// line the encoder wrote with one-digit ones grows, and each change of
+// formatting written again), and fit() then sends that whole if it fits
+// `budget`, or else the shortest encoding of the cells (encode_irc_min, not
+// tried on a line with formatting) whole if that does, each with the reset
+// fit() puts after a trailing space. This is the size of the one it sends
+// whole, or of the shorter of the two when neither fits, which is a line the
+// script cuts. Which code points join the one before them depends on the
+// Unicode of the script's Python, as that version's own categories have it
+// (joinMask), so the line is sized under each Unicode joinUnicode lists, and
+// a later one, once for each way they cluster it, and this is the
+// largest. Publish to Library and Send to WeeChat hold a .txt to it (#336,
+// #350, #362).
+std::size_t txtSentBytes(std::string_view line, std::size_t budget = kEfnetWeechatBudget);
+
+// A .txt line the ascii script cuts: its txtSentBytes, and, when only some
+// Unicode versions of the script's Python cut it, which ones (a clause
+// starting "where the script's Python has"); empty when all of them do.
+struct TxtLineSize {
+    int line;  // from 1
+    std::size_t bytes;
+    std::string where;
+};
+// The lines of a .txt the ascii script cuts at `budget`.
+std::vector<TxtLineSize> txtOverBudget(const std::vector<std::string>& lines, std::size_t budget = kEfnetWeechatBudget);
 
 } // namespace bw::irc

@@ -131,7 +131,9 @@ QString saveWarning(const AnsiOutput& out, bool project = false, ArtFormat forma
 // no hint to Save As UTF-8, since both always write CP437 whatever the
 // document is saved as.
 enum class PipelineAction { Publish, Send };
-QString pipelineWarning(const AnsiOutput& out, PipelineAction action);
+// `canvasText`: the .txt beside the .ans is made from the canvas
+// (Publisher::ircText), so the losses are the .ans's alone, which it says.
+QString pipelineWarning(const AnsiOutput& out, PipelineAction action, bool canvasText = false);
 
 class SelectTool;
 class GlyphBar;

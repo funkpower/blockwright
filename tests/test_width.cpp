@@ -25,6 +25,11 @@ struct VariesRun {
     std::uint32_t first, last;
 };
 
+struct JoinRun {
+    std::uint32_t first, last;
+    unsigned mask;
+};
+
 #include "../core/src/width.inc"
 
 // The width the table gives `cp` (1 outside every run).
@@ -45,6 +50,36 @@ void checkAll(std::initializer_list<char32_t> cps, int want) {
 } // namespace
 
 TEST_CASE("the width table is Unicode 18.0") { CHECK(std::strcmp(widthUnicodeVersion(), "18.0.0") == 0); }
+
+TEST_CASE("a code point joins under the Unicode versions whose own categories make it a mark") {
+    const char* versions[] = {"14.0", "15.0", "15.1", "16.0", "17.0", "18.0"};
+    REQUIRE(joinUnicodeCount() == 6);
+    for (int i = 0; i < 6; ++i)
+        CHECK(std::strcmp(joinUnicode(i), versions[i]) == 0);
+    CHECK(joinUnicode(6) == nullptr);  // a later one
+    // bit i for versions[i], bit 6 for a later version
+    CHECK(joinMask(0x1ACF) == 0x70);   // Mn from 17.0
+    CHECK(joinMask(0x0897) == 0x78);   // from 16.0
+    CHECK(joinMask(0x0ECE) == 0x7E);   // from 15.0
+    CHECK(joinMask(0x1171E) == 0x07);  // Mn until 15.1, Mc from 16.0
+    CHECK(joinMask(0x0898) == 0x7F);   // 14.0: every supported Python joins it
+    CHECK(joinMask(0x0301) == 0x7F);
+    CHECK(joinMask(0x200D) == 0x7F);   // default ignorable, joined whatever the categories
+    CHECK(joinMask(0x1160) == 0x7F);   // a Hangul vowel
+    CHECK(joinMask(U'x') == 0);
+    CHECK(joinMask(0x00AD) == 0);      // default ignorable, but drawn one column
+    CHECK(joinMask(0x115F) == 0);      // and two
+    CHECK(joinMask(0x0378) == 0x40);   // unassigned: only a later version may make it a mark
+    CHECK(joinMask(0xFFFF) == 0);      // a noncharacter, never a mark
+}
+
+TEST_CASE("the table's version joins exactly the code points of width 0") {
+    for (char32_t cp = 0; cp <= 0x10FFFF; ++cp)
+        if (((joinMask(cp) >> 5 & 1) != 0) != (codePointWidth(cp) == 0)) {
+            FAIL_CHECK("U+" << std::hex << unsigned(cp) << ": mask " << joinMask(cp) << ", width " << codePointWidth(cp));
+            break;
+        }
+}
 
 TEST_CASE("every CP437 glyph is one column") {
     for (int b = 0; b < 256; ++b) {
