@@ -33,6 +33,10 @@ write an .ans as CP437, or as UTF-8 with
 no character of three bytes or more); an XBIN or BIN
 .I out
 is CP437, so utf\-8 refuses one.
+.B snapshot
+writes the project's own encoding, or the one
+.B \-\-output\-encoding
+gives.
 Everything else is written as CP437.
 .SH COMMANDS
 .TP
@@ -95,7 +99,10 @@ Write a piece or a project as a project zip.
 Write a piece or a project as a project directory.
 .TP
 .BI snapshot " project"
-Save the flattened composite as the project's next round.
+Save the flattened composite as the project's next round, as an .ans in the
+project's encoding, or in the one
+.B \-\-output\-encoding
+gives.
 .TP
 .BI add-generator " project dir"
 Add a generator layer from a directory with a generator.json, run it once and

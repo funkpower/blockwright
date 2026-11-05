@@ -182,10 +182,11 @@ struct Project {
     std::optional<Sauce> sauce;
     // The text encoding of the project's flat .ans form (PLAN §8): what the
     // .ans it was made from was read as (fromAnsi), or what the app last
-    // saved it in. The app's Save As .ans writes it unless told otherwise;
-    // the CLI, snapshots and Publish don't follow it (their .ans is CP437
-    // unless an option says). The manifest's "ansEncoding", "utf-8" or
-    // "cp437", written only when UTF-8; a project without it is CP437.
+    // saved it in. The app's Save As .ans and snapshots (takeSnapshot) write
+    // it unless told otherwise; the CLI's convert and Publish don't follow it
+    // (their .ans is CP437 unless an option says). The manifest's
+    // "ansEncoding", "utf-8" or "cp437", written only when UTF-8; a project
+    // without it is CP437.
     TextEncoding ansEncoding = TextEncoding::Cp437;
     // What the project is drawn for (#350): ANSI (an .ans, 16 colours) or
     // IRC (mIRC's 99 colours too). The manifest's "target", "irc" or "ansi",
@@ -217,9 +218,11 @@ Project fromAnsi(const AnsiDocument& doc, Opened* opened = nullptr);
 AnsiDocument toAnsi(const Project& project);
 
 // Flattens the project to .ans and keeps it as the next round (one past the
-// last, r1 for the first). Returns what writeAnsi wrote, so a caller can
-// report a lossy snapshot (glyphs written as '?', blink dropped).
-AnsiOutput takeSnapshot(Project& project);
+// last, r1 for the first), in `encoding`, or with none in the project's
+// ansEncoding, so a UTF-8 piece's rounds keep its wide glyphs and clusters
+// (#336). Returns what writeAnsi wrote, so a caller can report a lossy
+// snapshot (glyphs written as '?', blink dropped).
+AnsiOutput takeSnapshot(Project& project, std::optional<TextEncoding> encoding = std::nullopt);
 
 // Why the writer would refuse a layer's reference image (a picture that is
 // not a PNG or JPEG, or too big; a place, size or opacity out of range; one

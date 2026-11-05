@@ -160,6 +160,28 @@ TEST_CASE("a file the system hands the app opens in the window, asking first abo
     CHECK(w.document()->path() == other);
 }
 
+TEST_CASE("Take Snapshot writes a UTF-8 document's snapshot in UTF-8 (#336)") {
+    QTemporaryDir tmp;
+    const QString zip = tmp.filePath(QStringLiteral("wide.bwp"));
+    // a wide glyph and a combined cluster
+    project::writeZip(project::fromAnsi(parseAnsi("\xE4\xB8\xAD" "e\xCC\x81" "\xE2\x96\x88\r\n")), fpath(zip));
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(zip, &error));
+    Document& d = *w.document();
+    REQUIRE(d.textEncoding() == TextEncoding::Utf8);
+    // nothing lost, so no question
+    REQUIRE(w.snapshot(&error) == 1);
+    const std::string& r1 = d.extras().snapshots.back().ans;
+    CHECK(r1 == writeAnsi(project::toAnsi(d.project()), TextEncoding::Utf8).bytes);
+    const AnsiDocument back = parseAnsi(r1);
+    CHECK(back.encoding == TextEncoding::Utf8);
+    CHECK(back.canvas.at(1, 0).ch.isContinuation());
+    CHECK(back.canvas.at(2, 0).ch.isCluster());
+    REQUIRE(w.save());
+    CHECK(project::read(fpath(zip)).snapshots.back().ans == r1);
+}
+
 TEST_CASE("a .bwp project opens with everything it holds and saves back as a zip") {
     QTemporaryDir tmp;
     const QString path = tmp.filePath(QStringLiteral("piece.bwp"));

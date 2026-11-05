@@ -1068,6 +1068,41 @@ TEST_CASE("snapshots are numbered rounds of the flattened project", "[project][s
     CHECK(lossy.snapshots.size() == 1);
 }
 
+TEST_CASE("a snapshot is written in the project's encoding unless told otherwise (#336)", "[project][snapshots][utf8]") {
+    // a wide glyph (a lead and its continuation) and a combined cluster
+    const AnsiDocument read = parseAnsi("\xE4\xB8\xAD" "e\xCC\x81" "\xE2\x96\x88\r\n");
+    REQUIRE(read.encoding == TextEncoding::Utf8);
+    Project p = project::fromAnsi(read);
+    REQUIRE(p.ansEncoding == TextEncoding::Utf8);
+
+    const AnsiOutput r1 = project::takeSnapshot(p);
+    CHECK(r1.encoding == TextEncoding::Utf8);
+    CHECK_FALSE(r1.lossy());
+    CHECK(r1.bytes == writeAnsi(project::toAnsi(p), TextEncoding::Utf8).bytes);
+    CHECK(p.snapshots.back().ans == r1.bytes);
+    const AnsiDocument back = parseAnsi(p.snapshots.back().ans);
+    CHECK(back.encoding == TextEncoding::Utf8);
+    CHECK(back.canvas.at(0, 0).ch == U'\u4E2D');
+    CHECK(back.canvas.at(1, 0).ch.isContinuation());
+    CHECK(back.canvas.at(2, 0).ch.isCluster());
+    CHECK(back.canvas == project::toAnsi(p).canvas);
+
+    // told CP437, it writes CP437 and counts what CP437 can't hold
+    const AnsiOutput cp = project::takeSnapshot(p, TextEncoding::Cp437);
+    CHECK(cp.encoding == TextEncoding::Cp437);
+    CHECK(cp.lossy());
+    CHECK(cp.bytes == writeAnsi(project::toAnsi(p), TextEncoding::Cp437).bytes);
+    CHECK(p.snapshots.back().round == 2);
+
+    // a CP437 project's snapshot is CP437, told nothing, as before
+    Project old;
+    old.layers = shadeUnderPixels();
+    REQUIRE(old.ansEncoding == TextEncoding::Cp437);
+    CHECK(project::takeSnapshot(old).bytes == writeAnsi(project::toAnsi(old), TextEncoding::Cp437).bytes);
+    old.ansEncoding = TextEncoding::Utf8;
+    CHECK(project::takeSnapshot(old).bytes == writeAnsi(project::toAnsi(old), TextEncoding::Utf8).bytes);
+}
+
 // ---- safety: links, budgets, entry types, collisions, limits ------------------
 
 namespace {

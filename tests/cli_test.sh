@@ -202,7 +202,7 @@ done
 expect "--output-encoding with a bad value is refused" 2 "--output-encoding takes cp437 or utf-8, not 'auto'" -- "$cli" convert --output-encoding auto "$piece" "$tmp/bad-enc.ans"
 if [[ -e $tmp/bad-enc.ans ]]; then bad "a bad --output-encoding wrote a file"; else ok "a bad --output-encoding writes nothing"; fi
 for cmd in info lint render export pack; do
-  expect "--output-encoding on $cmd is refused" 2 "--output-encoding is a convert or shade option, not an? $cmd option" -- "$cli" "$cmd" --output-encoding utf-8 "$piece" "$tmp/x"
+  expect "--output-encoding on $cmd is refused" 2 "--output-encoding is a convert, shade or snapshot option, not an? $cmd option" -- "$cli" "$cmd" --output-encoding utf-8 "$piece" "$tmp/x"
 done
 for out in tux-u8.xb tux-u8.XBIN tux-u8.bin; do
   expect "--output-encoding utf-8 to $out is refused" 2 "--output-encoding utf-8 writes an \.ans; .*${out//./\\.} is XBIN or BIN, which are CP437" -- "$cli" convert --output-encoding utf-8 "$piece" "$tmp/$out"
@@ -230,9 +230,9 @@ expect "info: shade wrote UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/sha
 "$cli" convert "$tmp/shade-u8.ans" "$tmp/shade-u8-cp.ans"
 if cmp -s "$tmp/shade-cp.ans" "$tmp/shade-u8-cp.ans"; then ok "shade's UTF-8 output is its CP437 output's cells"; else bad "shade UTF-8 and CP437 outputs differ"; fi
 expect "shade --output-encoding utf-8 to a .bin is refused" 2 'is XBIN or BIN, which are CP437' -- "$cli" shade --ramp steel --output-encoding utf-8 "$piece" "$tmp/shade.bin"
-expect "--help lists --output-encoding" 0 '^  --output-encoding <enc> +convert, shade: write an \.ans output as cp437 or' -- "$cli" --help
+expect "--help lists --output-encoding" 0 '^  --output-encoding <enc> +convert, shade, snapshot: write an \.ans output as$' -- "$cli" --help
 expect "--help says convert and shade write UTF-8 with it" 0 '^shade write an \.ans as CP437, or as UTF-8 with --output-encoding utf-8$' -- "$cli" --help
-expect "the usage says convert and shade take it" 2 '^ +convert and shade take --output-encoding cp437\|utf-8$' -- "$cli" convert
+expect "the usage says convert, shade and snapshot take it" 2 '^ +convert, shade and snapshot take --output-encoding cp437\|utf-8$' -- "$cli" convert
 cp "$tmp/tux.xb" "$tmp/tux-xb.ans"
 expect "an XBIN is read by its header whatever its name" 0 '^format: +XBIN' -- "$cli" info "$tmp/tux-xb.ans"
 expect "convert .xb to .ans" 0 '^$' -- "$cli" convert "$tmp/tux.xb" "$tmp/from-xb.ans"
@@ -852,6 +852,17 @@ if cmp -s "$piece" "$proj/tux/snapshots/r2.ans"; then ok "a snapshot is the flat
 expect "snapshot a zip" 0 '^r1$' -- "$cli" snapshot "$proj/tux.bwp"
 expect "info: snapshots" 0 '^snapshots: +1 \(last r1\)$' -- "$cli" info "$proj/tux.bwp"
 expect "snapshot takes a project" 1 'tux\.ans: not a project' -- "$cli" snapshot "$piece"
+# a UTF-8 project's snapshots are UTF-8 unless --output-encoding says (#336)
+"$cli" unpack "$u8" "$proj/u8" > /dev/null
+"$cli" convert --output-encoding utf-8 "$proj/u8" "$proj/u8-flat.ans"
+expect "snapshot a UTF-8 project" 0 '^r1$' -- "$cli" snapshot "$proj/u8"
+if cmp -s "$proj/u8-flat.ans" "$proj/u8/snapshots/r1.ans"; then ok "a UTF-8 project's snapshot is UTF-8"; else bad "a UTF-8 project's snapshot isn't its UTF-8 .ans"; fi
+expect "snapshot --output-encoding cp437" 0 '^r2$' -- "$cli" snapshot --output-encoding cp437 "$proj/u8"
+if cmp -s "$piece" "$proj/u8/snapshots/r2.ans"; then ok "--output-encoding cp437 snapshots CP437"; else bad "snapshot --output-encoding cp437 isn't CP437"; fi
+expect "snapshot --output-encoding utf-8 of a CP437 project" 0 '^r3$' -- "$cli" snapshot --output-encoding utf-8 "$proj/tux"
+if cmp -s "$u8" "$proj/tux/snapshots/r3.ans"; then ok "--output-encoding utf-8 snapshots UTF-8"; else bad "snapshot --output-encoding utf-8 isn't UTF-8"; fi
+expect "snapshot with a bad --output-encoding is refused" 2 "--output-encoding takes cp437 or utf-8, not 'auto'" -- "$cli" snapshot --output-encoding auto "$proj/u8"
+if [[ -e $proj/u8/snapshots/r3.ans ]]; then bad "a bad --output-encoding took a snapshot"; else ok "a bad --output-encoding takes no snapshot"; fi
 expect "pack takes --allow-lossy" 0 '^$' -- "$cli" pack --allow-lossy "$piece" "$proj/x.bwp"
 cp "$proj/tux.bwp" "$proj/keep.bwp"
 expect "a flat file never replaces a project" 1 'keep\.bwp: not written: convert writes \.ans, \.xb or \.bin; use pack for a project' -- "$cli" convert "$piece" "$proj/keep.bwp"

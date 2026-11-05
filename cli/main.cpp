@@ -19,7 +19,7 @@
 //   blockwright-cli library check <dir>
 //   blockwright-cli pack [--allow-lossy] [--target ansi|irc] <in.ans|project> <out.bwp>
 //   blockwright-cli unpack [--allow-lossy] [--target ansi|irc] <in.ans|project> <dir>
-//   blockwright-cli snapshot [--allow-lossy] <project>
+//   blockwright-cli snapshot [--allow-lossy] [--output-encoding cp437|utf-8] <project>
 //   blockwright-cli add-generator [--name NAME] [--timeout S] <project> <generator-dir>
 //   blockwright-cli run-generators [--layer ID]... [--timeout S] <project>
 //   blockwright-cli import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]
@@ -28,7 +28,8 @@
 // info, convert, render, export, shade, lint, pack and unpack take
 // --encoding auto|cp437|utf-8: what an .ans input's text is read as (PLAN §8).
 // convert and shade take --output-encoding cp437|utf-8: what an .ans output's
-// text is written as (default cp437).
+// text is written as (default cp437). snapshot takes it too, defaulting to
+// the project's own encoding (its ansEncoding).
 //
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
@@ -408,12 +409,13 @@ int pack(const std::string& in, const std::string& out, bool directory, bool all
     return kOk;
 }
 
-// Saves the project's composite as its next round, in the form it was read.
-int snapshot(const std::string& path, bool allowLossy) {
+// Saves the project's composite as its next round, in the form it was read,
+// in `encoding` or with none in the project's own.
+int snapshot(const std::string& path, bool allowLossy, std::optional<bw::TextEncoding> encoding) {
     if (!bw::project::isProject(path))
         throw Failure{path + ": not a project"};
     bw::project::Project p = loadProject(path);
-    const bw::AnsiOutput res = bw::project::takeSnapshot(p);
+    const bw::AnsiOutput res = bw::project::takeSnapshot(p, encoding);
     warnLoss(path, res);
     const int round = p.snapshots.back().round;
     if (res.lossy() && !allowLossy)
@@ -1002,7 +1004,9 @@ int main(int argc, char** argv) {
         "utf-8 says which. info prints the one it was read as. convert and\n"
         "shade write an .ans as CP437, or as UTF-8 with --output-encoding utf-8\n"
         "(SAUCE stays CP437; a byte order mark only when the text has no\n"
-        "sequence of three bytes or more). Everything else is written as CP437."));
+        "sequence of three bytes or more). snapshot writes the project's own\n"
+        "encoding, or the one --output-encoding gives. Everything else is\n"
+        "written as CP437."));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
@@ -1131,7 +1135,8 @@ int main(int argc, char** argv) {
     parser.addOption(encodingOpt);
     const QCommandLineOption outputEncodingOpt(
         QStringLiteral("output-encoding"),
-        QStringLiteral("convert, shade: write an .ans output as cp437 or utf-8 (default: cp437; SAUCE stays CP437)"),
+        QStringLiteral("convert, shade, snapshot: write an .ans output as cp437 or utf-8 (default: cp437, and for "
+                       "snapshot the project's encoding; SAUCE stays CP437)"),
         QStringLiteral("enc"), QStringLiteral("cp437"));
     parser.addOption(outputEncodingOpt);
     const QCommandLineOption targetOpt(
@@ -1174,14 +1179,14 @@ int main(int argc, char** argv) {
                   << "         <in> <out.png>\n"
                   << "       | library list [dir] | library check <dir>\n"
                   << "       | pack [--target ansi|irc] <in> <out.bwp> | unpack [--target ansi|irc] <in> <dir>\n"
-                  << "       | snapshot [--allow-lossy] <project>\n"
+                  << "       | snapshot [--allow-lossy] [--output-encoding enc] <project>\n"
                   << "       | add-generator [--name NAME] [--timeout S] <project> <dir>\n"
                   << "       | run-generators [--layer ID]... [--timeout S] <project>\n"
                   << "       | import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]\n"
                   << "         <scene.py> <out.bwp|dir>\n"
                   << "       | --version\n"
                   << "       info, convert, render, export, shade, lint, pack and unpack take --encoding auto|cp437|utf-8\n"
-                  << "       convert and shade take --output-encoding cp437|utf-8\n";
+                  << "       convert, shade and snapshot take --output-encoding cp437|utf-8\n";
         return kUsage;
     };
     if (args.isEmpty())
@@ -1200,7 +1205,7 @@ int main(int argc, char** argv) {
         {&timeoutOpt, {"add-generator", "run-generators", "import-scene"}},
         {&bakeOpt, {"import-scene"}},      {&authorOpt, {"import-scene"}}, {&dateOpt, {"import-scene"}},
         {&encodingOpt, {"info", "convert", "render", "export", "shade", "lint", "pack", "unpack"}},
-        {&outputEncodingOpt, {"convert", "shade"}},
+        {&outputEncodingOpt, {"convert", "shade", "snapshot"}},
         {&targetOpt, {"lint", "pack", "unpack"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
@@ -1372,7 +1377,8 @@ int main(int argc, char** argv) {
         if (cmd == QLatin1String("snapshot")) {
             if (args.size() != 2)
                 return usage("snapshot takes one project");
-            return snapshot(args[1].toStdString(), parser.isSet(lossyOpt));
+            return snapshot(args[1].toStdString(), parser.isSet(lossyOpt),
+                            parser.isSet(outputEncodingOpt) ? std::optional(gOutputEncoding) : std::nullopt);
         }
         bw::generator::RunOptions runOpts;
         if (parser.isSet(timeoutOpt))

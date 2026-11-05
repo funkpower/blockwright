@@ -418,6 +418,7 @@ bool Document::nextSnapshot(project::Snapshot* snapshot, AnsiOutput* out, QStrin
     p.layers = stack_;
     p.ice = doc_.ice;
     p.sauce = doc_.sauce;
+    p.ansEncoding = doc_.encoding;
     p.snapshots = extras_.snapshots;
     try {
         *out = project::takeSnapshot(p);

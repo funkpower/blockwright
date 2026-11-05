@@ -2132,13 +2132,13 @@ AnsiDocument toAnsi(const Project& project) {
     return doc;
 }
 
-AnsiOutput takeSnapshot(Project& project) {
+AnsiOutput takeSnapshot(Project& project, std::optional<TextEncoding> encoding) {
     int last = 0;
     for (const Snapshot& s : project.snapshots)
         last = std::max(last, s.round);
     if (last >= 999999999)
         fail("no rounds left after r" + std::to_string(last));
-    AnsiOutput out = writeAnsi(toAnsi(project));
+    AnsiOutput out = writeAnsi(toAnsi(project), encoding.value_or(project.ansEncoding));
     project.snapshots.push_back({last + 1, out.bytes});
     return out;
 }
