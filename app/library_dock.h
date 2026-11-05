@@ -59,6 +59,11 @@ QByteArray stampKey(const std::filesystem::path& p);
 // Empty if `key` can't be decoded (not UTF-8, on Windows).
 std::filesystem::path stampKeyPath(const QByteArray& key);
 
+// A library frame style's id for the Frame tool: "library:" and its
+// path's native bytes (stampKey) percent-encoded but for '/', so two names
+// that aren't UTF-8 stay apart and a plain path reads as itself.
+QString frameStyleId(const std::filesystem::path& p);
+
 // The grid's icon box.
 inline constexpr QSize kIconBox(96, 64);
 
@@ -68,6 +73,13 @@ inline constexpr QSize kIconBox(96, 64);
 // `bandPixels` pixels) at a time, so a large stamp never holds its whole 1x
 // image; the result is the same whatever the band size.
 QImage stampIcon(const Canvas& cv, int glyphWidth, QSize box, std::int64_t bandPixels = std::int64_t(1) << 22);
+
+// A frame style's thumbnail: drawn width x height (grown to its corners,
+// which kMaxFrameSourceColumns x kMaxFrameSourceRows bounds) and fitted to
+// `box` as stampIcon fits a stamp. A declared minimum larger than that is
+// left out, so a style's "min" never sizes the picture. Null if the style
+// isn't valid.
+QImage frameStyleIcon(const FrameStyle& style, int width, int height, QSize box);
 
 // The thumbnail grid: an icon-mode list whose drags carry the stamp's or
 // text style's key.
@@ -114,6 +126,9 @@ public:
 
     const std::vector<Entry>& entries() const { return entries_; }
     const std::vector<StyleEntry>& styles() const { return styles_; }
+    // The frame styles (.frame.json) in both libraries, bundled first, each
+    // with frameStyleId(its path) as its id, for the Frame tool's picker.
+    const std::vector<FrameStyle>& frameStyles() const { return frames_; }
     const std::vector<library::Problem>& problems() const { return problems_; }
     // The stamp read from the .ans at `path`, or null.
     const library::Stamp* find(const std::filesystem::path& path) const;
@@ -144,6 +159,8 @@ signals:
     // A text style was double-clicked or activated with Enter (the stampKey
     // of its .style.json).
     void textStyleActivated(const QByteArray& key);
+    // A rescan finished.
+    void rescanned();
 
 private:
     void refill();
@@ -156,6 +173,7 @@ private:
     std::filesystem::path bundled_, user_;
     std::vector<Entry> entries_;
     std::vector<StyleEntry> styles_;
+    std::vector<FrameStyle> frames_;
     std::vector<library::Problem> problems_;
     QHash<QByteArray, QImage> thumbnails_;
     int renders_ = 0;

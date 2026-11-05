@@ -7,6 +7,7 @@
 #include "draw_tools.h"
 #include "flow_row.h"
 #include "frame_tool.h"
+#include "library_dock.h"
 #include "help_text.h"
 #include "select_tool.h"
 #include "settings.h"
@@ -25,6 +26,7 @@
 #include <QBoxLayout>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QSignalBlocker>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -346,12 +348,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     // the names are long; the list opens wide enough to show them
     frameStyle_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     frameStyle_->setMinimumContentsLength(8);
-    for (const FrameStyle& st : bundledFrameStyles()) {
-        // the style drawn small, its open middle shown as the canvas shows it
-        const auto thumb = drawFrame(st, std::max(5, st.minimumWidth()), std::max(3, st.minimumHeight()));
-        const QIcon icon = thumb ? QIcon(QPixmap::fromImage(renderCanvas(*thumb, 8))) : QIcon();
-        frameStyle_->addItem(icon, QString::fromStdString(st.name), QString::fromStdString(st.id));
-    }
+    fillFrameStyles();
     frameStyle_->setToolTip(tr("Frame: the border drawn to fit the drag"));
     frameColours_ = new QComboBox;
     frameColours_->setObjectName(QStringLiteral("frameColours"));
@@ -516,7 +513,16 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     }
     if (frameTool_) {
         connect(frameTool_, &Tool::changed, this, &ToolOptions::sync);
+        connect(frameTool_, &FrameTool::stylesChanged, this, [this] {
+            fillFrameStyles();
+            sync();
+        });
         connect(frameStyle_, &QComboBox::currentIndexChanged, this, [this] {
+            if (!syncing_)
+                frameTool_->setStyle(frameStyle_->currentData().toString());
+        });
+        // a pick of the style shown already (activated, not changed) counts too
+        connect(frameStyle_, &QComboBox::activated, this, [this] {
             if (!syncing_)
                 frameTool_->setStyle(frameStyle_->currentData().toString());
         });
@@ -663,6 +669,24 @@ void ToolOptions::fitCentre() {
     const Canvas& c = view_->document()->canvas();
     centreX_->setRange(0, std::max(0, c.width() - 1));
     centreY_->setRange(0, std::max(0, c.height() - 1));
+}
+
+void ToolOptions::fillFrameStyles() {
+    const QSignalBlocker block(frameStyle_);
+    frameStyle_->clear();
+    std::vector<FrameStyle> styles = bundledFrameStyles();
+    if (frameTool_)
+        styles.insert(styles.end(), frameTool_->libraryStyles().begin(), frameTool_->libraryStyles().end());
+    for (const FrameStyle& st : styles) {
+        // the style drawn small, its open middle shown as the canvas shows
+        // it, fitted to the icon whatever minimum it declares
+        const QImage thumb = frameStyleIcon(st, std::clamp(st.minimumWidth(), 5, 16),
+                                            std::clamp(st.minimumHeight(), 3, 8), frameStyle_->iconSize());
+        const QIcon icon = thumb.isNull() ? QIcon() : QIcon(QPixmap::fromImage(thumb));
+        frameStyle_->addItem(icon, QString::fromStdString(st.name), QString::fromStdString(st.id));
+    }
+    if (frameTool_)
+        frameStyle_->setCurrentIndex(frameStyle_->findData(frameTool_->styleId()));
 }
 
 void ToolOptions::sync() {

@@ -198,6 +198,13 @@ public:
     // path written, or empty and `error`.
     QString saveSelectionToLibrary(const QString& name, const QString& category, const QStringList& tags,
                                    QString* error, bool replace = false);
+    // Saves the selection (or the floating selection) as a frame style in
+    // the user library (#345 slice 3, library::writeFrameStyle, never over
+    // another file), cut by the insets as frameStyleFromCells cuts it,
+    // rescans the dock and picks the style in the Frame tool. The path
+    // written, or empty and `error`.
+    QString saveSelectionAsFrameStyle(const QString& name, int left, int right, int top, int bottom, bool fill,
+                                      bool keepBackground, QString* error);
     // A Library text style (PLAN §12, §15). Double-clicking one applies it
     // to the active layer: its effects replace the layer's style, one undo
     // step through Document::setLayerProperties. It goes on the layers the
@@ -332,6 +339,11 @@ public slots:
     void setNinePx(bool on);
     // Selection > Save to Library...: asks for the name, category and tags.
     void saveToLibrary();
+    // Selection > Save as Frame Style...: asks for the name and the insets.
+    void saveFrameStyle();
+    // The selected cells (or the floating ones) as Save to Library saves
+    // them: a float lifted off a pixel layer as its pixels show.
+    CellBlock selectionCells() const;
     // Layer > Layer Style…: opens the Layer Style dialog on the layer, if it
     // can hold a style (window-modal; OK sets the style, one undo step).
     void editLayerStyle(LayerId id);

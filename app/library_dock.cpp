@@ -30,6 +30,7 @@
 #include <vector>
 #include <exception>
 #include <iterator>
+#include <optional>
 
 namespace bw {
 
@@ -51,6 +52,10 @@ QByteArray stampKey(const std::filesystem::path& p) {
 #else
     return QByteArray::fromStdString(p.native());
 #endif
+}
+
+QString frameStyleId(const std::filesystem::path& p) {
+    return QStringLiteral("library:") + QString::fromLatin1(stampKey(p).toPercentEncoding("/"));
 }
 
 std::filesystem::path stampKeyPath(const QByteArray& key) {
@@ -143,6 +148,7 @@ void LibraryDock::setDirectories(const std::filesystem::path& bundled, const std
 void LibraryDock::rescan() {
     entries_.clear();
     styles_.clear();
+    frames_.clear();
     problems_.clear();
     for (const auto& [dir, bundled] : {std::pair{bundled_, true}, std::pair{user_, false}}) {
         if (dir.empty())
@@ -155,6 +161,10 @@ void LibraryDock::rescan() {
         for (library::TextStyleEntry& t : r.styles) {
             QByteArray key = thumbnailKey(t);
             styles_.push_back({std::move(t), bundled, std::move(key)});
+        }
+        for (library::FrameStyleEntry& f : r.frames) {
+            f.style.id = frameStyleId(f.path).toStdString();
+            frames_.push_back(std::move(f.style));
         }
         problems_.insert(problems_.end(), r.problems.begin(), r.problems.end());
     }
@@ -191,6 +201,7 @@ void LibraryDock::rescan() {
         problemLabel_->setToolTip(lines.join(QLatin1Char('\n')));
     }
     refill();
+    emit rescanned();
 }
 
 QStringList LibraryDock::categories() const {
@@ -315,6 +326,15 @@ QImage stampIcon(const Canvas& cv, int glyphWidth, QSize box, std::int64_t bandP
         }
     }
     return out;
+}
+
+QImage frameStyleIcon(const FrameStyle& style, int width, int height, QSize box) {
+    FrameStyle s = style;
+    s.minWidth = std::min(s.minWidth, width);
+    s.minHeight = std::min(s.minHeight, height);
+    const std::optional<Canvas> drawn =
+        drawFrame(s, std::max(width, s.minimumWidth()), std::max(height, s.minimumHeight()));
+    return drawn ? stampIcon(*drawn, 8, box) : QImage();
 }
 
 QImage LibraryDock::cachedThumbnail(const QByteArray& key, const std::function<QImage()>& render) {

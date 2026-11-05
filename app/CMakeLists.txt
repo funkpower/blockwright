@@ -19,6 +19,7 @@ add_library(blockwright_app STATIC
   font_scanner.cpp
   flow_row.cpp
   flow_row.h
+  frame_style_dialog.cpp
   frame_tool.cpp
   frame_tool.h
   font_scanner.h

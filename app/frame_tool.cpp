@@ -73,24 +73,54 @@ std::pair<int, int> span(int from, int to, int minimum) {
 
 FrameTool::FrameTool(QObject* parent) : DragTool(QStringLiteral("frame"), tr("Fra&me"), parent) {
     const auto s = appSettings();
-    const QString id = s->value(kFrameStyleKey).toString();
-    styleId_ = findFrameStyle(id.toStdString()) ? id : QString::fromStdString(bundledFrameStyles().front().id);
+    saved_ = s->value(kFrameStyleKey).toString();
+    styleId_ = findStyle(saved_) ? saved_ : QString::fromStdString(bundledFrameStyles().front().id);
     penColours_ = s->value(kFramePenColoursKey, false).toBool();
 }
 
+const FrameStyle* FrameTool::findStyle(const QString& id) const {
+    if (const FrameStyle* s = findFrameStyle(id.toStdString()))
+        return s;
+    for (const FrameStyle& s : library_)
+        if (QString::fromStdString(s.id) == id)
+            return &s;
+    return nullptr;
+}
+
 const FrameStyle& FrameTool::style() const {
-    const FrameStyle* s = findFrameStyle(styleId_.toStdString());
+    const FrameStyle* s = findStyle(styleId_);
     return s ? *s : bundledFrameStyles().front();
 }
 
 void FrameTool::setStyle(const QString& id) {
-    if (id == styleId_ || !findFrameStyle(id.toStdString()))
+    if (!findStyle(id) || (id == styleId_ && id == saved_))
+        return;
+    // Picking the style shown already (the fallback for one that went away)
+    // still makes it the choice kept.
+    if (id != saved_) {
+        saved_ = id;
+        appSettings()->setValue(kFrameStyleKey, id);
+    }
+    if (id == styleId_)
         return;
     styleId_ = id;
-    appSettings()->setValue(kFrameStyleKey, id);
     // a drag under way is redone with it, or ends if the layer refuses it
     settingsChanged();
     emit changed();
+}
+
+void FrameTool::setLibraryStyles(std::vector<FrameStyle> styles) {
+    library_ = std::move(styles);
+    const QString was = styleId_;
+    if (findStyle(saved_))
+        styleId_ = saved_;
+    else if (!findStyle(styleId_))
+        styleId_ = QString::fromStdString(bundledFrameStyles().front().id);
+    emit stylesChanged();
+    // the style a drag under way draws may have changed, or gone
+    settingsChanged();
+    if (styleId_ != was)
+        emit changed();
 }
 
 void FrameTool::setPenColours(bool on) {

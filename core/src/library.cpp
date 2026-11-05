@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <new>
 #include <optional>
 #include <cstdlib>
 #include <fstream>
@@ -58,7 +59,8 @@ namespace fs = std::filesystem;
 
 namespace bw::library {
 
-std::string readRegularFile(const fs::path& p) {
+std::string readRegularFile(const fs::path& p, std::size_t limit) {
+    const auto tooLarge = [limit] { return LibraryError("is larger than " + std::to_string(limit) + " bytes"); };
 #if BW_LIBRARY_POSIX
     // The handle is checked, not the path: open without blocking (a FIFO
     // with no writer would block), refuse anything fstat doesn't call a
@@ -78,6 +80,8 @@ std::string readRegularFile(const fs::path& p) {
         throw LibraryError(std::string("can't be read: ") + std::strerror(errno));
     if (!S_ISREG(st.st_mode))
         throw LibraryError("is not a regular file");
+    if (std::uintmax_t(st.st_size) > limit)
+        throw tooLarge();
     const int flags = ::fcntl(fd, F_GETFL);
     if (flags < 0 || ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0)
         throw LibraryError(std::string("can't be read: ") + std::strerror(errno));
@@ -91,6 +95,8 @@ std::string readRegularFile(const fs::path& p) {
             throw LibraryError(std::string("read failed: ") + std::strerror(errno));
         if (n == 0)
             break;
+        if (std::size_t(n) > limit - out.size())  // it grew since fstat
+            throw tooLarge();
         out.append(buf, std::size_t(n));
     }
     return out;
@@ -99,11 +105,20 @@ std::string readRegularFile(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
     if (!in)
         throw LibraryError("can't be read");
-    std::ostringstream ss;
-    ss << in.rdbuf();
+    std::error_code ec;
+    const std::uintmax_t size = fs::file_size(p, ec);
+    if (!ec && size > limit)
+        throw tooLarge();
+    std::string out;
+    char buf[65536];
+    while (in.read(buf, sizeof buf) || in.gcount() > 0) {
+        if (std::size_t(in.gcount()) > limit - out.size())
+            throw tooLarge();
+        out.append(buf, std::size_t(in.gcount()));
+    }
     if (in.bad())
         throw LibraryError("read failed");
-    return ss.str();
+    return out;
 #endif
 }
 
@@ -727,9 +742,12 @@ Canvas textStyleSample(const TextStyle& style, bool ice) {
     return renderStyledText(source, style, blockFace(), ice).cells;
 }
 
-fs::path textStylePathFor(const fs::path& dir, const std::string& name) {
+namespace {
+
+// The lowest of <slug>.<suffix>, <slug>-2.<suffix>, … in `dir` that nothing
+// sits on, compared with ASCII case folded.
+fs::path freePathFor(const fs::path& dir, const std::string& name, std::string_view suffix) {
     const std::string base = slug(name);
-    constexpr std::string_view suffix = ".style.json";
     const auto nameOf = [&base, suffix](long n) {
         return base + (n > 1 ? "-" + std::to_string(n) : std::string()) + std::string(suffix);
     };
@@ -750,6 +768,14 @@ fs::path textStylePathFor(const fs::path& dir, const std::string& name) {
     }
 }
 
+constexpr std::string_view kFrameSuffix = ".frame.json";
+
+} // namespace
+
+fs::path textStylePathFor(const fs::path& dir, const std::string& name) {
+    return freePathFor(dir, name, ".style.json");
+}
+
 fs::path writeTextStyle(const fs::path& dir, const TextStyleEntry& entry) {
     const std::string json = textStyleEntryJson(entry);
     parseTextStyleEntry(json);
@@ -761,6 +787,54 @@ fs::path writeTextStyle(const fs::path& dir, const TextStyleEntry& entry) {
     Staged staged(p, json);
     if (testing::beforeTextStylePublish)
         testing::beforeTextStylePublish(p);
+    staged.commitNoReplace();
+    return p;
+}
+
+bool isFrameStyleName(const fs::path& p) {
+    const std::string name = lowered(p.filename().string());
+    return name.size() > kFrameSuffix.size() &&
+           name.compare(name.size() - kFrameSuffix.size(), kFrameSuffix.size(), kFrameSuffix) == 0;
+}
+
+FrameStyleEntry readFrameStyleEntry(const fs::path& p) {
+    std::error_code ec;
+    if (!fs::exists(fs::status(p, ec)))
+        throw LibraryError(".frame.json can't be read");
+    if (!regular(p))
+        throw LibraryError(".frame.json is not a regular file");
+    std::string json;
+    try {
+        json = readRegularFile(p, kMaxFrameStyleBytes);
+    } catch (const LibraryError& e) {
+        throw LibraryError(std::string(".frame.json ") + e.what());
+    }
+    std::string why;
+    std::optional<FrameStyle> style = frameStyleFromJson(json, &why);
+    if (!style)
+        throw LibraryError("frame style: " + why);
+    return {p, std::move(*style)};
+}
+
+fs::path frameStylePathFor(const fs::path& dir, const std::string& name) {
+    return freePathFor(dir, name, kFrameSuffix);
+}
+
+fs::path writeFrameStyle(const fs::path& dir, const FrameStyle& style) {
+    checkText(style.name, "frame style name");
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec)
+        throw LibraryError(dir.string() + ": " + ec.message());
+    const fs::path p = frameStylePathFor(dir, style.name);
+    FrameStyle named = style;
+    const std::string file = p.filename().string();
+    named.id = file.substr(0, file.size() - kFrameSuffix.size());
+    const std::string json = frameStyleJson(named);
+    std::string why;
+    if (!frameStyleFromJson(json, &why))
+        throw LibraryError("frame style: " + why);
+    Staged staged(p, json);
     staged.commitNoReplace();
     return p;
 }
@@ -1179,6 +1253,11 @@ ScanResult scan(const fs::path& dir) {
                                          sidecarPath(p).filename().string() + " would be a text style's file"});
             continue;
         }
+        if (isFrameStyleName(sidecarPath(p))) {
+            r.problems.push_back({p, "a stamp can't be named " + p.filename().string() + ": its sidecar " +
+                                         sidecarPath(p).filename().string() + " would be a frame style's file"});
+            continue;
+        }
         if (const auto it = sidecars.find({p.parent_path(), p.stem()}); it != sidecars.end())
             jsons.erase(chooseSidecar(p, it->second));
         try {
@@ -1193,6 +1272,16 @@ ScanResult scan(const fs::path& dir) {
                 r.styles.push_back(readTextStyleEntry(j));
             } catch (const LibraryError& e) {
                 r.problems.push_back({j, e.what()});
+            }
+            continue;
+        }
+        if (isFrameStyleName(j)) {
+            try {
+                r.frames.push_back(readFrameStyleEntry(j));
+            } catch (const LibraryError& e) {
+                r.problems.push_back({j, e.what()});
+            } catch (const std::bad_alloc&) {
+                r.problems.push_back({j, "frame style: out of memory reading it"});
             }
             continue;
         }

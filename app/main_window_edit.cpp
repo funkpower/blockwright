@@ -390,6 +390,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     }
     sel->addSeparator();
     needSelection << add(sel, tr("Save to &Library..."), "saveToLibrary", QKeySequence(), [this] { saveToLibrary(); });
+    needSelection << add(sel, tr("Save as &Frame Style..."), "saveFrameStyle", QKeySequence(), [this] { saveFrameStyle(); });
 
     const auto updateSelection = [this, needSelection, paste] {
         const bool any = selectTool_->floating() || !view_->selection().empty();

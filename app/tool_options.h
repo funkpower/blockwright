@@ -162,6 +162,8 @@ private:
     void stackTitle();
     // Shows the view's and the tools' settings.
     void sync();
+    // Lists the Frame tool's styles: the bundled ones, then the Library's.
+    void fillFrameStyles();
     // Limits the centre spins to the canvas.
     void fitCentre();
     // Sets the view's from the controls.

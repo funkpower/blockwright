@@ -44,17 +44,24 @@
 // its name (isTextStyleName) and by its kind, so a scan never takes one for
 // a stamp's sidecar: no stamp is named <x>.style.ans.
 //
+// A frame style (#345, frame.h) is one file, <slug>.frame.json, in the
+// form frameStyleFromJson reads; its "id" is the file's slug, but the
+// Frame tool knows it by its path, so two libraries never clash. As with a
+// text style, no stamp is named <x>.frame.ans.
+//
 // Libraries are directories scanned recursively: the bundled read-only one
 // at <prefix>/share/blockwright/library/ and the user's in the app data
 // directory.
 
 #include "blockwright/ansi.h"
+#include "blockwright/frame.h"
 #include "blockwright/selection.h"
 #include "blockwright/text_style.h"
 
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -118,8 +125,10 @@ std::filesystem::path pairedSidecar(const std::filesystem::path& ans);
 // opened handle is what is checked: the file is opened without blocking and
 // refused unless fstat says it is a regular file, so a FIFO swapped in after
 // any earlier path check can't block the reader. Throws LibraryError ("can't
-// be read", "is not a regular file", "read failed").
-std::string readRegularFile(const std::filesystem::path& p);
+// be read", "is not a regular file", "read failed", and "is larger than N
+// bytes" for one past `limit`, found before it is read or as it grows).
+std::string readRegularFile(const std::filesystem::path& p,
+                            std::size_t limit = std::numeric_limits<std::size_t>::max());
 
 // Reads and checks the stamp at `ans` and its sidecar. Throws LibraryError
 // saying what is wrong: an unreadable or unparsable file, no SAUCE or an
@@ -252,6 +261,30 @@ std::filesystem::path textStylePathFor(const std::filesystem::path& dir, const s
 // write that fails.
 std::filesystem::path writeTextStyle(const std::filesystem::path& dir, const TextStyleEntry& entry);
 
+// A frame style entry (see the top).
+struct FrameStyleEntry {
+    std::filesystem::path path;  // the .frame.json
+    FrameStyle style;
+};
+
+// Whether `p` is named as a frame style: it ends in ".frame.json", ASCII
+// case folded.
+bool isFrameStyleName(const std::filesystem::path& p);
+// The style in the regular file at `p` (through a link). Throws
+// LibraryError saying what is wrong; a file past kMaxFrameStyleBytes is
+// refused without being read. The scan lists any frame style it can't read,
+// running out of memory included, as a problem.
+FrameStyleEntry readFrameStyleEntry(const std::filesystem::path& p);
+// Where Selection > Save as Frame Style writes a style called `name`
+// (UTF-8) in `dir`: as textStylePathFor, with ".frame.json".
+std::filesystem::path frameStylePathFor(const std::filesystem::path& dir, const std::string& name);
+// Writes `style` to frameStylePathFor(dir, style.name), its "id" the file's
+// slug, as writeTextStyle writes a text style (never over another file),
+// and returns the path. Throws LibraryError for an empty name or one
+// holding a control character, a style frameStyleFromJson would refuse,
+// a file made at the path meanwhile, or a write that fails.
+std::filesystem::path writeFrameStyle(const std::filesystem::path& dir, const FrameStyle& style);
+
 struct Problem {
     std::filesystem::path path;
     std::string message;
@@ -260,8 +293,10 @@ struct Problem {
 struct ScanResult {
     std::vector<Stamp> stamps;            // sorted by path
     std::vector<TextStyleEntry> styles;  // sorted by path
+    std::vector<FrameStyleEntry> frames;  // sorted by path
     // Sorted by path: stamps that failed readStamp, text styles that failed
-    // readTextStyleEntry, stamps named <x>.style.ans, sidecars with no .ans,
+    // readTextStyleEntry, frame styles that failed readFrameStyleEntry,
+    // stamps named <x>.style.ans or <x>.frame.ans, sidecars with no .ans,
     // broken symbolic links, links to folders (not followed), folders that
     // can't be read, and .ans or .json entries that aren't regular files
     // (a FIFO is never opened), or that can't be read at all.
@@ -269,8 +304,9 @@ struct ScanResult {
 };
 
 // Every stamp under `dir`, recursively: each art file (isArtName) with its
-// pairedSidecar; and every text style, each .style.json no stamp pairs
-// with (a stamp named <x>.style.ans is a problem). A symbolic link to a file is read
+// pairedSidecar; every text style, each .style.json no stamp pairs
+// with (a stamp named <x>.style.ans is a problem); and every frame style,
+// each .frame.json, likewise. A symbolic link to a file is read
 // through; one to a folder is not followed, so that a link isn't followed by
 // accident (not as a security boundary: a folder swapped for a link while
 // the scan runs is followed, and whoever can do that can already write

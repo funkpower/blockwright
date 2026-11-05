@@ -15,6 +15,11 @@
 // returns nothing, and the Frame tool grows a drag to the minimum instead.
 // Nor is one larger than a canvas can be (kMaxColumns x kMaxRows).
 //
+// A style's source is at most kMaxFrameSourceColumns x kMaxFrameSourceRows
+// (so its insets are too), and its JSON form at most kMaxFrameStyleBytes:
+// a frame is a border, and a source that size already holds corners a
+// screen wide. Its declared minimum may be as large as a canvas.
+//
 // A cell may keep the background under it: the Frame tool writes its glyph
 // and foreground and leaves the colour the art there already has, so a line
 // dropped on a coloured scene doesn't cut a black band round itself. Line
@@ -22,11 +27,16 @@
 // part of the look (a fill, a bevel's dark half, a stripe's colour) doesn't.
 #include "blockwright/canvas.h"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace bw {
+
+inline constexpr int kMaxFrameSourceColumns = 100;
+inline constexpr int kMaxFrameSourceRows = 100;
+inline constexpr std::size_t kMaxFrameStyleBytes = std::size_t(1) << 20;
 
 struct FrameStyle {
     std::string id;   // a short name, unique among the styles ("double")
@@ -51,7 +61,9 @@ struct FrameStyle {
     int minimumWidth() const;
     int minimumHeight() const;
     // Whether the insets fit the source as above, keepBg is empty or one a
-    // source cell, and the source and minimum are no larger than a canvas.
+    // source cell, the source is no larger than kMaxFrameSourceColumns x
+    // kMaxFrameSourceRows and the minimum no larger than a canvas. Checked
+    // without overflow, whatever the fields hold.
     bool valid() const;
 };
 
@@ -77,10 +89,24 @@ Canvas recolourFrame(Canvas frame, Color fg, Color bg);
 // background). In "bg" a '.' marks a transparent cell. The colours are
 // palette indexes (RGB isn't kept). Reading refuses anything else: a key it
 // doesn't know, rows of different lengths, a source with no cells, a wide
-// glyph, a source, insets or minimum larger than a canvas, a style that
-// isn't valid(); `error` says what.
+// glyph, JSON longer than kMaxFrameStyleBytes, a source (or insets) past
+// kMaxFrameSourceColumns x kMaxFrameSourceRows, a minimum larger than a
+// canvas, a style that isn't valid(); `error` says what. The sizes are
+// checked before the rows are copied.
 std::string frameStyleJson(const FrameStyle& style);
 std::optional<FrameStyle> frameStyleFromJson(const std::string& json, std::string* error = nullptr);
+
+// A style cut from `cells` (a selection saved as a frame style): `id`,
+// `name`, the insets and fill as given, its blank cells (isBlank, the ones
+// transparent paste skips) transparent, and, when `keepBg`, every other
+// cell keeping the background under it. Nothing, and `error`, when the
+// insets leave no edge to repeat (valid()), the style would draw no cell,
+// or a cell it draws holds what the JSON form can't: a glyph that isn't one
+// code point one cell wide, a colour past the 16 of the ANSI palette, or an
+// attribute (blink), or the selection is larger than a source may be. A cell of the middle is only checked when `fill`.
+std::optional<FrameStyle> frameStyleFromCells(const Canvas& cells, std::string id, std::string name, int left,
+                                              int right, int top, int bottom, bool fill, bool keepBg,
+                                              std::string* error = nullptr);
 
 // The styles that come with the app, in the picker's order.
 const std::vector<FrameStyle>& bundledFrameStyles();

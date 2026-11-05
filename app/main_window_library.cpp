@@ -1,10 +1,13 @@
 // The Library parts of the main window (PLAN §12): the Library dock, placing
 // a stamp on the canvas, applying a text style or dropping one as a new text
-// layer, and Selection > Save to Library....
+// layer, Selection > Save to Library... and Selection > Save as Frame
+// Style....
 
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "frame_style_dialog.h"
+#include "frame_tool.h"
 #include "layer_style_dialog.h"
 #include "library_dock.h"
 #include "sauce_dialog.h"
@@ -47,6 +50,10 @@ void MainWindow::createLibrary() {
     // it (the dev install links ~/.local/bin/blockwright-dev into its prefix).
     const std::filesystem::path binDir = library::realBinDir(fspath(QCoreApplication::applicationFilePath()),
                                                              fspath(QCoreApplication::applicationDirPath()));
+    // The Frame tool lists the frame styles the libraries hold after its own.
+    if (auto* frame = qobject_cast<FrameTool*>(tools_->find(QStringLiteral("frame")))) {
+        connect(library_, &LibraryDock::rescanned, frame, [this, frame] { frame->setLibraryStyles(library_->frameStyles()); });
+    }
     library_->setDirectories(library::bundledLibraryDir(binDir),
                              library::userLibraryDir());
 
@@ -197,8 +204,7 @@ QString MainWindow::libraryPathFor(const QString& name, bool* exists, QString* e
     }
 }
 
-QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& category, const QStringList& tags,
-                                           QString* error, bool replace) {
+CellBlock MainWindow::selectionCells() const {
     CellBlock cells = selectTool_->floating() ? selectTool_->floatingBlock()
                                               : copyBlock(doc_.canvas(), view_->selection());
     if (cells.pixelLayer)
@@ -207,6 +213,12 @@ QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& c
         for (Cell& c : cells.cells)
             if (const auto p = pasteCell(c, Cell{}, PasteMode::Normal, {false, doc_.ansi().ice}, true))
                 c = *p;
+    return cells;
+}
+
+QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& category, const QStringList& tags,
+                                           QString* error, bool replace) {
+    const CellBlock cells = selectionCells();
     if (cells.empty()) {
         *error = tr("nothing is selected");
         return {};
@@ -273,6 +285,75 @@ void MainWindow::saveToLibrary() {
         QMessageBox::warning(this, tr("Save to Library"), tr("Could not save the stamp:\n%1").arg(error));
     else
         statusBar()->showMessage(tr("Saved %1 to the library").arg(written), 3000);
+}
+
+namespace {
+
+Canvas canvasOf(const CellBlock& block) {
+    Canvas c(std::max(1, block.width), std::max(1, block.height));
+    for (int y = 0; y < block.height; ++y)
+        for (int x = 0; x < block.width; ++x)
+            c.at(x, y) = block.at(x, y);
+    return c;
+}
+
+} // namespace
+
+QString MainWindow::saveSelectionAsFrameStyle(const QString& name, int left, int right, int top, int bottom,
+                                              bool fill, bool keepBackground, QString* error) {
+    const CellBlock cells = selectionCells();
+    if (cells.empty()) {
+        *error = tr("nothing is selected");
+        return {};
+    }
+    if (name.trimmed().isEmpty()) {
+        *error = tr("the frame style has no name");
+        return {};
+    }
+    if (library_->userDir().empty()) {
+        *error = tr("there is no user library directory");
+        return {};
+    }
+    std::string why;
+    const std::optional<FrameStyle> style = frameStyleFromCells(canvasOf(cells), std::string(),
+                                                                name.trimmed().toStdString(), left, right, top,
+                                                                bottom, fill, keepBackground, &why);
+    if (!style) {
+        *error = QString::fromStdString(why);
+        return {};
+    }
+    std::filesystem::path written;
+    try {
+        written = library::writeFrameStyle(library_->userDir(), *style);
+    } catch (const std::exception& e) {
+        // LibraryError, or anything else writing threw: never out of the
+        // menu action's handler.
+        *error = QString::fromStdString(e.what());
+        return {};
+    }
+    library_->rescan();
+    // the dock names it by its path (LibraryDock::frameStyles)
+    if (auto* frame = qobject_cast<FrameTool*>(tools_->find(QStringLiteral("frame"))))
+        frame->setStyle(frameStyleId(written));
+    return qpath(written);
+}
+
+void MainWindow::saveFrameStyle() {
+    if (!selectTool_->floating() && view_->selection().empty())
+        return;
+    const CellBlock cells = selectionCells();
+    if (cells.empty())
+        return;
+    FrameStyleDialog dialog(canvasOf(cells), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    QString error;
+    const QString written = saveSelectionAsFrameStyle(dialog.name(), dialog.left(), dialog.right(), dialog.top(),
+                                                      dialog.bottom(), dialog.fill(), dialog.keepBackground(), &error);
+    if (written.isEmpty())
+        QMessageBox::warning(this, tr("Save as Frame Style"), tr("Could not save the frame style:\n%1").arg(error));
+    else
+        statusBar()->showMessage(tr("Saved %1 to the library; the Frame tool lists it").arg(written), 3000);
 }
 
 void MainWindow::editLayerStyle(LayerId id) {

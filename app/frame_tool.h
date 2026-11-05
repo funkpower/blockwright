@@ -15,6 +15,8 @@
 
 #include <QString>
 
+#include <vector>
+
 namespace bw {
 
 class FrameTool : public DragTool {
@@ -22,10 +24,20 @@ class FrameTool : public DragTool {
 public:
     explicit FrameTool(QObject* parent = nullptr);
 
-    // The style drawn, by id (bundledFrameStyles); an unknown id is ignored.
+    // The style drawn, by id (bundledFrameStyles, then libraryStyles); an
+    // unknown id is ignored. Setting the style already drawn still makes it
+    // the saved choice, in place of a library style that went away.
     const FrameStyle& style() const;
     QString styleId() const { return styleId_; }
     void setStyle(const QString& id);
+    // The styles the Library holds (#345 slice 3), listed after the bundled
+    // ones, each with an id of its own (LibraryDock gives it its path). A
+    // style picked last session that wasn't found when the tool was made is
+    // picked again once a library holding it is set; one that goes away
+    // leaves the first bundled style picked, the saved choice kept.
+    const std::vector<FrameStyle>& libraryStyles() const { return library_; }
+    void setLibraryStyles(std::vector<FrameStyle> styles);
+    const FrameStyle* findStyle(const QString& id) const;
     // Recolour the style to the pen (recolourFrame) rather than draw it in
     // its own colours.
     bool penColours() const { return penColours_; }
@@ -37,6 +49,10 @@ public:
     // between them, grown to the style's minimum away from `from`.
     static QRect frameRect(const FrameStyle& style, QPoint from, QPoint to);
 
+signals:
+    // The styles there are changed (setLibraryStyles).
+    void stylesChanged();
+
 protected:
     bool begin(const ToolEvent& e) override;
     bool extend(const ToolEvent& e) override;
@@ -46,6 +62,8 @@ protected:
 
 private:
     QString styleId_;
+    QString saved_;  // the style last picked, kept in the settings
+    std::vector<FrameStyle> library_;
     bool penColours_ = false;
     QPoint from_, to_;
     Qt::MouseButton button_ = Qt::NoButton;

@@ -1,6 +1,7 @@
 #include "blockwright/frame.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/selection.h"
 #include "blockwright/width.h"
 
 #include <QJsonArray>
@@ -22,9 +23,12 @@ bool FrameStyle::keepsBackground(int x, int y) const {
 }
 
 bool FrameStyle::valid() const {
-    return left >= 0 && right >= 0 && top >= 0 && bottom >= 0 && minWidth >= 0 && minHeight >= 0 &&
-           source.width() > left + right && source.height() > top + bottom && source.width() <= kMaxColumns &&
-           source.height() <= kMaxRows && minWidth <= kMaxColumns && minHeight <= kMaxRows &&
+    // Each inset is bounded before two are added, so no sum overflows.
+    const int sw = source.width(), sh = source.height();
+    return sw <= kMaxFrameSourceColumns && sh <= kMaxFrameSourceRows && left >= 0 && right >= 0 && top >= 0 &&
+           bottom >= 0 && left < sw && right < sw && top < sh && bottom < sh && sw > left + right &&
+           sh > top + bottom && minWidth >= 0 && minHeight >= 0 && minWidth <= kMaxColumns &&
+           minHeight <= kMaxRows &&
            (keepBg.empty() || keepBg.size() == std::size_t(source.width()) * std::size_t(source.height()));
 }
 
@@ -126,16 +130,35 @@ std::optional<std::vector<int>> ints(const QJsonValue& v, qsizetype n) {
     return out;
 }
 
-std::optional<std::vector<std::u32string>> strings(const QJsonValue& v) {
+// A list of text, or nothing when it isn't one. Set `tooLarge` instead,
+// before anything is copied, when it holds more than kMaxFrameSourceRows
+// strings or one longer than kMaxFrameSourceColumns code points could be.
+std::optional<std::vector<std::u32string>> strings(const QJsonValue& v, bool& tooLarge) {
     if (!v.isArray() || v.toArray().isEmpty())
         return std::nullopt;
-    std::vector<std::u32string> out;
-    for (const QJsonValue& e : v.toArray()) {
+    const QJsonArray a = v.toArray();
+    if (a.size() > kMaxFrameSourceRows) {
+        tooLarge = true;
+        return std::nullopt;
+    }
+    for (const QJsonValue& e : a) {
         if (!e.isString())
             return std::nullopt;
-        out.push_back(e.toString().toStdU32String());
+        // two UTF-16 units at most a code point
+        if (e.toString().size() > 2 * qsizetype(kMaxFrameSourceColumns)) {
+            tooLarge = true;
+            return std::nullopt;
+        }
     }
+    std::vector<std::u32string> out;
+    out.reserve(std::size_t(a.size()));
+    for (const QJsonValue& e : a)
+        out.push_back(e.toString().toStdU32String());
     return out;
+}
+
+std::string sourceLimit() {
+    return std::to_string(kMaxFrameSourceColumns) + "x" + std::to_string(kMaxFrameSourceRows);
 }
 
 int hexDigit(char32_t c) {
@@ -175,6 +198,8 @@ std::string frameStyleJson(const FrameStyle& s) {
 }
 
 std::optional<FrameStyle> frameStyleFromJson(const std::string& json, std::string* error) {
+    if (json.size() > kMaxFrameStyleBytes)
+        return fail(error, "larger than " + std::to_string(kMaxFrameStyleBytes) + " bytes");
     QJsonParseError err{};
     const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(json), &err);
     if (err.error != QJsonParseError::NoError)
@@ -200,6 +225,9 @@ std::optional<FrameStyle> frameStyleFromJson(const std::string& json, std::strin
     if (!insets)
         return fail(error, "\"insets\" is not four whole numbers");
     s.left = (*insets)[0], s.right = (*insets)[1], s.top = (*insets)[2], s.bottom = (*insets)[3];
+    if (s.left >= kMaxFrameSourceColumns || s.right >= kMaxFrameSourceColumns || s.top >= kMaxFrameSourceRows ||
+        s.bottom >= kMaxFrameSourceRows)
+        return fail(error, "\"insets\" are larger than a source may be (" + sourceLimit() + ")");
     if (o.contains(QStringLiteral("fill"))) {
         if (!o.value(QStringLiteral("fill")).isBool())
             return fail(error, "\"fill\" is not true or false");
@@ -214,23 +242,25 @@ std::optional<FrameStyle> frameStyleFromJson(const std::string& json, std::strin
             return fail(error, "\"min\" is larger than a canvas (" + std::to_string(kMaxColumns) + "x" +
                                    std::to_string(kMaxRows) + ")");
     }
-    const auto rows = strings(o.value(QStringLiteral("rows")));
-    const auto fg = strings(o.value(QStringLiteral("fg")));
-    const auto bg = strings(o.value(QStringLiteral("bg")));
+    bool tooLarge = false;
+    const auto rows = strings(o.value(QStringLiteral("rows")), tooLarge);
+    const auto fg = tooLarge ? std::nullopt : strings(o.value(QStringLiteral("fg")), tooLarge);
+    const auto bg = tooLarge ? std::nullopt : strings(o.value(QStringLiteral("bg")), tooLarge);
+    if (tooLarge)
+        return fail(error, "the source is larger than a frame style's (" + sourceLimit() + ")");
     if (!rows || !fg || !bg)
         return fail(error, "\"rows\", \"fg\" and \"bg\" are not lists of text");
     const std::size_t w64 = rows->front().size(), h64 = rows->size();
     if (w64 == 0)
         return fail(error, "\"rows\" has no cells");
-    if (w64 > std::size_t(kMaxColumns) || h64 > std::size_t(kMaxRows))
-        return fail(error, "the source is larger than a canvas (" + std::to_string(kMaxColumns) + "x" +
-                               std::to_string(kMaxRows) + ")");
+    if (w64 > std::size_t(kMaxFrameSourceColumns) || h64 > std::size_t(kMaxFrameSourceRows))
+        return fail(error, "the source is larger than a frame style's (" + sourceLimit() + ")");
     const int w = int(w64), h = int(h64);
     if (int(fg->size()) != h || int(bg->size()) != h)
         return fail(error, "\"rows\", \"fg\" and \"bg\" have different numbers of rows");
     std::optional<std::vector<std::u32string>> keep;
     if (o.contains(QStringLiteral("keepBg"))) {
-        keep = strings(o.value(QStringLiteral("keepBg")));
+        keep = strings(o.value(QStringLiteral("keepBg")), tooLarge);
         if (!keep || int(keep->size()) != h)
             return fail(error, "\"keepBg\" is not a list of text as long as \"rows\"");
         s.keepBg.assign(std::size_t(w) * std::size_t(h), false);
@@ -265,6 +295,63 @@ std::optional<FrameStyle> frameStyleFromJson(const std::string& json, std::strin
     if (!s.valid())
         return fail(error, "the insets leave no edge to repeat: the source is " + std::to_string(w) + "x" +
                                std::to_string(h));
+    return s;
+}
+
+std::optional<FrameStyle> frameStyleFromCells(const Canvas& cells, std::string id, std::string name, int left,
+                                              int right, int top, int bottom, bool fill, bool keepBg,
+                                              std::string* error) {
+    FrameStyle s;
+    s.id = std::move(id);
+    s.name = std::move(name);
+    s.left = left, s.right = right, s.top = top, s.bottom = bottom;
+    s.fill = fill;
+    if (cells.width() > kMaxFrameSourceColumns || cells.height() > kMaxFrameSourceRows)
+        return fail(error, "the selection is " + std::to_string(cells.width()) + "x" +
+                               std::to_string(cells.height()) + ", larger than a frame style's source (" +
+                               sourceLimit() + ")");
+    s.source = cells;
+    if (!s.valid())
+        return fail(error, "the corners leave no edge to repeat: the selection is " + std::to_string(cells.width()) +
+                               "x" + std::to_string(cells.height()) + " and the corners " +
+                               std::to_string(static_cast<long long>(left) + right) + "x" +
+                               std::to_string(static_cast<long long>(top) + bottom) +
+                               " (an edge needs a cell between them)");
+    const int w = cells.width(), h = cells.height();
+    if (keepBg)
+        s.keepBg.assign(std::size_t(w) * std::size_t(h), false);
+    bool draws = false;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            Cell& c = s.source.at(x, y);
+            if (isBlank(c)) {
+                c = Cell{};
+                c.transparent = true;
+                continue;
+            }
+            if (!fill && x >= left && x < w - right && y >= top && y < h - bottom)
+                continue;  // the open middle: never drawn, so never checked
+            const std::string at = "the cell at column " + std::to_string(x + 1) + ", row " + std::to_string(y + 1);
+            const std::optional<char32_t> cp = c.ch.codePoint();
+            if (!cp || *cp < U' ' || codePointWidth(*cp) != 1)
+                return fail(error, at + " holds a glyph a frame style can't keep (one code point, one cell wide)");
+            if (!c.fg.isIndexed() || c.fg.paletteIndex() > 15 || !c.bg.isIndexed() || c.bg.paletteIndex() > 15)
+                return fail(error, at + " has a colour past the 16 a frame style keeps");
+            if (c.attrs)
+                return fail(error, at + " blinks, which a frame style doesn't keep");
+            draws = true;
+            if (keepBg)
+                s.keepBg[std::size_t(y) * std::size_t(w) + std::size_t(x)] = true;
+        }
+    if (!draws)
+        return fail(error, "every cell the frame would draw is blank");
+    // The middle, when open, is written as it is drawn: transparent.
+    if (!fill)
+        for (int y = top; y < h - bottom; ++y)
+            for (int x = left; x < w - right; ++x) {
+                s.source.at(x, y) = Cell{};
+                s.source.at(x, y).transparent = true;
+            }
     return s;
 }
 
