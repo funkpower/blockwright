@@ -96,10 +96,15 @@ public:
     const TextureOptions& textureOptions() const { return texture_; }
     void setTextureOptions(const TextureOptions& options);  // density and seed clamped
 
-    // The F-key glyph set (glyph_sets.h), wrapping round at either end; kept
-    // in the settings between runs (glyphSet/index).
-    int glyphSet() const { return glyphSet_; }
+    // The F-key glyph set (glyph_sets.h), wrapping round at either end of
+    // the sets the typing policy offers; kept in the settings between runs
+    // (glyphSet/index, 0-19). A kept Unicode set (16-19) under the CP437
+    // policy reads as the default set, and comes back under Unicode.
+    int glyphSet() const;
     void setGlyphSet(int set);
+    // What typing and the F-key sets offer: the document's typingPolicy, by
+    // its target and .ans encoding (#350 slice 2).
+    TypingPolicy typingPolicy() const;
 
     // The cursor's cell in view pixels: the canvas at this zoom is
     // viewSize() of them, and tools paint in them.
@@ -241,10 +246,15 @@ signals:
     void caretMoved(const QRect& cells);
     void zoomChanged(int zoom);
     void penChanged(const bw::Pen& pen);
+    // The current set, or the sets the typing policy offers, changed (a set
+    // picked, or the document's target or encoding changed or a new one
+    // opened).
     void glyphSetChanged(int set);
-    // The characters of typed or committed text that isTypeable refuses (no
-    // CP437 code, or a byte .ans reads as a control code); the text was not
-    // written. rejectedGlyphsMessage says why.
+    // The characters of typed or committed text that isTypeable refuses
+    // under the typing policy (under CP437 no CP437 code, or a byte .ans
+    // reads as a control code; under Unicode a control a UTF-8 .ans can't
+    // hold, or a cluster past 16 code points); the text was not written.
+    // rejectedGlyphsMessage says why.
     void glyphRejected(const QString& text);
     // A notice for the status bar: what an edit or a transform couldn't do
     // (a wide pair mirror mode can't copy, a rotation refused).
@@ -294,7 +304,8 @@ private:
     void noteUnmirrored(int pairs);
     // Writes the printable characters of `text` over the replacement range
     // (relative to the cursor) as one edit. If isTypeable refuses any of them
-    // nothing is written and they are reported instead.
+    // under the typing policy nothing is written and they are reported
+    // instead.
     void typeText(const QString& text, int replaceStart = 0, int replaceLength = 0);
     void updateSize();
     // The device pixel ratio changed: view pixels changed size.

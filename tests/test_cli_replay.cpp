@@ -8,10 +8,12 @@
 
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/form.h"
+#include "blockwright/glyph.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/steps.h"
+#include "blockwright/target.h"
 #include "blockwright/xbin.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -313,6 +315,89 @@ TEST_CASE("keyboard text is NFC-composed first, as keyboard mode types it", "[re
     CHECK(c.at(3, 2).ch == U't');
     CHECK(c.at(4, 2).ch == U'\u00e9');
     CHECK(c.at(5, 2).ch == U' ');
+}
+
+TEST_CASE("keyboard text follows the document's typing policy, as the editor's typing does (#350 slice 2)",
+          "[replay]") {
+    const steps::Script script = steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [
+        {"name": "star", "action": "keyboard", "at": [0, 0], "text": "★"},
+        {"name": "wide", "action": "keyboard", "at": [0, 1], "text": "a中b"},
+        {"name": "mark", "action": "keyboard", "at": [0, 2], "text": "q\u0302x"}]})");
+    const project::Project blankStart = bwcli::replay::start(script, kReplay, kSamples);
+    const auto with = [&](Target target, TextEncoding encoding) {
+        project::Project p = blankStart;
+        p.target = target;
+        p.ansEncoding = encoding;
+        return p;
+    };
+
+    // ANSI with a CP437 .ans: ★ has no CP437 code, as the editor refuses it
+    try {
+        bwcli::replay::run(script, with(Target::Ansi, TextEncoding::Cp437));
+        FAIL("ANSI with a CP437 .ans typed ★");
+    } catch (const bwcli::Failure& f) {
+        CHECK(f.message ==
+              "step 1 (star): the text holds a character keyboard mode can't type (U+2605; target: ANSI, CP437)");
+    }
+
+    // the IRC target or a UTF-8 .ans types it, 中 as a pair and q and U+0302 as one cluster
+    const struct {
+        Target target;
+        TextEncoding encoding;
+    } unicode[] = {{Target::Ansi, TextEncoding::Utf8}, {Target::Irc, TextEncoding::Cp437}, {Target::Irc, TextEncoding::Utf8}};
+    for (const auto& u : unicode) {
+        INFO(std::string(targetName(u.target)) << (u.encoding == TextEncoding::Utf8 ? " UTF-8" : " CP437"));
+        const auto out = bwcli::replay::run(script, with(u.target, u.encoding));
+        REQUIRE(out.captures.size() == 3);
+        CHECK(out.notes.empty());
+        const Canvas c = flat(out.captures.back().project);
+        CHECK(c.at(0, 0).ch == U'★');
+        CHECK(c.at(1, 0).ch == U' ');
+        CHECK(c.at(0, 1).ch == U'a');
+        CHECK(c.at(1, 1).ch == U'中');
+        CHECK(c.at(2, 1).ch.isContinuation());
+        CHECK(c.at(3, 1).ch == U'b');
+        CHECK(c.at(0, 2).ch.isCluster());
+        const GlyphCodePoints q = codePoints(c.at(0, 2).ch);
+        CHECK(std::u32string(q.begin(), q.end()) == U"q\u0302");
+        CHECK(c.at(1, 2).ch == U'x');
+    }
+
+    // and 中, on a blank start (ANSI with a CP437 .ans), is refused too
+    CHECK_THAT(failure(R"({"version": 1, "start": {"blank": [20, 10]},
+                           "steps": [{"name": "wide", "action": "keyboard", "at": [0, 0], "text": "中"}]})"),
+               ContainsSubstring("step 1 (wide): the text holds a character keyboard mode can't type (U+4E2D"));
+}
+
+TEST_CASE("a keyboard line is one commit, as the editor's input-method commit is (#366 review)", "[replay]") {
+    const auto onIrc = [](const std::string& steps) {
+        const steps::Script script =
+            steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [)" + steps + "]}");
+        project::Project p = bwcli::replay::start(script, kReplay, kSamples);
+        p.target = Target::Irc;
+        p.ansEncoding = TextEncoding::Cp437;
+        return bwcli::replay::run(script, p);
+    };
+    const std::string seed = R"({"name": "seed", "action": "keyboard", "at": [0, 0], "text": "q"})";
+
+    // a mark leading more text is refused, as replaceText refuses it, and q is left alone
+    try {
+        onIrc(seed + R"(, {"name": "mixed", "action": "keyboard", "at": [1, 0], "text": "̂x"})");
+        FAIL("a leading mark joined q");
+    } catch (const bwcli::Failure& f) {
+        CHECK(f.message == "step 2 (mixed): the text starts with a mark (U+0302) and has more after it on its "
+                           "line; keyboard mode joins marks only typed alone");
+    }
+
+    // a line of marks alone joins the cell before the cursor, as typeMarks does
+    const auto out = onIrc(seed + R"(, {"name": "hat", "action": "keyboard", "at": [1, 0], "text": "̂"})");
+    REQUIRE(out.captures.size() == 2);
+    CHECK(out.notes.empty());
+    const Canvas c = flat(out.captures.back().project);
+    REQUIRE(c.at(0, 0).ch.isCluster());
+    const GlyphCodePoints q = codePoints(c.at(0, 0).ch);
+    CHECK(std::u32string(q.begin(), q.end()) == U"q̂");
+    CHECK(c.at(1, 0).ch == U' ');
 }
 
 TEST_CASE("a step that can't be applied stops the replay, named", "[replay]") {

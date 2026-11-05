@@ -55,12 +55,6 @@ GlyphBar::GlyphBar(CanvasView* view, QWidget* parent) : QWidget(parent), view_(v
     set_ = new QComboBox;
     set_->setObjectName(QStringLiteral("glyphBarSet"));
     set_->setFocusPolicy(Qt::NoFocus);
-    for (int i = 0; i < kGlyphSetCount; ++i) {
-        QString shown;
-        for (const char32_t ch : glyphSet(i))
-            shown += glyphText(ch);
-        set_->addItem(tr("Set %1: %2").arg(i + 1).arg(shown), i);
-    }
     set_->setToolTip(tr("The glyph set F1-F10 type; the Glyphs menu has the keys that step through them"));
     row->addWidget(set_);
     row->addStretch(1);
@@ -74,6 +68,16 @@ GlyphBar::GlyphBar(CanvasView* view, QWidget* parent) : QWidget(parent), view_(v
 }
 
 void GlyphBar::sync() {
+    // the sets the typing policy offers, the Unicode ones only under Unicode
+    const int offered = glyphSetCount(view_->typingPolicy());
+    while (set_->count() > offered)
+        set_->removeItem(set_->count() - 1);
+    for (int i = set_->count(); i < offered; ++i) {
+        QString shown;
+        for (const char32_t ch : glyphSet(i))
+            shown += glyphText(ch);
+        set_->addItem(tr("Set %1: %2").arg(i + 1).arg(shown), i);
+    }
     const int set = view_->glyphSet();
     for (int k = 0; k < kGlyphSetKeys; ++k) {
         const char32_t ch = glyphSetGlyph(set, k);

@@ -6,6 +6,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/canvas.h"
+#include "blockwright/target.h"
 
 #include <cstddef>
 #include <functional>
@@ -152,18 +153,19 @@ Cursor moveCursor(const Canvas& canvas, Cursor c, int dx, int dy);
 // or on a lead whose continuation is the last column.
 bool atRowEnd(const Canvas& canvas, Cursor c);
 
-// Whether typing `ch` into a CP437 document can write it: printable (not a
-// C0 control or DEL) and saved to .ans as itself, not as '?' (see
+// Whether typing `ch` under the CP437 typing policy can write it: printable
+// (not a C0 control or DEL) and saved to .ans as itself, not as '?' (see
 // writeAnsi).
 bool isTypeable(char32_t ch);
 
 // Whether typing `cluster`, a base and the zero-width code points after it,
-// NFC-normalised, can write it into a document in `encoding` (PLAN §16): in
-// CP437 a single code point isTypeable takes; in UTF-8 at most
-// kMaxClusterCodePoints code points, none a control (C0, DEL, C1, U+2028,
-// U+2029) or anything else utf8Writable refuses. A cluster whose base is
-// zero-width is a lone mark, which typeMarks joins to a cluster instead.
-bool isTypeable(std::u32string_view cluster, TextEncoding encoding);
+// NFC-normalised, can write it under `policy` (typingPolicy; PLAN §16):
+// under CP437 a single code point isTypeable takes; under Unicode (the IRC
+// target or a UTF-8 .ans) at most kMaxClusterCodePoints code points, wide
+// or narrow, none a control (C0, DEL, C1, U+2028, U+2029) or anything else
+// utf8Writable refuses. A cluster whose base is zero-width is a lone mark,
+// which typeMarks joins to a cluster instead.
+bool isTypeable(std::u32string_view cluster, TypingPolicy policy);
 
 // `text` split into clusters (PLAN §16, Width): each code point
 // codePointWidth gives a width other than 0 starts one, and a zero-width one
@@ -175,7 +177,8 @@ std::vector<std::u32string> splitClusters(std::u32string_view text);
 
 // What typing is allowed to write and how far it may fill the cluster pool.
 struct TypingOptions {
-    TextEncoding encoding = TextEncoding::Cp437;  // Document::textEncoding
+    // typingPolicy of the document's target and Document::textEncoding
+    TypingPolicy policy = TypingPolicy::Cp437;
     // The pool's cap for a cluster typed (ClusterPool::kLossyCap; lowered by
     // tests): past it a cluster is typed as its base, and the result's
     // notice counts it.
@@ -185,7 +188,7 @@ struct TypingOptions {
 struct EditResult {
     CellEdit edit;   // empty when nothing changes
     Cursor cursor;   // where the cursor goes next
-    // A cluster refused for the document's encoding (isTypeable), for the
+    // A cluster refused under the typing policy (isTypeable), for the
     // status bar to name (rejectedGlyphsMessage); nothing changes then.
     std::u32string rejected;
     // Anything else typing refused or dropped, for the status bar ("中
@@ -200,13 +203,13 @@ struct EditResult {
 // of it, and moves two cells, staying on the lead with `pastEnd` when the
 // continuation is the last column; on the last column it is refused with a
 // notice. A narrow one moves one cell, staying put on the last column, past
-// it. A cluster the
-// encoding doesn't take changes nothing and is the result's `rejected`; a
-// lone mark (a zero-width base) goes to typeMarks.
+// it. A cluster the typing policy doesn't take changes nothing and is the
+// result's `rejected`; a lone mark (a zero-width base) goes to typeMarks.
 EditResult typeCluster(const Canvas& canvas, Cursor c, std::u32string_view cluster, const Pen& pen,
                        const TypingOptions& opts = {});
-// typeCluster of one code point in a CP437 document (the F-key glyph sets).
-EditResult typeGlyph(const Canvas& canvas, Cursor c, char32_t ch, const Pen& pen);
+// typeCluster of one code point under `policy` (the F-key glyph sets).
+EditResult typeGlyph(const Canvas& canvas, Cursor c, char32_t ch, const Pen& pen,
+                     TypingPolicy policy = TypingPolicy::Cp437);
 
 // Joins `marks`, zero-width code points typed with nothing to compose them,
 // to the cluster that ends just left of the cursor on its row (the pair's
@@ -214,7 +217,7 @@ EditResult typeGlyph(const Canvas& canvas, Cursor c, char32_t ch, const Pen& pen
 // the cursor, and NFC-normalises the result, keeping the cell's colours
 // and formatting; the cursor stays. Refused with a notice at column 0 and
 // when the cluster would hold more than kMaxClusterCodePoints code points;
-// a result the encoding doesn't take is `rejected`.
+// a result the typing policy doesn't take is `rejected`.
 EditResult typeMarks(const Canvas& canvas, Cursor c, std::u32string_view marks, const TypingOptions& opts = {});
 
 // Replaces `length` clusters along the cursor's row, starting `start`

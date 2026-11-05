@@ -862,7 +862,14 @@ mouse button (default left).
                  "from", "to" (pixels); fill, eyedropper: "at" (a pixel)
   gradient       "from", "to" (cells)
   keyboard       "at" (a cell), "text" (NFC-composed, as typing is; a
-                 newline starts the next row at the "at" column)
+                 newline starts the next row at the "at" column). What
+                 may be typed follows the start's target and .ans
+                 encoding, not --output-encoding: under IRC or UTF-8 any
+                 cluster a UTF-8 .ans holds, wide ones as a pair; under
+                 ANSI with CP437 only CP437 glyphs. Each line is typed as
+                 one commit: a line of combining marks alone joins the
+                 character before "at"; a line that starts with a mark
+                 and has more after it is refused, as the editor does
   move           "by": [dx, dy], the active layer's offset (canvas pixels
                  for a reference layer's picture); a locked or hidden
                  layer is refused

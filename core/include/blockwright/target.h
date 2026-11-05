@@ -14,6 +14,17 @@ namespace bw {
 
 enum class Target : std::uint8_t { Ansi, Irc };
 
+enum class TextEncoding;  // ansi.h
+
+// What typing and the F-key sets offer (#350 slice 2, PLAN §16, Cursor and
+// typing). CP437: the glyphs a CP437 .ans holds, as every document had
+// before. Unicode: any narrow glyph a UTF-8 .ans and IRC text hold.
+enum class TypingPolicy : std::uint8_t { Cp437, Unicode };
+
+// Unicode under the IRC target or a UTF-8 .ans encoding; CP437 only for an
+// ANSI document saved as a CP437 .ans.
+TypingPolicy typingPolicy(Target target, TextEncoding encoding);
+
 // "ansi" or "irc": the project manifest's value and the CLI's --target.
 std::string_view targetName(Target t);
 // The target a name means, in any case; nothing for any other string.

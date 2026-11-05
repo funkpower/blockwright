@@ -5,12 +5,15 @@
 
 #include "canvas_view.h"
 #include "document.h"
+#include "glyph_bar.h"
 #include "irc_meter.h"
 #include "main_window.h"
 #include "palette_widget.h"
 #include "preferences.h"
 #include "settings.h"
 
+#include "blockwright/glyph_sets.h"
+#include "blockwright/irc.h"
 #include "blockwright/irc_view.h"
 #include "blockwright/target.h"
 
@@ -23,6 +26,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QStatusBar>
 #include <QTemporaryDir>
 #include <QUndoStack>
 
@@ -249,6 +253,30 @@ void type(QWidget* w, const QString& text) {
         key(w, c.toUpper().unicode(), QString(c));
 }
 
+// A key, or with `text` and no key the key that types it.
+void press(QWidget* w, int k, const QString& text = {}) {
+    if (!k)
+        k = int(text.toUcs4().front());
+    QKeyEvent down(QEvent::KeyPress, k, Qt::NoModifier, text);
+    QApplication::sendEvent(w, &down);
+    QKeyEvent up(QEvent::KeyRelease, k, Qt::NoModifier, text);
+    QApplication::sendEvent(w, &up);
+}
+
+QStringList visibleGlyphSets(MainWindow& w) {
+    QStringList sets;
+    for (QAction* a : w.findChildren<QAction*>())
+        if (a->objectName().startsWith(QStringLiteral("glyphSet")) && a->isVisible())
+            sets << a->objectName();
+    return sets;
+}
+
+// Restores the stored glyph set when a test is done with it.
+struct StoredGlyphSet {
+    QVariant was = appSettings()->value(QStringLiteral("glyphSet/index"));
+    ~StoredGlyphSet() { appSettings()->setValue(QStringLiteral("glyphSet/index"), was); }
+};
+
 } // namespace
 
 TEST_CASE("a word typed bold, italic or underlined exports with its codes, at the bytes the meter shows",
@@ -428,4 +456,195 @@ TEST_CASE("Export IRC Text writes a formatted row's toggles after a plain twin",
     REQUIRE(w.exportIrcText(path, &error));
     CHECK(bwtest::readFile(path.toStdString()) == "\x03" "0,1A\n"
                                                    "\x03" "0,1\x02\x1d\x1f" "A\n");
+}
+
+TEST_CASE("an IRC document with a CP437 .ans types and draws ▚ and ★ (#350 slice 2)", "[app][target]") {
+    StoredGlyphSet restore;
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    REQUIRE(doc->target() == Target::Ansi);
+    REQUIRE(doc->textEncoding() == TextEncoding::Cp437);
+    CHECK(v->typingPolicy() == TypingPolicy::Cp437);
+    CHECK(visibleGlyphSets(w).size() == kCp437GlyphSetCount);
+    CHECK(w.glyphBar()->setBox()->count() == kCp437GlyphSetCount);
+
+    // Format > Target > IRC keeps the CP437 .ans, and offers the Unicode sets
+    act(w, "targetIrc")->trigger();
+    REQUIRE(doc->target() == Target::Irc);
+    REQUIRE(doc->textEncoding() == TextEncoding::Cp437);
+    CHECK(v->typingPolicy() == TypingPolicy::Unicode);
+    CHECK(visibleGlyphSets(w).size() == kGlyphSetCount);
+    CHECK(w.glyphBar()->setBox()->count() == kGlyphSetCount);
+
+    // the quadrant set from the Glyphs menu; F5 is ▚
+    act(w, "glyphSet17")->trigger();
+    CHECK(v->glyphSet() == 16);
+    CHECK(w.glyphSetLabel()->text().startsWith(QStringLiteral("F-keys set 17: ▖")));
+    CHECK(w.glyphBar()->setBox()->currentData().toInt() == 16);
+    press(v, Qt::Key_F5);
+    CHECK(doc->canvas().at(0, 0).ch == U'▚');
+    // the shapes set by stepping on from 17; F9 is ★
+    act(w, "nextGlyphSet")->trigger();
+    act(w, "nextGlyphSet")->trigger();
+    act(w, "nextGlyphSet")->trigger();
+    CHECK(v->glyphSet() == 19);
+    press(v, Qt::Key_F9);
+    CHECK(doc->canvas().at(1, 0).ch == U'★');
+    // and a typed ★, as a key's text
+    press(v, 0, QStringLiteral("★"));
+    CHECK(doc->canvas().at(2, 0).ch == U'★');
+    CHECK(v->cellCursor() == Cursor{3, 0});
+    // stepping wraps over all 20
+    act(w, "nextGlyphSet")->trigger();
+    CHECK(v->glyphSet() == 0);
+    act(w, "previousGlyphSet")->trigger();
+    CHECK(v->glyphSet() == kGlyphSetCount - 1);
+
+    // export writes their UTF-8 bytes
+    const std::vector<std::string> lines = irc::exportCanvas(irc::sentCanvas(doc->canvas(), true, Target::Irc));
+    REQUIRE_FALSE(lines.empty());
+    CHECK(lines.front().find("\xE2\x96\x9A\xE2\x98\x85\xE2\x98\x85") != std::string::npos);
+
+    // a CP437 .ans lists them as glyphs with no CP437 code, as before
+    const AnsiOutput out = doc->encode(ArtFormat::Ansi, TextEncoding::Cp437);
+    CHECK(lossDescription(out) ==
+          QStringLiteral("3 cells hold a glyph with no CP437 code and will be written as '?': "
+                         "▚ at 0,0; ★ in 2 cells, first at 1,0"));
+
+    // back to ANSI: set 20 reads as the default, and comes back under IRC
+    doc->undoStack()->undo();  // the typed ★
+    doc->undoStack()->undo();  // F9
+    doc->undoStack()->undo();  // F5
+    doc->undoStack()->undo();  // the target
+    REQUIRE(doc->target() == Target::Ansi);
+    CHECK(v->typingPolicy() == TypingPolicy::Cp437);
+    CHECK(v->glyphSet() == kDefaultGlyphSet);
+    CHECK(act(w, QStringLiteral("glyphSet%1").arg(kDefaultGlyphSet + 1).toLatin1().constData())->isChecked());
+    CHECK(visibleGlyphSets(w).size() == kCp437GlyphSetCount);
+    CHECK(w.glyphBar()->setBox()->count() == kCp437GlyphSetCount);
+    CHECK(w.glyphBar()->setBox()->currentData().toInt() == kDefaultGlyphSet);
+    CHECK(appSettings()->value(QStringLiteral("glyphSet/index")).toInt() == kGlyphSetCount - 1);
+    // stepping stays in Moebius's 16
+    act(w, "previousGlyphSet")->trigger();
+    CHECK(v->glyphSet() == kDefaultGlyphSet - 1);
+    act(w, "glyphSet1")->trigger();
+    act(w, "previousGlyphSet")->trigger();
+    CHECK(v->glyphSet() == kCp437GlyphSetCount - 1);
+    doc->undoStack()->redo();
+    CHECK(v->glyphSet() == kCp437GlyphSetCount - 1);
+}
+
+TEST_CASE("an ANSI document with a CP437 .ans refuses ▚ and ★, naming the target (#350 slice 2)", "[app][target]") {
+    StoredGlyphSet restore;
+    appSettings()->setValue(QStringLiteral("glyphSet/index"), 16);
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    REQUIRE(doc->target() == Target::Ansi);
+    // a stored Unicode set reads as set 6; F5 types its ▀, not ▚
+    CHECK(v->glyphSet() == kDefaultGlyphSet);
+    press(v, Qt::Key_F5);
+    CHECK(doc->canvas().at(0, 0).ch == glyphSetGlyph(kDefaultGlyphSet, 4));
+    QStringList rejected;
+    QObject::connect(v, &CanvasView::glyphRejected, [&](const QString& t) { rejected << t; });
+    press(v, 0, QStringLiteral("★"));
+    CHECK(rejected == QStringList{QStringLiteral("★")});
+    CHECK(doc->canvas().at(1, 0) == Cell{});
+    CHECK(v->cellCursor() == Cursor{1, 0});
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("★ has no CP437 code; not typed (target: ANSI, CP437)"));
+    press(v, 0, QStringLiteral("▚"));
+    CHECK(doc->canvas().at(1, 0) == Cell{});
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("▚ has no CP437 code; not typed (target: ANSI, CP437)"));
+
+    // a UTF-8 .ans takes them under ANSI too
+    Document utf8;
+    utf8.clear(10, 4, true, Target::Irc);
+    REQUIRE(utf8.textEncoding() == TextEncoding::Utf8);
+    CHECK(typingPolicy(Target::Ansi, utf8.textEncoding()) == TypingPolicy::Unicode);
+}
+
+TEST_CASE("the refusal names the target and encoding, under either policy (#350 slice 2)", "[app][target]") {
+    CHECK(rejectedGlyphsMessage(QStringLiteral("★"), Target::Ansi, TextEncoding::Cp437) ==
+          QStringLiteral("★ has no CP437 code; not typed (target: ANSI, CP437)"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("中"), Target::Ansi, TextEncoding::Cp437) ==
+          QStringLiteral("中 has no CP437 code; not typed (target: ANSI, CP437)"));
+    // under Unicode, #334 slice 8's reasons: a control, worded for IRC text
+    // under IRC, and a cluster past 16 code points
+    CHECK(rejectedGlyphsMessage(QString(QChar(0x2028)), Target::Irc, TextEncoding::Cp437) ==
+          QStringLiteral("U+2028 can't be held in IRC text; not typed (target: IRC, CP437)"));
+    CHECK(rejectedGlyphsMessage(QString(QChar(0x0085)) + QChar(0x2028), Target::Irc, TextEncoding::Utf8) ==
+          QStringLiteral("U+0085 U+2028 can't be held in IRC text; not typed (target: IRC, UTF-8)"));
+    CHECK(rejectedGlyphsMessage(QString(QChar(0x2028)), Target::Ansi, TextEncoding::Utf8) ==
+          QStringLiteral("U+2028 can't be held in a UTF-8 .ans; not typed (target: ANSI, UTF-8)"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("q") + QString(16, QChar(0x0302)), Target::Irc, TextEncoding::Cp437)
+              .endsWith(QStringLiteral(" holds more than 16 code points; not typed (target: IRC, CP437)")));
+}
+
+TEST_CASE("a wide glyph types as a pair under IRC, as in a UTF-8 document (#350 slice 2)", "[app][target]") {
+    StoredGlyphSet restore;
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    Document* doc = w.document();
+    // ANSI with a CP437 .ans refuses it, as #334 slice 8 does
+    press(v, 0, QStringLiteral("中"));
+    CHECK(doc->canvas().at(0, 0) == Cell{});
+    CHECK(v->cellCursor() == Cursor{0, 0});
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("中 has no CP437 code; not typed (target: ANSI, CP437)"));
+
+    // under IRC, still saved as a CP437 .ans, it is typed as a pair
+    act(w, "targetIrc")->trigger();
+    REQUIRE(doc->textEncoding() == TextEncoding::Cp437);
+    press(v, 0, QStringLiteral("中"));
+    CHECK(doc->canvas().at(0, 0).ch == U'中');
+    CHECK(doc->canvas().at(1, 0).ch.isContinuation());
+    CHECK(v->cellCursor() == Cursor{2, 0});
+    // and an F-key Unicode set glyph after it: set 17's F1 is ▖
+    act(w, "glyphSet17")->trigger();
+    press(v, Qt::Key_F1);
+    CHECK(doc->canvas().at(2, 0).ch == U'▖');
+    CHECK(v->cellCursor() == Cursor{3, 0});
+    // IRC text writes 中 whole, then ▖
+    const std::vector<std::string> lines = irc::exportCanvas(irc::sentCanvas(doc->canvas(), true, Target::Irc));
+    REQUIRE_FALSE(lines.empty());
+    CHECK(lines.front().find("\xE4\xB8\xAD\xE2\x96\x96") != std::string::npos);
+    // a control is refused, worded for IRC text
+    QInputMethodEvent separator;
+    separator.setCommitString(QString(QChar(0x2028)));
+    QApplication::sendEvent(v, &separator);
+    CHECK(doc->canvas().at(3, 0) == Cell{});
+    CHECK(w.statusBar()->currentMessage() ==
+          QStringLiteral("U+2028 can't be held in IRC text; not typed (target: IRC, CP437)"));
+}
+
+TEST_CASE("the IRC meter tells Unicode glyphs of one byte length apart (#350 slice 2)", "[app][target]") {
+    // ▚ and ★ are both three bytes in IRC text: the line cache (#371) has
+    // to key on the glyph, not its size, or one row takes the other's line
+    AnsiDocument d = formattedPair(0);
+    d.canvas.at(0, 0).ch = U'▚';
+    d.canvas.at(0, 1).ch = U'★';
+    MainWindow w;
+    Document* doc = w.document();
+    doc->replace(d, QString());
+    REQUIRE(doc->setTarget(Target::Irc));
+    IrcMeter* m = w.ircMeter();
+    CHECK(m->bytes(0) == 7);  // ^C0,1 ▚
+    CHECK(m->bytes(1) == 7);
+    std::vector<irc::Line> lines = m->lines();
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[0].text == "\x03" "0,1\xE2\x96\x9A");
+    CHECK(lines[1].text == "\x03" "0,1\xE2\x98\x85");
+    // row 1 made ▚ takes row 0's line; made ★ again, its own
+    Cell after = doc->canvas().at(0, 1);
+    after.ch = U'▚';
+    CellEdit e;
+    e.changes.push_back({0, 1, doc->canvas().at(0, 1), after});
+    REQUIRE(doc->edit(e));
+    lines = m->lines();
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[1].text == lines[0].text);
+    doc->undoStack()->undo();
+    lines = m->lines();
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[1].text == "\x03" "0,1\xE2\x98\x85");
 }

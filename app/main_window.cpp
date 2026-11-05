@@ -264,11 +264,15 @@ QString lossDescription(const AnsiOutput& out, bool countWide) {
     return parts.join(QStringLiteral(";\n"));
 }
 
-QString rejectedGlyphsMessage(const QString& text, TextEncoding encoding) {
+QString rejectedGlyphsMessage(const QString& text, Target target, TextEncoding encoding) {
+    // the target and encoding the typing policy follows (#350 slice 2)
+    const QString encodingName = encoding == TextEncoding::Utf8 ? QStringLiteral("UTF-8") : QStringLiteral("CP437");
+    const QString context = QObject::tr("(target: %1, %2)")
+                                .arg(target == Target::Irc ? QObject::tr("IRC") : QObject::tr("ANSI"), encodingName);
     QStringList parts;
-    if (encoding == TextEncoding::Utf8) {
-        // a UTF-8 .ans holds every glyph but the controls; anything else
-        // refused is a cluster past 16 code points
+    if (typingPolicy(target, encoding) == TypingPolicy::Unicode) {
+        // a UTF-8 .ans and IRC text hold every glyph but the controls;
+        // anything else refused is a cluster past 16 code points
         QString controls, named;
         std::vector<char32_t> seen;
         for (const char32_t ch : text.toUcs4()) {
@@ -279,11 +283,15 @@ QString rejectedGlyphsMessage(const QString& text, TextEncoding encoding) {
             controls += (controls.isEmpty() ? QString() : QStringLiteral(" ")) + QString::fromStdString(quotedGlyph(ch));
         }
         if (!controls.isEmpty())
-            return QObject::tr("%1 can't be held in a UTF-8 .ans; not typed").arg(controls);
+            return QObject::tr("%1 can't be held in %2; not typed %3")
+                .arg(controls, target == Target::Irc ? QObject::tr("IRC text") : QObject::tr("a UTF-8 .ans"), context);
         const QList<uint> cps = text.toUcs4();
         for (const char32_t ch : cps)
             named += (named.isEmpty() ? QString() : QStringLiteral(" ")) + QString::fromStdString(quotedGlyph(ch));
-        return QObject::tr("%1 holds more than %2 code points; not typed").arg(named).arg(kMaxClusterCodePoints);
+        return QObject::tr("%1 holds more than %2 code points; not typed %3")
+            .arg(named)
+            .arg(kMaxClusterCodePoints)
+            .arg(context);
     }
     QString uncoded;
     bool lastNamed = false;      // whether `uncoded` ends in a U+XXXX
@@ -310,7 +318,7 @@ QString rejectedGlyphsMessage(const QString& text, TextEncoding encoding) {
     }
     if (!uncoded.isEmpty())
         parts << QObject::tr("%1 has no CP437 code").arg(uncoded);
-    return QObject::tr("%1; not typed").arg(parts.join(QStringLiteral("; ")));
+    return QObject::tr("%1; not typed %2").arg(parts.join(QStringLiteral("; ")), context);
 }
 
 namespace {
@@ -563,7 +571,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
     connect(view_, &CanvasView::glyphSetChanged, this, &MainWindow::updateGlyphSet);
     connect(view_, &CanvasView::glyphRejected, this, [this](const QString& text) {
-        statusBar()->showMessage(rejectedGlyphsMessage(text, doc_.textEncoding()), 3000);
+        statusBar()->showMessage(rejectedGlyphsMessage(text, doc_.target(), doc_.textEncoding()), 3000);
     });
     connect(view_, &CanvasView::layerMoveStatus, this, [this](const QString& text) {
         statusBar()->showMessage(text);
@@ -732,8 +740,9 @@ void MainWindow::createActions() {
     add(glyphs, tr("&Default Set"), "defaultGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Slash),
         [this] { view_->setGlyphSet(kDefaultGlyphSet); });
     glyphs->addSeparator();
-    // Ctrl+Shift+F1-F10 pick sets 1-10; 11-16 are reached from this menu or by
-    // stepping. Not Moebius's Alt+F-keys: desktops take those (Alt+F4 closes
+    // Ctrl+Shift+F1-F10 pick sets 1-10; 11-16 (and the Unicode sets 17-20,
+    // shown only under the Unicode typing policy) are reached from this menu
+    // or by stepping. Not Moebius's Alt+F-keys: desktops take those (Alt+F4 closes
     // the window), as they do Ctrl+F-keys (KDE and Xfce desktop switching) and
     // Ctrl+Alt+F-keys (Linux VT switching).
     auto* group = new QActionGroup(this);
@@ -837,6 +846,9 @@ void MainWindow::updateGlyphSet() {
     tips << (picks.isEmpty() ? tr("Every set is in the Glyphs menu")
                              : tr("%1; every set is in the Glyphs menu").arg(picks.join(QStringLiteral(", "))));
     glyphSetLabel_->setToolTip(tips.join(QLatin1Char('\n')));
+    const int offered = glyphSetCount(view_->typingPolicy());
+    for (qsizetype i = 0; i < glyphSetActions_.size(); ++i)
+        glyphSetActions_[i]->setVisible(i < offered);
     if (set < glyphSetActions_.size())
         glyphSetActions_[set]->setChecked(true);
 }

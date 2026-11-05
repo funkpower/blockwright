@@ -1,6 +1,7 @@
 // Keyboard editing commands: cursor movement, typing, Backspace/Delete, and
 // cell deltas applied and reverted.
 
+#include "blockwright/ansi.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/despeckle.h"
 #include "blockwright/edit.h"
@@ -8,6 +9,8 @@
 #include "blockwright/layer.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
+#include "blockwright/target.h"
+#include "blockwright/width.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -334,10 +337,84 @@ TEST_CASE("the F-key glyph sets are Moebius's, and every glyph is typeable") {
     // the index wraps
     CHECK(glyphSet(kGlyphSetCount) == glyphSet(0));
     CHECK(glyphSet(-1) == glyphSet(kGlyphSetCount - 1));
-    for (int s = 0; s < kGlyphSetCount; ++s)
+    for (int s = 0; s < kCp437GlyphSetCount; ++s)
         for (int k = 0; k < kGlyphSetKeys; ++k) {
             INFO("set " << s + 1 << " F" << k + 1);
             CHECK(isTypeable(glyphSetGlyph(s, k)));
+        }
+}
+
+TEST_CASE("the typing policy is CP437 only for an ANSI document saved as a CP437 .ans") {
+    CHECK(typingPolicy(Target::Ansi, TextEncoding::Cp437) == TypingPolicy::Cp437);
+    CHECK(typingPolicy(Target::Ansi, TextEncoding::Utf8) == TypingPolicy::Unicode);
+    CHECK(typingPolicy(Target::Irc, TextEncoding::Cp437) == TypingPolicy::Unicode);
+    CHECK(typingPolicy(Target::Irc, TextEncoding::Utf8) == TypingPolicy::Unicode);
+}
+
+TEST_CASE("the Unicode policy types any glyph a UTF-8 .ans holds, the CP437 policy only CP437's") {
+    // wide and narrow, a cluster too (#359's UTF-8 rules)
+    for (const std::u32string_view k : {U"A", U"▚", U"★", U"○", U"◢", U"▔", U"中", U"q\u0302"}) {
+        INFO("U+" << std::hex << unsigned(k[0]));
+        CHECK(isTypeable(k, TypingPolicy::Unicode));
+    }
+    CHECK(isTypeable(U"A", TypingPolicy::Cp437));
+    CHECK_FALSE(isTypeable(U"▚", TypingPolicy::Cp437));
+    CHECK_FALSE(isTypeable(U"★", TypingPolicy::Cp437));
+    CHECK_FALSE(isTypeable(U"中", TypingPolicy::Cp437));
+    // controls, under either
+    for (const char32_t ch : {char32_t(0x0085), char32_t(0x2028), U'\t', char32_t(0x7f), char32_t(0xd800)}) {
+        INFO("U+" << std::hex << unsigned(ch));
+        CHECK_FALSE(isTypeable(std::u32string(1, ch), TypingPolicy::Unicode));
+        CHECK_FALSE(isTypeable(std::u32string(1, ch), TypingPolicy::Cp437));
+    }
+}
+
+TEST_CASE("typing a Unicode glyph writes it under the Unicode policy and nothing under CP437") {
+    const Canvas cv(3, 1);
+    const EditResult r = typeGlyph(cv, {1, 0}, U'★', Pen{}, TypingPolicy::Unicode);
+    Canvas after = cv;
+    r.edit.apply(after);
+    CHECK(after.at(1, 0).ch == U'★');
+    CHECK(r.cursor == Cursor{2, 0});
+    const EditResult refused = typeGlyph(cv, {1, 0}, U'★', Pen{}, TypingPolicy::Cp437);
+    CHECK(refused.edit.empty());
+    CHECK(refused.rejected == U"★");
+
+    const TypingOptions unicode{TypingPolicy::Unicode};
+    const EditResult t = replaceText(cv, {0, 0}, 0, 0, U"▚★", Pen{}, Cell{}, unicode);
+    Canvas typed = cv;
+    t.edit.apply(typed);
+    CHECK(typed.at(0, 0).ch == U'▚');
+    CHECK(typed.at(1, 0).ch == U'★');
+    CHECK(replaceText(cv, {0, 0}, 0, 0, U"▚★", Pen{}, Cell{}, TypingOptions{}).edit.empty());
+
+    // a wide glyph types as a pair under Unicode, as #359 types it in a
+    // UTF-8 document, and is refused under CP437
+    const EditResult wide = replaceText(cv, {0, 0}, 0, 0, U"a中", Pen{}, Cell{}, unicode);
+    Canvas pair = cv;
+    wide.edit.apply(pair);
+    CHECK(pair.at(0, 0).ch == U'a');
+    CHECK(pair.at(1, 0).ch == U'中');
+    CHECK(pair.at(2, 0).ch.isContinuation());
+    CHECK(wide.cursor == Cursor{1, 0, true});
+    const EditResult cp437 = replaceText(cv, {0, 0}, 0, 0, U"a中", Pen{}, Cell{}, TypingOptions{});
+    CHECK(cp437.edit.empty());
+    CHECK(cp437.rejected == U"中");
+}
+
+TEST_CASE("four Unicode F-key sets follow Moebius's, offered only under the Unicode policy") {
+    CHECK(glyphSetCount(TypingPolicy::Cp437) == 16);
+    CHECK(glyphSetCount(TypingPolicy::Unicode) == 20);
+    CHECK(glyphSet(16) == GlyphSet{U'▖', U'▗', U'▘', U'▝', U'▚', U'▞', U'▙', U'▛', U'▜', U'▟'});
+    CHECK(glyphSet(17) == GlyphSet{U'▁', U'▂', U'▃', U'▄', U'▅', U'▆', U'▇', U'█', U'▔', U'▕'});
+    CHECK(glyphSet(18) == GlyphSet{U'▏', U'▎', U'▍', U'▌', U'▋', U'▊', U'▉', U'█', U'▐', U'▕'});
+    CHECK(glyphSet(19) == GlyphSet{U'◢', U'◣', U'◤', U'◥', U'◆', U'◇', U'○', U'●', U'★', U'☆'});
+    for (int s = kCp437GlyphSetCount; s < kGlyphSetCount; ++s)
+        for (int k = 0; k < kGlyphSetKeys; ++k) {
+            INFO("set " << s + 1 << " F" << k + 1);
+            CHECK(codePointWidth(glyphSetGlyph(s, k)) == 1);
+            const char32_t ch = glyphSetGlyph(s, k);
+            CHECK(isTypeable(std::u32string_view(&ch, 1), TypingPolicy::Unicode));
         }
 }
 
@@ -410,7 +487,7 @@ TEST_CASE("a drawn edit keeps the dither mark only on a cell it leaves looking t
 // PLAN §16, Cursor and typing (#334 slice 8).
 namespace {
 
-const TypingOptions kUtf8{TextEncoding::Utf8};
+const TypingOptions kUnicode{TypingPolicy::Unicode};
 
 // A row of `w` cells with 中 as a pair at `x`.
 Canvas withPair(int w, int x, char32_t wide = U'中') {
@@ -471,31 +548,31 @@ TEST_CASE("typing splits text into clusters by width", "[wide]") {
 
 TEST_CASE("what may be typed follows the document's encoding", "[wide]") {
     // CP437: CP437 glyphs only, as before
-    CHECK(isTypeable(U"é", TextEncoding::Cp437));
-    CHECK_FALSE(isTypeable(U"中", TextEncoding::Cp437));
-    CHECK_FALSE(isTypeable(U"★", TextEncoding::Cp437));
-    CHECK_FALSE(isTypeable(U"é", TextEncoding::Cp437));
+    CHECK(isTypeable(U"é", TypingPolicy::Cp437));
+    CHECK_FALSE(isTypeable(U"中", TypingPolicy::Cp437));
+    CHECK_FALSE(isTypeable(U"★", TypingPolicy::Cp437));
+    CHECK_FALSE(isTypeable(U"é", TypingPolicy::Cp437));
     // UTF-8: any cluster a UTF-8 .ans holds
-    CHECK(isTypeable(U"中", TextEncoding::Utf8));
-    CHECK(isTypeable(U"★", TextEncoding::Utf8));
-    CHECK(isTypeable(U"q̂", TextEncoding::Utf8));
-    CHECK(isTypeable(U"👨‍", TextEncoding::Utf8));
-    CHECK(isTypeable(U"○", TextEncoding::Utf8));  // CP437 0x09, which a CP437 .ans can't hold
+    CHECK(isTypeable(U"中", TypingPolicy::Unicode));
+    CHECK(isTypeable(U"★", TypingPolicy::Unicode));
+    CHECK(isTypeable(U"q̂", TypingPolicy::Unicode));
+    CHECK(isTypeable(U"👨‍", TypingPolicy::Unicode));
+    CHECK(isTypeable(U"○", TypingPolicy::Unicode));  // CP437 0x09, which a CP437 .ans can't hold
     // controls, C1, the line and paragraph separators are typed in neither
     for (const char32_t c : {char32_t(0x01), char32_t(0x7f), char32_t(0x85), char32_t(0x9b), char32_t(0x2028),
                              char32_t(0x2029)}) {
-        CHECK_FALSE(isTypeable(std::u32string(1, c), TextEncoding::Utf8));
-        CHECK_FALSE(isTypeable(std::u32string(1, c), TextEncoding::Cp437));
+        CHECK_FALSE(isTypeable(std::u32string(1, c), TypingPolicy::Unicode));
+        CHECK_FALSE(isTypeable(std::u32string(1, c), TypingPolicy::Cp437));
     }
     // nor more than 16 code points
-    CHECK(isTypeable(U"q" + std::u32string(15, U'̂'), TextEncoding::Utf8));
-    CHECK_FALSE(isTypeable(U"q" + std::u32string(16, U'̂'), TextEncoding::Utf8));
+    CHECK(isTypeable(U"q" + std::u32string(15, U'̂'), TypingPolicy::Unicode));
+    CHECK_FALSE(isTypeable(U"q" + std::u32string(16, U'̂'), TypingPolicy::Unicode));
 }
 
 TEST_CASE("typing a wide cluster writes the pair and moves two cells", "[wide]") {
     const Pen pen{Color::indexed(Red), Color::indexed(Blue)};
     Canvas cv(5, 1);
-    EditResult r = typeCluster(cv, {0, 0}, U"中", pen, kUtf8);
+    EditResult r = typeCluster(cv, {0, 0}, U"中", pen, kUnicode);
     CHECK(r.cursor == Cursor{2, 0});
     CHECK(r.notice.empty());
     land(cv, r);
@@ -507,38 +584,38 @@ TEST_CASE("typing a wide cluster writes the pair and moves two cells", "[wide]")
     CHECK(r.rejected == U"中");
     CHECK(r.cursor == Cursor{0, 0});
     // onto the last two columns: the cursor stays on the lead, past the end
-    r = typeCluster(cv, {3, 0}, U"👍", pen, kUtf8);
+    r = typeCluster(cv, {3, 0}, U"👍", pen, kUnicode);
     CHECK(r.cursor == Cursor{3, 0, true});
     land(cv, r);
     CHECK(cv.at(3, 0).ch == Glyph(U'👍'));
     CHECK(cv.at(4, 0).ch.isContinuation());
     // and typing again there overwrites that pair
-    r = typeCluster(cv, r.cursor, U"国", pen, kUtf8);
+    r = typeCluster(cv, r.cursor, U"国", pen, kUnicode);
     CHECK(r.cursor == Cursor{3, 0, true});
     land(cv, r);
     CHECK(cv.at(3, 0).ch == Glyph(U'国'));
     CHECK(cv.at(4, 0).ch.isContinuation());
     // so does a key's text, which the app types with replaceText
-    r = replaceText(cv, r.cursor, 0, 0, U"中", pen, Cell{}, kUtf8);
+    r = replaceText(cv, r.cursor, 0, 0, U"中", pen, Cell{}, kUnicode);
     CHECK(r.cursor == Cursor{3, 0, true});
     CHECK(r.notice.empty());
     land(cv, r);
     CHECK(cv.at(3, 0).ch == Glyph(U'中'));
     CHECK(cv.at(4, 0).ch.isContinuation());
     // and a narrow one there is written on the lead, as typed on it
-    r = replaceText(cv, r.cursor, 0, 0, U"a", pen, Cell{}, kUtf8);
+    r = replaceText(cv, r.cursor, 0, 0, U"a", pen, Cell{}, kUnicode);
     CHECK(r.cursor == Cursor{4, 0});
     land(cv, r);
     CHECK(cv.at(3, 0).ch == Glyph(U'a'));
     CHECK(cv.at(4, 0).ch == Glyph(U' '));
     // on the last column it is refused, with a notice
     Canvas row(5, 1);
-    r = typeCluster(row, {4, 0}, U"中", pen, kUtf8);
+    r = typeCluster(row, {4, 0}, U"中", pen, kUnicode);
     CHECK(r.edit.empty());
     CHECK(r.cursor == Cursor{4, 0});
     CHECK(r.notice == "中 doesn't fit on the last column; not typed");
     // a one-column canvas has only the last column
-    CHECK(typeCluster(Canvas(1, 1), {0, 0}, U"中", pen, kUtf8).edit.empty());
+    CHECK(typeCluster(Canvas(1, 1), {0, 0}, U"中", pen, kUnicode).edit.empty());
 }
 
 TEST_CASE("a cluster typed over a pair's lead keeps the pair whole", "[wide]") {
@@ -548,26 +625,26 @@ TEST_CASE("a cluster typed over a pair's lead keeps the pair whole", "[wide]") {
     Canvas cv = withPair(4, 0);
     cv.at(0, 0).fg = pen.fg;
     cv.at(1, 0).fg = pen.fg;
-    EditResult r = typeCluster(cv, {0, 0}, U"国", pen, kUtf8);
+    EditResult r = typeCluster(cv, {0, 0}, U"国", pen, kUnicode);
     REQUIRE(r.edit.changes.size() == 2);
     CHECK(r.edit.changes[1].x == 1);
     land(cv, r);
     CHECK(cv.at(0, 0).ch == Glyph(U'国'));
     CHECK(cv.at(1, 0).ch.isContinuation());
     // a narrow one breaks it: the continuation becomes a space
-    r = typeCluster(cv, {0, 0}, U"a", pen, kUtf8);
+    r = typeCluster(cv, {0, 0}, U"a", pen, kUnicode);
     CHECK(r.cursor == Cursor{1, 0});
     land(cv, r);
     CHECK(cv.at(0, 0).ch == Glyph(U'a'));
     CHECK(cv.at(1, 0).ch == Glyph(U' '));
     // a cursor handed a continuation types on its lead
     cv = withPair(4, 1);
-    r = typeCluster(cv, {2, 0}, U"x", pen, kUtf8);
+    r = typeCluster(cv, {2, 0}, U"x", pen, kUnicode);
     REQUIRE_FALSE(r.edit.empty());
     CHECK(r.edit.changes[0].x == 1);
     // a wide one whose continuation lands on another pair's lead breaks that pair
     cv = withPair(5, 1);
-    land(cv, typeCluster(cv, {0, 0}, U"国", pen, kUtf8));
+    land(cv, typeCluster(cv, {0, 0}, U"国", pen, kUnicode));
     CHECK(cv.at(0, 0).ch == Glyph(U'国'));
     CHECK(cv.at(1, 0).ch.isContinuation());
     CHECK(cv.at(2, 0).ch == Glyph(U' '));
@@ -578,24 +655,24 @@ TEST_CASE("a narrow cluster typed over a stored pair's own base keeps it", "[wid
     // and the settle must not take that for a lead left with its glyph
     for (const Cursor at : {Cursor{0, 0}, Cursor{0, 0, true}}) {
         Canvas cv = withPair(2, 0, U'e');
-        land(cv, replaceText(cv, at, 0, 0, U"e", Pen{}, Cell{}, kUtf8));
+        land(cv, replaceText(cv, at, 0, 0, U"e", Pen{}, Cell{}, kUnicode));
         CHECK(cv.at(0, 0).ch == Glyph(U'e'));
         CHECK(cv.at(1, 0).ch == Glyph(U' '));
         cv = withPair(2, 0, U'e');
-        land(cv, typeCluster(cv, at, U"e", Pen{}, kUtf8));
+        land(cv, typeCluster(cv, at, U"e", Pen{}, kUnicode));
         CHECK(cv.at(0, 0).ch == Glyph(U'e'));
         CHECK(cv.at(1, 0).ch == Glyph(U' '));
     }
     // in another pen the lead's cell changes, and the same holds
     const Pen red{Color::indexed(Red), Color::indexed(Black)};
     Canvas cv = withPair(3, 0, U'e');
-    land(cv, replaceText(cv, {0, 0}, 0, 0, U"e", red, Cell{}, kUtf8));
+    land(cv, replaceText(cv, {0, 0}, 0, 0, U"e", red, Cell{}, kUnicode));
     CHECK(cv.at(0, 0).ch == Glyph(U'e'));
     CHECK(cv.at(0, 0).fg == Color::indexed(Red));
     CHECK(cv.at(1, 0).ch == Glyph(U' '));
     // and in mirror mode, on both sides
     cv = withPair(10, 0, U'e');
-    settleWide(cv, mirrorEdit(cv, typeCluster(cv, {0, 0}, U"e", Pen{}, kUtf8).edit)).apply(cv);
+    settleWide(cv, mirrorEdit(cv, typeCluster(cv, {0, 0}, U"e", Pen{}, kUnicode).edit)).apply(cv);
     CHECK(cv.at(0, 0).ch == Glyph(U'e'));
     CHECK(cv.at(1, 0).ch == Glyph(U' '));
     CHECK(cv.at(9, 0).ch == Glyph(U'e'));
@@ -605,7 +682,7 @@ TEST_CASE("a narrow cluster typed over a stored pair's own base keeps it", "[wid
 TEST_CASE("a lone mark joins the cluster left of the cursor", "[wide]") {
     const Pen pen;
     // NFC-normalised: e then U+0301 is é, in either encoding
-    for (const TypingOptions& opts : {TypingOptions{}, kUtf8}) {
+    for (const TypingOptions& opts : {TypingOptions{}, kUnicode}) {
         Canvas cv(4, 1);
         land(cv, typeCluster(cv, {0, 0}, U"e", pen, opts));
         const EditResult r = typeMarks(cv, {1, 0}, U"́", opts);
@@ -617,7 +694,7 @@ TEST_CASE("a lone mark joins the cluster left of the cursor", "[wide]") {
     Canvas cv(4, 1);
     cv.at(0, 0).ch = U'q';
     cv.at(0, 0).bg = Color::indexed(Red);
-    EditResult r = typeMarks(cv, {1, 0}, U"̂", kUtf8);
+    EditResult r = typeMarks(cv, {1, 0}, U"̂", kUnicode);
     land(cv, r);
     CHECK(cv.at(0, 0).ch.isCluster());
     CHECK(cps(cv.at(0, 0).ch) == U"q̂");
@@ -630,14 +707,14 @@ TEST_CASE("a lone mark joins the cluster left of the cursor", "[wide]") {
     CHECK(r.rejected == U"q̂");
     // onto a pair: the lead takes it and the pair stays whole
     cv = withPair(4, 0, U'❤');
-    r = typeMarks(cv, {2, 0}, U"️", kUtf8);
+    r = typeMarks(cv, {2, 0}, U"️", kUnicode);
     land(cv, r);
     CHECK(cps(cv.at(0, 0).ch) == U"❤️");
     CHECK(cv.at(1, 0).ch.isContinuation());
     // and onto a stored pair whose base is narrow, which NFC composes to
     // another base: the pair keeps the width it was stored with
     cv = withPair(4, 0, U'e');
-    r = typeMarks(cv, {2, 0}, U"́", kUtf8);
+    r = typeMarks(cv, {2, 0}, U"́", kUnicode);
     land(cv, r);
     CHECK(cv.at(0, 0).ch == Glyph(U'é'));
     CHECK(cv.at(1, 0).ch.isContinuation());
@@ -645,28 +722,28 @@ TEST_CASE("a lone mark joins the cluster left of the cursor", "[wide]") {
     // column, or a pair's lead
     cv = Canvas(4, 1);
     cv.at(3, 0).ch = U'q';
-    land(cv, typeMarks(cv, {3, 0, true}, U"̂", kUtf8));
+    land(cv, typeMarks(cv, {3, 0, true}, U"̂", kUnicode));
     CHECK(cps(cv.at(3, 0).ch) == U"q̂");
     cv = withPair(4, 2);
-    land(cv, typeMarks(cv, {2, 0, true}, U"̂", kUtf8));
+    land(cv, typeMarks(cv, {2, 0, true}, U"̂", kUnicode));
     CHECK(cps(cv.at(2, 0).ch) == U"中̂");
     CHECK(cv.at(3, 0).ch.isContinuation());
     // refused at column 0
-    r = typeMarks(Canvas(4, 1), {0, 0}, U"́", kUtf8);
+    r = typeMarks(Canvas(4, 1), {0, 0}, U"́", kUnicode);
     CHECK(r.edit.empty());
     CHECK(r.notice == "U+0301 has no character before it to join; not typed");
     // and as a 17th code point
     cv = Canvas(4, 1);
-    land(cv, typeCluster(cv, {0, 0}, U"q" + std::u32string(15, U'̂'), pen, kUtf8));
+    land(cv, typeCluster(cv, {0, 0}, U"q" + std::u32string(15, U'̂'), pen, kUnicode));
     REQUIRE(codePoints(cv.at(0, 0).ch).size == 16);
-    r = typeMarks(cv, {1, 0}, U"̂", kUtf8);
+    r = typeMarks(cv, {1, 0}, U"̂", kUnicode);
     CHECK(r.edit.empty());
     CHECK(r.notice == "U+0302 would be past the 16 code points a cell holds; not typed");
 }
 
 TEST_CASE("a cluster typed past the pool's cap is typed as its base", "[wide]") {
     // a cap the pool is already at: no new cluster goes in
-    const TypingOptions full{TextEncoding::Utf8, clusterPool().size()};
+    const TypingOptions full{TypingPolicy::Unicode, clusterPool().size()};
     Canvas cv(4, 1);
     const std::size_t before = clusterPool().size();
     EditResult r = typeCluster(cv, {0, 0}, U"w̆̇̈̉̊̋", Pen{}, full);
@@ -721,7 +798,7 @@ TEST_CASE("Backspace and Delete clear the whole pair", "[wide]") {
 TEST_CASE("an input-method commit is written in clusters", "[wide]") {
     const Pen pen;
     Canvas cv(5, 1);
-    EditResult r = replaceText(cv, {0, 0}, 0, 0, U"中a国", pen, Cell{}, kUtf8);
+    EditResult r = replaceText(cv, {0, 0}, 0, 0, U"中a国", pen, Cell{}, kUnicode);
     CHECK(r.cursor == Cursor{3, 0, true});
     CHECK(r.notice.empty());
     land(cv, r);
@@ -732,7 +809,7 @@ TEST_CASE("an input-method commit is written in clusters", "[wide]") {
     CHECK(cv.at(4, 0).ch.isContinuation());
     // a wide one that would start on the last column is dropped and reported
     cv = Canvas(5, 1);
-    r = replaceText(cv, {0, 0}, 0, 0, U"中中中", pen, Cell{}, kUtf8);
+    r = replaceText(cv, {0, 0}, 0, 0, U"中中中", pen, Cell{}, kUnicode);
     CHECK(r.notice == "中 would start on the last column; dropped");
     CHECK(r.cursor == Cursor{4, 0});
     land(cv, r);
@@ -740,7 +817,7 @@ TEST_CASE("an input-method commit is written in clusters", "[wide]") {
     CHECK(cv.at(4, 0) == Cell{});
     // its clusters with marks are interned as one cell each
     cv = Canvas(5, 1);
-    land(cv, replaceText(cv, {0, 0}, 0, 0, U"q̂̃z", pen, Cell{}, kUtf8));
+    land(cv, replaceText(cv, {0, 0}, 0, 0, U"q̂̃z", pen, Cell{}, kUnicode));
     CHECK(cps(cv.at(0, 0).ch) == U"q̂̃");
     CHECK(cv.at(1, 0).ch == Glyph(U'z'));
     // CP437 refuses one it can't hold, and all of the commit with it
@@ -748,13 +825,13 @@ TEST_CASE("an input-method commit is written in clusters", "[wide]") {
     CHECK(r.edit.empty());
     CHECK(r.rejected == U"中");
     // a commit that starts with a mark and has more after it is refused
-    r = replaceText(Canvas(5, 1), {1, 0}, 0, 0, U"́a", pen, Cell{}, kUtf8);
+    r = replaceText(Canvas(5, 1), {1, 0}, 0, 0, U"́a", pen, Cell{}, kUnicode);
     CHECK(r.edit.empty());
     CHECK(r.notice == "U+0301 starts text with more after it; not typed");
     // one past a pair it wrote on the last two columns goes on that pair's
     // lead, as typed there, not on the continuation it just wrote
     cv = Canvas(2, 1);
-    r = replaceText(cv, {0, 0}, 0, 0, U"中a", pen, Cell{}, kUtf8);
+    r = replaceText(cv, {0, 0}, 0, 0, U"中a", pen, Cell{}, kUnicode);
     CHECK(r.cursor == Cursor{1, 0});
     land(cv, r);
     CHECK(cv.at(0, 0).ch == Glyph(U'a'));
@@ -762,7 +839,7 @@ TEST_CASE("an input-method commit is written in clusters", "[wide]") {
     // a commit dropped whole leaves the cursor as it was, past the end too
     cv = Canvas(5, 1);
     cv.at(4, 0).ch = U'a';
-    r = replaceText(cv, {4, 0, true}, 0, 0, U"中", pen, Cell{}, kUtf8);
+    r = replaceText(cv, {4, 0, true}, 0, 0, U"中", pen, Cell{}, kUnicode);
     CHECK(r.edit.empty());
     CHECK(r.notice == "中 would start on the last column; dropped");
     CHECK(r.cursor == Cursor{4, 0, true});
@@ -774,7 +851,7 @@ TEST_CASE("an input-method replacement range is counted in clusters", "[wide]") 
     // column 0, and the two replaced take three cells
     Canvas cv = withPair(5, 0);
     cv.at(2, 0).ch = U'a';
-    EditResult r = replaceText(cv, {3, 0}, -2, 2, U"x", pen, Cell{}, kUtf8);
+    EditResult r = replaceText(cv, {3, 0}, -2, 2, U"x", pen, Cell{}, kUnicode);
     CHECK(r.cursor == Cursor{1, 0});
     land(cv, r);
     CHECK(cv.at(0, 0).ch == Glyph(U'x'));
@@ -783,7 +860,7 @@ TEST_CASE("an input-method replacement range is counted in clusters", "[wide]") 
     // past the end on a pair's lead the range counts back from after its
     // continuation: one cluster back is the pair
     cv = withPair(5, 3);
-    r = replaceText(cv, {3, 0, true}, -1, 1, U"国", pen, Cell{}, kUtf8);
+    r = replaceText(cv, {3, 0, true}, -1, 1, U"国", pen, Cell{}, kUnicode);
     CHECK(r.cursor == Cursor{3, 0, true});
     land(cv, r);
     CHECK(cv.at(3, 0).ch == Glyph(U'国'));
@@ -791,7 +868,7 @@ TEST_CASE("an input-method replacement range is counted in clusters", "[wide]") 
     // a range forward from the cursor steps over a pair as one
     cv = withPair(5, 1);
     cv.at(3, 0).ch = U'b';
-    r = replaceText(cv, {0, 0}, 1, 1, U"", pen, Cell{}, kUtf8);
+    r = replaceText(cv, {0, 0}, 1, 1, U"", pen, Cell{}, kUnicode);
     land(cv, r);
     CHECK(cv.at(1, 0) == Cell{});
     CHECK(cv.at(2, 0) == Cell{});
@@ -800,7 +877,7 @@ TEST_CASE("an input-method replacement range is counted in clusters", "[wide]") 
 
 TEST_CASE("a pair typed in mirror mode is mirrored whole", "[wide]") {
     Canvas cv(10, 1);
-    const EditResult r = typeCluster(cv, {0, 0}, U"中", Pen{}, kUtf8);
+    const EditResult r = typeCluster(cv, {0, 0}, U"中", Pen{}, kUnicode);
     int unmirrored = -1;
     settleWide(cv, mirrorEdit(cv, r.edit, &unmirrored)).apply(cv);
     CHECK(unmirrored == 0);
@@ -810,19 +887,19 @@ TEST_CASE("a pair typed in mirror mode is mirrored whole", "[wide]") {
     CHECK(cv.at(9, 0).ch.isContinuation());
     // typed over with the same pen, and a mark joined to it: both images
     // stay whole, though neither continuation's cell changes
-    settleWide(cv, mirrorEdit(cv, typeCluster(cv, {0, 0}, U"国", Pen{}, kUtf8).edit)).apply(cv);
+    settleWide(cv, mirrorEdit(cv, typeCluster(cv, {0, 0}, U"国", Pen{}, kUnicode).edit)).apply(cv);
     CHECK(cv.at(0, 0).ch == Glyph(U'国'));
     CHECK(cv.at(1, 0).ch.isContinuation());
     CHECK(cv.at(8, 0).ch == Glyph(U'国'));
     CHECK(cv.at(9, 0).ch.isContinuation());
-    settleWide(cv, mirrorEdit(cv, typeMarks(cv, {2, 0}, U"̂", kUtf8).edit)).apply(cv);
+    settleWide(cv, mirrorEdit(cv, typeMarks(cv, {2, 0}, U"̂", kUnicode).edit)).apply(cv);
     CHECK(cps(cv.at(0, 0).ch) == U"国̂");
     CHECK(cv.at(1, 0).ch.isContinuation());
     CHECK(cps(cv.at(8, 0).ch) == U"国̂");
     CHECK(cv.at(9, 0).ch.isContinuation());
     // one over the centre column of an odd width gets no copy
     Canvas odd(9, 1);
-    settleWide(odd, mirrorEdit(odd, typeCluster(odd, {3, 0}, U"中", Pen{}, kUtf8).edit, &unmirrored)).apply(odd);
+    settleWide(odd, mirrorEdit(odd, typeCluster(odd, {3, 0}, U"中", Pen{}, kUnicode).edit, &unmirrored)).apply(odd);
     CHECK(unmirrored == 1);
     CHECK(odd.at(3, 0).ch == Glyph(U'中'));
     CHECK(odd.at(4, 0).ch.isContinuation());
@@ -830,7 +907,7 @@ TEST_CASE("a pair typed in mirror mode is mirrored whole", "[wide]") {
     Canvas marks(10, 1);
     marks.at(0, 0).ch = U'q';
     marks.at(9, 0).ch = U'q';
-    settleWide(marks, mirrorEdit(marks, typeMarks(marks, {1, 0}, U"̂", kUtf8).edit)).apply(marks);
+    settleWide(marks, mirrorEdit(marks, typeMarks(marks, {1, 0}, U"̂", kUnicode).edit)).apply(marks);
     CHECK(cps(marks.at(9, 0).ch) == U"q̂");
 }
 
@@ -841,24 +918,24 @@ TEST_CASE("a pair typed on a layer is fitted whole or not at all", "[wide]") {
     Layer l = makeLayer(LayerKind::Cells, 4, 1, "top");
     for (int x = 0; x < 4; ++x)
         l.cells.at(x, 0) = transparentCell();
-    land(l.cells, typeCluster(l.cells, {1, 0}, U"A", pen, kUtf8));
+    land(l.cells, typeCluster(l.cells, {1, 0}, U"A", pen, kUnicode));
     l.props.alphaLocked = true;
-    std::optional<CellEdit> e = fitLayerEdit(l, typeCluster(l.cells, {0, 0}, U"中", pen, kUtf8).edit);
+    std::optional<CellEdit> e = fitLayerEdit(l, typeCluster(l.cells, {0, 0}, U"中", pen, kUnicode).edit);
     REQUIRE(e);
     CHECK(e->empty());
     // and both are where both cells are opaque
-    land(l.cells, typeCluster(l.cells, {2, 0}, U"B", pen, kUtf8));
-    e = fitLayerEdit(l, typeCluster(l.cells, {1, 0}, U"中", pen, kUtf8).edit);
+    land(l.cells, typeCluster(l.cells, {2, 0}, U"B", pen, kUnicode));
+    e = fitLayerEdit(l, typeCluster(l.cells, {1, 0}, U"中", pen, kUnicode).edit);
     REQUIRE(e);
     CHECK(e->changes.size() == 2);
     // a layer one column left of the canvas: a pair typed in its last
     // column would lose its continuation off the layer, so neither half is
     Layer m = makeLayer(LayerKind::Cells, 4, 1, "moved", -1);
     const Canvas shown = layerCanvas(m, 4, 1);
-    e = fitLayerEdit(m, typeCluster(shown, {2, 0}, U"中", pen, kUtf8).edit);
+    e = fitLayerEdit(m, typeCluster(shown, {2, 0}, U"中", pen, kUnicode).edit);
     REQUIRE(e);
     CHECK(e->empty());
-    e = fitLayerEdit(m, typeCluster(shown, {1, 0}, U"中", pen, kUtf8).edit);
+    e = fitLayerEdit(m, typeCluster(shown, {1, 0}, U"中", pen, kUnicode).edit);
     REQUIRE(e);
     CHECK(e->changes.size() == 2);
 }
@@ -925,7 +1002,7 @@ TEST_CASE("a pair pasted half onto an alpha lock's clear cell leaves a space in 
     CHECK(l.cells.at(1, 0).transparent);
     // typed, the same pair is refused whole
     const std::optional<CellEdit> typed =
-        fitLayerEdit(l, typeCluster(l.cells, {0, 0}, U"中", Pen{Color::indexed(Yellow), Color::indexed(Blue)}, kUtf8).edit);
+        fitLayerEdit(l, typeCluster(l.cells, {0, 0}, U"中", Pen{Color::indexed(Yellow), Color::indexed(Blue)}, kUnicode).edit);
     REQUIRE(typed);
     CHECK(typed->empty());
 }
@@ -941,7 +1018,7 @@ TEST_CASE("a typed pair refused in mirror mode leaves the art under it", "[wide]
     l.cells.at(4, 0) = pairCell(Glyph::continuation());
     l.props.alphaLocked = true;
     const Canvas was = l.cells;
-    const CellEdit typed = typeCluster(l.cells, {0, 0}, U"国", Pen{}, kUtf8).edit;
+    const CellEdit typed = typeCluster(l.cells, {0, 0}, U"国", Pen{}, kUnicode).edit;
     int unmirrored = -1;
     const std::optional<CellEdit> e = fitted(l, mirrorEdit(l.cells, typed, &unmirrored));
     REQUIRE(e);
@@ -1054,7 +1131,7 @@ TEST_CASE("mirror typing finds an unchanged pair lead", "[wide]") {
     l.cells = Canvas(6, 1);
     l.cells.at(0, 0).ch = U'中'; // legacy lone glyph
     l.cells.at(3, 0).ch = U'Z';
-    const auto typed = typeCluster(l.cells, {0, 0}, U"中", Pen{}, kUtf8).edit;
+    const auto typed = typeCluster(l.cells, {0, 0}, U"中", Pen{}, kUnicode).edit;
     REQUIRE(typed.changes.size() == 1);
     REQUIRE(typed.changes.front().x == 1);
     const auto e = fitted(l, mirrorEdit(l.cells, typed));
@@ -1067,7 +1144,7 @@ TEST_CASE("mirror typing finds an unchanged pair lead", "[wide]") {
 TEST_CASE("mirror cleanup does not reserve the image", "[wide]") {
     Layer l = makeLayer(LayerKind::Cells, 6, 1, "cells");
     l.cells = withPair(6, 2);
-    const auto typed = typeCluster(l.cells, {1, 0}, U"国", Pen{}, kUtf8).edit;
+    const auto typed = typeCluster(l.cells, {1, 0}, U"国", Pen{}, kUnicode).edit;
     const auto e = fitted(l, mirrorEdit(l.cells, typed));
     REQUIRE(e);
     e->apply(l.cells);
@@ -1086,7 +1163,7 @@ TEST_CASE("mirror typing over an unchanged lead clears the pair its image lands 
     l.cells.at(0, 0).ch = U'中';
     l.cells.at(3, 0).ch = U'国';
     l.cells.at(4, 0).ch = Glyph::continuation();
-    const auto typed = typeCluster(l.cells, {0, 0}, U"中", Pen{}, kUtf8).edit;
+    const auto typed = typeCluster(l.cells, {0, 0}, U"中", Pen{}, kUnicode).edit;
     REQUIRE(typed.changes.size() == 1);
     const auto e = fitted(l, mirrorEdit(l.cells, typed));
     REQUIRE(e);
@@ -1124,7 +1201,7 @@ TEST_CASE("mirror typing keeps every pair whole from every column over every pai
                 if (!set)
                     continue;
                 const Canvas was = l.cells;
-                const CellEdit typed = typeCluster(l.cells, {x, 0}, U"中", Pen{}, kUtf8).edit;
+                const CellEdit typed = typeCluster(l.cells, {x, 0}, U"中", Pen{}, kUnicode).edit;
                 const auto e = fitted(l, mirrorEdit(l.cells, typed));
                 REQUIRE(e);
                 e->apply(l.cells);
@@ -1167,10 +1244,10 @@ TEST_CASE("an input method's UTF-16 range is counted in whole clusters", "[wide]
     // units), then blanks: from column 4, the boundaries are 5, 4, 2 and 0
     // units back
     Canvas cv(8, 1);
-    land(cv, typeCluster(cv, {0, 0}, U"X", Pen{}, kUtf8));
-    land(cv, typeCluster(cv, {1, 0}, U"q", Pen{}, kUtf8));
-    land(cv, typeMarks(cv, {2, 0}, U"̂", kUtf8));
-    land(cv, typeCluster(cv, {2, 0}, U"😀", Pen{}, kUtf8));
+    land(cv, typeCluster(cv, {0, 0}, U"X", Pen{}, kUnicode));
+    land(cv, typeCluster(cv, {1, 0}, U"q", Pen{}, kUnicode));
+    land(cv, typeMarks(cv, {2, 0}, U"̂", kUnicode));
+    land(cv, typeCluster(cv, {2, 0}, U"😀", Pen{}, kUnicode));
     REQUIRE(cps(cv.at(1, 0).ch) == U"q̂");
     REQUIRE(cv.at(3, 0).ch.isContinuation());
     const Cursor c{4, 0};
@@ -1195,7 +1272,7 @@ TEST_CASE("an input method's UTF-16 range is counted in whole clusters", "[wide]
     CHECK(clusterRange(cv, {7, 0, true}, -1, 1) == ClusterRange{-1, 1});
     // replaceText given the converted range replaces 😀 alone
     const ClusterRange r = clusterRange(cv, c, -2, 2);
-    land(cv, replaceText(cv, c, r.start, r.length, U"B", Pen{}, Cell{}, kUtf8));
+    land(cv, replaceText(cv, c, r.start, r.length, U"B", Pen{}, Cell{}, kUnicode));
     CHECK(cps(cv.at(1, 0).ch) == U"q̂");
     CHECK(cv.at(2, 0).ch == Glyph(U'B'));
     CHECK(cv.at(3, 0) == Cell{});
@@ -1212,13 +1289,13 @@ TEST_CASE("typing writes the pen's formatting", "[irc][attrs]") {
     CHECK(r.edit.changes[0].after == Cell{U'A', pen.fg, pen.bg, bu, false});
     land(cv, r);
     // a wide cluster: both cells of the pair
-    r = typeCluster(cv, r.cursor, U"中", pen, kUtf8);
+    r = typeCluster(cv, r.cursor, U"中", pen, kUnicode);
     land(cv, r);
     CHECK(cv.at(1, 0) == Cell{U'中', pen.fg, pen.bg, bu, false});
     CHECK(cv.at(2, 0) == Cell{Glyph::continuation(), pen.fg, pen.bg, bu, false});
     // a lone mark joins the cell and keeps its formatting
-    land(cv, typeCluster(cv, {3, 0}, U"e", pen, kUtf8));
-    land(cv, typeMarks(cv, {4, 0}, U"́", kUtf8));
+    land(cv, typeCluster(cv, {3, 0}, U"e", pen, kUnicode));
+    land(cv, typeMarks(cv, {4, 0}, U"́", kUnicode));
     CHECK(cv.at(3, 0) == Cell{U'é', pen.fg, pen.bg, bu, false});
 
     // an input-method commit: each cluster written, a cleared cell blank
@@ -1226,7 +1303,7 @@ TEST_CASE("typing writes the pen's formatting", "[irc][attrs]") {
     Canvas row(6, 1);
     for (int x = 0; x < 6; ++x)
         row.at(x, 0) = Cell{U'z', Color::indexed(Grey), Color::indexed(Black), attr::Underline, false};
-    r = replaceText(row, {0, 0}, 0, 4, U"ab中", italic, Cell{}, kUtf8);
+    r = replaceText(row, {0, 0}, 0, 4, U"ab中", italic, Cell{}, kUnicode);
     land(row, r);
     CHECK(row.at(0, 0) == Cell{U'a', italic.fg, italic.bg, attr::Italic, false});
     CHECK(row.at(1, 0) == Cell{U'b', italic.fg, italic.bg, attr::Italic, false});
@@ -1237,7 +1314,7 @@ TEST_CASE("typing writes the pen's formatting", "[irc][attrs]") {
     // a pen without formatting types over a formatted cell without it
     land(row, typeGlyph(row, {0, 0}, U'q', Pen{}));
     CHECK(row.at(0, 0) == Cell{U'q', Pen{}.fg, Pen{}.bg, 0, false});
-    land(row, replaceText(row, {1, 0}, 0, 1, U"r", Pen{}, Cell{}, kUtf8));
+    land(row, replaceText(row, {1, 0}, 0, 1, U"r", Pen{}, Cell{}, kUnicode));
     CHECK(row.at(1, 0) == Cell{U'r', Pen{}.fg, Pen{}.bg, 0, false});
     // and Backspace and Delete clear to the blank, which has none
     land(row, backspace(row, {2, 0}));

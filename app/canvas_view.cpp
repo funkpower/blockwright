@@ -231,6 +231,10 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
         if (!ownEdit_)
             cancelTool();
     });
+    // The sets offered follow the typing policy, which follows the target
+    // and the encoding.
+    for (auto signal : {&Document::reset, &Document::targetChanged, &Document::encodingChanged})
+        connect(doc_, signal, this, [this] { emit glyphSetChanged(glyphSet()); });
     connect(doc_, &Document::reset, this, [this] {
         // The new document already has its own composite, possibly with the
         // same layer ids. No preview from the old document belongs on it.
@@ -371,8 +375,13 @@ void CanvasView::setForeground(int index) { setPen({swatchColor(index), pen_.bg,
 
 void CanvasView::setBackground(int index) { setPen({pen_.fg, swatchColor(index), pen_.attrs}); }
 
+TypingPolicy CanvasView::typingPolicy() const { return bw::typingPolicy(doc_->target(), doc_->textEncoding()); }
+
+int CanvasView::glyphSet() const { return glyphSet_ < glyphSetCount(typingPolicy()) ? glyphSet_ : kDefaultGlyphSet; }
+
 void CanvasView::setGlyphSet(int set) {
-    set = ((set % kGlyphSetCount) + kGlyphSetCount) % kGlyphSetCount;
+    const int n = glyphSetCount(typingPolicy());
+    set = ((set % n) + n) % n;
     if (set == glyphSet_)
         return;
     glyphSet_ = set;
@@ -1004,7 +1013,8 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
     if (e->key() >= Qt::Key_F1 && e->key() < Qt::Key_F1 + kGlyphSetKeys &&
         !(e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
         finishTool();
-        commit(typeGlyph(cv, cursor_, glyphSetGlyph(glyphSet_, e->key() - Qt::Key_F1), typingPen(*doc_, pen_)));
+        commit(typeGlyph(cv, cursor_, glyphSetGlyph(glyphSet(), e->key() - Qt::Key_F1), typingPen(*doc_, pen_),
+                         typingPolicy()));
         return;
     }
     if (isShortcut(e)) {
@@ -1044,9 +1054,10 @@ void CanvasView::inputMethodEvent(QInputMethodEvent* e) {
 }
 
 void CanvasView::typeText(const QString& text, int replaceStart, int replaceLength) {
-    // What may be typed follows the document's encoding (PLAN §16, Cursor
-    // and typing): any cluster a UTF-8 .ans holds, or a CP437 glyph.
-    const TypingOptions opts{doc_->textEncoding()};
+    // What may be typed follows the typing policy (PLAN §16, Cursor and
+    // typing): under the IRC target or a UTF-8 .ans any cluster a UTF-8 .ans
+    // holds, otherwise a CP437 glyph.
+    const TypingOptions opts{typingPolicy()};
     std::u32string glyphs;
     QString rejected;
     // NFC first: "e" + U+0301 is the glyph é, which CP437 holds.
@@ -1056,7 +1067,7 @@ void CanvasView::typeText(const QString& text, int replaceStart, int replaceLeng
         if (cluster[0] < 0x20 || cluster[0] == 0x7f)
             continue;
         // a lone mark is judged once joined (typeMarks)
-        if (isTypeable(cluster, opts.encoding) || (codePointWidth(cluster[0]) == 0 && glyphs.empty()))
+        if (isTypeable(cluster, opts.policy) || (codePointWidth(cluster[0]) == 0 && glyphs.empty()))
             glyphs += cluster;
         else
             rejected += QString::fromUcs4(cluster.data(), static_cast<qsizetype>(cluster.size()));

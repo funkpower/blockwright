@@ -355,10 +355,10 @@ bool atRowEnd(const Canvas& canvas, Cursor c) {
 
 bool isTypeable(char32_t ch) { return ch >= 0x20 && ch != 0x7f && isWritableGlyph(ch); }
 
-bool isTypeable(std::u32string_view cluster, TextEncoding encoding) {
+bool isTypeable(std::u32string_view cluster, TypingPolicy policy) {
     if (cluster.empty() || cluster.size() > static_cast<size_t>(kMaxClusterCodePoints))
         return false;
-    if (encoding == TextEncoding::Cp437)
+    if (policy == TypingPolicy::Cp437)
         return cluster.size() == 1 && isTypeable(cluster[0]);
     return std::all_of(cluster.begin(), cluster.end(), [&](char32_t cp) {
         return cp >= 0x20 && cp != 0x7f && utf8Writable(cp) && (cluster.size() == 1 || clusterMayHold(cp));
@@ -386,7 +386,7 @@ EditResult typeCluster(const Canvas& canvas, Cursor c, std::u32string_view clust
         return {{}, c};
     if (codePointWidth(cluster[0]) == 0)
         return typeMarks(canvas, c, cluster, opts);
-    if (!isTypeable(cluster, opts.encoding))
+    if (!isTypeable(cluster, opts.policy))
         return {{}, c, std::u32string(cluster)};
     c.x = leadOf(canvas, c.x, c.y);
     const int w = canvas.width();
@@ -416,8 +416,8 @@ EditResult typeCluster(const Canvas& canvas, Cursor c, std::u32string_view clust
     return r;
 }
 
-EditResult typeGlyph(const Canvas& canvas, Cursor c, char32_t ch, const Pen& pen) {
-    return typeCluster(canvas, c, std::u32string_view(&ch, 1), pen, {});
+EditResult typeGlyph(const Canvas& canvas, Cursor c, char32_t ch, const Pen& pen, TypingPolicy policy) {
+    return typeCluster(canvas, c, std::u32string_view(&ch, 1), pen, {policy});
 }
 
 EditResult typeMarks(const Canvas& canvas, Cursor c, std::u32string_view marks, const TypingOptions& opts) {
@@ -437,7 +437,7 @@ EditResult typeMarks(const Canvas& canvas, Cursor c, std::u32string_view marks, 
     joined = nfc(joined);
     if (joined.size() > static_cast<size_t>(kMaxClusterCodePoints))
         return {{}, c, {}, named(marks) + " would be past the 16 code points a cell holds; not typed"};
-    if (!isTypeable(joined, opts.encoding) || !clusterMayHold(joined[0]))
+    if (!isTypeable(joined, opts.policy) || !clusterMayHold(joined[0]))
         return {{}, c, joined};
     int capped = 0;
     std::vector<Cell> row = rowOf(canvas, c.y);
@@ -455,7 +455,7 @@ EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, st
         return {{}, c};
     const std::vector<std::u32string> clusters = splitClusters(text);
     for (const std::u32string& k : clusters)
-        if (!isTypeable(k, opts.encoding))
+        if (!isTypeable(k, opts.policy))
             return {{}, c, k};
     if (!clusters.empty() && codePointWidth(clusters.front()[0]) == 0)
         return {{}, c, {}, named(clusters.front()) + " starts text with more after it; not typed"};

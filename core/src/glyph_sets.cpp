@@ -10,7 +10,7 @@ namespace {
 
 // CP437 codes, from Moebius's app/prefs.js (F11 and F12, always blank
 // there, are left out).
-constexpr std::uint8_t kSets[kGlyphSetCount][kGlyphSetKeys] = {
+constexpr std::uint8_t kSets[kCp437GlyphSetCount][kGlyphSetKeys] = {
     {218, 191, 192, 217, 196, 179, 195, 180, 193, 194},  // ┌┐└┘─│├┤┴┬
     {201, 187, 200, 188, 205, 186, 204, 185, 202, 203},  // ╔╗╚╝═║╠╣╩╦
     {213, 184, 212, 190, 205, 179, 198, 181, 207, 209},  // ╒╕╘╛═│╞╡╧╤
@@ -29,11 +29,22 @@ constexpr std::uint8_t kSets[kGlyphSetCount][kGlyphSetKeys] = {
     {47, 92, 40, 41, 123, 125, 91, 93, 96, 39},          // /\(){}[]`'
 };
 
+// The Unicode sets (#350 slice 2): every glyph narrow by the width table
+// (PLAN §16, Width) and drawn by Unifont where CP437 has no code for it.
+constexpr GlyphSet kUnicodeSets[kGlyphSetCount - kCp437GlyphSetCount] = {
+    {U'▖', U'▗', U'▘', U'▝', U'▚', U'▞', U'▙', U'▛', U'▜', U'▟'},  // quadrants
+    {U'▁', U'▂', U'▃', U'▄', U'▅', U'▆', U'▇', U'█', U'▔', U'▕'},  // lower eighths, upper and right one
+    {U'▏', U'▎', U'▍', U'▌', U'▋', U'▊', U'▉', U'█', U'▐', U'▕'},  // left eighths, right half and eighth
+    {U'◢', U'◣', U'◤', U'◥', U'◆', U'◇', U'○', U'●', U'★', U'☆'},  // wedges, diamonds, circles, stars
+};
+
 std::array<GlyphSet, kGlyphSetCount> build() {
     std::array<GlyphSet, kGlyphSetCount> out{};
-    for (int s = 0; s < kGlyphSetCount; ++s)
+    for (int s = 0; s < kCp437GlyphSetCount; ++s)
         for (int k = 0; k < kGlyphSetKeys; ++k)
             out[s][k] = cp437ToUnicode(kSets[s][k]);
+    for (int s = kCp437GlyphSetCount; s < kGlyphSetCount; ++s)
+        out[s] = kUnicodeSets[s - kCp437GlyphSetCount];
     return out;
 }
 

@@ -112,11 +112,15 @@ QString ircLossDescription(const std::vector<Unwritable>& lost);
 // and the control code .ans reads it as ("○ is CP437 0x09, which .ans reads
 // as TAB"), then the glyphs with no CP437 code; then "; not typed". A
 // control, bidi override or invisible character is named as U+XXXX
-// (quotedGlyph), set off from the glyphs beside it by a space. In a UTF-8
-// document (PLAN §16) only the controls a UTF-8 .ans can't hold are refused
-// ("U+2028 can't be held in a UTF-8 .ans"), and a cluster past 16 code
-// points.
-QString rejectedGlyphsMessage(const QString& text, TextEncoding encoding = TextEncoding::Cp437);
+// (quotedGlyph), set off from the glyphs beside it by a space. That is the
+// CP437 typing policy's; under the Unicode one (the IRC target or a UTF-8
+// .ans, typingPolicy; PLAN §16) only the controls a UTF-8 .ans or IRC text
+// can't hold are refused ("U+2028 can't be held in a UTF-8 .ans", "… in IRC
+// text" under IRC), and a cluster past 16 code points. Every message ends
+// with the `target` and `encoding` the policy follows (#350 slice 2): "★
+// has no CP437 code; not typed (target: ANSI, CP437)".
+QString rejectedGlyphsMessage(const QString& text, Target target = Target::Ansi,
+                              TextEncoding encoding = TextEncoding::Cp437);
 // The question Save asks before a lossy save (AnsiOutput::lossy) as .ans
 // (or the XBIN or BIN `format` names), or, with `project`, as a project
 // (which keeps every glyph, so only blink lost on open and an XBIN's palette

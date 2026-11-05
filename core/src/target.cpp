@@ -1,5 +1,6 @@
 #include "blockwright/target.h"
 
+#include "blockwright/ansi.h"
 #include "blockwright/mirc.h"
 
 #include <algorithm>
@@ -18,6 +19,10 @@ std::optional<Target> parseTarget(std::string_view name) {
     if (s == "irc")
         return Target::Irc;
     return std::nullopt;
+}
+
+TypingPolicy typingPolicy(Target target, TextEncoding encoding) {
+    return target == Target::Irc || encoding == TextEncoding::Utf8 ? TypingPolicy::Unicode : TypingPolicy::Cp437;
 }
 
 Color swatchColor(int i) {

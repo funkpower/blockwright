@@ -757,7 +757,7 @@ TEST_CASE("the glyph bar types its glyphs, picks the glyph brush's, and follows 
         CHECK_FALSE(bar->cell(k)->icon().isNull());
     }
     QComboBox* sets = bar->setBox();
-    CHECK(sets->count() == kGlyphSetCount);
+    CHECK(sets->count() == kCp437GlyphSetCount);
     CHECK(sets->currentData().toInt() == v->glyphSet());
 
     // keyboard mode: a click types the glyph at the cursor, like its F-key

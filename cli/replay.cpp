@@ -19,6 +19,8 @@
 #include "blockwright/samples.h"
 #include "blockwright/selection.h"
 #include "blockwright/shapes.h"
+#include "blockwright/target.h"
+#include "blockwright/width.h"
 #include "blockwright/xbin.h"
 #include "read_file.h"
 
@@ -304,28 +306,68 @@ void eyedropper(State& s, const Step& step, Outcome& out) {
     (bg ? s.pen.bg : s.pen.fg) = *c;
 }
 
+// "U+2605", or "U+0071 U+0302" for a cluster.
+std::string codePoints(std::u32string_view cluster) {
+    std::string s;
+    for (const char32_t cp : cluster) {
+        char hex[16];
+        std::snprintf(hex, sizeof hex, "%sU+%04X", s.empty() ? "" : " ", unsigned(cp));
+        s += hex;
+    }
+    return s;
+}
+
+// Typed as keyboard mode types it (CanvasView::typeText), each line as one
+// commit under the document's typing policy, so the IRC target or a UTF-8
+// .ans takes any cluster a UTF-8 .ans holds, wide ones as a pair, and ANSI
+// with a CP437 .ans a CP437 glyph (PLAN §16, Cursor and typing). A line of
+// marks alone joins the cluster before the cursor (typeMarks); any other
+// line is written by replaceText, so a line that starts with a mark and has
+// more after it is refused, as the editor refuses it.
 void keyboard(State& s, const Step& step, Outcome& out) {
+    const TypingOptions opts{typingPolicy(s.p.target, s.p.ansEncoding)};
+    const auto refuse = [&](std::u32string_view cluster) {
+        fail(step, "the text holds a character keyboard mode can't type (" + codePoints(cluster) +
+                       "; target: " + (s.p.target == Target::Irc ? "IRC" : "ANSI") + ", " +
+                       (s.p.ansEncoding == TextEncoding::Utf8 ? "UTF-8" : "CP437") + ")");
+    };
+    const auto isMark = [](char32_t cp) { return codePointWidth(cp) == 0 && cp >= 0x20 && cp != 0x7f; };
     Cursor c{step.points[0].x, step.points[0].y, false};
     bool changed = false;
-    for (const char32_t ch : step.text) {
-        if (ch == U'\n') {
-            if (c.y + 1 >= s.height())
-                fail(step, "the text runs off the bottom of the canvas");
-            c = Cursor{step.points[0].x, c.y + 1, false};
-            continue;
+    std::u32string_view text = step.text;
+    for (;;) {
+        const std::size_t end = text.find(U'\n');
+        const std::u32string_view line = text.substr(0, end);
+        const std::vector<std::u32string> clusters = splitClusters(line);
+        if (!clusters.empty()) {
+            EditResult r;
+            if (std::all_of(line.begin(), line.end(), isMark)) {
+                // judged once joined
+                r = typeMarks(canvasOf(s), c, line, opts);
+            } else {
+                // a lone mark is judged once joined (typeMarks)
+                for (const std::u32string& k : clusters)
+                    if (!isMark(k[0]) && !isTypeable(k, opts.policy))
+                        refuse(k);
+                if (isMark(clusters.front()[0]))
+                    fail(step, "the text starts with a mark (" + codePoints(clusters.front()) +
+                                   ") and has more after it on its line; keyboard mode joins marks only typed alone");
+                r = replaceText(canvasOf(s), c, 0, 0, line, s.pen, blankCell(s), opts);
+            }
+            if (!r.rejected.empty())
+                refuse(r.rejected);
+            if (!r.notice.empty())
+                out.notes.push_back(steps::stepLabel(step) + ": " + r.notice);
+            Outcome quiet;
+            changed = land(s, step, r.edit, false, quiet) || changed;
+            c = r.cursor;
         }
-        if (!isTypeable(ch))
-            fail(step, "the text holds a character keyboard mode can't type (U+" +
-                           [&] {
-                               char hex[16];
-                               std::snprintf(hex, sizeof hex, "%04X", unsigned(ch));
-                               return std::string(hex);
-                           }() +
-                           ")");
-        const EditResult r = typeGlyph(canvasOf(s), c, ch, s.pen);
-        Outcome quiet;
-        changed = land(s, step, r.edit, false, quiet) || changed;
-        c = r.cursor;
+        if (end == std::u32string_view::npos)
+            break;
+        text.remove_prefix(end + 1);
+        if (c.y + 1 >= s.height())
+            fail(step, "the text runs off the bottom of the canvas");
+        c = Cursor{step.points[0].x, c.y + 1, false};
     }
     if (!changed)
         out.notes.push_back(steps::stepLabel(step) + ": changes nothing");

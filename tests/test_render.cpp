@@ -3,6 +3,8 @@
 
 #include "util.h"
 
+#include "blockwright/cp437.h"
+#include "blockwright/glyph_sets.h"
 #include "blockwright/render.h"
 #include "unifont.h"  // render/src: the bitmaps the wide and cluster cases expect
 
@@ -231,6 +233,45 @@ TEST_CASE("a glyph with no CP437 code draws in Unifont (PLAN §16)") {
             checkCell(img, 0, gw, rows, fg, bg);  // the ninth column is background
         }
     }
+}
+
+TEST_CASE("every glyph of the Unicode F-key sets draws in one cell (#350 slice 2)") {
+    // those CP437 lacks (▚, ★) come from Unifont; the few Unifont draws 16
+    // columns wide (★, ☆), though §16 counts them one cell, are squeezed
+    // into it, each pair of columns OR-ed into one
+    const Rgb fg = kPalette[Yellow], bg = kPalette[Black];
+    int unifontOnly = 0;
+    std::string squeezed;
+    for (int s = kCp437GlyphSetCount; s < kGlyphSetCount; ++s)
+        for (int k = 0; k < kGlyphSetKeys; ++k) {
+            const char32_t cp = glyphSetGlyph(s, k);
+            INFO("set " << s + 1 << " F" << k + 1 << " U+" << std::hex << unsigned(cp));
+            if (!unicodeToCp437(cp)) {
+                ++unifontOnly;
+                REQUIRE(unifontGlyph(cp));
+            }
+            int width = 0;
+            fontRow(cp, 0, &width);
+            std::array<std::uint16_t, 16> rows{};
+            bool inked = false;
+            for (int y = 0; y < 16; ++y) {
+                std::uint16_t row = fontRow(cp, y);
+                if (width == 16) {
+                    std::uint16_t out = 0;
+                    for (int i = 0; i < 8; ++i)
+                        if ((row >> (2 * i)) & 3)
+                            out |= std::uint16_t(1u << i);
+                    row = out;
+                }
+                inked |= (rows[y] = row) != 0;
+            }
+            if (width == 16)
+                squeezed += QString::fromUcs4(&cp, 1).toStdString();
+            CHECK(inked);
+            checkCell(renderCanvas(oneCell(cp, Color::indexed(Yellow), Color::indexed(Black)), 8), 0, 8, rows, fg, bg);
+        }
+    CHECK(unifontOnly > 20);
+    CHECK(squeezed == "★☆");
 }
 
 TEST_CASE("a wide glyph draws its left half in the lead and its right in the continuation (PLAN §16)") {

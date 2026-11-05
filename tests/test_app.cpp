@@ -803,7 +803,8 @@ TEST_CASE("input-method commits type like keys") {
     CHECK(rejected == QStringList{QStringLiteral("★")});
     CHECK(v->cellCursor() == Cursor{1, 0});
     CHECK(w.document()->canvas().at(1, 0) == Cell{});
-    CHECK(w.statusBar()->currentMessage() == QStringLiteral("★ has no CP437 code; not typed"));
+    CHECK(w.statusBar()->currentMessage() ==
+          QStringLiteral("★ has no CP437 code; not typed (target: ANSI, CP437)"));
 
     // #306: so is one CP437 has but .ans can't hold, and the status bar says why
     QInputMethodEvent circle;
@@ -811,7 +812,8 @@ TEST_CASE("input-method commits type like keys") {
     QApplication::sendEvent(v, &circle);
     CHECK(rejected.last() == QStringLiteral("○"));
     CHECK(w.document()->canvas().at(1, 0) == Cell{});
-    CHECK(w.statusBar()->currentMessage() == QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; not typed"));
+    CHECK(w.statusBar()->currentMessage() ==
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; not typed (target: ANSI, CP437)"));
 
     // the input method is told where the cursor is
     CHECK(v->inputMethodQuery(Qt::ImCursorRectangle).toRect() == v->cellRect(v->cellCursor()));
@@ -857,35 +859,40 @@ TEST_CASE("the cursor frames both cells of a wide glyph (PLAN §16)") {
 TEST_CASE("the typing refusal says why each glyph can't be typed") {
     // #306: the five CP437 glyphs .ans can't hold say which byte and control code
     CHECK(rejectedGlyphsMessage(QStringLiteral("○")) ==
-          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; not typed"));
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; not typed (target: ANSI, CP437)"));
     CHECK(rejectedGlyphsMessage(QStringLiteral("◙")) ==
-          QStringLiteral("◙ is CP437 0x0A, which .ans reads as LF; not typed"));
+          QStringLiteral("◙ is CP437 0x0A, which .ans reads as LF; not typed (target: ANSI, CP437)"));
     CHECK(rejectedGlyphsMessage(QStringLiteral("♪")) ==
-          QStringLiteral("♪ is CP437 0x0D, which .ans reads as CR; not typed"));
+          QStringLiteral("♪ is CP437 0x0D, which .ans reads as CR; not typed (target: ANSI, CP437)"));
     CHECK(rejectedGlyphsMessage(QStringLiteral("→")) ==
-          QStringLiteral("→ is CP437 0x1A, which .ans reads as SUB; not typed"));
+          QStringLiteral("→ is CP437 0x1A, which .ans reads as SUB; not typed (target: ANSI, CP437)"));
     CHECK(rejectedGlyphsMessage(QStringLiteral("←")) ==
-          QStringLiteral("← is CP437 0x1B, which .ans reads as ESC; not typed"));
+          QStringLiteral("← is CP437 0x1B, which .ans reads as ESC; not typed (target: ANSI, CP437)"));
     // a glyph with no CP437 code keeps its own reason, and a mix gives both
-    CHECK(rejectedGlyphsMessage(QStringLiteral("★")) == QStringLiteral("★ has no CP437 code; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("★")) ==
+          QStringLiteral("★ has no CP437 code; not typed (target: ANSI, CP437)"));
     CHECK(rejectedGlyphsMessage(QStringLiteral("★○…")) ==
-          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ★… has no CP437 code; not typed"));
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ★… has no CP437 code; "
+                         "not typed (target: ANSI, CP437)"));
     // one keypress or input-method commit carrying a glyph twice gives its reason once
     CHECK(rejectedGlyphsMessage(QStringLiteral("○○★★")) ==
-          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ★ has no CP437 code; not typed"));
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ★ has no CP437 code; "
+                         "not typed (target: ANSI, CP437)"));
     CHECK(rejectedGlyphsMessage(QStringLiteral("★○←○★…")) ==
           QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; ← is CP437 0x1B, which .ans reads as ESC; "
-                         "★… has no CP437 code; not typed"));
+                         "★… has no CP437 code; not typed (target: ANSI, CP437)"));
     // review of #332, N3: a typed or committed right-to-left override, or an
     // invisible glyph, is named by its code point, never put in the status
     // bar raw, and set off from the glyphs beside it
-    CHECK(rejectedGlyphsMessage(QString(QChar(0x202E))) == QStringLiteral("U+202E has no CP437 code; not typed"));
+    CHECK(rejectedGlyphsMessage(QString(QChar(0x202E))) ==
+          QStringLiteral("U+202E has no CP437 code; not typed (target: ANSI, CP437)"));
     CHECK(rejectedGlyphsMessage(QChar(0x202E) + QStringLiteral("★…")) ==
-          QStringLiteral("U+202E ★… has no CP437 code; not typed"));
+          QStringLiteral("U+202E ★… has no CP437 code; not typed (target: ANSI, CP437)"));
     CHECK(rejectedGlyphsMessage(QStringLiteral("★") + QChar(0x202E) + QChar(0xFE0F) + QStringLiteral("…")) ==
-          QStringLiteral("★ U+202E U+FE0F … has no CP437 code; not typed"));
+          QStringLiteral("★ U+202E U+FE0F … has no CP437 code; not typed (target: ANSI, CP437)"));
     CHECK(rejectedGlyphsMessage(QStringLiteral("○") + QChar(0x0301)) ==
-          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; U+0301 has no CP437 code; not typed"));
+          QStringLiteral("○ is CP437 0x09, which .ans reads as TAB; U+0301 has no CP437 code; "
+                         "not typed (target: ANSI, CP437)"));
     for (const QChar ch : {QChar(0x202E), QChar(0xFE0F), QChar(0x0301)})
         CHECK_FALSE(rejectedGlyphsMessage(QStringLiteral("★") + ch).contains(ch));
 }
@@ -1233,7 +1240,8 @@ TEST_CASE("a combining mark with no CP437 composed form writes none of the commi
     e.setCommitString(QStringLiteral("Aq́B"));
     QApplication::sendEvent(v, &e);
     CHECK(rejected == QStringList{QStringLiteral("q́")});
-    CHECK(w.statusBar()->currentMessage() == QStringLiteral("q U+0301 has no CP437 code; not typed"));
+    CHECK(w.statusBar()->currentMessage() ==
+          QStringLiteral("q U+0301 has no CP437 code; not typed (target: ANSI, CP437)"));
     CHECK(w.document()->canvas() == Canvas(80, 40));
     CHECK(v->cellCursor() == Cursor{0, 0});
     CHECK_FALSE(w.document()->isModified());
@@ -1493,7 +1501,7 @@ TEST_CASE("F1-F10 type the glyphs of the current set") {
     first->trigger();
     CHECK(v->glyphSet() == 0);
     prev->trigger();
-    CHECK(v->glyphSet() == kGlyphSetCount - 1);
+    CHECK(v->glyphSet() == kCp437GlyphSetCount - 1);
     CHECK(w.glyphSetLabel()->text().startsWith(QStringLiteral("F-keys set 16: /")));
     next->trigger();
     CHECK(v->glyphSet() == 0);
@@ -1551,7 +1559,7 @@ TEST_CASE("no shortcut uses a desktop's F-key chords") {
     CHECK(glyphSetChords == kGlyphSetKeys);
 }
 
-TEST_CASE("the Glyphs menu lists every set") {
+TEST_CASE("the Glyphs menu lists every set the typing policy offers") {
     MainWindow w;
     QMenu* glyphs = nullptr;
     for (QAction* m : w.menuBar()->actions())
@@ -1560,10 +1568,11 @@ TEST_CASE("the Glyphs menu lists every set") {
     REQUIRE(glyphs);
     QStringList sets;
     for (QAction* a : glyphs->actions())
-        if (a->objectName().startsWith(QStringLiteral("glyphSet")))
+        if (a->objectName().startsWith(QStringLiteral("glyphSet")) && a->isVisible())
             sets << a->objectName();
-    REQUIRE(sets.size() == kGlyphSetCount);
-    for (int i = 0; i < kGlyphSetCount; ++i) {
+    // a new document is ANSI with a CP437 .ans: Moebius's 16 (#350 slice 2)
+    REQUIRE(sets.size() == kCp437GlyphSetCount);
+    for (int i = 0; i < kCp437GlyphSetCount; ++i) {
         CHECK(sets[i] == QStringLiteral("glyphSet%1").arg(i + 1));
         QAction* a = action(w, sets[i].toLatin1().constData());
         CHECK(a->text().startsWith(QStringLiteral("Set %1: ").arg(i + 1)));
@@ -1738,6 +1747,7 @@ TEST_CASE("a stored pen colour or glyph set out of range reads as the default", 
         {QVariant(9), 9},                   {QStringLiteral("16"), kDefaultGlyphSet},
         {QStringLiteral("-1"), kDefaultGlyphSet}, {QVariant(100), kDefaultGlyphSet},
         {QStringLiteral("2.5"), kDefaultGlyphSet}, {QStringLiteral("set"), kDefaultGlyphSet},
+        {QStringLiteral("19"), kDefaultGlyphSet}, {QStringLiteral("20"), kDefaultGlyphSet},
         {QStringLiteral(""), kDefaultGlyphSet},
     };
     for (const auto& [value, want] : sets) {
@@ -1870,13 +1880,14 @@ TEST_CASE("a CP437 document refuses a wide cluster and names it", "[app][wide]")
     MainWindow w;
     CanvasView* v = w.canvasView();
     commitText(v, QStringLiteral("中"));
-    CHECK(w.statusBar()->currentMessage() == QStringLiteral("中 has no CP437 code; not typed"));
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("中 has no CP437 code; not typed (target: ANSI, CP437)"));
     CHECK(w.document()->canvas() == Canvas(80, 40));
     CHECK(v->cellCursor() == Cursor{0, 0});
     // a lone mark whose cluster CP437 has no glyph for is named by code point
     commitText(v, QStringLiteral("q"));
     key(v, 0, QString(QChar(0x0302)));
-    CHECK(w.statusBar()->currentMessage() == QStringLiteral("q U+0302 has no CP437 code; not typed"));
+    CHECK(w.statusBar()->currentMessage() ==
+          QStringLiteral("q U+0302 has no CP437 code; not typed (target: ANSI, CP437)"));
     CHECK(w.document()->canvas().at(0, 0).ch == U'q');
     // one it has is composed: e then U+0301 is é
     commitText(v, QStringLiteral("e"));
@@ -1975,7 +1986,8 @@ TEST_CASE("a UTF-8 document types wide and combining clusters", "[app][wide]") {
     commitText(v, QStringLiteral("★"));
     CHECK(cv.at(0, 1).ch == Glyph(U'★'));
     commitText(v, QString(QChar(0x2028)));
-    CHECK(w.statusBar()->currentMessage() == QStringLiteral("U+2028 can't be held in a UTF-8 .ans; not typed"));
+    CHECK(w.statusBar()->currentMessage() ==
+          QStringLiteral("U+2028 can't be held in a UTF-8 .ans; not typed (target: ANSI, UTF-8)"));
     CHECK(v->cellCursor() == Cursor{1, 1});
     // a lone mark at column 0 has nothing to join
     v->setCellCursor({0, 2});
@@ -2048,12 +2060,13 @@ TEST_CASE("typing a pair in mirror mode mirrors it whole", "[app][wide]") {
 }
 
 TEST_CASE("the typing refusal in a UTF-8 document names what it can't hold", "[app][wide]") {
-    CHECK(rejectedGlyphsMessage(QString(QChar(0x0085)), TextEncoding::Utf8) ==
-          QStringLiteral("U+0085 can't be held in a UTF-8 .ans; not typed"));
-    CHECK(rejectedGlyphsMessage(QStringLiteral("q") + QString(16, QChar(0x0302)), TextEncoding::Utf8)
-              .endsWith(QStringLiteral(" holds more than 16 code points; not typed")));
+    CHECK(rejectedGlyphsMessage(QString(QChar(0x0085)), Target::Ansi, TextEncoding::Utf8) ==
+          QStringLiteral("U+0085 can't be held in a UTF-8 .ans; not typed (target: ANSI, UTF-8)"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("q") + QString(16, QChar(0x0302)), Target::Ansi, TextEncoding::Utf8)
+              .endsWith(QStringLiteral(" holds more than 16 code points; not typed (target: ANSI, UTF-8)")));
     // CP437 names a cluster by its glyphs and its marks' code points
-    CHECK(rejectedGlyphsMessage(QStringLiteral("中")) == QStringLiteral("中 has no CP437 code; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("中")) ==
+          QStringLiteral("中 has no CP437 code; not typed (target: ANSI, CP437)"));
 }
 
 TEST_CASE("a key typed over a stored pair's own narrow base keeps the typed cell", "[app][wide]") {
