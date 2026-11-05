@@ -34,6 +34,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QHelpEvent>
 #include <QKeyEvent>
 #include <QLabel>
@@ -118,6 +119,37 @@ void key(QWidget* w, int k, Qt::KeyboardModifiers mods) {
     QApplication::sendEvent(w, &release);
 }
 
+// The text of every label, check box, radio button, button and group box
+// the Tool Options panel would show now, mnemonics and a closing colon
+// taken off, but for the widgets named in `skip`.
+QStringList toolOptionsLabels(QWidget* panel, const QSet<QString>& skip) {
+    QStringList out;
+    for (QWidget* child : panel->findChildren<QWidget*>()) {
+        // A control shown only in a state the test doesn't put the panel in
+        // (a hidden stacked page, a conditional row) is not covered.
+        if (!child->isVisibleTo(panel) || skip.contains(child->objectName()))
+            continue;
+        QString text;
+        if (auto* label = qobject_cast<QLabel*>(child))
+            text = label->text();
+        else if (auto* button = qobject_cast<QAbstractButton*>(child))
+            text = button->text();
+        else if (auto* group = qobject_cast<QGroupBox*>(child))
+            text = group->title();
+        else
+            continue;
+        text.replace(QStringLiteral("&&"), QStringLiteral("\x01"));
+        text.remove(QLatin1Char('&'));
+        text.replace(QLatin1Char('\x01'), QLatin1Char('&'));
+        text = text.trimmed();
+        if (text.endsWith(QLatin1Char(':')))
+            text.chop(1);
+        if (!text.isEmpty() && !out.contains(text))
+            out << text;
+    }
+    return out;
+}
+
 } // namespace
 
 TEST_CASE("every tool in the registry has help, and no help is left over", "[help]") {
@@ -149,6 +181,50 @@ TEST_CASE("every tool in the registry has help, and no help is left over", "[hel
     CHECK(sources.join(QLatin1Char(' ')).toStdString() == sorted.join(QLatin1Char(' ')).toStdString());
     CHECK(help::toolText(QStringLiteral("noSuchTool")).isEmpty());
     CHECK(help::toolText(QStringLiteral("../layers/cells")).isEmpty());
+}
+
+TEST_CASE("every setting a tool shows in Tool Options is named on its help page", "[help]") {
+    // Widgets in the panel whose text names no setting, by object name.
+    const QSet<QString> notSettings{
+        QStringLiteral("toolOptionsTitle"),  // the tool's name
+        QStringLiteral("toolHelpToggle"),    // folds the help away
+        QStringLiteral("toolHelp"),          // the help page itself
+        QStringLiteral("toolOptionsNone"),   // "This tool has no options."
+        QStringLiteral("brushGlyph"),        // a readout of the glyph brush's glyph
+        QStringLiteral("transformNote"),     // a note on what the active layer lets Move/Transform do
+        QStringLiteral("faceFavourite"),     // the ☆/★ mark, which the page names as ★
+        QStringLiteral("fontsScanning"),     // "Scanning fonts…" while the fonts folder is read
+    };
+    // Settings every page that names **Symmetry** leaves to the page that
+    // says what symmetry does: the label and that page.
+    const std::map<QString, QString> namedOnce{
+        {QStringLiteral("Folds"), QStringLiteral("halfBlock")},
+        {QStringLiteral("Radial centre at"), QStringLiteral("halfBlock")},
+    };
+    MainWindow w;
+    ToolOptions* panel = w.toolOptions();
+    REQUIRE(panel);
+    for (const QString& id : registryIds(w)) {
+        INFO("tool " << id.toStdString());
+        bool known = false;
+        ToolOptions::optionsFor(id, &known);
+        CHECK(known);  // a tool with no entry shows every brush setting
+        w.tools()->setActive(id);
+        const QString text = help::toolText(id);
+        const QStringList shown = toolOptionsLabels(panel, notSettings);
+        if (id != QStringLiteral("keyboard"))
+            CHECK(!shown.isEmpty());
+        for (const QString& name : shown) {
+            INFO("setting " << name.toStdString());
+            const QString bold = QStringLiteral("**%1**").arg(name);
+            if (const auto once = namedOnce.find(name); once != namedOnce.end() && !text.contains(bold)) {
+                CHECK(text.contains(QStringLiteral("**Symmetry**")));
+                CHECK(help::toolText(once->second).contains(bold));
+                continue;
+            }
+            CHECK(text.contains(bold));
+        }
+    }
 }
 
 TEST_CASE("every kind of layer has help", "[help]") {

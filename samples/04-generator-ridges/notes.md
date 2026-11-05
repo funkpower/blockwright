@@ -35,5 +35,5 @@ Snapshots: r1 is the first run of the ridges, two smooth ones; r2 the parameters
 - Set Ridges to 1 or 4, Roughness to 0 for rolling hills, or turn on Sharp peaks. Snapshots r1 and r2 show two settings side by side.
 - Set Highest row under 18: the peaks climb into the rows where the sky is still a gradient. They stay darker than the glow, but near the top of the sky they stand lighter than the dusk around them.
 - Hide ridges and show ridges (baked): the picture is the same, but the baked layer is plain cells you can paint on, and it no longer has a form.
-- Turn the stars layer's mode to normal: each star brings its own white on black instead of the sky's colours.
+- The stars layer is chars-only, so each star takes the sky's colours under it. The app has no control for a layer's mode: to see the stars in their own white on black, save a copy with File > Save As Project Directory, change `"mode"` from `"chars-only"` to `"normal"` in the copy's `layers/2.json`, and open the copy.
 - From a terminal, `blockwright-cli run-generators` runs every generator layer of a saved copy again and keeps the cells they make.
