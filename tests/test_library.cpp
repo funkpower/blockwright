@@ -72,6 +72,14 @@ CellBlock tree() {
 
 std::string sidecar(const std::string& body) { return "{" + body + "}"; }
 
+constexpr std::string_view kBom = "\xEF\xBB\xBF";
+
+Glyph stampCluster(std::vector<char32_t> cps) {
+    const std::optional<Glyph> g = clusterPool().intern(cps, PoolCap::Capped);
+    REQUIRE(g);
+    return *g;
+}
+
 struct EnvGuard {
     const char* name;
     explicit EnvGuard(const char* n, const std::string& value) : name(n) {
@@ -210,7 +218,7 @@ TEST_CASE("readStamp refuses a sidecar that disagrees with the art, or a stamp m
     }
 }
 
-TEST_CASE("encodeStamp counts the glyphs .ans can't store as one cell or as cells") {
+TEST_CASE("encodeStamp counts the glyphs even a UTF-8 stamp can't store as one cell or as cells") {
     const auto why = [](const CellBlock& b) {
         try {
             encodeStamp("Pine", "trees", {}, b, true);
@@ -219,11 +227,16 @@ TEST_CASE("encodeStamp counts the glyphs .ans can't store as one cell or as cell
         }
         return std::string("no error");
     };
+    // 中 in one cell, with no continuation: a lone wide cell, which UTF-8
+    // writes as ? so the row keeps its columns
     CellBlock b = tree();
     b.at(0, 0) = cell(U'\u4E2D', Green);
-    CHECK(why(b) == "1 cell holds a glyph with no CP437 code, which .ans can't store");
+    CHECK(why(b) == "1 wide glyph has no cell for its right half, which a stamp can't store");
     b.at(3, 1) = cell(U'\u4E2D', Green);
-    CHECK(why(b) == "2 cells hold a glyph with no CP437 code, which .ans can't store");
+    CHECK(why(b) == "2 wide glyphs have no cell for their right half, which a stamp can't store");
+    b.at(3, 0) = cell(U'\u0085', Green);  // NEL, a C1 control
+    CHECK(why(b) == "1 cell holds a control character; 2 wide glyphs have no cell for their right half, which a stamp "
+                    "can't store");
 }
 
 TEST_CASE("stampLossMessage counts each loss as one cell or as cells") {
@@ -241,6 +254,176 @@ TEST_CASE("stampLossMessage counts each loss as one cell or as cells") {
     CHECK(stampLossMessage(out) == "1 blinking cell would lose its blink");
     out.blinkDropped = 3;
     CHECK(stampLossMessage(out) == "3 blinking cells would lose their blink");
+    // a UTF-8 stamp's losses are those UTF-8 can't write
+    out = {};
+    out.encoding = TextEncoding::Utf8;
+    out.unwritable = {{0, 0, U'\u0085', Loss::Control}, {2, 0, U'\u4E2D', Loss::LoneWide},
+                      {3, 0, U'\u0301', Loss::LoneMark}, {4, 0, U'\u0301', Loss::LoneMark}};
+    CHECK(stampLossMessage(out) == "1 cell holds a control character; 1 wide glyph has no cell for its right half; "
+                                   "2 marks have no glyph of their own to sit on, which a stamp can't store");
+}
+
+// #336: a stamp CP437 can't hold is written to the user library as UTF-8,
+// with a byte order mark and "encoding": "utf-8" in its sidecar.
+
+TEST_CASE("a stamp CP437 holds is written as before: no byte order mark, three sidecar keys") {
+    const StampFiles f = encodeStamp("Pine", "trees", {"tree"}, tree(), true);
+    CHECK_FALSE(f.ans.starts_with(kBom));
+    CHECK(f.ans.starts_with('\x1b'));  // so a mark never opens a CP437 stamp
+    CHECK(f.json == "{\n  \"category\": \"trees\",\n  \"tags\": [\"tree\"],\n  \"ircBytes\": " +
+                        std::to_string(parseSidecar(f.json).ircBytes) + "\n}\n");
+    CHECK(parseSidecar(f.json).encoding == TextEncoding::Cp437);
+    // the bytes are writeAnsi's CP437 output for the same cells
+    AnsiDocument doc = parseAnsi(f.ans, ParseOptions{.encoding = TextEncoding::Cp437});
+    CHECK(writeAnsi(doc).bytes == f.ans);
+}
+
+TEST_CASE("a stamp with a wide glyph and a cluster is written as UTF-8 with a byte order mark and reads back") {
+    const fs::path dir = scratch("utf8");
+    const Glyph acute = stampCluster({U'e', U'́'});
+    CellBlock b(5, 2);
+    b.at(0, 0) = cell(U'中', Yellow, Blue);  // 中, a pair
+    b.at(1, 0) = cell(U'中', Yellow, Blue);
+    b.at(1, 0).ch = Glyph::continuation();
+    b.at(2, 0) = cell(U'e', LightGreen);
+    b.at(2, 0).ch = acute;
+    b.at(3, 0) = cell(U'▄', Green);  // CP437 cells beside them stay as they are
+    b.at(1, 1) = cell(U'█', Black);
+    const StampFiles f = encodeStamp("Han", "symbols", {"wide"}, b, true);
+    REQUIRE(f.ans.starts_with(kBom));
+    CHECK(f.ans.find("中") != std::string::npos);
+    CHECK(f.ans.find("é") != std::string::npos);
+    CHECK(f.json.find("\"encoding\": \"utf-8\"") != std::string::npos);
+    writeStamp(dir / "han.ans", f);
+    CHECK(bwtest::readFile(dir / "han.ans") == f.ans);
+
+    const Stamp s = readStamp(dir / "han.ans");
+    CHECK(s.meta.encoding == TextEncoding::Utf8);
+    CHECK(s.art.encoding == TextEncoding::Utf8);
+    REQUIRE(s.art.canvas.width() == 5);
+    REQUIRE(s.art.canvas.height() == 2);
+    const Canvas& cv = s.art.canvas;
+    CHECK(cv.at(0, 0).ch == Glyph(U'中'));
+    CHECK(cv.at(1, 0).ch.isContinuation());
+    CHECK(cv.at(0, 0).fg == b.at(0, 0).fg);
+    CHECK(cv.at(0, 0).bg == b.at(0, 0).bg);
+    CHECK(cv.at(2, 0).ch == acute);
+    CHECK(cv.at(2, 0).fg == b.at(2, 0).fg);
+    CHECK(cv.at(3, 0).ch == Glyph(U'▄'));
+    CHECK(cv.at(1, 1).ch == Glyph(U'█'));
+    // saved again from what it read, it is the same stamp
+    const StampFiles again = encodeStamp(s.name, s.meta.category, s.meta.tags, s.block(), s.art.ice);
+    CHECK(again.ans.substr(0, again.ans.size() - 128) == f.ans.substr(0, f.ans.size() - 128));
+    CHECK(again.json == f.json);
+}
+
+TEST_CASE("a cluster CP437 would compose to one byte is written as UTF-8, so it reads back as the cluster") {
+    const fs::path dir = scratch("utf8-cluster");
+    CellBlock b(2, 1);
+    b.at(0, 0) = cell(U'e', White);
+    b.at(0, 0).ch = stampCluster({U'e', U'́'});  // CP437 writes é, 0x82
+    const StampFiles f = encodeStamp("Acute", "symbols", {}, b, true);
+    CHECK(f.ans.starts_with(kBom));
+    writeStamp(dir / "acute.ans", f);
+    CHECK(readStamp(dir / "acute.ans").art.canvas.at(0, 0).ch == b.at(0, 0).ch);
+}
+
+TEST_CASE("a stamp with no byte order mark is read as CP437, whatever its high bytes look like") {
+    const fs::path dir = scratch("cp437-high");
+    // Σ╕¡ is E4 B8 AD in CP437, which is 中 in UTF-8: detectEncoding would
+    // call the file UTF-8, and a stamp is never read by detection
+    CellBlock b(3, 1);
+    b.at(0, 0) = cell(U'Σ', White);
+    b.at(1, 0) = cell(U'╕', White);
+    b.at(2, 0) = cell(U'¡', White);
+    const StampFiles f = encodeStamp("Sigma", "symbols", {}, b, true);
+    REQUIRE_FALSE(f.ans.starts_with(kBom));
+    REQUIRE(f.ans.find("\xE4\xB8\xAD") != std::string::npos);
+    CHECK(detectEncoding(f.ans.substr(0, f.ans.find('\x1A'))) == TextEncoding::Utf8);
+    writeStamp(dir / "sigma.ans", f);
+    const Stamp s = readStamp(dir / "sigma.ans");
+    CHECK(s.art.encoding == TextEncoding::Cp437);
+    CHECK(s.art.canvas.at(0, 0).ch == Glyph(U'Σ'));
+    CHECK(s.art.canvas.at(1, 0).ch == Glyph(U'╕'));
+    CHECK(s.art.canvas.at(2, 0).ch == Glyph(U'¡'));
+}
+
+TEST_CASE("a stamp's byte order mark and its sidecar's encoding must agree for it to read as UTF-8") {
+    const fs::path dir = scratch("utf8-agree");
+    CellBlock b(3, 1);
+    b.at(0, 0) = cell(U'★', Yellow);
+
+    SECTION("a sidecar that says UTF-8 over an .ans with no byte order mark is refused") {
+        const StampFiles f = encodeStamp("Star", "symbols", {}, b, true);
+        REQUIRE(f.ans.starts_with(kBom));
+        put(dir / "star.ans", f.ans.substr(kBom.size()));
+        put(dir / "star.json", f.json);
+        CHECK_THROWS_WITH(readStamp(dir / "star.ans"),
+                          "sidecar says the .ans is UTF-8, but it doesn't start with a byte order mark");
+    }
+    SECTION("an .ans that starts with the mark under a sidecar that doesn't say UTF-8 is refused") {
+        // A CP437 stamp starts with ESC, so a mark with no key is a UTF-8
+        // stamp that lost its key, or a hand-made file whose first glyphs
+        // are ∩╗┐. Both are refused rather than read as CP437.
+        const std::string why = ".ans starts with a byte order mark, but its sidecar has no \"encoding\": \"utf-8\"";
+        // a UTF-8 stamp whose widest row is plain ASCII: its CP437 read
+        // costs the same IRC bytes, so only this check stops a misread
+        CellBlock mixed(30, 2);
+        mixed.at(0, 0) = cell(U'中', White);
+        mixed.at(1, 0) = cell(U'中', White);
+        mixed.at(1, 0).ch = Glyph::continuation();
+        for (int x = 0; x < 30; ++x)
+            mixed.at(x, 1) = cell(U'a' + char32_t(x % 26), White);
+        const StampFiles f = encodeStamp("Mixed", "symbols", {}, mixed, true);
+        REQUIRE(f.ans.starts_with(kBom));
+        StampMeta meta = parseSidecar(f.json);
+        meta.encoding = TextEncoding::Cp437;
+        REQUIRE(widestRowBytes(parseAnsi(f.ans, ParseOptions{.encoding = TextEncoding::Cp437}).canvas) ==
+                meta.ircBytes);
+        put(dir / "mixed.ans", f.ans);
+        put(dir / "mixed.json", sidecarJson(meta));
+        CHECK_THROWS_WITH(readStamp(dir / "mixed.ans"), why);
+        // a CP437 stamp with the mark put in front, its ircBytes as CP437 reads it
+        CellBlock plain(5, 1);
+        plain.at(0, 0) = cell(U'#', Yellow);
+        const std::string ans = std::string(kBom) + encodeStamp("Hash", "symbols", {}, plain, true).ans;
+        const Canvas old = parseAnsi(ans, ParseOptions{.encoding = TextEncoding::Cp437}).canvas;
+        put(dir / "hash.ans", ans);
+        put(dir / "hash.json", sidecarJson({"symbols", {}, widestRowBytes(old)}));
+        CHECK_THROWS_WITH(readStamp(dir / "hash.ans"), why);
+        // scanned, both are problems and neither is a stamp
+        const ScanResult found = scan(dir);
+        CHECK(found.stamps.empty());
+        CHECK(found.problems.size() == 2);
+    }
+    SECTION("the sidecar names no encoding but UTF-8") {
+        CHECK_THROWS_AS(parseSidecar(sidecar(R"("category": "a", "tags": [], "ircBytes": 1, "encoding": "cp437")")),
+                        LibraryError);
+        CHECK_THROWS_AS(parseSidecar(sidecar(R"("category": "a", "tags": [], "ircBytes": 1, "encoding": 8)")),
+                        LibraryError);
+        CHECK(parseSidecar(sidecar(R"("category": "a", "tags": [], "ircBytes": 1, "encoding": "utf-8")")).encoding ==
+              TextEncoding::Utf8);
+    }
+}
+
+TEST_CASE("an older build's CP437 read of a UTF-8 stamp can match its ircBytes; the fourth key is what refuses it") {
+    // A build before #336 reads every stamp as CP437 and knows only three
+    // sidecar keys. When the widest row is plain ASCII, its CP437 read of
+    // the art costs the same IRC bytes as the UTF-8 one, so the ircBytes
+    // check alone would let it place the stamp misread; the "encoding" key
+    // is what makes it list the stamp as a problem.
+    CellBlock b(30, 2);
+    b.at(0, 0) = cell(U'中', White);
+    b.at(1, 0) = cell(U'中', White);
+    b.at(1, 0).ch = Glyph::continuation();
+    for (int x = 0; x < 30; ++x)
+        b.at(x, 1) = cell(U'a' + char32_t(x % 26), White);
+    const StampFiles f = encodeStamp("Mixed", "symbols", {}, b, true);
+    const StampMeta meta = parseSidecar(f.json);
+    const Canvas misread = parseAnsi(f.ans, ParseOptions{.encoding = TextEncoding::Cp437}).canvas;
+    CHECK(widestRowBytes(misread) == meta.ircBytes);
+    CHECK(misread.at(0, 0).ch == Glyph(U'∩'));
+    CHECK(f.json.find("\"encoding\"") != std::string::npos);
 }
 
 TEST_CASE("writeStamp leaves the old stamp intact when a file can't be written") {
@@ -333,24 +516,15 @@ TEST_CASE("encodeStamp refuses what a stamp can't hold") {
     CHECK_THROWS_AS(encodeStamp("Pine", "trees", {"a,b"}, b, true), LibraryError);
     CHECK_THROWS_AS(encodeStamp("Pine", "trees", {}, CellBlock{}, true), LibraryError);
     CHECK_THROWS_AS(encodeStamp("Pine", "trees", {}, CellBlock(3, 2), true), LibraryError);  // all blank
-    CellBlock star = b;
-    star.at(0, 0) = cell(U'★', Yellow);  // no CP437 code
-    CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, star, true),
-                      "1 cell holds a glyph with no CP437 code, which .ans can't store");
-    // #300: ◙ has CP437 0x0A, but .ans reads that byte as LF
-    CellBlock lf = b;
-    lf.at(0, 0) = cell(U'◙', Yellow);
-    CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, lf, true),
-                      "1 cell holds a glyph whose CP437 byte .ans reads as a control code (LF), which .ans can't "
-                      "store");
-    lf.at(1, 0) = cell(U'★', Yellow);
-    CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, lf, true),
-                      "1 cell holds a glyph with no CP437 code and 1 cell holds a glyph whose CP437 byte .ans "
-                      "reads as a control code (LF), which .ans can't store");
-    lf.at(2, 0) = cell(U'○', Yellow);  // CP437 0x09, TAB
-    CHECK_THROWS_WITH(encodeStamp("Pine", "trees", {}, lf, true),
-                      "1 cell holds a glyph with no CP437 code and 2 cells hold a glyph whose CP437 byte .ans "
-                      "reads as a control code (LF, TAB), which .ans can't store");
+    // What CP437 can't hold is saved as UTF-8 (#336): ★ has no CP437 code,
+    // and ◙ and ○ have 0x0A and 0x09, which .ans reads as LF and TAB (#300)
+    for (const char32_t ch : {U'★', U'◙', U'○'}) {
+        CellBlock odd = b;
+        odd.at(0, 0) = cell(ch, Yellow);
+        const StampFiles f = encodeStamp("Pine", "trees", {}, odd, true);
+        CHECK(f.ans.starts_with(kBom));
+        CHECK(parseSidecar(f.json).encoding == TextEncoding::Utf8);
+    }
 }
 
 TEST_CASE("a stamp is written as the editor saves its cells with the document's iCE") {

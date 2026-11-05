@@ -16,6 +16,19 @@
 // sidecar that repeats a key, and a stamp whose cells are all blank (it
 // would draw nothing).
 //
+// A stamp is CP437, but for one in the user library whose cells CP437 can't
+// hold (a wide glyph, a cluster, a glyph with no CP437 byte or whose byte
+// .ans reads as a control code; #336): that is written as UTF-8, starting
+// with a byte order mark, and its sidecar carries a fourth key,
+// "encoding": "utf-8". It is read as UTF-8 only when the .ans starts with
+// the mark and the sidecar says so; a sidecar that says so over an .ans with
+// no mark is refused, and so is an .ans that starts with the mark under a
+// sidecar that doesn't (every CP437 stamp Blockwright writes starts with
+// ESC, so that is a UTF-8 stamp that lost its key). A build from before #336
+// refuses the fourth key, so it lists such a stamp as a problem rather than
+// placing it misread. The bundled library is CP437 only
+// (test_library_bundled).
+//
 // A text style (PLAN §15) is one file, <slug>.style.json:
 //   {"kind": "text-style", "name": "...", "category": "...",
 //    "tags": ["...", ...], "ice": "required", "effects": [...]}
@@ -59,6 +72,8 @@ struct StampMeta {
     std::string category;           // UTF-8, not empty
     std::vector<std::string> tags;  // UTF-8, none empty or holding ','  
     std::size_t ircBytes = 0;       // the widest row's IRC bytes
+    // The .ans's text: "encoding": "utf-8" in the sidecar, nothing for CP437.
+    TextEncoding encoding = TextEncoding::Cp437;
 
     bool operator==(const StampMeta&) const = default;
 };
@@ -81,7 +96,9 @@ std::size_t widestRowBytes(const Canvas& canvas);
 
 // The sidecar as JSON text (keys in a fixed order, two-space indent, a
 // trailing newline), and back. parseSidecar throws LibraryError for
-// anything but an object with exactly the three keys, of the right types.
+// anything but an object with exactly the three keys, of the right types,
+// and "encoding" when it is "utf-8" (written only for a UTF-8 stamp, so a
+// CP437 stamp's sidecar is as it always was).
 std::string sidecarJson(const StampMeta& meta);
 StampMeta parseSidecar(std::string_view json);
 
@@ -119,10 +136,15 @@ struct StampFiles {
 // bytes, 1-35, no NUL, not ending in a space (0x01-0x1F are glyphs here,
 // ☺ ♥ …; readStamp holds a SAUCE title to the same rules). The cells are
 // written as they show with iCE colours `ice` (iceCell), as the editor
-// saves a document, under a fresh SAUCE record titled `name`. Throws
-// LibraryError for a bad name, category or tag, an empty, too large or
-// all-blank block, cells .ans can't hold (glyphs written as '?', blink
-// lost), or any failure of the .ans writer, parser or IRC encoder.
+// saves a document, under a fresh SAUCE record titled `name`, in CP437 when
+// CP437 holds every cell as it is (nothing in AnsiOutput::unwritable and no
+// cluster, not even one CP437 composes to a byte: é as e + U+0301 would
+// read back as U+00E9), so such a stamp is byte for byte what it was before
+// #336. Otherwise in UTF-8 with a byte order mark and "encoding": "utf-8" in
+// the sidecar (see the top), so wide glyphs and clusters read back as they
+// were. Throws LibraryError for a bad name, category or tag, an empty, too
+// large or all-blank block, cells neither can hold (glyphs written as '?',
+// blink lost), or any failure of the .ans writer, parser or IRC encoder.
 StampFiles encodeStamp(const std::string& name, const std::string& category,
                        const std::vector<std::string>& tags, const CellBlock& cells, bool ice);
 
@@ -131,7 +153,9 @@ StampFiles encodeStamp(const std::string& name, const std::string& category,
 // no CP437 code, those whose byte .ans reads as a control code, the
 // clusters written as their base, then the wide glyphs, counted: "3 wide
 // glyphs written as ?"), else the blinking cells that lost their blink.
-// Empty when nothing was lost.
+// For a UTF-8 output the glyphs are those it can't write: a control
+// character, a wide glyph with no continuation, a lone mark, a lead whose
+// glyph isn't two columns. Empty when nothing was lost.
 std::string stampLossMessage(const AnsiOutput& out);
 
 // Writes both files (the sidecar at pairedSidecar(ans)), replacing a stamp

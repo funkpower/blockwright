@@ -740,14 +740,18 @@ sed 's/"night"/"night,day"/' "$lib/sky/small-star.json" > "$bl/comma.json"; cp "
   printf '%022d' 0 | tr 0 '\0'
 } > "$bl/blank.ans"
 printf '{"category": "x", "tags": [], "ircBytes": 0}\n' > "$bl/blank.json"
-problems=7
+# bom.ans: a byte order mark (a UTF-8 stamp) under a sidecar with no "encoding"
+{ printf '\357\273\277'; cat "$lib/sky/small-star.ans"; } > "$bl/bom.ans"; cp "$lib/sky/small-star.json" "$bl/bom.json"
+problems=8
 if [[ -z ${BW_CLI_WINDOWS:-} ]]; then  # (a Windows program sees no Linux link)
   mkdir -p "$tmp/shared"; ln -s "$tmp/shared" "$bl/linked"; ln -s "$bl/gone.ans" "$bl/dangling.ans"
-  problems=9
+  problems=10
 fi
 expect "library check: a comma in a tag" 1 'comma\.ans: a sidecar tag holds a comma' -- "$cli" library check "$bl"
 expect "library check: an all-blank stamp" 1 'blank\.ans: \.ans has no drawn cell' -- "$cli" library check "$bl"
-if [[ $problems == 9 ]]; then
+expect "library check: a byte order mark with no encoding key" 1 'bom\.ans: \.ans starts with a byte order mark, but its sidecar has no "encoding": "utf-8"' -- "$cli" library check "$bl"
+expect "library list: a byte order mark with no encoding key is a warning" 0 'warning: .*bom\.ans: \.ans starts with a byte order mark' -- "$cli" library list "$bl"
+if [[ $problems == 10 ]]; then
   expect "library check: a linked folder" 1 'linked: symbolic link to a folder, not followed' -- "$cli" library check "$bl"
   expect "library check: a broken link" 1 'dangling\.ans: broken symbolic link, skipped' -- "$cli" library check "$bl"
   expect "library list: a linked folder is a warning" 0 'warning: .*linked: symbolic link to a folder' -- "$cli" library list "$bl"

@@ -26,6 +26,7 @@
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -706,6 +707,10 @@ int main(int argc, char** argv) {
         for (const Spec& s : specs()) {
             const CellBlock block = cells(s.draw());
             library::StampFiles files = library::encodeStamp(s.title, s.category, s.tags, block, true);
+            // The bundled library is CP437 only (#336): UTF-8 is for the
+            // user library.
+            if (files.ans.starts_with("\xEF\xBB\xBF"))
+                throw std::runtime_error(std::string(s.title) + ": CP437 can't hold its cells, and a bundled stamp is CP437");
             // The SAUCE record is the file's last 128 bytes: its author (at
             // 42, 20 bytes, space-padded) is funkpower, and its date (at 82)
             // is fixed, so a stamp made again is the same file.

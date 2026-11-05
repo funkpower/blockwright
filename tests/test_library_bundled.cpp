@@ -228,3 +228,29 @@ TEST_CASE("every all-black bundled stamp is tagged silhouette and dark") {
     CHECK(allBlack(*palm));
     CHECK(matches(*palm, "dark"));
 }
+
+TEST_CASE("every bundled stamp is CP437: no byte order mark, no encoding key, and CP437 holds its cells") {
+    // #336: only the user library holds UTF-8 stamps. Saved again from its
+    // cells, a bundled stamp is the same two files but for the SAUCE author
+    // and date bw-make-stamps sets, so CP437 holds every cell as it is (a
+    // cell it couldn't would make encodeStamp write UTF-8) and Save to
+    // Library still writes what it wrote before #336, byte for byte.
+    const ScanResult r = scan(kBundled);
+    REQUIRE_FALSE(r.stamps.empty());
+    for (const Stamp& s : r.stamps) {
+        INFO(s.path.string());
+        const std::string ans = readRegularFile(s.path);
+        const std::string json = readRegularFile(pairedSidecar(s.path));
+        CHECK_FALSE(ans.starts_with("\xEF\xBB\xBF"));
+        CHECK(json.find("\"encoding\"") == std::string::npos);
+        CHECK(s.meta.encoding == TextEncoding::Cp437);
+        CHECK(s.art.encoding == TextEncoding::Cp437);
+        StampFiles again = encodeStamp(s.name, s.meta.category, s.meta.tags, s.block(), s.art.ice);
+        REQUIRE(again.ans.size() == ans.size());
+        const size_t sauce = ans.size() - 128;
+        again.ans.replace(sauce + 42, 20, ans, sauce + 42, 20);  // the author
+        again.ans.replace(sauce + 82, 8, ans, sauce + 82, 8);    // the date
+        CHECK(again.ans == ans);
+        CHECK(again.json == json);
+    }
+}

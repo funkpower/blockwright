@@ -482,6 +482,23 @@ TEST_CASE("an all-blank selection is not saved as a stamp") {
     CHECK_FALSE(QFileInfo::exists(QDir(f.user.path()).filePath(QStringLiteral("nothing.ans"))));
 }
 
+TEST_CASE("the dock reports a stamp whose byte order mark its sidecar doesn't back") {
+    // #336: a mark says UTF-8, so a sidecar with no "encoding" key is a
+    // problem, not a stamp placed misread with ∩╗┐ on its first row
+    Fixture f;
+    const fs::path user = fspath(f.user.path());
+    CellBlock b(2, 1);
+    b.at(0, 0).ch = U'#';
+    const library::StampFiles plain = library::encodeStamp("Hash", "test", {}, b, true);
+    library::writeStamp(user / "hash.ans", {std::string("\xEF\xBB\xBF") + plain.ans, plain.json});
+    f.dock->rescan();
+    CHECK(f.dock->problems().size() == 1);
+    CHECK(f.dock->problemLabel()->text() == QStringLiteral("1 file skipped"));
+    CHECK(f.dock->problemLabel()->toolTip().contains(QStringLiteral("starts with a byte order mark")));
+    for (int i = 0; i < f.dock->grid()->count(); ++i)
+        CHECK(f.dock->grid()->item(i)->text() != QStringLiteral("Hash"));
+}
+
 TEST_CASE("the dock reports links it skipped") {
     // std::filesystem's links: QFile::link makes .lnk shortcuts on Windows.
     if (!bwtest::symlinksWork())

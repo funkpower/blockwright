@@ -199,12 +199,14 @@ struct AnsiOutput {
 // `unwritable`. So are a lone wide cell and a lone mark the reader would
 // join to the cell before it (utf8LoneLoss), so the row keeps its columns
 // when it is read back or drawn by a terminal. The content starts with a byte
-// order mark only when it would not be read back as UTF-8 without one
-// (detectEncoding: no sequence of three bytes or more), so parseAnsi of the
-// bytes always gives the cells back, read as UTF-8. SAUCE's text fields stay
-// CP437 bytes, and FileSize counts the UTF-8 content, mark and all. The
-// document's own `encoding` is not consulted.
-AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding = TextEncoding::Cp437);
+// order mark when `bom` asks for one (a user-library stamp, PLAN §12, is
+// read as UTF-8 only by its mark), and otherwise only when it would not be
+// read back as UTF-8 without one (detectEncoding: no sequence of three bytes
+// or more), so parseAnsi of the bytes always gives the cells back, read as
+// UTF-8. SAUCE's text fields stay CP437 bytes, and FileSize counts the UTF-8
+// content, mark and all. The document's own `encoding` is not consulted, and
+// `bom` is ignored for CP437.
+AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding = TextEncoding::Cp437, bool bom = false);
 
 // Whether writeAnsi writes `ch` as itself in a UTF-8 .ans: NUL (a blank),
 // 0x20-0x7E, and every Unicode scalar value from U+00A0 up (no surrogate,

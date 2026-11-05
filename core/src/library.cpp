@@ -109,13 +109,18 @@ std::string readRegularFile(const fs::path& p) {
 
 namespace {
 
-// A stamp is CP437, as Save to Library writes it: never read as UTF-8, so a
-// stamp's cells don't hang on detectEncoding.
-const ParseOptions kStampParse{.encoding = TextEncoding::Cp437};
+// A stamp is read as its sidecar says (CP437 unless "encoding": "utf-8" and
+// a byte order mark), never by detectEncoding, so a stamp's cells don't hang
+// on what its bytes happen to look like.
+ParseOptions stampParse(TextEncoding encoding) { return {.encoding = encoding}; }
+
+constexpr std::string_view kBom = "\xEF\xBB\xBF";
 
 constexpr const char* kCategory = "category";
 constexpr const char* kTags = "tags";
 constexpr const char* kIrcBytes = "ircBytes";
+constexpr const char* kEncoding = "encoding";
+constexpr const char* kUtf8Name = "utf-8";
 
 std::string readAll(const fs::path& p) { return readRegularFile(p); }
 
@@ -512,11 +517,13 @@ QJsonObject knownObject(std::string_view json, const std::string& what, std::ini
 std::string sidecarJson(const StampMeta& meta) {
     // Written by hand so the key order is fixed and diffs stay small.
     return "{\n  \"category\": " + quoted(meta.category) + ",\n  \"tags\": " + tagsJson(meta.tags) +
-           ",\n  \"ircBytes\": " + std::to_string(meta.ircBytes) + "\n}\n";
+           ",\n  \"ircBytes\": " + std::to_string(meta.ircBytes) +
+           (meta.encoding == TextEncoding::Utf8 ? ",\n  \"encoding\": \"" + std::string(kUtf8Name) + "\"" : "") +
+           "\n}\n";
 }
 
 StampMeta parseSidecar(std::string_view json) {
-    const QJsonObject o = knownObject(json, "sidecar", {kCategory, kTags, kIrcBytes});
+    const QJsonObject o = knownObject(json, "sidecar", {kCategory, kTags, kIrcBytes, kEncoding});
     StampMeta m;
     const QJsonValue cat = o.value(QLatin1String(kCategory));
     if (!cat.isString())
@@ -537,6 +544,12 @@ StampMeta parseSidecar(std::string_view json) {
     if (!bytes.isDouble() || d < 0 || d != std::floor(d) || d > 1e15)
         throw LibraryError("sidecar \"ircBytes\" is missing or not a whole number of bytes");
     m.ircBytes = static_cast<std::size_t>(d);
+    // Absent for CP437: only a UTF-8 stamp's sidecar names its encoding.
+    if (o.contains(QLatin1String(kEncoding))) {
+        if (o.value(QLatin1String(kEncoding)).toString() != QLatin1String(kUtf8Name))
+            throw LibraryError("sidecar \"encoding\" is not \"utf-8\" (a CP437 stamp's sidecar has no \"encoding\")");
+        m.encoding = TextEncoding::Utf8;
+    }
     return m;
 }
 
@@ -766,8 +779,35 @@ Stamp readStamp(const fs::path& ans) {
     } catch (const LibraryError& e) {
         throw LibraryError(std::string(".ans ") + e.what());
     }
+    // A stamp that starts with a byte order mark is UTF-8, and its sidecar
+    // must say so: it is read first, and one that doesn't is refused (no
+    // CP437 stamp Blockwright writes starts with the mark; they start with
+    // ESC). Any other stamp is read as CP437, as it always was, and its
+    // sidecar checked after the art.
+    const auto readSidecar = [&] {
+        const fs::path side = pairedSidecar(ans);
+        if (!fs::exists(fs::status(side, ec)))
+            throw LibraryError("no sidecar " + side.filename().string());
+        if (!regular(side))
+            throw LibraryError("sidecar " + side.filename().string() + " is not a regular file");
+        std::string json;
+        try {
+            json = readAll(side);
+        } catch (const LibraryError& e) {
+            throw LibraryError("sidecar " + std::string(e.what()));
+        }
+        return parseSidecar(json);
+    };
+    const bool bom = data.starts_with(kBom);
+    std::optional<StampMeta> meta;
+    if (bom) {
+        meta = readSidecar();
+        if (meta->encoding != TextEncoding::Utf8)
+            throw LibraryError(".ans starts with a byte order mark, but its sidecar has no \"encoding\": \"utf-8\"");
+    }
+    const TextEncoding encoding = bom ? TextEncoding::Utf8 : TextEncoding::Cp437;
     try {
-        s.art = parseAnsi(data, kStampParse);
+        s.art = parseAnsi(data, stampParse(encoding));
     } catch (const AnsiError& e) {
         throw LibraryError(std::string(".ans does not parse: ") + e.what());
     }
@@ -784,18 +824,9 @@ Stamp readStamp(const fs::path& ans) {
     if (allBlank(s.art.canvas))
         throw LibraryError(".ans has no drawn cell: every cell is blank, so placing it writes nothing");
 
-    const fs::path side = pairedSidecar(ans);
-    if (!fs::exists(fs::status(side, ec)))
-        throw LibraryError("no sidecar " + side.filename().string());
-    if (!regular(side))
-        throw LibraryError("sidecar " + side.filename().string() + " is not a regular file");
-    std::string json;
-    try {
-        json = readAll(side);
-    } catch (const LibraryError& e) {
-        throw LibraryError("sidecar " + std::string(e.what()));
-    }
-    s.meta = parseSidecar(json);
+    s.meta = meta ? *meta : readSidecar();
+    if (s.meta.encoding == TextEncoding::Utf8 && !bom)
+        throw LibraryError("sidecar says the .ans is UTF-8, but it doesn't start with a byte order mark");
     std::size_t actual = 0;
     try {
         actual = widestRowBytes(s.art.canvas);
@@ -841,6 +872,21 @@ std::string stampLossMessage(const AnsiOutput& out) {
                                      [&](const Unwritable& u) { return u.loss == loss; }));
         };
         const auto cells = [](int n) { return std::to_string(n) + (n == 1 ? " cell holds" : " cells hold"); };
+        if (out.encoding == TextEncoding::Utf8) {
+            // What even a UTF-8 stamp can't hold (writeAnsi would write each as '?').
+            const int controls = count(Loss::Control), loneWide = count(Loss::LoneWide),
+                      marks = count(Loss::LoneMark), wide = count(Loss::Wide);
+            std::string why;
+            const auto add = [&](int n, const char* one, const char* many) {
+                if (n)
+                    why += (why.empty() ? "" : "; ") + std::to_string(n) + (n == 1 ? one : many);
+            };
+            add(controls, " cell holds a control character", " cells hold a control character");
+            add(loneWide, " wide glyph has no cell for its right half", " wide glyphs have no cell for their right half");
+            add(marks, " mark has no glyph of its own to sit on", " marks have no glyph of their own to sit on");
+            add(wide, " wide glyph isn't two columns wide", " wide glyphs aren't two columns wide");
+            return why + ", which a stamp can't store";
+        }
         const int uncoded = count(Loss::NoCode), controls = count(Loss::Control), marks = count(Loss::MarksDropped),
                   wide = count(Loss::Wide);
         std::string why;
@@ -880,16 +926,24 @@ StampFiles encodeChecked(const std::string& name, const std::string& category, c
     doc.sauce = Sauce::fresh(cells.width, cells.height);
     doc.sauce->title = name;
     doc.sauce->setIce(ice);
-    const AnsiOutput out = writeAnsi(doc);
+    AnsiOutput out = writeAnsi(doc);
+    // CP437 when it holds every cell as it is; a cluster CP437 composes to
+    // one byte (e + U+0301 as é) would read back as another glyph.
+    bool cluster = false;
+    for (int y = 0; y < cells.height; ++y)
+        for (int x = 0; x < cells.width; ++x)
+            cluster = cluster || doc.canvas.at(x, y).ch.isCluster();
+    if (!out.unwritable.empty() || cluster)
+        out = writeAnsi(doc, TextEncoding::Utf8, true);
     if (const std::string why = stampLossMessage(out); !why.empty())
         throw LibraryError(why);
 
     // Check and count the art as it reads back, which is what readStamp
     // checks the sidecar against.
-    const Canvas back = parseAnsi(out.bytes, kStampParse).canvas;
+    const Canvas back = parseAnsi(out.bytes, stampParse(out.encoding)).canvas;
     if (allBlank(back))
         throw LibraryError("every cell is blank, so the stamp would draw nothing");
-    StampMeta meta{category, tags, widestRowBytes(back)};
+    StampMeta meta{category, tags, widestRowBytes(back), out.encoding};
     return {out.bytes, sidecarJson(meta)};
 }
 

@@ -745,7 +745,7 @@ std::optional<Loss> utf8LoneLoss(Glyph g, bool afterCluster) {
     return std::nullopt;
 }
 
-AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
+AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding, bool bom) {
     AnsiOutput out;
     out.encoding = encoding;
     const bool utf8 = encoding == TextEncoding::Utf8;
@@ -837,8 +837,9 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding) {
             s += "\r\n";
     }
     // Only a byte order mark says UTF-8 for content with no sequence of
-    // three bytes or more (only ASCII, or two-byte sequences like é).
-    if (utf8 && detectEncoding(s) != TextEncoding::Utf8)
+    // three bytes or more (only ASCII, or two-byte sequences like é), or
+    // when the caller asks for one.
+    if (utf8 && (bom || detectEncoding(s) != TextEncoding::Utf8))
         s.insert(0, kUtf8Bom);
     Sauce sauce = doc.sauce ? *doc.sauce : Sauce::fresh(cv.width(), cv.height());
     sauce.dataType = 1;
