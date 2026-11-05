@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <map>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -29,12 +30,27 @@ public:
     }
     bool has(int x, int y) const { return after_.count({y, x}) != 0; }
 
-    CellEdit finish() const {
+    // With `keepPairs`, a continuation set unchanged beside a lead set
+    // changed stays, so the settle keeps that pair whole (PLAN §16), and so
+    // does a lead set unchanged whose continuation is set to something else
+    // (a narrow cluster typed over its own base).
+    CellEdit finish(bool keepPairs = false) const {
         CellEdit e;
+        const auto changedAt = [&](int x, int y) {
+            const auto it = after_.find({y, x});
+            return it != after_.end() && !identical(canvas_.at(x, y), it->second);
+        };
         for (const auto& [at, c] : after_) {
-            const Cell& before = canvas_.at(at.second, at.first);
-            if (!identical(before, c))
-                e.changes.push_back({at.second, at.first, before, c});
+            const auto [y, x] = at;
+            const Cell& before = canvas_.at(x, y);
+            const bool kept = keepPairs && c.ch.isContinuation() && changedAt(x - 1, y) &&
+                              !after_.at({y, x - 1}).ch.isContinuation();
+            const auto right = after_.find({y, x + 1});
+            const bool spaced = keepPairs && !c.ch.isContinuation() && !before.ch.isContinuation() &&
+                                right != after_.end() && canvas_.at(x + 1, y).ch.isContinuation() &&
+                                !right->second.ch.isContinuation();
+            if (kept || spaced || !identical(before, c))
+                e.changes.push_back({x, y, before, c});
         }
         return e;
     }
@@ -283,7 +299,8 @@ CellEdit stampBlock(const Canvas& canvas, const CellBlock& block, int x, int y, 
     if (liftedFrom)
         clearInto(b, canvas, *liftedFrom, blank);
     pasteInto(b, canvas, block, x, y, mode, liftedFrom, blank, pixels);
-    CellEdit e = b.finish();
+    // a pair landing on a continuation it leaves as it was stays whole
+    CellEdit e = b.finish(true);
     e.moves = true;
     return e;
 }
@@ -390,7 +407,7 @@ SelectionEdit transformSelection(const Canvas& canvas, const Selection& sel, Tra
     EditBuilder b(canvas);
     clearInto(b, canvas, from, blank);
     pasteInto(b, canvas, block, r.x, r.y, PasteMode::Normal, &from, blank);
-    CellEdit e = b.finish();
+    CellEdit e = b.finish(true);
     e.moves = true;
     return {e, Selection(CellRect{r.x, r.y, block.width, block.height}).clipped(canvas)};
 }
@@ -432,55 +449,63 @@ bool blockHoldsPair(const CellBlock& block) {
 CellEdit mirrorEdit(const Canvas& canvas, const CellEdit& edit, int* pairsUnmirrored) {
     if (pairsUnmirrored)
         *pairsUnmirrored = 0;
-    // settled first, so a change to one half of a pair is a change to both
-    // and the pair is mirrored whole
+    // Each cell the edit asks for is mirrored with the pair it is a half of
+    // once the edit lands (EditedCells over the settled edit, so a lead
+    // written over leaves its old continuation out of it, and over the
+    // canvas, so an unchanged half the edit leaves out is still in it), or
+    // alone. Only those units and their images reserve cells: the settle's
+    // cleanup is provisional, and what comes back is the edit as asked and
+    // the images of its units, unsettled, so the settle runs once, after
+    // fitLayerEdit, and a pair fitting refuses takes none of the cleanup it
+    // would have caused with it (PLAN §16, Editing).
     const CellEdit settled = settleWide(canvas, edit);
-    EditBuilder own(canvas);
-    std::map<std::pair<int, int>, Cell> after;  // (y, x) -> what the edit writes
-    for (const CellChange& c : settled.changes) {
-        own.set(c.x, c.y, c.after);
-        after[{c.y, c.x}] = c.after;
+    const EditedCells after(canvas, settled);
+    std::map<std::pair<int, int>, bool> units;  // (y, x) of each unit's first cell -> a pair
+    std::set<std::pair<int, int>> owned;  // (y, x): the cells of every unit
+    for (const CellChange& c : edit.changes) {
+        if (!canvas.contains(c.x, c.y))
+            continue;
+        const std::optional<int> lead = after.pairLead(c.x, c.y);
+        const int x = lead.value_or(c.x);
+        units[{c.y, x}] = lead.has_value();
+        owned.insert({c.y, x});
+        if (lead)
+            owned.insert({c.y, x + 1});
     }
-    const auto written = [&](int x, int y) -> const Cell* {
-        const auto it = after.find({y, x});
-        return it == after.end() ? nullptr : &it->second;
-    };
-    EditBuilder all = own;
+    EditBuilder all(canvas);
+    for (const CellChange& c : edit.changes)
+        all.set(c.x, c.y, c.after);
     const int w = canvas.width();
     // a drawn image is settled with the rest; a moved one is pasted
     const auto put = [&](int mx, int y, const Cell& image) {
         all.set(mx, y, edit.moves && canvas.contains(mx, y) ? writtenOver(canvas.at(mx, y), image) : image);
     };
-    for (const auto& [yx, c] : after) {
+    for (const auto& [yx, pair] : units) {
         const auto [y, x] = yx;
-        if (!canvas.contains(x, y))
-            continue;
-        const Cell* right = written(x + 1, y);
-        const Cell* left = x > 0 ? written(x - 1, y) : nullptr;
-        if (c.ch.isContinuation() && left && !left->ch.isContinuation())
-            continue;  // mirrored with its lead
-        if (!c.ch.isContinuation() && right && right->ch.isContinuation()) {
-            // a pair (x, x + 1): its image's lead at mirrorColumn(x + 1)
-            const int ml = mirrorColumn(w, x + 1), mr = mirrorColumn(w, x);
-            if (ml == x)
-                continue;  // its own image (an even width, across the axis)
-            if (own.has(ml, y) || own.has(mr, y)) {
-                // over its own image (an odd width) gets no copy; one over
-                // another change keeps that change
-                if (pairsUnmirrored && (ml == x + 1 || mr == x))
-                    ++*pairsUnmirrored;
-                continue;
-            }
-            put(ml, y, flipCell(c, Flip::Horizontal));
-            put(mr, y, *right);
+        const Cell& c = *after.at(x, y);
+        if (!pair) {
+            const int mx = mirrorColumn(w, x);
+            if (!owned.contains({y, mx}))
+                put(mx, y, flipCell(c, Flip::Horizontal));
             continue;
         }
-        const int mx = mirrorColumn(w, x);
-        if (!own.has(mx, y))
-            put(mx, y, flipCell(c, Flip::Horizontal));
+        // a pair (x, x + 1): its image's lead at mirrorColumn(x + 1)
+        const int ml = mirrorColumn(w, x + 1), mr = mirrorColumn(w, x);
+        if (ml == x)
+            continue;  // its own image (an even width, across the axis)
+        if (owned.contains({y, ml}) || owned.contains({y, mr})) {
+            // over its own image (an odd width) gets no copy; one over
+            // another unit keeps that unit
+            if (pairsUnmirrored && (ml == x + 1 || mr == x))
+                ++*pairsUnmirrored;
+            continue;
+        }
+        put(ml, y, flipCell(c, Flip::Horizontal));
+        put(mr, y, *after.at(x + 1, y));
     }
-    CellEdit e = all.finish();
+    CellEdit e = all.finish(true);
     e.moves = edit.moves;
+    e.typed = edit.typed;
     return e;
 }
 

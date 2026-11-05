@@ -1227,18 +1227,20 @@ TEST_CASE("a combining mark with no CP437 composed form writes none of the commi
     CanvasView* v = w.canvasView();
     QStringList rejected;
     QObject::connect(v, &CanvasView::glyphRejected, [&](const QString& t) { rejected << t; });
-    // q + U+0301 has no precomposed form, so NFC leaves the mark on its own
+    // q + U+0301 has no precomposed form, so NFC leaves the cluster q́,
+    // which the refusal names whole (PLAN §16)
     QInputMethodEvent e;
     e.setCommitString(QStringLiteral("Aq́B"));
     QApplication::sendEvent(v, &e);
-    CHECK(rejected == QStringList{QStringLiteral("́")});
+    CHECK(rejected == QStringList{QStringLiteral("q́")});
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("q U+0301 has no CP437 code; not typed"));
     CHECK(w.document()->canvas() == Canvas(80, 40));
     CHECK(v->cellCursor() == Cursor{0, 0});
     CHECK_FALSE(w.document()->isModified());
 
     rejected.clear();
     key(v, Qt::Key_Q, QStringLiteral("q́"));
-    CHECK(rejected == QStringList{QStringLiteral("́")});
+    CHECK(rejected == QStringList{QStringLiteral("q́")});
     CHECK(w.document()->canvas() == Canvas(80, 40));
     CHECK(v->cellCursor() == Cursor{0, 0});
 }
@@ -1851,4 +1853,225 @@ int main(int argc, char** argv) {
 #else
     return Catch::Session().run(argc, argv);
 #endif
+}
+
+// PLAN §16, Cursor and typing (#334 slice 8).
+namespace {
+
+void commitText(CanvasView* v, const QString& text) {
+    QInputMethodEvent e;
+    e.setCommitString(text);
+    QApplication::sendEvent(v, &e);
+}
+
+} // namespace
+
+TEST_CASE("a CP437 document refuses a wide cluster and names it", "[app][wide]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    commitText(v, QStringLiteral("中"));
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("中 has no CP437 code; not typed"));
+    CHECK(w.document()->canvas() == Canvas(80, 40));
+    CHECK(v->cellCursor() == Cursor{0, 0});
+    // a lone mark whose cluster CP437 has no glyph for is named by code point
+    commitText(v, QStringLiteral("q"));
+    key(v, 0, QString(QChar(0x0302)));
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("q U+0302 has no CP437 code; not typed"));
+    CHECK(w.document()->canvas().at(0, 0).ch == U'q');
+    // one it has is composed: e then U+0301 is é
+    commitText(v, QStringLiteral("e"));
+    key(v, 0, QString(QChar(0x0301)));
+    CHECK(w.document()->canvas().at(1, 0).ch == U'é');
+    CHECK(v->cellCursor() == Cursor{2, 0});
+}
+
+TEST_CASE("a UTF-8 document types wide and combining clusters", "[app][wide]") {
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(qpath(bwtest::dataDir() / "utf8/tux-utf8.ans"), &error));
+    REQUIRE(w.document()->textEncoding() == TextEncoding::Utf8);
+    CanvasView* v = w.canvasView();
+    const Canvas& cv = w.document()->canvas();
+    const int last = cv.width() - 1;
+    REQUIRE(last > 4);
+
+    v->setCellCursor({0, 0});
+    commitText(v, QStringLiteral("中"));
+    CHECK(cv.at(0, 0).ch == Glyph(U'中'));
+    CHECK(cv.at(1, 0).ch.isContinuation());
+    CHECK(v->cellCursor() == Cursor{2, 0});
+    // a click or a cursor put on the continuation goes to the lead, and
+    // Right from the lead past the pair
+    v->setCellCursor({1, 0});
+    CHECK(v->cellCursor() == Cursor{0, 0});
+    key(v, Qt::Key_Right);
+    CHECK(v->cellCursor() == Cursor{2, 0});
+    key(v, Qt::Key_Left);
+    CHECK(v->cellCursor() == Cursor{0, 0});
+
+    // another wide one typed over the lead keeps the pair whole, though its
+    // continuation's cell doesn't change (Document::edit drops no-op cells)
+    commitText(v, QStringLiteral("国"));
+    CHECK(cv.at(0, 0).ch == Glyph(U'国'));
+    CHECK(cv.at(1, 0).ch.isContinuation());
+    CHECK(v->cellCursor() == Cursor{2, 0});
+    // a lone mark joins the pair's lead and the pair stays whole
+    key(v, 0, QString(QChar(0x0302)));
+    const GlyphCodePoints joined = codePoints(cv.at(0, 0).ch);
+    REQUIRE(joined.size == 2);
+    CHECK(joined[1] == U'̂');
+    CHECK(cv.at(1, 0).ch.isContinuation());
+    CHECK(v->cellCursor() == Cursor{2, 0});
+    // Backspace clears the whole pair
+    key(v, Qt::Key_Backspace);
+    CHECK(v->cellCursor() == Cursor{0, 0});
+    CHECK_FALSE(cv.at(0, 0).ch.isContinuation());
+    CHECK_FALSE(cv.at(1, 0).ch.isContinuation());
+    CHECK(cv.at(0, 0).ch == Glyph(U' '));
+    CHECK(cv.at(1, 0).ch == Glyph(U' '));
+    // and Delete does too
+    commitText(v, QStringLiteral("中"));
+    v->setCellCursor({0, 0});
+    key(v, Qt::Key_Delete);
+    CHECK(cv.at(0, 0).ch == Glyph(U' '));
+    CHECK(cv.at(1, 0).ch == Glyph(U' '));
+
+    // onto the last two columns the cursor stays on the lead, past the end
+    v->setCellCursor({last - 1, 0});
+    commitText(v, QStringLiteral("中"));
+    CHECK(v->cellCursor() == Cursor{last - 1, 0, true});
+    CHECK(cv.at(last, 0).ch.isContinuation());
+    // a key typed there writes over that pair, as typed on its lead
+    key(v, 0, QStringLiteral("国"));
+    CHECK(cv.at(last - 1, 0).ch == Glyph(U'国'));
+    CHECK(cv.at(last, 0).ch.isContinuation());
+    CHECK(v->cellCursor() == Cursor{last - 1, 0, true});
+    key(v, 0, QStringLiteral("A"));
+    CHECK(cv.at(last - 1, 0).ch == Glyph(U'A'));
+    CHECK(cv.at(last, 0).ch == Glyph(U' '));
+    CHECK(v->cellCursor() == Cursor{last, 0});
+    v->setCellCursor({last - 1, 0});
+    commitText(v, QStringLiteral("中"));
+    // and Backspace there clears it
+    key(v, Qt::Key_Backspace);
+    CHECK(v->cellCursor() == Cursor{last - 1, 0});
+    CHECK(cv.at(last - 1, 0).ch == Glyph(U' '));
+    // on the last column a wide one from the input method is dropped
+    v->setCellCursor({last - 1, 0});
+    key(v, 0, QStringLiteral("B"));
+    key(v, 0, QStringLiteral("A"));
+    REQUIRE(v->cellCursor() == Cursor{last, 0, true});
+    const Cell under = cv.at(last, 0);
+    commitText(v, QStringLiteral("中"));
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("中 would start on the last column; dropped"));
+    CHECK(cv.at(last, 0) == under);
+    // leaving the cursor as it was, past A, so Backspace clears A
+    CHECK(v->cellCursor() == Cursor{last, 0, true});
+    key(v, Qt::Key_Backspace);
+    CHECK(cv.at(last, 0).ch == Glyph(U' '));
+    CHECK(cv.at(last - 1, 0).ch == Glyph(U'B'));
+    // a glyph a CP437 file can't hold is typed; a control isn't
+    v->setCellCursor({0, 1});
+    commitText(v, QStringLiteral("★"));
+    CHECK(cv.at(0, 1).ch == Glyph(U'★'));
+    commitText(v, QString(QChar(0x2028)));
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("U+2028 can't be held in a UTF-8 .ans; not typed"));
+    CHECK(v->cellCursor() == Cursor{1, 1});
+    // a lone mark at column 0 has nothing to join
+    v->setCellCursor({0, 2});
+    const Cell first = cv.at(0, 2);
+    key(v, 0, QString(QChar(0x0301)));
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("U+0301 has no character before it to join; not typed"));
+    CHECK(cv.at(0, 2) == first);
+}
+
+TEST_CASE("an input-method replacement range in UTF-16 units is counted in clusters", "[app][wide]") {
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(qpath(bwtest::dataDir() / "utf8/tux-utf8.ans"), &error));
+    REQUIRE(w.document()->textEncoding() == TextEncoding::Utf8);
+    CanvasView* v = w.canvasView();
+    const Canvas& cv = w.document()->canvas();
+    // 😀 is two UTF-16 units: replacing the two before the cursor replaces
+    // it, not A with it
+    v->setCellCursor({0, 0});
+    commitText(v, QStringLiteral("A😀"));
+    REQUIRE(v->cellCursor() == Cursor{3, 0});
+    QInputMethodEvent event;
+    event.setCommitString(QStringLiteral("B"), -2, 2);
+    QApplication::sendEvent(v, &event);
+    CHECK(cv.at(0, 0).ch == Glyph(U'A'));
+    CHECK(cv.at(1, 0).ch == Glyph(U'B'));
+    CHECK(cv.at(2, 0).ch == Glyph(U' '));
+    CHECK(v->cellCursor() == Cursor{2, 0});
+}
+
+TEST_CASE("typing a pair in mirror mode mirrors it whole", "[app][wide]") {
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(qpath(bwtest::dataDir() / "utf8/tux-utf8.ans"), &error));
+    CanvasView* v = w.canvasView();
+    const Canvas& cv = w.document()->canvas();
+    const int width = cv.width();
+    v->setMirror(true);
+    REQUIRE(v->mirror());
+    v->setCellCursor({0, 3});
+    commitText(v, QStringLiteral("中"));
+    CHECK(cv.at(0, 3).ch == Glyph(U'中'));
+    CHECK(cv.at(1, 3).ch.isContinuation());
+    CHECK(cv.at(width - 2, 3).ch == Glyph(U'中'));
+    CHECK(cv.at(width - 1, 3).ch.isContinuation());
+    // typed over with the same pen, and a mark joined to it: both images
+    // stay whole, and stay so through undo and redo
+    const auto bothWhole = [&](int n) {
+        CHECK(codePoints(cv.at(0, 3).ch).size == n);
+        CHECK(cv.at(1, 3).ch.isContinuation());
+        CHECK(codePoints(cv.at(width - 2, 3).ch).size == n);
+        CHECK(cv.at(width - 1, 3).ch.isContinuation());
+    };
+    v->setCellCursor({0, 3});
+    commitText(v, QStringLiteral("国"));
+    CHECK(cv.at(0, 3).ch == Glyph(U'国'));
+    CHECK(cv.at(width - 2, 3).ch == Glyph(U'国'));
+    bothWhole(1);
+    key(v, 0, QString(QChar(0x0302)));
+    bothWhole(2);
+    w.document()->undoStack()->undo();
+    bothWhole(1);
+    w.document()->undoStack()->redo();
+    bothWhole(2);
+    // Backspace clears both images whole
+    key(v, Qt::Key_Backspace);
+    CHECK_FALSE(cv.at(1, 3).ch.isContinuation());
+    CHECK_FALSE(cv.at(width - 1, 3).ch.isContinuation());
+    CHECK(cv.at(width - 2, 3).ch == Glyph(U' '));
+}
+
+TEST_CASE("the typing refusal in a UTF-8 document names what it can't hold", "[app][wide]") {
+    CHECK(rejectedGlyphsMessage(QString(QChar(0x0085)), TextEncoding::Utf8) ==
+          QStringLiteral("U+0085 can't be held in a UTF-8 .ans; not typed"));
+    CHECK(rejectedGlyphsMessage(QStringLiteral("q") + QString(16, QChar(0x0302)), TextEncoding::Utf8)
+              .endsWith(QStringLiteral(" holds more than 16 code points; not typed")));
+    // CP437 names a cluster by its glyphs and its marks' code points
+    CHECK(rejectedGlyphsMessage(QStringLiteral("中")) == QStringLiteral("中 has no CP437 code; not typed"));
+}
+
+TEST_CASE("a key typed over a stored pair's own narrow base keeps the typed cell", "[app][wide]") {
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(qpath(bwtest::dataDir() / "utf8/tux-utf8.ans"), &error));
+    CanvasView* v = w.canvasView();
+    const Canvas& cv = w.document()->canvas();
+    // a pair whose base is e, in the cells the key will write
+    const Cell blank;
+    Cell lead = blank, cont = blank;
+    lead.ch = U'e';
+    cont.ch = Glyph::continuation();
+    REQUIRE(w.document()->edit(CellEdit{{{0, 0, cv.at(0, 0), lead}, {1, 0, cv.at(1, 0), cont}}}));
+    REQUIRE(cv.at(1, 0).ch.isContinuation());
+    v->setCellCursor({0, 0});
+    key(v, Qt::Key_E, QStringLiteral("e"));
+    CHECK(cv.at(0, 0).ch == Glyph(U'e'));
+    CHECK(cv.at(1, 0).ch == Glyph(U' '));
+    CHECK(v->cellCursor() == Cursor{1, 0});
 }

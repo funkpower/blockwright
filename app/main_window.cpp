@@ -264,8 +264,27 @@ QString lossDescription(const AnsiOutput& out, bool countWide) {
     return parts.join(QStringLiteral(";\n"));
 }
 
-QString rejectedGlyphsMessage(const QString& text) {
+QString rejectedGlyphsMessage(const QString& text, TextEncoding encoding) {
     QStringList parts;
+    if (encoding == TextEncoding::Utf8) {
+        // a UTF-8 .ans holds every glyph but the controls; anything else
+        // refused is a cluster past 16 code points
+        QString controls, named;
+        std::vector<char32_t> seen;
+        for (const char32_t ch : text.toUcs4()) {
+            if ((ch >= 0x20 && ch != 0x7f && utf8Writable(ch)) ||
+                std::find(seen.begin(), seen.end(), ch) != seen.end())
+                continue;
+            seen.push_back(ch);
+            controls += (controls.isEmpty() ? QString() : QStringLiteral(" ")) + QString::fromStdString(quotedGlyph(ch));
+        }
+        if (!controls.isEmpty())
+            return QObject::tr("%1 can't be held in a UTF-8 .ans; not typed").arg(controls);
+        const QList<uint> cps = text.toUcs4();
+        for (const char32_t ch : cps)
+            named += (named.isEmpty() ? QString() : QStringLiteral(" ")) + QString::fromStdString(quotedGlyph(ch));
+        return QObject::tr("%1 holds more than %2 code points; not typed").arg(named).arg(kMaxClusterCodePoints);
+    }
     QString uncoded;
     bool lastNamed = false;      // whether `uncoded` ends in a U+XXXX
     std::vector<char32_t> seen;  // each glyph's reason once, however often it was typed
@@ -539,7 +558,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
     connect(view_, &CanvasView::glyphSetChanged, this, &MainWindow::updateGlyphSet);
     connect(view_, &CanvasView::glyphRejected, this, [this](const QString& text) {
-        statusBar()->showMessage(rejectedGlyphsMessage(text), 3000);
+        statusBar()->showMessage(rejectedGlyphsMessage(text, doc_.textEncoding()), 3000);
     });
     connect(view_, &CanvasView::layerMoveStatus, this, [this](const QString& text) {
         statusBar()->showMessage(text);

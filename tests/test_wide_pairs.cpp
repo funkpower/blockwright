@@ -559,7 +559,8 @@ TEST_CASE("mirror mode mirrors a recoloured pair whole", "[wide][mirror]") {
     putPair(c, 7, 0, Yellow, Blue);
     Cell lead = c.at(1, 0);
     lead.bg = Color::indexed(Red);
-    const Canvas out = applied(c, mirrorEdit(c, change(c, 1, 0, lead)));
+    // settled after, as Document::edit settles every edit
+    const Canvas out = settled(c, mirrorEdit(c, change(c, 1, 0, lead)));
     CHECK(glyphs(out) == " W+    W+ ");
     for (const int x : {1, 2, 7, 8})
         CHECK(out.at(x, 0).bg == Color::indexed(Red));

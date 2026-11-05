@@ -256,6 +256,10 @@ CellEdit toLayerEdit(const Layer& layer, const CellEdit& canvasEdit);
 // comes back empty instead: the lock would keep what it lifts and drop
 // what lands on clear cells, copying one glyph and losing another. A paste
 // clears nothing, so it lands on the opaque cells and not on the clear ones.
+// A wide pair the edit writes with one half off the layer or kept off by the
+// lock is dropped whole when the edit is typed (CellEdit::typed); any other
+// edit keeps the half that lands, as a space in its colours, as at the
+// canvas edge (PLAN §16).
 std::optional<CellEdit> fitLayerEdit(const Layer& layer, const CellEdit& canvasEdit,
                                      const std::function<Cell(int, int)>& below = {}, bool ice = true);
 // The layer's cells as a canvas of width by height cells, each at its

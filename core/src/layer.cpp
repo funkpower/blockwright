@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <map>
+#include <set>
 #include <unordered_map>
 
 namespace bw {
@@ -44,6 +46,87 @@ std::optional<E> fromName(const std::array<std::pair<E, std::string_view>, N>& n
 
 // Clamps a 64-bit sum back into int (offsets near INT_MAX).
 int clampInt(long long v) { return int(std::clamp<long long>(v, INT_MIN, INT_MAX)); }
+
+// Drops each change that writes what the cell holds, but for a continuation
+// whose lead the edit changes: the settle keeps a pair written over an old
+// one whole only when the edit writes both halves (PLAN §16, Editing), and
+// typing a cluster over a lead or joining a mark to it leaves the
+// continuation as it was. A typed edit's lead whose continuation it makes
+// something else stays too: a narrow cluster typed over its own base, which
+// the settle would otherwise take for a lead left as it was.
+void dropNoOps(CellEdit& e) {
+    std::set<std::pair<int, int>> changed;  // (y, x)
+    std::set<std::pair<int, int>> unpaired; // (y, x): continuations made something else
+    for (const CellChange& c : e.changes) {
+        if (!identical(c.after, c.before))
+            changed.insert({c.y, c.x});
+        if (c.before.ch.isContinuation() && !c.after.ch.isContinuation())
+            unpaired.insert({c.y, c.x});
+    }
+    std::erase_if(e.changes, [&](const CellChange& c) {
+        if (!identical(c.after, c.before))
+            return false;
+        if (c.after.ch.isContinuation())
+            return !changed.contains({c.y, c.x - 1});
+        return !(e.typed && c.x < INT_MAX && unpaired.contains({c.y, c.x + 1}));
+    });
+}
+
+// A pair the canvas edit writes, one half of which is off the layer or in
+// `lost` (PLAN §16): a typed one is new and fitted whole or not at all, so
+// the other half is dropped too; any other edit's (a move, a paste) is
+// clipped as at the canvas edge, the half left a space in its colours. A
+// pair is judged by what the edit leaves, so a continuation it writes
+// beside a lead it leaves out as unchanged (a pair moved onto its own
+// glyph) is a pair with the layer's cell as its lead.
+void fitHalfPairs(const Layer& layer, const CellEdit& canvasEdit,
+                  const std::set<std::pair<long long, long long>>& lost, CellEdit& e) {
+    // what the edit leaves, the layer's cell where it leaves one out
+    const EditedCells written(canvasEdit, [&layer](int x, int y) { return layer.cellAt(x, y); });
+    std::set<std::pair<int, int>> cells;  // (y, x): the cells the edit writes
+    for (const CellChange& c : canvasEdit.changes)
+        cells.insert({c.y, c.x});
+    const auto gone = [&](long long lx, long long ly) {
+        return lx < 0 || ly < 0 || lx >= layer.width() || ly >= layer.height() || lost.contains({ly, lx});
+    };
+    std::set<std::pair<long long, long long>> drop;
+    std::map<std::pair<long long, long long>, Cell> spaced;  // (y, x) on the layer
+    for (const auto& [y, x] : cells) {
+        const Cell& after = *written.at(x, y);
+        if (!after.ch.isContinuation() || x == INT_MIN)
+            continue;
+        // off the layer, a lead left out is unknown; only the continuation
+        // can be kept then, so its own colours are all the space needs
+        const Cell* lead = written.at(x - 1, y);
+        if (lead && lead->ch.isContinuation())
+            continue;
+        const long long lx = 1LL * x - layer.props.x, ly = 1LL * y - layer.props.y;
+        if (gone(lx - 1, ly) == gone(lx, ly))
+            continue;
+        if (e.typed) {
+            drop.insert({ly, lx - 1});
+            drop.insert({ly, lx});
+        } else {
+            const bool leadKept = !gone(lx - 1, ly);
+            Cell half = leadKept ? *lead : after;
+            half.ch = U' ';
+            spaced[{ly, leadKept ? lx - 1 : lx}] = half;
+        }
+    }
+    if (!drop.empty())
+        std::erase_if(e.changes, [&](const CellChange& c) { return drop.contains({c.y, c.x}); });
+    if (spaced.empty())
+        return;
+    for (CellChange& c : e.changes)
+        if (const auto it = spaced.find({c.y, c.x}); it != spaced.end()) {
+            c.after = it->second;
+            spaced.erase(it);
+        }
+    // a half the edit wrote as the layer had it, a no-op until now
+    for (const auto& [yx, half] : spaced)
+        e.changes.push_back({int(yx.second), int(yx.first), layer.cells.at(int(yx.second), int(yx.first)), half});
+    dropNoOps(e);
+}
 
 } // namespace
 
@@ -220,15 +303,17 @@ CellEdit toLayerEdit(const Layer& layer, const CellEdit& canvasEdit) {
         else
             out.changes[it->second].after = c.after;
     }
-    std::erase_if(out.changes, [](const CellChange& c) { return identical(c.after, c.before); });
     out.moves = canvasEdit.moves;
     out.dithers = canvasEdit.dithers;
+    out.typed = canvasEdit.typed;
+    dropNoOps(out);
     return out;
 }
 
 std::optional<CellEdit> fitLayerEdit(const Layer& layer, const CellEdit& canvasEdit,
                                      const std::function<Cell(int, int)>& below, bool ice) {
     CellEdit e = toLayerEdit(layer, canvasEdit);
+    std::set<std::pair<long long, long long>> lost;  // (y, x) on the layer: changes alpha lock refuses
     const bool pixels = layer.props.kind == LayerKind::Pixels;
     for (CellChange& c : e.changes) {
         if (pixels) {
@@ -247,7 +332,7 @@ std::optional<CellEdit> fitLayerEdit(const Layer& layer, const CellEdit& canvasE
             }
         }
     }
-    std::erase_if(e.changes, [](const CellChange& c) { return identical(c.after, c.before); });
+    dropNoOps(e);
     if (layer.props.alphaLocked) {
         // what is opaque is frozen both ways: a cell (a pixel, on a pixel
         // layer) is neither cleared nor painted where it was clear
@@ -266,8 +351,14 @@ std::optional<CellEdit> fitLayerEdit(const Layer& layer, const CellEdit& canvasE
         // a move keeps what it lifts only by copying it: refused whole
         if (e.moves && std::any_of(e.changes.begin(), e.changes.end(), clears))
             return std::nullopt;
-        std::erase_if(e.changes, frozen);
+        std::erase_if(e.changes, [&](const CellChange& c) {
+            if (!frozen(c))
+                return false;
+            lost.insert({c.y, c.x});
+            return true;
+        });
     }
+    fitHalfPairs(layer, canvasEdit, lost, e);
     return e;
 }
 

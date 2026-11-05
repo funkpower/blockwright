@@ -182,8 +182,15 @@ SelectionEdit moveSelection(const Canvas& canvas, const Selection& sel, int dx, 
 // column of an odd width, or an edit spanning both halves) the edit's own
 // change wins. Integer columns only; no rounding.
 //
-// The edit is settled first (settleWide, edit.h). A wide pair at (x, x + 1)
-// is mirrored whole, its lead at mirrorColumn(x + 1) and its continuation
+// Each cell the edit changes is mirrored with the pair it is a half of once
+// the edit lands (EditedCells over the settled edit and the canvas, edit.h,
+// so a half the edit leaves out as unchanged still counts), or alone. What
+// comes back is unsettled: the edit's own changes and the images of those
+// pairs and cells, not of the cells the settle would add, and only they
+// keep an image off a cell, so the caller settles once after fitting the
+// edit to the layer (Document::edit), and a pair the fitting refuses takes
+// no cleanup with it. A wide pair at
+// (x, x + 1) is mirrored whole, its lead at mirrorColumn(x + 1) and its continuation
 // at mirrorColumn(x), as a pair reads left to right (PLAN §16). On an even
 // width a pair across the axis is its own image. On an odd width a pair
 // over the centre column overlaps its own image and gets no copy;

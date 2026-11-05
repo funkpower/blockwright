@@ -10,6 +10,7 @@
 #include "blockwright/composite.h"
 #include "blockwright/glyph_sets.h"
 #include "blockwright/selection.h"
+#include "blockwright/width.h"
 
 #include <QAbstractScrollArea>
 #include <QApplication>
@@ -381,10 +382,13 @@ void CanvasView::setZoom(int zoom) {
 }
 
 void CanvasView::setCellCursor(Cursor c) {
-    const Canvas& cv = doc_->canvas();
+    // On the canvas and never on a continuation (PLAN §16, Cursor and
+    // typing), judged on the cells typing writes to.
+    const Canvas& cv = doc_->layerCanvas();
     const Cursor on = moveCursor(cv, c, 0, 0);
-    // Past the end only where the caller put it: on the last column.
-    c = {on.x, on.y, c.pastEnd && on.x == c.x && on.y == c.y && on.x == cv.width() - 1};
+    // Past the end only where the caller put it: on the last column, or on a
+    // lead whose continuation is the last column.
+    c = {on.x, on.y, c.pastEnd && on.x == c.x && on.y == c.y && atRowEnd(cv, on)};
     if (c == cursor_)
         return;
     update(toWidget(cursorRect()));
@@ -900,6 +904,10 @@ void CanvasView::commit(const EditResult& r) {
     }
     noteUnmirrored(unmirrored);
     setCellCursor(r.cursor);
+    if (!r.rejected.empty())
+        emit glyphRejected(QString::fromUcs4(r.rejected.data(), static_cast<qsizetype>(r.rejected.size())));
+    if (!r.notice.empty())
+        notify(QString::fromStdString(r.notice));
 }
 
 bool CanvasView::event(QEvent* e) {
@@ -1027,16 +1035,22 @@ void CanvasView::inputMethodEvent(QInputMethodEvent* e) {
 }
 
 void CanvasView::typeText(const QString& text, int replaceStart, int replaceLength) {
+    // What may be typed follows the document's encoding (PLAN §16, Cursor
+    // and typing): any cluster a UTF-8 .ans holds, or a CP437 glyph.
+    const TypingOptions opts{doc_->textEncoding()};
     std::u32string glyphs;
     QString rejected;
     // NFC first: "e" + U+0301 is the glyph é, which CP437 holds.
-    for (const char32_t ch : text.normalized(QString::NormalizationForm_C).toUcs4()) {
-        if (ch < 0x20 || ch == 0x7f)
+    const QList<uint> nfc = text.normalized(QString::NormalizationForm_C).toUcs4();
+    for (const std::u32string& cluster : splitClusters(std::u32string(nfc.begin(), nfc.end()))) {
+        // a control typed (Tab, Escape) is no glyph, and nor is a mark on it
+        if (cluster[0] < 0x20 || cluster[0] == 0x7f)
             continue;
-        if (isTypeable(ch))
-            glyphs += ch;
+        // a lone mark is judged once joined (typeMarks)
+        if (isTypeable(cluster, opts.encoding) || (codePointWidth(cluster[0]) == 0 && glyphs.empty()))
+            glyphs += cluster;
         else
-            rejected += QString::fromUcs4(&ch, 1);
+            rejected += QString::fromUcs4(cluster.data(), static_cast<qsizetype>(cluster.size()));
     }
     if (!rejected.isEmpty()) {
         emit glyphRejected(rejected);
@@ -1046,7 +1060,17 @@ void CanvasView::typeText(const QString& text, int replaceStart, int replaceLeng
         return;
     // A floating selection lands first; the typing goes on top of it.
     finishTool();
-    commit(replaceText(doc_->layerCanvas(), cursor_, replaceStart, replaceLength, glyphs, pen_, doc_->blankCell()));
+    // A lone mark typed with nothing to compose it joins the cluster before
+    // the cursor.
+    if (replaceStart == 0 && replaceLength <= 0 &&
+        std::all_of(glyphs.begin(), glyphs.end(), [](char32_t cp) { return codePointWidth(cp) == 0; })) {
+        commit(typeMarks(doc_->layerCanvas(), cursor_, glyphs, opts));
+        return;
+    }
+    // the input method's range is in UTF-16 units; replaceText's in clusters
+    const ClusterRange range = clusterRange(doc_->layerCanvas(), cursor_, replaceStart, replaceLength);
+    commit(replaceText(doc_->layerCanvas(), cursor_, range.start, range.length, glyphs, pen_, doc_->blankCell(),
+                       opts));
 }
 
 namespace {
