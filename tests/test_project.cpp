@@ -465,6 +465,8 @@ TEST_CASE("every layer kind survives a zip and a directory", "[project][io]") {
     // a zip writes the same bytes every time
     project::writeZip(p, dir / "again.bwp");
     CHECK(bwtest::readFile(dir / "moon.bwp") == bwtest::readFile(dir / "again.bwp"));
+    // and in memory the bytes it writes to a file
+    CHECK(project::zipBytes(p) == bwtest::readFile(dir / "moon.bwp"));
 
     // and zip to directory to zip is the same project
     project::writeZip(project::read(dir / "moon"), dir / "third.bwp");

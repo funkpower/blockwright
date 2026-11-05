@@ -54,6 +54,7 @@ add_executable(blockwright-tests
   test_brush.cpp
   test_clone_brush.cpp
   test_cli_read.cpp
+  test_cli_replay.cpp
   test_cli_shade.cpp
   test_composite.cpp
   test_cp437.cpp
@@ -93,6 +94,7 @@ add_executable(blockwright-tests
   test_project.cpp
   test_reference_layers.cpp
   test_shading_brushes.cpp
+  test_steps.cpp
   cpu_time.cpp
   cpu_time.h
   test_cpu_time.cpp
@@ -154,6 +156,30 @@ set_tests_properties(cli PROPERTIES ENVIRONMENT "${BW_CLI_ENV}")
 set_property(TEST cli APPEND PROPERTY ENVIRONMENT "BW_LOGO=${PROJECT_SOURCE_DIR}/branding/logo.txt")
 if(CMAKE_CROSSCOMPILING)
   set_tests_properties(cli PROPERTIES TIMEOUT 900)  # some hundred programs under an emulator
+endif()
+# replay's open-file refusal when setrlimit fails, under an LD_PRELOAD shim
+# (macOS has no LD_PRELOAD; an emulated CLI wouldn't load a host library)
+if(UNIX AND NOT APPLE AND NOT CMAKE_CROSSCOMPILING)
+  add_library(setrlimit-fails MODULE setrlimit_fails.cpp)
+  target_link_libraries(setrlimit-fails PRIVATE ${CMAKE_DL_LIBS})
+  # uninstrumented in a sanitizer build: it is preloaded into plain bash too,
+  # where clang's unresolved ASan runtime references can't load
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag(-fno-sanitize=all BW_HAVE_FNO_SANITIZE_ALL)
+  if(BW_HAVE_FNO_SANITIZE_ALL)
+    target_compile_options(setrlimit-fails PRIVATE -fno-sanitize=all)
+    target_link_options(setrlimit-fails PRIVATE -fno-sanitize=all)
+  endif()
+  add_test(NAME cli_rlimit
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_rlimit_test.sh
+            ${BW_CLI_COMMAND} $<TARGET_FILE:setrlimit-fails> ${CMAKE_CURRENT_BINARY_DIR}/cli-rlimit-tmp)
+  set_tests_properties(cli_rlimit PROPERTIES ENVIRONMENT "${BW_CLI_ENV}" SKIP_RETURN_CODE 77)
+  # the same under German messages, where bash's EPERM reads otherwise
+  add_test(NAME cli_rlimit_locale
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_rlimit_locale_test.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/cli_rlimit_test.sh
+            ${BW_CLI_COMMAND} $<TARGET_FILE:setrlimit-fails> ${CMAKE_CURRENT_BINARY_DIR}/cli-rlimit-locale-tmp)
+  set_tests_properties(cli_rlimit_locale PROPERTIES ENVIRONMENT "${BW_CLI_ENV}" SKIP_RETURN_CODE 77)
 endif()
 add_test(NAME cli_generators
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_generators_test.sh

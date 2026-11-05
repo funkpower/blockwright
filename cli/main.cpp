@@ -24,12 +24,14 @@
 //   blockwright-cli run-generators [--layer ID]... [--timeout S] <project>
 //   blockwright-cli import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]
 //                                <scene.py> <out.bwp|dir>
+//   blockwright-cli replay [--project] [--render [--scale N] [--font-width 8|9]] [--allow-lossy]
+//                          [--output-encoding cp437|utf-8] <steps.json> -o <dir>
 //
 // info, convert, render, export, shade, lint, pack and unpack take
 // --encoding auto|cp437|utf-8: what an .ans input's text is read as (PLAN §8).
-// convert and shade take --output-encoding cp437|utf-8: what an .ans output's
-// text is written as (default cp437). snapshot takes it too, defaulting to
-// the project's own encoding (its ansEncoding).
+// convert, shade and replay take --output-encoding cp437|utf-8: what an .ans
+// output's text is written as (default cp437). snapshot takes it too,
+// defaulting to the project's own encoding (its ansEncoding).
 //
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
@@ -59,13 +61,16 @@
 #include "blockwright/logo_text.h"
 #include "blockwright/project.h"
 #include "blockwright/render.h"
+#include "blockwright/samples.h"
 #include "blockwright/sauce.h"
+#include "blockwright/steps.h"
 #include "blockwright/version.h"
 #include "blockwright/xbin.h"
 #include "generators.h"
 #include "lint.h"
 #include "loss.h"
 #include "read_file.h"
+#include "replay.h"
 #include "shade.h"
 
 #include <QBuffer>
@@ -76,6 +81,10 @@
 #include <QFileInfo>
 #include <QSaveFile>
 
+#if __has_include(<sys/resource.h>)
+#include <sys/resource.h>
+#endif
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -85,6 +94,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <new>
 #include <optional>
 #include <stdexcept>
@@ -115,7 +125,8 @@ bw::project::Project loadProject(const std::string& path) {
 // --encoding: the character set every .ans a command reads is read as;
 // nothing: what bw::detectEncoding finds in each.
 std::optional<bw::TextEncoding> gEncoding;
-// --output-encoding: the character set convert and shade write an .ans in.
+// --output-encoding: the character set convert, shade and replay write an .ans
+// in (snapshot's default is the project's own).
 bw::TextEncoding gOutputEncoding = bw::TextEncoding::Cp437;
 
 // An .ans, XBIN or BIN, or a project as its flattened composite.
@@ -800,6 +811,249 @@ int render(const std::string& in, const std::string& out, const bw::RenderOption
     return kOk;
 }
 
+// replay --help: the steps file's format (PLAN §9, blockwright/steps.h).
+constexpr const char* kReplayHelp = R"(usage: blockwright-cli replay [options] <steps.json> -o <dir>
+
+Applies a steps file's edits to its start through the editor's own brushes,
+shapes, selection and layer operations, and writes the canvas (flattened,
+with SAUCE) after each step: NN-<name>.ans, or NN-<name>-before.ans and
+NN-<name>-after.ans for a step marked "capture": "before-after". NN is the
+step's number from 01. Nothing is written unless every step applies. <dir>
+is made if it isn't there. Every file is made in memory, written to a
+temporary beside it as convert writes its output, and only once all are
+written moved into place, so a write that fails leaves no new file; a
+directory in the way is refused before anything is written. An existing
+file is written through a symlink and keeps its permissions, and one that
+isn't writable is refused. Files already in <dir> are left as they are unless
+this run writes one of the same name: replay a shorter script into an
+empty directory to have only its captures. The same file writes the same
+bytes every run.
+
+Options:
+  -o, --output <dir>   where the files go (required)
+  --project            also write each capture as NN-<name>.bwp
+  --render             also write each capture as NN-<name>.png
+  --scale N            --render: integer zoom, 1-8 (default 1)
+  --font-width 8|9     --render: glyph width (default: SAUCE, else 8)
+  --allow-lossy        write an .ans that loses something (a warning says what)
+  --output-encoding cp437|utf-8
+                       the .ans files' text (default cp437)
+
+A steps file is JSON:
+
+  {"version": 1,
+   "start": {"file": "piece.ans"}            .ans, .xb, .bin or a project, relative
+                                             to the steps file
+          | {"sample": "01-layers-showcase", "variant": "Night"}
+          | {"blank": [80, 25]},
+   "ice": true,                              a blank start's iCE colours (default on)
+   "steps": [{"name": "base-ramp", "action": "gradient", ...}, ...]}
+
+Each step has a "name" (1-64 of a-z 0-9 - _, starting with a letter or
+digit) and an "action", the editor's name for it. Points are [x, y]: cells,
+or for the half-block tools (halfBlock, line, rectangle, ellipse, fill,
+eyedropper) pixels, two rows to a cell row. "button": "right" is the right
+mouse button (default left).
+
+  tool strokes   shade rampShade form soft despeckle smudge glyph colorize
+                 outline rimLight texture spray: "points": [[x, y], ...]
+                 (cells; [x, y, pressure] for a pressure of 0-1)
+  half-block     halfBlock: "points" (pixels); line, rectangle, ellipse:
+                 "from", "to" (pixels); fill, eyedropper: "at" (a pixel)
+  gradient       "from", "to" (cells)
+  keyboard       "at" (a cell), "text" (NFC-composed, as typing is; a
+                 newline starts the next row at the "at" column)
+  move           "by": [dx, dy], the active layer's offset (canvas pixels
+                 for a reference layer's picture); a locked or hidden
+                 layer is refused
+  selection      select "rect": [x0, y0, x1, y1] (corners included),
+                 selectAll, deselect, moveSelection "by": [dx, dy], copy,
+                 cut, deleteSelection, paste "at" (a cell), flipHorizontal,
+                 flipVertical, rotateClockwise, rotateCounterClockwise
+  layers         newCellsLayer, newPixelLayer (each above the active layer
+                 and made active; "rename" names it, else Layer N),
+                 deleteLayer, raiseLayer, lowerLayer, setActiveLayer
+                 "layer" (a name), layerProperties "rename", "visible",
+                 "locked", "alphaLocked"
+
+A tool step without points only sets Tool Options. Any step may set Tool
+Options, which hold for the steps after it:
+
+  "fg", "bg" 0-15 (7 on 0)   "size" 1-256 (1)   "tip" square|round
+  "strength" 0-1 (1)         "light" N|NE|E|SE|S|SW|W|NW (NW)
+  "ramp" a name or [palette indices, dark to light] (fire)
+  "symmetry" none|mirrorX|mirrorY|mirrorXY or
+             {"mode": "radial", "folds": 2-8, "centre": [x, y]} (a cell
+             on the canvas)
+  "form" {"shape": dome|cylinder|plane, "rim": bool, "specular": bool}
+  "hardness" 0-1 (soft)      "outline" ramp|selection    "keepLint" bool
+  "glyph" one character      "filled" bool (rectangle, ellipse)
+  "pencil" 4|8 (halfBlock)   "pasteMode" normal|transparent|under
+  "gradient" {"shape": linear|radial, "banding": cells|bayer,
+              "from": rung, "to": rung}
+  "texture" {"kind": scales|foliage|hoard|brick|noise, "density", "seed"}
+  "spray" {"kind": stars|haze|smoke, "density", "seed"}
+
+The editor opens on the bottom layer, with nothing selected. A step that
+can't be applied (an unknown action or key, a value out of range, a point
+off the canvas, no selection to transform, a layer that can't take the
+edit, a symmetry centre off the canvas) stops the replay with exit status
+1 and a message naming the step.
+)";
+
+struct ReplayArgs {
+    std::string outDir;
+    bool project = false;
+    std::optional<bw::RenderOptions> render;
+    bool allowLossy = false;
+};
+
+// Open files a run keeps beside its outputs: stdio and Qt's own.
+constexpr std::size_t kSpareOpenFiles = 64;
+
+// Room for `files` more open files: each output's QSaveFile stays open until
+// all are written. Raises the soft limit as far as the hard one allows and
+// returns the limit in force when that still leaves too little room (the old
+// one when it can't be raised), so the run is refused before any file is
+// opened rather than failing part way through.
+std::optional<unsigned long long> tooFewOpenFiles(std::size_t files) {
+#if __has_include(<sys/resource.h>)
+    rlimit l{};
+    if (getrlimit(RLIMIT_NOFILE, &l) != 0)
+        return std::nullopt;
+    const rlim_t want = rlim_t(files) + kSpareOpenFiles;
+    if (l.rlim_cur != RLIM_INFINITY && l.rlim_cur < want) {
+        const rlim_t had = l.rlim_cur;
+        l.rlim_cur = l.rlim_max == RLIM_INFINITY ? want : std::min(want, l.rlim_max);
+        if (setrlimit(RLIMIT_NOFILE, &l) != 0)
+            return static_cast<unsigned long long>(had);
+        if (l.rlim_cur < want)
+            return static_cast<unsigned long long>(l.rlim_cur);
+    }
+#else
+    (void)files;
+#endif
+    return std::nullopt;
+}
+
+// Writes every file whole, or none of them, each as save writes one (through
+// a symlink, keeping the file's permissions, refusing a file that isn't
+// writable): a target that is a directory, or a project where a flat file
+// goes (as save refuses one), is refused first; then every file is written
+// to its own QSaveFile, and only once all are written is each committed into
+// place. A failure drops the files not yet committed and removes every file
+// it committed that wasn't there. The caller checks the open-file limit
+// (tooFewOpenFiles) first.
+void saveAll(const std::vector<std::pair<std::string, std::string>>& files) {
+    namespace fs = std::filesystem;
+    std::vector<bool> existed;
+    for (const auto& [path, bytes] : files) {
+        std::error_code ec;
+        if (fs::is_directory(path, ec))
+            throw Failure{path + ": not written: a directory is in the way"};
+        if (!path.ends_with(".bwp") && bw::project::isProject(path))
+            throw Failure{path + ": not written: it is a project (pack and unpack write projects)"};
+        existed.push_back(fs::exists(fs::symlink_status(path, ec)));
+    }
+    // a QSaveFile dropped before its commit removes its temporary
+    std::vector<std::unique_ptr<QSaveFile>> out;
+    for (const auto& [path, bytes] : files) {
+        auto f = std::make_unique<QSaveFile>(QString::fromStdString(path));
+        f->setDirectWriteFallback(false);
+        if (!f->open(QIODevice::WriteOnly))
+            throw Failure{path + ": " + f->errorString().toStdString()};
+        const auto n = static_cast<qint64>(bytes.size());
+        errno = 0;
+        if (f->write(bytes.data(), n) != n || !f->flush()) {
+            // Qt's error string for a failed write is often "Unknown error"
+            const std::string why = errno ? std::strerror(errno) : f->errorString().toStdString();
+            throw Failure{path + ": write failed: " + why};
+        }
+        out.push_back(std::move(f));
+    }
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        if (!out[i]->commit()) {
+            const std::string why = out[i]->errorString().toStdString();
+            std::error_code ignored;
+            for (std::size_t j = 0; j < i; ++j)
+                if (!existed[j])
+                    fs::remove(files[j].first, ignored);
+            throw Failure{files[i].first + ": write failed: " + why};
+        }
+    }
+}
+
+// replay <steps.json> -o <dir>: every capture made in memory first, then
+// written, so a step that fails writes nothing and a write that fails
+// leaves no new file (saveAll).
+int replay(const std::string& stepsPath, const ReplayArgs& a) {
+    namespace fs = std::filesystem;
+    bw::steps::Script script;
+    try {
+        script = bw::steps::parse(readFile(stepsPath, 16 << 20));
+    } catch (const bw::steps::StepsError& e) {
+        throw Failure{stepsPath + ": " + e.what()};
+    }
+    const auto native = [](const QString& p) { return fs::path(QFile::encodeName(p).toStdString()); };
+    const fs::path samplesDir = bw::samples::bundledDir(bw::library::realBinDir(
+        native(QCoreApplication::applicationFilePath()), native(QCoreApplication::applicationDirPath())));
+    bwcli::replay::Outcome outcome;
+    try {
+        outcome = bwcli::replay::run(
+            script, bwcli::replay::start(script, fs::path(stepsPath).parent_path(), samplesDir));
+    } catch (const Failure& f) {
+        throw Failure{stepsPath + ": " + f.message};
+    }
+    for (const std::string& n : outcome.notes)
+        std::cerr << "blockwright-cli: note: " << stepsPath << ": " << n << "\n";
+
+    const fs::path dir(a.outDir);
+    std::vector<std::pair<std::string, std::string>> files;  // path, bytes
+    for (const bwcli::replay::Capture& c : outcome.captures) {
+        const std::string base = (dir / c.stem).string();
+        const bw::AnsiDocument doc = bw::project::toAnsi(c.project);
+        const bw::AnsiOutput res = bw::writeArt(doc, bw::ArtFormat::Ansi, gOutputEncoding);
+        warnLoss(base + ".ans", res);
+        if (res.lossy() && !a.allowLossy)
+            throw Failure{base + ".ans: not written: the conversion loses data (--allow-lossy writes it anyway)"};
+        files.push_back({base + ".ans", res.bytes});
+        if (a.project) {
+            try {
+                files.push_back({base + ".bwp", bw::project::zipBytes(c.project)});
+            } catch (const bw::project::ProjectError& e) {
+                throw Failure{base + ".bwp: " + e.what()};
+            }
+        }
+        if (a.render) {
+            QImage img;
+            try {
+                img = bw::renderDocument(doc, *a.render);
+            } catch (const std::length_error&) {
+                throw Failure{base + ".png: not written: the image would be too large"};
+            }
+            QByteArray png;
+            QBuffer buf(&png);
+            buf.open(QIODevice::WriteOnly);
+            QImageWriter w(&buf, "png");
+            if (!w.write(img))
+                throw Failure{base + ".png: not written: PNG encoding failed: " + w.errorString().toStdString()};
+            files.push_back({base + ".png", std::string(png.constData(), static_cast<size_t>(png.size()))});
+        }
+    }
+    // refused before <dir> is made, so a refused run leaves nothing, as a
+    // failed step does
+    if (const auto limit = tooFewOpenFiles(files.size()))
+        throw Failure{"not written: " + std::to_string(files.size()) + " outputs need " +
+                      std::to_string(files.size() + kSpareOpenFiles) + " open files at once (one each and " +
+                      std::to_string(kSpareOpenFiles) + " to spare), more than the open-file limit of " +
+                      std::to_string(*limit)};
+    std::error_code ec;
+    if (fs::exists(dir, ec) ? !fs::is_directory(dir, ec) : !fs::create_directories(dir, ec))
+        throw Failure{a.outDir + ": " + (ec ? ec.message() : std::string("not a directory"))};
+    saveAll(files);
+    return kOk;
+}
+
 // The whole lint of the piece (lint_rules.h) with its own iCE colours, for
 // `target`, else a project's own, else ANSI: one line per finding and a
 // summary, or JSON. Findings but notes exit kFindings.
@@ -988,16 +1242,22 @@ int main(int argc, char** argv) {
         "                       --layer) again and save their output; this runs\n"
         "                       the programs their generator.json names\n"
         "  import-scene <scene.py> <out>\n"
-        "                       open a layered Python scene as a new\n"
-        "                       project with a generator layer for each of its\n"
-        "                       layers, run once; <out> is a .bwp zip, or else a\n"
-        "                       directory that doesn't exist or is empty. This\n"
-        "                       runs the scene with python3; on Windows with the\n"
-        "                       first of py -3, python and python3 that is\n"
-        "                       Python 3. To rebuild a project byte for byte:\n"
-        "                       --bake writes the layers as cells without the\n"
-        "                       scene's path, --author and --date set SAUCE's,\n"
-        "                       and SOURCE_DATE_EPOCH stands in for today\n\n"
+        "                       open a layered Python scene (one that answers\n"
+        "                       --list-layers) as a new project with a generator\n"
+        "                       layer for each of its layers, run once; <out> is a\n"
+        "                       .bwp zip, or else a directory that doesn't exist or\n"
+        "                       is empty. This runs the scene with python3; on\n"
+        "                       Windows with the first of py -3, python and python3\n"
+        "                       that is Python 3.\n"
+        "                       To rebuild a project byte for byte: --bake writes\n"
+        "                       the layers as cells without the scene's path,\n"
+        "                       --author and --date set SAUCE's, and\n"
+        "                       SOURCE_DATE_EPOCH stands in for today\n"
+        "  replay <steps.json> -o <dir>\n"
+        "                       apply a steps file's edits through the editor's\n"
+        "                       tools and write the canvas after each step as\n"
+        "                       NN-<name>.ans (and .bwp with --project, .png with\n"
+        "                       --render); replay --help gives the format\n\n"
         "Every command that reads an .ans also reads an XBIN (.xb) or BIN (.bin),\n"
         "and a project (a .bwp zip or a project directory) as its flattened\n"
         "composite. convert and shade write XBIN to an <out> named .xb and BIN\n"
@@ -1006,23 +1266,23 @@ int main(int argc, char** argv) {
         "An .ans is read as CP437, or as UTF-8 when it starts with a byte order\n"
         "mark or is all well-formed UTF-8 with a sequence of three bytes or more\n"
         "(the block and box glyphs terminals draw with); --encoding cp437 or\n"
-        "utf-8 says which. info prints the one it was read as. convert and\n"
-        "shade write an .ans as CP437, or as UTF-8 with --output-encoding utf-8\n"
-        "(SAUCE stays CP437; a byte order mark only when the text has no\n"
+        "utf-8 says which. info prints the one it was read as. convert, shade\n"
+        "and replay write an .ans as CP437, or as UTF-8 with --output-encoding\n"
+        "utf-8 (SAUCE stays CP437; a byte order mark only when the text has no\n"
         "sequence of three bytes or more). snapshot writes the project's own\n"
         "encoding, or the one --output-encoding gives. Everything else is\n"
         "written as CP437."));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
-                                      QStringLiteral("convert, shade, pack, unpack, snapshot: write even if something can't be represented"));
+                                      QStringLiteral("convert, shade, pack, unpack, snapshot, replay: write even if something can't be represented"));
     parser.addOption(lossyOpt);
     const QCommandLineOption scaleOpt(QStringLiteral("scale"),
-                                      QStringLiteral("render: integer zoom, nearest neighbour (1-8, default 1)"),
+                                      QStringLiteral("render, replay --render: integer zoom, nearest neighbour (1-8, default 1)"),
                                       QStringLiteral("N"), QStringLiteral("1"));
     parser.addOption(scaleOpt);
     const QCommandLineOption fontWidthOpt(QStringLiteral("font-width"),
-                                          QStringLiteral("render: glyph width 8 or 9 (default: SAUCE letter spacing, else 8)"),
+                                          QStringLiteral("render, replay --render: glyph width 8 or 9 (default: SAUCE letter spacing, else 8)"),
                                           QStringLiteral("px"));
     parser.addOption(fontWidthOpt);
     const QCommandLineOption ircOpt(QStringLiteral("irc"),
@@ -1140,8 +1400,8 @@ int main(int argc, char** argv) {
     parser.addOption(encodingOpt);
     const QCommandLineOption outputEncodingOpt(
         QStringLiteral("output-encoding"),
-        QStringLiteral("convert, shade, snapshot: write an .ans output as cp437 or utf-8 (default: cp437, and for "
-                       "snapshot the project's encoding; SAUCE stays CP437)"),
+        QStringLiteral("convert, shade, snapshot, replay: write an .ans output as cp437 or utf-8 (default: cp437, "
+                       "and for snapshot the project's encoding; SAUCE stays CP437)"),
         QStringLiteral("enc"), QStringLiteral("cp437"));
     parser.addOption(outputEncodingOpt);
     const QCommandLineOption targetOpt(
@@ -1150,7 +1410,17 @@ int main(int argc, char** argv) {
                        "project's target (default: a project's own, else ansi)"),
         QStringLiteral("target"));
     parser.addOption(targetOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators or import-scene"));
+    const QCommandLineOption outputOpt(QStringList{QStringLiteral("o"), QStringLiteral("output")},
+                                       QStringLiteral("replay: the directory the captures go in"),
+                                       QStringLiteral("dir"));
+    parser.addOption(outputOpt);
+    const QCommandLineOption projectOpt(QStringLiteral("project"),
+                                        QStringLiteral("replay: also write each capture as a .bwp"));
+    parser.addOption(projectOpt);
+    const QCommandLineOption renderOpt(QStringLiteral("render"),
+                                       QStringLiteral("replay: also write each capture as a PNG"));
+    parser.addOption(renderOpt);
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators, import-scene or replay"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -1166,6 +1436,10 @@ int main(int argc, char** argv) {
     // Printed here rather than by showHelp(), which on Windows puts the text
     // in a message box when it finds no console, as under a pipe it may not.
     if (parser.isSet(helpOpt)) {
+        if (parser.positionalArguments().value(0) == QLatin1String("replay")) {
+            std::cout << kReplayHelp;
+            return kOk;
+        }
         std::cout << bw::kLogoText << "\n" << parser.helpText().toStdString();
         return kOk;
     }
@@ -1189,9 +1463,11 @@ int main(int argc, char** argv) {
                   << "       | run-generators [--layer ID]... [--timeout S] <project>\n"
                   << "       | import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]\n"
                   << "         <scene.py> <out.bwp|dir>\n"
+                  << "       | replay [--project] [--render [--scale N] [--font-width 8|9]] [--allow-lossy]\n"
+                  << "         <steps.json> -o <dir>   (replay --help gives the steps format)\n"
                   << "       | --version\n"
                   << "       info, convert, render, export, shade, lint, pack and unpack take --encoding auto|cp437|utf-8\n"
-                  << "       convert, shade and snapshot take --output-encoding cp437|utf-8\n";
+                  << "       convert, shade, snapshot and replay take --output-encoding cp437|utf-8\n";
         return kUsage;
     };
     if (args.isEmpty())
@@ -1199,7 +1475,8 @@ int main(int argc, char** argv) {
     const QString cmd = args.first();
     // Each option belongs to its commands; every other command refuses it.
     const std::pair<const QCommandLineOption*, std::vector<const char*>> owners[] = {
-        {&lossyOpt, {"convert", "shade", "pack", "unpack", "snapshot"}}, {&scaleOpt, {"render"}},  {&fontWidthOpt, {"render"}},
+        {&lossyOpt, {"convert", "shade", "pack", "unpack", "snapshot", "replay"}},
+        {&scaleOpt, {"render", "replay"}}, {&fontWidthOpt, {"render", "replay"}},
         {&ircOpt, {"export", "render"}},   {&budgetOpt, {"export", "render"}}, {&overOpt, {"export"}},
         {&fitOpt, {"export", "render"}},   {&padOpt, {"export", "render"}}, {&swapShadesOpt, {"export", "render"}},
         {&rampOpt, {"shade", "lint"}},     {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
@@ -1210,15 +1487,16 @@ int main(int argc, char** argv) {
         {&timeoutOpt, {"add-generator", "run-generators", "import-scene"}},
         {&bakeOpt, {"import-scene"}},      {&authorOpt, {"import-scene"}}, {&dateOpt, {"import-scene"}},
         {&encodingOpt, {"info", "convert", "render", "export", "shade", "lint", "pack", "unpack"}},
-        {&outputEncodingOpt, {"convert", "shade", "snapshot"}},
+        {&outputEncodingOpt, {"convert", "shade", "snapshot", "replay"}},
         {&targetOpt, {"lint", "pack", "unpack"}},
+        {&outputOpt, {"replay"}},          {&projectOpt, {"replay"}}, {&renderOpt, {"replay"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
         cmd == QLatin1String("library") ||
         cmd == QLatin1String("pack") || cmd == QLatin1String("unpack") || cmd == QLatin1String("snapshot") ||
         cmd == QLatin1String("add-generator") || cmd == QLatin1String("run-generators") ||
-        cmd == QLatin1String("import-scene"))
+        cmd == QLatin1String("import-scene") || cmd == QLatin1String("replay"))
         for (const auto& [o, cmds] : owners) {
             if (!parser.isSet(*o) ||
                 std::any_of(cmds.begin(), cmds.end(), [&](const char* c) { return cmd == QLatin1String(c); }))
@@ -1436,6 +1714,28 @@ int main(int argc, char** argv) {
             // SOURCE_DATE_EPOCH only stands in for today: it makes no record
             fix.stamp.record = fix.stamp.author || parser.isSet(dateOpt);
             return importScene(args[1].toStdString(), args[2].toStdString(), runOpts, fix);
+        }
+        if (cmd == QLatin1String("replay")) {
+            if (args.size() != 2)
+                return usage("replay takes one steps file");
+            if (!parser.isSet(outputOpt))
+                return usage("replay needs -o <dir>, the directory the captures go in");
+            if (!parser.isSet(renderOpt))
+                for (const QCommandLineOption* o : {&scaleOpt, &fontWidthOpt})
+                    if (parser.isSet(*o))
+                        return usage(("--" + o->names().first().toStdString() + " is a replay --render option").c_str());
+            ReplayArgs a;
+            a.outDir = parser.value(outputOpt).toStdString();
+            a.project = parser.isSet(projectOpt);
+            a.allowLossy = parser.isSet(lossyOpt);
+            if (parser.isSet(renderOpt)) {
+                bw::RenderOptions opts;
+                opts.scale = intValue(parser.value(scaleOpt), "scale", 1, bw::kMaxScale);
+                if (parser.isSet(fontWidthOpt))
+                    opts.fontWidth = intValue(parser.value(fontWidthOpt), "font-width", 8, 9);
+                a.render = opts;
+            }
+            return replay(args[1].toStdString(), a);
         }
         return usage(("unknown command '"+ cmd.toStdString() + "'").c_str());
     } catch (const Usage& u) {

@@ -181,7 +181,7 @@ expect "info: a BOM says UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/bom.
 if [[ $(od -An -tx1 "$tmp/bom-cp.ans" | tr -d ' \n') == *4180* && $(od -An -tx1 "$tmp/bom-cp.ans" | tr -d ' \n') != *efbbbf* ]]; then ok "the BOM is dropped and Ç is written as 80"; else bad "convert of a BOM file: $(od -An -tx1 "$tmp/bom-cp.ans")"; fi
 printf '\xc9\xbb\r\n\xc8\xbc\r\n' > "$tmp/corners.ans"
 expect "info: CP437 corners that look like UTF-8 stay CP437" 0 '^encoding: +CP437$' -- "$cli" info "$tmp/corners.ans"
-# writing UTF-8 (#302 part 2): convert and shade take --output-encoding
+# writing UTF-8 (#302 part 2): convert, shade and replay take --output-encoding
 printf 'A\xc2\x9b31mB\r\n' > "$tmp/c1-u8.ans"
 expect "convert --output-encoding utf-8 refuses a C1 control" 1 'warning: .*c1-u8\.ans: 1 cell holds a control character a UTF-8 \.ans can.t hold.*U\+009B' -- \
   "$cli" convert --encoding utf-8 --output-encoding utf-8 "$tmp/c1-u8.ans" "$tmp/c1-out.ans"
@@ -202,7 +202,7 @@ done
 expect "--output-encoding with a bad value is refused" 2 "--output-encoding takes cp437 or utf-8, not 'auto'" -- "$cli" convert --output-encoding auto "$piece" "$tmp/bad-enc.ans"
 if [[ -e $tmp/bad-enc.ans ]]; then bad "a bad --output-encoding wrote a file"; else ok "a bad --output-encoding writes nothing"; fi
 for cmd in info lint render export pack; do
-  expect "--output-encoding on $cmd is refused" 2 "--output-encoding is a convert, shade or snapshot option, not an? $cmd option" -- "$cli" "$cmd" --output-encoding utf-8 "$piece" "$tmp/x"
+  expect "--output-encoding on $cmd is refused" 2 "--output-encoding is a convert, shade, snapshot or replay option, not an? $cmd option" -- "$cli" "$cmd" --output-encoding utf-8 "$piece" "$tmp/x"
 done
 for out in tux-u8.xb tux-u8.XBIN tux-u8.bin; do
   expect "--output-encoding utf-8 to $out is refused" 2 "--output-encoding utf-8 writes an \.ans; .*${out//./\\.} is XBIN or BIN, which are CP437" -- "$cli" convert --output-encoding utf-8 "$piece" "$tmp/$out"
@@ -230,9 +230,10 @@ expect "info: shade wrote UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/sha
 "$cli" convert "$tmp/shade-u8.ans" "$tmp/shade-u8-cp.ans"
 if cmp -s "$tmp/shade-cp.ans" "$tmp/shade-u8-cp.ans"; then ok "shade's UTF-8 output is its CP437 output's cells"; else bad "shade UTF-8 and CP437 outputs differ"; fi
 expect "shade --output-encoding utf-8 to a .bin is refused" 2 'is XBIN or BIN, which are CP437' -- "$cli" shade --ramp steel --output-encoding utf-8 "$piece" "$tmp/shade.bin"
-expect "--help lists --output-encoding" 0 '^  --output-encoding <enc> +convert, shade, snapshot: write an \.ans output as$' -- "$cli" --help
-expect "--help says convert and shade write UTF-8 with it" 0 '^shade write an \.ans as CP437, or as UTF-8 with --output-encoding utf-8$' -- "$cli" --help
-expect "the usage says convert, shade and snapshot take it" 2 '^ +convert, shade and snapshot take --output-encoding cp437\|utf-8$' -- "$cli" convert
+expect "--help lists --output-encoding" 0 '^  --output-encoding <enc> +convert, shade, snapshot, replay: write an \.ans$' -- "$cli" --help
+expect "--help says convert, shade and replay write UTF-8 with it" 0 '^and replay write an \.ans as CP437, or as UTF-8 with --output-encoding$' -- "$cli" --help
+expect "--help says snapshot writes the project's encoding" 0 "^sequence of three bytes or more\\)\\. snapshot writes the project's own$" -- "$cli" --help
+expect "the usage says convert, shade, snapshot and replay take it" 2 '^ +convert, shade, snapshot and replay take --output-encoding cp437\|utf-8$' -- "$cli" convert
 cp "$tmp/tux.xb" "$tmp/tux-xb.ans"
 expect "an XBIN is read by its header whatever its name" 0 '^format: +XBIN' -- "$cli" info "$tmp/tux-xb.ans"
 expect "convert .xb to .ans" 0 '^$' -- "$cli" convert "$tmp/tux.xb" "$tmp/from-xb.ans"
@@ -653,14 +654,15 @@ expect "lint bad input" 1 'nope\.ans: No such file' -- "$cli" lint "$tmp/nope.an
 
 # Every command refuses every option it doesn't use: exit 2, a usage message
 # naming the option and the command, and nothing written.
-declare -A owner=([--allow-lossy]="convert shade pack unpack snapshot" [--scale]=render [--font-width]=render
+declare -A owner=([--allow-lossy]="convert shade pack unpack snapshot replay" [--scale]="render replay"
+                  [--font-width]="render replay"
                   [--irc]="export render" [--budget]="export render" [--allow-over-budget]=export
                   [--fit]="export render" [--pad]="export render" [--swap-shades]="export render"
                   [--ramp]="shade lint" [--darken]=shade [--steps]=shade [--box]="shade lint" [--ice]=shade
                   [--json]=lint)
 declare -A value=([--scale]=2 [--font-width]=9 [--budget]=60 [--ramp]=steel [--steps]=2 [--box]=0,0,1,1)
 foreign=$tmp/foreign && mkdir -p "$foreign"
-for cmd in info convert render export shade lint pack unpack snapshot; do
+for cmd in info convert render export shade lint pack unpack snapshot replay; do
   for opt in --allow-lossy --scale --font-width --irc --budget --allow-over-budget --fit --pad --swap-shades \
              --ramp --darken --steps --box --ice --json; do
     [[ " ${owner[$opt]} " == *" $cmd "* ]] && continue
@@ -671,6 +673,7 @@ for cmd in info convert render export shade lint pack unpack snapshot; do
       export) argv=(export --irc "$piece" "$out") ;;
       shade) argv=(shade --ramp steel "$piece" "$out") ;;
       lint) argv=(lint "$piece") ;;
+      replay) argv=(replay "$data/replay/tour.json" -o "$out") ;;
       *) argv=("$cmd" "$piece" "$out") ;;
     esac
     read -ra o <<<"${owner[$opt]}"; a=${o[-1]}
@@ -684,7 +687,7 @@ done
 out=$("$cli" info --scale 2 "$piece" 2>/dev/null)
 if [[ -z $out ]]; then ok "info with a foreign option prints no info"; else bad "info with a foreign option printed: $out"; fi
 if [[ -z $(ls -A "$foreign") ]]; then ok "commands with a foreign option write nothing"; else bad "foreign options wrote: $(ls -A "$foreign")"; fi
-expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert, shade, pack, unpack or snapshot option, not a render option$' -- \
+expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert, shade, pack, unpack, snapshot or replay option, not a render option$' -- \
   "$cli" render "$piece" "$foreign/late.png" --allow-lossy
 
 expect "export bad input" 1 'nope\.ans: No such file' -- "$cli" export --irc "$tmp/nope.ans" "$tmp/x.txt"
@@ -720,7 +723,7 @@ expect "library check: missing dir" 1 'nope: not a directory' -- "$cli" library 
 expect "library check: needs a dir" 2 'library check takes one directory' -- "$cli" library check
 expect "library: needs a subcommand" 2 'library needs a subcommand' -- "$cli" library
 expect "library: unknown subcommand" 2 "unknown library subcommand 'frob'" -- "$cli" library frob
-expect "library: refuses other commands' options" 2 '--scale is a render option, not a library option' -- "$cli" library list --scale 2
+expect "library: refuses other commands' options" 2 '--scale is a render or replay option, not a library option' -- "$cli" library list --scale 2
 bl=$tmp/badlib; mkdir -p "$bl"
 cp "$lib/sky/small-star.ans" "$bl/bytes.ans"; sed 's/"ircBytes": 16/"ircBytes": 17/' "$lib/sky/small-star.json" > "$bl/bytes.json"
 cp "$lib/sky/small-star.ans" "$bl/key.ans"; sed 's/"tags"/"tag"/' "$lib/sky/small-star.json" > "$bl/key.json"
@@ -943,6 +946,81 @@ expect "snapshot refuses it" 1 'r1 not saved: the snapshot loses data' -- "$cli"
 expect "export --irc sends mIRC 77" 0 '1 line' -- "$cli" export --irc "$tmp/rgb-irc.bwp" "$tmp/rgb.txt"
 printf '\00377,1X\00315BCD\n' >"$tmp/rgb-want.txt"
 if cmp -s "$tmp/rgb.txt" "$tmp/rgb-want.txt"; then ok "export --irc writes ^C77"; else bad "export --irc wrote $(od -An -c "$tmp/rgb.txt")"; fi
+
+# replay (#208): files per step, nothing written when a step fails
+rp=$tmp/replay
+mkdir -p "$rp"
+expect "replay --help documents the steps file" 0 '"capture": "before-after"' -- "$cli" replay --help
+expect "replay: the tour" 0 '^$' -- "$cli" replay "$data/replay/tour.json" -o "$rp/tour"
+if diff -r "$data/replay/tour" "$rp/tour" > /dev/null; then ok "replay: the tour's saved bytes"; else bad "replay: the tour differs from data/replay/tour"; fi
+printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}, {"name": "far", "action": "shade", "points": [[9, 0]]}]}' > "$rp/bad.json"
+expect "replay: a step off the canvas, named" 1 'step 2 \(far\): ' -- "$cli" replay "$rp/bad.json" -o "$rp/bad"
+if [[ ! -e $rp/bad ]]; then ok "replay: a failed replay writes nothing"; else bad "replay wrote files for a failed replay"; fi
+expect "replay: -o is required" 2 "replay needs -o" -- "$cli" replay "$rp/bad.json"
+# replay writes .ans files whatever the target, so --target isn't its option
+expect "replay takes no --target" 2 '^blockwright-cli: --target is a lint, pack or unpack option, not a replay option$' -- "$cli" replay --target irc "$data/replay/tour.json" -o "$rp/target"
+if [[ ! -e $rp/target ]]; then ok "replay --target writes nothing"; else bad "replay --target made $rp/target"; fi
+# every file is made in memory and renamed into place only once all are
+# written, so a write that fails leaves no new file; a directory in the way
+# is refused before anything is written
+printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "a", "action": "glyph", "points": [[1, 1]]}, {"name": "b", "action": "glyph", "points": [[2, 1]]}]}' > "$rp/two.json"
+mkdir -p "$rp/way/02-b.ans"
+expect "replay: a directory in the way is refused" 1 '02-b\.ans: not written: a directory is in the way$' -- "$cli" replay "$rp/two.json" -o "$rp/way"
+if [[ $(ls -A "$rp/way") == 02-b.ans ]]; then ok "replay: a directory in the way, nothing written"; else bad "replay wrote beside a directory in the way: $(ls -A "$rp/way")"; fi
+mkdir -p "$rp/wayp/02-b.bwp"
+expect "replay --project: a directory in the way is refused" 1 '02-b\.bwp: not written: a directory is in the way$' -- "$cli" replay --project "$rp/two.json" -o "$rp/wayp"
+if [[ $(ls -A "$rp/wayp") == 02-b.bwp ]]; then ok "replay --project: a directory in the way, nothing written"; else bad "replay --project wrote beside a directory in the way: $(ls -A "$rp/wayp")"; fi
+# files already there are left, but for those the run writes again
+mkdir -p "$rp/old"
+echo stale > "$rp/old/01-a.ans"
+echo kept > "$rp/old/09-z.ans"
+expect "replay into a directory used before" 0 '^$' -- "$cli" replay --project "$rp/two.json" -o "$rp/old"
+if [[ $(ls -A "$rp/old" | tr '\n' ' ') == "01-a.ans 01-a.bwp 02-b.ans 02-b.bwp 09-z.ans " ]]; then ok "replay: the captures beside the old file, no temporaries left"; else bad "replay into a used directory left: $(ls -A "$rp/old" | tr '\n' ' ')"; fi
+if [[ $(cat "$rp/old/09-z.ans") == kept && $(cat "$rp/old/01-a.ans") != stale ]]; then ok "replay: an old capture replaced, another file left"; else bad "replay: old files in the output directory"; fi
+
+# a capture already there is written as save writes it (convert shows
+# it): through a symlink, keeping its permissions, and refused when it
+# isn't writable, with nothing written
+mkdir -p "$rp/kept"
+echo real > "$rp/kept/real.ans"
+ln -s real.ans "$rp/kept/01-a.ans"
+echo old > "$rp/kept/02-b.ans"
+chmod 600 "$rp/kept/02-b.ans"
+expect "replay onto a symlink and a 0600 file" 0 '^$' -- "$cli" replay "$rp/two.json" -o "$rp/kept"
+if [[ -L $rp/kept/01-a.ans ]] && cmp -s "$rp/kept/real.ans" "$rp/old/01-a.ans"; then ok "replay writes through a symlink"; else bad "replay replaced a symlink instead of writing through it"; fi
+if [[ $(ls -l "$rp/kept/02-b.ans" | cut -c1-10) == -rw------- ]] && cmp -s "$rp/kept/02-b.ans" "$rp/old/02-b.ans"; then ok "replay keeps a file's permissions"; else bad "replay changed a 0600 file to $(ls -l "$rp/kept/02-b.ans" | cut -c1-10)"; fi
+if [[ $(ls -A "$rp/kept" | tr '\n' ' ') == "01-a.ans 02-b.ans real.ans " ]]; then ok "replay through a symlink: no temporaries left"; else bad "replay through a symlink left: $(ls -A "$rp/kept" | tr '\n' ' ')"; fi
+if [[ $(id -u) -ne 0 ]]; then
+  mkdir -p "$rp/ro"
+  echo ro > "$rp/ro/02-b.ans"
+  chmod 444 "$rp/ro/02-b.ans"
+  expect "convert refuses a read-only file" 1 'Existing file .*02-b\.ans is not writable' -- "$cli" convert "$rp/old/01-a.ans" "$rp/ro/02-b.ans"
+  expect "replay refuses a read-only capture as convert does" 1 '02-b\.ans: Existing file .*02-b\.ans is not writable' -- "$cli" replay "$rp/two.json" -o "$rp/ro"
+  if [[ $(ls -A "$rp/ro") == 02-b.ans && $(cat "$rp/ro/02-b.ans") == ro ]]; then ok "replay: a read-only capture, nothing written"; else bad "replay wrote beside a read-only capture: $(ls -A "$rp/ro" | tr '\n' ' ')"; fi
+else
+  echo "skip replay: a read-only capture (running as root)"
+fi
+# every output stays open until all are written: with too few files to
+# hold them all, the replay fails and writes nothing
+{
+  printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": ['
+  for i in $(seq 0 29); do printf '%s{"name": "s%d", "action": "glyph", "points": [[%d, %d]]}' "$([[ $i -gt 0 ]] && echo ,)" "$i" $((i % 8)) $((i / 8)); done
+  printf ']}'
+} > "$rp/many.json"
+mkdir -p "$rp/many"
+expect "replay: more outputs than open files, refused" 1 '^blockwright-cli: not written: 30 outputs need 94 open files at once \(one each and 64 to spare\), more than the open-file limit of 32$' -- bash -c 'ulimit -n 32 && exec "$0" "$@"' "$cli" replay "$rp/many.json" -o "$rp/many"
+if [[ -z $(ls -A "$rp/many") ]]; then ok "replay: out of open files, nothing written"; else bad "replay out of open files left: $(ls -A "$rp/many" | tr '\n' ' ')"; fi
+# the refusal comes before <dir> is made, as a failed step's does
+expect "replay: out of open files, into a new directory" 1 'more than the open-file limit of 32$' -- bash -c 'ulimit -n 32 && exec "$0" "$@"' "$cli" replay "$rp/many.json" -o "$rp/many-new/deeper"
+if [[ ! -e $rp/many-new ]]; then ok "replay: out of open files, no directory made"; else bad "replay out of open files made $rp/many-new"; fi
+# the rule is the outputs and 64 spare: 94 holds 30, 93 doesn't
+expect "replay: one open file short, refused" 1 '30 outputs need 94 open files at once \(one each and 64 to spare\), more than the open-file limit of 93$' -- bash -c 'ulimit -n 93 && exec "$0" "$@"' "$cli" replay "$rp/many.json" -o "$rp/many-93"
+if [[ ! -e $rp/many-93 ]]; then ok "replay: one open file short, nothing made"; else bad "replay one open file short made $rp/many-93"; fi
+expect "replay: exactly enough open files" 0 '^$' -- bash -c 'ulimit -n 94 && exec "$0" "$@"' "$cli" replay "$rp/many.json" -o "$rp/many-94"
+if [[ $(ls -A "$rp/many-94" | wc -l) -eq 30 ]]; then ok "replay: exactly enough open files, 30 written"; else bad "replay with 94 open files wrote: $(ls -A "$rp/many-94" | tr '\n' ' ')"; fi
+mkdir -p "$rp/many-soft"
+expect "replay: as many outputs as the soft limit allows, raised" 0 '^$' -- bash -c 'ulimit -S -n 32 && exec "$0" "$@"' "$cli" replay "$rp/many.json" -o "$rp/many-soft"
+if [[ $(ls -A "$rp/many-soft" | wc -l) -eq 30 ]]; then ok "replay: the soft limit raised for its outputs"; else bad "replay under a low soft limit wrote: $(ls -A "$rp/many-soft" | tr '\n' ' ')"; fi
 
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]

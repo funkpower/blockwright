@@ -52,6 +52,7 @@ add_library(blockwright_core STATIC
   src/scene_import.cpp
   src/selection.cpp
   src/shapes.cpp
+  src/steps.cpp
   src/big_text.cpp
   src/text.cpp
   src/text_style.cpp

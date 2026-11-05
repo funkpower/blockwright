@@ -24,9 +24,9 @@ sets it for
 and
 .BR unpack .
 SAUCE fields are CP437 either way.
-.B convert
+.BR convert ", " shade
 and
-.B shade
+.B replay
 write an .ans as CP437, or as UTF-8 with
 .BR "\-\-output\-encoding utf\-8"
 (SAUCE stays CP437, and a byte order mark is written only when the text has
@@ -129,6 +129,28 @@ doesn't name the scene's path;
 .BI \-\-date " CCYYMMDD"
 set the SAUCE author and date, and make a SAUCE record when the scene's title
 gave none.
+.TP
+.BI replay " steps.json " \-o " dir"
+Apply a steps file's edits to its start (a file, a bundled sample or a blank
+canvas) through the editor's brushes, shapes, selection and layer operations,
+and write the flattened canvas after each step as
+.IR NN \- name .ans,
+or
+.IR NN \- name \-before.ans
+and
+.IR NN \- name \-after.ans
+for a step marked for both;
+.B \-\-project
+and
+.B \-\-render
+write a .bwp and a PNG beside each. Nothing is written when a step can't be
+applied: the error names the step. Every file is written under a temporary
+name and renamed into place once all are written, so a write that fails
+leaves no new file; files already in
+.I dir
+are left unless the run writes one of the same name.
+.B "blockwright-cli replay \-\-help"
+gives the steps file's format.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help

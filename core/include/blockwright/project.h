@@ -327,6 +327,10 @@ Project read(const std::filesystem::path& path, ReadNotes* notes = nullptr);
 // .png entries are stored, the rest deflated.
 void writeZip(const Project& project, const std::filesystem::path& path);
 
+// The bytes writeZip writes for the project, made in memory: for a caller
+// that writes several files and wants each whole before it writes any.
+std::string zipBytes(const Project& project);
+
 // Writes the project as a directory: each entry written whole (a new
 // temporary file, created exclusively, renamed over it), manifest.json last,
 // then every other file under the directory that isn't hidden removed (never

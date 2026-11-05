@@ -2476,26 +2476,22 @@ Project read(const fs::path& path, ReadNotes* notes) {
     return decode(readZip(path), notes);
 }
 
-void writeZip(const Project& project, const fs::path& path) {
-    const Entries entries = encode(project);
-    std::error_code ec;
-    if (fs::is_directory(path, ec))
-        fail(path.string() + " is a directory");
-    int err = 0;
-    zip_t* z = zip_open(zipName(path).c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
-    if (!z)
-        fail("can't write " + path.string() + ": " + zipErrorText(err));
-    // discarded however the save leaves, unless it is closed
-    struct Discard {
-        zip_t* z;
-        ~Discard() {
-            if (z)
-                zip_discard(z);
-        }
-    } discard{z};
-    const auto abandon = [&](const std::string& what) {
-        fail("can't write " + path.string() + ": " + what + ": " + zip_strerror(z));
-    };
+namespace {
+
+// Discards an archive however a writer leaves, unless it was closed.
+struct Discard {
+    zip_t* z;
+    ~Discard() {
+        if (z)
+            zip_discard(z);
+    }
+};
+
+// The entries added to `z` as both zip writers store them: at a fixed time,
+// .cells and .png stored, the rest deflated. `abandon` is told the entry it
+// failed on, and throws. The entries' bytes must outlive the archive.
+template <typename Abandon>
+void addEntries(zip_t* z, const Entries& entries, const Abandon& abandon) {
     for (const auto& [name, bytes] : entries) {
         zip_source_t* src = zip_source_buffer(z, bytes.data(), bytes.size(), 0);
         if (!src)
@@ -2510,9 +2506,70 @@ void writeZip(const Project& project, const fs::path& path) {
             zip_file_set_dostime(z, zip_uint64_t(i), kDosTime, kDosDate, 0) != 0)
             abandon(name);
     }
+}
+
+} // namespace
+
+void writeZip(const Project& project, const fs::path& path) {
+    const Entries entries = encode(project);
+    std::error_code ec;
+    if (fs::is_directory(path, ec))
+        fail(path.string() + " is a directory");
+    int err = 0;
+    zip_t* z = zip_open(zipName(path).c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
+    if (!z)
+        fail("can't write " + path.string() + ": " + zipErrorText(err));
+    Discard discard{z};
+    const auto abandon = [&](const std::string& what) {
+        fail("can't write " + path.string() + ": " + what + ": " + zip_strerror(z));
+    };
+    addEntries(z, entries, abandon);
     if (zip_close(z) != 0)
         abandon("closing");
     discard.z = nullptr;
+}
+
+std::string zipBytes(const Project& project) {
+    const Entries entries = encode(project);
+    zip_error_t error;
+    zip_error_init(&error);
+    zip_source_t* mem = zip_source_buffer_create(nullptr, 0, 0, &error);
+    if (!mem) {
+        const std::string why = zip_error_strerror(&error);
+        zip_error_fini(&error);
+        fail("can't make a zip in memory: " + why);
+    }
+    struct Release {
+        zip_source_t* s;
+        ~Release() { zip_source_free(s); }
+    } release{mem};
+    zip_t* z = zip_open_from_source(mem, ZIP_CREATE | ZIP_TRUNCATE, &error);
+    if (!z) {
+        const std::string why = zip_error_strerror(&error);
+        zip_error_fini(&error);
+        fail("can't make a zip in memory: " + why);
+    }
+    zip_error_fini(&error);
+    // the archive owns the source now; kept past zip_close to read it back
+    zip_source_keep(mem);
+    Discard discard{z};
+    const auto abandon = [&](const std::string& what) {
+        fail("can't make a zip in memory: " + what + ": " + zip_strerror(z));
+    };
+    addEntries(z, entries, abandon);
+    if (zip_close(z) != 0)
+        abandon("closing");
+    discard.z = nullptr;
+    zip_stat_t st;
+    zip_stat_init(&st);
+    if (zip_source_stat(mem, &st) != 0 || !(st.valid & ZIP_STAT_SIZE) || zip_source_open(mem) != 0)
+        fail("can't read back a zip made in memory: " + std::string(zip_error_strerror(zip_source_error(mem))));
+    std::string bytes(std::size_t(st.size), '\0');
+    const zip_int64_t n = zip_source_read(mem, bytes.data(), st.size);
+    zip_source_close(mem);
+    if (n < 0 || zip_uint64_t(n) != st.size)
+        fail("can't read back a zip made in memory");
+    return bytes;
 }
 
 void writeDirectory(const Project& project, const fs::path& path) {
