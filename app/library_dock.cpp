@@ -21,6 +21,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QSet>
+#include <QSpinBox>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -485,6 +486,33 @@ StampDialog::StampDialog(const QStringList& categories, QWidget* parent, Purpose
     form->addRow(tr("&Name:"), name_);
     form->addRow(tr("&Category:"), category_);
     form->addRow(tr("&Tags:"), tags_);
+    if (purpose == Purpose::Stamp) {
+        // A frame or band (stamp_slice.h): the insets are the cells kept
+        // whole at each side; what lies between them repeats.
+        resize_ = new QComboBox;
+        resize_->setObjectName(QStringLiteral("stampResize"));
+        resize_->addItems({tr("Fixed size"), tr("Width only (a band)"), tr("Width and height (a frame)")});
+        form->addRow(tr("&Resize:"), resize_);
+        auto* row = new QHBoxLayout;
+        const QString names[4] = {tr("Left"), tr("Right"), tr("Top"), tr("Bottom")};
+        for (int i = 0; i < 4; ++i) {
+            auto* box = new QSpinBox;
+            box->setObjectName(QStringLiteral("stampInset%1").arg(i));
+            box->setRange(0, i < 2 ? kMaxColumns : kMaxRows);  // a column or a row count
+            box->setValue(1);
+            box->setPrefix(names[i] + QStringLiteral(" "));
+            insets_[std::size_t(i)] = box;
+            row->addWidget(box);
+        }
+        form->addRow(tr("Insets:"), row);
+        const auto enable = [this] {
+            const int k = resize_->currentIndex();
+            for (int i = 0; i < 4; ++i)
+                insets_[std::size_t(i)]->setEnabled(i < 2 ? k > 0 : k == 2);
+        };
+        connect(resize_, &QComboBox::currentIndexChanged, this, enable);
+        enable();
+    }
     auto* layout = new QVBoxLayout(this);
     layout->addLayout(form);
     layout->addWidget(problem_);
@@ -507,6 +535,27 @@ QStringList StampDialog::tags() const {
             out << s;
     }
     return out;
+}
+
+std::optional<StampSlice> StampDialog::slice() const {
+    if (!resize_ || resize_->currentIndex() == 0)
+        return std::nullopt;
+    const bool frame = resize_->currentIndex() == 2;
+    return StampSlice{insets_[0]->value(), insets_[1]->value(), frame ? insets_[2]->value() : 0,
+                      frame ? insets_[3]->value() : 0, true, frame};
+}
+
+void StampDialog::setSlice(const std::optional<StampSlice>& s) {
+    if (!resize_)
+        return;
+    if (!s || !s->width) {
+        resize_->setCurrentIndex(0);
+        return;
+    }
+    resize_->setCurrentIndex(s->height ? 2 : 1);
+    const int v[4] = {s->left, s->right, s->top, s->bottom};
+    for (int i = 0; i < 4; ++i)
+        insets_[std::size_t(i)]->setValue(v[i]);
 }
 
 QString StampDialog::problem() const {

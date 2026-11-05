@@ -6,6 +6,7 @@
 #include "blockwright/irc.h"
 #include "blockwright/library.h"
 #include "blockwright/selection.h"
+#include "blockwright/stamp_slice.h"
 
 #include "../cli/lint.h"
 
@@ -245,7 +246,7 @@ TEST_CASE("every bundled stamp is CP437: no byte order mark, no encoding key, an
         CHECK(json.find("\"encoding\"") == std::string::npos);
         CHECK(s.meta.encoding == TextEncoding::Cp437);
         CHECK(s.art.encoding == TextEncoding::Cp437);
-        StampFiles again = encodeStamp(s.name, s.meta.category, s.meta.tags, s.block(), s.art.ice);
+        StampFiles again = encodeStamp(s.name, s.meta.category, s.meta.tags, s.block(), s.art.ice, s.meta.slice);
         REQUIRE(again.ans.size() == ans.size());
         const size_t sauce = ans.size() - 128;
         again.ans.replace(sauce + 42, 20, ans, sauce + 42, 20);  // the author
@@ -253,4 +254,49 @@ TEST_CASE("every bundled stamp is CP437: no byte order mark, no encoding key, an
         CHECK(again.ans == ans);
         CHECK(again.json == json);
     }
+}
+
+// The bundled frames (PLAN §12, #345 slice 2) are resizable: each re-cuts to
+// its minimum, to odd sizes and to a full screen, and every size lints as
+// clean as the stamp itself and fits one IRC line per row.
+TEST_CASE("every bundled frame is resizable and re-cuts clean at its minimum, odd sizes and a full screen") {
+    std::set<std::string> frames;
+    for (const Stamp& s : scan(kBundled).stamps) {
+        if (s.meta.category != "frames")
+            continue;
+        const std::string rel = s.path.stem().string();
+        INFO(rel);
+        REQUIRE(s.meta.slice);
+        const StampSlice& sl = *s.meta.slice;
+        CHECK(sl.width);
+        CHECK(sl.height);
+        CHECK(sliceProblem(s.block(), sl).empty());
+        frames.insert(rel);
+        const int minW = sliceMinimumWidth(s.block(), sl), minH = sliceMinimumHeight(s.block(), sl);
+        for (const auto& [w, h] : std::vector<std::pair<int, int>>{
+                 {minW, minH}, {minW + 1, minH + 1}, {minW + 7, minH + 4}, {s.art.canvas.width() + 3, s.art.canvas.height() + 1},
+                 {s.art.canvas.width() - 1, s.art.canvas.height() - 1}, {80, 24}}) {
+            INFO(w << "x" << h);
+            const std::optional<CellBlock> b = resizeStamp(s.block(), sl, w, h);
+            REQUIRE(b);
+            AnsiDocument art = s.art;
+            art.canvas = Canvas(w, h);
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x)
+                    art.canvas.at(x, y) = b->at(x, y);
+            // the corners stay whole
+            CHECK(b->at(0, 0) == s.block().at(0, 0));
+            CHECK(b->at(w - 1, h - 1) == s.block().at(s.art.canvas.width() - 1, s.art.canvas.height() - 1));
+            lint::LintReport r = bwcli::lintDocument(art, {});
+            std::erase_if(r.findings, [](const lint::Finding& f) { return f.kind == lint::Finding::Kind::TrailingBlack; });
+            INFO(bwcli::lintText(r));
+            CHECK(r.findings.empty());
+            CHECK(widestRowBytes(art.canvas) < irc::kEfnetWeechatBudget);
+            // what repeats in the middle is the opening, blank at any size
+            for (int y = sl.top; y < h - sl.bottom; ++y)
+                for (int x = sl.left; x < w - sl.right; ++x)
+                    CHECK(blankAt(art.canvas, x, y));
+        }
+    }
+    CHECK(frames == std::set<std::string>{"bevel-frame", "double-line-frame", "hazard-frame", "line-frame"});
 }

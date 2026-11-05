@@ -11,6 +11,8 @@
 #include <QPainter>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <exception>
 #include <utility>
 
@@ -94,6 +96,7 @@ void SelectTool::lift() {
     float_ = copied(liftedFrom_);
     floatPos_ = {liftedFrom_.bounds().x, liftedFrom_.bounds().y};
     floating_ = lifted_ = true;
+    resizable_.reset();
     previewStale_ = true;
     emit changed();
 }
@@ -126,7 +129,9 @@ void SelectTool::stamp() {
     const bool lifted = lifted_;
     floating_ = lifted_ = false;
     floatMode_.reset();
+    resizable_.reset();
     drag_ = Drag::None;
+    dropResizeRollback();
     previewStale_ = true;
     // a refused move (the alpha lock) leaves the selection on the cells
     // that stayed
@@ -140,6 +145,8 @@ void SelectTool::cancel() {
     if (floating_) {
         floating_ = false;
         floatMode_.reset();
+        resizable_.reset();
+        dropResizeRollback();
         setSelection(std::exchange(lifted_, false) ? liftedFrom_ : Selection());
         previewStale_ = true;
     } else if (!dragging) {
@@ -150,10 +157,21 @@ void SelectTool::cancel() {
 
 void SelectTool::cancelDrag() {
     const Drag d = std::exchange(drag_, Drag::None);
-    if (d == Drag::Float && floating_)
+    if (d == Drag::Resize && floating_) {
+        float_ = std::move(resizeOld_);
+        resizable_ = std::move(resizeOldSlice_);
+        dropResizeRollback();
+        setFloatPos(resizeOldPos_);
+    } else if (d == Drag::Float && floating_)
         setFloatPos(dragFrom_);
     else if (d != Drag::None)
         emit changed();
+}
+
+void SelectTool::dropResizeRollback() {
+    // assigned, not cleared, so the cells' memory goes with them
+    resizeOld_ = CellBlock();
+    resizeOldSlice_.reset();
 }
 
 void SelectTool::copy() {
@@ -180,7 +198,9 @@ void SelectTool::clear() {
         const CellEdit edit = lifted_ ? clearSelection(canvas(), liftedFrom_, view()->document()->blankCell()) : CellEdit{};
         floating_ = lifted_ = false;
         floatMode_.reset();
+        resizable_.reset();
         drag_ = Drag::None;
+        dropResizeRollback();
         setSelection({});
         previewStale_ = true;
         view()->applyEdit(edit);
@@ -197,11 +217,15 @@ void SelectTool::paste() {
     floatBlock(clipboard_, {c.x, c.y});
 }
 
-void SelectTool::floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode) {
+void SelectTool::floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode,
+                            const std::optional<StampSlice>& slice) {
     if (!view() || block.empty())
         return;
     stamp();
     floatMode_ = mode;
+    resizable_.reset();
+    if (slice && sliceProblem(block, *slice).empty())
+        resizable_ = Resizable{block, *slice, {}, block, *slice};
     float_ = block;
     floating_ = true;
     lifted_ = false;
@@ -220,7 +244,15 @@ void SelectTool::transform(Transform t) {
         return;
     }
     if (floating_) {
+        // The cells turn as they are. A later re-cut cuts the stamp as saved
+        // and turns it the same way (resizeFloat): turning first would
+        // anchor a repeat of several cells at the other end.
         float_ = transformed(float_, t);
+        if (resizable_) {
+            addTurn(resizable_->turns, t);
+            resizable_->source = transformed(resizable_->source, t);
+            resizable_->slice = transformedSlice(resizable_->slice, t);
+        }
         setFloatPos(floatPos_);
     } else if (!selection().empty()) {
         const SelectionEdit r = transformSelection(canvas(), selection(), t, view()->document()->blankCell());
@@ -235,6 +267,14 @@ bool SelectTool::mousePress(const ToolEvent& e) {
     const QPoint c = e.cell;
     dragStart_ = c;
     dragMoved_ = false;
+    if (const int h = handleAt(e.pos); h >= 0) {
+        drag_ = Drag::Resize;
+        handle_ = h;
+        resizeOld_ = float_;
+        resizeOldPos_ = floatPos_;
+        resizeOldSlice_ = resizable_;
+        return true;
+    }
     if (floating_ && QRect(floatPos_, QSize(float_.width, float_.height)).contains(c)) {
         drag_ = Drag::Float;
         dragOffset_ = c - floatPos_;
@@ -277,15 +317,57 @@ bool SelectTool::mouseMove(const ToolEvent& e) {
         if (dragMoved_)
             setFloatPos(c - dragOffset_);
         break;
+    case Drag::Resize: resizeToward(e.pos); break;
     case Drag::None: break;
     }
     return true;
 }
 
+void SelectTool::resizeToward(QPoint px) {
+    // The dragged side goes to the cell edge nearest the pointer; the
+    // opposite side stays, and the size keeps within the slice's bounds.
+    if (!resizable())
+        return;
+    const QSize cs = view()->cellRect(QPoint(0, 0)).size();
+    const auto edge = [](int p, int cell) { return int(std::floor((p + cell / 2.0) / cell)); };
+    // the float as it stands, so a nudge or turn made during the drag
+    // moves the side that stays with it
+    const QRect f(floatPos_, QSize(float_.width, float_.height));
+    const CellBlock& src = resizable_->source;
+    const StampSlice& sl = resizable_->slice;
+    const bool left = handle_ == 0 || handle_ == 6 || handle_ == 7;
+    const bool right = handle_ >= 2 && handle_ <= 4;
+    const bool top = handle_ <= 2;
+    const bool bottom = handle_ >= 4 && handle_ <= 6;
+    QRect r = f;
+    const int wMin = sliceMinimumWidth(src, sl), wMax = sliceMaximumWidth(src, sl);
+    const int hMin = sliceMinimumHeight(src, sl), hMax = sliceMaximumHeight(src, sl);
+    // an axis whose corners alone are past a canvas's limit (a frame turned
+    // on its side) can't resize, and std::clamp needs its bounds in order
+    const bool wFits = wMin <= wMax, hFits = hMin <= hMax;
+    if (left && wFits) {
+        const int w = std::clamp(f.x() + f.width() - edge(px.x(), cs.width()), wMin, wMax);
+        r.setLeft(f.x() + f.width() - w);
+    } else if (right && wFits) {
+        r.setWidth(std::clamp(edge(px.x(), cs.width()) - f.x(), wMin, wMax));
+    }
+    if (top && hFits) {
+        const int h = std::clamp(f.y() + f.height() - edge(px.y(), cs.height()), hMin, hMax);
+        r.setTop(f.y() + f.height() - h);
+    } else if (bottom && hFits) {
+        r.setHeight(std::clamp(edge(px.y(), cs.height()) - f.y(), hMin, hMax));
+    }
+    if (r != QRect(floatPos_, QSize(float_.width, float_.height)))
+        resizeFloat(r);
+}
+
 bool SelectTool::mouseRelease(const ToolEvent& e) {
     if (e.button != Qt::LeftButton || drag_ == Drag::None || !view())
         return false;
+    if (drag_ == Drag::Resize)
+        resizeToward(e.pos);  // the release may be past the last move
     const Drag d = std::exchange(drag_, Drag::None);
+    dropResizeRollback();
     if (d == Drag::Float && !dragMoved_)
         stamp();  // a click on a floating selection
     else if (d == Drag::Pending)
@@ -360,6 +442,55 @@ const CellEdit& SelectTool::layerCells() const {
 void SelectTool::paint(QPainter& p) const {
     if (view() && floating_)
         view()->paintOutline(p, {floatPos_.x(), floatPos_.y(), float_.width, float_.height}, true);
+    p.save();
+    p.setPen(QPen(Qt::black, 1));
+    p.setBrush(Qt::white);
+    for (const auto& h : handles())
+        if (h)
+            p.drawRect(h->x() - kHandle / 2, h->y() - kHandle / 2, kHandle - 1, kHandle - 1);
+    p.restore();
+}
+
+bool SelectTool::resizeFloat(const QRect& rect) {
+    if (!resizable())
+        return false;
+    // Cut the stamp as saved at the size it has before its turns, then turn
+    // it as the float was turned; the limits are on the size as it shows.
+    std::optional<CellBlock> b =
+        resizeTurnedStamp(resizable_->saved, resizable_->savedSlice, resizable_->turns, rect.width(), rect.height());
+    if (!b)
+        return false;
+    float_ = std::move(*b);
+    setFloatPos(rect.topLeft());
+    return true;
+}
+
+std::array<std::optional<QPoint>, 8> SelectTool::handles() const {
+    std::array<std::optional<QPoint>, 8> out;
+    if (!view() || !resizable())
+        return out;
+    const QRect px(view()->cellRect(floatPos_).topLeft(),
+                   view()->cellRect(floatPos_ + QPoint(float_.width - 1, float_.height - 1)).bottomRight());
+    const int l = px.left(), r = px.right() + 1, t = px.top(), b = px.bottom() + 1;
+    const int mx = l + (r - l) / 2, my = t + (b - t) / 2;
+    const StampSlice& s = resizable_->slice;
+    const QPoint at[8] = {{l, t}, {mx, t}, {r, t}, {r, my}, {r, b}, {mx, b}, {l, b}, {l, my}};
+    for (int i = 0; i < 8; ++i) {
+        const bool corner = i % 2 == 0;
+        const bool horizontal = i == 3 || i == 7;  // the left and right edges
+        if (corner ? s.width && s.height : horizontal ? s.width : s.height)
+            out[std::size_t(i)] = at[i];
+    }
+    return out;
+}
+
+int SelectTool::handleAt(QPoint pos) const {
+    const auto hs = handles();
+    for (int i = 0; i < 8; ++i)
+        if (const auto& h = hs[std::size_t(i)];
+            h && std::abs(pos.x() - h->x()) <= kHandle / 2 && std::abs(pos.y() - h->y()) <= kHandle / 2)
+            return i;
+    return -1;
 }
 
 } // namespace bw

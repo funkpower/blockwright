@@ -411,6 +411,7 @@ private:
     bool stylusGrab_ = false;
     QPoint stylusCell_;
     int stylusHalfRow_ = 0;
+    QPoint stylusPos_;  // in view pixels, for a release the view missed
     Selection selection_;
     bool mirror_ = false;
     Symmetry symmetry_{SymmetryMode::MirrorX, 4, std::nullopt};

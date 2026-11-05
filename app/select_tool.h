@@ -6,6 +6,12 @@
 // Esc puts it back. Delete clears the selection. Flips and rotations work on
 // the floating cells, or on the selection in place as one edit.
 //
+// A float with slice insets (a resizable Library stamp, stamp_slice.h) shows
+// handles on its outline: dragging one re-cuts the stamp to the new size,
+// the opposite side staying put. A frame has eight, a band the two on its
+// ends. Each re-cut starts from the stamp as saved, so shrinking and growing
+// back loses nothing; only the stamp at the end is an edit.
+//
 // The selection itself is the view's (CanvasView::selection), so it outlives
 // the tool. A floating selection doesn't: switching tools, typing or saving
 // stamps it, and undo, redo or a new canvas drops it (cancel).
@@ -16,10 +22,13 @@
 #include "tool.h"
 
 #include "blockwright/selection.h"
+#include "blockwright/stamp_slice.h"
 
 #include <QMetaObject>
 
+#include <array>
 #include <optional>
+#include <vector>
 
 namespace bw {
 
@@ -60,7 +69,33 @@ public:
     // clipboard (a Library stamp). Stamps a floating selection first. With
     // `mode`, this float stamps in that mode instead of the setting, which
     // stays as it was; the mode ends when the float lands or is dropped.
-    void floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode = std::nullopt);
+    // With `slice` (one sliceProblem passes), the float is resizable.
+    void floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode = std::nullopt,
+                    const std::optional<StampSlice>& slice = std::nullopt);
+    // Whether the floating selection is resizable, and its slice as it
+    // stands (flips and rotations turn it with the cells).
+    bool resizable() const { return floating_ && resizable_.has_value(); }
+    std::optional<StampSlice> floatingSlice() const {
+        return resizable() ? std::optional<StampSlice>(resizable_->slice) : std::nullopt;
+    }
+    // The flips and rotations a re-cut of the float replays, and the bytes
+    // held to put a Resize drag back (the float as the drag took it), for
+    // the tests: none once the drag ends.
+    std::size_t floatTurns() const { return resizable() ? resizable_->turns.size() : 0; }
+    std::size_t resizeRollbackBytes() const {
+        std::size_t n = resizeOld_.cells.capacity() * sizeof(Cell);
+        if (resizeOldSlice_)
+            n += (resizeOldSlice_->saved.cells.capacity() + resizeOldSlice_->source.cells.capacity()) * sizeof(Cell) +
+                 resizeOldSlice_->turns.capacity() * sizeof(Transform);
+        return n;
+    }
+    // Re-cuts a resizable float to `rect`, in canvas cells; whether it could
+    // (a size under the minimum or over the maximum can't).
+    bool resizeFloat(const QRect& rect);
+    // The handle under `pos`, in view pixels, or -1: 0 is the top-left
+    // corner, then clockwise to 7, the left edge's middle.
+    int handleAt(QPoint pos) const;
+    static constexpr int kHandle = 8;
     // Delete: clears the selected cells, or drops a floating selection
     // (clearing the cells it was lifted from).
     void clear();
@@ -92,7 +127,17 @@ public:
     const CellEdit& pending() const override;
 
 private:
-    enum class Drag { None, Select, Pending, Float };
+    enum class Drag { None, Select, Pending, Float, Resize };
+    struct Resizable {
+        CellBlock saved;  // the stamp as saved
+        StampSlice savedSlice;
+        std::vector<Transform> turns;  // the float's flips and rotations, in order
+        CellBlock source;  // `saved` with `turns` applied, and its slice
+        StampSlice slice;
+    };
+    // The handles' centres, in view pixels, in handleAt's order; a handle
+    // the slice has no use for is unset.
+    std::array<std::optional<QPoint>, 8> handles() const;
 
     const Canvas& canvas() const;
     // The cells of `sel` on the active layer, marked as a pixel layer's
@@ -102,6 +147,11 @@ private:
     void lift();
     void setFloatPos(QPoint pos);
     void setSelection(const Selection& s);
+    // Lets go of what a Resize drag holds to put the float back, once the
+    // drag has ended.
+    void dropResizeRollback();
+    // A Resize drag's dragged side to the cell edge nearest `px`.
+    void resizeToward(QPoint px);
     // What stamping would write, as a 1x picture of the cells it changes.
     void updatePreview() const;
 
@@ -114,11 +164,18 @@ private:
     CellBlock clipboard_;
     PasteMode mode_ = PasteMode::Normal;
     std::optional<PasteMode> floatMode_;  // this float's own mode
+    std::optional<Resizable> resizable_;  // this float's own slice
 
     Drag drag_ = Drag::None;
     QPoint dragStart_, dragOffset_;
     QPoint dragFrom_;  // where the floating selection was when the drag took it
     bool dragMoved_ = false;
+    int handle_ = -1;  // the handle a Resize drag holds
+    // The float when a Resize drag took it, for cancelDrag: its cells, place
+    // and slice, so a turn or nudge made during the drag goes back too.
+    CellBlock resizeOld_;
+    QPoint resizeOldPos_;
+    std::optional<Resizable> resizeOldSlice_;
 
     mutable bool previewStale_ = true;
     mutable CellEdit pending_;

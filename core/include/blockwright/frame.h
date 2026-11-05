@@ -74,6 +74,13 @@ struct FrameStyle {
 std::optional<Canvas> drawFrame(const FrameStyle& style, int width, int height,
                                 std::vector<bool>* keepBg = nullptr);
 
+// The source column (or row) cell `i` of a strip `length` cells long takes
+// when the source is cut by `lead` and `trail` round a middle `middle` cells
+// long (at least 1): the lead corner as it is, the middle over and over from
+// it, then the trail corner. drawFrame's cut, for one that cuts a source past
+// a frame style's limit (a resizable stamp, stamp_slice.h).
+int frameSourceIndex(int i, int length, int lead, int middle, int trail);
+
 // `frame` with every cell that isn't transparent in `fg` on `bg`, for the
 // Frame tool's "Pen colours". A style's own shading (a bevel's light and dark
 // sides) goes flat.

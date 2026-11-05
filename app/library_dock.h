@@ -35,15 +35,18 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <vector>
 
 class QComboBox;
 class QDialogButtonBox;
 class QLabel;
 class QLineEdit;
+class QSpinBox;
 
 namespace bw {
 
@@ -218,6 +221,11 @@ public:
     QString name() const;
     QString category() const;
     QStringList tags() const;
+    // A stamp's slice insets (Resize: Width only is a band, Width and
+    // height a frame), or unset for a stamp of a fixed size. Whether they
+    // fit the cells is encodeStamp's to say.
+    std::optional<StampSlice> slice() const;
+    void setSlice(const std::optional<StampSlice>& slice);
     // Why the fields can't be saved, or empty.
     QString problem() const;
 
@@ -225,6 +233,9 @@ public:
     QComboBox* categoryBox() const { return category_; }
     QLineEdit* tagsEdit() const { return tags_; }
     QDialogButtonBox* buttons() const { return buttons_; }
+    QComboBox* resizeBox() const { return resize_; }
+    // left, right, top, bottom
+    QSpinBox* insetBox(int i) const { return insets_[std::size_t(i)]; }
 
 private:
     void check();
@@ -234,6 +245,8 @@ private:
     QLineEdit* tags_;
     QLabel* problem_;
     QDialogButtonBox* buttons_;
+    QComboBox* resize_ = nullptr;
+    std::array<QSpinBox*, 4> insets_{};
     Purpose purpose_;
 };
 

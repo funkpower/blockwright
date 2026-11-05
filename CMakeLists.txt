@@ -12,6 +12,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
+# libstdc++'s cheap precondition checks (std::clamp's bounds, an index past
+# a vector or string) in the builds the tests run in, as most distributions
+# build with; a Release build is left as it is. libc++ ignores the macro.
+add_compile_definitions($<$<CONFIG:Debug,RelWithDebInfo>:_GLIBCXX_ASSERTIONS>)
 
 # macOS: with BLOCKWRIGHT_MACOS_BUNDLE the GUI is an app bundle and everything
 # installs inside it: the CLI beside the GUI in Contents/MacOS, the Library and

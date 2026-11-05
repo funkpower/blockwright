@@ -16,6 +16,7 @@
 #include "document.h"
 
 #include "blockwright/samples.h"
+#include "blockwright/stamp_slice.h"
 
 #include <QHash>
 #include <QSet>
@@ -23,6 +24,7 @@
 
 #include <array>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -200,8 +202,10 @@ public:
     // user library and rescans the dock, at libraryPathFor(name). Refuses
     // to replace the stamp of that name already there unless `replace`. The
     // path written, or empty and `error`.
+    // With `slice`, the stamp is resizable (a frame or band).
     QString saveSelectionToLibrary(const QString& name, const QString& category, const QStringList& tags,
-                                   QString* error, bool replace = false);
+                                   QString* error, bool replace = false,
+                                   const std::optional<StampSlice>& slice = std::nullopt);
     // Saves the selection (or the floating selection) as a frame style in
     // the user library (#345 slice 3, library::writeFrameStyle, never over
     // another file), cut by the insets as frameStyleFromCells cuts it,

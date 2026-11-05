@@ -29,6 +29,15 @@
 // placing it misread. The bundled library is CP437 only
 // (test_library_bundled).
 //
+// A resizable stamp (#345 slice 2, stamp_slice.h) has a fifth key,
+// "insets": [left, right, top, bottom] for one that resizes both ways (a
+// frame) or [left, right] for one that resizes in width only (a band),
+// whole numbers of cells that leave at least a column (and a row) between
+// them to repeat; a stamp holding a wide character can't have them. A
+// build from before it refuses the key, so it lists such a stamp as a
+// problem. A sidecar is at most kMaxSidecarBytes, refused from its size
+// before it is read.
+//
 // A text style (PLAN §15) is one file, <slug>.style.json:
 //   {"kind": "text-style", "name": "...", "category": "...",
 //    "tags": ["...", ...], "ice": "required", "effects": [...]}
@@ -56,12 +65,14 @@
 #include "blockwright/ansi.h"
 #include "blockwright/frame.h"
 #include "blockwright/selection.h"
+#include "blockwright/stamp_slice.h"
 #include "blockwright/text_style.h"
 
 #include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -81,6 +92,9 @@ struct StampMeta {
     std::size_t ircBytes = 0;       // the widest row's IRC bytes
     // The .ans's text: "encoding": "utf-8" in the sidecar, nothing for CP437.
     TextEncoding encoding = TextEncoding::Cp437;
+    // "insets": how the stamp resizes (stamp_slice.h); none for a stamp of
+    // a fixed size.
+    std::optional<StampSlice> slice;
 
     bool operator==(const StampMeta&) const = default;
 };
@@ -97,6 +111,10 @@ struct Stamp {
     CellBlock block() const;
 };
 
+// The largest sidecar read: a sidecar is a few lines, and one this large is
+// not one.
+inline constexpr std::size_t kMaxSidecarBytes = std::size_t(1) << 20;
+
 // The IRC bytes the widest row of `canvas` costs, as irc::encodeCanvas
 // encodes the rows (trailing black spaces dropped).
 std::size_t widestRowBytes(const Canvas& canvas);
@@ -104,8 +122,11 @@ std::size_t widestRowBytes(const Canvas& canvas);
 // The sidecar as JSON text (keys in a fixed order, two-space indent, a
 // trailing newline), and back. parseSidecar throws LibraryError for
 // anything but an object with exactly the three keys, of the right types,
-// and "encoding" when it is "utf-8" (written only for a UTF-8 stamp, so a
-// CP437 stamp's sidecar is as it always was).
+// "encoding" when it is "utf-8" (written only for a UTF-8 stamp, so a
+// CP437 stamp's sidecar is as it always was) and "insets" when it is two
+// or four whole numbers from 0 to kMaxRows (written only for a resizable
+// stamp; readStamp checks them against the art). sidecarJson can't write a
+// slice that resizes in height only and throws LibraryError for one.
 std::string sidecarJson(const StampMeta& meta);
 StampMeta parseSidecar(std::string_view json);
 
@@ -132,8 +153,8 @@ std::string readRegularFile(const std::filesystem::path& p,
 
 // Reads and checks the stamp at `ans` and its sidecar. Throws LibraryError
 // saying what is wrong: an unreadable or unparsable file, no SAUCE or an
-// empty title, every cell blank, a bad sidecar, or an ircBytes that
-// disagrees with the art.
+// empty title, every cell blank, a bad sidecar, an ircBytes that
+// disagrees with the art, or insets that can't cut it (sliceProblem).
 Stamp readStamp(const std::filesystem::path& ans);
 
 // The two files of a new stamp.
@@ -154,8 +175,12 @@ struct StampFiles {
 // were. Throws LibraryError for a bad name, category or tag, an empty, too
 // large or all-blank block, cells neither can hold (glyphs written as '?',
 // blink lost), or any failure of the .ans writer, parser or IRC encoder.
+// With `slice` the stamp is resizable and its sidecar carries the insets;
+// a slice that can't cut the cells (sliceProblem), or that resizes in
+// height only, is refused.
 StampFiles encodeStamp(const std::string& name, const std::string& category,
-                       const std::vector<std::string>& tags, const CellBlock& cells, bool ice);
+                       const std::vector<std::string>& tags, const CellBlock& cells, bool ice,
+                       const std::optional<StampSlice>& slice = std::nullopt);
 
 // Why encodeStamp refuses what writeAnsi wrote, in English with each count
 // in the singular or the plural: the cells it lost a glyph of (those with

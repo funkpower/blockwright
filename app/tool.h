@@ -43,6 +43,7 @@ struct ToolEvent {
     Qt::MouseButtons buttons;               // the buttons held
     Qt::KeyboardModifiers modifiers;
     double pressure = 1.0;  // a stylus's pressure, 0-1; a mouse gives 1
+    QPoint pos;             // the pointer, in view pixels (CanvasView::cellRect's)
 };
 
 class Tool : public QObject {

@@ -82,6 +82,7 @@ add_executable(blockwright-tests
   test_layers.cpp
   test_library.cpp
   test_library_bundled.cpp
+  test_stamp_slice.cpp
   test_samples.cpp
   test_lint.cpp
   test_lint_rules.cpp

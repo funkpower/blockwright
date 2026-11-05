@@ -32,20 +32,13 @@ bool FrameStyle::valid() const {
            (keepBg.empty() || keepBg.size() == std::size_t(source.width()) * std::size_t(source.height()));
 }
 
-namespace {
-
-// The source column (or row) cell `i` of a strip `length` long takes: the
-// corner `lead` cells before the repeat as they are, then the middle
-// `middle` cells over and over, then the corner `trail` cells after it.
-int sourceIndex(int i, int length, int lead, int middle, int trail) {
+int frameSourceIndex(int i, int length, int lead, int middle, int trail) {
     if (i < lead)
         return i;
     if (i >= length - trail)
         return lead + middle + (i - (length - trail));
     return lead + (i - lead) % middle;
 }
-
-} // namespace
 
 std::optional<Canvas> drawFrame(const FrameStyle& style, int width, int height, std::vector<bool>* keepBg) {
     if (!style.valid() || width < style.minimumWidth() || height < style.minimumHeight() || width > kMaxColumns ||
@@ -57,7 +50,7 @@ std::optional<Canvas> drawFrame(const FrameStyle& style, int width, int height, 
     if (keepBg)
         keepBg->assign(std::size_t(width) * std::size_t(height), false);
     for (int y = 0; y < height; ++y) {
-        const int sy = sourceIndex(y, height, style.top, midH, style.bottom);
+        const int sy = frameSourceIndex(y, height, style.top, midH, style.bottom);
         const bool midRow = y >= style.top && y < height - style.bottom;
         for (int x = 0; x < width; ++x) {
             const bool midCol = x >= style.left && x < width - style.right;
@@ -67,7 +60,7 @@ std::optional<Canvas> drawFrame(const FrameStyle& style, int width, int height, 
                 c.transparent = true;
                 continue;
             }
-            const int sx = sourceIndex(x, width, style.left, midW, style.right);
+            const int sx = frameSourceIndex(x, width, style.left, midW, style.right);
             c = style.source.at(sx, sy);
             if (keepBg && style.keepsBackground(sx, sy))
                 (*keepBg)[std::size_t(y) * std::size_t(width) + std::size_t(x)] = true;

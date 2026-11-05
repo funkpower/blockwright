@@ -136,6 +136,7 @@ constexpr const char* kTags = "tags";
 constexpr const char* kIrcBytes = "ircBytes";
 constexpr const char* kEncoding = "encoding";
 constexpr const char* kUtf8Name = "utf-8";
+constexpr const char* kInsets = "insets";
 
 std::string readAll(const fs::path& p) { return readRegularFile(p); }
 
@@ -530,15 +531,23 @@ QJsonObject knownObject(std::string_view json, const std::string& what, std::ini
 } // namespace
 
 std::string sidecarJson(const StampMeta& meta) {
+    std::string insets;
+    if (const auto& sl = meta.slice) {
+        if (!sl->width)
+            throw LibraryError("a stamp's sidecar can't hold a slice that resizes in height only");
+        insets = ",\n  \"insets\": [" + std::to_string(sl->left) + ", " + std::to_string(sl->right) +
+                 (sl->height ? ", " + std::to_string(sl->top) + ", " + std::to_string(sl->bottom) : std::string()) +
+                 "]";
+    }
     // Written by hand so the key order is fixed and diffs stay small.
     return "{\n  \"category\": " + quoted(meta.category) + ",\n  \"tags\": " + tagsJson(meta.tags) +
-           ",\n  \"ircBytes\": " + std::to_string(meta.ircBytes) +
+           ",\n  \"ircBytes\": " + std::to_string(meta.ircBytes) + insets +
            (meta.encoding == TextEncoding::Utf8 ? ",\n  \"encoding\": \"" + std::string(kUtf8Name) + "\"" : "") +
            "\n}\n";
 }
 
 StampMeta parseSidecar(std::string_view json) {
-    const QJsonObject o = knownObject(json, "sidecar", {kCategory, kTags, kIrcBytes, kEncoding});
+    const QJsonObject o = knownObject(json, "sidecar", {kCategory, kTags, kIrcBytes, kEncoding, kInsets});
     StampMeta m;
     const QJsonValue cat = o.value(QLatin1String(kCategory));
     if (!cat.isString())
@@ -564,6 +573,23 @@ StampMeta parseSidecar(std::string_view json) {
         if (o.value(QLatin1String(kEncoding)).toString() != QLatin1String(kUtf8Name))
             throw LibraryError("sidecar \"encoding\" is not \"utf-8\" (a CP437 stamp's sidecar has no \"encoding\")");
         m.encoding = TextEncoding::Utf8;
+    }
+    // Absent for a stamp of a fixed size. Each number is bounded before it
+    // is made an int; readStamp checks them against the art.
+    if (o.contains(QLatin1String(kInsets))) {
+        const QJsonValue v = o.value(QLatin1String(kInsets));
+        const QJsonArray a = v.toArray();
+        if (!v.isArray() || (a.size() != 2 && a.size() != 4))
+            throw LibraryError("sidecar \"insets\" is not [left, right] or [left, right, top, bottom]");
+        int n[4] = {0, 0, 0, 0};
+        for (qsizetype i = 0; i < a.size(); ++i) {
+            const double d = a[i].toDouble(-1);
+            if (!a[i].isDouble() || d < 0 || d != std::floor(d) || d > kMaxRows)
+                throw LibraryError("sidecar \"insets\" holds something other than a whole number of cells from 0 to " +
+                                   std::to_string(kMaxRows));
+            n[i] = static_cast<int>(d);
+        }
+        m.slice = StampSlice{n[0], n[1], n[2], n[3], true, a.size() == 4};
     }
     return m;
 }
@@ -866,7 +892,7 @@ Stamp readStamp(const fs::path& ans) {
             throw LibraryError("sidecar " + side.filename().string() + " is not a regular file");
         std::string json;
         try {
-            json = readAll(side);
+            json = readRegularFile(side, kMaxSidecarBytes);
         } catch (const LibraryError& e) {
             throw LibraryError("sidecar " + std::string(e.what()));
         }
@@ -910,16 +936,19 @@ Stamp readStamp(const fs::path& ans) {
     if (actual != s.meta.ircBytes)
         throw LibraryError("sidecar says the widest row is " + std::to_string(s.meta.ircBytes) +
                            " IRC bytes; the art's is " + std::to_string(actual));
+    if (s.meta.slice)
+        if (const std::string why = sliceProblem(s.block(), *s.meta.slice); !why.empty())
+            throw LibraryError("sidecar \"insets\" can't cut the art: " + why);
     return s;
 }
 
 namespace {
 StampFiles encodeChecked(const std::string& name, const std::string& category, const std::vector<std::string>& tags,
-                         const CellBlock& cells, bool ice);
+                         const CellBlock& cells, bool ice, const std::optional<StampSlice>& slice);
 } // namespace
 
 StampFiles encodeStamp(const std::string& name, const std::string& category, const std::vector<std::string>& tags,
-                       const CellBlock& cells, bool ice) {
+                       const CellBlock& cells, bool ice, const std::optional<StampSlice>& slice) {
     checkName(name);
     checkText(category, "the category");
     for (const std::string& t : tags)
@@ -930,8 +959,14 @@ StampFiles encodeStamp(const std::string& name, const std::string& category, con
         throw LibraryError("the stamp is " + std::to_string(cells.width) + " x " + std::to_string(cells.height) +
                            " cells; a stamp is at most " + std::to_string(kMaxColumns) + " x " +
                            std::to_string(kMaxRows));
+    if (slice) {
+        if (const std::string why = sliceProblem(cells, *slice); !why.empty())
+            throw LibraryError("the stamp can't be resizable: " + why);
+        if (!slice->width)
+            throw LibraryError("a stamp resizes in width and height, or in width only");
+    }
     try {
-        return encodeChecked(name, category, tags, cells, ice);
+        return encodeChecked(name, category, tags, cells, ice, slice);
     } catch (const AnsiError& e) {
         throw LibraryError(std::string("the art can't be written as .ans: ") + e.what());
     } catch (const irc::IrcError& e) {
@@ -988,7 +1023,7 @@ std::string stampLossMessage(const AnsiOutput& out) {
 namespace {
 
 StampFiles encodeChecked(const std::string& name, const std::string& category, const std::vector<std::string>& tags,
-                         const CellBlock& cells, bool ice) {
+                         const CellBlock& cells, bool ice, const std::optional<StampSlice>& slice) {
     AnsiDocument doc;
     doc.canvas = Canvas(cells.width, cells.height);
     for (int y = 0; y < cells.height; ++y)
@@ -1017,7 +1052,7 @@ StampFiles encodeChecked(const std::string& name, const std::string& category, c
     const Canvas back = parseAnsi(out.bytes, stampParse(out.encoding)).canvas;
     if (allBlank(back))
         throw LibraryError("every cell is blank, so the stamp would draw nothing");
-    StampMeta meta{category, tags, widestRowBytes(back), out.encoding};
+    StampMeta meta{category, tags, widestRowBytes(back), out.encoding, slice};
     return {out.bytes, sidecarJson(meta)};
 }
 
@@ -1264,6 +1299,8 @@ ScanResult scan(const fs::path& dir) {
             r.stamps.push_back(readStamp(p));
         } catch (const LibraryError& e) {
             r.problems.push_back({p, e.what()});
+        } catch (const std::bad_alloc&) {
+            r.problems.push_back({p, "out of memory reading it"});
         }
     }
     for (const fs::path& j : jsons) {

@@ -1111,7 +1111,7 @@ std::vector<Qt::MouseButton> buttonsIn(Qt::MouseButtons bs) {
 
 ToolEvent toolEvent(const CanvasView& v, const QMouseEvent* e) {
     const QPoint p = v.toView(e->position());
-    return {v.cellAt(p), v.halfRowAt(p), e->button(), e->buttons(), e->modifiers()};
+    return {v.cellAt(p), v.halfRowAt(p), e->button(), e->buttons(), e->modifiers(), 1.0, p};
 }
 
 } // namespace
@@ -1475,7 +1475,7 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
     const Qt::MouseButtons pressed = (now & ~was) | missed;
     const Qt::MouseButtons here = lifted & flipped;
     const QPoint p = toView(e->position());
-    ToolEvent te{cellAt(p), halfRowAt(p), Qt::NoButton, was, e->modifiers(), stylusPressure_};
+    ToolEvent te{cellAt(p), halfRowAt(p), Qt::NoButton, was, e->modifiers(), stylusPressure_, p};
     // What the view makes of the event, if it's one Qt could have said.
     QEvent::Type type = QEvent::TabletMove;
     Qt::MouseButton button = Qt::NoButton;
@@ -1503,7 +1503,8 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
             if (seen)
                 taken = tool_->mouseRelease(te) || taken;
             else
-                tool_->mouseRelease({stylusCell_, stylusHalfRow_, b, te.buttons, e->modifiers(), stylusPressure_});
+                tool_->mouseRelease(
+                    {stylusCell_, stylusHalfRow_, b, te.buttons, e->modifiers(), stylusPressure_, stylusPos_});
         }
     }
     te.buttons = now & ~pressed;
@@ -1541,6 +1542,7 @@ bool CanvasView::stylusEvent(QTabletEvent* e) {
     }
     stylusCell_ = te.cell;
     stylusHalfRow_ = te.halfRow;
+    stylusPos_ = te.pos;
     // Taken, Qt makes no mouse event of it; otherwise the mouse event moves
     // the cell cursor as a click does. The mouse event Qt would make of an
     // event it has the wrong type or button for would be wrong the same way,

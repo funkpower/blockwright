@@ -4,6 +4,7 @@
 // test_app.cpp, which points the libraries at empty scratch directories.
 
 #include "fs_quirks.h"
+#include "system_input.h"
 #include "util.h"
 
 #include "canvas_view.h"
@@ -13,10 +14,12 @@
 #include "select_tool.h"
 #include "tool.h"
 
+#include "blockwright/frame.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
 #include "blockwright/library.h"
 #include "blockwright/render.h"
+#include "blockwright/stamp_slice.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -29,22 +32,30 @@
 #include <QScrollArea>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFocusEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
+#include <QSpinBox>
 #include <QListWidget>
 #include <QMimeData>
+#include <QPointingDevice>
 #include <QPushButton>
 #include <QStatusBar>
+#include <QTabletEvent>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUndoStack>
 
 #include <filesystem>
+#include <cstring>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -859,4 +870,619 @@ TEST_CASE("Save to Library on a float lifted off a pixel layer writes its pixels
     // the half pixel is kept, over black
     INFO("b: ch " << b.ch << " fg " << int(b.fg.paletteIndex()) << " bg " << int(b.bg.paletteIndex()));
     CHECK(halfBlocks(b, false) == HalfPair{Red, Black});
+}
+
+// Resizable stamps (#345 slice 2): a stamp with slice insets floats with
+// handles, and a drag on one re-cuts it to the size it reaches.
+namespace {
+
+Cell ascii(char ch) {
+    Cell c;
+    c.ch = char32_t(ch);
+    c.fg = Color::indexed(Grey);
+    c.bg = Color::indexed(Black);
+    return c;
+}
+
+CellBlock asciiBlock(std::initializer_list<const char*> rows) {
+    const int h = int(rows.size()), w = int(std::strlen(*rows.begin()));
+    CellBlock b(w, h);
+    int y = 0;
+    for (const char* r : rows) {
+        for (int x = 0; x < w; ++x)
+            b.at(x, y) = ascii(r[x]);
+        ++y;
+    }
+    return b;
+}
+
+// Writes `block` to the user library as a stamp with `slice` and places it
+// at `cell`.
+void placeResizable(Fixture& f, const CellBlock& block, const std::optional<StampSlice>& slice, QPoint cell) {
+    const fs::path p = fspath(QDir(f.user.path()).filePath(QStringLiteral("piece.ans")));
+    library::writeStamp(p, library::encodeStamp("Piece", "frames", {}, block, false, slice));
+    f.dock->rescan();
+    QString error;
+    REQUIRE(f.w.placeStamp(p, cell, &error));
+}
+
+// A mouse event at `px`, in view pixels, with the left button.
+void mouseAt(CanvasView* v, QEvent::Type type, QPoint px) {
+    const QPointF at = v->toWidget(QRect(px, QSize(1, 1))).topLeft();
+    const Qt::MouseButtons held = type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton;
+    QMouseEvent e(type, at, v->mapToGlobal(at), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held,
+                  Qt::NoModifier);
+    QApplication::sendEvent(v, &e);
+}
+
+// The view pixel at the top-left corner of `cell`: the edge a handle goes to.
+QPoint edgeOf(CanvasView* v, QPoint cell) { return v->cellRect(cell).topLeft(); }
+
+void dragPx(CanvasView* v, QPoint from, QPoint to) {
+    mouseAt(v, QEvent::MouseButtonPress, from);
+    mouseAt(v, QEvent::MouseMove, to);
+    mouseAt(v, QEvent::MouseButtonRelease, to);
+}
+
+QString canvasRow(MainWindow& w, int x, int y, int n) {
+    QString s;
+    for (int i = 0; i < n; ++i)
+        s += at(w, x + i, y);
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("a resizable stamp floats with handles; a drag re-cuts it and Enter stamps it as one undo step") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    placeResizable(f, asciiBlock({"+-+", "| |", "+-+"}), StampSlice{1, 1, 1, 1, true, true}, {2, 2});
+    REQUIRE(t->resizable());
+    CHECK(t->floatingSlice() == StampSlice{1, 1, 1, 1, true, true});
+    // eight handles: the corners and the edges' middles
+    const QPoint br = edgeOf(v, {5, 5});
+    CHECK(t->handleAt(br) == 4);
+    CHECK(t->handleAt(edgeOf(v, {2, 2})) == 0);
+    CHECK(t->handleAt(br + QPoint(0, -v->cellRect(QPoint(0, 0)).height() * 3 / 2)) == 3);
+    CHECK(t->handleAt(v->cellRect(QPoint(3, 3)).center()) == -1);
+    const int edits = f.w.document()->undoStack()->count();
+
+    dragPx(v, br, edgeOf(v, {9, 7}));
+    CHECK(t->floating());
+    CHECK(t->floatingPos() == QPoint(2, 2));
+    REQUIRE(t->floatingBlock().width == 7);
+    REQUIRE(t->floatingBlock().height == 5);
+    CHECK(f.w.document()->undoStack()->count() == edits);  // nothing landed yet
+    CHECK(at(f.w, 8, 6) == QLatin1Char(' '));
+
+    press(v, Qt::Key_Return);
+    CHECK_FALSE(t->floating());
+    CHECK(f.w.document()->undoStack()->count() == edits + 1);
+    CHECK(canvasRow(f.w, 2, 2, 7) == QStringLiteral("+-----+"));
+    CHECK(canvasRow(f.w, 2, 4, 7) == QStringLiteral("|     |"));
+    CHECK(canvasRow(f.w, 2, 6, 7) == QStringLiteral("+-----+"));
+    CHECK(v->selection().bounds() == CellRect{2, 2, 7, 5});
+
+    f.w.document()->undoStack()->undo();
+    CHECK(canvasRow(f.w, 2, 2, 7) == QStringLiteral("       "));
+    CHECK(canvasRow(f.w, 2, 6, 7) == QStringLiteral("       "));
+}
+
+TEST_CASE("a drag on a resizable stamp's top-left handle keeps its far corner, down to the minimum") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    placeResizable(f, asciiBlock({"+-+", "| |", "+-+"}), StampSlice{1, 1, 1, 1, true, true}, {4, 4});
+    // past the far corner: the minimum, the bottom-right staying put
+    dragPx(v, edgeOf(v, {4, 4}), edgeOf(v, {12, 12}));
+    CHECK(t->floatingBlock().width == 2);
+    CHECK(t->floatingBlock().height == 2);
+    CHECK(t->floatingPos() == QPoint(5, 5));
+    // and out again: growing back loses nothing
+    dragPx(v, edgeOf(v, {5, 5}), edgeOf(v, {1, 2}));
+    CHECK(t->floatingPos() == QPoint(1, 2));
+    CHECK(t->floatingBlock() == *resizeStamp(asciiBlock({"+-+", "| |", "+-+"}), {1, 1, 1, 1, true, true}, 6, 5));
+    // a size past the limit is refused, and the float stays as it was
+    CHECK_FALSE(t->resizeFloat(QRect(0, 0, kMaxColumns + 1, 3)));
+    CHECK(t->floatingBlock().width == 6);
+}
+
+TEST_CASE("a drag on a resizable stamp that loses focus puts the size back") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    placeResizable(f, asciiBlock({"+-+", "| |", "+-+"}), StampSlice{1, 1, 1, 1, true, true}, {2, 2});
+    mouseAt(v, QEvent::MouseButtonPress, edgeOf(v, {5, 5}));
+    mouseAt(v, QEvent::MouseMove, edgeOf(v, {10, 9}));
+    REQUIRE(t->floatingBlock().width == 8);
+    QFocusEvent lost(QEvent::FocusOut, Qt::ActiveWindowFocusReason);
+    QApplication::sendEvent(v, &lost);
+    CHECK_FALSE(t->dragging());
+    CHECK(t->floating());
+    CHECK(t->floatingBlock().width == 3);
+    CHECK(t->floatingBlock().height == 3);
+    CHECK(t->floatingPos() == QPoint(2, 2));
+}
+
+TEST_CASE("a resize takes the size where the button is let go, past the last move") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    placeResizable(f, asciiBlock({"+-+", "| |", "+-+"}), StampSlice{1, 1, 1, 1, true, true}, {2, 2});
+    mouseAt(v, QEvent::MouseButtonPress, edgeOf(v, {5, 5}));
+    mouseAt(v, QEvent::MouseMove, edgeOf(v, {8, 6}));
+    REQUIRE(t->floatingBlock().width == 6);
+    REQUIRE(t->floatingBlock().height == 4);
+    mouseAt(v, QEvent::MouseButtonRelease, edgeOf(v, {9, 7}));
+    CHECK_FALSE(t->dragging());
+    CHECK(t->floatingPos() == QPoint(2, 2));
+    CHECK(t->floatingBlock().width == 7);
+    CHECK(t->floatingBlock().height == 5);
+}
+
+TEST_CASE("a turn during a resize drag, then the undo key, puts the float back whole") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    REQUIRE(bwtest::showExposed(&f.w));
+    v->setFocus();
+    placeResizable(f, asciiBlock({"[ab]"}), StampSlice{1, 1, 0, 0, true, false}, {2, 2});
+    const int edits = f.w.document()->undoStack()->count();
+    const int half = v->cellRect(QPoint(0, 0)).height() / 2;
+    mouseAt(v, QEvent::MouseButtonPress, edgeOf(v, {6, 2}) + QPoint(0, half));
+    mouseAt(v, QEvent::MouseMove, edgeOf(v, {9, 2}) + QPoint(0, half));
+    REQUIRE(t->floatingBlock().width == 7);
+    bwtest::systemKey(v, Qt::Key_R, Qt::ControlModifier);
+    REQUIRE(t->floatingBlock().width == 1);
+    REQUIRE(t->floatingBlock().height == 7);
+    CHECK(t->floatingSlice() == StampSlice{0, 0, 1, 1, false, true});
+    bwtest::systemKey(v, Qt::Key_Z, Qt::ControlModifier);
+    mouseAt(v, QEvent::MouseButtonRelease, edgeOf(v, {9, 2}) + QPoint(0, half));
+    // the size, the place and the slice as the drag found them
+    CHECK_FALSE(t->dragging());
+    REQUIRE(t->floating());
+    CHECK(t->floatingBlock() == asciiBlock({"[ab]"}));
+    CHECK(t->floatingPos() == QPoint(2, 2));
+    REQUIRE(t->floatingSlice());
+    CHECK(*t->floatingSlice() == StampSlice{1, 1, 0, 0, true, false});
+    CHECK(sliceProblem(t->floatingBlock(), *t->floatingSlice()).empty());
+    CHECK(f.w.document()->undoStack()->count() == edits);
+    // and its handles still resize it
+    dragPx(v, edgeOf(v, {6, 2}) + QPoint(0, half), edgeOf(v, {11, 2}) + QPoint(0, half));
+    CHECK(t->floatingBlock().width == 9);
+    CHECK(t->floatingBlock().height == 1);
+}
+
+TEST_CASE("an arrow key during a resize drag moves the side that stays with the float") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    REQUIRE(bwtest::showExposed(&f.w));
+    v->setFocus();
+    placeResizable(f, asciiBlock({"+-+", "| |", "+-+"}), StampSlice{1, 1, 1, 1, true, true}, {2, 2});
+    mouseAt(v, QEvent::MouseButtonPress, edgeOf(v, {5, 5}));
+    mouseAt(v, QEvent::MouseMove, edgeOf(v, {8, 6}));
+    REQUIRE(t->floatingBlock().width == 6);
+    bwtest::systemKey(v, Qt::Key_Right);
+    REQUIRE(t->floatingPos() == QPoint(3, 2));
+    mouseAt(v, QEvent::MouseMove, edgeOf(v, {9, 7}));
+    CHECK(t->floatingPos() == QPoint(3, 2));
+    CHECK(t->floatingBlock().width == 6);
+    CHECK(t->floatingBlock().height == 5);
+    // the undo key puts back the place the drag found it at, and the size
+    bwtest::systemKey(v, Qt::Key_Z, Qt::ControlModifier);
+    mouseAt(v, QEvent::MouseButtonRelease, edgeOf(v, {9, 7}));
+    CHECK(t->floatingPos() == QPoint(2, 2));
+    CHECK(t->floatingBlock() == asciiBlock({"+-+", "| |", "+-+"}));
+}
+
+TEST_CASE("a turned float with repeats of several cells re-cuts as the stamp re-cut, then turned") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    const CellBlock big = asciiBlock({"AB12CD", "EF34GH", "ij56kl", "mn78op", "QR90ST", "UVwxYZ"});
+    const StampSlice cut{2, 1, 1, 2, true, true};
+    const Transform all[] = {Transform::FlipHorizontal, Transform::FlipVertical, Transform::RotateClockwise,
+                             Transform::RotateCounterClockwise};
+    for (const Transform turn : all) {
+        for (const auto& [w, h] : {std::pair{9, 8}, std::pair{10, 13}, std::pair{4, 4}, std::pair{11, 5}}) {
+            INFO(int(turn) << " at " << w << "x" << h);
+            placeResizable(f, big, cut, {2, 2});
+            t->transform(turn);
+            const bool side = turn == Transform::RotateClockwise || turn == Transform::RotateCounterClockwise;
+            REQUIRE(t->resizeFloat(QRect(2, 2, side ? h : w, side ? w : h)));
+            CHECK(t->floatingBlock() == transformed(*resizeStamp(big, cut, w, h), turn));
+            t->cancel();
+        }
+    }
+    // two turns, and a real handle drag after them
+    placeResizable(f, big, cut, {2, 2});
+    t->transform(Transform::RotateClockwise);
+    t->transform(Transform::FlipHorizontal);
+    REQUIRE(t->floatingBlock().width == 6);
+    dragPx(v, edgeOf(v, {8, 8}), edgeOf(v, {15, 11}));
+    REQUIRE(t->floatingBlock().width == 13);
+    REQUIRE(t->floatingBlock().height == 9);
+    CHECK(t->floatingBlock() ==
+          transformed(transformed(*resizeStamp(big, cut, 9, 13), Transform::RotateClockwise), Transform::FlipHorizontal));
+}
+
+TEST_CASE("Save to Library keeps a placed frame's insets past the column limit on the rows") {
+    Fixture f;
+    // a frame 452 rows tall whose top inset is 450 rows
+    std::vector<const char*> rows(452, "|.|");
+    rows.front() = "+-+";
+    rows.back() = "+-+";
+    CellBlock tall(3, 452);
+    for (int y = 0; y < 452; ++y)
+        for (int x = 0; x < 3; ++x)
+            tall.at(x, y) = ascii(rows[std::size_t(y)][x]);
+    const StampSlice deep{1, 1, 450, 1, true, true};
+    REQUIRE(sliceProblem(tall, deep).empty());
+    placeResizable(f, tall, deep, {0, 0});
+    REQUIRE(f.w.selectTool()->floatingSlice() == deep);
+    bool ran = false;
+    QTimer::singleShot(0, &f.w, [&] {
+        auto* d = qobject_cast<StampDialog*>(QApplication::activeModalWidget());
+        REQUIRE(d);
+        ran = true;
+        CHECK(d->insetBox(2)->value() == 450);
+        CHECK(d->insetBox(2)->maximum() == kMaxRows);
+        CHECK(d->insetBox(3)->maximum() == kMaxRows);
+        CHECK(d->insetBox(0)->maximum() == kMaxColumns);
+        CHECK(d->slice() == deep);
+        d->nameEdit()->setText(QStringLiteral("Deep"));
+        d->categoryBox()->setCurrentText(QStringLiteral("frames"));
+        d->buttons()->button(QDialogButtonBox::Ok)->click();
+    });
+    act(f.w, "saveToLibrary")->trigger();
+    REQUIRE(ran);
+    const library::Stamp* s = f.dock->find(fspath(QDir(f.user.path()).filePath(QStringLiteral("deep.ans"))));
+    REQUIRE(s);
+    CHECK(s->meta.slice == deep);
+    // and it resizes, though its source is past a frame style's
+    placeResizable(f, tall, deep, {0, 0});
+    REQUIRE(f.w.selectTool()->resizeFloat(QRect(0, 0, 4, 453)));
+    CHECK(f.w.selectTool()->floatingBlock() == *resizeStamp(tall, deep, 4, 453));
+}
+
+TEST_CASE("a band floats with handles on its ends only and resizes in width") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    placeResizable(f, asciiBlock({"[ab]"}), StampSlice{1, 1, 0, 0, true, false}, {2, 2});
+    REQUIRE(t->resizable());
+    const int half = v->cellRect(QPoint(0, 0)).height() / 2;
+    CHECK(t->handleAt(edgeOf(v, {2, 2})) == -1);  // no corners
+    CHECK(t->handleAt(edgeOf(v, {6, 2}) + QPoint(0, half)) == 3);
+    CHECK(t->handleAt(edgeOf(v, {2, 2}) + QPoint(0, half)) == 7);
+    dragPx(v, edgeOf(v, {6, 2}) + QPoint(0, half), edgeOf(v, {11, 6}));
+    REQUIRE(t->floatingBlock().height == 1);
+    CHECK(t->floatingBlock().width == 9);
+    press(v, Qt::Key_Return);
+    CHECK(canvasRow(f.w, 2, 2, 9) == QStringLiteral("[abababa]"));
+}
+
+TEST_CASE("a resizable float turned on its side resizes along its new length") {
+    Fixture f;
+    SelectTool* t = f.w.selectTool();
+    placeResizable(f, asciiBlock({"[ab]"}), StampSlice{1, 1, 0, 0, true, false}, {2, 2});
+    t->transform(Transform::RotateClockwise);
+    REQUIRE(t->resizable());
+    CHECK(t->floatingSlice() == StampSlice{0, 0, 1, 1, false, true});
+    CHECK_FALSE(t->resizeFloat(QRect(2, 2, 2, 6)));
+    REQUIRE(t->resizeFloat(QRect(2, 2, 1, 6)));
+    CHECK(t->floatingBlock().height == 6);
+    t->transform(Transform::FlipVertical);
+    CHECK(t->floatingSlice() == StampSlice{0, 0, 1, 1, false, true});
+    // a stamp's own float of a fixed size, or the cells lifted off the
+    // canvas, has none
+    t->stamp();
+    CHECK_FALSE(t->resizable());
+    t->select({2, 2, 1, 6});
+    t->moveBy(1, 0);
+    CHECK(t->floating());
+    CHECK_FALSE(t->resizable());
+    CHECK(t->handleAt(QPoint(0, 0)) == -1);
+}
+
+TEST_CASE("a stamp with a source past a frame style's limit still resizes") {
+    // 120 x 3 and 3 x 120: stamps may be, frame style sources may not
+    REQUIRE(120 > kMaxFrameSourceColumns);
+    REQUIRE(120 > kMaxFrameSourceRows);
+    Fixture f;
+    SelectTool* t = f.w.selectTool();
+    std::string top(120, '-'), mid(120, ' ');
+    top.front() = top.back() = '+';
+    mid.front() = mid.back() = '|';
+    const CellBlock wide = asciiBlock({top.c_str(), mid.c_str(), top.c_str()});
+    const StampSlice cut{1, 1, 1, 1, true, true};
+    placeResizable(f, wide, cut, {0, 0});
+    REQUIRE(t->resizable());
+    REQUIRE(t->resizeFloat(QRect(0, 0, 130, 5)));
+    CHECK(t->floatingBlock() == *resizeStamp(wide, cut, 130, 5));
+    REQUIRE(t->resizeFloat(QRect(0, 0, 4, 3)));
+    CHECK(t->floatingBlock() == asciiBlock({"+--+", "|  |", "+--+"}));
+    t->cancel();
+    std::vector<const char*> rows(120, "|.|");
+    rows.front() = rows.back() = "+-+";
+    CellBlock tall(3, 120);
+    for (int y = 0; y < 120; ++y)
+        for (int x = 0; x < 3; ++x)
+            tall.at(x, y) = ascii(rows[std::size_t(y)][x]);
+    placeResizable(f, tall, cut, {0, 0});
+    REQUIRE(t->resizeFloat(QRect(0, 0, 6, 200)));
+    CHECK(t->floatingBlock() == *resizeStamp(tall, cut, 6, 200));
+}
+
+TEST_CASE("a band on its side resizes to the canvas's height and no wider than its width") {
+    Fixture f;
+    SelectTool* t = f.w.selectTool();
+    placeResizable(f, asciiBlock({"[ab]"}), StampSlice{1, 1, 0, 0, true, false}, {2, 2});
+    t->transform(Transform::RotateClockwise);
+    // the displayed height is checked against the rows, not the columns
+    REQUIRE(t->resizeFloat(QRect(2, 2, 1, 401)));
+    CHECK(t->floatingBlock().height == 401);
+    CHECK(t->floatingBlock().width == 1);
+    CHECK(t->floatingBlock().at(0, 0).ch == Glyph(rotateGlyph(U'[', true)));
+    CHECK(t->floatingBlock().at(0, 399).ch == Glyph(U'a'));
+    CHECK(t->floatingBlock().at(0, 400).ch == Glyph(rotateGlyph(U']', true)));
+    REQUIRE(t->resizeFloat(QRect(2, 2, 1, kMaxRows)));
+    CHECK(t->floatingBlock().height == kMaxRows);
+    CHECK_FALSE(t->resizeFloat(QRect(2, 2, 1, kMaxRows + 1)));
+    t->cancel();
+    // a frame turned: 401 across is past the columns however it was cut
+    placeResizable(f, asciiBlock({"+-+", "| |", "+-+"}), StampSlice{1, 1, 1, 1, true, true}, {2, 2});
+    t->transform(Transform::RotateCounterClockwise);
+    CHECK_FALSE(t->resizeFloat(QRect(2, 2, kMaxColumns + 1, 3)));
+    CHECK(t->floatingBlock().width == 3);
+    REQUIRE(t->resizeFloat(QRect(2, 2, kMaxColumns, 401)));
+    CHECK(t->floatingBlock().width == kMaxColumns);
+    CHECK(t->floatingBlock().height == 401);
+}
+
+TEST_CASE("a tall band turned on its side rotates, but a drag can't resize it past the columns") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    // 3 x 401: on its side its fixed width is 401, past kMaxColumns
+    std::vector<const char*> rows(kMaxColumns + 1, "[x]");
+    CellBlock tall(3, kMaxColumns + 1);
+    for (int y = 0; y < tall.height; ++y)
+        for (int x = 0; x < 3; ++x)
+            tall.at(x, y) = ascii(rows[std::size_t(y)][x]);
+    placeResizable(f, tall, StampSlice{1, 1, 0, 0, true, false}, {0, 0});
+    REQUIRE(t->resizable());
+    // the turn itself is allowed, as a plain float's is
+    t->transform(Transform::RotateClockwise);
+    REQUIRE(t->floatingBlock().width == kMaxColumns + 1);
+    REQUIRE(t->floatingBlock().height == 3);
+    CHECK_FALSE(t->resizeFloat(QRect(0, 0, kMaxColumns + 1, 8)));
+    // the bottom handle, dragged down five rows
+    const int mx = (edgeOf(v, {0, 0}).x() + edgeOf(v, {kMaxColumns + 1, 0}).x()) / 2;
+    const QPoint handle(mx, edgeOf(v, {0, 3}).y());
+    REQUIRE(t->handleAt(handle) >= 0);
+    dragPx(v, handle, QPoint(mx, edgeOf(v, {0, 8}).y()));
+    CHECK(t->floatingBlock().width == kMaxColumns + 1);
+    CHECK(t->floatingBlock().height == 3);
+}
+
+TEST_CASE("a turned frame whose minimum is past the columns ignores a drag on its width") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    // 3 x 402 with insets [1, 1, 400, 1]: on its side 402 x 3 with insets
+    // [1, 400, 1, 1], so its least width (401) is past kMaxColumns (400)
+    CellBlock tall(3, kMaxColumns + 2);
+    for (int y = 0; y < tall.height; ++y)
+        for (int x = 0; x < 3; ++x)
+            tall.at(x, y) = ascii(x == 1 ? '.' : '|');
+    placeResizable(f, tall, StampSlice{1, 1, kMaxColumns, 1, true, true}, {0, 0});
+    REQUIRE(t->resizable());
+    t->transform(Transform::RotateClockwise);
+    const CellBlock turned = t->floatingBlock();
+    REQUIRE(turned.width == kMaxColumns + 2);
+    REQUIRE(turned.height == 3);
+    // the left-middle handle, dragged one cell right
+    const int my = (edgeOf(v, {0, 0}).y() + edgeOf(v, {0, 3}).y()) / 2;
+    const QPoint handle(edgeOf(v, {0, 0}).x(), my);
+    REQUIRE(t->handleAt(handle) == 7);
+    dragPx(v, handle, QPoint(edgeOf(v, {1, 0}).x(), my));
+    CHECK(t->floatingBlock() == turned);
+    CHECK(t->floatingPos() == QPoint(0, 0));
+    // and the right-middle handle, dragged one cell left
+    const QPoint right(edgeOf(v, {kMaxColumns + 2, 0}).x(), my);
+    REQUIRE(t->handleAt(right) == 3);
+    dragPx(v, right, QPoint(edgeOf(v, {kMaxColumns + 1, 0}).x(), my));
+    CHECK(t->floatingBlock() == turned);
+    CHECK(t->floatingPos() == QPoint(0, 0));
+}
+
+TEST_CASE("a stylus release the view missed keeps the size the last move showed") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    placeResizable(f, asciiBlock({"+-+", "| |", "+-+"}), StampSlice{1, 1, 1, 1, true, true}, {2, 2});
+    static const QPointingDevice pen(QStringLiteral("test stylus"), 4343, QInputDevice::DeviceType::Stylus,
+                                     QPointingDevice::PointerType::Pen,
+                                     QInputDevice::Capability::Position | QInputDevice::Capability::Pressure, 1, 3);
+    const auto tablet = [&](QEvent::Type type, QPoint px, Qt::MouseButton button, Qt::MouseButtons held) {
+        const QPointF at = v->toWidget(QRect(px, QSize(1, 1))).topLeft();
+        QTabletEvent e(type, &pen, at, v->mapToGlobal(at), held ? 1.0 : 0.0, 0, 0, 0, 0, 0, Qt::NoModifier, button,
+                       held);
+        QApplication::sendEvent(v, &e);
+    };
+    // the review's repro in 8 x 16 cells, (40, 80) to (71, 111), in the
+    // view's own: a pixel short of the edge at (9, 7), which rounds to it,
+    // while the centre of the cell it is in, (8, 6), rounds to that cell
+    tablet(QEvent::TabletPress, edgeOf(v, {5, 5}), Qt::LeftButton, Qt::LeftButton);
+    REQUIRE(t->dragging());
+    tablet(QEvent::TabletMove, edgeOf(v, {9, 7}) - QPoint(1, 1), Qt::NoButton, Qt::LeftButton);
+    REQUIRE(t->floatingBlock().width == 7);
+    REQUIRE(t->floatingBlock().height == 5);
+    // no release; the pen hovers back with no button held
+    tablet(QEvent::TabletMove, edgeOf(v, {20, 15}), Qt::NoButton, Qt::NoButton);
+    CHECK_FALSE(t->dragging());
+    CHECK(t->floatingPos() == QPoint(2, 2));
+    CHECK(t->floatingBlock().width == 7);
+    CHECK(t->floatingBlock().height == 5);
+}
+
+TEST_CASE("a float's flips and turns that undo each other aren't replayed") {
+    Fixture f;
+    SelectTool* t = f.w.selectTool();
+    const CellBlock big = asciiBlock({"AB12CD", "EF34GH", "ij56kl", "mn78op", "QR90ST", "UVwxYZ"});
+    const StampSlice cut{2, 1, 1, 2, true, true};
+    placeResizable(f, big, cut, {2, 2});
+    for (int i = 0; i < 1000; ++i) {
+        t->transform(Transform::FlipHorizontal);
+        t->transform(Transform::FlipHorizontal);
+    }
+    CHECK(t->floatTurns() == 0);
+    for (int i = 0; i < 10; ++i) {
+        t->transform(Transform::RotateClockwise);
+        t->transform(Transform::RotateCounterClockwise);
+        t->transform(Transform::FlipVertical);
+        t->transform(Transform::FlipVertical);
+    }
+    CHECK(t->floatTurns() == 0);
+    for (int i = 0; i < 8; ++i)
+        t->transform(Transform::RotateCounterClockwise);
+    CHECK(t->floatTurns() == 0);
+    t->transform(Transform::RotateClockwise);
+    t->transform(Transform::FlipHorizontal);
+    CHECK(t->floatTurns() == 2);
+    REQUIRE(t->resizeFloat(QRect(2, 2, 13, 9)));
+    CHECK(t->floatingBlock() ==
+          transformed(transformed(*resizeStamp(big, cut, 9, 13), Transform::RotateClockwise), Transform::FlipHorizontal));
+}
+
+TEST_CASE("a resize drag's rollback is let go when the drag ends") {
+    Fixture f;
+    CanvasView* v = f.w.canvasView();
+    SelectTool* t = f.w.selectTool();
+    const CellBlock frame = asciiBlock({"+-+", "| |", "+-+"});
+    const StampSlice cut{1, 1, 1, 1, true, true};
+    const auto drag = [&](QPoint corner) {
+        mouseAt(v, QEvent::MouseButtonPress, edgeOf(v, corner));
+        mouseAt(v, QEvent::MouseMove, edgeOf(v, corner + QPoint(4, 3)));
+        REQUIRE(t->dragging());
+        CHECK(t->resizeRollbackBytes() > 0);
+    };
+    SECTION("released") {
+        placeResizable(f, frame, cut, {2, 2});
+        drag({5, 5});
+        mouseAt(v, QEvent::MouseButtonRelease, edgeOf(v, {9, 8}));
+        CHECK(t->resizeRollbackBytes() == 0);
+        CHECK(t->floatingBlock().width == 7);
+    }
+    SECTION("focus lost") {
+        placeResizable(f, frame, cut, {2, 2});
+        drag({5, 5});
+        QFocusEvent lost(QEvent::FocusOut, Qt::ActiveWindowFocusReason);
+        QApplication::sendEvent(v, &lost);
+        CHECK(t->resizeRollbackBytes() == 0);
+        CHECK(t->floatingBlock().width == 3);
+    }
+    SECTION("committed") {
+        placeResizable(f, frame, cut, {2, 2});
+        drag({5, 5});
+        press(v, Qt::Key_Return);
+        CHECK_FALSE(t->floating());
+        CHECK(t->resizeRollbackBytes() == 0);
+    }
+    SECTION("Escape") {
+        placeResizable(f, frame, cut, {2, 2});
+        drag({5, 5});
+        press(v, Qt::Key_Escape);
+        CHECK_FALSE(t->floating());
+        CHECK(t->resizeRollbackBytes() == 0);
+    }
+    SECTION("Delete") {
+        placeResizable(f, frame, cut, {2, 2});
+        drag({5, 5});
+        press(v, Qt::Key_Delete);
+        CHECK_FALSE(t->floating());
+        CHECK(t->resizeRollbackBytes() == 0);
+    }
+}
+
+TEST_CASE("a stamp of a fixed size floats without handles") {
+    Fixture f;
+    SelectTool* t = f.w.selectTool();
+    placeResizable(f, asciiBlock({"+-+", "| |", "+-+"}), std::nullopt, {2, 2});
+    CHECK(t->floating());
+    CHECK_FALSE(t->resizable());
+    CHECK(t->handleAt(f.w.canvasView()->cellRect(QPoint(5, 5)).topLeft()) == -1);
+    CHECK_FALSE(t->resizeFloat(QRect(2, 2, 5, 5)));
+}
+
+TEST_CASE("Save to Library can mark the selection as a frame or a band") {
+    Fixture f;
+    write(f.w, 0, 0, QStringLiteral("+-+"));
+    write(f.w, 0, 1, QStringLiteral("| |"));
+    write(f.w, 0, 2, QStringLiteral("+-+"));
+    f.w.tools()->setActive(f.w.selectTool());
+    f.w.selectTool()->select({0, 0, 3, 3});
+    const auto save = [&](const QString& name, int resize) {
+        bool ran = false;
+        QTimer::singleShot(0, &f.w, [&] {
+            auto* d = qobject_cast<StampDialog*>(QApplication::activeModalWidget());
+            REQUIRE(d);
+            ran = true;
+            REQUIRE(d->resizeBox());
+            CHECK(d->resizeBox()->currentIndex() == 0);  // a fixed size unless asked
+            CHECK_FALSE(d->insetBox(0)->isEnabled());
+            d->nameEdit()->setText(name);
+            d->categoryBox()->setCurrentText(QStringLiteral("frames"));
+            d->resizeBox()->setCurrentIndex(resize);
+            CHECK(d->insetBox(0)->isEnabled());
+            CHECK(d->insetBox(1)->isEnabled());
+            CHECK(d->insetBox(2)->isEnabled() == (resize == 2));
+            CHECK(d->insetBox(3)->isEnabled() == (resize == 2));
+            d->buttons()->button(QDialogButtonBox::Ok)->click();
+        });
+        act(f.w, "saveToLibrary")->trigger();
+        CHECK(ran);
+    };
+    save(QStringLiteral("Box"), 2);
+    const library::Stamp* box = f.dock->find(fspath(QDir(f.user.path()).filePath(QStringLiteral("box.ans"))));
+    REQUIRE(box);
+    CHECK(box->meta.slice == StampSlice{1, 1, 1, 1, true, true});
+    save(QStringLiteral("Rail"), 1);
+    const library::Stamp* rail = f.dock->find(fspath(QDir(f.user.path()).filePath(QStringLiteral("rail.ans"))));
+    REQUIRE(rail);
+    CHECK(rail->meta.slice == StampSlice{1, 1, 0, 0, true, false});
+
+    // the saved frame places resizable, and saving the placed float offers
+    // its slice again
+    QString error;
+    REQUIRE(f.w.placeStamp(box->path, {5, 5}, &error));
+    REQUIRE(f.w.selectTool()->resizable());
+    REQUIRE(f.w.selectTool()->resizeFloat(QRect(5, 5, 6, 4)));
+    bool ran = false;
+    QTimer::singleShot(0, &f.w, [&] {
+        auto* d = qobject_cast<StampDialog*>(QApplication::activeModalWidget());
+        REQUIRE(d);
+        ran = true;
+        CHECK(d->resizeBox()->currentIndex() == 2);
+        CHECK(d->slice() == StampSlice{1, 1, 1, 1, true, true});
+        d->reject();
+    });
+    act(f.w, "saveToLibrary")->trigger();
+    CHECK(ran);
+}
+
+TEST_CASE("Save to Library refuses insets the selection can't be cut by") {
+    Fixture f;
+    write(f.w, 0, 0, QStringLiteral("ab"));
+    f.w.tools()->setActive(f.w.selectTool());
+    f.w.selectTool()->select({0, 0, 2, 1});
+    QString error;
+    CHECK(f.w.saveSelectionToLibrary(QStringLiteral("Bar"), QStringLiteral("frames"), {}, &error, false,
+                                     StampSlice{1, 1, 0, 0, true, false})
+              .isEmpty());
+    CHECK(error.contains(QStringLiteral("can't be resizable")));
+    CHECK_FALSE(QFileInfo::exists(QDir(f.user.path()).filePath(QStringLiteral("bar.ans"))));
 }

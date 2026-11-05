@@ -1,5 +1,6 @@
 {
   "category": "frames",
   "tags": ["frame", "border", "box", "double"],
-  "ircBytes": 125
+  "ircBytes": 125,
+  "insets": [1, 1, 1, 1]
 }

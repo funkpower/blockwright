@@ -184,7 +184,7 @@ bool MainWindow::placeStamp(const std::filesystem::path& path, QPoint cell, QStr
     view_->setCellCursor({cell.x(), cell.y()});
     // Whatever floats already lands first, in its own mode; the stamp floats
     // in transparent mode without changing the Paste Mode setting.
-    selectTool_->floatBlock(block, cell, PasteMode::Transparent);
+    selectTool_->floatBlock(block, cell, PasteMode::Transparent, stamp->meta.slice);
     view_->setFocus();
     return true;
 }
@@ -217,7 +217,7 @@ CellBlock MainWindow::selectionCells() const {
 }
 
 QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& category, const QStringList& tags,
-                                           QString* error, bool replace) {
+                                           QString* error, bool replace, const std::optional<StampSlice>& slice) {
     const CellBlock cells = selectionCells();
     if (cells.empty()) {
         *error = tr("nothing is selected");
@@ -247,7 +247,7 @@ QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& c
             return {};
         }
         const library::StampFiles files =
-            library::encodeStamp(*title, category.trimmed().toStdString(), tagList, cells, doc_.ansi().ice);
+            library::encodeStamp(*title, category.trimmed().toStdString(), tagList, cells, doc_.ansi().ice, slice);
         library::writeStamp(t.path, files);
     } catch (const std::exception& e) {
         // LibraryError, or anything else encoding or writing threw: never
@@ -263,6 +263,7 @@ void MainWindow::saveToLibrary() {
     if (!selectTool_->floating() && view_->selection().empty())
         return;
     StampDialog dialog(library_->categories(), this);
+    dialog.setSlice(selectTool_->floatingSlice());  // a placed frame, saved again
     if (dialog.exec() != QDialog::Accepted)
         return;
     bool replace = false;
@@ -280,7 +281,7 @@ void MainWindow::saveToLibrary() {
                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
             return;
     }
-    const QString written = saveSelectionToLibrary(dialog.name(), dialog.category(), dialog.tags(), &error, replace);
+    const QString written = saveSelectionToLibrary(dialog.name(), dialog.category(), dialog.tags(), &error, replace, dialog.slice());
     if (written.isEmpty())
         QMessageBox::warning(this, tr("Save to Library"), tr("Could not save the stamp:\n%1").arg(error));
     else
