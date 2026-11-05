@@ -9,6 +9,7 @@
 #include "blockwright/render.h"
 
 #include <QComboBox>
+#include <QFont>
 #include <QFutureWatcher>
 #include <QHeaderView>
 #include <QLabel>
@@ -193,6 +194,14 @@ void LintDock::showReport(lint::LintReport report) {
                                           f.ramp.empty() ? QStringLiteral("-") : QString::fromStdString(f.ramp),
                                           QString::fromStdString(f.message)});
         item->setData(0, Qt::UserRole, QPoint(f.x, f.y));
+        if (lint::noteKind(f.kind)) {
+            // a note, no fault: in italics, the message saying so
+            item->setText(3, tr("note: %1").arg(item->text(3)));
+            QFont italic = item->font(0);
+            italic.setItalic(true);
+            for (int col = 0; col < 4; ++col)
+                item->setFont(col, italic);
+        }
         item->setToolTip(3, item->text(3));
         items.append(item);
     }

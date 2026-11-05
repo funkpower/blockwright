@@ -7,6 +7,7 @@
 #include "blockwright/lint_rules.h"
 #include "blockwright/mirc.h"
 #include "blockwright/palette.h"
+#include "blockwright/ramp.h"
 #include "blockwright/target.h"
 #include "blockwright/xbin.h"
 
@@ -188,6 +189,139 @@ TEST_CASE("under IRC lint reports what an .ans would lose instead of no-cp437", 
     clean.at(0, 0).ch = U'X';
     const auto none = checkRules(clean, irc);
     CHECK(std::none_of(none.begin(), none.end(), [](const Finding& f) { return f.kind == Finding::Kind::AnsLoss; }));
+}
+
+TEST_CASE("ans-loss is a note: reported, but the report is clean", "[target][lint]") {
+    CHECK(noteKind(Finding::Kind::AnsLoss));
+    for (Finding::Kind k : {Finding::Kind::NoCp437, Finding::Kind::Merge, Finding::Kind::RungSkip, Finding::Kind::Noise})
+        CHECK_FALSE(noteKind(k));
+
+    // mIRC 77 only: the note alone
+    Canvas c(2, 1);
+    c.at(0, 0).ch = U'X';
+    c.at(0, 0).fg = swatchColor(77);
+    LintOptions lo;
+    lo.target = Target::Irc;
+    const LintReport r = lintCanvas(c, lo);
+    REQUIRE(r.findings.size() == 1);
+    CHECK(r.findings[0].kind == Finding::Kind::AnsLoss);
+    CHECK(r.clean());
+    CHECK(summary(r) == "clean, 1 note (1 ans-loss), noise 0.0000, iCE on");
+
+    // and beside a merge: one finding, one note
+    c.at(1, 0).ch = U'A';
+    c.at(1, 0).fg = Color::indexed(Blue);
+    c.at(1, 0).bg = Color::indexed(Blue);
+    const LintReport m = lintCanvas(c, lo);
+    CHECK_FALSE(m.clean());
+    CHECK(summary(m) == "1 finding (1 merge), 1 note (1 ans-loss), noise 0.0000, iCE on");
+}
+
+TEST_CASE("under IRC a ladder finding at an RGB cell says it was judged by the nearest of the 16", "[target][lint]") {
+    // test_lint's fallback speck: a field of ░ of grey on dark grey (steel's
+    // rung 5), cut by a yellow shape's edge whose free half is the mIRC
+    // colour read as grey
+    int grey = 16;
+    while (grey < 99 && swatchColor(grey).paletteIndex() != Grey)
+        ++grey;
+    REQUIRE(grey < 99);
+    Canvas c(7, 5);
+    for (int y = 0; y < 5; ++y)
+        for (int x = 0; x < 7; ++x) {
+            c.at(x, y).ch = U'░';
+            c.at(x, y).fg = Color::indexed(Grey);
+            c.at(x, y).bg = Color::indexed(DarkGrey);
+        }
+    c.at(3, 1).ch = U'█';
+    c.at(3, 1).fg = Color::indexed(Yellow);
+    c.at(3, 2).ch = U'▀';
+    c.at(3, 2).fg = Color::indexed(Yellow);
+    c.at(3, 2).bg = swatchColor(grey);
+    LintOptions lo;
+    for (const Ramp& r : namedRamps())
+        if (r.name == "steel")
+            lo.ramps = {r};
+    REQUIRE(lo.ramps.size() == 1);
+    lo.target = Target::Irc;
+    const auto speck = [](const LintReport& r) {
+        return std::find_if(r.findings.begin(), r.findings.end(),
+                            [](const Finding& f) { return f.kind == Finding::Kind::FallbackSpeck; });
+    };
+    const std::string suffix = " (an RGB cell, judged by the nearest of the 16)";
+    const LintReport irc = lintCanvas(c, lo);
+    REQUIRE(speck(irc) != irc.findings.end());
+    CHECK(speck(irc)->x == 3);
+    CHECK(speck(irc)->y == 2);
+    CHECK(speck(irc)->message.starts_with("cell 3,2: a fallback speck"));
+    CHECK(speck(irc)->message.ends_with(suffix));
+
+    // the ANSI target, or an indexed cell, says nothing of it
+    lo.target = Target::Ansi;
+    const LintReport ansi = lintCanvas(c, lo);
+    REQUIRE(speck(ansi) != ansi.findings.end());
+    CHECK_FALSE(speck(ansi)->message.ends_with(suffix));
+    c.at(3, 2).bg = Color::indexed(Grey);
+    lo.target = Target::Irc;
+    const LintReport indexed = lintCanvas(c, lo);
+    REQUIRE(speck(indexed) != indexed.findings.end());
+    CHECK_FALSE(speck(indexed)->message.ends_with(suffix));
+}
+
+TEST_CASE("under IRC the RGB note on a ladder finding counts only a colour the cell shows", "[target][lint]") {
+    // a speck of grey in a field of ░ of grey on dark grey (steel's rung 5),
+    // under a yellow block
+    const auto field = [] {
+        Canvas c(7, 5);
+        for (int y = 0; y < 5; ++y)
+            for (int x = 0; x < 7; ++x) {
+                c.at(x, y).ch = U'░';
+                c.at(x, y).fg = Color::indexed(Grey);
+                c.at(x, y).bg = Color::indexed(DarkGrey);
+            }
+        c.at(3, 1).ch = U'█';
+        c.at(3, 1).fg = Color::indexed(Yellow);
+        return c;
+    };
+    int grey = 16;
+    while (grey < 99 && swatchColor(grey).paletteIndex() != Grey)
+        ++grey;
+    REQUIRE(grey < 99);
+    LintOptions lo;
+    for (const Ramp& r : namedRamps())
+        if (r.name == "steel")
+            lo.ramps = {r};
+    REQUIRE(lo.ramps.size() == 1);
+    lo.target = Target::Irc;
+    const std::string suffix = " (an RGB cell, judged by the nearest of the 16)";
+    const auto speck = [&](const Canvas& c) {
+        const LintReport r = lintCanvas(c, lo);
+        const auto f = std::find_if(r.findings.begin(), r.findings.end(), [](const Finding& f) {
+            return f.kind == Finding::Kind::Speckle || f.kind == Finding::Kind::FallbackSpeck;
+        });
+        REQUIRE(f != r.findings.end());
+        CHECK(f->x == 3);
+        CHECK(f->y == 2);
+        return f->message;
+    };
+    const Color unseen = Color::fromRgb(Rgb{0x12, 0x34, 0x56});
+    // a space shows only its background, a full block only its foreground
+    Canvas space = field();
+    space.at(3, 2).ch = U' ';
+    space.at(3, 2).bg = Color::indexed(Grey);
+    space.at(3, 2).fg = unseen;
+    Canvas block = field();
+    block.at(3, 2).ch = U'█';
+    block.at(3, 2).fg = Color::indexed(Grey);
+    block.at(3, 2).bg = unseen;
+    CHECK_FALSE(speck(space).ends_with(suffix));
+    CHECK_FALSE(speck(block).ends_with(suffix));
+    // a half block shows both: with the mIRC grey below the yellow, the
+    // fallback speck was judged by the nearest of the 16
+    Canvas half = field();
+    half.at(3, 2).ch = U'▀';
+    half.at(3, 2).fg = Color::indexed(Yellow);
+    half.at(3, 2).bg = swatchColor(grey);
+    CHECK(speck(half).ends_with(suffix));
 }
 
 // Every golden piece is indexed only, so it sends the same bytes, and the

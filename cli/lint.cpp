@@ -55,7 +55,7 @@ std::string lintText(const bw::lint::LintReport& r) {
     std::string out;
     for (const bw::lint::Finding& f : r.findings)
         out += std::to_string(f.x) + "," + std::to_string(f.y) + " " + std::string(bw::lint::kindName(f.kind)) + " " +
-               (f.ramp.empty() ? "-" : f.ramp) + " " + f.message + "\n";
+               (f.ramp.empty() ? "-" : f.ramp) + " " + (bw::lint::noteKind(f.kind) ? "note: " : "") + f.message + "\n";
     out += bw::lint::summary(r) + "\n";
     return out;
 }
@@ -65,6 +65,7 @@ std::string lintJson(const bw::lint::LintReport& r) {
     for (std::size_t i = 0; i < r.findings.size(); ++i) {
         const bw::lint::Finding& f = r.findings[i];
         out += std::string(i ? "," : "") + "{\"kind\":" + quoted(std::string(bw::lint::kindName(f.kind))) +
+               ",\"severity\":" + (bw::lint::noteKind(f.kind) ? "\"note\"" : "\"warning\"") +
                ",\"ramp\":" + (f.ramp.empty() ? std::string("null") : quoted(f.ramp)) +
                ",\"x\":" + std::to_string(f.x) + ",\"y\":" + std::to_string(f.y) + ",\"x2\":" + std::to_string(f.x2) +
                ",\"y2\":" + std::to_string(f.y2) + ",\"message\":" + quoted(f.message) + "}";

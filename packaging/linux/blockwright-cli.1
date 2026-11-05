@@ -85,6 +85,11 @@ picks the .ans text encoding.
 .BI lint " in"
 Check the shading ladders, pixel noise and the craft rules; exits 4 when
 there are findings.
+A note (ans\-loss, under
+.BR "\-\-target irc" )
+is printed with
+.B note:
+before its message and doesn't count.
 .TP
 .BI "library list" " \fR[\fPdir\fR]\fP"
 List the stamps and text styles in a library.
@@ -160,6 +165,6 @@ found a line over the byte budget.
 .TP
 .B 4
 .B lint
-found something.
+found something other than a note.
 .SH SEE ALSO
 .BR blockwright (1)

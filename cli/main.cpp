@@ -799,7 +799,7 @@ int render(const std::string& in, const std::string& out, const bw::RenderOption
 
 // The whole lint of the piece (lint_rules.h) with its own iCE colours, for
 // `target`, else a project's own, else ANSI: one line per finding and a
-// summary, or JSON. Findings exit kFindings.
+// summary, or JSON. Findings but notes exit kFindings.
 int lint(const std::string& in, bwcli::LintCliOptions o, std::optional<bw::Target> target) {
     bw::AnsiDocument doc;
     if (bw::project::isProject(in)) {
@@ -812,7 +812,7 @@ int lint(const std::string& in, bwcli::LintCliOptions o, std::optional<bw::Targe
     }
     const bw::lint::LintReport r = bwcli::lintDocument(doc, o);
     std::cout << (o.json ? bwcli::lintJson(r) : bwcli::lintText(r));
-    return r.findings.empty() ? kOk : kFindings;
+    return r.clean() ? kOk : kFindings;
 }
 
 std::string joined(const std::vector<std::string>& v, const char* sep) {
@@ -948,10 +948,11 @@ int main(int argc, char** argv) {
         "                       named ramp and the craft pairs\n"
         "                       between), pixel noise and the craft rules; one\n"
         "                       line per finding (x,y kind ramp message) and a\n"
-        "                       summary, or --json. Exits 4 when there are findings.\n"
-        "                       --target irc (default: a project's own, else\n"
-        "                       ansi) turns no-cp437 off and counts what an .ans\n"
-        "                       save drops instead (ans-loss)\n"
+        "                       summary, or --json. Exits 4 when there are findings\n"
+        "                       other than notes. --target irc (default: a\n"
+        "                       project's own, else ansi) turns no-cp437 off and\n"
+        "                       counts what an .ans save drops instead (ans-loss,\n"
+        "                       a note: printed with \"note:\", it exits 0)\n"
         "  render --irc <in> <out.png>\n"
         "                       draw the IRC view: the mIRC palette, what IRC\n"
         "                       drops, and each line cut at --budget bytes, 1 to\n"

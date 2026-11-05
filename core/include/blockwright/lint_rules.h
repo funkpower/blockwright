@@ -7,6 +7,7 @@
 #include "blockwright/lint.h"
 #include "blockwright/target.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -60,6 +61,9 @@ struct Finding {
 std::string_view kindName(Finding::Kind kind);
 // Whether the kind comes from the ladder check (and so names a ramp).
 bool ladderKind(Finding::Kind kind);
+// Whether the kind is a note: reported, but no fault, so it doesn't make a
+// report unclean or `lint` exit 4. AnsLoss is one: the art is fine for IRC.
+bool noteKind(Finding::Kind kind);
 
 struct RuleOptions {
     bool ice = true;  // read pixels by the colours they show (halfBlocks)
@@ -148,6 +152,10 @@ struct LintReport {
     std::vector<Finding> findings;  // by y, then x, then kind
     double noise = 0.0;             // pixel noise over the whole canvas
     bool ice = true;
+    // No finding but notes (noteKind).
+    bool clean() const {
+        return std::all_of(findings.begin(), findings.end(), [](const Finding& f) { return noteKind(f.kind); });
+    }
 };
 
 // Everything: the ladder check of the whole canvas under each ramp (with
@@ -155,12 +163,15 @@ struct LintReport {
 // same kind at the same cells under two ramps is reported once, under the
 // first. A shade of two colours that one of the ramps has as neighbours is
 // no fault, whichever ramps don't: the lint can't know which ramp the artist
-// shaded on. With craftPairs, neither is a shade of a craftPair. Throws LintError for a bad ramp (rampProblem).
+// shaded on. With craftPairs, neither is a shade of a craftPair. Under the
+// IRC target a ladder finding at an RGB cell says it was judged by the
+// nearest of the 16. Throws LintError for a bad ramp (rampProblem).
 LintReport lintCanvas(const Canvas& canvas, const LintOptions& options = {});
 
 // The report in a line: "clean" or "N findings (n kind, ...)" by kind in the
-// order the kinds are declared, then the noise and whether iCE is on, as
-// "3 findings (1 speckle, 2 gap), noise 0.0071, iCE on".
+// order the kinds are declared, the notes apart as ", N notes (n kind)", then
+// the noise and whether iCE is on, as "3 findings (1 speckle, 2 gap), noise
+// 0.0071, iCE on" or "clean, 1 note (1 ans-loss), noise 0.0000, iCE on".
 std::string summary(const LintReport& report);
 
 } // namespace bw::lint

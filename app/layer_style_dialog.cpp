@@ -579,7 +579,11 @@ void LayerStyleDialog::refresh() {
     confusable_->setVisible(!confusables_.isEmpty());
     QStringList lint{QString::fromStdString(lint::summary(report_))};
     for (const lint::Finding& f : report_.findings)
-        lint << tr("%1,%2  %3").arg(f.x).arg(f.y).arg(QString::fromStdString(f.message));
+        lint << tr("%1,%2  %3%4")
+                    .arg(f.x)
+                    .arg(f.y)
+                    .arg(lint::noteKind(f.kind) ? tr("note: ") : QString())
+                    .arg(QString::fromStdString(f.message));
     lint_->setPlainText(lint.join(QLatin1Char('\n')));
     problem_->setText(problemText_);
     problem_->setVisible(!problemText_.isEmpty());

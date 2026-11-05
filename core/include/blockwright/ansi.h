@@ -334,6 +334,11 @@ int ansControlCount(const std::vector<Unwritable>& cells);
 // A cluster or the continuation is never blank.
 bool blankGlyph(Glyph g);
 
+// Whether `cell` shows a 24-bit colour that isn't exactly one of the 16
+// (kPalette): a foreground on a glyph that draws one (not blankGlyph), a
+// background on a glyph that isn't a full block.
+bool showsQuantisedColour(const Cell& cell);
+
 // How many cells of `canvas` show a 24-bit colour that isn't exactly one of
 // the 16 (kPalette), which .ans, XBIN and BIN write as the nearest: a
 // foreground on a glyph that draws one (not blankGlyph), a background on a

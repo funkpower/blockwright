@@ -560,15 +560,18 @@ bool isWritableGlyph(char32_t ch) {
 
 bool blankGlyph(Glyph g) { return g == U' ' || g == U'\0' || g == U'\u00a0'; }
 
-int quantisedColourCount(const Canvas& canvas) {
+bool showsQuantisedColour(const Cell& cell) {
     const auto off = [](const Color& c) { return !c.isIndexed() && kPalette[nearestPaletteIndex(c.rgb)] != c.rgb; };
+    return (off(cell.fg) && !blankGlyph(cell.ch)) || (off(cell.bg) && cell.ch != Glyph(kFullBlock));
+}
+
+int quantisedColourCount(const Canvas& canvas) {
     int n = 0;
     for (int y = 0; y < canvas.height(); ++y)
         for (int x = 0; x < canvas.width(); ++x) {
             const Cell& c = canvas.at(x, y);
             // a wide pair is counted at its lead
-            if (!c.transparent && !c.ch.isContinuation() &&
-                ((off(c.fg) && !blankGlyph(c.ch)) || (off(c.bg) && c.ch != Glyph(kFullBlock))))
+            if (!c.transparent && !c.ch.isContinuation() && showsQuantisedColour(c))
                 ++n;
         }
     return n;

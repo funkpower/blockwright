@@ -16,6 +16,7 @@
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/render.h"
+#include "blockwright/target.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1025,6 +1026,40 @@ TEST_CASE("a refresh asked for while one runs takes the note down once its resul
     CHECK(rowAt(dock->list(), QStringLiteral("30,20"), QStringLiteral("merge")));
     CHECK_FALSE(dock->stale());
     CHECK(label->isHidden());
+}
+
+TEST_CASE("the Lint dock shows ans-loss as a note, in italics, and the summary clean") {
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    AnsiDocument small;
+    small.canvas = Canvas(4, 1);
+    doc->replace(small, QString());
+    REQUIRE(doc->setTarget(Target::Irc));
+    Cell x;
+    x.ch = U'X';
+    x.fg = swatchColor(77);
+    REQUIRE(doc->edit(CellEdit{{CellChange{0, 0, doc->canvas().at(0, 0), x}}}));
+    LintDock* dock = w.lintWidget();
+    dock->refresh();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    QTreeWidgetItem* note = rowAt(dock->list(), QStringLiteral("0,0"), QStringLiteral("ans-loss"));
+    REQUIRE(note);
+    CHECK(note->text(3).startsWith(QStringLiteral("note: 1 cell is in a colour an .ans can't hold")));
+    CHECK(note->font(1).italic());
+    CHECK(note->font(3).italic());
+    CHECK(dock->summaryLabel()->text().toStdString().starts_with("clean, 1 note (1 ans-loss), noise "));
+
+    // a warning beside it is a finding, in the usual face
+    REQUIRE(doc->edit(merge(*doc, 3, 0)));
+    dock->refresh();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    QTreeWidgetItem* row = rowAt(dock->list(), QStringLiteral("3,0"), QStringLiteral("merge"));
+    REQUIRE(row);
+    CHECK_FALSE(row->text(3).startsWith(QStringLiteral("note: ")));
+    CHECK_FALSE(row->font(3).italic());
+    REQUIRE(rowAt(dock->list(), QStringLiteral("0,0"), QStringLiteral("ans-loss")));
+    CHECK(dock->summaryLabel()->text().toStdString().starts_with("1 finding (1 merge), 1 note (1 ans-loss), noise "));
 }
 
 TEST_CASE("the Lint dock names a control or bidi override from a file by its code point") {

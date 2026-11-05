@@ -628,6 +628,8 @@ bool craftPair(std::uint8_t a, std::uint8_t b) {
 
 bool ladderKind(Finding::Kind kind) { return kind <= Kind::OneGlyph; }
 
+bool noteKind(Finding::Kind kind) { return kind == Kind::AnsLoss; }
+
 std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options) {
     std::vector<Finding> out;
     if (canvas.width() <= 0 || canvas.height() <= 0)
@@ -682,6 +684,11 @@ LintReport lintCanvas(const Canvas& canvas, const LintOptions& options) {
             if (lf.kind == LadderFinding::Kind::OneGlyph)
                 f.x2 = w - 1, f.y2 = h - 1;  // about the whole canvas
             f.message = shade ? shadeMessage(lf.x, lf.y, canvas.at(lf.x, lf.y)) : lf.message;
+            // under IRC an RGB cell is one of mIRC's 99, read as the nearest of
+            // the 16 (#350); only a colour the glyph shows was judged
+            if (options.target == Target::Irc && lf.kind != LadderFinding::Kind::OneGlyph &&
+                (showsQuantisedColour(canvas.at(f.x, f.y)) || showsQuantisedColour(canvas.at(f.x2, f.y2))))
+                f.message += " (an RGB cell, judged by the nearest of the 16)";
             if (places.insert({f.kind, f.x, f.y, f.x2, f.y2}).second)
                 all.push_back(std::move(f));
         }
@@ -720,18 +727,28 @@ LintReport lintCanvas(const Canvas& canvas, const LintOptions& options) {
 }
 
 std::string summary(const LintReport& r) {
-    const std::size_t n = r.findings.size();
-    std::string out = n == 0 ? std::string("clean") : std::to_string(n) + (n == 1 ? " finding" : " findings");
-    std::map<Finding::Kind, int> byKind;
-    for (const Finding& f : r.findings)
-        ++byKind[f.kind];
-    if (!byKind.empty()) {
-        out += " (";
-        for (auto it = byKind.begin(); it != byKind.end(); ++it)
-            out += std::string(it == byKind.begin() ? "" : ", ") + std::to_string(it->second) + " " +
-                   std::string(kindName(it->first));
-        out += ")";
-    }
+    // "N findings (n kind, ...)" of the notes or of the rest
+    const auto count = [&](bool notes, const char* one, const char* many) {
+        std::size_t n = 0;
+        std::map<Finding::Kind, int> byKind;
+        for (const Finding& f : r.findings)
+            if (noteKind(f.kind) == notes)
+                ++n, ++byKind[f.kind];
+        std::string out = std::to_string(n) + (n == 1 ? one : many);
+        if (n) {
+            out += " (";
+            for (auto it = byKind.begin(); it != byKind.end(); ++it)
+                out += std::string(it == byKind.begin() ? "" : ", ") + std::to_string(it->second) + " " +
+                       std::string(kindName(it->first));
+            out += ")";
+        }
+        return std::make_pair(n, out);
+    };
+    const auto [faults, findings] = count(false, " finding", " findings");
+    const auto [notes, noted] = count(true, " note", " notes");
+    std::string out = faults == 0 ? std::string("clean") : findings;
+    if (notes)
+        out += ", " + noted;
     char noise[32];
     std::snprintf(noise, sizeof noise, "%.4f", r.noise);
     return out + ", noise " + noise + ", iCE " + (r.ice ? "on" : "off");

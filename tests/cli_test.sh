@@ -606,11 +606,11 @@ expect "lint: a wide rung" 4 '^2,3 wide-rung steel cell 2,3: a rung 4 cells wide
 expect "lint: a speck" 4 '^2,1 speckle steel cell 2,1: a speck, lighter than every neighbour$' -- "$cli" lint --ramp steel "$tmp/lint-speck.ans"
 expect "lint: a non-neighbour shade" 4 "^1,0 non-neighbour-shade steel cell 1,0: ▒ of 15 on 0, colours no ramp linted has as neighbours$" -- "$cli" lint --ramp steel "$tmp/lint-shade.ans"
 expect "lint: the summary" 4 '^4 findings \(4 wide-rung\), noise 0\.0000, iCE on$' -- "$cli" lint --ramp steel "$tmp/lint-wide.ans"
-expect "lint: a skip as JSON" 4 '^\{"findings":\[\{"kind":"rung-skip","ramp":"steel","x":3,"y":0,"x2":4,"y2":0,"message":"cell 3,0: rung 4 next to rung 8 at cell 4,0 \(more than one rung apart\)"\}\],"noise":0\.0000,"ice":true\}$' -- \
+expect "lint: a skip as JSON" 4 '^\{"findings":\[\{"kind":"rung-skip","severity":"warning","ramp":"steel","x":3,"y":0,"x2":4,"y2":0,"message":"cell 3,0: rung 4 next to rung 8 at cell 4,0 \(more than one rung apart\)"\}\],"noise":0\.0000,"ice":true\}$' -- \
   "$cli" lint --json --ramp steel "$tmp/lint-skip.ans"
-expect "lint: a wide rung as JSON" 4 '"kind":"wide-rung","ramp":"steel","x":2,"y":3,"x2":7,"y2":3,' -- "$cli" lint --json --ramp steel "$tmp/lint-wide.ans"
-expect "lint: a speck as JSON" 4 '^\{"findings":\[\{"kind":"speckle","ramp":"steel","x":2,"y":1,"x2":2,"y2":1,' -- "$cli" lint --json --ramp steel "$tmp/lint-speck.ans"
-expect "lint: a non-neighbour shade as JSON" 4 '^\{"findings":\[\{"kind":"non-neighbour-shade","ramp":"steel","x":1,"y":0,"x2":1,"y2":0,' -- "$cli" lint --json --ramp steel "$tmp/lint-shade.ans"
+expect "lint: a wide rung as JSON" 4 '"kind":"wide-rung","severity":"warning","ramp":"steel","x":2,"y":3,"x2":7,"y2":3,' -- "$cli" lint --json --ramp steel "$tmp/lint-wide.ans"
+expect "lint: a speck as JSON" 4 '^\{"findings":\[\{"kind":"speckle","severity":"warning","ramp":"steel","x":2,"y":1,"x2":2,"y2":1,' -- "$cli" lint --json --ramp steel "$tmp/lint-speck.ans"
+expect "lint: a non-neighbour shade as JSON" 4 '^\{"findings":\[\{"kind":"non-neighbour-shade","severity":"warning","ramp":"steel","x":1,"y":0,"x2":1,"y2":0,' -- "$cli" lint --json --ramp steel "$tmp/lint-shade.ans"
 # a shade of neighbours on one named ramp is no fault under the others: LightRed over Red is fire's
 cells '\033[0;1;31;41m\xb0' '\033[0;1;31;41m\xb0' '\033[0;1;31;41m\xb1' '\033[0;1;31;41m\xb1' '\033[0;1;31;41m\xb2' '\033[0;1;31;41m\xb2' > "$tmp/lint-fire.ans"
 expect "lint: a fire pair under every ramp" 0 '^clean' -- "$cli" lint "$tmp/lint-fire.ans"
@@ -917,10 +917,22 @@ expect "a bad --target is a usage error" 2 "--target takes ansi or irc, not 'mir
 expect "--target needs a value" 2 '.' -- "$cli" lint "$piece" --target
 expect "convert takes no --target" 2 '.' -- "$cli" convert --target irc "$piece" "$tmp/x.ans"
 expect "lint under ANSI: no ans-loss" 0 '^clean' -- "$cli" lint "$rgb"
-expect "lint --target irc: ans-loss" 4 '^0,0 ans-loss - 1 cell is in a colour an \.ans can.t hold, saved as the nearest of the 16 \(fine for IRC\)$' -- "$cli" lint --target irc "$rgb"
-expect "lint follows the project's target" 4 'ans-loss' -- "$cli" lint "$tmp/rgb-irc.bwp"
+# ans-loss is a note: printed, but only mIRC colours lint clean and exit 0
+expect "lint --target irc: ans-loss" 0 '^0,0 ans-loss - note: 1 cell is in a colour an \.ans can.t hold, saved as the nearest of the 16 \(fine for IRC\)$' -- "$cli" lint --target irc "$rgb"
+expect "lint: a note alone is clean" 0 '^clean, 1 note \(1 ans-loss\), noise ' -- "$cli" lint --target irc "$rgb"
+expect "lint follows the project's target" 0 'ans-loss' -- "$cli" lint "$tmp/rgb-irc.bwp"
 expect "lint --target ansi overrides it" 0 '^clean' -- "$cli" lint --target ansi "$tmp/rgb-irc.bwp"
-expect "lint --json names ans-loss" 4 '"kind": *"ans-loss"' -- "$cli" lint --json --target irc "$rgb"
+expect "lint --json names ans-loss" 0 '"kind": *"ans-loss", *"severity": *"note"' -- "$cli" lint --json --target irc "$rgb"
+# the same colour beside a real finding (a layer with an A in its own
+# background colour) still exits 4, the note printed too
+printf '\033[0;31;41mA' > "$tmp/merge.ans"
+expect "unpack the merge" 0 '^$' -- "$cli" unpack "$tmp/merge.ans" "$tmp/rgb-merge"
+cp "$rgb/layers/1.cells" "$tmp/rgb-merge/layers/2.cells"
+sed -e 's/"id": 1/"id": 2/' -e 's/"x": 0/"x": 1/' "$rgb/layers/1.json" > "$tmp/rgb-merge/layers/2.json"
+printf '{"format": "blockwright", "version": "1.3", "width": 80, "height": 1, "ice": true, "palette": "cga", "sauce": null, "target": "irc", "ircBudget": {"bytes": 407, "profile": "efnet-weechat"}, "layers": [1, 2], "nextLayerId": 3}\n' > "$tmp/rgb-merge/manifest.json"
+expect "lint: a warning beside the note exits 4" 4 '^1 finding \(1 merge\), 1 note \(1 ans-loss\), noise ' -- "$cli" lint "$tmp/rgb-merge"
+expect "lint: the note is printed beside it" 4 '^1,0 ans-loss - note: 1 cell is in a colour' -- "$cli" lint "$tmp/rgb-merge"
+expect "lint --json: a warning's severity" 4 '"kind": *"merge", *"severity": *"warning"' -- "$cli" lint --json "$tmp/rgb-merge"
 if [[ $("$cli" lint --target irc "$piece" 2>&1) == $("$cli" lint "$piece" 2>&1) ]]; then ok "lint --target irc of an .ans that loses nothing says what ANSI does"; else bad "lint --target irc of tux differs"; fi
 expect "convert refuses a colour it can't hold" 1 'warning: .*rgb: 1 cell is in a colour the file can.t hold, written as the nearest of the 16' -- "$cli" convert "$rgb" "$tmp/rgb.ans"
 if [[ -e $tmp/rgb.ans ]]; then bad "refused RGB convert wrote a file"; else ok "refused RGB convert writes nothing"; fi

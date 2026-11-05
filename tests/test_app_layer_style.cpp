@@ -17,6 +17,7 @@
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/style_draw.h"
+#include "blockwright/target.h"
 #include "blockwright/text.h"
 #include "blockwright/text_style.h"
 
@@ -284,6 +285,27 @@ TEST_CASE("the dialog previews the layer with the style, its IRC bytes and its l
     CHECK_FALSE(d.previewLabel()->pixmap().isNull());
     // a cells layer has no face, so no confusables
     CHECK(d.confusables().isEmpty());
+}
+
+TEST_CASE("under IRC the dialog's lint marks ans-loss as a note, and the summary is clean", "[style]") {
+    MainWindow w;
+    Document* doc = w.document();
+    // black-on-black blocks, so IRC has no blank rows to trim, and an X in
+    // mIRC 77
+    Layer l = artLayer(LayerKind::Cells);
+    for (int y = 0; y < kH; ++y)
+        for (int x = 0; x < kW; ++x)
+            l.cells.at(x, y) = Cell{kFullBlock, Color::indexed(Black), Color::indexed(Black), 0, false};
+    l.cells.at(5, 3) = Cell{U'X', swatchColor(77), Color::indexed(Black), 0, false};
+    const LayerId id = open(w, std::move(l));
+    REQUIRE(doc->setTarget(Target::Irc));
+    LayerStyleDialog d(doc, id);
+    REQUIRE(d.lintReport().findings.size() == 1);
+    REQUIRE(d.lintReport().findings[0].kind == lint::Finding::Kind::AnsLoss);
+    const QStringList lines = d.lintText()->toPlainText().split(QLatin1Char('\n'));
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[0].startsWith(QStringLiteral("clean, 1 note (1 ans-loss)")));
+    CHECK(lines[1] == QStringLiteral("5,3  note: ") + QString::fromStdString(d.lintReport().findings[0].message));
 }
 
 TEST_CASE("the preview and its IRC bytes show the cells as the canvas does, with the project's iCE", "[style]") {
