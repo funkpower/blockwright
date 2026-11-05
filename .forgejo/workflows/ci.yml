@@ -112,8 +112,8 @@ jobs:
   freebsd:
     name: freebsd (14, packaged Qt 6)
     runs-on: bw-freebsd
-    # The runner stops any job at an hour; the suite takes about half that.
-    timeout-minutes: 60
+    # The runner stops any job at two hours.
+    timeout-minutes: 120
     env:
       QT_QPA_PLATFORM: offscreen
       # Jobs run on the machine itself, so each works under its own workspace
