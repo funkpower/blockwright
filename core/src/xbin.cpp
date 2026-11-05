@@ -62,6 +62,7 @@ Cell cellOf(std::uint8_t ch, std::uint8_t a, bool ice) {
 // canvas's width + 1, a blank column.
 std::vector<std::uint8_t> pairsOf(const Canvas& cv, int width, bool ice, AnsiOutput& out) {
     out.coloursQuantised = quantisedColourCount(cv);
+    out.formattingDropped = formattedCellCount(cv);
     std::vector<std::uint8_t> pairs;
     pairs.reserve(static_cast<size_t>(width) * cv.height() * 2);
     const Cell blank{};

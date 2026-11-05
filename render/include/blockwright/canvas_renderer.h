@@ -77,6 +77,8 @@ public:
     bool blank(std::uint8_t glyph) const { return blank_[glyph]; }
     // The image of `rows` (bw::cellImage) in `fg`.
     const QImage& rows(const GlyphRows& rows, const Color& fg);
+    // The image of rows made for one cell (formattedRows), not cached.
+    QImage drawRows(const GlyphRows& rows, const Color& fg) const;
 
 private:
     QImage drawGlyph(std::uint8_t glyph, QRgb color) const;

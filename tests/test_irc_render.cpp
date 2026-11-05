@@ -1,13 +1,20 @@
 // The IRC view drawn (irc_render.h): the cells as renderCanvas draws them,
-// and the cut mark on rows over the budget.
+// the cut mark on rows over the budget, and a formatted cell drawn as its
+// encoding reads back.
 
 #include "util.h"
 
 #include "blockwright/irc_render.h"
+#include "blockwright/irc_view.h"
+#include "blockwright/mirc.h"
+#include "blockwright/render.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace bw;
+using irc::encodeMircRow;
+using irc::kMircRgb;
+using irc::MircCell;
 
 namespace {
 
@@ -71,4 +78,53 @@ TEST_CASE("a view that fits has no cut mark", "[irc][render]") {
     CHECK(img.width() == 40 * 9);
     for (int py = 0; py < img.height(); ++py)
         CHECK(marks(img, py) == 0);
+}
+
+namespace {
+
+// mIRC cells as a client draws them: each colour its 24-bit value, the
+// client's own (99) its foreground or background.
+Canvas shownCanvas(const std::vector<MircCell>& row) {
+    const auto colour = [](int n, std::uint32_t client) {
+        const std::uint32_t v = n == irc::kClientColour ? client : kMircRgb[std::size_t(n)];
+        return Color::fromRgb({std::uint8_t(v >> 16), std::uint8_t(v >> 8), std::uint8_t(v)});
+    };
+    Canvas c(int(row.size()), 1);
+    for (std::size_t i = 0; i < row.size(); ++i) {
+        const MircCell& m = row[i];
+        c.at(int(i), 0) =
+            Cell{m.ch, colour(m.fg, irc::kClientForeground), colour(m.bg, irc::kClientBackground), m.attrs, false};
+    }
+    return c;
+}
+
+} // namespace
+
+TEST_CASE("a formatted cell's IRC encoding draws the pixels the cell draws", "[irc][attrs][render]") {
+    // #360 review: italic shears a full block over its background, and bold
+    // widens a half block, so neither may drop a colour or swap the half
+    const char32_t glyphs[] = {U'█', U'▀', U'▄', U'▌', U'▐', U'░', U'▒', U'▓', U' ', U'A'};
+    const std::uint8_t formats[] = {attr::Bold, attr::Italic, attr::Underline, attr::Bold | attr::Italic,
+                                    attr::Bold | attr::Italic | attr::Underline};
+    const std::pair<std::uint8_t, std::uint8_t> colours[] = {{4, 2}, {4, 4}, {1, 1}};
+    for (const bool swapShades : {false, true})
+        for (const char32_t g : glyphs)
+            for (const std::uint8_t a : formats)
+                for (const auto& [fg, bg] : colours)
+                    for (const bool after : {false, true}) {
+                        // alone, and after a cell in other colours
+                        std::vector<MircCell> row;
+                        if (after)
+                            row.push_back(MircCell{U'x', 7, 6, 0});
+                        row.push_back(MircCell{g, fg, bg, a});
+                        const std::string line = encodeMircRow(row, swapShades);
+                        std::vector<MircCell> shown;
+                        for (const irc::ShownCell& s : irc::decodeLine(line))
+                            shown.push_back(s.cell);
+                        INFO("U+" << std::hex << std::uint32_t(g) << std::dec << " attrs " << int(a) << " colours "
+                                  << int(fg) << "," << int(bg) << " swap " << swapShades << " after " << after);
+                        REQUIRE(shown.size() == row.size());
+                        for (const int gw : {8, 9})
+                            CHECK(renderCanvas(shownCanvas(shown), gw) == renderCanvas(shownCanvas(row), gw));
+                    }
 }

@@ -10,6 +10,7 @@
 #include <QPainter>
 
 #include <algorithm>
+#include <array>
 
 using namespace bw;
 namespace fs = std::filesystem;
@@ -278,5 +279,62 @@ TEST_CASE("the atlas draws wide glyphs and clusters like renderCanvas (PLAN §16
         INFO(firstDiff(got, renderCanvas(cv, gw, 1)));
         CHECK(same(got, renderCanvas(cv, gw, 1)));
         cv.at(0, 0).ch = U'中';
+    }
+}
+
+TEST_CASE("bold, italic and underline draw the same in both renderers", "[irc][attrs]") {
+    // 'A' in the VGA font: row 2 is one pixel at x = 3
+    const CellImage a{nullptr, std::uint8_t('A')};
+    const GlyphRows plain = formattedRows(a, 0, 8);
+    CHECK(plain[2] == 1u << 3);
+    // bold smears each pixel one to the right
+    CHECK(formattedRows(a, attr::Bold, 8)[2] == (1u << 3 | 1u << 4));
+    // italic shears: row 2 of 16 moves (15 - 2) / 4 = 3 right, the bottom row none
+    const GlyphRows italic = formattedRows(a, attr::Italic, 8);
+    CHECK(italic[2] == 1u << 6);
+    CHECK(italic[15] == plain[15]);
+    // underline lights the bottom row, the 9th column too
+    CHECK(formattedRows(a, attr::Underline, 9)[15] == 0x1ff);
+    CHECK(formattedRows(a, attr::Underline, 8)[15] == 0xff);
+    // nothing passes the cell's right edge: the top row of █, sheared 3, keeps 5 columns
+    const CellImage block{nullptr, 0xDB};
+    CHECK(formattedRows(block, attr::Bold | attr::Italic, 8)[0] == 0xf8);
+    // an 8 px font underlines row 7
+    static const std::array<std::uint8_t, 256 * 8> zeros{};
+    const BitmapFont small{8, zeros};
+    const GlyphRows u = formattedRows(a, attr::Underline, 8, small);
+    CHECK(u[7] == 0xff);
+    CHECK(u[6] == 0);
+    CHECK(u[15] == 0);
+
+    Canvas cv(6, 2);
+    cv.at(0, 0) = Cell{U'A', Color::indexed(Yellow), Color::indexed(Blue), attr::Bold, false};
+    cv.at(1, 0) = Cell{U'g', Color::indexed(White), Color::indexed(Red), attr::Italic, false};
+    cv.at(2, 0) = Cell{U' ', Color::indexed(LightCyan), Color::indexed(Black), attr::Underline, false};
+    cv.at(3, 0) = Cell{U'─', Color::indexed(White), Color::indexed(Magenta),
+                       attr::Bold | attr::Italic | attr::Underline, false};
+    cv.at(4, 0) = Cell{U'中', Color::fromRgb({0x12, 0x34, 0x56}), Color::indexed(Green), attr::Underline, false};
+    cv.at(5, 0) = Cell{Glyph::continuation(), Color::fromRgb({0x12, 0x34, 0x56}), Color::indexed(Green),
+                       attr::Underline, false};
+    cv.at(0, 1) = Cell{U'λ', Color::indexed(LightGreen), Color::indexed(Black), attr::Bold | attr::Italic, false};
+    cv.at(1, 1) = Cell{U'B', Color::indexed(Grey), Color::indexed(Black), 0, false};
+    for (int gw : {8, 9}) {
+        AtlasRenderer r;
+        r.setCanvas(&cv, gw);
+        for (int zoom : {1, 2}) {
+            INFO("width " << gw << " zoom " << zoom);
+            const QImage want = renderCanvas(cv, gw, zoom);
+            const QImage got = paintAll(r, zoom);
+            INFO(firstDiff(got, want));
+            CHECK(same(got, want));
+        }
+        // the underlined space shows its line in the foreground
+        const QImage img = renderCanvas(cv, gw, 1);
+        CHECK(img.pixel(2 * gw, 15) == qRgb(0x55, 0xff, 0xff));
+        CHECK(img.pixel(2 * gw, 14) == qRgb(0, 0, 0));
+        // bold differs from plain
+        Canvas unbold = cv;
+        unbold.at(0, 0).attrs = 0;
+        CHECK_FALSE(same(renderCanvas(unbold, gw, 1), img));
     }
 }

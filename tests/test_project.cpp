@@ -319,7 +319,8 @@ TEST_CASE("layer cells round-trip through the .cells codec", "[project][cells]")
     c.at(2, 1).fg = Color::fromRgb({1, 2, 3});
     c.at(3, 1).bg = Color::fromRgb({250, 128, 0});
     c.at(4, 2).ch = U'\U0010FFFF';
-    c.at(5, 2).attrs = 0xA0;  // attribute bits the editor doesn't use are kept
+    c.at(5, 2).attrs = attr::Bold | attr::Italic | attr::Underline;
+    c.at(6, 2).attrs = attr::Underline | attr::Blink;
     const std::string data = project::encodeCells(c);
     REQUIRE(data.size() > 16);
     CHECK(data.substr(0, 4) == "BWCL");
@@ -342,6 +343,12 @@ TEST_CASE("the .cells codec refuses what it can't read exactly", "[project][cell
     refused("");
     refused(good.substr(0, 12));
     refused("BWCX" + good.substr(4));
+    // an attribute bit nothing defines: the reserved strikethrough and bits 5-7
+    for (const std::uint8_t bit : {std::uint8_t(1u << 4), std::uint8_t(1u << 5), std::uint8_t(1u << 7)}) {
+        Canvas d(1, 1);
+        d.at(0, 0).attrs = bit;
+        refused(project::encodeCells(d));
+    }
     std::string v2 = good;
     v2[4] = 2;  // version 2 has a cluster table after the cells
     refused(v2);
@@ -475,9 +482,12 @@ TEST_CASE("a reader refuses another major version and reads a newer minor", "[pr
     Entries e = project::encode(p);
     QJsonObject m = object(e.at("manifest.json"));
 
-    m["version"] = "5.0";
+    m["version"] = "6.0";
     e["manifest.json"] = json(m);
     CHECK_THROWS_AS(project::decode(e), ProjectError);
+    m["version"] = "5.0";
+    e["manifest.json"] = json(m);
+    CHECK(project::decode(e).layers == p.layers);
     m["version"] = "4.0";
     e["manifest.json"] = json(m);
     CHECK(project::decode(e).layers == p.layers);

@@ -172,10 +172,13 @@ struct AnsiOutput {
     // Cells whose 24-bit colour was written as the nearest of the 16
     // (quantisedColourCount).
     int coloursQuantised = 0;
+    // Cells with bold, italic or underline, which an .ans, XBIN or BIN has no
+    // way to write and leaves out (formattedCellCount, #350).
+    int formattingDropped = 0;
 
     bool lossy() const {
         return !unwritable.empty() || blinkDropped || paletteDropped || fontDropped || letterSpacingDropped ||
-               aspectDropped || !fontNameDropped.empty() || coloursQuantised;
+               aspectDropped || !fontNameDropped.empty() || coloursQuantised || formattingDropped;
     }
 };
 
@@ -345,5 +348,10 @@ bool showsQuantisedColour(const Cell& cell);
 // glyph that isn't a full block. Transparent cells don't count, and a
 // wide pair counts once, at its lead.
 int quantisedColourCount(const Canvas& canvas);
+
+// How many cells of `canvas` have bold, italic or underline
+// (attr::Formatting). Transparent cells don't count, and a wide pair counts
+// once, at its lead.
+int formattedCellCount(const Canvas& canvas);
 
 } // namespace bw

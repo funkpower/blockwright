@@ -48,8 +48,9 @@ struct DecodeLoss {
 
 // A line of IRC text read as a client reads it: ^C sets colours (up to two
 // digits each, 99 the client's own; ^C alone resets them), ^O resets every
-// attribute, ^V swaps foreground and background, and ^B ^] ^_ ^^ ^Q are
-// read and leave the colours alone. Other bytes are UTF-8, laid out by the
+// attribute, ^V swaps foreground and background, ^B ^] ^_ toggle bold,
+// italic and underline (MircCell::attrs), and ^^ ^Q are read and leave the
+// cells alone. Other bytes are UTF-8, laid out by the
 // width table as a terminal lays them out (PLAN §16, Reading): a wide code
 // point is a pair (a lead and a continuation in the same colours), wrapping
 // first when it would start on the last of `opts.columns` (the column left

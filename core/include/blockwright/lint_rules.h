@@ -40,6 +40,7 @@ struct Finding {
         LoneMark,        // a zero-width code point in a cell of its own, or a lone wide cell
         BidiControl,     // a bidi control, which reorders the rest of the line in some clients
         AnsLoss,         // IRC target: what an .ans save would drop, one finding per kind
+        WastedFormat,    // bold, italic or underline that draws nothing but costs IRC bytes
     };
     Kind kind = Kind::Noise;
     std::string ramp;  // the ramp a ladder finding came from; empty for the rest
@@ -125,8 +126,15 @@ struct RuleOptions {
 // - AnsLoss: IRC target only, where the art is fine for IRC and an .ans is
 //   the lossy save. One finding per kind of loss, at the first cell it
 //   covers, counting the cells: glyphs a CP437 .ans saves as '?' (the cells
-//   NoCp437 would report) and 24-bit colours saved as the nearest of the 16
-//   (quantisedColourCount).
+//   NoCp437 would report), 24-bit colours saved as the nearest of the 16
+//   (quantisedColourCount) and cells with bold, italic or underline, which
+//   an .ans leaves out (formattedCellCount).
+// - WastedFormat: under either target, a cell whose formatting draws nothing
+//   and still costs its toggles in IRC text: an attribute without which the
+//   cell draws the same pixels (formatRows) at 8 and 9 px, such as bold on
+//   a blank, ▀ or █, or underline on █. Italic shears a block off its
+//   background, so it draws. Only glyphs the VGA font has are judged. One
+//   finding a cell, naming the attributes wasted.
 std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options = {});
 
 // Whether hand shading goes between the two colours, either way round,

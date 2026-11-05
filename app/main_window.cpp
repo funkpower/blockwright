@@ -31,6 +31,8 @@
 #include <QMessageBox>
 #include <QPointer>
 #include <QScrollArea>
+#include <QToolButton>
+#include <QVBoxLayout>
 #include <QScreen>
 #include <QStatusBar>
 #include <QWhatsThis>
@@ -255,6 +257,10 @@ QString lossDescription(const AnsiOutput& out, bool countWide) {
         parts << plural(out.coloursQuantised,
                         QObject::tr("%n cell is in a colour the file can't hold, saved as the nearest of the 16"),
                         QObject::tr("%n cells are in colours the file can't hold, saved as the nearest of the 16"));
+    if (out.formattingDropped)
+        parts << plural(out.formattingDropped,
+                        QObject::tr("%n cell has bold, italic or underline, which the file can't hold"),
+                        QObject::tr("%n cells have bold, italic or underline, which the file can't hold"));
     return parts.join(QStringLiteral(";\n"));
 }
 
@@ -426,7 +432,48 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     paletteDock_ = new QDockWidget(tr("Palette"), this);
     paletteDock_->setObjectName(QStringLiteral("paletteDock"));
     paletteDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
-    paletteDock_->setWidget(palette_);
+    // Under the IRC target, the pen's formatting below the palette (#350).
+    auto* paletteBox = new QWidget;
+    auto* paletteLayout = new QVBoxLayout(paletteBox);
+    paletteLayout->setContentsMargins(0, 0, 0, 0);
+    paletteLayout->setSpacing(0);
+    paletteLayout->addWidget(palette_);
+    formatBar_ = new QWidget;
+    auto* formatLayout = new QHBoxLayout(formatBar_);
+    formatLayout->setContentsMargins(4, 2, 4, 2);
+    const struct {
+        std::uint8_t bit;
+        const char* name;
+        QString text, tip;
+    } formats[] = {
+        {attr::Bold, "formatBold", tr("B"), tr("Bold: the glyph brush writes ^B")},
+        {attr::Italic, "formatItalic", tr("I"), tr("Italic: the glyph brush writes ^]")},
+        {attr::Underline, "formatUnderline", tr("U"), tr("Underline: the glyph brush writes ^_")},
+    };
+    for (std::size_t i = 0; i < std::size(formats); ++i) {
+        const auto& f = formats[i];
+        auto* a = new QAction(f.text, this);
+        a->setObjectName(QString::fromLatin1(f.name));
+        a->setCheckable(true);
+        a->setToolTip(f.tip);
+        QFont font = a->font();
+        font.setBold(f.bit == attr::Bold);
+        font.setItalic(f.bit == attr::Italic);
+        font.setUnderline(f.bit == attr::Underline);
+        a->setFont(font);
+        connect(a, &QAction::toggled, this, [this, bit = f.bit](bool on) {
+            Pen pen = view_->pen();
+            pen.attrs = std::uint8_t(on ? pen.attrs | bit : pen.attrs & ~bit);
+            view_->setPen(pen);
+        });
+        auto* button = new QToolButton;
+        button->setDefaultAction(a);
+        formatLayout->addWidget(button);
+        formatActions_[i] = a;
+    }
+    formatLayout->addStretch();
+    paletteLayout->addWidget(formatBar_);
+    paletteDock_->setWidget(paletteBox);
     addDockWidget(Qt::RightDockWidgetArea, paletteDock_);
 
     glyphSetLabel_ = new QLabel;
@@ -484,6 +531,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(palette_, &PaletteWidget::foregroundPicked, view_, &CanvasView::setForeground);
     connect(palette_, &PaletteWidget::backgroundPicked, view_, &CanvasView::setBackground);
     connect(view_, &CanvasView::penChanged, palette_, &PaletteWidget::setPen);
+    connect(view_, &CanvasView::penChanged, this, [this](const Pen& pen) {
+        for (QAction* a : formatActions_) {
+            const QSignalBlocker block(a);
+            a->setChecked(pen.attrs & formatBit(a));
+        }
+    });
     connect(view_, &CanvasView::glyphSetChanged, this, &MainWindow::updateGlyphSet);
     connect(view_, &CanvasView::glyphRejected, this, [this](const QString& text) {
         statusBar()->showMessage(rejectedGlyphsMessage(text), 3000);
@@ -641,7 +694,11 @@ void MainWindow::createActions() {
     add(colours, tr("&Default Colours"), "defaultColours", QKeySequence(Qt::CTRL | Qt::Key_D),
         [this] { view_->setPen(Pen{}); });
     add(colours, tr("&Swap Colours"), "swapColours", QKeySequence(),
-        [this] { view_->setPen(Pen{view_->pen().bg, view_->pen().fg}); });
+        [this] {
+            Pen p = view_->pen();  // the formatting stays (#360)
+            std::swap(p.fg, p.bg);
+            view_->setPen(p);
+        });
 
     QMenu* glyphs = menuBar()->addMenu(tr("&Glyphs"));
     add(glyphs, tr("&Previous Set"), "previousGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Comma),

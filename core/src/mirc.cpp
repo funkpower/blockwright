@@ -1,5 +1,6 @@
 #include "blockwright/mirc.h"
 
+#include "blockwright/cell.h"
 #include "blockwright/cp437.h"
 
 #include <algorithm>
@@ -21,6 +22,11 @@
 // one way only, and its continuation as nothing: the continuation costs no
 // byte and takes the line through unchanged, so no code goes between them.
 // A cluster of one cell is likewise written whole, one way.
+//
+// Formatting (bold, italic, underline) is part of the state: a cell is drawn
+// with exactly its own, each bit that differs toggled with one byte, in
+// ascii.py's ATTR_CODES order (^B ^] ^_) and after any colour code, so the
+// colour number before it never needs a leading zero or a comma guard.
 
 namespace bw::irc {
 
@@ -33,6 +39,7 @@ constexpr int kDefault = -1;
 struct State {
     int fg = kDefault;
     int bg = kDefault;
+    std::uint8_t attrs = 0;
     auto operator<=>(const State&) const = default;
 };
 
@@ -67,10 +74,13 @@ struct Ways {
 bool blank(char32_t ch) { return ch == U' ' || ch == U' '; }
 
 // The ways to draw a cell: at most two. A lead (`lead`: a continuation
-// follows) and a cluster have one, their own glyph in their own colours.
+// follows), a cluster and a formatted cell have one, their own glyph in
+// their own colours: underline lights the foreground on any glyph, italic
+// shears a block off its background, and bold widens a half block, so the
+// other ways would draw other pixels (#360).
 Ways ways(const MircCell& mc, bool swapShades, bool lead) {
     const int f = mc.fg, b = mc.bg;
-    if (lead || !mc.ch.codePoint()) {
+    if (lead || !mc.ch.codePoint() || (mc.attrs & attr::Formatting)) {
         const Way w = way(mc.ch, f, b);
         return Ways{{{w, w}}, 1};
     }
@@ -97,9 +107,10 @@ Ways ways(const MircCell& mc, bool swapShades, bool lead) {
 
 bool asciiDigit(char32_t ch) { return ch >= U'0' && ch <= U'9'; }
 
-// A run of formatting codes: the longest is six bytes.
+// A run of formatting codes: the longest is nine bytes (a colour code and
+// three toggles).
 struct Code {
-    std::array<char, 8> buf{};
+    std::array<char, 12> buf{};
     std::uint8_t len = 0;
 
     void push(char b) { buf[len++] = b; }
@@ -133,10 +144,42 @@ struct Move {
     State state;
 };
 
-// The ways to get from `cur` to colours that draw `way`: (codes, new state).
-void moves(State cur, const Way& way, std::vector<Move>& out) {
+// The toggles that take formatting `from` to `to`, in ATTR_CODES order.
+Code toggles(std::uint8_t from, std::uint8_t to) {
+    Code c;
+    const std::uint8_t diff = from ^ to;
+    if (diff & attr::Bold)
+        c.push('\x02');
+    if (diff & attr::Italic)
+        c.push('\x1d');
+    if (diff & attr::Underline)
+        c.push('\x1f');
+    return c;
+}
+
+void colourMoves(State cur, const Way& way, char32_t g, std::vector<Move>& out);
+
+// The ways to get from `cur` to a state that draws `way` with formatting
+// `attrs`: (codes, new state). The toggles go after the colour code.
+void moves(State cur, const Way& way, std::uint8_t attrs, std::vector<Move>& out) {
     out.clear();
-    const char32_t g = way.first;
+    const Code t = toggles(cur.attrs, attrs);
+    if (t.len == 0) {
+        colourMoves(cur, way, way.first, out);
+        return;
+    }
+    // a toggle byte ends a colour number and is no comma
+    colourMoves(cur, way, U'\x02', out);
+    for (Move& m : out) {
+        for (std::uint8_t i = 0; i < t.len; ++i)
+            m.code.push(t.buf[i]);
+        m.state.attrs = attrs;
+    }
+}
+
+// The colour codes from `cur` to colours that draw `way`, `g` the character
+// after them: (codes, new state), the formatting left as it is.
+void colourMoves(State cur, const Way& way, char32_t g, std::vector<Move>& out) {
     const bool bgChange = way.bg != kDefault && cur.bg != way.bg;
     const bool fgChange = way.fg != kDefault && cur.fg != way.fg;
     if (bgChange) {
@@ -153,7 +196,7 @@ void moves(State cur, const Way& way, std::vector<Move>& out) {
             const int f = fgs[i];
             if (i > 0 && (f == kDefault || std::find(fgs.begin(), fgs.begin() + i, f) != fgs.begin() + i))
                 continue;
-            out.push_back({Code::colour(f, b, g), {f, b}});
+            out.push_back({Code::colour(f, b, g), {f, b, cur.attrs}});
         }
         return;
     }
@@ -165,13 +208,13 @@ void moves(State cur, const Way& way, std::vector<Move>& out) {
     if (g == U',') {
         // "\x034," would read the comma as the start of a background
         if (cur.bg != kDefault)
-            out.push_back({Code::colour(f, cur.bg, g), {f, cur.bg}});
+            out.push_back({Code::colour(f, cur.bg, g), {f, cur.bg, cur.attrs}});
         Code c = Code::colour(f, kDefault, U'x');
         c.push('\x02');
         c.push('\x02');
-        out.push_back({c, {f, cur.bg}});
+        out.push_back({c, {f, cur.bg, cur.attrs}});
     } else {
-        out.push_back({Code::colour(f, kDefault, g), {f, cur.bg}});
+        out.push_back({Code::colour(f, kDefault, g), {f, cur.bg, cur.attrs}});
     }
 }
 
@@ -187,16 +230,19 @@ struct Key {
 };
 
 // Any state is one colour code (at most 6 bytes) from any other, so an entry
-// further than that behind the best can't win.
+// further than that behind the best can't win. With formatting in the row it
+// is a colour code and three toggles.
 constexpr detail::Cost kSlack = 6;
+constexpr detail::Cost kFormattingSlack = 9;
 
 struct Entry {
     Key key;
-    // 64 bits: a cell costs at most 10 bytes, so no row that fits in memory
+    // 64 bits: a cell costs at most 13 bytes, so no row that fits in memory
     // reaches the top
     detail::Cost cost = 0;
     // An index into the layer before, which holds at most one entry per key:
-    // 100 foregrounds (the 99 and the default) x 100 backgrounds x 2.
+    // 100 foregrounds (the 99 and the default) x 100 backgrounds x 8
+    // formattings x 2.
     std::uint32_t prev = 0;
     Code code;
     // the continuation for a pair's second half, which writes nothing
@@ -227,7 +273,7 @@ std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades, bool
     return detail::encodeMircRowFrom(cells, swapShades, 0, solidEnd);
 }
 
-bool detail::withinSlack(Cost cost, Cost best) { return cost - best <= kSlack; }
+bool detail::withinSlack(Cost cost, Cost best, Cost slack) { return cost - best <= slack; }
 
 std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swapShades, Cost start, bool solidEnd) {
     for (std::size_t i = 0; i < cells.size(); ++i) {
@@ -243,6 +289,8 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
     }
     if (cells.empty())
         return {};
+    const bool formatted = std::any_of(cells.begin(), cells.end(), [](const MircCell& c) { return c.attrs & attr::Formatting; });
+    const detail::Cost slack = formatted ? kFormattingSlack : kSlack;
     // One layer of reachable (state, cost) entries per cell, each pointing
     // back at the entry in the layer before it that it was reached from.
     std::vector<std::vector<Entry>> layers;
@@ -266,6 +314,7 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
         }
         const bool lead = c + 1 < cells.size() && cells[c + 1].ch.isContinuation();
         Ways options = ways(cell, swapShades, lead);
+        const std::uint8_t attrs = cell.attrs & attr::Formatting;
         // solid() lists the space first
         if (solidEnd && c + 1 == cells.size() && options.n == 2 && options.way[0].glyph == U' ') {
             options.way[0] = options.way[1];
@@ -275,7 +324,7 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
             const Entry& e = cur[i];
             for (int w = 0; w < options.n; ++w) {
                 const Way& way = options.way[w];
-                moves(e.key.state, way, mv);
+                moves(e.key.state, way, attrs, mv);
                 for (const Move& m : mv) {
                     const detail::Cost cost = e.cost + m.code.len + way.bytes;
                     const Key key{m.state, way.glyph == U' '};
@@ -291,7 +340,7 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
         detail::Cost best = next.front().cost;
         for (const Entry& e : next)
             best = std::min(best, e.cost);
-        std::erase_if(next, [&](const Entry& e) { return !detail::withinSlack(e.cost, best); });
+        std::erase_if(next, [&](const Entry& e) { return !detail::withinSlack(e.cost, best, slack); });
         std::swap(cur, next);
         layers.push_back(cur);
     }

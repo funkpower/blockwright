@@ -39,6 +39,7 @@ std::optional<Cell> ShadeBrush::paintCell(const Stroke& stroke, int x, int y, do
     out.ch = kLevels[static_cast<size_t>(next)];
     out.fg = pen_.fg;
     out.bg = pen_.bg;
+    out.attrs = cell->attrs & attr::Formatting;  // shading keeps the formatting (#360)
     return out;
 }
 

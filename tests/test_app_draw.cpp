@@ -20,6 +20,8 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QDockWidget>
+#include <QToolButton>
 #include <QRegion>
 #include <QUndoStack>
 
@@ -784,4 +786,92 @@ TEST_CASE("changedCells is the union of the changed cells, in any order") {
     }
     CHECK(Document::changedCells(e) == naive);
     CHECK(Document::changedCells(CellEdit{}).isEmpty());
+}
+
+TEST_CASE("under IRC the glyph brush writes the pen's formatting and the eyedropper picks it", "[irc][attrs]") {
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    QAction* bold = w.findChild<QAction*>(QStringLiteral("formatBold"));
+    QAction* italic = w.findChild<QAction*>(QStringLiteral("formatItalic"));
+    QAction* underline = w.findChild<QAction*>(QStringLiteral("formatUnderline"));
+    REQUIRE(bold);
+    REQUIRE(italic);
+    REQUIRE(underline);
+    QToolButton* button = nullptr;
+    for (QToolButton* b : w.paletteDock()->findChildren<QToolButton*>())
+        if (b->defaultAction() == bold)
+            button = b;
+    REQUIRE(button);
+    // the toggles show under IRC only
+    CHECK_FALSE(button->isVisibleTo(&w));
+    w.document()->setTarget(Target::Irc);
+    CHECK(button->isVisibleTo(&w));
+
+    bold->trigger();
+    underline->trigger();
+    CHECK(v->pen().attrs == (attr::Bold | attr::Underline));
+    v->setForeground(LightGreen);  // a colour keeps the formatting
+    CHECK(v->pen().attrs == (attr::Bold | attr::Underline));
+    use(w, "glyph");
+    drag(v, {{0, 2}, {2, 2}});
+    for (int x = 0; x <= 2; ++x) {
+        INFO(x);
+        CHECK(at(w, x, 1).attrs == (attr::Bold | attr::Underline));
+        CHECK(at(w, x, 1).fg == Color::indexed(LightGreen));
+    }
+    // the right button erases to a blank without formatting
+    drag(v, {{2, 2}}, Qt::RightButton);
+    CHECK(at(w, 2, 1) == Cell{});
+
+    // a pen set elsewhere sets the toggles
+    v->setPen(Pen{});
+    CHECK_FALSE(bold->isChecked());
+    CHECK_FALSE(underline->isChecked());
+    // the eyedropper's left button picks the formatting, the right doesn't
+    use(w, "eyedropper");
+    drag(v, {{1, 2}}, Qt::RightButton);
+    CHECK(v->pen().attrs == 0);
+    drag(v, {{1, 2}});
+    CHECK(v->pen().fg == Color::indexed(LightGreen));
+    CHECK(v->pen().attrs == (attr::Bold | attr::Underline));
+    CHECK(bold->isChecked());
+    CHECK_FALSE(italic->isChecked());
+    CHECK(underline->isChecked());
+
+    // a Pixels layer holds no formatting: the glyph brush writes the block
+    // without it
+    Document* doc = w.document();
+    const LayerId cells = doc->activeLayer();
+    act(w, QStringLiteral("newPixelLayer"))->trigger();
+    REQUIRE(doc->active()->props.kind == LayerKind::Pixels);
+    use(w, "glyph");
+    drag(v, {{6, 2}});
+    CHECK(doc->active()->cells.at(6, 1).ch == kFullBlock);
+    CHECK(doc->active()->cells.at(6, 1).attrs == 0);
+    REQUIRE(doc->setActiveLayer(cells));
+
+    // under ANSI the toggles hide and the glyph brush writes no formatting
+    w.document()->setTarget(Target::Ansi);
+    CHECK_FALSE(button->isVisibleTo(&w));
+    use(w, "glyph");
+    drag(v, {{5, 2}});
+    CHECK(at(w, 5, 1).ch == kFullBlock);
+    CHECK(at(w, 5, 1).attrs == 0);
+}
+
+TEST_CASE("Swap Colours keeps the pen's formatting", "[irc][attrs]") {
+    // #360 review: the swap built a new pen from the two colours alone
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    w.document()->setTarget(Target::Irc);
+    const std::uint8_t all = attr::Bold | attr::Italic | attr::Underline;
+    v->setPen(Pen{Color::indexed(LightGreen), Color::indexed(Blue), all});
+    act(w, QStringLiteral("swapColours"))->trigger();
+    CHECK(v->pen().fg == Color::indexed(Blue));
+    CHECK(v->pen().bg == Color::indexed(LightGreen));
+    CHECK(v->pen().attrs == all);
+    for (const char* name : {"formatBold", "formatItalic", "formatUnderline"}) {
+        INFO(name);
+        CHECK(w.findChild<QAction*>(QString::fromLatin1(name))->isChecked());
+    }
 }

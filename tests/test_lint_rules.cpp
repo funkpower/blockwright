@@ -510,9 +510,9 @@ TEST_CASE("a glyph whose CP437 byte .ans reads as a control code is found, with 
 
 TEST_CASE("kinds have distinct names and only the ladder's name a ramp", "[lint][rules]") {
     std::set<std::string_view> names;
-    for (int k = int(Kind::NonNeighbourShade); k <= int(Kind::BidiControl); ++k)
+    for (int k = int(Kind::NonNeighbourShade); k <= int(Kind::WastedFormat); ++k)
         names.insert(lint::kindName(Kind(k)));
-    CHECK(names.size() == 18);
+    CHECK(names.size() == 20);
     CHECK(lint::kindName(Kind::RungSkip) == "rung-skip");
     CHECK(lint::ladderKind(Kind::OneGlyph));
     CHECK_FALSE(lint::ladderKind(Kind::Noise));

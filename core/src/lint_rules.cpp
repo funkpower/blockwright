@@ -2,6 +2,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/cp437.h"
+#include "blockwright/glyph_rows.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/irc.h"
 #include "blockwright/ramp.h"
@@ -311,12 +312,12 @@ void flats(const Canvas& canvas, bool ice, const Box& box, int minCells, std::ve
 }
 
 // The cells of row y the IRC encoding keeps: up to the last that isn't a
-// black space (encodeCanvas).
+// black space with nothing drawn on it (encodeCanvas).
 int keptLength(const Canvas& canvas, int y) {
     int n = canvas.width();
     while (n > 0) {
         const Cell& c = canvas.at(n - 1, y);
-        const bool space = c.transparent || c.ch == U' ' || c.ch == 0;
+        const bool space = c.transparent || ((c.ch == U' ' || c.ch == 0) && !attr::showsOnBlank(c.attrs));
         if (!space || (!c.transparent && irc::mircColor(c.bg) != 1))
             break;
         --n;
@@ -516,20 +517,71 @@ void ansLoss(const Canvas& canvas, std::vector<Finding>& out) {
                            std::to_string(n) + (n == 1 ? " cell holds a glyph" : " cells hold glyphs") +
                                " a CP437 .ans saves as '?' (fine for IRC)"));
     }
-    if (const int n = quantisedColourCount(canvas)) {
-        // the first cell it counts
+    // the first cell `count` counts
+    const auto first = [&](int (*count)(const Canvas&)) {
         Canvas one(1, 1);
         for (int y = 0; y < canvas.height(); ++y)
             for (int x = 0; x < canvas.width(); ++x) {
                 one.at(0, 0) = canvas.at(x, y);
-                if (quantisedColourCount(one)) {
-                    out.push_back(make(Kind::AnsLoss, x, y, x, y,
-                                       std::to_string(n) + (n == 1 ? " cell is in a colour" : " cells are in colours") +
-                                           " an .ans can't hold, saved as the nearest of the 16 (fine for IRC)"));
-                    return;
-                }
+                if (count(one))
+                    return std::pair{x, y};
             }
+        return std::pair{0, 0};
+    };
+    if (const int n = quantisedColourCount(canvas)) {
+        const auto [x, y] = first(quantisedColourCount);
+        out.push_back(make(Kind::AnsLoss, x, y, x, y,
+                           std::to_string(n) + (n == 1 ? " cell is in a colour" : " cells are in colours") +
+                               " an .ans can't hold, saved as the nearest of the 16 (fine for IRC)"));
     }
+    if (const int n = formattedCellCount(canvas)) {
+        const auto [x, y] = first(formattedCellCount);
+        out.push_back(make(Kind::AnsLoss, x, y, x, y,
+                           std::to_string(n) + (n == 1 ? " cell has" : " cells have") +
+                               " bold, italic or underline, which an .ans leaves out (fine for IRC)"));
+    }
+}
+
+// Formatting that draws nothing on its cell but costs IRC bytes: a bit
+// whose cell draws the same rows without it (formatRows, as the renderer
+// draws it) at either glyph width. Only a glyph the VGA font has is judged;
+// the rest draw from Unifont, which the core doesn't hold.
+void wastedFormat(const Canvas& canvas, std::vector<Finding>& out) {
+    for (int y = 0; y < canvas.height(); ++y)
+        for (int x = 0; x < canvas.width(); ++x) {
+            const Cell& c = canvas.at(x, y);
+            if (c.transparent || c.ch.isContinuation() || !(c.attrs & attr::Formatting) ||
+                (x + 1 < canvas.width() && canvas.at(x + 1, y).ch.isContinuation()))
+                continue;
+            const std::optional<char32_t> cp = c.ch.codePoint();
+            const std::optional<std::uint8_t> g = cp ? unicodeToCp437(*cp) : std::nullopt;
+            if (!g)
+                continue;
+            std::uint8_t wasted = 0;
+            for (const std::uint8_t bit : {attr::Bold, attr::Italic, attr::Underline}) {
+                if (!(c.attrs & bit))
+                    continue;
+                bool same = true;
+                for (const int gw : {8, 9}) {
+                    const GlyphRows rows = vgaRows(*g, gw);
+                    same = same && formatRows(rows, c.attrs, gw, 16) ==
+                                       formatRows(rows, std::uint8_t(c.attrs & ~bit), gw, 16);
+                }
+                if (same)
+                    wasted |= bit;
+            }
+            if (!wasted)
+                continue;
+            const bool blank = blankGlyph(*cp);
+            std::string names;
+            for (const auto& [bit, name] : {std::pair{attr::Bold, "bold"}, std::pair{attr::Italic, "italic"},
+                                            std::pair{attr::Underline, "underline"}})
+                if (wasted & bit)
+                    names += (names.empty() ? "" : " and ") + std::string(name);
+            const std::string on = blank ? "a blank" : c.ch == Glyph(U'█') ? "a full block" : quotedGlyph(c.ch);
+            out.push_back(make(Kind::WastedFormat, x, y, x, y,
+                               names + " on " + on + " draws nothing and costs bytes in IRC text"));
+        }
 }
 
 Kind fromLadder(LadderFinding::Kind k) {
@@ -591,6 +643,7 @@ std::string_view kindName(Finding::Kind kind) {
     case Kind::LoneMark: return "lone-mark";
     case Kind::BidiControl: return "bidi-control";
     case Kind::AnsLoss: return "ans-loss";
+    case Kind::WastedFormat: return "wasted-format";
     }
     return "?";
 }
@@ -648,6 +701,7 @@ std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options
     else
         noCp437(canvas, out);
     unicodeRules(canvas, out);
+    wastedFormat(canvas, out);
     std::stable_sort(out.begin(), out.end(), readingOrder);
     return out;
 }

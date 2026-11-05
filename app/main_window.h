@@ -21,6 +21,7 @@
 #include <QSet>
 #include <QMainWindow>
 
+#include <array>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -511,6 +512,9 @@ private:
     QDockWidget* previewDock_ = nullptr;
     PaletteWidget* palette_ = nullptr;
     QDockWidget* paletteDock_ = nullptr;
+    QWidget* formatBar_ = nullptr;
+    std::array<QAction*, 3> formatActions_{};  // bold, italic, underline
+    std::uint8_t formatBit(const QAction* a) const;
     ToolOptions* toolOptions_ = nullptr;
     QDockWidget* toolOptionsDock_ = nullptr;
     Toolbox* toolbox_ = nullptr;

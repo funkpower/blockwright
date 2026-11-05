@@ -2,6 +2,7 @@
 
 #include <QPainter>
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace bw {
@@ -66,18 +67,23 @@ const QImage& GlyphAtlas::rows(const GlyphRows& rows, const Color& fg) {
     const QRgb color = toQRgb(resolveColor(fg));
     const auto key = std::pair(&rows, color);
     auto it = rows_.find(key);
-    if (it == rows_.end()) {
-        QImage img(gw_, 16, QImage::Format_ARGB32_Premultiplied);
-        img.fill(Qt::transparent);
-        for (int y = 0; y < 16; ++y) {
-            auto* line = reinterpret_cast<QRgb*>(img.scanLine(y));
-            for (int x = 0; x < gw_; ++x)
-                if ((rows[y] >> x) & 1)
-                    line[x] = color | 0xff000000u;
-        }
-        it = rows_.insert(key, img);
-    }
+    if (it == rows_.end())
+        it = rows_.insert(key, drawRows(rows, fg));
     return *it;
+}
+
+QImage GlyphAtlas::drawRows(const GlyphRows& rows, const Color& fg) const {
+    const QRgb color = toQRgb(resolveColor(fg));
+    const int h = std::min(font_->height, 16);
+    QImage img(gw_, h, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    for (int y = 0; y < h; ++y) {
+        auto* line = reinterpret_cast<QRgb*>(img.scanLine(y));
+        for (int x = 0; x < gw_; ++x)
+            if ((rows[std::size_t(y)] >> x) & 1)
+                line[x] = color | 0xff000000u;
+    }
+    return img;
 }
 
 AtlasRenderer::AtlasRenderer(const BitmapFont& font) : font_(&font) {}
@@ -127,6 +133,11 @@ QRegion AtlasRenderer::flush() {
                 const QRect target(QPoint(cx * cs.width(), cy * cs.height()), cs);
                 p.fillRect(target, QColor(toQRgb(resolveColor(cell.bg))));
                 const CellImage ci = cellImage(*canvas_, cx, cy, font_->height);
+                if (cell.attrs & attr::Formatting) {
+                    const GlyphRows rows = formattedRows(ci, cell.attrs, cs.width(), *font_);
+                    p.drawImage(target.topLeft(), atlas_->drawRows(rows, cell.fg));
+                    continue;
+                }
                 if (ci.rows) {
                     p.drawImage(target.topLeft(), atlas_->rows(*ci.rows, cell.fg));
                     continue;

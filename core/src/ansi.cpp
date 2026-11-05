@@ -577,6 +577,17 @@ int quantisedColourCount(const Canvas& canvas) {
     return n;
 }
 
+int formattedCellCount(const Canvas& canvas) {
+    int n = 0;
+    for (int y = 0; y < canvas.height(); ++y)
+        for (int x = 0; x < canvas.width(); ++x) {
+            const Cell& c = canvas.at(x, y);
+            if (!c.transparent && !c.ch.isContinuation() && (c.attrs & attr::Formatting))
+                ++n;
+        }
+    return n;
+}
+
 int lostBlinkCount(const AnsiDocument& doc) {
     int n = 0;
     for (int y = 0; y < doc.canvas.height(); ++y)
@@ -764,6 +775,7 @@ AnsiOutput writeAnsi(const AnsiDocument& doc, TextEncoding encoding, bool bom) {
     out.paletteDropped = customPalette(doc);
     out.fontDropped = doc.font.has_value();
     out.coloursQuantised = quantisedColourCount(cv);
+    out.formattingDropped = formattedCellCount(cv);
     s = "\x1b[0m";
     bool wrapPending = false;  // the row before was written full width, with no line break
     for (int y = 0; y < cv.height(); ++y) {

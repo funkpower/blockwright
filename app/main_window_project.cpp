@@ -39,7 +39,8 @@ void MainWindow::syncProjectActions() {
 
 bool MainWindow::openProject(const QString& path, QString* error) {
     project::Project p;
-    if (!Document::readProject(path, &p, error))
+    project::ReadNotes notes;
+    if (!Document::readProject(path, &p, error, &notes))
         return false;
     // As openFile: the renderer takes the composite first, so a canvas too
     // large to display leaves the open document as it was.
@@ -57,6 +58,10 @@ bool MainWindow::openProject(const QString& path, QString* error) {
     const FileForm form = fi.isDir() ? FileForm::ProjectDirectory : FileForm::ProjectZip;
     // Cleaned, so a directory given as "piece/" is titled "piece".
     doc_.replace(std::move(p), QDir::cleanPath(fi.absoluteFilePath()), form);
+    if (const int n = notes.strayAttributes)
+        statusBar()->showMessage(tr("Opened %1: cleared attribute bits no earlier build wrote from %2")
+                                     .arg(QDir::toNativeSeparators(path),
+                                          n == 1 ? tr("1 cell") : tr("%1 cells").arg(n)));
     return true;
 }
 

@@ -855,7 +855,11 @@ std::optional<Cell> FormShadeBrush::toneCell(const Stroke& stroke, const std::ve
             break;
         }
     }
-    return rung && *rung == target ? original : rungCell(ramp_, target, form);
+    if (rung && *rung == target)
+        return original;
+    Cell out = rungCell(ramp_, target, form);
+    out.attrs |= original.attrs & attr::Formatting;  // shading keeps the formatting (#360)
+    return out;
 }
 
 void FormShadeBrush::lay(Stroke& stroke, StrokeLint& guard, Canvas& next, std::vector<Paint> paints) const {

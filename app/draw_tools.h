@@ -256,7 +256,8 @@ protected:
 };
 
 // Glyph brush: left writes the brush's glyph in the pen's colours, right
-// erases to blank. F1-F10 pick the glyph from the current glyph set while
+// erases to blank. Under the IRC target the glyph takes the pen's formatting
+// too (bold, italic, underline), except on a Pixels layer. F1-F10 pick the glyph from the current glyph set while
 // the tool is active; it starts as the full block. On a Pixels layer the
 // left button declines a press when the glyph, or an image of it mirror
 // mode writes (▀ turned on its side by radial symmetry), is one the layer
@@ -430,7 +431,8 @@ private:
 // half's colour as it shows under the document's iCE setting, elsewhere
 // the cell's foreground or the background it shows. It picks from the
 // active layer, where a transparent cell or pixel picks nothing, or with
-// sample merged (CanvasView::sampleMerged) from the composite.
+// sample merged (CanvasView::sampleMerged) from the composite. Under the
+// IRC target a left pick also sets the pen's formatting to the cell's.
 class EyedropperTool : public Tool {
     Q_OBJECT
 public:

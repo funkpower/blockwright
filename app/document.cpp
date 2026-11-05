@@ -346,9 +346,9 @@ bool Document::read(const QString& path, AnsiDocument* out, QString* error, std:
     return true;
 }
 
-bool Document::readProject(const QString& path, project::Project* out, QString* error) {
+bool Document::readProject(const QString& path, project::Project* out, QString* error, project::ReadNotes* notes) {
     try {
-        *out = project::read(fspath(path));
+        *out = project::read(fspath(path), notes);
     } catch (const std::exception& e) {
         *error = QString::fromStdString(e.what());
         return false;

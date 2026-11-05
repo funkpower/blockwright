@@ -321,6 +321,9 @@ void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
         std::cerr << "blockwright-cli: warning: " << in << ": " << n
                   << (n == 1 ? " cell is in a colour" : " cells are in colours")
                   << " the file can't hold, written as the nearest of the 16\n";
+    if (const int n = res.formattingDropped)
+        std::cerr << "blockwright-cli: warning: " << in << ": " << n << (n == 1 ? " cell has" : " cells have")
+                  << " bold, italic or underline, which the file can't hold: left out\n";
 }
 
 void saveAnsi(const std::string& in, const std::string& out, const bw::AnsiDocument& doc, bool allowLossy,
@@ -945,14 +948,15 @@ int main(int argc, char** argv) {
         "                       --mask piece the size of <in>, or the mask's cells\n"
         "                       in the box, lit from --light\n"
         "  lint <in>            the ladder check under each --ramp (default: every\n"
-        "                       named ramp and the craft pairs\n"
-        "                       between), pixel noise and the craft rules; one\n"
-        "                       line per finding (x,y kind ramp message) and a\n"
-        "                       summary, or --json. Exits 4 when there are findings\n"
-        "                       other than notes. --target irc (default: a\n"
-        "                       project's own, else ansi) turns no-cp437 off and\n"
-        "                       counts what an .ans save drops instead (ans-loss,\n"
-        "                       a note: printed with \"note:\", it exits 0)\n"
+        "                       named ramp and the craft pairs), pixel noise and\n"
+        "                       the craft rules; one line per finding (x,y kind\n"
+        "                       ramp message) and a summary, or --json. Exits 4\n"
+        "                       when there are findings other than notes. --target\n"
+        "                       irc (default: a project's own, else ansi) turns\n"
+        "                       no-cp437 off and counts what an .ans save drops\n"
+        "                       instead (ans-loss, a note: printed with \"note:\",\n"
+        "                       it exits 0); wasted-format flags bold, italic or\n"
+        "                       underline on a cell where it draws nothing\n"
         "  render --irc <in> <out.png>\n"
         "                       draw the IRC view: the mIRC palette, what IRC\n"
         "                       drops, and each line cut at --budget bytes, 1 to\n"

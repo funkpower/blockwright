@@ -7,6 +7,7 @@
 #include <QChar>
 #include <QString>
 
+#include <algorithm>
 #include <array>
 #include <deque>
 #include <mutex>
@@ -184,6 +185,22 @@ std::uint8_t glyphIndex(Glyph g) {
 
 Rgb resolveColor(const Color& c) { return c.isIndexed() ? kPalette[c.index & 15] : c.rgb; }
 
+GlyphRows formattedRows(const CellImage& ci, std::uint8_t attrs, int gw, const BitmapFont& font) {
+    const int gh = std::min(font.height, 16);
+    GlyphRows rows{};
+    if (ci.rows) {
+        rows = *ci.rows;
+    } else {
+        const std::uint8_t g = ci.index;
+        const bool lineDrawing = g >= 0xC0 && g <= 0xDF;
+        for (int y = 0; y < gh; ++y)
+            for (int x = 0; x < gw; ++x)
+                if (x < 8 ? font.pixel(g, x, y) : lineDrawing && font.pixel(g, 7, y))
+                    rows[std::size_t(y)] |= std::uint16_t(1u << x);
+    }
+    return formatRows(rows, attrs, gw, gh);
+}
+
 QImage renderCanvas(const Canvas& canvas, int gw, int scale, const BitmapFont& font) {
     if (gw != 8 && gw != 9)
         throw std::invalid_argument("font width must be 8 or 9");
@@ -202,12 +219,17 @@ QImage renderCanvas(const Canvas& canvas, int gw, int scale, const BitmapFont& f
     for (int cy = 0; cy < canvas.height(); ++cy) {
         for (int cx = 0; cx < canvas.width(); ++cx) {
             const Cell& cell = canvas.at(cx, cy);
-            const CellImage ci = cellImage(canvas, cx, cy, gh);
+            CellImage ci = cellImage(canvas, cx, cy, gh);
             const std::uint8_t g = ci.index;
             const QRgb fg = toQRgb(resolveColor(cell.fg)), bg = toQRgb(resolveColor(cell.bg));
+            GlyphRows formatted;
+            if (cell.attrs & attr::Formatting) {
+                formatted = formattedRows(ci, cell.attrs, gw, font);
+                ci.rows = &formatted;
+            }
             if (ci.rows) {
                 for (int y = 0; y < gh; ++y) {
-                    const std::uint16_t row = (*ci.rows)[y];
+                    const std::uint16_t row = (*ci.rows)[std::size_t(y)];
                     for (int s = 0; s < scale; ++s) {
                         auto* line = reinterpret_cast<QRgb*>(img.scanLine((cy * gh + y) * scale + s));
                         QRgb* px = line + qint64(cx) * gw * scale;

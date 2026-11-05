@@ -28,6 +28,7 @@
 #include <QFileOpenEvent>
 #include <QKeyEvent>
 #include <QMessageBox>
+#include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUndoStack>
@@ -768,7 +769,7 @@ TEST_CASE("the app refuses a newer major project and keeps a newer minor's files
     QString error;
     const QString ans = tuxAt(tmp.filePath(QStringLiteral("tux.ans")));
     REQUIRE(w.openFile(ans, &error));
-    writeBytes(manifest, withVersion("\"5.0\""));
+    writeBytes(manifest, withVersion("\"6.0\""));
     CHECK_FALSE(w.openFile(dir, &error));
     CHECK_FALSE(error.isEmpty());
     CHECK(w.document()->path() == ans);
@@ -780,6 +781,35 @@ TEST_CASE("the app refuses a newer major project and keeps a newer minor's files
     drawAt(w, 0, 0, U'Q');
     REQUIRE(w.save());
     CHECK(bwtest::readFile(fpath(dir + QStringLiteral("/future/x.bin"))) == "abc");
+}
+
+TEST_CASE("a project before 5.0 opens with its stray attribute bits cleared, and says how many cells") {
+    // #360: no build before 5.0 wrote a bit but blink
+    QTemporaryDir tmp;
+    const QString dir = tmp.filePath(QStringLiteral("p"));
+    writeSampleDirectory(dir);
+    const QString manifest = dir + QStringLiteral("/manifest.json");
+    std::string m = bwtest::readFile(fpath(manifest));
+    const auto at = m.find("\"1.3\"");
+    REQUIRE(at != std::string::npos);
+    writeBytes(manifest, m.replace(at, 5, "\"4.0\""));
+    const QStringList files = QDir(dir + QStringLiteral("/layers")).entryList({QStringLiteral("*.cells")});
+    REQUIRE_FALSE(files.isEmpty());
+    const QString cellsPath = dir + QStringLiteral("/layers/") + files.front();
+    Canvas c = project::decodeCells(bwtest::readFile(fpath(cellsPath)));
+    REQUIRE(c.width() >= 3);
+    c.at(0, 0).attrs = std::uint8_t(0xA0 | attr::Blink);
+    c.at(1, 0).attrs = std::uint8_t(attr::Underline | attr::ReservedStrike);
+    c.at(2, 0).attrs = attr::Blink;
+    writeBytes(cellsPath, project::encodeCells(c));
+
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(dir, &error));
+    CHECK(w.statusBar()->currentMessage().contains(QStringLiteral("from 2 cells")));
+    project::ReadNotes notes;
+    const project::Project p = project::read(fpath(dir), &notes);
+    CHECK(notes.strayAttributes == 2);
 }
 
 TEST_CASE("a flat .ans is not written over a project") {

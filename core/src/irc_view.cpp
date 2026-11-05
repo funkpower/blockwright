@@ -63,18 +63,27 @@ bool takesMarks(char32_t cp) { return !(cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) 
 // again in as few bytes as it can (parse_irc, then encode_irc_min). Both see
 // a cluster (a base and the zero-width code points after it, any codes
 // between them skipped) as one cell in its base's colours, whose glyph
-// neither changes. (ascii.py falls back on a plainer encoding for a line of
-// more than 2000 cells or one with attributes; the export's lines have at
-// most kMaxColumns cells, and their only attributes are the ^B pairs that
-// cancel out.) A colour is -1 where the line sets none (the client's own).
+// neither changes. Formatting is toggled per code as parse_irc toggles it,
+// and a line with any on a cell gets encode_irc where encode_irc_min would
+// run (ascii.py's fallback for it; the other, for a line of more than 2000
+// cells, never applies: the export's lines have at most kMaxColumns cells).
+// A colour is -1 where the line sets none (the client's own).
 namespace sender {
 
 constexpr int kNone = -1;
 constexpr int kAny = -2;  // encode_irc_min: whatever the colour is now
 
+// ascii.py's attribute bits and their codes, in ATTR_CODES order.
+constexpr int kBold = 1, kItalic = 2, kUnderline = 4, kReverse = 8, kStrike = 16, kMono = 32;
+constexpr std::pair<int, char> kAttrCodes[] = {{kBold, '\x02'},    {kItalic, '\x1d'}, {kUnderline, '\x1f'},
+                                               {kReverse, '\x16'}, {kStrike, '\x1e'}, {kMono, '\x11'}};
+// attributes that make a space's foreground colour visible
+constexpr int kSpaceVisible = kUnderline | kReverse | kStrike;
+
 struct SentCell {
     std::u32string ch;  // a cluster: its base, then its zero-width code points
     int fg, bg;
+    int attrs = 0;
     bool is(char32_t c) const { return ch.size() == 1 && ch[0] == c; }
 };
 
@@ -98,12 +107,12 @@ std::string colourCode(int fg, int bg = kNone) {
 }
 
 // parse_irc and cluster_cells, for the export's lines: no ^D colours, tabs
-// or other control bytes, and attributes that leave the cells as they are.
+// or other control bytes. Each attribute code toggles its bit.
 // `codeInCluster` is set when a code sits between a cluster's base and a
 // zero-width code point of it (code_in_cluster).
 std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr) {
     std::vector<SentCell> cells;
-    int fg = kNone, bg = kNone;
+    int fg = kNone, bg = kNone, attrs = 0;
     bool code = false;  // a code since the last code point
     auto mirc = [](std::uint8_t n) { return n < 99 ? int(n) : kNone; };
     std::size_t i = 0;
@@ -128,6 +137,7 @@ std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr
             ++i;
             code = true;
             fg = bg = kNone;
+            attrs = 0;
             break;
         case '\x02':
         case '\x11':
@@ -135,6 +145,9 @@ std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr
         case '\x1d':
         case '\x1e':
         case '\x1f':
+            for (const auto& [bit, c] : kAttrCodes)
+                if (c == line[i])
+                    attrs ^= bit;
             ++i;
             code = true;
             break;
@@ -145,7 +158,7 @@ std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr
                 if (code && codeInCluster)
                     *codeInCluster = true;
             } else {
-                cells.push_back({std::u32string(1, cp), fg, bg});
+                cells.push_back({std::u32string(1, cp), fg, bg, attrs});
             }
             code = false;
         }
@@ -155,7 +168,7 @@ std::vector<SentCell> parse(std::string_view line, bool* codeInCluster = nullptr
 }
 
 // Whether a cell is one encode_irc drops at the end of a line.
-bool blank(const SentCell& c) { return c.is(U' ') && c.bg == kNone; }
+bool blank(const SentCell& c) { return c.is(U' ') && c.bg == kNone && !(c.attrs & kSpaceVisible); }
 
 // encode_irc: as few codes as it can, a space's foreground left as it is.
 std::string encode(const std::vector<SentCell>& cells) {
@@ -163,11 +176,17 @@ std::string encode(const std::vector<SentCell>& cells) {
     while (end && blank(cells[end - 1]))
         --end;
     std::string out;
-    int curFg = kNone, curBg = kNone;
+    int curFg = kNone, curBg = kNone, curAttrs = 0;
     for (std::size_t i = 0; i < end; ++i) {
         const SentCell& c = cells[i];
+        if (c.attrs != curAttrs) {
+            for (const auto& [bit, code] : kAttrCodes)
+                if ((c.attrs ^ curAttrs) & bit)
+                    out += code;
+            curAttrs = c.attrs;
+        }
         const std::string text = utf8(c.ch);
-        const bool space = c.is(U' ');
+        const bool space = c.is(U' ') && !(c.attrs & kSpaceVisible);
         int wantFg = c.fg;
         if (space) {
             if (c.bg == curBg) {
@@ -239,8 +258,11 @@ std::pair<std::string, Colours> code(Colours cur, int fg, int bg, char32_t ch) {
 // drawn (a space or a full block of the same colour; a cluster has one way,
 // its own glyph in its own colours). Kept in ascii.py's
 // order throughout, so that of two encodings of one length it picks the one
-// it picks, which decides where a cut falls.
+// it picks, which decides where a cut falls. A line with any attribute on a
+// cell is left to encode_irc, as ascii.py leaves it.
 std::string encodeMin(const std::vector<SentCell>& cells) {
+    if (std::any_of(cells.begin(), cells.end(), [](const SentCell& c) { return c.attrs != 0; }))
+        return encode(cells);
     struct Entry {
         Colours state;
         std::size_t cost;
@@ -320,7 +342,7 @@ std::size_t sentSize(const std::string& line) { return line.size() + (!line.empt
 
 std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& opts, DecodeLoss* loss) {
     std::vector<ShownCell> out;
-    std::uint8_t fg = kClientColour, bg = kClientColour;
+    std::uint8_t fg = kClientColour, bg = kClientColour, attrs = 0;
     bool reverse = false;
     int col = 0;  // the cursor's column, opts.columns when a wrap is pending
     // The last cluster written, while a zero-width code point may still join
@@ -339,7 +361,7 @@ std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& op
         }
     };
     const auto put = [&](Glyph g, std::size_t end) {
-        MircCell c{g, fg, bg};
+        MircCell c{g, fg, bg, attrs};
         if (reverse)
             std::swap(c.fg, c.bg);
         out.push_back({c, end});
@@ -365,6 +387,7 @@ std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& op
         case '\x0f':
             ++i;
             fg = bg = kClientColour;
+            attrs = 0;
             reverse = false;
             break;
         case '\x16':
@@ -372,10 +395,19 @@ std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& op
             reverse = !reverse;
             break;
         case '\x02':
-        case '\x11':
+            ++i;
+            attrs ^= attr::Bold;
+            break;
         case '\x1d':
-        case '\x1e':
+            ++i;
+            attrs ^= attr::Italic;
+            break;
         case '\x1f':
+            ++i;
+            attrs ^= attr::Underline;
+            break;
+        case '\x11':
+        case '\x1e':
             ++i;
             break;
         default: {
@@ -488,6 +520,7 @@ View ircView(const Canvas& canvas, std::size_t budget, const EncodeOptions& opts
             c.ch = s.cell.ch;
             c.fg = shownColour(s.cell.fg, kClientForeground);
             c.bg = shownColour(s.cell.bg, kClientBackground);
+            c.attrs = s.cell.attrs;
         }
     }
     return v;

@@ -67,6 +67,16 @@ void MainWindow::updateTarget() {
     }
     if (palette_)
         palette_->setTarget(t);
+    if (formatBar_)
+        formatBar_->setVisible(t == Target::Irc);
+}
+
+std::uint8_t MainWindow::formatBit(const QAction* a) const {
+    static constexpr std::uint8_t bits[] = {attr::Bold, attr::Italic, attr::Underline};
+    for (std::size_t i = 0; i < formatActions_.size(); ++i)
+        if (formatActions_[i] == a)
+            return bits[i];
+    return 0;
 }
 
 void MainWindow::stepColour(bool foreground, int step) {

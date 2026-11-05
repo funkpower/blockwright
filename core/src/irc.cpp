@@ -38,15 +38,18 @@ Cell drawn(const Cell& c) {
     return d;
 }
 
-bool same(const MircCell& a, const MircCell& b) { return a.ch == b.ch && a.fg == b.fg && a.bg == b.bg; }
+bool same(const MircCell& a, const MircCell& b) {
+    return a.ch == b.ch && a.fg == b.fg && a.bg == b.bg && a.attrs == b.attrs;
+}
 
 bool blank(Glyph ch) { return ch == U' ' || ch == U'\u00a0'; }
 
 // The one colour a cell shows, if it shows one: as the row encoder's ways().
 // A continuation shows none of its own (its lead draws it), and a cluster
-// is drawn as itself.
+// is drawn as itself, and so is a formatted cell, whose formatting can show
+// either colour.
 std::optional<std::uint8_t> solidColour(const MircCell& c) {
-    if (!c.ch.codePoint())
+    if (!c.ch.codePoint() || (c.attrs & attr::Formatting))
         return std::nullopt;
     if (blank(c.ch))
         return c.bg;
@@ -98,12 +101,14 @@ int fgQuarters(Glyph g) {
     }
 }
 
-// The row as it is encoded: trailing black spaces dropped, unless padded,
-// and then a black last cell drawn as a block.
+// The row as it is encoded: trailing black spaces dropped (not an underlined
+// one, which shows its line), unless padded, and then a black last cell drawn
+// as a block.
 std::string encodeCells(std::span<const MircCell> cells, const EncodeOptions& opts) {
     std::size_t n = cells.size();
     if (!opts.pad)
-        while (n > 0 && cells[n - 1].ch == U' ' && cells[n - 1].bg == kMircBlack)
+        while (n > 0 && cells[n - 1].ch == U' ' && cells[n - 1].bg == kMircBlack &&
+               !attr::showsOnBlank(cells[n - 1].attrs))
             --n;
     const auto row = cells.first(n);
     const bool solidEnd = opts.pad && n > 0 && solidColour(row.back()) == kMircBlack;
@@ -132,8 +137,10 @@ struct Step {
 // neighbour's.
 void stepsFor(const std::vector<MircCell>& row, std::size_t x, std::vector<Step>& out) {
     const MircCell& c = row[x];
-    // either half of a pair is left alone, so neither ever changes alone
-    if (c.ch.isContinuation() || (x + 1 < row.size() && row[x + 1].ch.isContinuation()))
+    // either half of a pair is left alone, so neither ever changes alone,
+    // and so is a formatted cell, whose formatting fit never changes
+    if (c.ch.isContinuation() || (x + 1 < row.size() && row[x + 1].ch.isContinuation()) ||
+        (c.attrs & attr::Formatting))
         return;
     std::array<std::uint8_t, 2> left{};
     const int nLeft = x > 0 ? shownColours(row[x - 1], left) : 0;
@@ -277,7 +284,9 @@ std::uint8_t mircColor(const Color& c) {
 std::vector<MircCell> mircRow(std::span<const Cell> cells, std::vector<Unwritable>* lost, int y) {
     std::vector<MircCell> out;
     out.reserve(cells.size());
-    const auto colours = [](const Cell& d, Glyph g) { return MircCell{g, mircColor(d.fg), mircColor(d.bg)}; };
+    const auto colours = [](const Cell& d, Glyph g) {
+        return MircCell{g, mircColor(d.fg), mircColor(d.bg), std::uint8_t(d.attrs & attr::Formatting)};
+    };
     for (std::size_t x = 0; x < cells.size(); ++x) {
         const Cell& c = cells[x];
         const Cell d = drawn(c);
@@ -292,7 +301,7 @@ std::vector<MircCell> mircRow(std::span<const Cell> cells, std::vector<Unwritabl
         if (!c.transparent && !c.ch.isContinuation() && x + 1 < cells.size() && cells[x + 1].ch.isContinuation()) {
             if (utf8WideGlyph(c.ch)) {
                 out.push_back(m);
-                out.push_back({Glyph::continuation(), m.fg, m.bg});
+                out.push_back({Glyph::continuation(), m.fg, m.bg, m.attrs});
             } else {
                 refuse(writable ? Loss::Wide : Loss::Control, true);
                 out.push_back(m);

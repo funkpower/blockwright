@@ -71,7 +71,8 @@ struct CellBlock {
 };
 
 // A blank cell: a hole, or a space (also NUL or CP437 0xFF) on a black
-// background without blink, which iCE would show as a bright background.
+// background without blink, which iCE would show as a bright background,
+// and without underline, whose line shows (attr::showsOnBlank).
 bool isBlank(const Cell& c);
 
 // The selected cells, clipped to the canvas. Empty if nothing is selected.

@@ -116,6 +116,15 @@ Color getColour(const unsigned char* p, std::size_t at) {
 }
 
 // A .cells file's format version, from its header; 0 for one that isn't.
+// Whether a cell of `cells` has bold, italic or underline (5.0).
+bool hasFormatting(const Canvas& cells) {
+    for (int y = 0; y < cells.height(); ++y)
+        for (int x = 0; x < cells.width(); ++x)
+            if (cells.at(x, y).attrs & attr::Formatting)
+                return true;
+    return false;
+}
+
 std::uint16_t cellsVersion(std::string_view data) {
     if (data.size() < kHeaderSize || data.substr(0, 4) != std::string_view(kMagic, 4))
         return 0;
@@ -844,7 +853,7 @@ struct PendingClusters {
 
 // decodeCells without the interning: each cell holding a cluster holds
 // U+FFFD until internClusters puts in the pool's glyph.
-Canvas readCells(std::string_view data, PendingClusters& pending);
+Canvas readCells(std::string_view data, PendingClusters& pending, int* stray = nullptr);
 // Interns `pending`'s entries (PoolCap::Uncapped) and puts each in the
 // cells that use it. A pool out of ids or memory part-way leaves the entries
 // interned before it.
@@ -852,7 +861,7 @@ void internClusters(const PendingClusters& pending, Canvas& cells);
 
 Layer layerFromEntries(LayerId id, const std::string& json, const std::string& cells, int major,
                        const FontStore& fonts, const Entries& entries, ReadRefs& refs,
-                       PendingClusters& clusters) {
+                       PendingClusters& clusters, ReadNotes& notes) {
     const std::string what = layerPath(id, false);
     const Reader r(parseObject(json, what), what);
     Layer l;
@@ -930,7 +939,8 @@ Layer layerFromEntries(LayerId id, const std::string& json, const std::string& c
     if (cellsVersion(cells) == kWideCellsVersion && major < kWideFormatMajor)
         fail(layerPath(id, true) + ": wide glyphs or clusters in a " + std::to_string(major) + ".x project");
     try {
-        l.cells = readCells(cells, clusters);
+        // before 5.0 every attribute bit but blink is stray, and cleared
+        l.cells = readCells(cells, clusters, major < kFormattingFormatMajor ? &notes.strayAttributes : nullptr);
     } catch (const ProjectError& e) {
         fail(layerPath(id, true) + ": " + e.what());
     }
@@ -1911,7 +1921,7 @@ void checkTableCodePoints(std::size_t codePoints) {
         fail("the project's layers hold clusters of over " + std::to_string(kMaxTableCodePoints) + " code points");
 }
 
-Canvas readCells(std::string_view data, PendingClusters& pending) {
+Canvas readCells(std::string_view data, PendingClusters& pending, int* stray) {
     pending = {};
     if (data.size() < kHeaderSize || data.substr(0, 4) != std::string_view(kMagic, 4))
         fail("layer cells: not a .cells file");
@@ -2024,6 +2034,16 @@ Canvas readCells(std::string_view data, PendingClusters& pending) {
         c.fg = getColour(r + 4, i);
         c.bg = getColour(r + 8, i);
         c.attrs = r[12];
+        if (stray) {
+            // a project before 5.0: no build wrote a bit but blink, so any
+            // other is stray (#360)
+            if (c.attrs & ~attr::Blink) {
+                c.attrs &= attr::Blink;
+                ++*stray;
+            }
+        } else if (c.attrs & ~attr::Known) {
+            fail("layer cells: cell " + std::to_string(i) + " has an unknown attribute");
+        }
         c.transparent = (flags & kFlagTransparent) != 0;
         if ((flags & kFlagContinuation) && (flags & kFlagCluster))
             fail("layer cells: cell " + std::to_string(i) + " is both a continuation and a cluster");
@@ -2192,6 +2212,7 @@ Entries encode(const Project& project) {
     bool glowLit = false;  // a live text layer's Glow whose brightness isn't its width (1.8, 2.4)
     bool glowCells = false;  // any Glow on a cells or pixels layer (3.0)
     bool wide = false;  // a layer with a wide pair or a cluster (4.0)
+    bool formatted = false;  // a layer with bold, italic or underline (5.0)
     std::size_t tableCodePoints = 0;  // what a reader counts the layers' cluster tables at
     std::set<std::string> writtenReferences;
     for (const Layer& l : stack.layers()) {
@@ -2240,6 +2261,7 @@ Entries encode(const Project& project) {
         checkJsonSize(layerPath(l.props.id, false), json.size());
         out[layerPath(l.props.id, false)] = json;
         std::string& cellsEntry = out[layerPath(l.props.id, true)] = encodeCells(l.cells);
+        formatted = formatted || hasFormatting(l.cells);
         if (cellsVersion(cellsEntry) == kWideCellsVersion) {
             wide = true;
             tableCodePoints += cellsTableCodePoints(cellsEntry);
@@ -2248,7 +2270,8 @@ Entries encode(const Project& project) {
     checkTableCodePoints(tableCodePoints);
     QJsonObject manifest{
         {"format", "blockwright"},
-        {"version", qstr(wide        ? std::to_string(kWideFormatMajor) + "." + std::to_string(kWideFormatMinor)
+        {"version", qstr(formatted ? std::to_string(kFormattingFormatMajor) + "." + std::to_string(kFormattingFormatMinor)
+                         : wide        ? std::to_string(kWideFormatMajor) + "." + std::to_string(kWideFormatMinor)
                          : glowCells ? std::to_string(kGlowCellsFormatMajor) + "." + std::to_string(kGlowCellsFormatMinor)
                          : styled  ? std::to_string(kStyledFormatMajor) + "." +
                                       std::to_string(glowLit      ? kGlowStyledFormatMinor
@@ -2296,7 +2319,10 @@ Entries encode(const Project& project) {
     return out;
 }
 
-Project decode(const Entries& entries) {
+Project decode(const Entries& entries, ReadNotes* notes) {
+    ReadNotes local;
+    ReadNotes& n = notes ? *notes : local;
+    n = {};
     checkEntries(entries);
     checkPaths(entries);
     const auto manifestIt = entries.find("manifest.json");
@@ -2308,10 +2334,10 @@ Project decode(const Entries& entries) {
     const std::string version = m.string("version");
     const int major = parseVersion(version).first;
     if (major != kFormatMajor && major != kStyledFormatMajor && major != kGlowCellsFormatMajor &&
-        major != kWideFormatMajor)
+        major != kWideFormatMajor && major != kFormattingFormatMajor)
         fail("a project in format " + version + ": this build reads " + std::to_string(kFormatMajor) + ".x, " +
-             std::to_string(kStyledFormatMajor) + ".x, " + std::to_string(kGlowCellsFormatMajor) + ".x and " +
-             std::to_string(kWideFormatMajor) + ".x");
+             std::to_string(kStyledFormatMajor) + ".x, " + std::to_string(kGlowCellsFormatMajor) + ".x, " +
+             std::to_string(kWideFormatMajor) + ".x and " + std::to_string(kFormattingFormatMajor) + ".x");
 
     Project p;
     const int w = int(m.integer("width", 1, kMaxColumns));
@@ -2389,7 +2415,7 @@ Project decode(const Entries& entries) {
         if (json == entries.end() || cells == entries.end())
             fail("layer " + std::to_string(id) + " has no " + layerPath(id, json != entries.end()));
         PendingClusters pending;
-        p.layers.add(layerFromEntries(id, json->second, cells->second, major, p.fonts, entries, refs, pending));
+        p.layers.add(layerFromEntries(id, json->second, cells->second, major, p.fonts, entries, refs, pending, n));
         if (!pending.empty())
             clusters.emplace_back(id, std::move(pending));
     }
@@ -2441,13 +2467,13 @@ bool isProject(const fs::path& path) {
     return in.gcount() == 4 && std::memcmp(sig, "PK\x03\x04", 4) == 0;
 }
 
-Project read(const fs::path& path) {
+Project read(const fs::path& path, ReadNotes* notes) {
     std::error_code ec;
     if (fs::is_directory(path, ec))
-        return decode(readDirectory(path));
+        return decode(readDirectory(path), notes);
     if (!fs::exists(path, ec))
         fail(path.string() + " doesn't exist");
-    return decode(readZip(path));
+    return decode(readZip(path), notes);
 }
 
 void writeZip(const Project& project, const fs::path& path) {

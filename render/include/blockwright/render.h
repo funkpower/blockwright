@@ -5,6 +5,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/cp437.h"
+#include "blockwright/glyph_rows.h"
 
 #include <QImage>
 
@@ -48,9 +49,8 @@ std::uint8_t glyphIndex(char32_t ch);
 // space. What a cell draws is cellImage's.
 std::uint8_t glyphIndex(Glyph g);
 
-// The pixels of a cell the CP437 font doesn't draw: 16 rows, bit x of a row
-// lit in column x, bit 8 the ninth column of 9 px mode.
-using GlyphRows = std::array<std::uint16_t, 16>;
+// The pixels of a cell the CP437 font doesn't draw are GlyphRows
+// (glyph_rows.h).
 
 // What a cell draws: the font's glyph `index`, or `rows` when that isn't
 // null. Rows live as long as the process, so their address names them.
@@ -87,6 +87,12 @@ inline CellImage cellImage(const Canvas& canvas, int x, int y, int fontHeight) {
     return detail::slowCellImage(canvas, x, y, fontHeight, lead);
 }
 
+// The pixels a cell with formatting draws (#350): its cellImage in a font
+// `font.height` px high (16 at most) and `glyphWidth` (8 or 9) wide, as
+// GlyphRows (an 8 px font uses its first 8), with the 9th column as
+// renderCanvas draws it, with formatRows' formatting.
+GlyphRows formattedRows(const CellImage& ci, std::uint8_t attrs, int glyphWidth, const BitmapFont& font = vgaFont());
+
 // The colour a cell colour renders as: a palette entry or its 24-bit value.
 Rgb resolveColor(const Color& c);
 
@@ -97,6 +103,7 @@ Rgb resolveColor(const Color& c);
 // as libansilove draws it. In 9 px mode the 9th column repeats the 8th for
 // the line-drawing glyphs 0xC0-0xDF and is background otherwise, as VGA does.
 // Each cell draws its cellImage in its own colours.
+// A cell with bold, italic or underline draws its formattedRows.
 // The SAUCE aspect-ratio flag is not applied: pixels are always square.
 // Transparent cells draw like any other (layers come later).
 // Throws std::invalid_argument for a bad width or scale or an empty (0-column

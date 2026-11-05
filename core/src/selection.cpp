@@ -215,7 +215,7 @@ bool isBlank(const Cell& c) {
         return true;
     const bool space = c.ch == U' ' || c.ch == U'\0' || c.ch == U' ';
     const bool black = c.bg.isIndexed() ? c.bg.index == Black : c.bg.rgb == Rgb{};
-    return space && black && !(c.attrs & attr::Blink);
+    return space && black && !(c.attrs & attr::Blink) && !attr::showsOnBlank(c.attrs);
 }
 
 CellBlock copyBlock(const Canvas& canvas, const Selection& sel) {

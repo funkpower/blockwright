@@ -45,6 +45,8 @@ struct MircCell {
     Glyph ch = U' ';
     std::uint8_t fg = 0;
     std::uint8_t bg = 1;
+    // attr::Bold, Italic and Underline; any other bit is ignored
+    std::uint8_t attrs = 0;
 };
 
 // The shortest IRC line that draws `cells`, without a line ending. With
@@ -54,7 +56,11 @@ struct MircCell {
 // in its own background) is drawn as █ rather than as a space, so a client
 // that drops trailing blanks keeps it. A lead is written as its cluster's
 // UTF-8 bytes in one way (its own colours, whatever they are) and its
-// continuation as nothing, with no code between them. Throws IrcError for a
+// continuation as nothing, with no code between them. A cell's formatting is
+// switched on and off with ^B, ^] and ^_ (in that order, after any colour
+// code), a byte a toggle, and never left off a cell that has it; an
+// underlined cell has one way, its own glyph in its own colours, since the
+// line shows its foreground. Throws IrcError for a
 // code point that is not a Unicode scalar value, a continuation in the first
 // cell or right of another continuation, or a colour over 98.
 std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades = false, bool solidEnd = false);
@@ -65,7 +71,7 @@ using Cost = std::uint64_t;
 
 // Whether an entry `cost` bytes long can still beat the best, `best` bytes
 // (cost >= best): without overflow at any cost.
-bool withinSlack(Cost cost, Cost best);
+bool withinSlack(Cost cost, Cost best, Cost slack = 6);
 
 // encodeMircRow with the search's byte count starting at `start` rather than
 // 0, so tests can reach the top of the cost range with a short row.

@@ -56,8 +56,8 @@ public:
     Cursor cellCursor() const { return cursor_; }
     void setCellCursor(Cursor c);  // kept on the canvas
 
-    // The pen, kept in the settings between runs (pen/foreground and
-    // pen/background).
+    // The pen, its colours kept in the settings between runs (pen/foreground
+    // and pen/background); its formatting starts off each run.
     const Pen& pen() const { return pen_; }
     void setPen(const Pen& pen);
     // The pen's colours one at a time, as swatches 0-98 (swatchColor): 0-15

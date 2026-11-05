@@ -92,9 +92,12 @@ struct Cursor {
 };
 
 // The colours typing writes with: grey on black until a palette picks others.
+// `attrs` is the formatting (attr::Bold, Italic, Underline) the glyph brush
+// writes under the IRC target (#350); typing doesn't write it yet.
 struct Pen {
     Color fg = Color::indexed(Grey);
     Color bg = Color::indexed(Black);
+    std::uint8_t attrs = 0;
 };
 
 // The cursor moved by (dx, dy), kept on the canvas.

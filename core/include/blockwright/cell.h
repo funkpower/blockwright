@@ -35,8 +35,20 @@ namespace attr {
 // off. With iCE on, blink means a bright background and the parser folds it
 // into the background index instead.
 inline constexpr std::uint8_t Blink = 1u << 0;
-// Bits 1-3 are kept for IRC's bold, italic and underline and bit 4 for
-// strikethrough (#350); nothing sets them yet.
+// IRC's formatting (#350): ^B, ^] and ^_. An .ans can't hold them.
+inline constexpr std::uint8_t Bold = 1u << 1;
+inline constexpr std::uint8_t Italic = 1u << 2;
+inline constexpr std::uint8_t Underline = 1u << 3;
+// Kept for strikethrough (^^), which nothing sets yet; a project with it is
+// refused, as one with bits 5-7 is.
+inline constexpr std::uint8_t ReservedStrike = 1u << 4;
+// The formatting bits, and every bit a project may hold.
+inline constexpr std::uint8_t Formatting = Bold | Italic | Underline;
+inline constexpr std::uint8_t Known = Blink | Formatting;
+// Whether `attrs` draw anything on a blank glyph (a space, NUL or U+00A0):
+// underline lights its bottom row in the foreground; bold and italic move
+// no pixel of it. Paste, the IRC encoder and the lint read a blank by this.
+constexpr bool showsOnBlank(std::uint8_t attrs) { return (attrs & Underline) != 0; }
 } // namespace attr
 
 struct Cell {

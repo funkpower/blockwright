@@ -123,6 +123,14 @@ inline constexpr int kGlowCellsFormatMinor = 0;
 // implies every 3.x and 2.x minor.
 inline constexpr int kWideFormatMajor = 4;
 inline constexpr int kWideFormatMinor = 0;
+// A layer that holds a cell with bold, italic or underline (attr::Formatting,
+// #350): a 4.x reader would keep the bits but neither draw nor export them,
+// so the project is 5.0, which a 4.x reader refuses. It implies every 4.x
+// minor and everything before. No build before 5.0 wrote a bit but blink, so
+// a reader clears every other bit in a project below 5.0 and counts the
+// cells (ReadNotes), and refuses a bit outside attr::Known in 5.0 or later.
+inline constexpr int kFormattingFormatMajor = 5;
+inline constexpr int kFormattingFormatMinor = 0;
 
 // Limits a reader holds a file to, and a writer checks before it writes
 // anything: no more than kMaxEntries entries, none over kMaxEntryBytes, all
@@ -247,7 +255,7 @@ std::optional<std::string> layerReferenceProblem(const LayerProperties& props);
 // cluster may hold (clusterMayHold). decodeCells throws ProjectError for
 // anything else: another magic or version, a size over the limits, a frame
 // that isn't exactly the cells (and table), a code point past U+10FFFF, an
-// unknown colour kind or flag, a version 2 layer with no continuation or
+// unknown colour kind, flag or attribute bit (outside attr::Known), a version 2 layer with no continuation or
 // cluster, a table that could hold over kMaxTableCodePoints code points
 // (checked before decoding), and a pool that can't take the table (out of
 // ids or memory; never its lossy cap, PoolCap::Uncapped). encodeCells
@@ -275,7 +283,12 @@ Canvas decodeCells(std::string_view data);
 // hold, and for a project whose entries decode would refuse that way.
 using Entries = std::map<std::string, std::string>;
 Entries encode(const Project& project);
-Project decode(const Entries& entries);
+// What decode changed to open a project, for a notice: the cells of a
+// project before 5.0 whose stray attribute bits (all but blink) it cleared.
+struct ReadNotes {
+    int strayAttributes = 0;
+};
+Project decode(const Entries& entries, ReadNotes* notes = nullptr);
 
 // Whether a path in a project is one a reader takes and a writer writes:
 // relative and '/'-separated, no empty, ".", ".." or hidden (leading '.')
@@ -303,7 +316,7 @@ bool isProject(const std::filesystem::path& path);
 // repeated or over the limits is refused, as is any symbolic link or other
 // entry that isn't a file or directory (in a zip, by its UNIX mode, hidden
 // or not), and everything decode refuses.
-Project read(const std::filesystem::path& path);
+Project read(const std::filesystem::path& path, ReadNotes* notes = nullptr);
 
 // Both writers encode the project first, so one decode would refuse is
 // refused before the destination is touched.

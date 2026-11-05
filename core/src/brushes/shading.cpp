@@ -24,9 +24,11 @@ std::optional<Cell> stepRung(const Ramp& ramp, const Cell& cell, int steps, bool
     // of the target that can, or leave the cell.
     const int back = target > *rung ? -1 : 1;
     for (int next = target; next != *rung; next += back) {
-        const Cell out = rungCell(ramp, next, form);
-        if (ice || out.bg.paletteIndex() < 8)
+        Cell out = rungCell(ramp, next, form);
+        if (ice || out.bg.paletteIndex() < 8) {
+            out.attrs |= cell.attrs & attr::Formatting;  // shading keeps the formatting (#360)
             return out;
+        }
     }
     return std::nullopt;
 }

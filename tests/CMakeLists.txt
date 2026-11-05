@@ -75,6 +75,7 @@ add_executable(blockwright-tests
   test_glyph_writers.cpp
   test_gradient.cpp
   test_irc.cpp
+  test_irc_attrs.cpp
   test_irc_fit.cpp
   test_irc_target.cpp
   test_layers.cpp

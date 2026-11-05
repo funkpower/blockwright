@@ -116,7 +116,8 @@ public:
     // Reads the project (a .bwp zip or a project directory) at `path` into
     // `out` without touching any document; false and `error` (what
     // project::read refused) on failure.
-    static bool readProject(const QString& path, project::Project* out, QString* error);
+    static bool readProject(const QString& path, project::Project* out, QString* error,
+                            project::ReadNotes* notes = nullptr);
     // Replaces the document with `project`, read from `path` in `form`: its
     // layer stack (next layer id included; the bottom layer active), iCE,
     // SAUCE fields, extras and .ans encoding (Project::ansEncoding),

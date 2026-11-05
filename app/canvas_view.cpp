@@ -273,7 +273,7 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
 }
 
 void CanvasView::setPen(const Pen& pen) {
-    if (pen.fg == pen_.fg && pen.bg == pen_.bg)
+    if (pen.fg == pen_.fg && pen.bg == pen_.bg && pen.attrs == pen_.attrs)
         return;
     pen_ = pen;
     savePen(pen_);
@@ -357,9 +357,9 @@ void CanvasView::brushSettingsChanged() {
         tool_->settingsChanged();
 }
 
-void CanvasView::setForeground(int index) { setPen({swatchColor(index), pen_.bg}); }
+void CanvasView::setForeground(int index) { setPen({swatchColor(index), pen_.bg, pen_.attrs}); }
 
-void CanvasView::setBackground(int index) { setPen({pen_.fg, swatchColor(index)}); }
+void CanvasView::setBackground(int index) { setPen({pen_.fg, swatchColor(index), pen_.attrs}); }
 
 void CanvasView::setGlyphSet(int set) {
     set = ((set % kGlyphSetCount) + kGlyphSetCount) % kGlyphSetCount;

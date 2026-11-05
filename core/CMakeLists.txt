@@ -28,6 +28,7 @@ add_library(blockwright_core STATIC
   src/tdf.cpp
   src/generator.cpp
   src/glyph.cpp
+  src/glyph_rows.cpp
   src/glyph_sets.cpp
   src/composite.cpp
   src/halfblock.cpp

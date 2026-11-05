@@ -367,6 +367,9 @@ std::unique_ptr<Brush> GlyphTool::makeBrush(Qt::MouseButton button) const {
     c.ch = glyph_;
     c.fg = pen().fg;
     c.bg = pen().bg;
+    const Document* doc = view()->document();
+    if (doc->target() == Target::Irc && !(doc->active() && doc->active()->props.kind == LayerKind::Pixels))
+        c.attrs = pen().attrs;
     return std::make_unique<GlyphBrush>(c);
 }
 
@@ -712,6 +715,10 @@ bool EyedropperTool::mousePress(const ToolEvent& e) {
                                               : pickLayerColour(*doc, e.cell.x(), e.halfRow, bg)) {
         Pen pen = view()->pen();
         (bg ? pen.bg : pen.fg) = *c;
+        // the foreground picks the cell's formatting with it, under IRC
+        if (!bg && doc->target() == Target::Irc)
+            pen.attrs = (view()->sampleMerged() ? doc->canvas() : doc->layerCanvas()).at(e.cell.x(), e.cell.y()).attrs &
+                        attr::Formatting;
         view()->setPen(pen);
     }
     return true;

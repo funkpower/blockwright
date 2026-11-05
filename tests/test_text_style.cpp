@@ -2628,10 +2628,10 @@ TEST_CASE("a reader refuses a malformed or misplaced stack with a clear error", 
               o["kind"] = "cells";
           }),
           "a styled cells layer in a 1.x project"));
-    // a 5.x project: refused before any layer is read
+    // a 6.x project: refused before any layer is read
     Entries newer = good;
     QJsonObject m = object(newer.at("manifest.json"));
-    m["version"] = "5.0";
+    m["version"] = "6.0";
     newer["manifest.json"] = json(m);
     CHECK_THROWS_AS(project::decode(newer), ProjectError);
 }
