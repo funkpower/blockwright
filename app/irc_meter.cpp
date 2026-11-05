@@ -128,23 +128,29 @@ const IrcMeter::Row& IrcMeter::row(int y) {
 irc::Line IrcMeter::encoded(const std::vector<irc::MircCell>& cells) {
     const irc::EncodeOptions o = options();
     std::string key;
-    key.reserve(cells.size() * 6 + 10);
+    key.reserve(cells.size() * 7 + 10);
     const auto put = [&key](std::uint64_t v, int bytes) {
         for (int i = 0; i < bytes; ++i)
             key += char(v >> (8 * i));
     };
-    put(o.fit, 8);
-    put(o.pad, 1);
-    put(o.swapShades, 1);
-    // A cluster by its code points, not its id: the key says what is drawn
-    // whatever pool the id came from (PLAN §16, Storage).
+    // Everything the encoder reads goes in the key. The structured bindings
+    // stop compiling when EncodeOptions or MircCell gains a field, so a new
+    // one can't be left out of it (#371).
+    const auto& [swapShades, pad, fit] = o;
+    put(fit, 8);
+    put(pad, 1);
+    put(swapShades, 1);
     for (const irc::MircCell& c : cells) {
-        const GlyphCodePoints cps = codePoints(c.ch);
+        const auto& [ch, fg, bg, attrs] = c;
+        // A cluster by its code points, not its id: the key says what is
+        // drawn whatever pool the id came from (PLAN §16, Storage).
+        const GlyphCodePoints cps = codePoints(ch);
         put(std::uint64_t(cps.size), 1);
         for (const char32_t cp : cps)
             put(cp, 4);
-        put(c.fg, 1);
-        put(c.bg, 1);
+        put(fg, 1);
+        put(bg, 1);
+        put(attrs, 1);
     }
     if (const auto it = cache_.find(key); it != cache_.end())
         return it->second;

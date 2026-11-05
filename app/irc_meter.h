@@ -133,7 +133,7 @@ private:
     std::vector<Row> rows_;
     std::vector<CellChange> pending_;  // the tool's, on the canvas, by row
     QMetaObject::Connection toolConnection_;
-    // Lines by their cells and the options.
+    // Lines by their cells (glyph, colours and formatting) and the options.
     std::unordered_map<std::string, irc::Line> cache_;
 };
 

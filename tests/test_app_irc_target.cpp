@@ -366,3 +366,66 @@ TEST_CASE("typing writes the pen's formatting under IRC on a cells layer only", 
         CHECK(doc->canvas().at(x, 1).fg == Color::indexed(LightGreen));
     }
 }
+
+namespace {
+
+// A 1x2 IRC canvas of A in mIRC 0 on 1, row 1 with `attrs` (#371).
+AnsiDocument formattedPair(std::uint8_t attrs) {
+    AnsiDocument d;
+    d.canvas = Canvas(1, 2);
+    for (int y = 0; y < 2; ++y) {
+        Cell& c = d.canvas.at(0, y);
+        c.ch = U'A';
+        c.fg = Color::indexed(White);
+        c.bg = Color::indexed(Black);
+    }
+    d.canvas.at(0, 1).attrs = attrs;
+    return d;
+}
+
+constexpr std::uint8_t kBiu = attr::Bold | attr::Italic | attr::Underline;
+
+} // namespace
+
+TEST_CASE("the IRC meter measures rows that differ only in formatting apart", "[app][target][attrs]") {
+    // #371: the meter's line cache was keyed without the cells' formatting
+    MainWindow w;
+    w.document()->replace(formattedPair(kBiu), QString());
+    REQUIRE(w.document()->setTarget(Target::Irc));
+    IrcMeter* m = w.ircMeter();
+    CHECK(m->bytes(0) == 5);  // ^C0,1A
+    CHECK(m->bytes(1) == 8);  // ^C0,1^B^]^_A
+}
+
+TEST_CASE("the IRC meter re-measures a row whose formatting changes after it was read", "[app][target][attrs]") {
+    // #371
+    MainWindow w;
+    Document* doc = w.document();
+    doc->replace(formattedPair(0), QString());
+    REQUIRE(doc->setTarget(Target::Irc));
+    IrcMeter* m = w.ircMeter();
+    REQUIRE(m->bytes(0) == 5);
+    REQUIRE(m->bytes(1) == 5);
+    Cell after = doc->canvas().at(0, 1);
+    after.attrs = kBiu;
+    CellEdit e;
+    e.changes.push_back({0, 1, doc->canvas().at(0, 1), after});
+    REQUIRE(doc->edit(e));
+    CHECK(m->bytes(1) == 8);
+    CHECK(m->bytes(0) == 5);
+    doc->undoStack()->undo();
+    CHECK(m->bytes(1) == 5);
+}
+
+TEST_CASE("Export IRC Text writes a formatted row's toggles after a plain twin", "[app][target][attrs]") {
+    // #371: Export writes the meter's lines, so the cache's key reached the .txt
+    QTemporaryDir dir;
+    MainWindow w;
+    w.document()->replace(formattedPair(kBiu), QString());
+    REQUIRE(w.document()->setTarget(Target::Irc));
+    const QString path = dir.filePath(QStringLiteral("pair.txt"));
+    QString error;
+    REQUIRE(w.exportIrcText(path, &error));
+    CHECK(bwtest::readFile(path.toStdString()) == "\x03" "0,1A\n"
+                                                   "\x03" "0,1\x02\x1d\x1f" "A\n");
+}
