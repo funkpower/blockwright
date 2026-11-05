@@ -245,26 +245,38 @@ TEST_CASE("9 px cells repeat column 8 for 0xC0-0xDF and are background otherwise
     CHECK(same(eight, renderCanvas(cv, 8)));
 }
 
-TEST_CASE("a continuation draws as its background in both renderers (PLAN §16)", "[wide]") {
-    // a lead and its continuation in different colours, beside a pair-free
-    // cell; the continuation's glyph colour must not show anywhere
-    Canvas cv(3, 1);
-    cv.at(0, 0) = Cell{U'中', Color::indexed(Yellow), Color::indexed(Blue), 0, false};
-    cv.at(1, 0) = Cell{Glyph::continuation(), Color::indexed(White), Color::indexed(Red), 0, false};
-    cv.at(2, 0) = Cell{U'A', Color::indexed(Yellow), Color::indexed(Blue), 0, false};
+TEST_CASE("the atlas draws wide glyphs and clusters like renderCanvas (PLAN §16)", "[wide]") {
+    // a pair in two colourings, a lone wide glyph (squeezed), clusters, a
+    // narrow glyph from Unifont, an emoji pair, a stray continuation and a
+    // glyph neither font has; drawn again after a cell changes
+    Canvas cv(12, 2);
+    auto cluster = [](std::vector<char32_t> cps) {
+        const std::optional<Glyph> g = clusterPool().intern(cps, PoolCap::Capped);
+        REQUIRE(g);
+        return *g;
+    };
+    const Glyph row[12] = {U'中', Glyph::continuation(), U'中', cluster({U'q', 0x303}), cluster({U'e', 0x301}),
+                           U'Ж', char32_t(0x1F600), Glyph::continuation(), Glyph::continuation(),
+                           cluster({U'中', 0x301}), Glyph::continuation(), char32_t(0xE000)};
+    for (int x = 0; x < 12; ++x) {
+        cv.at(x, 0) = Cell{row[x], Color::indexed(Yellow), Color::indexed(Blue), 0, false};
+        cv.at(x, 1) = Cell{row[x], Color::indexed(x % 3), Color::fromRgb({0x12, 0x34, std::uint8_t(x * 20)}), 0, false};
+    }
     for (int gw : {8, 9}) {
-        INFO("width " << gw);
-        const QImage want = renderCanvas(cv, gw, 1);
-        for (int y = 0; y < 16; ++y)
-            for (int x = gw; x < 2 * gw; ++x)
-                if (want.pixel(x, y) != qRgb(kPalette[Red].r, kPalette[Red].g, kPalette[Red].b))
-                    FAIL("continuation pixel " << x << "," << y << " isn't its background");
         AtlasRenderer r;
         r.setCanvas(&cv, gw);
         for (int zoom : {1, 2}) {
+            INFO("width " << gw << " zoom " << zoom);
             const QImage got = paintAll(r, zoom);
             INFO(firstDiff(got, renderCanvas(cv, gw, zoom)));
             CHECK(same(got, renderCanvas(cv, gw, zoom)));
         }
+        // the pair at 0 loses its lead: the continuation goes blank
+        cv.at(0, 0).ch = U'A';
+        r.markDirty(QRect(0, 0, 2, 1));
+        const QImage got = paintAll(r, 1);
+        INFO(firstDiff(got, renderCanvas(cv, gw, 1)));
+        CHECK(same(got, renderCanvas(cv, gw, 1)));
+        cv.at(0, 0).ch = U'中';
     }
 }

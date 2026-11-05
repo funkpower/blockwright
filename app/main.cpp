@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
             // The version stays the first line, for the scripts that read it
             std::cout << "blockwright " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n\n"
                       << bw::kLogoText << "\n"
-                      << bw::kFontCredit << bw::kIconCredit;
+                      << bw::kFontCredit << bw::kUnifontCredit << bw::kIconCredit;
             return 0;
         } else if (!std::strcmp(a, "--help") || !std::strcmp(a, "-h")) {
             messagesToConsole();

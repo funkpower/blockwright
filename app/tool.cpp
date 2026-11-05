@@ -82,16 +82,19 @@ void EditPreview::paint(QPainter& p, const CanvasView& view, const QRect& expose
     const Canvas& cv = view.document()->canvas();
     const CanvasRenderer* r = view.renderer();
     const bool ice = r->iceColours();
-    Canvas part(cells.width(), cells.height());
-    for (int y = cells.top(); y <= cells.bottom(); ++y) {
-        for (int x = cells.left(); x <= cells.right(); ++x)
-            part.at(x - cells.left(), y - cells.top()) = iceCell(cv.at(x, y), ice);
-        auto c = std::lower_bound(changes_.begin(), changes_.end(), std::pair{y, cells.left()},
+    // A column more each side, so a pair across the edge draws as both its
+    // halves do (PLAN §16 Compositing); only `cells` is drawn.
+    const QRect wide = cells.adjusted(-1, 0, 1, 0) & QRect(0, 0, cv.width(), cv.height());
+    Canvas part(wide.width(), wide.height());
+    for (int y = wide.top(); y <= wide.bottom(); ++y) {
+        for (int x = wide.left(); x <= wide.right(); ++x)
+            part.at(x - wide.left(), y - wide.top()) = iceCell(cv.at(x, y), ice);
+        auto c = std::lower_bound(changes_.begin(), changes_.end(), std::pair{y, wide.left()},
                                   [](const CellChange& a, std::pair<int, int> b) {
                                       return a.y != b.first ? a.y < b.first : a.x < b.second;
                                   });
-        for (; c != changes_.end() && c->y == y && c->x <= cells.right(); ++c)
-            part.at(c->x - cells.left(), y - cells.top()) = iceCell(c->after, ice);
+        for (; c != changes_.end() && c->y == y && c->x <= wide.right(); ++c)
+            part.at(c->x - wide.left(), y - wide.top()) = iceCell(c->after, ice);
     }
     QImage image;
     try {
@@ -99,8 +102,10 @@ void EditPreview::paint(QPainter& p, const CanvasView& view, const QRect& expose
     } catch (const std::exception&) {
         return;
     }
+    const int gw = image.width() / wide.width();
+    const QRect source((cells.left() - wide.left()) * gw, 0, cells.width() * gw, image.height());
     p.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    p.drawImage(QRect(view.cellRect(cells.topLeft()).topLeft(), image.size() * view.zoom()), image);
+    p.drawImage(QRect(view.cellRect(cells.topLeft()).topLeft(), source.size() * view.zoom()), image, source);
 }
 
 void ToolRegistry::add(Tool* tool) {

@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Generate third_party/unifont/unifont.bin.z, the Unifont glyphs the renderer
+draws (PLAN §16, Rendering).
+
+    gen-unifont SOURCE... [-o FILE]
+        Reads GNU Unifont's .hex files (plain or gzipped) and writes the
+        compressed table to FILE (third_party/unifont/unifont.bin.z by
+        default). A SOURCE that is a directory stands for two files in it,
+        each plain or .gz: the BMP set (unifont-VERSION.hex, or unifont.hex)
+        and the upper planes (unifont_upper-VERSION.hex or unifont_upper.hex,
+        else unifont_all-VERSION.hex or unifont_all.hex). A release's
+        font/precompiled/ has the first pair, Debian's /usr/share/unifont/
+        unifont.hex and unifont_all.hex.
+
+    gen-unifont --release SOURCE...
+        Prints the Unifont release that the files it would read name
+        (unifont-18.0.01.hex: 18.0.01), or an empty line when one of them
+        names none, as Debian's don't, or two name different ones. The
+        --version credit of a BLOCKWRIGHT_SYSTEM_UNIFONT build names it.
+
+A .hex line is CODE:BITMAP, CODE 4 to 6 hex digits and BITMAP 32 hex digits
+(8x16, a byte a row) or 64 (16x16, two bytes a row), the leftmost pixel the
+top bit. A code point given twice keeps its first bitmap (unifont_upper's
+first line is a U+0020 the BMP file already holds), so the files' order is
+the order of preference. The private use areas (U+E000-F8FF, planes 15 and
+16), which unifont_all fills with the ConScript registry's glyphs, are left
+out: they are no standard's, and a build from either source draws the same.
+
+The output is zlib data with a 4-byte big-endian length in front, the form
+Qt's qUncompress reads, of:
+    "BWUF", u32 LE glyph count n,
+    n varints (LEB128) of 2 * gap + wide, gap being the code point minus the
+        one before it minus 1 (the first counts from -1), wide 1 for 16x16,
+    then the n bitmaps in the same order, 16 bytes narrow and 32 wide.
+Keeping the code points apart from the bitmaps lets zlib find the repeats in
+each.
+"""
+
+import argparse
+import gzip
+import pathlib
+import re
+import struct
+import sys
+import zlib
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+DEFAULT_OUT = ROOT / "third_party" / "unifont" / "unifont.bin.z"
+
+
+def find(directory, stems):
+    for stem in stems:
+        found = sorted(f for f in directory.iterdir()
+                       if f.name in (stem + ".hex", stem + ".hex.gz")
+                       or (f.name.startswith(stem + "-") and f.name.endswith((".hex", ".hex.gz"))))
+        if found:
+            return found[-1]
+    sys.exit(f"gen-unifont: no {' or '.join(s + '.hex' for s in stems)} in {directory}")
+
+
+def expand(source):
+    p = pathlib.Path(source)
+    if not p.is_dir():
+        return [p]
+    return [find(p, ["unifont"]), find(p, ["unifont_upper", "unifont_all"])]
+
+
+def release(paths):
+    names = [re.fullmatch(r"unifont(?:_upper|_all)?-(.+)\.hex(?:\.gz)?", p.name) for p in paths]
+    found = {m.group(1) for m in names if m}
+    return found.pop() if all(names) and len(found) == 1 else ""
+
+
+def private_use(cp):
+    return 0xE000 <= cp <= 0xF8FF or cp >= 0xF0000
+
+
+def read_hex(path):
+    opener = gzip.open if path.name.endswith(".gz") else open
+    with opener(path, "rt", encoding="ascii") as f:
+        for n, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            code, sep, bits = line.partition(":")
+            if not sep or not 4 <= len(code) <= 6 or len(bits) not in (32, 64):
+                sys.exit(f"gen-unifont: {path}:{n}: not a .hex line")
+            cp = int(code, 16)
+            if cp > 0x10FFFF:
+                sys.exit(f"gen-unifont: {path}:{n}: U+{cp:X} isn't a code point")
+            yield cp, bytes.fromhex(bits)
+
+
+def varint(v):
+    out = bytearray()
+    while True:
+        b = v & 0x7F
+        v >>= 7
+        if v:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("sources", nargs="+")
+    ap.add_argument("-o", "--output", default=str(DEFAULT_OUT))
+    ap.add_argument("--release", action="store_true")
+    args = ap.parse_args()
+    if args.release:
+        print(release([path for source in args.sources for path in expand(source)]))
+        return
+
+    glyphs = {}
+    for source in args.sources:
+        for path in expand(source):
+            for cp, bits in read_hex(path):
+                if not private_use(cp):
+                    glyphs.setdefault(cp, bits)
+
+    index, bitmaps, prev = bytearray(), bytearray(), -1
+    for cp in sorted(glyphs):
+        bits = glyphs[cp]
+        index += varint(2 * (cp - prev - 1) + (len(bits) == 32))
+        bitmaps += bits
+        prev = cp
+    raw = b"BWUF" + struct.pack("<I", len(glyphs)) + bytes(index) + bytes(bitmaps)
+    data = struct.pack(">I", len(raw)) + zlib.compress(raw, 9)
+    out = pathlib.Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    wide = sum(len(b) == 32 for b in glyphs.values())
+    print(f"gen-unifont: {len(glyphs)} glyphs ({wide} wide), {len(raw)} bytes, {len(data)} compressed: {out}")
+
+
+if __name__ == "__main__":
+    main()

@@ -14,6 +14,15 @@ Files: third_party/oldschool-pc-fonts/*
 Copyright: 2016-2020 VileR
 License: CC-BY-SA-4.0
 
+Files: third_party/unifont/*
+Copyright: 1998-2026 Roman Czyborra, Paul Hardy, Qianqian Fang, Andrew Miller,
+           Johnnie Weaver, David Corbett, Ælla Chiana Moskopp,
+           Rebecca Bettencourt, Minseo Lee, Ho-Seok Ee, et al.
+License: OFL-1.1 or GPL-2+ with Font exception
+Comment: GNU Unifont 18.0.01's glyphs, repacked by scripts/gen-unifont. The
+ Debian build leaves this copy out and makes the same table from the unifont
+ package's .hex files (-DBLOCKWRIGHT_SYSTEM_UNIFONT).
+
 Files: third_party/tabler-icons/*
 Copyright: 2020-2026 Paweł Kuna
 License: Expat
@@ -30,6 +39,7 @@ Comment: Used by the tests only; not installed.
 Files: third_party/oldschool-pc-fonts/fon2inc.py
        third_party/oldschool-pc-fonts/README.md
        third_party/tabler-icons/README.md
+       third_party/unifont/README.md
        tests/data/fonts/README.md
 Copyright: 2026 funkpower
 License: GPL-3+
@@ -495,6 +505,25 @@ License: CC-BY-SA-4.0
  public licenses.
  .
  Creative Commons may be contacted at creativecommons.org.
+
+License: GPL-2+ with Font exception
+ This font is free software; you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the
+ Free Software Foundation; either version 2 of the License, or (at your
+ option) any later version.
+ .
+ As a special exception, if you create a document which uses this font,
+ and embed this font or unaltered portions of this font into the
+ document, this font does not by itself cause the resulting document to
+ be covered by the GNU General Public License. This exception does not
+ however invalidate any other reasons why the document might be covered
+ by the GNU General Public License. If you modify this font, you may
+ extend this exception to your version of the font, but you are not
+ obligated to do so. If you do not wish to do so, delete this exception
+ statement from your version.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 2 can be found in '/usr/share/common-licenses/GPL-2'.
 
 License: OFL-1.1
  Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)

@@ -100,6 +100,15 @@ profile `nocheck` (`DEB_BUILD_PROFILES=nocheck DEB_BUILD_OPTIONS=nocheck`, and
 `apt-get build-dep -o APT::Build-Profiles=nocheck ./`) builds without the
 tests and without Catch2.
 
+The renderer's GNU Unifont comes from the `unifont` package: `debian/rules`
+passes `-DBLOCKWRIGHT_SYSTEM_UNIFONT=/usr/share/unifont`, and the build makes
+the compiled-in table from its `unifont.hex` and `unifont_all.hex` with
+`scripts/gen-unifont` (so `python3` and `unifont` are build dependencies, the
+tests or not). Those file names carry no release, so the package's
+`--version` and About box credit GNU Unifont without one. The rpm and AUR
+packages compile in `third_party/unifont/`: Fedora ships only the BMP
+`unifont.hex`, without the upper planes (`unifont_upper` or `unifont_all`).
+
 The package needs Qt 6.7 or newer, the minimum `CMakeLists.txt` states (#263),
 so it is built only for releases that have it. Debian 12 and Ubuntu 24.04 ship
 Qt 6.4.2: they are not packaged natively; use the AppImage, which bundles its
@@ -133,8 +142,8 @@ rpmlint packaging/rpm/blockwright.spec ~/rpmbuild/SRPMS/*.src.rpm ~/rpmbuild/RPM
 
 `%check` validates the desktop entry and AppStream metadata and runs the tests
 (`--without check` skips the tests). `LICENSE`, `NOTICE` and the bundled
-font's and icons' licences (`LICENSE.oldschool-pc-fonts`,
-`LICENSE.tabler-icons`) are `%license` files in
+fonts' and icons' licences (`LICENSE.oldschool-pc-fonts`,
+`LICENSE.unifont-OFL`, `LICENSE.unifont-GPL`, `LICENSE.tabler-icons`) are `%license` files in
 `/usr/share/licenses/blockwright/`, which an install with `tsflags=nodocs`
 keeps. The same notices are also in `/usr/share/doc/blockwright/`, where
 `NOTICE` and `--version` say they are; its `LICENSE` links to the `%license`
@@ -230,7 +239,11 @@ only), and `make test` runs the suite offscreen with `BW_FETCH_CATCH2=OFF`
 against `devel/catch2`; `x11-fonts/noto-basic` is a test dependency for the
 same reason as `noto-fonts` on Arch. The install block that
 serves Linux (desktop entry, metainfo, icons, man pages) applies unchanged,
-and the man pages land in `share/man`. The `distinfo` in the tree is a
+and the man pages land in `share/man`. `LICENSE` names the program's GPL
+and the bundled fonts' and icons' licences (CC BY-SA 4.0, MIT, OFL 1.1 for
+Unifont), and `pkg-plist` lists their notices under `%%DOCSDIR%%`; the
+`install_notices_freebsd_plist` test fails when the install's notices and
+the plist part ways. The `distinfo` in the tree is a
 template: `scripts/release` writes the port for its tarball, with
 `DISTVERSION` and the `distinfo` (the commit's time, the tarball's SHA-256 and
 size) filled in, to `dist/freebsd/blockwright/`. `MAINTAINER` is left unset,

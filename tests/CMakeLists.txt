@@ -227,6 +227,21 @@ add_test(NAME install_notices_space_path
           ${CMAKE_GENERATOR} ${Qt6_DIR} "${bw_prefix_path}")
 set_tests_properties(install_notices install_notices_absolute_docdir install_notices_space_path
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+# packaging/freebsd/pkg-plist lists the notices the install carries, no more
+add_test(NAME install_notices_freebsd_plist
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/install_notices_freebsd_plist_test.sh
+          ${PROJECT_BINARY_DIR} ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/install-notices-plist-tmp
+          ${CMAKE_INSTALL_FULL_DOCDIR} "$<CONFIG>")
+# A BLOCKWRIGHT_SYSTEM_UNIFONT build credits the release its .hex files name,
+# or none (render/CMakeLists.txt); the nested builds use the bundled copy.
+if(BLOCKWRIGHT_SYSTEM_UNIFONT)
+  set_property(TEST install_notices APPEND PROPERTY ENVIRONMENT
+    "BW_UNIFONT_CREDIT=Includes ${BW_UNIFONT_RELEASE} Roman Czyborra, Paul Hardy et al.,")
+endif()
+# gen-unifont --release, which names the release in that credit
+add_test(NAME unifont_release
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/unifont_release_test.sh ${PROJECT_SOURCE_DIR}/scripts/gen-unifont
+          ${CMAKE_CURRENT_BINARY_DIR}/unifont-release-tmp)
 # And under a multi-config generator, where CMAKE_BUILD_TYPE is ignored and
 # build and install must name the same configuration
 if(CMAKE_GENERATOR MATCHES "^Ninja")
@@ -503,6 +518,11 @@ add_executable(blockwright-render-tests
 )
 target_link_libraries(blockwright-render-tests PRIVATE blockwright::render Catch2::Catch2WithMain)
 target_compile_definitions(blockwright-render-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+# render/src/unifont.h: the tests check cells against Unifont's own bitmaps
+target_include_directories(blockwright-render-tests PRIVATE ${PROJECT_SOURCE_DIR}/render/src)
+if(NOT BLOCKWRIGHT_SYSTEM_UNIFONT)
+  target_compile_definitions(blockwright-render-tests PRIVATE BW_BUNDLED_UNIFONT)
+endif()
 catch_discover_tests(blockwright-render-tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 
 add_test(NAME cli_render
@@ -799,6 +819,10 @@ endif()
 add_test(NAME gui_version
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh ${BW_GUI_COMMAND})
 set_property(TEST gui_version APPEND PROPERTY ENVIRONMENT "BW_LOGO=${PROJECT_SOURCE_DIR}/branding/logo.txt")
+if(BLOCKWRIGHT_SYSTEM_UNIFONT)
+  set_property(TEST gui_version APPEND PROPERTY ENVIRONMENT
+    "BW_UNIFONT_CREDIT=Includes ${BW_UNIFONT_RELEASE} Roman Czyborra, Paul Hardy et al.,")
+endif()
 
 # blockwright --list-actions (#209) with no display and an empty HOME and XDG
 # profile: JSON, unique ids, nothing written. The profile is the host's, so a

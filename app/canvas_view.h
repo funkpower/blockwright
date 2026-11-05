@@ -104,6 +104,9 @@ public:
     // The cursor's cell in view pixels: the canvas at this zoom is
     // viewSize() of them, and tools paint in them.
     QRect cellRect(Cursor c) const;
+    // The cursor's frame in view pixels: its cell, or the two of a wide
+    // glyph when it is on the lead or the continuation (PLAN §16, Rendering).
+    QRect cursorRect() const;
     // Cell `cell` in view pixels, and the cell under a view pixel (rounded
     // down, so it may be off the canvas).
     QRect cellRect(const QPoint& cell) const { return cellRect(Cursor{cell.x(), cell.y()}); }

@@ -1,0 +1,8 @@
+#pragma once
+// The Unifont release the renderer's table was built from and its copyright
+// years, as the --version credit names them (credits.h): the bundled copy's
+// from third_party/unifont/README.md, a BLOCKWRIGHT_SYSTEM_UNIFONT build's
+// release from its .hex files' names and no years, or no release when the
+// names give none. Written by CMake at configure time.
+
+#define BW_UNIFONT_RELEASE "@BW_UNIFONT_RELEASE@"

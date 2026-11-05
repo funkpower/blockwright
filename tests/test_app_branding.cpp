@@ -324,6 +324,7 @@ TEST_CASE("Help > About Blockwright shows the small logo drawn by the renderer",
     CHECK(text->text().contains(QStringLiteral("GPL-3.0-or-later")));
     CHECK(text->text().contains(QStringLiteral("VileR")));
     CHECK(text->text().contains(QStringLiteral("Tabler Icons")));
+    CHECK(text->text().contains(QStringLiteral("GNU Unifont")));
     // a second time shows the same dialog
     about->trigger();
     CHECK(w.findChildren<AboutDialog*>().size() == 1);

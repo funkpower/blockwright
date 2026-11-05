@@ -2,9 +2,12 @@
 # blockwright --version, --help and usage errors, with no display: gui_version_test.sh <blockwright>
 # BW_NOTICES_DIR names where --version says the notices are (default share/doc/blockwright/);
 # BW_LOGO is branding/logo.txt, which --version prints under the version line.
+# BW_UNIFONT_CREDIT is the Unifont credit's first line a BLOCKWRIGHT_SYSTEM_UNIFONT
+# build prints (default the bundled 18.0.01's).
 set -uo pipefail
 bin=$1
 notices_dir=${BW_NOTICES_DIR:-share/doc/blockwright/}
+unifont_credit=${BW_UNIFONT_CREDIT:-'Includes GNU Unifont 18.0.01, (c) 1998-2026 Roman Czyborra, Paul Hardy et al.,'}
 fails=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fails=$((fails + 1)); }
@@ -21,6 +24,11 @@ if grep -q 'IBM VGA 8x16 and IBM PC BIOS 8x8 fonts, (c) 2016-2020 VileR,' <<<"$o
   ok "--version credits the font"
 else
   bad "--version has no font credit: $out"
+fi
+if grep -qxF "$unifont_credit" <<<"$out" && grep -q 'SIL OFL 1.1, https://unifoundry.com/unifont/' <<<"$out"; then
+  ok "--version credits Unifont"
+else
+  bad "--version has no Unifont credit: $out"
 fi
 if grep -q 'Includes icons from Tabler Icons, MIT licence, https://tabler.io/icons;' <<<"$out"; then
   ok "--version credits the icons"

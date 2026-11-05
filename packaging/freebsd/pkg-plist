@@ -6,6 +6,9 @@ bin/blockwright-cli
 %%DOCSDIR%%/oldschool-pc-fonts/README.md
 %%DOCSDIR%%/tabler-icons/LICENSE
 %%DOCSDIR%%/tabler-icons/README.md
+%%DOCSDIR%%/unifont/COPYING
+%%DOCSDIR%%/unifont/OFL-1.1.txt
+%%DOCSDIR%%/unifont/README.md
 share/applications/blockwright.desktop
 share/icons/hicolor/128x128/apps/blockwright.png
 share/icons/hicolor/16x16/apps/blockwright.png

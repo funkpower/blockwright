@@ -12,6 +12,19 @@ It includes third-party material under its own licence:
   (share/doc/blockwright/oldschool-pc-fonts/); in the source tree,
   third_party/oldschool-pc-fonts/.
 
+- GNU Unifont glyph bitmaps (18.0.01 in the source tree; a
+  BLOCKWRIGHT_SYSTEM_UNIFONT build uses the distribution's release),
+  (c) 1998-2026 Roman Czyborra, Paul Hardy, Qianqian Fang, Andrew Miller,
+  Johnnie Weaver, David Corbett, Ælla Chiana Moskopp, Rebecca Bettencourt,
+  Minseo Lee, Ho-Seok Ee, et al.,
+  https://unifoundry.com/unifont/, dual-licensed under the SIL Open Font
+  License 1.1 and the GNU GPL version 2 or later with the font embedding
+  exception; Blockwright takes it under the OFL. They draw every glyph with
+  no CP437 code. The bitmaps are unchanged, repacked into one compressed
+  table by scripts/gen-unifont. Source, version and licence texts: in an
+  install, the unifont/ directory beside this file
+  (share/doc/blockwright/unifont/); in the source tree, third_party/unifont/.
+
 - Eleven outline icons from Tabler Icons v3.50.0, https://tabler.io/icons,
   licensed under the MIT licence: the Toolbox and Tools menu icons of the
   keyboard, select, move, line, rectangle, ellipse, fill, eyedropper, text,

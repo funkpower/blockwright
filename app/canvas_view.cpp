@@ -387,9 +387,9 @@ void CanvasView::setCellCursor(Cursor c) {
     c = {on.x, on.y, c.pastEnd && on.x == c.x && on.y == c.y && on.x == cv.width() - 1};
     if (c == cursor_)
         return;
-    update(toWidget(cellRect(cursor_)));
+    update(toWidget(cursorRect()));
     cursor_ = c;
-    update(toWidget(cellRect(cursor_)));
+    update(toWidget(cursorRect()));
     tellInputMethod();
     emit cursorMoved(cursor_);
 }
@@ -397,6 +397,18 @@ void CanvasView::setCellCursor(Cursor c) {
 QRect CanvasView::cellRect(Cursor c) const {
     const QSize cs = renderer_->cellSize() * zoom_;
     return QRect(QPoint(c.x * cs.width(), c.y * cs.height()), cs);
+}
+
+QRect CanvasView::cursorRect() const {
+    const Canvas& cv = doc_->canvas();
+    const QRect r = cellRect(cursor_);
+    if (!cv.contains(cursor_.x, cursor_.y))
+        return r;
+    if (cursor_.x + 1 < cv.width() && cv.at(cursor_.x + 1, cursor_.y).ch.isContinuation())
+        return r.united(cellRect(Cursor{cursor_.x + 1, cursor_.y}));
+    if (cursor_.x > 0 && cv.at(cursor_.x, cursor_.y).ch.isContinuation())
+        return r.united(cellRect(Cursor{cursor_.x - 1, cursor_.y}));
+    return r;
 }
 
 QPoint CanvasView::cellAt(const QPoint& pixel) const {
@@ -585,7 +597,7 @@ QVariant CanvasView::inputMethodQuery(Qt::InputMethodQuery query) const {
     // where the text goes: the tool's text cursor, else the cell cursor
     if (query == Qt::ImCursorRectangle) {
         const std::optional<QRect> caret = tool_ ? tool_->caretRect() : std::nullopt;
-        return toWidget(caret ? *caret : cellRect(cursor_));
+        return toWidget(caret ? *caret : cursorRect());
     }
     return QWidget::inputMethodQuery(query);
 }
@@ -648,7 +660,7 @@ void CanvasView::paintEvent(QPaintEvent* e) {
     }
 
     // The cursor: a frame drawn with XOR so it shows on any colour.
-    const QRect r = cellRect(cursor_);
+    const QRect r = cursorRect();
     const int t = std::max(1, zoom_);
     p.setCompositionMode(QPainter::RasterOp_SourceXorDestination);
     const QColor white(Qt::white);

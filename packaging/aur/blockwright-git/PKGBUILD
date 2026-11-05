@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc='Editor for ANSI and IRC block art (development version)'
 arch=('x86_64' 'aarch64')
 url='https://git.pumpin.online/funkpower/blockwright'
-license=('GPL-3.0-or-later' 'CC-BY-SA-4.0' 'MIT')
+license=('GPL-3.0-or-later' 'CC-BY-SA-4.0' 'MIT' 'OFL-1.1 OR GPL-2.0-or-later WITH Font-exception-2.0')
 depends=('glibc' 'hicolor-icon-theme' 'libgcc' 'libstdc++' 'libzip' 'qt6-base' 'qt6-svg' 'zstd')
 makedepends=('catch2' 'cmake' 'git' 'ninja')
 checkdepends=('noto-fonts' 'python')
@@ -38,10 +38,12 @@ check() {
 
 package() {
   DESTDIR="$pkgdir" cmake --install build
-  # the bundled font's and icons' licences, beside GPL-3.0-or-later's common
+  # the bundled fonts' and icons' licences, beside GPL-3.0-or-later's common
   # one: copies, since NoExtract may leave out /usr/share/doc
   local src="$_pkgname" lic="$pkgdir/usr/share/licenses/$pkgname"
   install -Dm644 "$src/NOTICE" "$lic/NOTICE"
   install -Dm644 "$src/third_party/oldschool-pc-fonts/LICENSE" "$lic/LICENSE.oldschool-pc-fonts"
+  install -Dm644 "$src/third_party/unifont/OFL-1.1.txt" "$lic/LICENSE.unifont-OFL"
+  install -Dm644 "$src/third_party/unifont/COPYING" "$lic/LICENSE.unifont-GPL"
   install -Dm644 "$src/third_party/tabler-icons/LICENSE" "$lic/LICENSE.tabler-icons"
 }

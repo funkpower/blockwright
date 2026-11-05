@@ -4,10 +4,12 @@
 #include "util.h"
 
 #include "blockwright/render.h"
+#include "unifont.h"  // render/src: the bitmaps the wide and cluster cases expect
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <QCryptographicHash>
+#include <QImage>
 
 #include <stdexcept>
 #include <vector>
@@ -30,6 +32,41 @@ std::string withSauce(const std::string& body, std::uint8_t flags) {
     Sauce s = Sauce::fresh(80, 1);
     s.flags = flags;
     return body + encodeSauce(s, static_cast<std::uint32_t>(body.size()));
+}
+
+// Row y of a glyph's own bitmap, bit x column x: Unifont's, or the VGA
+// font's for a CP437 glyph; and how many columns it has.
+std::uint16_t fontRow(char32_t cp, int y, int* width = nullptr) {
+    std::uint16_t row = 0;
+    if (const std::optional<std::uint8_t> b = unicodeToCp437(cp)) {
+        for (int x = 0; x < 8; ++x)
+            row |= std::uint16_t(vgaFont().pixel(*b, x, y) << x);
+        if (width)
+            *width = 8;
+        return row;
+    }
+    const std::optional<UnifontGlyph> u = unifontGlyph(cp);
+    REQUIRE(u);
+    for (int x = 0; x < (u->wide ? 16 : 8); ++x)
+        row |= std::uint16_t(u->pixel(x, y) << x);
+    if (width)
+        *width = u->wide ? 16 : 8;
+    return row;
+}
+
+// Fails unless the cell at column `cx` of the one-row image `img` (cells
+// `gw` wide) is `rows` (bit 8 the ninth column) in `fg` on `bg`.
+void checkCell(const QImage& img, int cx, int gw, const std::array<std::uint16_t, 16>& rows, Rgb fg, Rgb bg) {
+    for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < gw; ++x)
+            if (img.pixel(cx * gw + x, y) != q((rows[y] >> x) & 1 ? fg : bg))
+                FAIL("cell " << cx << " pixel " << x << "," << y << " (width " << gw << ")");
+}
+
+Glyph cluster(std::vector<char32_t> cps) {
+    const std::optional<Glyph> g = clusterPool().intern(cps, PoolCap::Capped);
+    REQUIRE(g);
+    return *g;
 }
 
 } // namespace
@@ -159,12 +196,165 @@ TEST_CASE("transparent cells draw like opaque ones") {
     }
 }
 
-TEST_CASE("glyphs without a CP437 byte draw as '?'") {
+TEST_CASE("a glyph neither font has draws as '?'") {
     CHECK(glyphIndex(U'A') == 0x41);
     CHECK(glyphIndex(U'█') == 0xDB);
     CHECK(glyphIndex(U'★') == '?');
     const Color fg = Color::indexed(Grey), bg = Color::indexed(Black);
-    CHECK(renderCanvas(oneCell(U'★', fg, bg), 8) == renderCanvas(oneCell(U'?', fg, bg), 8));
+    // the private use areas are left out of the Unifont table
+    CHECK(!unifontGlyph(0xE000));
+    CHECK(!unifontGlyph(0x10FFFD));
+    for (int gw : {8, 9}) {
+        CHECK(renderCanvas(oneCell(0xE000, fg, bg), gw) == renderCanvas(oneCell(U'?', fg, bg), gw));
+        CHECK(renderCanvas(oneCell(0x10FFFD, fg, bg), gw) == renderCanvas(oneCell(U'?', fg, bg), gw));
+        // and a cluster on such a base
+        Canvas cv(1, 1);
+        cv.at(0, 0) = Cell{cluster({0xE000, 0x301}), fg, bg, 0, false};
+        CHECK(renderCanvas(cv, gw) == renderCanvas(oneCell(U'?', fg, bg), gw));
+    }
+}
+
+TEST_CASE("a glyph with no CP437 code draws in Unifont (PLAN §16)") {
+    // the Cyrillic Zhe and the Hebrew alef are narrow
+    CHECK(unifontGlyphCount() > 60000);
+    const Rgb fg = kPalette[LightGreen], bg = kPalette[Blue];
+    for (char32_t cp : {char32_t(0x0416), char32_t(0x05D0)}) {
+        INFO("U+" << std::hex << unsigned(cp));
+        int width = 0;
+        fontRow(cp, 0, &width);
+        REQUIRE(width == 8);
+        std::array<std::uint16_t, 16> rows{};
+        for (int y = 0; y < 16; ++y)
+            rows[y] = fontRow(cp, y);
+        for (int gw : {8, 9}) {
+            const QImage img = renderCanvas(oneCell(cp, Color::indexed(LightGreen), Color::indexed(Blue)), gw);
+            checkCell(img, 0, gw, rows, fg, bg);  // the ninth column is background
+        }
+    }
+}
+
+TEST_CASE("a wide glyph draws its left half in the lead and its right in the continuation (PLAN §16)") {
+    // each half in its own cell's colours; the lead's ninth column repeats
+    // its eighth, so the glyph joins across the gap, and the continuation's
+    // is background
+    Canvas cv(3, 1);
+    cv.at(0, 0) = Cell{U'中', Color::indexed(Yellow), Color::indexed(Blue), 0, false};
+    cv.at(1, 0) = Cell{Glyph::continuation(), Color::indexed(White), Color::indexed(Red), 0, false};
+    cv.at(2, 0) = Cell{U'A', Color::indexed(Yellow), Color::indexed(Blue), 0, false};
+    int width = 0;
+    fontRow(U'中', 0, &width);
+    REQUIRE(width == 16);
+    std::array<std::uint16_t, 16> left{}, right{};
+    for (int y = 0; y < 16; ++y) {
+        const std::uint16_t r = fontRow(U'中', y);
+        left[y] = std::uint16_t((r & 0xff) | ((r >> 7) & 1) << 8);
+        right[y] = std::uint16_t(r >> 8);
+    }
+    for (int gw : {8, 9}) {
+        const QImage img = renderCanvas(cv, gw);
+        checkCell(img, 0, gw, left, kPalette[Yellow], kPalette[Blue]);
+        checkCell(img, 1, gw, right, kPalette[White], kPalette[Red]);
+        CHECK(img.copy(2 * gw, 0, gw, 16) == renderCanvas(oneCell(U'A', Color::indexed(Yellow), Color::indexed(Blue)), gw));
+    }
+    // a lead whose glyph is narrow draws it whole, its continuation blank
+    cv.at(0, 0).ch = U'A';
+    const QImage narrow = renderCanvas(cv, 9);
+    CHECK(narrow.copy(0, 0, 8, 16) == renderCanvas(oneCell(U'A', Color::indexed(Yellow), Color::indexed(Blue)), 9).copy(0, 0, 8, 16));
+    checkCell(narrow, 1, 9, {}, kPalette[White], kPalette[Red]);
+    // a continuation with no lead (in column 0, or after another) is blank
+    Canvas lone(2, 1);
+    lone.at(0, 0) = Cell{Glyph::continuation(), Color::indexed(White), Color::indexed(Red), 0, false};
+    lone.at(1, 0) = lone.at(0, 0);
+    const QImage blank = renderCanvas(lone, 9);
+    checkCell(blank, 0, 9, {}, kPalette[White], kPalette[Red]);
+    checkCell(blank, 1, 9, {}, kPalette[White], kPalette[Red]);
+}
+
+TEST_CASE("a wide glyph alone in a cell is squeezed into it (PLAN §16)") {
+    // no continuation after it: each pair of columns ORed into one
+    for (char32_t cp : {U'中', U'★', char32_t(0x1F600)}) {
+        INFO("U+" << std::hex << unsigned(cp));
+        int width = 0;
+        fontRow(cp, 0, &width);
+        REQUIRE(width == 16);
+        std::array<std::uint16_t, 16> rows{};
+        for (int y = 0; y < 16; ++y) {
+            const std::uint16_t r = fontRow(cp, y);
+            for (int x = 0; x < 8; ++x)
+                if ((r >> (2 * x)) & 3)
+                    rows[y] |= std::uint16_t(1u << x);
+        }
+        for (int gw : {8, 9})
+            checkCell(renderCanvas(oneCell(cp, Color::indexed(White), Color::indexed(Black)), gw), 0, gw, rows,
+                      kPalette[White], kPalette[Black]);
+    }
+}
+
+TEST_CASE("a cluster draws its NFC form, else its base with its marks over it (PLAN §16)") {
+    const Color fg = Color::indexed(LightCyan), bg = Color::indexed(Magenta);
+    auto draw = [&](Glyph g, int gw) {
+        Canvas cv(1, 1);
+        cv.at(0, 0) = Cell{g, fg, bg, 0, false};
+        return renderCanvas(cv, gw);
+    };
+    for (int gw : {8, 9}) {
+        INFO("width " << gw);
+        // e + acute is é, CP437 0x82, drawn from the VGA font
+        CHECK(draw(cluster({U'e', 0x301}), gw) == renderCanvas(oneCell(U'é', fg, bg), gw));
+        // q + tilde has no precomposed form: the VGA q with Unifont's tilde over it
+        std::array<std::uint16_t, 16> rows{};
+        for (int y = 0; y < 16; ++y)
+            rows[y] = fontRow(U'q', y) | fontRow(0x303, y);
+        checkCell(draw(cluster({U'q', 0x303}), gw), 0, gw, rows, kPalette[LightCyan], kPalette[Magenta]);
+        // the marks in any order normalise to the same drawing
+        CHECK(draw(cluster({U'q', 0x323, 0x303}), gw) == draw(cluster({U'q', 0x303, 0x323}), gw));
+        // a variation selector and a joiner draw nothing: a joined sequence
+        // draws its first base
+        CHECK(draw(cluster({U'e', 0xFE0F}), gw) == renderCanvas(oneCell(U'e', fg, bg), gw));
+        CHECK(draw(cluster({U'a', 0x200D, U'b'}), gw) == renderCanvas(oneCell(U'a', fg, bg), gw));
+    }
+    // a cluster on a wide base in a pair draws across both cells, the mark
+    // centred over the base
+    Canvas pair(2, 1), plain(2, 1);
+    pair.at(0, 0) = Cell{cluster({U'中', 0x301}), fg, bg, 0, false};
+    pair.at(1, 0) = Cell{Glyph::continuation(), fg, bg, 0, false};
+    plain.at(0, 0) = Cell{U'中', fg, bg, 0, false};
+    plain.at(1, 0) = pair.at(1, 0);
+    const QImage got = renderCanvas(pair, 8), base = renderCanvas(plain, 8);
+    for (int y = 0; y < 16; ++y) {
+        const std::uint16_t mark = std::uint16_t(fontRow(0x301, y) << 4);
+        for (int x = 0; x < 16; ++x)
+            CHECK((got.pixel(x, y) == q(kPalette[LightCyan])) ==
+                  ((base.pixel(x, y) == q(kPalette[LightCyan])) || ((mark >> x) & 1)));
+    }
+}
+
+TEST_CASE("wide glyphs and clusters match their golden render", "[golden]") {
+#ifdef BW_BUNDLED_UNIFONT
+    // A row of the cases above, at 9 and 8 pixels: tests/data/render/unifont/,
+    // made from the bundled Unifont 18.0.01 (a system Unifont may draw them
+    // otherwise). BW_WRITE_GOLDENS=1 writes them afresh.
+    Canvas cv(10, 2);
+    const Color fg = Color::indexed(White), bg = Color::indexed(Blue);
+    const Glyph row[10] = {U'中', Glyph::continuation(), U'文', Glyph::continuation(), U'中',
+                           cluster({U'q', 0x303}), cluster({U'e', 0x301}), U'Ж', char32_t(0x1F600), U'A'};
+    for (int x = 0; x < 10; ++x) {
+        cv.at(x, 0) = Cell{row[x], fg, bg, 0, false};
+        cv.at(x, 1) = Cell{row[x], Color::indexed(Black), Color::indexed(x % 2 ? Grey : Yellow), 0, false};
+    }
+    cv.at(9, 1).ch = 0xE000;
+    for (int gw : {8, 9}) {
+        const QImage img = renderCanvas(cv, gw);
+        const auto path = bwtest::dataDir() / "render" / "unifont" / ("wide-" + std::to_string(gw) + ".png");
+        if (qEnvironmentVariableIsSet("BW_WRITE_GOLDENS"))
+            REQUIRE(img.save(QString::fromStdString(path.string())));
+        const QImage want(QString::fromStdString(path.string()));
+        REQUIRE(!want.isNull());
+        CHECK(img == want.convertToFormat(img.format()));
+    }
+#else
+    SKIP("built against a system Unifont");
+#endif
 }
 
 TEST_CASE("the bundled font is the IBM VGA 8x16") {
@@ -197,20 +387,10 @@ TEST_CASE("the bundled font table is the one in VileR's pack, byte for byte") {
           "a8bad6fd78475a6bc2a05438c19207a9bb8c0f4f4099f60384e158cdc3eba580");
 }
 
-TEST_CASE("a continuation draws as a space and a cluster as '?' until the renderer draws them") {
-    const Color fg = Color::indexed(15), bg = Color::indexed(1);
-    const std::optional<Glyph> e = clusterPool().intern(std::vector<char32_t>{U'e', 0x301}, PoolCap::Capped);
-    REQUIRE(e);
+TEST_CASE("glyphIndex, for a font of one byte a glyph, keeps a space for the continuation and '?' for the rest") {
+    // what the 8-pixel fonts and the CP437 fast path draw
     CHECK(glyphIndex(Glyph::continuation()) == ' ');
-    CHECK(glyphIndex(*e) == '?');
+    CHECK(glyphIndex(cluster({U'e', 0x301})) == '?');
     CHECK(glyphIndex(Glyph(U'░')) == 0xB0);
     CHECK(glyphIndex(Glyph(U'中')) == '?');
-    Canvas pair(3, 1), plain(3, 1);
-    pair.at(0, 0) = Cell{U'中', fg, bg, 0, false};
-    pair.at(1, 0) = Cell{Glyph::continuation(), bg, fg, 0, false};
-    pair.at(2, 0) = Cell{*e, fg, bg, 0, false};
-    plain.at(0, 0) = Cell{U'?', fg, bg, 0, false};
-    plain.at(1, 0) = Cell{U' ', bg, fg, 0, false};
-    plain.at(2, 0) = Cell{U'?', fg, bg, 0, false};
-    CHECK(renderCanvas(pair, 9) == renderCanvas(plain, 9));
 }

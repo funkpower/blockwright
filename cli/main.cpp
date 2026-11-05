@@ -1155,7 +1155,7 @@ int main(int argc, char** argv) {
         // The version stays the first line, for the scripts that read it
         std::cout << "blockwright-cli " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n\n"
                   << bw::kLogoText << "\n"
-                  << bw::kFontCredit;
+                  << bw::kFontCredit << bw::kUnifontCredit;
         return kOk;
     }
     // Printed here rather than by showHelp(), which on Windows puts the text

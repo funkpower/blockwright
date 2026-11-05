@@ -4,8 +4,9 @@ Release:        1%{?dist}
 Summary:        Editor for ANSI and IRC block art
 
 # GPL-3.0-or-later: the program; CC-BY-SA-4.0: the bundled VGA and BIOS
-# glyph bitmaps; MIT: the bundled Tabler icons
-License:        GPL-3.0-or-later AND CC-BY-SA-4.0 AND MIT
+# glyph bitmaps; MIT: the bundled Tabler icons; OFL-1.1 OR GPL-2.0-or-later
+# WITH Font-exception-2.0: the bundled GNU Unifont glyphs
+License:        GPL-3.0-or-later AND CC-BY-SA-4.0 AND MIT AND (OFL-1.1 OR GPL-2.0-or-later WITH Font-exception-2.0)
 URL:            https://git.pumpin.online/funkpower/blockwright
 Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}.tar.gz
 
@@ -30,6 +31,12 @@ BuildRequires:  python3
 BuildRequires:  qt6-qtbase-private-devel
 %endif
 
+# The renderer draws the glyphs CP437 lacks with GNU Unifont's bitmaps. Fedora
+# ships only the BMP unifont.hex, without the upper planes (no unifont_upper or
+# unifont_all .hex) that BLOCKWRIGHT_SYSTEM_UNIFONT also needs, so the copy in
+# third_party/unifont/ is compiled in.
+Provides:       bundled(unifont) = 18.0.01
+
 Requires:       hicolor-icon-theme
 Recommends:     python3
 Recommends:     qt6-qtimageformats
@@ -45,9 +52,11 @@ renders, converts and checks pieces without a display.
 
 %prep
 %autosetup
-# the bundled font's and icons' licences, under names that don't collide in
+# the bundled fonts' and icons' licences, under names that don't collide in
 # %%license, which installs even with tsflags=nodocs
 cp -p third_party/oldschool-pc-fonts/LICENSE LICENSE.oldschool-pc-fonts
+cp -p third_party/unifont/OFL-1.1.txt LICENSE.unifont-OFL
+cp -p third_party/unifont/COPYING LICENSE.unifont-GPL
 cp -p third_party/tabler-icons/LICENSE LICENSE.tabler-icons
 
 %build
@@ -69,8 +78,8 @@ export QT_QPA_PLATFORM=offscreen
 %endif
 
 %files
-%license LICENSE NOTICE LICENSE.oldschool-pc-fonts LICENSE.tabler-icons
-# NOTICE, and the bundled font's and icons' licences beside it where NOTICE
+%license LICENSE NOTICE LICENSE.oldschool-pc-fonts LICENSE.unifont-OFL LICENSE.unifont-GPL LICENSE.tabler-icons
+# NOTICE, and the bundled fonts' and icons' licences beside it where NOTICE
 # and --version say they are; the %%license copies are the ones nodocs keeps
 %doc %{_pkgdocdir}/
 %{_bindir}/blockwright

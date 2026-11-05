@@ -12,7 +12,10 @@ Build-Depends: debhelper-compat (= 13),
                libzstd-dev,
                catch2 (>= 3) <!nocheck>,
                qt6-base-private-dev (>= 6.7) <!nocheck>,
-               python3 <!nocheck>
+# scripts/gen-unifont makes the renderer's Unifont table from the unifont
+# package's .hex files (debian/rules)
+               python3,
+               unifont,
 Standards-Version: 4.7.4
 Homepage: https://git.pumpin.online/funkpower/blockwright
 Vcs-Browser: https://git.pumpin.online/funkpower/blockwright

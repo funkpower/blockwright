@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The licence, font and icon notices install with the binary:
+# The licence, font, Unifont and icon notices install with the binary:
 #   install_notices_test.sh <build dir> <source dir> <scratch dir> <full bindir> <full docdir> [<config>]
 #
 # <full bindir> and <full docdir> are the build's CMAKE_INSTALL_FULL_BINDIR and
@@ -12,10 +12,13 @@
 # the real `cmake --install` of this build, staged the same way) to check the
 # dev install carries them and refuses an install without them, and that it
 # installs blockwright-dev and its launcher entry. BW_NOTICES_DIR names where
-# --version says the notices are (default share/doc/blockwright/).
+# --version says the notices are (default share/doc/blockwright/), and
+# BW_UNIFONT_CREDIT the Unifont credit's first line a BLOCKWRIGHT_SYSTEM_UNIFONT
+# build prints (default the bundled 18.0.01's).
 set -uo pipefail
 build=$1 src=$2 tmp=$3 bindir=$4 docdir=$5 config=${6:-}
 notices_dir=${BW_NOTICES_DIR:-share/doc/blockwright/}
+unifont_credit=${BW_UNIFONT_CREDIT:-'Includes GNU Unifont 18.0.01, (c) 1998-2026 Roman Czyborra, Paul Hardy et al.,'}
 rm -rf "$tmp" && mkdir -p "$tmp"
 tmp=$(cd "$tmp" && pwd)
 fails=0
@@ -23,9 +26,11 @@ ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 
 notices=(LICENSE NOTICE oldschool-pc-fonts/LICENSE oldschool-pc-fonts/README.md
-         tabler-icons/LICENSE tabler-icons/README.md)
+         tabler-icons/LICENSE tabler-icons/README.md
+         unifont/OFL-1.1.txt unifont/COPYING unifont/README.md)
 sources=(LICENSE NOTICE third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fonts/README.md
-         third_party/tabler-icons/LICENSE third_party/tabler-icons/README.md)
+         third_party/tabler-icons/LICENSE third_party/tabler-icons/README.md
+         third_party/unifont/OFL-1.1.txt third_party/unifont/COPYING third_party/unifont/README.md)
 
 # has_notices <name> <dir>: the notices are in <dir>, unchanged
 has_notices() {
@@ -70,6 +75,21 @@ finds_icons() {
   fi
 }
 
+# finds_unifont <name> <dir>: <dir>/NOTICE sends the reader to Unifont's
+# notices by a path that exists there, and to the source tree's copy
+finds_unifont() {
+  local t; t=$(tr -s ' \n' ' ' < "$2/NOTICE")
+  if [[ $t != *"the unifont/ directory beside this file (share/doc/blockwright/unifont/)"* ]]; then
+    bad "$1: NOTICE does not name share/doc/blockwright/unifont/"
+  elif [[ ! -f $2/unifont/OFL-1.1.txt || ! -f $2/unifont/COPYING || ! -f $2/unifont/README.md ]]; then
+    bad "$1: no unifont/ beside NOTICE in $2"
+  elif [[ $t != *"in the source tree, third_party/unifont/."* ]]; then
+    bad "$1: NOTICE does not name third_party/unifont/"
+  else
+    ok "$1"
+  fi
+}
+
 # icon_credit <name> <gui>: the GUI's --version credits the icons
 icon_credit() {
   local out; out=$("$2" --version 2>&1)
@@ -80,11 +100,13 @@ icon_credit() {
   fi
 }
 
-# credits <name> <cli>: --version names the fonts, their author and licence
+# credits <name> <cli>: --version names the fonts, their authors and licences
 credits() {
   local out; out=$("$2" --version 2>&1)
   if grep -q 'IBM VGA 8x16 and IBM PC BIOS 8x8 fonts, (c) 2016-2020 VileR,' <<<"$out" \
      && grep -q 'CC BY-SA 4.0, https://int10h.org/oldschool-pc-fonts/' <<<"$out" \
+     && grep -qxF "$unifont_credit" <<<"$out" \
+     && grep -q 'SIL OFL 1.1, https://unifoundry.com/unifont/' <<<"$out" \
      && grep -qF "notices in $notices_dir" <<<"$out"; then
     ok "$1"
   else
@@ -108,6 +130,7 @@ if staged "$build" "$stage"; then ok "cmake --install staged in $stage"; else ba
 has_notices "staged install carries the notices" "$stage$docdir"
 finds_fonts "staged NOTICE points to the font notices" "$stage$docdir"
 finds_icons "staged NOTICE points to the icon notices" "$stage$docdir"
+finds_unifont "staged NOTICE points to the Unifont notices" "$stage$docdir"
 credits "installed --version credits the font" "$stage$bindir/blockwright-cli"
 credits "installed GUI --version credits the font" "$stage$bindir/blockwright"
 icon_credit "installed GUI --version credits the icons" "$stage$bindir/blockwright"
@@ -178,6 +201,7 @@ if out=$(dev); then ok "install-dev"; else bad "install-dev failed: $out"; fi
 has_notices "install-dev carries the notices" "$prefix/share/doc/blockwright"
 finds_fonts "install-dev NOTICE points to the font notices" "$prefix/share/doc/blockwright"
 finds_icons "install-dev NOTICE points to the icon notices" "$prefix/share/doc/blockwright"
+finds_unifont "install-dev NOTICE points to the Unifont notices" "$prefix/share/doc/blockwright"
 credits "blockwright-cli-dev --version credits the font" "$home/.local/bin/blockwright-cli-dev"
 credits "blockwright-dev --version credits the font" "$home/.local/bin/blockwright-dev"
 icon_credit "blockwright-dev --version credits the icons" "$home/.local/bin/blockwright-dev"

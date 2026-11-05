@@ -16,7 +16,8 @@ wins. The licence it gets must be the one the file states:
 - otherwise nothing is checked (the file falls to `Files: *`).
 
 A file that matches no stanza, or a stanza whose licence has no `License:`
-paragraph, fails too.
+paragraph, fails too; a licence of alternatives (`A or B`) needs a paragraph
+for each.
 """
 import os
 import re
@@ -25,6 +26,7 @@ import sys
 
 # How a header or README names a licence -> the copyright file's short name.
 NAMES = [
+    (re.compile(r"OFL-1\.1 or GPL-2\+ with Font exception"), "OFL-1.1 or GPL-2+ with Font exception"),
     (re.compile(r"CC BY-SA 4\.0|CC-BY-SA-4\.0|Attribution-ShareAlike 4\.0"), "CC-BY-SA-4.0"),
     (re.compile(r"SIL Open Font License,? (Version )?1\.1|OFL-1\.1"), "OFL-1.1"),
     (re.compile(r"GPL-3\.0-or-later|GPL-3\+"), "GPL-3+"),
@@ -112,9 +114,10 @@ def main():
     fails = 0
 
     for _, lic, pats in compiled:
-        if lic not in licences:
-            print(f"FAIL stanza {' '.join(pats)}: no 'License: {lic}' paragraph")
-            fails += 1
+        for alt in lic.split(" or "):
+            if alt not in licences:
+                print(f"FAIL stanza {' '.join(pats)}: no 'License: {alt}' paragraph")
+                fails += 1
 
     dir_licence = {}
     files = files_of(src)

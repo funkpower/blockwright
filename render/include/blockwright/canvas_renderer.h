@@ -60,7 +60,9 @@ public:
 // a transparent background, so a cell is a background fill plus one
 // drawImage from a source rect. 24-bit colours get their own glyph images,
 // made on first use. In 9 px mode the 9th column repeats the 8th for the
-// line-drawing glyphs 0xC0-0xDF, as in renderCanvas.
+// line-drawing glyphs 0xC0-0xDF, as in renderCanvas. A cell drawn from rows
+// (bw::cellImage: Unifont, a cluster, either half of a pair) gets an image
+// per (rows, colour) on first use.
 class GlyphAtlas {
 public:
     GlyphAtlas(const BitmapFont& font, int glyphWidth);
@@ -73,6 +75,8 @@ public:
     std::pair<const QImage*, QRect> glyph(std::uint8_t glyph, const Color& fg);
     // Whether the glyph has no foreground pixels (a space, say).
     bool blank(std::uint8_t glyph) const { return blank_[glyph]; }
+    // The image of `rows` (bw::cellImage) in `fg`.
+    const QImage& rows(const GlyphRows& rows, const Color& fg);
 
 private:
     QImage drawGlyph(std::uint8_t glyph, QRgb color) const;
@@ -82,6 +86,7 @@ private:
     QImage atlas_;  // 256 glyphs across, 16 colours down
     std::array<bool, 256> blank_{};
     QHash<quint64, QImage> rgb_;  // (glyph, rgb) -> glyph image
+    QHash<std::pair<const GlyphRows*, QRgb>, QImage> rows_;  // (rows, rgb) -> image
 };
 
 // The QPainter renderer: a 1x RGB32 cache filled from a GlyphAtlas. It draws

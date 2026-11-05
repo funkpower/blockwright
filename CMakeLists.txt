@@ -114,6 +114,15 @@ file(READ ${CMAKE_SOURCE_DIR}/branding/logo.txt BW_LOGO_TEXT)
 string(REPLACE "\r" "" BW_LOGO_TEXT "${BW_LOGO_TEXT}")
 configure_file(cmake/logo_text.h.in ${CMAKE_BINARY_DIR}/generated/blockwright/logo_text.h @ONLY)
 
+# The glyphs CP437 lacks draw from GNU Unifont (PLAN §16, Rendering), built
+# from third_party/unifont/ unless this names the directory of the
+# distribution's Unifont .hex files (the BMP set, unifont.hex or
+# unifont-VERSION.hex, and the upper planes, unifont_upper or unifont_all
+# likewise, each plain or gzipped; scripts/gen-unifont --help), which the
+# Debian package uses: /usr/share/unifont, with unifont.hex and
+# unifont_all.hex. The rpm and AUR packages build from third_party/unifont/.
+set(BLOCKWRIGHT_SYSTEM_UNIFONT "" CACHE PATH "Build Unifont from the .hex files in this directory, not third_party/unifont/")
+
 add_subdirectory(core)
 add_subdirectory(render)
 add_subdirectory(cli)
@@ -121,13 +130,15 @@ add_subdirectory(app)
 add_subdirectory(samples)
 add_subdirectory(library-maker)
 
-# The licence and the bundled font's and icons' notices travel with the
-# binaries (CC BY-SA 4.0 section 3, MIT): <prefix>/share/doc/blockwright/.
+# The licence and the bundled fonts' and icons' notices travel with the
+# binaries (CC BY-SA 4.0 section 3, MIT, OFL 1.1): <prefix>/share/doc/blockwright/.
 install(FILES LICENSE NOTICE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fonts/README.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/oldschool-pc-fonts)
 install(FILES third_party/tabler-icons/LICENSE third_party/tabler-icons/README.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/tabler-icons)
+install(FILES third_party/unifont/OFL-1.1.txt third_party/unifont/COPYING third_party/unifont/README.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}/unifont)
 
 # The desktop entry, icon, AppStream metadata and manual pages of a Linux
 # (freedesktop) install, which the distribution packages and the AppImage carry.

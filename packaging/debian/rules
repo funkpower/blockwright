@@ -15,8 +15,9 @@ endif
 %:
 	dh $@ --buildsystem=cmake+ninja
 
+# The renderer's Unifont comes from the unifont package, not third_party/
 override_dh_auto_configure:
-	dh_auto_configure -- -DBW_FETCH_CATCH2=OFF $(BW_TESTING)
+	dh_auto_configure -- -DBW_FETCH_CATCH2=OFF -DBLOCKWRIGHT_SYSTEM_UNIFONT=/usr/share/unifont $(BW_TESTING)
 
 override_dh_auto_test:
 	QT_QPA_PLATFORM=offscreen CTEST_OUTPUT_ON_FAILURE=1 \

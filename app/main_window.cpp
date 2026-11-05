@@ -443,7 +443,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     status_ = new QLabel;
     statusBar()->addPermanentWidget(status_);
 
-    connect(&doc_, &Document::cellsChanged, this, [this](const QRegion& cells) {
+    connect(&doc_, &Document::cellsChanged, this, [this](const QRegion& changed) {
+        // and each one's neighbours: a cell draws half of a wide glyph by
+        // what is beside it (PLAN §16, Rendering)
+        QRegion cells;
+        for (const QRect& r : changed)
+            cells += r.adjusted(-1, 0, 1, 0);
         renderer_.markDirty(cells);
         view_->cellsChanged(cells);
         preview_->cellsChanged(cells);

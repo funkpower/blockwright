@@ -62,6 +62,24 @@ std::pair<const QImage*, QRect> GlyphAtlas::glyph(std::uint8_t g, const Color& f
     return {&*it, QRect(QPoint(0, 0), cellSize())};
 }
 
+const QImage& GlyphAtlas::rows(const GlyphRows& rows, const Color& fg) {
+    const QRgb color = toQRgb(resolveColor(fg));
+    const auto key = std::pair(&rows, color);
+    auto it = rows_.find(key);
+    if (it == rows_.end()) {
+        QImage img(gw_, 16, QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::transparent);
+        for (int y = 0; y < 16; ++y) {
+            auto* line = reinterpret_cast<QRgb*>(img.scanLine(y));
+            for (int x = 0; x < gw_; ++x)
+                if ((rows[y] >> x) & 1)
+                    line[x] = color | 0xff000000u;
+        }
+        it = rows_.insert(key, img);
+    }
+    return *it;
+}
+
 AtlasRenderer::AtlasRenderer(const BitmapFont& font) : font_(&font) {}
 
 void AtlasRenderer::setCanvas(const Canvas* canvas, int glyphWidth) {
@@ -108,7 +126,12 @@ QRegion AtlasRenderer::flush() {
                 const Cell cell = iceCell(canvas_->at(cx, cy), ice_);
                 const QRect target(QPoint(cx * cs.width(), cy * cs.height()), cs);
                 p.fillRect(target, QColor(toQRgb(resolveColor(cell.bg))));
-                const std::uint8_t g = glyphIndex(cell.ch);
+                const CellImage ci = cellImage(*canvas_, cx, cy, font_->height);
+                if (ci.rows) {
+                    p.drawImage(target.topLeft(), atlas_->rows(*ci.rows, cell.fg));
+                    continue;
+                }
+                const std::uint8_t g = ci.index;
                 if (atlas_->blank(g))
                     continue;
                 const auto [img, src] = atlas_->glyph(g, cell.fg);

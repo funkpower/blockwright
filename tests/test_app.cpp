@@ -817,6 +817,43 @@ TEST_CASE("input-method commits type like keys") {
     CHECK(v->inputMethodQuery(Qt::ImCursorRectangle).toRect() == v->cellRect(v->cellCursor()));
 }
 
+TEST_CASE("the cursor frames both cells of a wide glyph (PLAN §16)") {
+    MainWindow w;
+    AnsiDocument doc;
+    doc.canvas = Canvas(5, 1);
+    doc.canvas.at(1, 0).ch = U'中';
+    doc.canvas.at(2, 0).ch = Glyph::continuation();
+    w.document()->replace(std::move(doc), QString());
+    CanvasView* v = w.canvasView();
+    const QRect pair = v->cellRect(QPoint(1, 0)).united(v->cellRect(QPoint(2, 0)));
+    // on the lead and on the continuation alike; a narrow cell keeps its own
+    for (int x : {1, 2}) {
+        v->setCellCursor({x, 0});
+        CHECK(v->cursorRect() == pair);
+        CHECK(v->inputMethodQuery(Qt::ImCursorRectangle).toRect() == v->toWidget(pair));
+    }
+    v->setCellCursor({4, 0});
+    CHECK(v->cursorRect() == v->cellRect(QPoint(4, 0)));
+    // drawn: the frame runs round the pair, with no side between its cells
+    v->setZoom(2);
+    const QImage away = v->grab().toImage();
+    v->setCellCursor({2, 0});
+    const QImage on = v->grab().toImage();
+    const QRect r = v->toWidget(pair);
+    const qreal dpr = on.devicePixelRatio();
+    auto px = [&](const QImage& img, int x, int y) { return img.pixel(int(x * dpr), int(y * dpr)); };
+    for (int x = r.left(); x <= r.right(); ++x) {
+        CHECK(px(on, x, r.top()) != px(away, x, r.top()));
+        CHECK(px(on, x, r.bottom()) != px(away, x, r.bottom()));
+    }
+    const int mid = r.top() + r.height() / 2;
+    CHECK(px(on, r.left(), mid) != px(away, r.left(), mid));
+    CHECK(px(on, r.right(), mid) != px(away, r.right(), mid));
+    const int join = v->toWidget(v->cellRect(QPoint(2, 0))).left();
+    CHECK(px(on, join, mid) == px(away, join, mid));
+    CHECK(px(on, join - 1, mid) == px(away, join - 1, mid));
+}
+
 TEST_CASE("the typing refusal says why each glyph can't be typed") {
     // #306: the five CP437 glyphs .ans can't hold say which byte and control code
     CHECK(rejectedGlyphsMessage(QStringLiteral("○")) ==

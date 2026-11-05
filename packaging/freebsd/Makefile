@@ -6,11 +6,12 @@ MASTER_SITES=	https://git.pumpin.online/funkpower/blockwright/releases/download/
 COMMENT=	Editor for ANSI and IRC block art
 WWW=		https://git.pumpin.online/funkpower/blockwright
 
-LICENSE=	GPLv3+ CC-BY-SA-4.0 MIT
+LICENSE=	GPLv3+ CC-BY-SA-4.0 MIT OFL11
 LICENSE_COMB=	multi
 LICENSE_FILE_GPLv3+ =	${WRKSRC}/LICENSE
 LICENSE_FILE_CC-BY-SA-4.0=	${WRKSRC}/third_party/oldschool-pc-fonts/LICENSE
 LICENSE_FILE_MIT=	${WRKSRC}/third_party/tabler-icons/LICENSE
+LICENSE_FILE_OFL11=	${WRKSRC}/third_party/unifont/OFL-1.1.txt
 
 BUILD_DEPENDS=	zstd>0:archivers/zstd
 LIB_DEPENDS=	libzip.so:archivers/libzip

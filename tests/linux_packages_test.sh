@@ -66,6 +66,17 @@ for dir in $(sed -n 's|.*FILES third_party/\([^/]*\)/LICENSE.*|\1|p' "$src/CMake
     missing+=" LICENSE.$dir(not copied in %prep)"
   fi
 done
+# Unifont's two licence texts (OFL-1.1.txt and COPYING, its OFL and GPL)
+for pair in OFL-1.1.txt:OFL COPYING:GPL; do
+  f=${pair%%:*} name=LICENSE.unifont-${pair#*:}
+  if ! grep -q "FILES third_party/unifont/.*$f" "$src/CMakeLists.txt"; then
+    missing+=" (CMakeLists.txt installs no third_party/unifont/$f)"
+  elif ! grep -qx "$name" <<<"$lic"; then
+    missing+=" $name"
+  elif ! grep -Eq "^cp( -p)? third_party/unifont/$f $name$" "$spec"; then
+    missing+=" $name(not copied in %prep)"
+  fi
+done
 [[ -z $missing ]] && ok "blockwright.spec: %license holds LICENSE, NOTICE and the bundled licences" ||
   bad "blockwright.spec's %license lacks:$missing"
 
