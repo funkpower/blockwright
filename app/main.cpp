@@ -2,6 +2,7 @@
 //
 //   blockwright [file.ans | file.xb | file.bin | project.bwp | project-directory]
 //   blockwright --version | --help | --list-actions
+//   blockwright --screenshot <steps.json> -o <dir>
 
 #include "branding.h"
 #include "file_open.h"
@@ -9,6 +10,7 @@
 #include "action_list.h"
 #include "shortcut_settings.h"
 #include "main_window.h"
+#include "screenshot.h"
 #include "settings.h"
 #include "start_screen.h"
 
@@ -18,6 +20,7 @@
 
 #include <QApplication>
 #include <QFileInfo>
+#include <QStyle>
 
 #include <cstdio>
 #include <cstring>
@@ -55,6 +58,8 @@ int main(int argc, char** argv) {
     std::vector<const char*> files;
     bool dashdash = false;
     bool listActions = false;
+    const char* screenshotSteps = nullptr;
+    const char* screenshotDir = nullptr;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         if (dashdash || a[0] != '-' || !a[1]) {
@@ -70,15 +75,33 @@ int main(int argc, char** argv) {
             return 0;
         } else if (!std::strcmp(a, "--help") || !std::strcmp(a, "-h")) {
             messagesToConsole();
-            std::cout << "Usage: blockwright [file.ans | file.xb | file.bin | project.bwp | project-directory]\n\n"
+            std::cout << "Usage: blockwright [file.ans | file.xb | file.bin | project.bwp | project-directory]\n"
+                         "       blockwright --screenshot <steps.json> -o <dir>\n\n"
                          "ANSI and IRC art editor.\n\n"
                          "  -h, --help      show this help\n"
                          "  -v, --version   show the version and the font and icon credits\n"
                          "  --list-actions  print every menu and dock action as JSON (id, menu, text,\n"
-                         "                  default shortcuts, tips, tool and help ids) and exit\n";
+                         "                  default shortcuts, tips, tool and help ids) and exit\n"
+                         "  --screenshot <steps.json> -o <dir>\n"
+                         "                  replay a steps file (blockwright-cli replay --help gives\n"
+                         "                  the format) in the window, offscreen, and write a PNG of\n"
+                         "                  the window, a dock or a crop for each step's \"screenshot\":\n"
+                         "                  {\"of\": \"window\" | a dock or widget's object name,\n"
+                         "                   \"crop\": {\"cells\": [x, y, w, h]} | {\"pixels\": [x, y, w, h]},\n"
+                         "                   \"when\": \"before\" | \"after\" | \"both\"}, as NN-<name>.png\n"
+                         "                  (-before, -after); a top-level \"window\": [w, h] sizes the\n"
+                         "                  window (default 1280 x 800)\n";
             return 0;
         } else if (!std::strcmp(a, "--list-actions")) {
             listActions = true;
+        } else if (!std::strcmp(a, "--screenshot") || !std::strcmp(a, "-o") || !std::strcmp(a, "--output")) {
+            const bool steps = !std::strcmp(a, "--screenshot");
+            if (i + 1 >= argc || (steps ? screenshotSteps : screenshotDir)) {
+                messagesToConsole();
+                std::cerr << "blockwright: " << a << (i + 1 >= argc ? " needs a value\n" : " given twice\n");
+                return 2;
+            }
+            (steps ? screenshotSteps : screenshotDir) = argv[++i];
         } else {
             messagesToConsole();
             std::cerr << "blockwright: unknown option " << a << "\n";
@@ -96,6 +119,20 @@ int main(int argc, char** argv) {
         // desktop's theme and style are not loaded: a theme can need a display
         // (gtk3) or change the keys (kde, qt6ct), and the dump is the same
         // everywhere.
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        qunsetenv("QT_QPA_PLATFORMTHEME");
+        qunsetenv("QT_STYLE_OVERRIDE");
+    }
+    const bool screenshot = screenshotSteps || screenshotDir;
+    if (screenshot && (!screenshotSteps || !screenshotDir || listActions || !files.empty())) {
+        messagesToConsole();
+        std::cerr << "blockwright: usage: blockwright --screenshot <steps.json> -o <dir>\n";
+        return 2;
+    }
+    if (screenshot) {
+        messagesToConsole();
+        // Offscreen, in Qt's own Fusion style: as for --list-actions, the
+        // desktop's theme and style are not loaded.
         qputenv("QT_QPA_PLATFORM", "offscreen");
         qunsetenv("QT_QPA_PLATFORMTHEME");
         qunsetenv("QT_STYLE_OVERRIDE");
@@ -120,6 +157,12 @@ int main(int argc, char** argv) {
     // A generator still running when the app quits is stopped, not waited for.
     bw::killGeneratorsOnQuit(&app);
 
+    if (screenshot) {
+        QApplication::setStyle(QStringLiteral("Fusion"));
+        QApplication::setPalette(QApplication::style()->standardPalette());
+        bw::useLinuxStandardKeys();
+        return bw::screenshot::run(QString::fromLocal8Bit(screenshotSteps), QString::fromLocal8Bit(screenshotDir));
+    }
     if (listActions) {
         // Under scratch settings the window has its default keys and layout,
         // whatever the user changed, and what it writes is dropped.

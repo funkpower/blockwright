@@ -9,6 +9,7 @@
 #include "blockwright/steps.h"
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -35,11 +36,23 @@ struct Outcome {
 bw::project::Project start(const bw::steps::Script& script, const std::filesystem::path& dir,
                            const std::filesystem::path& samplesDir);
 
+// The replay just before or after a step, as the editor would hold it: what
+// the window's screenshots (#295) put in the window.
+struct Moment {
+    const bw::steps::Step& step;
+    bool before;
+    const bw::project::Project& project;
+    bw::LayerId active;
+    const bw::Selection& selection;
+};
+using Observer = std::function<void(const Moment&)>;
+
 // The script's steps applied to `project` in order. Throws Failure naming
 // the step ("step 3 (outline): ...") for one that can't be applied: a point
 // off the canvas, no selection to transform, a layer that can't take the
-// edit or isn't there.
-Outcome run(const bw::steps::Script& script, bw::project::Project project);
+// edit or isn't there. `observe`, if given, sees each step before and after
+// it is applied; what it throws stops the replay.
+Outcome run(const bw::steps::Script& script, bw::project::Project project, const Observer& observe = {});
 
 // "07": the step's number, as wide as the last step's and at least two.
 std::string stepNumber(int number, int steps);

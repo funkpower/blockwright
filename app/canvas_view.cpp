@@ -421,6 +421,13 @@ QRect CanvasView::cellRect(Cursor c) const {
     return QRect(QPoint(c.x * cs.width(), c.y * cs.height()), cs);
 }
 
+void CanvasView::setCursorShown(bool on) {
+    if (on == cursorShown_)
+        return;
+    cursorShown_ = on;
+    update();
+}
+
 QRect CanvasView::cursorRect() const {
     const Canvas& cv = doc_->canvas();
     const QRect r = cellRect(cursor_);
@@ -682,6 +689,8 @@ void CanvasView::paintEvent(QPaintEvent* e) {
     }
 
     // The cursor: a frame drawn with XOR so it shows on any colour.
+    if (!cursorShown_)
+        return;
     const QRect r = cursorRect();
     const int t = std::max(1, zoom_);
     p.setCompositionMode(QPainter::RasterOp_SourceXorDestination);

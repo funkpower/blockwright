@@ -67,6 +67,8 @@ add_library(blockwright_app STATIC
   row_tree.h
   sauce_dialog.cpp
   sauce_dialog.h
+  screenshot.cpp
+  screenshot.h
   select_tool.cpp
   select_tool.h
   settings.cpp
@@ -165,7 +167,9 @@ qt_add_resources(blockwright_app "branding_icon" PREFIX "/branding" BASE ${BW_IC
 )
 add_dependencies(blockwright_app bw_version)
 target_include_directories(blockwright_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated)
-target_link_libraries(blockwright_app PUBLIC blockwright::core blockwright::render Qt6::Widgets Qt6::Concurrent Qt6::Svg)
+# blockwright_cli_io for the replay --screenshot shares with blockwright-cli (#295)
+target_link_libraries(blockwright_app PUBLIC blockwright::core blockwright::render blockwright_cli_io
+                      Qt6::Widgets Qt6::Concurrent Qt6::Svg)
 target_compile_options(blockwright_app PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)
 

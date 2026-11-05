@@ -613,6 +613,7 @@ add_executable(blockwright-app-tests
   test_app_help.cpp
   test_app_scene.cpp
   test_app_branding.cpp
+  test_app_screenshot.cpp
   scene_env.h
   scratch_settings.h
   system_input.h
@@ -651,6 +652,13 @@ endforeach()
 if(NOT CMAKE_CROSSCOMPILING)
   add_test(NAME app_tests_layout_after_a_close
     COMMAND ${BW_APP_TEST_ENV} bash ${CMAKE_CURRENT_SOURCE_DIR}/app_order_test.sh $<TARGET_FILE:blockwright-app-tests>)
+endif()
+# blockwright --screenshot (#295): the PNGs a steps file asks for, their
+# sizes, a failing step and the usage errors, through the binary itself.
+if(NOT CMAKE_CROSSCOMPILING)
+  add_test(NAME app_screenshot
+    COMMAND ${BW_APP_TEST_ENV} sh ${CMAKE_CURRENT_SOURCE_DIR}/app_screenshot_test.sh ${BW_GUI_COMMAND}
+            ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/app-screenshot-check)
 endif()
 # The canvas keeps its floor after the window shrinks (#238): a scroll bar
 # appears with the shorter or narrower window, at every scale.

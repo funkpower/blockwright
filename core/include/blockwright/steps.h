@@ -28,6 +28,16 @@
 // Tool Options do in the editor. "capture": "before-after"
 // asks for the canvas before the step as well as after it.
 //
+// Two keys are the window's (#295), which `blockwright --screenshot` reads
+// and `blockwright-cli replay` passes over: a top-level "window": [w, h],
+// the window's size in pixels, and a step's "screenshot":
+//
+//   "screenshot": {"of": "window" | a dock's or widget's object name,
+//                  "crop": {"cells": [x, y, w, h]} | {"pixels": [x, y, w, h]},
+//                  "when": "before" | "after" | "both"}
+//
+// each key optional (the window, uncropped, after the step).
+//
 // Every key is checked: an unknown key, a key the action doesn't take, a
 // value of the wrong kind or out of range is refused, and the error names
 // the step by number and name. Where a point, rectangle or radial symmetry
@@ -107,6 +117,16 @@ struct Point {
 enum class Button { Left, Right };
 enum class Capture { After, BeforeAfter };
 
+// A picture of the window a step asks for (#295).
+struct Screenshot {
+    enum class When { Before, After, Both };
+    enum class Crop { None, Cells, Pixels };
+    std::string of = "window";  // "window", or a dock's or widget's object name
+    Crop crop = Crop::None;
+    int x = 0, y = 0, width = 0, height = 0;  // the crop: canvas cells, or pixels of `of`
+    When when = When::After;
+};
+
 struct Step {
     int number = 0;  // from 1, as the files and errors name it
     std::string name;
@@ -122,11 +142,17 @@ struct Step {
     // layerProperties: what it changes on the active layer
     std::optional<std::string> rename;
     std::optional<bool> visible, locked, alphaLocked;
+    std::optional<Screenshot> screenshot;
 };
+
+// The window's size a steps file may set, in pixels.
+constexpr int kMinWindowSide = 320;
+constexpr int kMaxWindowSide = 4096;
 
 struct Script {
     Start start;
     std::optional<bool> ice;
+    std::optional<int> windowWidth, windowHeight;  // "window": [w, h]
     std::vector<Step> steps;
 };
 

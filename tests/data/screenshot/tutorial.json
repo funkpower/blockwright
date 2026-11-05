@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "start": {"blank": [20, 8]},
+  "window": [1024, 720],
+  "steps": [
+    {"name": "pick-ramp", "action": "rampShade", "ramp": "steel", "size": 2,
+     "screenshot": {"of": "toolOptions"}},
+    {"name": "stroke", "action": "glyph", "glyph": "#", "fg": 14, "bg": 1,
+     "points": [[2, 2], [3, 2], [4, 2]], "screenshot": {"when": "both"}},
+    {"name": "ink", "action": "newCellsLayer", "rename": "ink", "screenshot": {"of": "layersDock"}},
+    {"name": "box", "action": "rectangle", "fg": 12, "filled": true, "from": [0, 0], "to": [5, 5],
+     "screenshot": {"crop": {"cells": [1, 1, 6, 3]}}},
+    {"name": "plain", "action": "selectAll"},
+    {"name": "corner", "action": "deselect", "screenshot": {"of": "window", "crop": {"pixels": [0, 0, 120, 40]}}}
+  ]
+}

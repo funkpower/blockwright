@@ -77,7 +77,7 @@ const std::set<std::string_view> kOptionKeys = {
     "texture",  "spray",   "pasteMode",
 };
 
-const std::set<std::string_view> kStepKeys = {"name", "action", "capture"};
+const std::set<std::string_view> kStepKeys = {"name", "action", "capture", "screenshot"};
 
 std::string utf8(const QString& s) { return s.toStdString(); }
 
@@ -372,6 +372,40 @@ Start readStart(const QJsonValue& v) {
     return s;
 }
 
+// A step's "screenshot" (#295). Whether the widget it names is there, and
+// the crop on it, is the window's to check when it takes the picture.
+Screenshot readScreenshot(const std::string& where, const QJsonValue& v) {
+    const QJsonObject o = objectOf(where, "screenshot", v, {"of", "crop", "when"});
+    Screenshot shot;
+    if (o.contains("of")) {
+        shot.of = stringOf(where, "screenshot of", o["of"]);
+        if (shot.of.empty())
+            fail(where, "\"screenshot of\" is empty");
+    }
+    if (o.contains("when"))
+        shot.when = choiceOf<Screenshot::When>(
+            where, "screenshot when", o["when"],
+            {{"before", Screenshot::When::Before}, {"after", Screenshot::When::After}, {"both", Screenshot::When::Both}});
+    if (o.contains("crop")) {
+        const QJsonObject c = objectOf(where, "screenshot crop", o["crop"], {"cells", "pixels"});
+        if (c.size() != 1)
+            fail(where, "\"screenshot crop\" needs one of \"cells\" or \"pixels\"");
+        const bool cells = c.contains("cells");
+        const std::string key = cells ? "cells" : "pixels";
+        const QJsonValue r = c[QString::fromStdString(key)];
+        if (!r.isArray() || r.toArray().size() != 4)
+            fail(where, "\"screenshot crop " + key + "\" must be [x, y, width, height]");
+        const QJsonArray a = r.toArray();
+        const std::string k = "screenshot crop " + key;
+        shot.crop = cells ? Screenshot::Crop::Cells : Screenshot::Crop::Pixels;
+        shot.x = intOf(where, k + " x", a[0], 0, cells ? kMaxBlankSide - 1 : kMaxWindowSide - 1);
+        shot.y = intOf(where, k + " y", a[1], 0, cells ? kMaxBlankSide - 1 : kMaxWindowSide - 1);
+        shot.width = intOf(where, k + " width", a[2], 1, cells ? kMaxBlankSide : kMaxWindowSide);
+        shot.height = intOf(where, k + " height", a[3], 1, cells ? kMaxBlankSide : kMaxWindowSide);
+    }
+    return shot;
+}
+
 Step readStep(const QJsonValue& v, int number) {
     Step st;
     st.number = number;
@@ -406,6 +440,8 @@ Step readStep(const QJsonValue& v, int number) {
         st.capture = choiceOf<Capture>(where, "capture", o["capture"],
                                        {{"after", Capture::After}, {"before-after", Capture::BeforeAfter}});
     readOptions(where, o, st.options);
+    if (o.contains("screenshot"))
+        st.screenshot = readScreenshot(where, o["screenshot"]);
     if (o.contains("button"))
         st.button = choiceOf<Button>(where, "button", o["button"], {{"left", Button::Left}, {"right", Button::Right}});
 
@@ -502,8 +538,9 @@ Script parse(std::string_view json) {
         throw StepsError("a steps file is a JSON object");
     const QJsonObject o = doc.object();
     for (auto it = o.begin(); it != o.end(); ++it)
-        if (const std::string k = utf8(it.key()); k != "version" && k != "start" && k != "ice" && k != "steps")
-            throw StepsError("unknown key \"" + k + "\"; a steps file has version, start, ice and steps");
+        if (const std::string k = utf8(it.key());
+            k != "version" && k != "start" && k != "ice" && k != "window" && k != "steps")
+            throw StepsError("unknown key \"" + k + "\"; a steps file has version, start, ice, window and steps");
     if (!o.contains("version"))
         throw StepsError("no \"version\"");
     if (!o["version"].isDouble() || o["version"].toDouble() != kVersion)
@@ -516,6 +553,13 @@ Script parse(std::string_view json) {
         if (s.start.kind != Start::Kind::Blank)
             throw StepsError("\"ice\" is for a blank start; a file or sample has its own");
         s.ice = boolOf("top level", "ice", o["ice"]);
+    }
+    if (o.contains("window")) {
+        const QJsonArray a = o["window"].toArray();
+        if (!o["window"].isArray() || a.size() != 2)
+            throw StepsError("top level: \"window\" must be [width, height]");
+        s.windowWidth = intOf("top level", "window width", a[0], kMinWindowSide, kMaxWindowSide);
+        s.windowHeight = intOf("top level", "window height", a[1], kMinWindowSide, kMaxWindowSide);
     }
     if (!o["steps"].isArray() || o["steps"].toArray().isEmpty())
         throw StepsError("\"steps\" must be an array of at least one step");

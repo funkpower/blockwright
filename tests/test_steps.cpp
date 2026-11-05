@@ -93,6 +93,49 @@ TEST_CASE("a steps file reads its start, options and every step's fields", "[ste
     CHECK_FALSE(s.steps[8].rename);
 }
 
+TEST_CASE("a steps file reads the window's size and each step's screenshot", "[steps][screenshot]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "window": [1024, 720],
+        "steps": [
+            {"name": "plain", "action": "selectAll"},
+            {"name": "all", "action": "selectAll", "screenshot": {}},
+            {"name": "dock", "action": "rampShade", "ramp": "steel",
+             "screenshot": {"of": "toolOptionsDock", "when": "before"}},
+            {"name": "cells", "action": "deselect", "screenshot": {"crop": {"cells": [1, 2, 3, 4]}, "when": "both"}},
+            {"name": "pixels", "action": "deselect", "screenshot": {"of": "layers", "crop": {"pixels": [5, 6, 7, 8]}}}
+        ]})");
+    CHECK(s.windowWidth == 1024);
+    CHECK(s.windowHeight == 720);
+    REQUIRE(s.steps.size() == 5);
+    using Shot = steps::Screenshot;
+    CHECK_FALSE(s.steps[0].screenshot);
+
+    REQUIRE(s.steps[1].screenshot);
+    const Shot& all = *s.steps[1].screenshot;
+    CHECK(all.of == "window");
+    CHECK(all.crop == Shot::Crop::None);
+    CHECK(all.when == Shot::When::After);
+
+    REQUIRE(s.steps[2].screenshot);
+    CHECK(s.steps[2].screenshot->of == "toolOptionsDock");
+    CHECK(s.steps[2].screenshot->when == Shot::When::Before);
+    CHECK(s.steps[2].options.ramp->name == "steel");
+
+    REQUIRE(s.steps[3].screenshot);
+    const Shot& cells = *s.steps[3].screenshot;
+    CHECK(cells.crop == Shot::Crop::Cells);
+    CHECK((cells.x == 1 && cells.y == 2 && cells.width == 3 && cells.height == 4));
+    CHECK(cells.when == Shot::When::Both);
+
+    REQUIRE(s.steps[4].screenshot);
+    const Shot& pixels = *s.steps[4].screenshot;
+    CHECK(pixels.of == "layers");
+    CHECK(pixels.crop == Shot::Crop::Pixels);
+    CHECK((pixels.x == 5 && pixels.y == 6 && pixels.width == 7 && pixels.height == 8));
+
+    // without a "window", the window's replay picks its size
+    CHECK_FALSE(steps::parse(script(R"({"name": "a", "action": "selectAll"})")).windowWidth);
+}
+
 TEST_CASE("a steps file starts from a file or a sample", "[steps]") {
     const steps::Script f = steps::parse(R"({"version": 1, "start": {"file": "art/piece.bwp"}, "steps": [{"name": "all", "action": "selectAll"}]})");
     CHECK(f.start.kind == steps::Start::Kind::File);
@@ -168,6 +211,29 @@ TEST_CASE("what a steps file refuses names the step or the start", "[steps]") {
          "capture"},
         {"an unknown paste mode", script(R"({"name": "a", "action": "paste", "at": [0, 0], "pasteMode": "glue"})"),
          "step 1 (a)", "pasteMode"},
+        {"a window too small", R"({"version": 1, "start": {"blank": [4, 4]}, "window": [100, 600], "steps": []})",
+         "top level", "window width"},
+        {"a window not two numbers", R"({"version": 1, "start": {"blank": [4, 4]}, "window": [800], "steps": []})",
+         "top level", "window"},
+        {"a screenshot not an object", script(R"({"name": "a", "action": "selectAll", "screenshot": "window"})"),
+         "step 1 (a)", "screenshot"},
+        {"an unknown screenshot key",
+         script(R"({"name": "a", "action": "selectAll", "screenshot": {"of": "window", "scale": 3}})"), "step 1 (a)",
+         "scale"},
+        {"an empty screenshot of", script(R"({"name": "a", "action": "selectAll", "screenshot": {"of": ""}})"),
+         "step 1 (a)", "of"},
+        {"an unknown screenshot when",
+         script(R"({"name": "a", "action": "selectAll", "screenshot": {"when": "during"}})"), "step 1 (a)", "when"},
+        {"a crop in cells and pixels",
+         script(R"({"name": "a", "action": "selectAll",
+                    "screenshot": {"crop": {"cells": [0, 0, 1, 1], "pixels": [0, 0, 1, 1]}}})"),
+         "step 1 (a)", "crop"},
+        {"a crop of no size",
+         script(R"({"name": "a", "action": "selectAll", "screenshot": {"crop": {"cells": [0, 0, 0, 1]}}})"),
+         "step 1 (a)", "crop cells width"},
+        {"a crop not four numbers",
+         script(R"({"name": "a", "action": "selectAll", "screenshot": {"crop": {"pixels": [0, 0, 4]}}})"),
+         "step 1 (a)", "x, y, width, height"},
     };
     for (const Case& c : cases) {
         INFO(c.what);

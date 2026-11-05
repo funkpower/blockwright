@@ -112,6 +112,10 @@ public:
     // The cursor's frame in view pixels: its cell, or the two of a wide
     // glyph when it is on the lead or the continuation (PLAN §16, Rendering).
     QRect cursorRect() const;
+    // Whether the cursor's frame is drawn (on until turned off): the
+    // window's screenshots (#295) leave it out.
+    bool cursorShown() const { return cursorShown_; }
+    void setCursorShown(bool on);
     // Cell `cell` in view pixels, and the cell under a view pixel (rounded
     // down, so it may be off the canvas).
     QRect cellRect(const QPoint& cell) const { return cellRect(Cursor{cell.x(), cell.y()}); }
@@ -341,6 +345,7 @@ private:
     CanvasRenderer* renderer_;
     int zoom_ = 2;
     Cursor cursor_;
+    bool cursorShown_ = true;
     Pen pen_;
     int glyphSet_;
     Tool* tool_ = nullptr;  // owned by the tool registry

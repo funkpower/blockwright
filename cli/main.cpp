@@ -71,6 +71,7 @@
 #include "loss.h"
 #include "read_file.h"
 #include "replay.h"
+#include "save_all.h"
 #include "shade.h"
 
 #include <QBuffer>
@@ -80,10 +81,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
-
-#if __has_include(<sys/resource.h>)
-#include <sys/resource.h>
-#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -915,81 +912,6 @@ struct ReplayArgs {
     bool allowLossy = false;
 };
 
-// Open files a run keeps beside its outputs: stdio and Qt's own.
-constexpr std::size_t kSpareOpenFiles = 64;
-
-// Room for `files` more open files: each output's QSaveFile stays open until
-// all are written. Raises the soft limit as far as the hard one allows and
-// returns the limit in force when that still leaves too little room (the old
-// one when it can't be raised), so the run is refused before any file is
-// opened rather than failing part way through.
-std::optional<unsigned long long> tooFewOpenFiles(std::size_t files) {
-#if __has_include(<sys/resource.h>)
-    rlimit l{};
-    if (getrlimit(RLIMIT_NOFILE, &l) != 0)
-        return std::nullopt;
-    const rlim_t want = rlim_t(files) + kSpareOpenFiles;
-    if (l.rlim_cur != RLIM_INFINITY && l.rlim_cur < want) {
-        const rlim_t had = l.rlim_cur;
-        l.rlim_cur = l.rlim_max == RLIM_INFINITY ? want : std::min(want, l.rlim_max);
-        if (setrlimit(RLIMIT_NOFILE, &l) != 0)
-            return static_cast<unsigned long long>(had);
-        if (l.rlim_cur < want)
-            return static_cast<unsigned long long>(l.rlim_cur);
-    }
-#else
-    (void)files;
-#endif
-    return std::nullopt;
-}
-
-// Writes every file whole, or none of them, each as save writes one (through
-// a symlink, keeping the file's permissions, refusing a file that isn't
-// writable): a target that is a directory, or a project where a flat file
-// goes (as save refuses one), is refused first; then every file is written
-// to its own QSaveFile, and only once all are written is each committed into
-// place. A failure drops the files not yet committed and removes every file
-// it committed that wasn't there. The caller checks the open-file limit
-// (tooFewOpenFiles) first.
-void saveAll(const std::vector<std::pair<std::string, std::string>>& files) {
-    namespace fs = std::filesystem;
-    std::vector<bool> existed;
-    for (const auto& [path, bytes] : files) {
-        std::error_code ec;
-        if (fs::is_directory(path, ec))
-            throw Failure{path + ": not written: a directory is in the way"};
-        if (!path.ends_with(".bwp") && bw::project::isProject(path))
-            throw Failure{path + ": not written: it is a project (pack and unpack write projects)"};
-        existed.push_back(fs::exists(fs::symlink_status(path, ec)));
-    }
-    // a QSaveFile dropped before its commit removes its temporary
-    std::vector<std::unique_ptr<QSaveFile>> out;
-    for (const auto& [path, bytes] : files) {
-        auto f = std::make_unique<QSaveFile>(QString::fromStdString(path));
-        f->setDirectWriteFallback(false);
-        if (!f->open(QIODevice::WriteOnly))
-            throw Failure{path + ": " + f->errorString().toStdString()};
-        const auto n = static_cast<qint64>(bytes.size());
-        errno = 0;
-        if (f->write(bytes.data(), n) != n || !f->flush()) {
-            // Qt's error string for a failed write is often "Unknown error"
-            const std::string why = errno ? std::strerror(errno) : f->errorString().toStdString();
-            throw Failure{path + ": write failed: " + why};
-        }
-        out.push_back(std::move(f));
-    }
-    for (std::size_t i = 0; i < files.size(); ++i) {
-        if (!out[i]->commit()) {
-            const std::string why = out[i]->errorString().toStdString();
-            std::error_code ignored;
-            for (std::size_t j = 0; j < i; ++j)
-                if (!existed[j])
-                    fs::remove(files[j].first, ignored);
-            throw Failure{files[i].first + ": write failed: " + why};
-        }
-    }
-}
-
 // replay <steps.json> -o <dir>: every capture made in memory first, then
 // written, so a step that fails writes nothing and a write that fails
 // leaves no new file (saveAll).
@@ -1049,15 +971,15 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
     }
     // refused before <dir> is made, so a refused run leaves nothing, as a
     // failed step does
-    if (const auto limit = tooFewOpenFiles(files.size()))
+    if (const auto limit = bwcli::tooFewOpenFiles(files.size()))
         throw Failure{"not written: " + std::to_string(files.size()) + " outputs need " +
-                      std::to_string(files.size() + kSpareOpenFiles) + " open files at once (one each and " +
-                      std::to_string(kSpareOpenFiles) + " to spare), more than the open-file limit of " +
+                      std::to_string(files.size() + bwcli::kSpareOpenFiles) + " open files at once (one each and " +
+                      std::to_string(bwcli::kSpareOpenFiles) + " to spare), more than the open-file limit of " +
                       std::to_string(*limit)};
     std::error_code ec;
     if (fs::exists(dir, ec) ? !fs::is_directory(dir, ec) : !fs::create_directories(dir, ec))
         throw Failure{a.outDir + ": " + (ec ? ec.message() : std::string("not a directory"))};
-    saveAll(files);
+    bwcli::saveAll(files);
     return kOk;
 }
 

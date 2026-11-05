@@ -678,7 +678,7 @@ project::Project start(const steps::Script& script, const fs::path& dir, const f
     return p;
 }
 
-Outcome run(const steps::Script& script, project::Project project) {
+Outcome run(const steps::Script& script, project::Project project, const Observer& observe) {
     State s;
     s.p = std::move(project);
     if (s.stack().empty())
@@ -691,7 +691,11 @@ Outcome run(const steps::Script& script, project::Project project) {
         const std::string stem = stepNumber(st.number, count) + "-" + st.name;
         if (st.capture == steps::Capture::BeforeAfter)
             out.captures.push_back({stem + "-before", s.p});
+        if (observe)
+            observe({st, true, s.p, s.active, s.selection});
         step(s, st, out);
+        if (observe)
+            observe({st, false, s.p, s.active, s.selection});
         out.captures.push_back({st.capture == steps::Capture::BeforeAfter ? stem + "-after" : stem, s.p});
     }
     return out;
