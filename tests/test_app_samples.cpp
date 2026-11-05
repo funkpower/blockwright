@@ -47,6 +47,7 @@ const fs::path kSource = BW_SAMPLES_SOURCE;
 const QString kShowcase = QStringLiteral("01-layers-showcase");
 const QString kLogo = QStringLiteral("02-text-style-logo");
 const QString kStillLife = QStringLiteral("03-still-life");
+const QString kRidges = QStringLiteral("04-generator-ridges");
 
 QString qpath(const fs::path& p) { return QFile::decodeName(QByteArray::fromStdString(p.string())); }
 
@@ -134,7 +135,7 @@ TEST_CASE("Help > Samples lists the bundled samples by title, a broken one disab
     SECTION("the source samples") {
         SamplesAt env(qpath(kSource));
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 3);
+        REQUIRE(actions.size() == 4);
         CHECK(actions[0]->text() == QStringLiteral("Harbour at night"));
         CHECK(actions[0]->isEnabled());
         CHECK(actions[0]->toolTip().startsWith(QStringLiteral("A city on the water")));
@@ -147,6 +148,10 @@ TEST_CASE("Help > Samples lists the bundled samples by title, a broken one disab
         CHECK(actions[2]->isEnabled());
         CHECK(actions[2]->toolTip().startsWith(QStringLiteral("A cylinder, a box and a ball on a table")));
         CHECK(actions[2]->property("path").toString() == qpath(kSource / kStillLife.toStdString()));
+        CHECK(actions[3]->text() == QStringLiteral("Ridges at dusk"));
+        CHECK(actions[3]->isEnabled());
+        CHECK(actions[3]->toolTip().startsWith(QStringLiteral("Mountain ridges and stars made by two generator layers")));
+        CHECK(actions[3]->property("path").toString() == qpath(kSource / kRidges.toStdString()));
     }
     SECTION("in file-name order, a broken one disabled with its problem") {
         SamplesAt env(scratchSamples(tmp, {QStringLiteral("02-b"), QStringLiteral("01-a")}, true));
@@ -216,7 +221,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     }
     SECTION("from Help > Samples") {
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 3);
+        REQUIRE(actions.size() == 4);
         actions[0]->trigger();
         CHECK(w.document()->layers().size() == saved.layers.size());
         CHECK(w.document()->path().isEmpty());
@@ -225,7 +230,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     SECTION("the text-style logo, its live text layers and styles intact") {
         const project::Project logo = project::read(kSource / kLogo.toStdString());
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 3);
+        REQUIRE(actions.size() == 4);
         actions[1]->trigger();
         const Document& doc = *w.document();
         CHECK(doc.path().isEmpty());
@@ -237,7 +242,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     SECTION("the still life, its locks intact") {
         const project::Project life = project::read(kSource / kStillLife.toStdString());
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 3);
+        REQUIRE(actions.size() == 4);
         actions[2]->trigger();
         const Document& doc = *w.document();
         CHECK(doc.path().isEmpty());
@@ -245,6 +250,18 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
         CHECK(doc.ansi().canvas == composite(life.layers, {life.ice, Cell{}}));
         REQUIRE(doc.layers().size() == life.layers.size());
         CHECK(doc.layers() == life.layers);
+    }
+    SECTION("the generator piece, its generators and their files intact, not run") {
+        const project::Project ridges = project::read(kSource / kRidges.toStdString());
+        const QList<QAction*> actions = sampleActions(w);
+        REQUIRE(actions.size() == 4);
+        actions[3]->trigger();
+        const Document& doc = *w.document();
+        CHECK(doc.path().isEmpty());
+        CHECK_FALSE(doc.isModified());
+        CHECK(doc.ansi().canvas == composite(ridges.layers, {ridges.ice, Cell{}}));
+        CHECK(doc.layers() == ridges.layers);
+        CHECK_FALSE(w.generatorsTrusted());
     }
     SECTION("a save goes where it is asked to, the whole sample, and the sample is left as it was") {
         // a copy of the sample, so a write to it would show
@@ -338,9 +355,10 @@ TEST_CASE("the start screen lists the samples and opens one", "[samples][start-s
         s->open();
         QPointer<StartScreen> guard(s);
         const QList<QPushButton*> entries = s->findChildren<QPushButton*>(QStringLiteral("startSampleEntry"));
-        REQUIRE(entries.size() == 3);
+        REQUIRE(entries.size() == 4);
         CHECK(entries[1]->text() == QStringLiteral("Ember Kiln"));
         CHECK(entries[2]->text() == QStringLiteral("Still life"));
+        CHECK(entries[3]->text() == QStringLiteral("Ridges at dusk"));
         CHECK(entries[1]->toolTip().startsWith(QStringLiteral("A two-word logo set in big block text")));
         QPushButton* entry = entries[0];
         entry->click();

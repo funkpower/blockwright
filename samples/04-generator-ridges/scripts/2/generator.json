@@ -1,0 +1,9 @@
+{
+  "command": ["sh", "stars.sh"],
+  "key": 0,
+  "params": [
+    {"name": "seed", "type": "integer", "label": "Seed", "min": 0, "max": 99999, "default": 5},
+    {"name": "count", "type": "integer", "label": "Stars", "min": 0, "max": 60, "default": 18},
+    {"name": "bottom", "type": "integer", "label": "Lowest row", "min": 0, "max": 31, "default": 2}
+  ]
+}

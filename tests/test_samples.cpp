@@ -3,10 +3,13 @@
 // the bundled samples themselves, held to the bar the Library's stamps are.
 
 #include "blockwright/composite.h"
+#include "blockwright/generator.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/irc.h"
 #include "blockwright/library.h"
+#include "blockwright/palette.h"
 #include "blockwright/project.h"
+#include "blockwright/ramp.h"
 #include "blockwright/samples.h"
 #include "blockwright/text_source.h"
 #include "blockwright/text_style.h"
@@ -20,11 +23,15 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#ifndef _WIN32
+#include <csignal>
+#endif
 #include <cstdint>
 #include <fstream>
 #include <regex>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace bw;
@@ -68,6 +75,24 @@ const Layer& named(const LayerStack& s, const std::string& name) {
             return l;
     FAIL("no layer " << name);
     throw;
+}
+
+// How light a cell looks from a distance: the luma of its foreground and
+// background, weighted by how much of the cell each covers.
+double value(const Cell& c) {
+    const auto luma = [](const Color& col) {
+        const Rgb& rgb = kPalette[col.paletteIndex()];
+        return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
+    };
+    int quarters = 0;
+    switch (c.ch.codePointOr(kNoCodePoint)) {
+    case U'░': quarters = 1; break;
+    case U'▒': quarters = 2; break;
+    case U'▓': quarters = 3; break;
+    case U'█': quarters = 4; break;
+    default: break;
+    }
+    return (quarters * luma(c.fg) + (4 - quarters) * luma(c.bg)) / 4;
 }
 
 std::string locks(const LayerProperties& p) {
@@ -566,4 +591,158 @@ TEST_CASE("the still life sample keeps each object, its shadows and its rim ligh
     CHECK(project::read(out / "dir") == p);
     project::writeZip(p, out / "still-life.bwp");
     CHECK(project::read(out / "still-life.bwp") == p);
+}
+
+TEST_CASE("the generator sample keeps its generators, their parameters and a baked copy under cells layers") {
+    const fs::path dir = kSamples / "04-generator-ridges";
+    const project::Project p = project::read(dir);
+    CHECK(p.ice);
+    REQUIRE(names(p.layers) == std::vector<std::string>{"sky", "stars", "ridges", "ridges (seed 12)", "ridges (baked)",
+                                                        "lake", "shore", "pines", "cabin"});
+    const auto kindOf = [&](const char* name) { return named(p.layers, name).props.kind; };
+    CHECK(kindOf("sky") == LayerKind::Cells);
+    CHECK(kindOf("stars") == LayerKind::Generator);
+    CHECK(kindOf("ridges") == LayerKind::Generator);
+    CHECK(kindOf("ridges (seed 12)") == LayerKind::Generator);
+    CHECK(kindOf("ridges (baked)") == LayerKind::Cells);
+    CHECK(kindOf("lake") == LayerKind::Cells);
+    CHECK(kindOf("shore") == LayerKind::Cells);
+    CHECK(kindOf("pines") == LayerKind::Pixels);
+    CHECK(kindOf("cabin") == LayerKind::Pixels);
+    CHECK(named(p.layers, "stars").props.mode == LayerMode::CharsOnly);
+    for (const char* name : {"sky", "lake", "shore"})
+        CHECK(named(p.layers, name).props.locked);
+    for (const Layer& l : p.layers.layers()) {
+        INFO(l.props.name);
+        const bool hidden = l.props.name == "ridges (seed 12)" || l.props.name == "ridges (baked)";
+        CHECK(l.props.visible != hidden);
+    }
+
+    // each generator ships inside the project, run by a relative command,
+    // with the parameters it was left at
+    const auto params = [&](const char* name) {
+        const LayerId id = named(p.layers, name).props.id;
+        const std::string path = generator::directory(id) + std::string(generator::kParamsFile);
+        return generator::paramValues(generator::layerSpec(p, id), p.files.count(path) ? p.files.at(path) : "");
+    };
+    for (const char* name : {"stars", "ridges", "ridges (seed 12)"}) {
+        INFO(name);
+        const generator::Spec spec = generator::layerSpec(p, named(p.layers, name).props.id);
+        REQUIRE(spec.command.size() == 2);
+        CHECK(spec.command[0] == "sh");
+        CHECK(spec.command[1].find('/') == std::string::npos);
+        CHECK(p.files.count(generator::directory(named(p.layers, name).props.id) + spec.command[1]) == 1);
+        CHECK(spec.key == std::optional<std::uint8_t>(0));
+        CHECK_FALSE(spec.params.empty());
+    }
+    auto ridges = params("ridges");
+    CHECK(ridges.at("seed") == generator::ParamValue(3.0));
+    CHECK(ridges.at("ridges") == generator::ParamValue(3.0));
+    CHECK(ridges.at("roughness") == generator::ParamValue(0.3));
+    CHECK(ridges.at("sharp") == generator::ParamValue(false));
+    CHECK(ridges.at("top") == generator::ParamValue(18.0));
+    auto other = params("ridges (seed 12)");
+    CHECK(other.at("seed") == generator::ParamValue(12.0));
+    CHECK(other.at("ridges") == generator::ParamValue(4.0));
+    CHECK(other.at("sharp") == generator::ParamValue(true));
+
+    // the generated ridges sit on the glow and are darker than it, in no
+    // colour the sky has, and each nearer ridge is darker than the one
+    // behind it, as haze makes them: down every column a cell is as dark as
+    // the one above it, or darker where a nearer ridge starts
+    const Layer& sky = named(p.layers, "sky");
+    const double glow = value(Cell{U'\u2588', Color::indexed(LightRed), Color::indexed(Black)});
+    CHECK(value(sky.cells.at(0, sky.cells.height() - 1)) == glow);
+    std::set<std::tuple<std::uint32_t, int, int>> skyLooks;
+    for (int y = 0; y < sky.cells.height(); ++y)
+        for (int x = 0; x < sky.cells.width(); ++x) {
+            const Cell& s = sky.cells.at(x, y);
+            skyLooks.insert({s.ch.bits(), s.fg.paletteIndex(), s.bg.paletteIndex()});
+        }
+    const Layer& ridgeLayer = named(p.layers, "ridges");
+    for (const char* name : {"ridges", "ridges (seed 12)"}) {
+        INFO(name);
+        const Layer& l = named(p.layers, name);
+        int ridgeCells = 0;
+        for (int x = 0; x < l.cells.width(); ++x) {
+            const Cell* above = nullptr;
+            for (int y = 0; y < l.cells.height(); ++y) {
+                const Cell& c = l.cells.at(x, y);
+                if (c.transparent)
+                    continue;
+                INFO(x << "," << y);
+                ++ridgeCells;
+                CHECK(y >= 18);
+                CHECK(value(c) < glow);
+                CHECK(skyLooks.count({c.ch.bits(), c.fg.paletteIndex(), c.bg.paletteIndex()}) == 0);
+                if (above)
+                    CHECK((*above == c ? value(c) == value(*above) : value(c) < value(*above)));
+                above = &c;
+            }
+        }
+        CHECK(ridgeCells > 0);
+    }
+
+    // the baked copy is the ridges layer's cells, with no generator behind it
+    const Layer& baked = named(p.layers, "ridges (baked)");
+    CHECK(baked.cells == bake(ridgeLayer, p.ice).cells);
+    CHECK_FALSE(named(p.layers, "ridges (seed 12)").cells == ridgeLayer.cells);
+
+#ifndef _WIN32
+    // run again, each generator draws the cells it saved
+    struct sigaction old {};
+    REQUIRE(::sigaction(SIGCHLD, nullptr, &old) == 0);
+    struct Restore {
+        struct sigaction old;
+        ~Restore() { ::sigaction(SIGCHLD, &old, nullptr); }
+    } restore{old};
+    struct sigaction dfl {};
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    REQUIRE(::sigaction(SIGCHLD, &dfl, nullptr) == 0);
+    for (const char* name : {"stars", "ridges", "ridges (seed 12)"}) {
+        INFO(name);
+        const Layer& l = named(p.layers, name);
+        CHECK(generator::run(p, l.props.id) == l.cells);
+    }
+    // gawk looks for `-f` scripts on AWKPATH before the working directory;
+    // the scripts name theirs as ./, so a decoy of the same name there is
+    // never run
+    {
+        const fs::path decoys = scratch("generator-awkpath");
+        for (const char* file : {"ridges.awk", "stars.awk"})
+            std::ofstream(decoys / file) << "BEGIN { print \"decoy\"; exit }\n";
+        const EnvGuard awkpath("AWKPATH", decoys.string());
+        for (const char* name : {"stars", "ridges", "ridges (seed 12)"}) {
+            INFO(name << ", AWKPATH holding decoys");
+            const Layer& l = named(p.layers, name);
+            CHECK(generator::run(p, l.props.id) == l.cells);
+        }
+    }
+#endif
+
+    // the variants: the baked copy looks as the ridges do, the others change
+    // the picture
+    const Canvas whole = project::toAnsi(p).canvas;
+    const Notes notes = parseNotes(p.notes);
+    REQUIRE(notes.variants.size() == 4);
+    for (const Variant& v : notes.variants) {
+        INFO(v.name);
+        project::Project changed = p;
+        REQUIRE_NOTHROW(applyVariant(changed.layers, v));
+        CHECK((project::toAnsi(changed).canvas == whole) == (v.name == "Baked"));
+    }
+
+    // three rounds: two smooth ridges, the parameters kept, finished
+    REQUIRE(p.snapshots.size() == 3);
+    for (int i = 0; i < 3; ++i)
+        CHECK(p.snapshots[std::size_t(i)].round == i + 1);
+    CHECK(p.snapshots[0].ans != p.snapshots[1].ans);
+    CHECK(p.snapshots[1].ans != p.snapshots[2].ans);
+
+    const fs::path out = scratch("generator-round-trip");
+    project::writeDirectory(p, out / "dir");
+    CHECK(project::read(out / "dir") == p);
+    project::writeZip(p, out / "ridges.bwp");
+    CHECK(project::read(out / "ridges.bwp") == p);
 }

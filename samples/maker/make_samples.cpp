@@ -5,7 +5,8 @@
 //
 // It writes each sample as a directory project under <samples dir>,
 // replacing what is there. The fog layer's cells are its generator's first
-// run (python3 fog.py), as Add Generator makes them.
+// run (python3 fog.py), as Add Generator makes them; the generator piece's
+// are its generators' runs (sh and awk) with the parameters it sets.
 #include "blockwright/composite.h"
 #include "blockwright/generator.h"
 #include "blockwright/brushes/form.h"
@@ -24,6 +25,7 @@
 #include <QPainter>
 #include <QPen>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -33,6 +35,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -795,6 +798,180 @@ project::Project stillLife(const fs::path& makerDir) {
     return p;
 }
 
+// ---- the generator piece ----------------------------------------------------
+
+constexpr int kRidgeW = 80, kRidgeH = 34;
+// the row the sky turns solid light red, where the ridges may begin
+constexpr int kGlowRow = 18;
+// the lake's top row and the shore's
+constexpr int kLakeTop = 28, kShoreTop = 32;
+
+// Dusk: black rows for the stars, then a rung a row up the sunset ramp to
+// a solid light red glow behind the ridges. The black rows' spaces carry
+// the colours the stars layer takes (chars only).
+Layer duskSky() {
+    Layer l = makeLayer(LayerKind::Cells, kRidgeW, kRidgeH, "sky");
+    Lcg r{17};
+    for (int y = 0; y < kRidgeH; ++y)
+        for (int x = 0; x < kRidgeW; ++x) {
+            const int rung = std::clamp(y - 2, 0, 16);
+            if (rung > 0) {
+                l.cells.at(x, y) = rungCell(ramp("sunset"), rung);
+                continue;
+            }
+            const int pick = r.below(5);
+            l.cells.at(x, y) =
+                x == kRidgeW - 1 ? blackBlock() : cell(U' ', pick == 0 ? White : pick < 3 ? Grey : DarkGrey, Black);
+        }
+    l.props.locked = true;
+    return l;
+}
+
+// The lake under the ridges: the sea ramp, with ripples a rung up on every
+// other row.
+Layer lake() {
+    const int h = kShoreTop - kLakeTop;
+    Layer l = makeLayer(LayerKind::Cells, kRidgeW, h, "lake", 0, kLakeTop);
+    Lcg r{23};
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < kRidgeW; ++x)
+            l.cells.at(x, y) = rungCell(ramp("sea"), 6);
+        if (y % 2 == 1)
+            continue;
+        for (int x = r.below(6); x + 2 <= kRidgeW;) {
+            const int len = std::min(2 + r.below(4), kRidgeW - x);
+            for (int i = 0; i < len; ++i)
+                l.cells.at(x + i, y) = rungCell(ramp("sea"), 7);
+            x += len + 4 + r.below(8);
+        }
+    }
+    l.props.locked = true;
+    return l;
+}
+
+// The near shore, a strip of grass along the bottom.
+Layer shore() {
+    const int h = kRidgeH - kShoreTop;
+    Layer l = makeLayer(LayerKind::Cells, kRidgeW, h, "shore", 0, kShoreTop);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < kRidgeW; ++x)
+            l.cells.at(x, y) = rungCell(ramp("grass"), y == 0 ? 3 : 2);
+    l.props.locked = true;
+    return l;
+}
+
+// Pines on the shore, in half-block pixels: a canopy widening a pixel
+// every third row down, on a two-pixel trunk. Each is lit from the right:
+// green on that side, and black in the shade of each bough, a pixel further
+// round on each row of it.
+Layer pines() {
+    struct Pine {
+        int cx, height;  // its centre column and height in pixels
+    };
+    const Pine trees[] = {{3, 16}, {9, 20}, {15, 14}, {20, 18}, {72, 15}, {77, 20}};
+    const int w = kRidgeW, ch = 12, top = kRidgeH - ch;
+    Layer l = makeLayer(LayerKind::Pixels, w, ch, "pines", 0, top);
+    const int ground = 2 * ch - 3;  // the pixel row the trunks stand on
+    for (const Pine& t : trees) {
+        const int crown = ground - t.height;
+        for (int py = crown; py <= ground; ++py) {
+            const bool trunk = py > ground - 2;
+            const int half = trunk ? 0 : (py - crown) / 3;
+            for (int px = t.cx - half; px <= t.cx + half; ++px) {
+                if (px < 0 || px >= w)
+                    continue;
+                const bool lit = px - t.cx >= (py - crown) % 3 - 1;
+                Cell& c = l.cells.at(px, py / 2);
+                c = setLayerPixel(c, py % 2 == 1, trunk ? Brown : lit ? Green : Black);
+            }
+        }
+    }
+    return l;
+}
+
+// A cabin on the shore with its window lit, in pixels: walls, a roof
+// stepping in a pixel a row, a door and a window a cell each.
+Layer cabin() {
+    const int cw = 12, ch = 5;
+    Layer l = makeLayer(LayerKind::Pixels, cw, ch, "cabin", 52, kShoreTop + 1 - ch);
+    for (int py = 0; py < 2 * ch; ++py)
+        for (int px = 0; px < cw; ++px) {
+            std::optional<std::uint8_t> c;
+            if (py < 5) {
+                if (px >= 5 - py && px <= 6 + py)
+                    c = Red;
+            } else if (px >= 1 && px <= 10) {
+                c = Brown;
+                if (px >= 3 && px <= 4 && py >= 6 && py <= 7)
+                    c = Yellow;
+                if (px >= 7 && px <= 8 && py >= 6)
+                    c = Black;
+            }
+            if (c)
+                l.cells.at(px, py / 2) = setLayerPixel(l.cells.at(px, py / 2), py % 2 == 1, *c);
+        }
+    return l;
+}
+
+// A generator layer's params.json with each name set, in the form the
+// generator form writes.
+void setParams(project::Project& p, LayerId id, const std::vector<std::pair<std::string, generator::ParamValue>>& values) {
+    const generator::Spec spec = generator::layerSpec(p, id);
+    const std::string path = generator::directory(id) + std::string(generator::kParamsFile);
+    std::string json = p.files.count(path) ? p.files.at(path) : std::string();
+    for (const auto& [name, value] : values)
+        json = generator::withParam(spec, json, name, value);
+    p.files[path] = json;
+    generator::refresh(p, id);
+}
+
+Layer& layerById(LayerStack& st, LayerId id) {
+    for (std::size_t i = 0; i < st.size(); ++i)
+        if (st[i].props.id == id)
+            return st[i];
+    throw std::runtime_error("no layer " + std::to_string(id));
+}
+
+project::Project generatorPiece(const fs::path& makerDir) {
+    project::Project p;
+    p.layers = LayerStack(kRidgeW, kRidgeH);
+    p.ice = true;  // the glow's light red is a background under the ridges' edges
+    p.sauce = sauceFor("Ridges at dusk");
+
+    p.layers.add(duskSky());
+    const LayerId starsId = generator::add(p, dirFiles(makerDir / "stars"), "stars");
+    layerById(p.layers, starsId).props.mode = LayerMode::CharsOnly;
+    const std::map<std::string, std::string> ridgeFiles = dirFiles(makerDir / "ridges");
+    const LayerId ridgesId = generator::add(p, ridgeFiles, "ridges");
+    // the first round: two ridges, smooth
+    setParams(p, ridgesId, {{"ridges", 2.0}, {"roughness", 0.0}});
+    project::takeSnapshot(p);
+
+    // the second: the parameters the piece keeps, three ridges, rougher
+    setParams(p, ridgesId, {{"ridges", 3.0}, {"roughness", 0.3}});
+    project::takeSnapshot(p);
+
+    // the same generator again with another seed, hidden, and a baked copy
+    const LayerId otherId = generator::add(p, ridgeFiles, "ridges (seed 12)");
+    setParams(p, otherId, {{"seed", 12.0}, {"ridges", 4.0}, {"roughness", 0.3}, {"sharp", true}});
+    layerById(p.layers, otherId).props.visible = false;
+    Layer baked = bake(layerById(p.layers, ridgesId), p.ice);
+    baked.props.id = 0;
+    baked.props.name = "ridges (baked)";
+    baked.props.visible = false;
+    p.layers.add(std::move(baked));
+
+    // the third: the lake, shore, pines and cabin over what the generators made
+    p.layers.add(lake());
+    p.layers.add(shore());
+    p.layers.add(pines());
+    p.layers.add(cabin());
+
+    p.notes = readFile(makerDir / "notes" / "04-generator-ridges.md");
+    project::takeSnapshot(p);
+    return p;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -810,6 +987,7 @@ int main(int argc, char** argv) {
                                 out / "01-layers-showcase");
         project::writeDirectory(logo(BW_MAKER_DIR), out / "02-text-style-logo");
         project::writeDirectory(stillLife(BW_MAKER_DIR), out / "03-still-life");
+        project::writeDirectory(generatorPiece(BW_MAKER_DIR), out / "04-generator-ridges");
     } catch (const std::exception& e) {
         std::cerr << "bw-make-samples: " << e.what() << "\n";
         return 1;
