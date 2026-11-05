@@ -1049,6 +1049,66 @@ TEST_CASE("Send to WeeChat puts an IRC-target document's .txt beside the .ans", 
     }
 }
 
+TEST_CASE("Publish to Library and Send to WeeChat keep bold, italic and underline in an IRC-target .txt",
+          "[utf8][attrs]") {
+    // #362 review: two rows of A, mIRC 0 on 1, the second bold, italic and
+    // underlined. The .ans has no way to write the formatting and drops it;
+    // the .txt keeps it, as File > Export IRC Text writes it (#372).
+    Fixture f;
+    AnsiDocument doc = f.w.document()->ansi();
+    doc.canvas = Canvas(1, 2);
+    for (int y = 0; y < 2; ++y) {
+        Cell& c = doc.canvas.at(0, y);
+        c.ch = U'A';
+        c.fg = Color::indexed(White);
+        c.bg = Color::indexed(Black);
+    }
+    doc.canvas.at(0, 1).attrs = attr::Bold | attr::Italic | attr::Underline;
+    f.w.document()->replace(doc, f.w.document()->path());
+    REQUIRE(f.w.document()->setTarget(Target::Irc));
+    const std::string want = "\x03" "0,1A\n"
+                             "\x03" "0,1\x02\x1d\x1f" "A\n";
+    REQUIRE(f.p->ircText());
+    CHECK(irc::joinLines(*f.p->ircText()) == want);
+    const AnsiOutput out = f.p->payload();
+    REQUIRE(out.formattingDropped == 1);
+    REQUIRE(out.lossy());
+    const QString refusal = QStringLiteral("The .ans would lose data:\n") + lossDescription(out, true) +
+                            QLatin1Char('.');
+
+    SECTION("Publish") {
+        const QString lib = f.library();
+        QString error;
+        CHECK_FALSE(f.p->planPublish(lib, QStringLiteral("biu"), {}, &error));
+        CHECK(error == refusal);
+        CHECK_FALSE(QFile::exists(lib + QStringLiteral("/funkpower/biu.txt")));
+        const auto plan = f.p->planPublish(lib, QStringLiteral("biu"), {}, &error, true);
+        INFO(error.toStdString());
+        REQUIRE(plan);
+        CHECK(plan->txt == want);
+        REQUIRE(f.p->publish(*plan, &error));
+        CHECK(readAll(lib + QStringLiteral("/funkpower/biu.ans")).toStdString() == out.bytes);
+        CHECK(readAll(lib + QStringLiteral("/funkpower/biu.txt")).toStdString() == want);
+    }
+    SECTION("Send") {
+        RecordingSsh ssh("RELOADED\n");
+        f.p->setSshProgram(ssh.program);
+        CHECK(f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"), QStringLiteral("biu"), 1)
+                  .message == refusal);
+        CHECK_FALSE(ssh.ran());
+        const auto r = f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                          QStringLiteral("biu"), 1, true);
+        INFO(r.message.toStdString());
+        CHECK(r.ok);
+        const QByteArray input = ssh.input();
+        REQUIRE(std::size_t(input.size()) == out.bytes.size() + want.size());
+        CHECK(input.left(qsizetype(out.bytes.size())).toStdString() == out.bytes);
+        CHECK(input.mid(qsizetype(out.bytes.size())).toStdString() == want);
+        CHECK(ssh.args() == sshArguments(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"),
+                                         QStringLiteral("biu"), 1, out.bytes.size(), want.size()));
+    }
+}
+
 TEST_CASE("Publish to Library and Send to WeeChat refuse an IRC-target .txt line over the ascii script's budget",
           "[utf8]") {
     // A row of ★ alternating mIRC 16 and 17: a colour code and three bytes
