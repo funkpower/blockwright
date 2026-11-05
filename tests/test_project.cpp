@@ -336,6 +336,72 @@ TEST_CASE("layer cells round-trip through the .cells codec", "[project][cells]")
     CHECK(project::decodeCells(project::encodeCells(Canvas(0, 0))) == Canvas(0, 0));
 }
 
+TEST_CASE("a raw .cells frame is the same bytes whatever zstd is built in", "[project][cells]") {
+    // the bytes spelt out from the format (PLAN §6) and RFC 8878, so a
+    // change to them, or to the frame, fails here and not on a machine with
+    // another zstd
+    Canvas one(1, 1);
+    one.at(0, 0) = cell(U'A', Grey, Black);
+    const std::string expected("BWCL\x01\0\0\0"           // magic, version 1, reserved
+                               "\x01\0\0\0\x01\0\0\0"     // 1x1
+                               "\x28\xb5\x2f\xfd\xe0"     // zstd magic; single segment, 8-byte size
+                               "\x0e\0\0\0\0\0\0\0"       // 14 bytes of content
+                               "\x71\0\0"                 // the last block, raw, 14 bytes
+                               "A\0\0\0\0\x07\0\0\0\0\0\0\0\0",  // U+0041, fg 7, bg 0, no attrs, no flags
+                               46);
+    CHECK(project::encodeCells(one, project::CellsFrame::Raw) == expected);
+    CHECK(project::decodeCells(expected) == one);
+
+    const std::string empty("BWCL\x01\0\0\0\0\0\0\0\0\0\0\0"
+                            "\x28\xb5\x2f\xfd\xe0\0\0\0\0\0\0\0\0"
+                            "\x01\0\0",  // one empty last block
+                            32);
+    CHECK(project::encodeCells(Canvas(0, 0), project::CellsFrame::Raw) == empty);
+    CHECK(project::decodeCells(empty) == Canvas(0, 0));
+
+    // 10 000 cells are 140 000 bytes: a full 128 KiB block, then the last 8928
+    Canvas big(100, 100);
+    for (int y = 0; y < 100; ++y)
+        for (int x = 0; x < 100; ++x)
+            big.at(x, y) = cell(char32_t(U'0' + (x + y) % 10), std::uint8_t(x % 16), std::uint8_t(y % 16));
+    const std::string data = project::encodeCells(big, project::CellsFrame::Raw);
+    REQUIRE(data.size() == 16 + 13 + 3 + 131072 + 3 + 8928);
+    CHECK(data.substr(29, 3) == std::string("\0\0\x10", 3));      // 131072 << 3, not last
+    CHECK(data.substr(29 + 3 + 131072, 3) == "\x01\x17\x01");    // 8928 << 3 | last
+    CHECK(project::decodeCells(data) == big);
+    // the same cells as the compressed frame holds, which zstd itself reads
+    const std::string packed = project::encodeCells(big);
+    std::string fromPacked(140000, '\0'), fromRaw(140000, '\0');
+    REQUIRE(ZSTD_decompress(fromPacked.data(), fromPacked.size(), packed.data() + 16, packed.size() - 16) == 140000);
+    REQUIRE(ZSTD_decompress(fromRaw.data(), fromRaw.size(), data.data() + 16, data.size() - 16) == 140000);
+    CHECK(fromRaw == fromPacked);
+    CHECK(data.substr(32, 131072) == fromPacked.substr(0, 131072));
+}
+
+TEST_CASE("a directory save can write its cells in raw frames", "[project][cells]") {
+    const fs::path dir = scratch("raw-frames");
+    const auto bytes = [](const fs::path& path) {
+        std::ifstream f(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(f), {});
+    };
+    project::Project p;
+    p.layers = LayerStack(4, 2);
+    Layer l = makeLayer(LayerKind::Cells, 4, 2, "a");
+    l.cells.at(1, 1) = cell(U'#', Yellow, Blue);
+    p.layers.add(std::move(l));
+    project::writeDirectory(p, dir / "raw", project::CellsFrame::Raw);
+    project::writeDirectory(p, dir / "packed");
+    const project::Project back = project::read(dir / "raw");
+    REQUIRE(back.layers.size() == 1);
+    CHECK(back.layers[0].cells == p.layers[0].cells);
+    const std::string id = std::to_string(back.layers[0].props.id);
+    CHECK(bytes(dir / "raw" / "layers" / (id + ".cells")) ==
+          project::encodeCells(p.layers[0].cells, project::CellsFrame::Raw));
+    CHECK(bytes(dir / "packed" / "layers" / (id + ".cells")) == project::encodeCells(p.layers[0].cells));
+    // only the cells differ
+    CHECK(bytes(dir / "raw" / "manifest.json") == bytes(dir / "packed" / "manifest.json"));
+}
+
 TEST_CASE("the .cells codec refuses what it can't read exactly", "[project][cells]") {
     Canvas c(3, 2);
     const std::string good = project::encodeCells(c);

@@ -464,6 +464,15 @@ if(BW_PYTHON3)
     COMMAND ${BW_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/debian_copyright_test.py ${PROJECT_SOURCE_DIR})
 endif()
 
+# The samples checked in are what bw-make-samples draws now, byte for byte
+# (PLAN §12). The maker runs the samples' generators, one of them in python3.
+if(BW_PYTHON3 AND UNIX AND NOT CMAKE_CROSSCOMPILING)
+  add_test(NAME samples_remade
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/samples_remade_test.sh
+            $<TARGET_FILE:bw-make-samples> ${PROJECT_SOURCE_DIR}/samples ${CMAKE_CURRENT_BINARY_DIR}/samples-remade-tmp)
+  set_tests_properties(samples_remade PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen TIMEOUT 300)
+endif()
+
 # The desktop entry, icons and AppStream metadata of a Linux install, the
 # AppImage's AppRun, and the AppImage scripts/package-appimage made, when
 # BW_APPIMAGE names it

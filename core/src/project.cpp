@@ -1813,9 +1813,36 @@ bool sameAsLead(const Cell& lead, const Cell& c) {
 
 std::string cellName(int x, int y) { return std::to_string(x) + "," + std::to_string(y); }
 
+// `data` in a zstd frame of raw blocks (RFC 8878): the magic, a header
+// descriptor saying a single segment and an 8-byte content size, that size,
+// then the bytes in blocks of at most 128 KiB, each after its 3-byte header
+// (bit 0 last, bits 1-2 type 0, raw, bits 3-23 size). No checksum. One empty
+// last block for no bytes.
+std::string rawZstdFrame(std::string_view data) {
+    constexpr std::size_t kMaxBlock = std::size_t(128) * 1024;
+    std::string out;
+    out.reserve(4 + 1 + 8 + data.size() + 3 * (data.size() / kMaxBlock + 1));
+    put32(out, 0xFD2FB528u);
+    out += char(0xE0);  // FCS field 8 bytes (3 << 6), single segment (1 << 5)
+    put32(out, std::uint32_t(data.size() & 0xFFFFFFFFu));
+    put32(out, std::uint32_t(std::uint64_t(data.size()) >> 32));
+    std::size_t at = 0;
+    do {
+        const std::size_t n = std::min(kMaxBlock, data.size() - at);
+        const bool last = at + n == data.size();
+        const std::uint32_t header = std::uint32_t(n) << 3 | (last ? 1u : 0u);
+        out += char(header & 0xFF);
+        out += char((header >> 8) & 0xFF);
+        out += char((header >> 16) & 0xFF);
+        out.append(data.substr(at, n));
+        at += n;
+    } while (at < data.size());
+    return out;
+}
+
 } // namespace
 
-std::string encodeCells(const Canvas& cells) {
+std::string encodeCells(const Canvas& cells, CellsFrame frame) {
     const std::uint32_t w = std::uint32_t(cells.width()), h = std::uint32_t(cells.height());
     if (w > kMaxSide || h > kMaxSide || std::size_t(w) * h > kMaxLayerCells)
         fail("a layer of " + std::to_string(w) + "x" + std::to_string(h) + " cells is over the limits");
@@ -1872,12 +1899,14 @@ std::string encodeCells(const Canvas& cells) {
     put16(out, 0);
     put32(out, w);
     put32(out, h);
-    std::string frame(ZSTD_compressBound(raw.size()), '\0');
-    const std::size_t n = ZSTD_compress(frame.data(), frame.size(), raw.data(), raw.size(), kZstdLevel);
+    if (frame == CellsFrame::Raw)
+        return out + rawZstdFrame(raw);
+    std::string compressed(ZSTD_compressBound(raw.size()), '\0');
+    const std::size_t n = ZSTD_compress(compressed.data(), compressed.size(), raw.data(), raw.size(), kZstdLevel);
     if (ZSTD_isError(n))
         fail(std::string("can't compress layer cells: ") + ZSTD_getErrorName(n));
-    frame.resize(n);
-    return out + frame;
+    compressed.resize(n);
+    return out + compressed;
 }
 
 namespace {
@@ -2177,7 +2206,7 @@ bool safeEntryPath(std::string_view path) {
     return true;
 }
 
-Entries encode(const Project& project) {
+Entries encode(const Project& project, CellsFrame cellsFrame) {
     const LayerStack& stack = project.layers;
     if (stack.width() < 1 || stack.width() > kMaxColumns || stack.height() < 1 || stack.height() > kMaxRows)
         fail("a canvas of " + std::to_string(stack.width()) + "x" + std::to_string(stack.height()) +
@@ -2260,7 +2289,7 @@ Entries encode(const Project& project) {
         const std::string json = toJson(layerJson(l));
         checkJsonSize(layerPath(l.props.id, false), json.size());
         out[layerPath(l.props.id, false)] = json;
-        std::string& cellsEntry = out[layerPath(l.props.id, true)] = encodeCells(l.cells);
+        std::string& cellsEntry = out[layerPath(l.props.id, true)] = encodeCells(l.cells, cellsFrame);
         formatted = formatted || hasFormatting(l.cells);
         if (cellsVersion(cellsEntry) == kWideCellsVersion) {
             wide = true;
@@ -2572,8 +2601,8 @@ std::string zipBytes(const Project& project) {
     return bytes;
 }
 
-void writeDirectory(const Project& project, const fs::path& path) {
-    const Entries entries = encode(project);
+void writeDirectory(const Project& project, const fs::path& path, CellsFrame cells) {
+    const Entries entries = encode(project, cells);
     // an empty path is no directory; `path / name` would write into the
     // working one, past the check that it holds a project
     if (path.empty())

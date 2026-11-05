@@ -7,6 +7,11 @@
 // replacing what is there. The fog layer's cells are its generator's first
 // run (python3 fog.py), as Add Generator makes them; the generator piece's
 // are its generators' runs (sh and awk) with the parameters it sets.
+//
+// Every byte it writes is the same on any machine: nothing it writes is
+// compressed or encoded by a library whose output can change with its
+// version. The layers' cells go in raw zstd blocks (CellsFrame::Raw), and
+// the reference sketch is maker/sketch.png, copied as it is.
 #include "blockwright/composite.h"
 #include "blockwright/generator.h"
 #include "blockwright/brushes/form.h"
@@ -20,11 +25,6 @@
 #include "blockwright/sauce.h"
 #include "blockwright/text.h"
 
-#include <QBuffer>
-#include <QImage>
-#include <QPainter>
-#include <QPen>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -32,6 +32,7 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -307,30 +308,6 @@ Layer reflection(const Canvas& waterCells) {
     return l;
 }
 
-QByteArray sketchPng() {
-    // the composition as drawn before the cells: horizon, towers, moon
-    QImage img(640, 400, QImage::Format_RGB32);
-    img.fill(QColor(250, 248, 240));
-    QPainter p(&img);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(QColor(60, 60, 70), 2));
-    p.drawLine(0, 240, 640, 240);
-    const int towers[][3] = {{32, 72, 216}, {72, 104, 168}, {104, 152, 120}, {200, 256, 144}, {232, 264, 96},
-                             {296, 344, 192}, {336, 384, 128}};
-    for (const auto& t : towers)
-        p.drawRect(t[0], t[2], t[1] - t[0], 240 - t[2]);
-    p.drawEllipse(QPointF(544, 175), 40, 40);
-    p.setPen(QPen(QColor(120, 120, 140), 1, Qt::DashLine));
-    for (int y = 260; y < 380; y += 16)
-        p.drawLine(520 - (y - 240) / 4, y, 568 + (y - 240) / 4, y);
-    p.end();
-    QByteArray bytes;
-    QBuffer buf(&bytes);
-    buf.open(QIODevice::WriteOnly);
-    img.save(&buf, "PNG");
-    return bytes;
-}
-
 project::Project showcase(const fs::path& makerDir) {
     project::Project p;
     p.layers = LayerStack(kW, kH);
@@ -373,8 +350,10 @@ project::Project showcase(const fs::path& makerDir) {
 
     Layer ref = makeLayer(LayerKind::Reference, 0, 0, "reference sketch");
     ReferenceImage img;
-    const QByteArray png = sketchPng();
-    img.bytes = std::make_shared<const std::string>(png.constData(), std::size_t(png.size()));
+    // the composition as drawn before the cells (horizon, towers, moon),
+    // copied byte for byte: a PNG encoded here would come out in other
+    // bytes from another zlib
+    img.bytes = std::make_shared<const std::string>(readFile(makerDir / "sketch.png"));
     img.x = 0, img.y = 0, img.width = kW, img.height = kH;
     img.opacity = 40;
     ref.props.reference = img;
@@ -873,7 +852,10 @@ Layer pines() {
     const int w = kRidgeW, ch = 12, top = kRidgeH - ch;
     Layer l = makeLayer(LayerKind::Pixels, w, ch, "pines", 0, top);
     const int ground = 2 * ch - 3;  // the pixel row the trunks stand on
-    for (const Pine& t : trees) {
+    // which pine each pixel shows, -1 for none
+    std::vector<int> owner(std::size_t(w * 2 * ch), -1);
+    for (int i = 0; i < int(std::size(trees)); ++i) {
+        const Pine& t = trees[i];
         const int crown = ground - t.height;
         for (int py = crown; py <= ground; ++py) {
             const bool trunk = py > ground - 2;
@@ -884,9 +866,21 @@ Layer pines() {
                 const bool lit = py - crown < 3 || px - t.cx >= (py - crown) % 3 - 1;
                 Cell& c = l.cells.at(px, py / 2);
                 c = setLayerPixel(c, py % 2 == 1, trunk ? Brown : lit ? Green : Black);
+                owner[std::size_t(py * w + px)] = i;
             }
         }
     }
+    // The pines stand left to right, back to front, so a later one hides the
+    // lit side of the one behind it with its own shaded side. The boughs of
+    // the one behind keep a lit edge against it, or the two shades would run
+    // together into one dark mass. The edge stops two rows above the
+    // lowest boughs, where its last pixels would stand alone as a speck.
+    for (int py = 0; py <= ground - 4; ++py)
+        for (int px = 0; px + 1 < w; ++px) {
+            const int back = owner[std::size_t(py * w + px)], front = owner[std::size_t(py * w + px + 1)];
+            if (back >= 0 && front > back)
+                l.cells.at(px, py / 2) = setLayerPixel(l.cells.at(px, py / 2), py % 2 == 1, Green);
+        }
     return l;
 }
 
@@ -973,6 +967,275 @@ project::Project generatorPiece(const fs::path& makerDir) {
     return p;
 }
 
+// ---- the character ----------------------------------------------------------
+
+constexpr int kCharW = 80, kCharH = 30;
+// the first row of the meadow, below the hills
+constexpr int kMeadowTop = 20;
+// where the figure's layers sit, and their size in cells
+constexpr int kFigX = 44, kFigY = 5, kFigW = 32, kFigH = 23;
+
+// A day sky on the ice ramp: a rung a row down from blue at the top to a
+// solid light blue, then on to light cyan at the horizon.
+Layer meadowSky() {
+    Layer l = makeLayer(LayerKind::Cells, kCharW, kMeadowTop, "sky");
+    const int rungs[kMeadowTop] = {6, 7, 8, 8, 8, 8, 8, 8, 8, 9, 10, 11, 12, 12, 12, 12, 12, 12, 12, 12};
+    for (int y = 0; y < kMeadowTop; ++y)
+        for (int x = 0; x < kCharW; ++x)
+            l.cells.at(x, y) = rungCell(ramp("ice"), rungs[y]);
+    l.props.locked = true;
+    return l;
+}
+
+// Far hills in the haze, cyan against the light cyan sky, their tops in
+// half-block steps over it.
+Layer hills() {
+    const int top = 14, h = kMeadowTop - top;
+    Layer l = makeLayer(LayerKind::Cells, kCharW, h, "hills", 0, top);
+    for (int x = 0; x < kCharW; ++x) {
+        // the hills' top in pixel rows of the layer, rolling
+        const double wave = 6.0 + 2.5 * std::sin(x / 8.0 + 0.6) + 1.2 * std::sin(x / 3.5 + 1.3);
+        const int crest = std::clamp(int(std::lround(wave)), 1, 2 * h - 2);
+        for (int y = 0; y < h; ++y) {
+            if (2 * y + 1 < crest)
+                continue;  // sky
+            l.cells.at(x, y) = 2 * y < crest ? cell(U'▄', Cyan, LightCyan) : cell(U'█', Cyan, Cyan);
+        }
+    }
+    l.props.locked = true;
+    return l;
+}
+
+// The meadow the figure stands in: light green going back to the hills, a
+// path across it, and tufts of darker grass in the near rows.
+Layer meadow() {
+    const int h = kCharH - kMeadowTop;
+    Layer l = makeLayer(LayerKind::Cells, kCharW, h, "meadow", 0, kMeadowTop);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < kCharW; ++x)
+            l.cells.at(x, y) = cell(U'█', LightGreen, LightGreen);
+    // a path coming out of the hills and widening toward the front, past
+    // where the traveller stands
+    const auto onPath = [](int x, int y) {
+        const double centre = 34 + 1.4 * y, half = 0.8 + 0.9 * y;
+        return std::abs(x + 0.5 - centre) <= half;
+    };
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < kCharW; ++x)
+            if (onPath(x, y))
+                l.cells.at(x, y) = cell(U'█', Brown, Brown);
+    Lcg r{31};
+    for (int y = 4; y < h; y += 2)
+        for (int x = r.below(9); x + 3 <= kCharW;) {
+            const int len = 2 + r.below(2);
+            bool clear = true;
+            for (int i = -1; i <= len; ++i)
+                clear = clear && !onPath(x + i, y);
+            for (int i = 0; clear && i < len; ++i)
+                l.cells.at(x + i, y) = cell(U'▄', Green, LightGreen);
+            x += len + 7 + r.below(12);
+        }
+    l.props.locked = true;
+    return l;
+}
+
+// The traveller, in half-block pixels, a character a pixel: facing left, into
+// the light from the upper left, a staff in the front hand and a pack on the
+// back. Each letter is a part:
+//   h hat   b hat band   a hair   s skin   y scarf   c coat   C coat, lit
+//   g pack  G pack, lit  t trousers   o boots and glove   w staff
+//   k the outline's black, filling the shade under the arm
+// and the letters a layer above the body draws over a part:
+//   e eye, m mouth (face detail, over skin)
+//   H on the hat, Y on the lit coat, K on the staff (highlights)
+const std::vector<std::string>& traveller() {
+    static const std::vector<std::string> rows = {
+        ".........hhhh.....",  //  0
+        "........hHHhhh....",
+        "........hHHhhh....",
+        "........hhhhhh....",
+        "........bbbbbb....",
+        ".K..hhhhhhhhhhhhh.",  //  5
+        ".K......sssssaa...",
+        ".w.....sessssaa...",
+        ".w....sssssssa....",
+        ".w.....ssssssa....",
+        ".w......mssss.....",  // 10
+        ".w.......yyyy.....",
+        ".w......yyyyccgg..",
+        ".w.....CCCcccGGgg.",
+        ".w....CCCcccccGgg.",
+        ".w....CCc.ccccggg.",  // 15
+        ".w....YYc.ccccggg.",
+        ".w....YCc.ccccggg.",
+        ".w...CCcc.ccccggg.",
+        ".w..CCcc..ccccgg..",
+        ".w.CCcc...Ccccc...",  // 20
+        ".oooc..kk.Ccccc...",
+        ".ooo.k.kk.Ccccc...",
+        ".w........CCcccc..",
+        ".w.......CCccccc..",
+        ".w.......CCcccccc.",  // 25
+        ".w.......Cccccccc.",
+        ".w........ttt.ttt.",
+        ".w........ttt.ttt.",
+        ".w.......ttt..ttt.",
+        ".w.......ttt..ttt.",  // 30
+        ".w.......ttt..ttt.",
+        ".w.......ttt..ttt.",
+        ".w.......ttt..ttt.",
+        ".w.....ttt....ttt.",
+        ".w.....ttt....ttt.",  // 35
+        ".w.....ttt....ttt.",
+        ".w.....ttt....ttt.",
+        ".w....ttt.....ttt.",
+        ".w....ttt.....ttt.",
+        ".w....ooo.....ooo.",  // 40
+        ".w....ooo.....ooo.",
+        ".w..ooooo....oooo.",
+        ".w.oooooo....oooo.",
+    };
+    return rows;
+}
+
+enum class Part { Body, Face, Highlight };
+
+// The colour a sprite letter gives one of the figure's layers, if any. The
+// body in flat colours (`flat`) has no lit side.
+std::optional<std::uint8_t> partColour(char ch, Part part, bool flat = false) {
+    switch (part) {
+    case Part::Face:
+        return ch == 'e' ? std::optional<std::uint8_t>(Black) : ch == 'm' ? std::optional<std::uint8_t>(Red) : std::nullopt;
+    case Part::Highlight:
+        return ch == 'H' ? std::optional<std::uint8_t>(Grey)
+               : ch == 'Y' || ch == 'K' ? std::optional<std::uint8_t>(Yellow) : std::nullopt;
+    case Part::Body: break;
+    }
+    switch (ch) {
+    case 'h': case 'H': return DarkGrey;
+    case 'b': return Red;
+    case 'a': return Grey;
+    case 's': case 'e': case 'm': return Brown;
+    case 'y': return Yellow;
+    case 'c': return Red;
+    case 'C': case 'Y': return flat ? Red : LightRed;
+    case 'g': return Green;
+    case 'G': return flat ? Green : LightGreen;
+    case 't': return Blue;
+    case 'o': return DarkGrey;
+    case 'w': case 'K': return Brown;
+    default: return std::nullopt;  // '.', and 'k', the outline's own
+    }
+}
+
+// The sprite's pixel (px, py) in the figure's layers: a pixel of margin
+// round it for the outline.
+bool inSprite(int px, int py) {
+    const auto& rows = traveller();
+    const int sx = px - 1, sy = py - 1;
+    return sy >= 0 && sy < int(rows.size()) && sx >= 0 && sx < int(rows[std::size_t(sy)].size()) &&
+           rows[std::size_t(sy)][std::size_t(sx)] != '.';
+}
+
+char spriteAt(int px, int py) { return inSprite(px, py) ? traveller()[std::size_t(py - 1)][std::size_t(px - 1)] : '.'; }
+
+Layer figureLayer(const std::string& name, const std::function<std::optional<std::uint8_t>(int, int)>& colourAt) {
+    Layer l = makeLayer(LayerKind::Pixels, kFigW, kFigH, name, kFigX, kFigY);
+    for (int py = 0; py < 2 * kFigH; ++py)
+        for (int px = 0; px < kFigW; ++px)
+            if (const auto c = colourAt(px, py))
+                l.cells.at(px, py / 2) = setLayerPixel(l.cells.at(px, py / 2), py % 2 == 1, *c);
+    return l;
+}
+
+Layer figurePart(const std::string& name, Part part, bool flat = false) {
+    return figureLayer(name, [part, flat](int px, int py) { return partColour(spriteAt(px, py), part, flat); });
+}
+
+// The outline: the whole silhouette grown a pixel all round, in black, under
+// the body. The body covers all of it but the ring, and the gaps between
+// the arm, the staff and the legs.
+Layer outline() {
+    return figureLayer("outline", [](int px, int py) -> std::optional<std::uint8_t> {
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+                if (inSprite(px + dx, py + dy))
+                    return Black;
+        return std::nullopt;
+    });
+}
+
+// The shadow the figure casts on the meadow, away from the light: a strip
+// of darker green from the back boot out to the lower right. Its lower row
+// runs on a single pixel past the upper, so the tip is one cell of a green
+// bottom half on the light green: two such cells would look like a tuft in
+// the grass, and with a tuft a cell past them read as a line with a break
+// in it, wherever the figure is moved.
+Layer castShadow() {
+    return figureLayer("shadow", [](int px, int py) -> std::optional<std::uint8_t> {
+        const int ground = 44;  // the boots' last pixel row
+        if (py == ground && px >= 18 && px <= 30)
+            return Green;
+        if (py == ground + 1 && px >= 17 && px <= 31)
+            return Green;
+        return std::nullopt;
+    });
+}
+
+project::Project character(const fs::path& makerDir) {
+    project::Project p;
+    p.layers = LayerStack(kCharW, kCharH);
+    p.ice = true;  // the hills' light cyan sky behind their tops is a background
+    p.sauce = sauceFor("Traveller");
+
+    // the first round: the scene
+    p.layers.add(meadowSky());
+    p.layers.add(hills());
+    p.layers.add(meadow());
+    project::takeSnapshot(p);
+
+    // the second: the figure with its outline and its parts flat
+    p.layers.add(outline());
+    p.layers.add(figurePart("body", Part::Body, true));
+    project::takeSnapshot(p);
+
+    // the third: the lit side, the face, the highlights and the shadow, and
+    // the whole figure merged onto one layer, hidden
+    layerNamed(p.layers, "body").cells = figurePart("body", Part::Body).cells;
+    layerNamed(p.layers, "body").props.alphaLocked = true;
+    LayerStack st(kCharW, kCharH);
+    for (std::size_t i = 0; i < p.layers.size(); ++i) {
+        Layer l = p.layers[i];
+        l.props.id = 0;
+        const bool meadowLayer = l.props.name == "meadow";
+        st.add(std::move(l));
+        if (meadowLayer)
+            st.add(castShadow());
+    }
+    p.layers = st;
+    p.layers.add(figurePart("face detail", Part::Face));
+    p.layers.add(figurePart("highlights", Part::Highlight));
+    Layer merged = makeLayer(LayerKind::Pixels, kFigW, kFigH, "figure (merged)", kFigX, kFigY);
+    for (const char* name : {"shadow", "outline", "body", "face detail", "highlights"}) {
+        const Layer& part = layerNamed(p.layers, name);
+        for (int y = 0; y < kFigH; ++y)
+            for (int x = 0; x < kFigW; ++x) {
+                const LayerPixels over = layerPixels(part.cells.at(x, y));
+                Cell& c = merged.cells.at(x, y);
+                if (over.top)
+                    c = setLayerPixel(c, false, *over.top);
+                if (over.bottom)
+                    c = setLayerPixel(c, true, *over.bottom);
+            }
+    }
+    merged.props.visible = false;
+    p.layers.add(std::move(merged));
+
+    p.notes = readFile(makerDir / "notes" / "05-character.md");
+    project::takeSnapshot(p);
+    return p;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -984,11 +1247,12 @@ int main(int argc, char** argv) {
     std::signal(SIGCHLD, SIG_DFL);
     try {
         const fs::path out = argv[1];
-        project::writeDirectory(showcase(BW_MAKER_DIR),
-                                out / "01-layers-showcase");
-        project::writeDirectory(logo(BW_MAKER_DIR), out / "02-text-style-logo");
-        project::writeDirectory(stillLife(BW_MAKER_DIR), out / "03-still-life");
-        project::writeDirectory(generatorPiece(BW_MAKER_DIR), out / "04-generator-ridges");
+        constexpr auto raw = project::CellsFrame::Raw;
+        project::writeDirectory(showcase(BW_MAKER_DIR), out / "01-layers-showcase", raw);
+        project::writeDirectory(logo(BW_MAKER_DIR), out / "02-text-style-logo", raw);
+        project::writeDirectory(stillLife(BW_MAKER_DIR), out / "03-still-life", raw);
+        project::writeDirectory(generatorPiece(BW_MAKER_DIR), out / "04-generator-ridges", raw);
+        project::writeDirectory(character(BW_MAKER_DIR), out / "05-character", raw);
     } catch (const std::exception& e) {
         std::cerr << "bw-make-samples: " << e.what() << "\n";
         return 1;

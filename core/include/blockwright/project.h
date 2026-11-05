@@ -261,7 +261,13 @@ std::optional<std::string> layerReferenceProblem(const LayerProperties& props);
 // ids or memory; never its lossy cap, PoolCap::Uncapped). encodeCells
 // refuses a canvas it would write so (a stray continuation, one in other
 // values than its lead's, a table over the limit).
-std::string encodeCells(const Canvas& cells);
+// The zstd frame a .cells file holds its cells in: compressed (zstd at level
+// 3, what a save writes), or raw blocks, the cells as they are, in a frame
+// that depends on no zstd version (a frame header with the content size, then
+// blocks of at most 128 KiB, the last one flagged; bw-make-samples writes the
+// samples so, the same bytes on any machine). decodeCells reads either.
+enum class CellsFrame { Compressed, Raw };
+std::string encodeCells(const Canvas& cells, CellsFrame frame = CellsFrame::Compressed);
 Canvas decodeCells(std::string_view data);
 
 // The project as its entries, path to bytes, and back. decode throws
@@ -282,7 +288,7 @@ Canvas decodeCells(std::string_view data);
 // fonts/<sha256>.tdf), for a text source in a TheDraw font `fonts` doesn't
 // hold, and for a project whose entries decode would refuse that way.
 using Entries = std::map<std::string, std::string>;
-Entries encode(const Project& project);
+Entries encode(const Project& project, CellsFrame cells = CellsFrame::Compressed);
 // What decode changed to open a project, for a notice: the cells of a
 // project before 5.0 whose stray attribute bits (all but blink) it cleared.
 struct ReadNotes {
@@ -395,7 +401,8 @@ std::string zipBytes(const Project& project);
 // systems other than POSIX, where all of this is done by path, looking
 // before each step, and what changes between the look and the step isn't
 // seen.
-void writeDirectory(const Project& project, const std::filesystem::path& path);
+void writeDirectory(const Project& project, const std::filesystem::path& path,
+                    CellsFrame cells = CellsFrame::Compressed);
 
 namespace testing {
 // Called at each step below with the path it is about. Tests only.

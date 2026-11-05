@@ -28,6 +28,7 @@
 #endif
 #include <cstdint>
 #include <fstream>
+#include <iterator>
 #include <regex>
 #include <set>
 #include <string>
@@ -390,6 +391,35 @@ bool insideCanvas(const Layer& l, const LayerStack& s) {
 } // namespace
 
 // #207's list of the layer capabilities the set must cover between them.
+TEST_CASE("the bundled samples hold nothing a library version could encode differently") {
+    const auto bytes = [](const fs::path& path) {
+        std::ifstream f(path, std::ios::binary);
+        REQUIRE(f);
+        return std::string(std::istreambuf_iterator<char>(f), {});
+    };
+    // every layer's cells in a raw frame, which no zstd version changes
+    int cellsFiles = 0;
+    for (const Sample& s : list(kSamples))
+        for (const auto& e : fs::directory_iterator(s.path / "layers"))
+            if (e.path().extension() == ".cells") {
+                INFO(e.path().string());
+                const std::string data = bytes(e.path());
+                CHECK(data == project::encodeCells(project::decodeCells(data), project::CellsFrame::Raw));
+                ++cellsFiles;
+            }
+    CHECK(cellsFiles > 0);
+    // the showcase's reference sketch is maker/sketch.png as it is, not a
+    // picture encoded on the machine that made the samples
+    const project::Project showcase = project::read(kSamples / "01-layers-showcase");
+    int references = 0;
+    for (std::size_t i = 0; i < showcase.layers.size(); ++i)
+        if (const auto& ref = showcase.layers[i].props.reference) {
+            CHECK(*ref->bytes == bytes(kSamples / "maker" / "sketch.png"));
+            ++references;
+        }
+    CHECK(references == 1);
+}
+
 TEST_CASE("the bundled samples show every layer capability between them") {
     std::set<LayerKind> kinds;
     std::set<LayerMode> modes;
@@ -775,4 +805,172 @@ TEST_CASE("the generator sample's pines run unbroken from tip to crown") {
         CHECK(pixel(x, py).has_value());
     }
     CHECK(tips == 6);
+}
+
+TEST_CASE("the generator sample's overlapping pines keep a lit edge between them") {
+    // A pine in front of another hides its lit side with its own shaded
+    // one; the one behind keeps a lit edge against it, so the two shades
+    // don't run together (#363's review: at cell 74,29 they did). One pine's
+    // shaded side is at most six pixels wide, so no run of black in the
+    // boughs is wider, but in the lowest two rows of them, where the edge
+    // stops.
+    const project::Project p = project::read(kSamples / "04-generator-ridges");
+    const Layer& pines = named(p.layers, "pines");
+    const int w = pines.cells.width(), h = 2 * pines.cells.height();
+    const auto pixel = [&](int x, int py) {
+        const LayerPixels px = layerPixels(pines.cells.at(x, py / 2));
+        return py % 2 == 1 ? px.bottom : px.top;
+    };
+    int lowest = -1;
+    for (int py = 0; py < h; ++py)
+        for (int x = 0; x < w; ++x)
+            if (pixel(x, py) == std::optional<std::uint8_t>(Black))
+                lowest = py;
+    REQUIRE(lowest > 0);
+    for (int py = 0; py < lowest - 1; ++py) {
+        int run = 0;
+        for (int x = 0; x < w; ++x) {
+            run = pixel(x, py) == std::optional<std::uint8_t>(Black) ? run + 1 : 0;
+            INFO("pixel " << x << "," << py << " (cell " << x << "," << pines.props.y + py / 2 << ")");
+            CHECK(run <= 6);
+        }
+    }
+    // the edge the review's cell lost: pine 72's, beside pine 77's shade
+    CHECK(layerPixels(pines.cells.at(72, 29 - pines.props.y)).top == std::optional<std::uint8_t>(Green));
+}
+
+TEST_CASE("the character sample keeps its figure on layers of its own, one size and in one place, over a locked scene") {
+    const fs::path dir = kSamples / "05-character";
+    const project::Project p = project::read(dir);
+    CHECK(p.ice);
+    const std::vector<std::string> scene{"sky", "hills", "meadow"};
+    const std::vector<std::string> parts{"shadow", "outline", "body", "face detail", "highlights"};
+    REQUIRE(names(p.layers) == std::vector<std::string>{"sky", "hills", "meadow", "shadow", "outline", "body",
+                                                        "face detail", "highlights", "figure (merged)"});
+    for (const std::string& name : scene) {
+        INFO(name);
+        const Layer& l = named(p.layers, name);
+        CHECK(l.props.kind == LayerKind::Cells);
+        CHECK(l.props.locked);
+        CHECK(l.props.visible);
+    }
+
+    // the figure's layers: pixels, one size and in one place, smaller than
+    // the canvas and placed by their offset, so moving each by the same
+    // distance moves the figure whole
+    const Layer& merged = named(p.layers, "figure (merged)");
+    CHECK_FALSE(merged.props.visible);
+    CHECK(merged.cells.width() < p.layers.width());
+    CHECK(merged.cells.height() < p.layers.height());
+    CHECK((merged.props.x > 0 && merged.props.y > 0));
+    CHECK(insideCanvas(merged, p.layers));
+    for (const std::string& name : parts) {
+        INFO(name);
+        const Layer& l = named(p.layers, name);
+        CHECK(l.props.kind == LayerKind::Pixels);
+        CHECK(l.props.visible);
+        CHECK_FALSE(l.props.locked);
+        CHECK(l.props.alphaLocked == (name == "body"));
+        CHECK(l.props.x == merged.props.x);
+        CHECK(l.props.y == merged.props.y);
+        CHECK(l.cells.width() == merged.cells.width());
+        CHECK(l.cells.height() == merged.cells.height());
+    }
+
+    // pixel x,py of a figure layer, in the layer
+    const auto pixel = [](const Layer& l, int x, int py) {
+        const LayerPixels px = layerPixels(l.cells.at(x, py / 2));
+        return py % 2 == 1 ? px.bottom : px.top;
+    };
+    const int w = merged.cells.width(), h = 2 * merged.cells.height();
+    const Layer& outline = named(p.layers, "outline");
+    const Layer& body = named(p.layers, "body");
+    int ring = 0, detail = 0, lights = 0;
+    for (int py = 0; py < h; ++py)
+        for (int x = 0; x < w; ++x) {
+            INFO("pixel " << x << "," << py);
+            // the merged copy is the five parts, each over the ones under it
+            std::optional<std::uint8_t> top;
+            for (const std::string& name : parts)
+                if (const auto c = pixel(named(p.layers, name), x, py))
+                    top = c;
+            CHECK(pixel(merged, x, py) == top);
+            // the outline is black, under the whole figure and a pixel round it
+            const auto o = pixel(outline, x, py);
+            CHECK((!o || *o == Black));
+            if (pixel(body, x, py))
+                CHECK(o.has_value());
+            else if (o)
+                ++ring;
+            // the face and the highlights lie on the body
+            if (pixel(named(p.layers, "face detail"), x, py)) {
+                ++detail;
+                CHECK(pixel(body, x, py).has_value());
+            }
+            if (pixel(named(p.layers, "highlights"), x, py)) {
+                ++lights;
+                CHECK(pixel(body, x, py).has_value());
+            }
+        }
+    CHECK(ring > 0);
+    CHECK(detail > 0);
+    CHECK(lights > 0);
+
+    // the variants: the merged copy looks as the parts do, the others change
+    // the picture
+    const Canvas whole = project::toAnsi(p).canvas;
+    const Notes notes = parseNotes(p.notes);
+    REQUIRE(notes.variants.size() == 5);
+    for (const Variant& v : notes.variants) {
+        INFO(v.name);
+        project::Project changed = p;
+        REQUIRE_NOTHROW(applyVariant(changed.layers, v));
+        CHECK((project::toAnsi(changed).canvas == whole) == (v.name == "One layer"));
+    }
+
+    // moved as Alt+drag moves a layer, the merged copy alone or each part by
+    // the same distance, to anywhere on the canvas the figure's layers fit
+    // and its boots stay on the meadow: the same picture either way, and
+    // the whole piece lints clean wherever the figure stands, the figure
+    // and the scene round it (a tuft in the grass a cell past the tip of
+    // the shadow included).
+    for (int dy = -2; dy <= 2; ++dy)
+        for (int dx = -merged.props.x; merged.props.x + dx + merged.cells.width() <= p.layers.width(); ++dx) {
+            INFO("moved by " << dx << "," << dy);
+            project::Project one = p;
+            REQUIRE_NOTHROW(applyVariant(one.layers, {"One layer", {"show figure (merged)", "hide highlights",
+                                                                    "hide face detail", "hide body", "hide outline",
+                                                                    "hide shadow"}}));
+            project::Project each = p;
+            for (std::size_t i = 0; i < p.layers.size(); ++i) {
+                const std::string& name = p.layers[i].props.name;
+                if (name == "figure (merged)")
+                    one.layers[i].props.x += dx, one.layers[i].props.y += dy;
+                else if (std::find(parts.begin(), parts.end(), name) != parts.end())
+                    each.layers[i].props.x += dx, each.layers[i].props.y += dy;
+            }
+            const Layer& moved = named(each.layers, "body");
+            REQUIRE(insideCanvas(moved, each.layers));
+            const AnsiDocument doc = project::toAnsi(each);
+            CHECK(project::toAnsi(one).canvas == doc.canvas);
+            CHECK((doc.canvas == whole) == (dx == 0 && dy == 0));
+            const lint::LintReport r = bwcli::lintDocument(doc, {});
+            INFO(bwcli::lintText(r));
+            CHECK(r.findings.empty());
+            CHECK(irc::overBudget(irc::encodeCanvas(doc.canvas), p.ircBudget.bytes).empty());
+        }
+
+    // three rounds: the scene, the figure in flat colours, finished
+    REQUIRE(p.snapshots.size() == 3);
+    for (int i = 0; i < 3; ++i)
+        CHECK(p.snapshots[std::size_t(i)].round == i + 1);
+    CHECK(p.snapshots[0].ans != p.snapshots[1].ans);
+    CHECK(p.snapshots[1].ans != p.snapshots[2].ans);
+
+    // it saves back as it reads, as a directory and as a zip
+    const fs::path out = scratch("character-round-trip");
+    project::writeDirectory(p, out / "dir");
+    CHECK(project::read(out / "dir") == p);
+    project::writeZip(p, out / "character.bwp");
+    CHECK(project::read(out / "character.bwp") == p);
 }

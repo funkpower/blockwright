@@ -467,11 +467,12 @@ TEST_CASE("a project's cluster tables count against one limit, before any layer 
 
 TEST_CASE("a project without pairs or clusters writes the entries it was read from", "[wide][project][golden]") {
     // the samples and a test project, saved by builds before version 2:
-    // every entry the writer writes is the file as it was
+    // every entry the writer writes is the file as it was (the samples' cells
+    // in raw frames, as bw-make-samples writes them)
     for (const char* name : {"01-layers-showcase", "02-text-style-logo"}) {
         INFO(name);
         const fs::path dir = fs::path(BW_SAMPLES_SOURCE) / name;
-        const Entries e = project::encode(project::read(dir));
+        const Entries e = project::encode(project::read(dir), project::CellsFrame::Raw);
         std::size_t cells = 0;
         for (const auto& [path, bytes] : e) {
             INFO(path);
