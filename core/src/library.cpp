@@ -2,6 +2,7 @@
 
 #include "blockwright/cp437.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/links.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
@@ -488,6 +489,44 @@ std::size_t widestRowBytes(const Canvas& canvas) {
     for (const std::string& line : irc::encodeCanvas(canvas))
         widest = std::max(widest, line.size());
     return widest;
+}
+
+SentRow widestSentRow(const Canvas& canvas, std::size_t budget) {
+    SentRow widest;
+    for (const std::string& line : irc::encodeCanvas(canvas))
+        if (const std::size_t sent = irc::txtSentBytes(line, budget); sent > widest.sent)
+            widest = {sent, line.size()};
+    return widest;
+}
+
+std::vector<Problem> budgetProblems(const ScanResult& scanned, std::size_t budget) {
+    std::vector<Problem> problems;
+    const std::string over = ", over the " + std::to_string(budget) + "-byte budget";
+    // `written` is the widest row as written; the art's rows are measured
+    // again as the ascii script sends them
+    const auto check = [&](const fs::path& path, const std::string& what, std::size_t written, const Canvas& art) {
+        if (const SentRow sent = widestSentRow(art, budget); sent.sent > budget)
+            problems.push_back({path, what + " is " + std::to_string(sent.sent) +
+                                          " IRC bytes as WeeChat's ascii script sends it (" +
+                                          std::to_string(sent.written) + " as written)" + over});
+        else if (written > budget)
+            problems.push_back({path, what + " is " + std::to_string(written) + " IRC bytes" + over});
+    };
+    for (const Stamp& s : scanned.stamps)
+        check(s.path, "the widest row", s.meta.ircBytes, s.art.canvas);
+    for (const TextStyleEntry& t : scanned.styles)
+        for (const bool ice : {true, false}) {
+            if (!ice && t.iceRequired)
+                continue;
+            const std::string colours = std::string("iCE colours ") + (ice ? "on" : "off");
+            try {
+                const Canvas sample = textStyleSample(t.style, ice);
+                check(t.path, "the sample's widest row with " + colours, widestRowBytes(sample), sample);
+            } catch (const std::exception& e) {
+                problems.push_back({t.path, "the sample can't be drawn with " + colours + ": " + e.what()});
+            }
+        }
+    return problems;
 }
 
 namespace {

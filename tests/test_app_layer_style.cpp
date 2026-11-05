@@ -12,6 +12,7 @@
 #include "blockwright/composite.h"
 #include "blockwright/face.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/layer.h"
 #include "blockwright/library.h"
 #include "blockwright/project.h"
@@ -266,10 +267,11 @@ TEST_CASE("the dialog previews the layer with the style, its IRC bytes and its l
     alone.add(styled);
     CHECK(shown == composite(alone, {doc->ansi().ice, Cell{}}));
 
-    // the widest IRC line, against the project's budget
+    // the widest IRC line as the ascii script sends it, against the
+    // project's budget
     std::size_t widest = 0;
     for (const std::string& line : irc::encodeCanvas(shown))
-        widest = std::max(widest, line.size());
+        widest = std::max(widest, irc::txtSentBytes(line, irc::kEfnetWeechatBudget));
     CHECK(d.widestLineBytes() == widest);
     CHECK(d.ircLabel()->text().contains(QString::number(widest)));
     CHECK(d.ircLabel()->text().contains(QString::number(irc::kEfnetWeechatBudget)));
@@ -324,7 +326,8 @@ TEST_CASE("the preview and its IRC bytes show the cells as the canvas does, with
         CHECK(d.previewCells().at(5, 3).bg.paletteIndex() == DarkGrey);
         CHECK(shownBg(d) == kPalette[DarkGrey]);
         CHECK(d.widestLineBytes() > 0);
-        CHECK(d.widestLineBytes() == w.ircMeter()->bytes(3));
+        CHECK(d.widestLineBytes() == w.ircMeter()->sentBytes(3));
+        CHECK(d.widestLineWrittenBytes() == w.ircMeter()->bytes(3));
         // the lint reads the cells as the Lint dock does, the canvas's own
         // with o.ice: a blinking space on Black is a black space to IRC, so
         // the canvas has no art and no blank edge rows
@@ -347,8 +350,35 @@ TEST_CASE("the preview and its IRC bytes show the cells as the canvas does, with
         CHECK(d.previewCells().at(5, 3).bg.paletteIndex() == Black);
         CHECK(d.previewCells().at(5, 3).attrs & attr::Blink);
         CHECK(shownBg(d) == kPalette[Black]);
-        CHECK(d.widestLineBytes() == w.ircMeter()->bytes(3));
+        CHECK(d.widestLineBytes() == w.ircMeter()->sentBytes(3));
+        CHECK(d.widestLineWrittenBytes() == w.ircMeter()->bytes(3));
     }
+}
+
+TEST_CASE("the dialog measures the widest line as the ascii script sends it, as the meter does (#364)", "[style]") {
+    // 80 ★ in bright red and red by turns on black: 402 bytes written, 483
+    // as the ascii script sends it, which the meter and Export hold to 407
+    MainWindow w;
+    Layer l;
+    l.props.kind = LayerKind::Cells;
+    l.props.name = "stars";
+    l.cells = Canvas(80, 1);
+    for (int x = 0; x < 80; ++x)
+        l.cells.at(x, 0) = Cell{U'★', Color::indexed(x % 2 ? Red : LightRed), Color::indexed(Black), 0, false};
+    project::Project p;
+    p.layers = LayerStack(80, 1);
+    const LayerId id = p.layers.add(std::move(l));
+    w.document()->replace(p, QStringLiteral("stars.bwp"), FileForm::ProjectZip);
+    REQUIRE(w.document()->extras().ircBudget.bytes == irc::kEfnetWeechatBudget);
+    REQUIRE(w.ircMeter()->bytes(0) == 402);
+    REQUIRE(w.ircMeter()->sentBytes(0) == 483);
+    LayerStyleDialog d(w.document(), id);
+    CHECK(d.widestLineBytes() == 483);
+    CHECK(d.widestLineWrittenBytes() == 402);
+    const QString text = d.ircLabel()->text();
+    CHECK(text.contains(QStringLiteral("483 of 407 bytes")));
+    CHECK(text.contains(QStringLiteral("402 as written")));
+    CHECK(text.contains(QStringLiteral("over by 76")));
 }
 
 TEST_CASE("a style the layer can't draw is named and OK is off", "[style]") {

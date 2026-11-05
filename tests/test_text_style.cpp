@@ -7,6 +7,7 @@
 #include "blockwright/big_text.h"
 #include "blockwright/composite.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/lint.h"
 #include "blockwright/lint_rules.h"
@@ -896,7 +897,7 @@ TEST_CASE("Fill rows and columns on Block big text: a gradient by position and n
                         findings += f.ramp + " " + f.message + "\n";
                 CHECK(findings == "");
                 for (const std::string& line : irc::encodeCanvas(out))
-                    CHECK(line.size() <= irc::kEfnetWeechatBudget);
+                    CHECK(irc::txtSentBytes(line) <= irc::kEfnetWeechatBudget);
             }
 }
 

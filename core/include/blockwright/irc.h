@@ -54,8 +54,9 @@ struct EncodeOptions {
     // █, so IRC keeps them, and the blank rows above and below the art with
     // them (PLAN §3). Off, they are dropped.
     bool pad = false;
-    // Fit lines over this many bytes by merging their least visible colours
-    // into their neighbours' (fitCells); 0 leaves every cell as it is.
+    // Fit lines over this many bytes as the ascii script sends them
+    // (txtSentBytes) by merging their least visible colours into their
+    // neighbours' (fitCells); 0 leaves every cell as it is.
     std::size_t fit = 0;
 };
 
@@ -123,8 +124,9 @@ std::vector<Line> exportLines(const Canvas& canvas, const EncodeOptions& opts = 
 void trimBlankLines(std::vector<Line>& lines);
 
 // The cells, one row in mIRC colours, changed as little as can be seen so
-// that the row encodes in `budget` bytes with `opts` (its trimming, padding
-// and shade swaps; opts.fit is ignored). Each step settles one cell into a
+// that the row encoded with `opts` (its trimming, padding and shade swaps;
+// opts.fit is ignored) is sent in `budget` bytes by the ascii script, which
+// writes the line again before it fits it (irc::txtSentBytes, irc_view.h). Each step settles one cell into a
 // colour it or its left neighbour already shows: a solid cell takes its
 // neighbour's colour, a half block or shade one of its own two colours or
 // one of the neighbour's, the cheapest first by squared RGB distance times
@@ -148,7 +150,8 @@ struct LineSize {
     std::size_t bytes;
 };
 
-// The lines longer than `budget` bytes.
+// The lines longer than `budget` bytes as written. What the ascii script
+// sends of a .txt line can be longer: irc::txtOverBudget measures that.
 std::vector<LineSize> overBudget(const std::vector<std::string>& lines, std::size_t budget);
 
 } // namespace bw::irc

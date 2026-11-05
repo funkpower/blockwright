@@ -528,13 +528,17 @@ TEST_CASE("the IRC View dock shows the lines Export writes, with Fit, Pad, Swap 
     CHECK(rgbOf(irc->view().canvas.at(0, 3).bg) == irc::kMircRgb[2]);
     CHECK(fileBytes(txt).split('\n').value(2).startsWith("\x03" "2,2    \x0f"));
 
-    // Fit: row 1 fit to 406 bytes and not cut, as the meter says (#297)
+    // Fit: row 1 fit to 407 bytes as the ascii script sends it and not cut,
+    // as the meter says (#297, #364)
     ircAction(w, "ircFit")->trigger();
     REQUIRE(meter->fit());
     CHECK(irc->stale());
     CHECK(showsExport() == 0);
-    CHECK(irc->view().rows[1].bytes == 406);
+    CHECK(irc->view().rows[1].bytes == 341);
     CHECK(irc->view().rows[1].bytes == meter->bytes(1));
+    // the blank row 0 is dropped, so row 1 is the file's first line
+    CHECK(meter->sentBytes(1) == irc::txtSentBytes(linesOf(fileBytes(txt).toStdString())[0]));
+    CHECK(meter->sentBytes(1) <= 407);
     CHECK(meter->state(1) == IrcMeter::RowState::Merged);
     CHECK(irc->statusLabel()->text() == QStringLiteral("Every line fits 407 bytes"));
 
@@ -745,6 +749,32 @@ TEST_CASE("the IRC View dock renders off the GUI thread too") {
     REQUIRE(waitFor([&] { return irc->view().cutRows() == cut; }));
     CHECK(irc->image() == renderIrcView(irc::ircView(doc->canvas(), 60), glyphWidth(doc->ansi())));
     CHECK(irc->statusLabel()->text() == QStringLiteral("%1 rows cut at 60 bytes").arg(cut));
+}
+
+TEST_CASE("the IRC View dock marks a row cut only past its width (#364)") {
+    // 80 lone wide 中, bright red and red by turns on black: every cell the
+    // view shows is sent at 407 bytes, but the script cuts the line
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    AnsiDocument wide;
+    wide.canvas = Canvas(80, 1);
+    for (int x = 0; x < 80; ++x)
+        wide.canvas.at(x, 0) = Cell{U'中', Color::indexed(x % 2 ? Red : LightRed), Color::indexed(Black), 0, false};
+    doc->replace(wide, QString());
+    REQUIRE(doc->setTarget(Target::Irc));
+    IrcViewDock* irc = w.ircViewWidget();
+    w.ircViewDock()->raise();
+    REQUIRE(waitFor([&] { return irc->shown() && irc->view().cutRows() == 1; }));
+    CHECK(irc->view().rows[0].shown == 80);
+    CHECK(irc->statusLabel()->text() == QStringLiteral("1 row cut at 407 bytes"));
+    const QImage img = irc->image();
+    CHECK(img == ircNow(*doc));
+    const int bar = glyphWidth(doc->ansi()) / 4;
+    for (int py = 0; py < img.height(); ++py) {
+        CHECK(img.pixel(img.width() - 1, py) == kIrcCutMark);
+        CHECK(img.pixel(img.width() - bar, py) == kIrcCutMark);
+    }
 }
 
 TEST_CASE("a budget change drops the IRC View's render in flight: it never shows the old budget") {

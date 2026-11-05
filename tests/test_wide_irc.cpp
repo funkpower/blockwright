@@ -508,7 +508,8 @@ TEST_CASE("the IRC view's cut is the one the ascii.py sender 1.32.2 makes") {
     // Each table is what ascii.py 1.32.2 (3f16708) sends of the
     // row's line at each budget from `from` on, as the columns a client lays
     // it out in. Derived by loading ascii.py with python3 -I and running
-    // fit(line, budget) on the line below, then parse_irc and cluster_cells
+    // fit(compact(line), budget) on the line below (compact is what the
+    // script does to each .txt line it loads), then parse_irc and cluster_cells
     // on what it returns, counting a cluster two columns when its base is
     // East Asian Wide or Fullwidth, up to the row's width. Not from the view.
     struct ScriptCut {
@@ -552,7 +553,7 @@ TEST_CASE("the IRC view's cut is the one the ascii.py sender 1.32.2 makes") {
         row[2] = cell(U'c');
         row[3] = cell(cluster({0x2764, 0xFE0F}));
         cuts.push_back({"heart", row, "\x03" "15,1abc\xE2\x9D\xA4\xEF\xB8\x8Fzzzzzzzzzzzz", 8,
-                        {1, 2, 3, 3, 3, 3, 3, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 16, 16, 16, 16}});
+                        {1, 2, 3, 3, 3, 3, 3, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 16, 16, 16}});
     }
     {
         // █ and a space carrying U+0301, coloured so that sending either as

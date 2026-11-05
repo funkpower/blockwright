@@ -188,9 +188,10 @@ TEST_CASE("a line over the budget loses the cells past it", "[irc][view]") {
     for (int x = within; x < 40; ++x)
         CHECK(rgb(v.canvas.at(x, 0).bg) == kClientBackground);
     CHECK(rgb(v.canvas.at(within - 1, 0).bg) != kClientBackground);
-    // a budget the line fits shows it whole
-    CHECK(ircView(c, lines[0].size()).cutRows() == 0);
-    CHECK(ircView(c, lines[0].size() - 1).cutRows() == 1);
+    // the least budget the script sends the line whole in shows it whole
+    const std::size_t whole = txtSentBytes(lines[0], 0);
+    CHECK(ircView(c, whole).cutRows() == 0);
+    CHECK(ircView(c, whole - 1).cutRows() == 1);
 }
 
 TEST_CASE("a cut line keeps a byte for the reset after it, as the sender's fit does", "[irc][view]") {
@@ -239,9 +240,13 @@ TEST_CASE("a line over the budget is cut as the sender cuts its own encoding of 
     CHECK(v.canvas.at(44, 0).ch == kUpperHalf);
     CHECK(rgb(v.canvas.at(0, 0).fg) == kMircRgb[4]);
     CHECK(rgb(v.canvas.at(0, 0).bg) == kMircRgb[2]);
-    // a budget the export fits sends it as it is
-    CHECK(ircView(c, 580).rows[0].shown == 80);
-    CHECK(ircView(c, 579).rows[0].cut());
+    // a budget the export fits is not one the script sends it whole in: it
+    // writes the line again with two-digit codes first
+    CHECK(ircView(c, 580).rows[0].cut());
+    const std::size_t whole = txtSentBytes(lines[0], 0);
+    CHECK(whole > 580);
+    CHECK(ircView(c, whole).rows[0].shown == 80);
+    CHECK(ircView(c, whole - 1).rows[0].cut());
 }
 
 TEST_CASE("a padded line over the budget whose sender encoding fits is sent whole", "[irc][view]") {
@@ -280,23 +285,23 @@ TEST_CASE("a 120-row piece fits the EFnet budget, and the view agrees with the l
     const auto exported = exportCanvas(c);
     for (const auto& l : exported)
         CHECK(l.size() <= kEfnetWeechatBudget);
-    CHECK(overBudget(exported, kEfnetWeechatBudget).empty());
+    CHECK(txtOverBudget(exported, kEfnetWeechatBudget).empty());
     const View v = ircView(c);
     CHECK(v.cutRows() == 0);
 
-    // under a tighter budget the rows the view cuts are rows over it
+    // under a tighter budget the rows the view cuts are the rows the
+    // script sends over it
     const auto lines = encodeCanvas(c);
     for (const std::size_t budget : {std::size_t(150), std::size_t(300)}) {
         const View t = ircView(c, budget);
         std::set<int> over;
-        for (const auto& o : overBudget(lines, budget))
+        for (const auto& o : txtOverBudget(lines, budget))
             over.insert(o.line - 1);
         CHECK(t.cutRows() > 0);
         for (int y = 0; y < c.height(); ++y) {
             INFO("budget " << budget << ", row " << y);
             CHECK(t.rows[std::size_t(y)].bytes == lines[std::size_t(y)].size());
-            if (t.rows[std::size_t(y)].cut())
-                CHECK(over.count(y) == 1);
+            CHECK(t.rows[std::size_t(y)].cut() == (over.count(y) == 1));
         }
     }
 }
@@ -335,4 +340,63 @@ TEST_CASE("a cell is sent as it shows with the document's iCE setting", "[irc][v
     CHECK(rgb(ircView(sent).canvas.at(0, 0).bg) == kMircRgb[2]);
     CHECK(rgb(ircView(canvas).canvas.at(0, 0).bg) == kMircRgb[12]);
     CHECK(encodeCanvas(sent) == encodeCanvas(sentCanvas(sent, false)));
+}
+
+TEST_CASE("stars written within the budget are cut as the script sends them (#364)", "[irc][view]") {
+    // ★ in bright red and red by turns, on black: the encoder writes each
+    // star's colour in one digit ("\x03" "4,1★"), the ascii script in two,
+    // and keeps the 67 stars that end within 406 bytes of its own line
+    const auto stars = [](int n) {
+        Canvas c(80, 1);
+        for (int x = 0; x < n; ++x)
+            c.at(x, 0) = cell(U'★', x % 2 ? Red : LightRed, Black);
+        return c;
+    };
+    const Canvas c80 = stars(80);
+    const auto lines = encodeCanvas(c80);
+    REQUIRE(lines[0].size() == 402);
+    REQUIRE(lines[0].substr(0, 9) == "\x03" "4,1★\x03" "5");
+    REQUIRE(txtSentBytes(lines[0], 407) == 483);
+    const View v80 = ircView(c80, 407);
+    CHECK(v80.rows[0].bytes == 402);
+    CHECK(v80.rows[0].kept == 80);
+    CHECK(v80.rows[0].shown == 67);
+    CHECK(v80.rows[0].cut());
+    CHECK(v80.canvas.at(66, 0).ch == U'★');
+    CHECK(rgb(v80.canvas.at(67, 0).bg) == kClientBackground);
+    // 68 stars: 342 bytes written, 411 sent, cut to the same 67
+    const Canvas c68 = stars(68);
+    REQUIRE(encodeCanvas(c68)[0].size() == 342);
+    const View v68 = ircView(c68, 407);
+    CHECK(v68.rows[0].shown == 67);
+    CHECK(v68.rows[0].cut());
+    // 67 stars: 337 written, 405 sent, whole
+    const Canvas c67 = stars(67);
+    REQUIRE(encodeCanvas(c67)[0].size() == 337);
+    CHECK(txtSentBytes(encodeCanvas(c67)[0], 407) == 405);
+    const View v67 = ircView(c67, 407);
+    CHECK(v67.rows[0].shown == 67);
+    CHECK_FALSE(v67.rows[0].cut());
+}
+
+TEST_CASE("a row cut past the view's width is cut (#364)", "[irc][view]") {
+    // 80 lone wide 中, no continuations, bright red and red by turns on
+    // black: 402 bytes written, 483 sent, and the script keeps 67 of them.
+    // Those lay out in 134 columns, so all 80 the view shows are carried,
+    // but the line is cut all the same
+    Canvas c(80, 1);
+    for (int x = 0; x < 80; ++x)
+        c.at(x, 0) = cell(U'中', x % 2 ? Red : LightRed, Black);
+    const auto lines = encodeCanvas(c);
+    REQUIRE(lines[0].size() == 402);
+    REQUIRE(txtSentBytes(lines[0], 407) == 483);
+    const View v = ircView(c, 407);
+    CHECK(v.rows[0].shown == 80);
+    CHECK(v.rows[0].lost);
+    CHECK(v.rows[0].cut());
+    CHECK(v.cutRows() == 1);
+    // with room for the whole line it is not
+    const View whole = ircView(c, 483);
+    CHECK_FALSE(whole.rows[0].lost);
+    CHECK(whole.cutRows() == 0);
 }

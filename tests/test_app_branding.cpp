@@ -10,6 +10,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/logo_text.h"
 #include "blockwright/project.h"
 #include "blockwright/render.h"
@@ -118,10 +119,10 @@ TEST_CASE("each branding .ans parses, is signed, keeps to its size and fits the 
             }
 
         // Every row as `blockwright-cli export --irc` writes it fits one
-        // EFnet message
+        // EFnet message as WeeChat's ascii script sends it
         for (const irc::Line& line : irc::exportLines(c, {})) {
             INFO(line.text);
-            CHECK(line.text.size() <= irc::kEfnetWeechatBudget);
+            CHECK(irc::txtSentBytes(line.text) <= irc::kEfnetWeechatBudget);
             CHECK(line.merged == 0);
         }
 

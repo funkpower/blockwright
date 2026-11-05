@@ -8,6 +8,8 @@
 #include "irc_meter.h"
 #include "plural.h"
 
+#include "blockwright/irc_view.h"
+
 #include <QAction>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -71,9 +73,11 @@ void MainWindow::editIrcBudget() {
 bool MainWindow::exportIrcText(const QString& path, QString* error, bool allowOverBudget) {
     view_->finishTool();
     const std::vector<std::string> lines = texts(ircMeter_->lines());
-    const auto over = irc::overBudget(lines, ircMeter_->budget().bytes);
+    // as the ascii script sends each line, which it writes again (#364)
+    const auto over = irc::txtOverBudget(lines, ircMeter_->budget().bytes);
     if (!over.empty() && !allowOverBudget) {
-        *error = plural(int(over.size()), tr("%n line over the %1-byte budget"), tr("%n lines over the %1-byte budget"))
+        *error = plural(int(over.size()), tr("%n line over the %1-byte budget as WeeChat's ascii script sends it"),
+                        tr("%n lines over the %1-byte budget as WeeChat's ascii script sends them"))
                      .arg(ircMeter_->budget().bytes);
         return false;
     }
@@ -91,7 +95,7 @@ void MainWindow::exportIrc() {
     view_->finishTool();
     const std::vector<std::string> lines = texts(ircMeter_->lines());
     const std::size_t budget = ircMeter_->budget().bytes;
-    const auto over = irc::overBudget(lines, budget);
+    const auto over = irc::txtOverBudget(lines, budget);
     if (!over.empty()) {
         int longest = 0;
         for (const auto& o : over)
@@ -99,10 +103,10 @@ void MainWindow::exportIrc() {
         const auto answer = QMessageBox::warning(
             this, tr("Export IRC Text"),
             plural(int(over.size()),
-                   tr("%n line is over the %1-byte budget, at %2 bytes: a client cuts it short or drops it.\n\n"
-                      "Export anyway?"),
-                   tr("%n lines are over the %1-byte budget, the longest %2 bytes: a client cuts them short or drops "
-                      "them.\n\nExport anyway?"))
+                   tr("%n line is over the %1-byte budget, at %2 bytes as WeeChat's ascii script sends it: the "
+                      "script cuts it short.\n\nExport anyway?"),
+                   tr("%n lines are over the %1-byte budget, the longest %2 bytes as WeeChat's ascii script sends "
+                      "them: the script cuts them short.\n\nExport anyway?"))
                 .arg(budget)
                 .arg(longest),
             QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);

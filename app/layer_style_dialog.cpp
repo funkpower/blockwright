@@ -8,6 +8,7 @@
 #include "blockwright/composite.h"
 #include "blockwright/face.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/library.h"
 #include "blockwright/palette.h"
 #include "blockwright/ramp.h"
@@ -515,7 +516,7 @@ void LayerStyleDialog::refresh() {
         return;
     stale_ = false;
     cells_ = Canvas(0, 0);
-    widest_ = 0;
+    widest_ = widestWritten_ = 0;
     report_ = {};
     confusables_.clear();
     problemText_.clear();
@@ -557,18 +558,28 @@ void LayerStyleDialog::refresh() {
                 }
         }
     }
+    // each line measured as the ascii script sends it, as the row meter and
+    // Export measure it against the budget (irc::txtSentBytes)
+    const std::size_t budget = doc_->extras().ircBudget.bytes;
     if (cells_.width() > 0 && cells_.height() > 0) {
         for (const std::string& line : irc::encodeCanvas(cells_))
-            widest_ = std::max(widest_, line.size());
+            if (const std::size_t sent = irc::txtSentBytes(line, budget); sent > widest_) {
+                widest_ = sent;
+                widestWritten_ = line.size();
+            }
         report_ = dockLint(raw, ice, 0, doc_->target());
     }
 
     // the widgets
-    const std::size_t budget = doc_->extras().ircBudget.bytes;
     if (cells_.width() > 0 && cells_.height() > 0) {
         preview_->setPixmap(QPixmap::fromImage(renderCanvas(cells_, 8)));
-        irc_->setText(widest_ > budget ? tr("IRC: widest line %1 bytes, over the %2-byte budget").arg(widest_).arg(budget)
-                                       : tr("IRC: widest line %1 of %2 bytes").arg(widest_).arg(budget));
+        QString text = tr("IRC: widest line %1 of %2 bytes as WeeChat's ascii script sends it, %3 as written")
+                           .arg(widest_)
+                           .arg(budget)
+                           .arg(widestWritten_);
+        if (widest_ > budget)
+            text += tr(", over by %1").arg(widest_ - budget);
+        irc_->setText(text);
     } else {
         preview_->setPixmap(QPixmap());
         preview_->setText(tr("Nothing to show"));
@@ -604,6 +615,11 @@ const Canvas& LayerStyleDialog::previewCells() {
 std::size_t LayerStyleDialog::widestLineBytes() {
     refresh();
     return widest_;
+}
+
+std::size_t LayerStyleDialog::widestLineWrittenBytes() {
+    refresh();
+    return widestWritten_;
 }
 
 const lint::LintReport& LayerStyleDialog::lintReport() {

@@ -1,6 +1,7 @@
 #pragma once
 // The IRC row meter (PLAN §8): a gutter right of the canvas giving every
-// row's size as the IRC encoder writes it, against the byte budget, and
+// row's size as the ascii script sends the line the IRC encoder writes
+// (irc::txtSentBytes), against the byte budget, and
 // the scroll area that makes room for it. Rows over the budget show red;
 // rows fit to the budget by merging colours, amber. The budget is the
 // document's (Document::extras, saved with a project), the one the IRC View
@@ -76,11 +77,15 @@ public:
     // Shows the meter in its gutter, or hides it and gives the room back.
     void setShown(bool on);
 
-    // Row y's line as the encoder writes it now, the cells fit merged in it,
-    // and how it stands against the budget. A row is encoded when first
-    // asked for after it changed, and a row with the same cells as one
-    // encoded before with the same options takes that row's line.
+    // Row y's line as the encoder writes it now (bytes), its size as the
+    // ascii script sends it (sentBytes: it writes the line again, with
+    // two-digit colour codes, #364), the cells fit merged in it, and how it
+    // stands against the budget, which the sent size decides. A row is
+    // encoded when first asked for after it changed, and a row with the
+    // same cells as one encoded before with the same options and budget
+    // takes that row's line.
     std::size_t bytes(int y);
+    std::size_t sentBytes(int y);
     int merged(int y);
     RowState state(int y);
     // Row y's band in the meter's own coordinates: the canvas row's top and
@@ -108,14 +113,19 @@ protected:
     void paintEvent(QPaintEvent* e) override;
 
 private:
-    struct Row {
+    // A row's line and its size as the ascii script sends it.
+    struct Measured {
         irc::Line line;
+        std::size_t sent = 0;
+    };
+    struct Row {
+        Measured m;
         bool valid = false;
     };
     const Row& row(int y);
-    // Encodes a row's cells, or takes the line of the same cells from the
-    // cache.
-    irc::Line encoded(const std::vector<irc::MircCell>& cells);
+    // Encodes a row's cells and measures the line, or takes the line of the
+    // same cells from the cache.
+    Measured encoded(const std::vector<irc::MircCell>& cells);
     void resetRows();
     void invalidate(const QRegion& cells);
     void invalidateRow(int y);
@@ -133,8 +143,9 @@ private:
     std::vector<Row> rows_;
     std::vector<CellChange> pending_;  // the tool's, on the canvas, by row
     QMetaObject::Connection toolConnection_;
-    // Lines by their cells (glyph, colours and formatting) and the options.
-    std::unordered_map<std::string, irc::Line> cache_;
+    // Lines by their cells (glyph, colours and formatting), the options and
+    // the budget.
+    std::unordered_map<std::string, Measured> cache_;
 };
 
 // View > IRC > Budget...: a preset, or a byte count typed or worked out

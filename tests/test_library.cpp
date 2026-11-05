@@ -131,6 +131,77 @@ TEST_CASE("a stamp written from cells reads back with its name, sidecar and cell
     CHECK(widestRowBytes(s.art.canvas) == widest);
 }
 
+TEST_CASE("the widest row as the ascii script sends it, beside the sidecar's written size (#364)") {
+    // 80 ★ in bright red and red by turns on black: written in 402 bytes,
+    // the sidecar's ircBytes, and sent in 483
+    Canvas c(80, 2);
+    for (int x = 0; x < 80; ++x)
+        c.at(x, 1) = Cell{U'★', Color::indexed(x % 2 ? Red : LightRed), Color::indexed(Black), 0, false};
+    CHECK(widestRowBytes(c) == 402);
+    const SentRow sent = widestSentRow(c, irc::kEfnetWeechatBudget);
+    CHECK(sent.sent == 483);
+    CHECK(sent.written == 402);
+    // an empty canvas sends nothing
+    CHECK(widestSentRow(Canvas(3, 1), irc::kEfnetWeechatBudget).sent == 0);
+}
+
+TEST_CASE("a text style's sample row sent over the budget is a problem though it is written within (#364)") {
+    // a glow ring a cell wide in every rung, the letters a gradient across
+    // the columns: the sample's rows change colour cell by cell, and the
+    // ascii script sends each colour code in two digits
+    const TextStyleEntry style = parseTextStyleEntry(
+        R"({"kind": "text-style", "name": "Rings", "category": "test", "tags": [], "ice": "required",
+            "effects": [{"kind": "glow", "enabled": true, "ramp": "sunset", "width": 16, "brightness": 16},
+                        {"kind": "fill", "enabled": true, "mode": "columns", "colour": 7, "ramp": "sunset"}]})");
+    const Canvas sample = textStyleSample(style.style, true);
+    const std::size_t written = widestRowBytes(sample);
+    const SentRow sent = widestSentRow(sample, written);
+    INFO("written " << written << ", sent " << sent.sent << " (" << sent.written << " as written)");
+    REQUIRE(sent.sent > written);
+    REQUIRE(sent.written <= written);
+
+    ScanResult scanned;
+    scanned.styles.push_back(style);
+    scanned.styles.back().path = "rings.style.json";
+    // at a budget the widest row is written within, its sending is over
+    const std::vector<Problem> over = budgetProblems(scanned, written);
+    REQUIRE(over.size() == 1);
+    CHECK(over[0].path == "rings.style.json");
+    CHECK(over[0].message == "the sample's widest row with iCE colours on is " + std::to_string(sent.sent) +
+                                 " IRC bytes as WeeChat's ascii script sends it (" + std::to_string(sent.written) +
+                                 " as written), over the " + std::to_string(written) + "-byte budget");
+    // with room for what is sent, nothing is over
+    CHECK(budgetProblems(scanned, sent.sent).empty());
+    // without "ice": "required" the sample is checked with iCE colours off too
+    scanned.styles.back().iceRequired = false;
+    const std::vector<Problem> both = budgetProblems(scanned, written);
+    REQUIRE_FALSE(both.empty());
+    CHECK(both[0].message == over[0].message);
+}
+
+TEST_CASE("a stamp's widest row is over the budget sent or written, once (#364)") {
+    // 80 ★ in bright red and red by turns on black: written in 402 bytes and
+    // sent in 483
+    Stamp star;
+    star.path = "stars.ans";
+    star.art.canvas = Canvas(80, 1);
+    for (int x = 0; x < 80; ++x)
+        star.art.canvas.at(x, 0) = Cell{U'★', Color::indexed(x % 2 ? Red : LightRed), Color::indexed(Black), 0, false};
+    star.meta.ircBytes = 402;
+    ScanResult scanned;
+    scanned.stamps.push_back(star);
+    const std::vector<Problem> sent = budgetProblems(scanned, 407);
+    REQUIRE(sent.size() == 1);
+    CHECK(sent[0].message == "the widest row is 483 IRC bytes as WeeChat's ascii script sends it (402 as written), "
+                             "over the 407-byte budget");
+    CHECK(budgetProblems(scanned, 483).empty());
+    // a sidecar that says the row is written over is believed
+    scanned.stamps[0].meta.ircBytes = 500;
+    const std::vector<Problem> written = budgetProblems(scanned, 483);
+    REQUIRE(written.size() == 1);
+    CHECK(written[0].message == "the widest row is 500 IRC bytes, over the 483-byte budget");
+}
+
 TEST_CASE("the sidecar is three keys in a fixed order") {
     const StampMeta m{"sky", {"star", "a \"quoted\" tag"}, 42};
     CHECK(sidecarJson(m) == "{\n  \"category\": \"sky\",\n  \"tags\": [\"star\", \"a \\\"quoted\\\" tag\"],\n"

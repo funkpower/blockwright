@@ -70,6 +70,42 @@ TEST_CASE("the IRC view draws its cells and marks where a cut row ends", "[irc][
     }
 }
 
+TEST_CASE("a row cut only past the view's width is marked at its right edge (#364)", "[irc][render]") {
+    // 80 lone wide 中, bright red and red by turns on black: the script
+    // keeps 67 of them, which lay out in 134 columns, so all 80 the view
+    // shows are sent but the line is cut. The row below fits.
+    Canvas c(80, 2);
+    for (int x = 0; x < 80; ++x) {
+        c.at(x, 0) = Cell{U'中', Color::indexed(x % 2 ? Red : LightRed), Color::indexed(Black), 0, false};
+        c.at(x, 1) = Cell{U'█', Color::indexed(Grey), Color::indexed(Black), 0, false};
+    }
+    const irc::View v = irc::ircView(c, 407);
+    REQUIRE(v.rows[0].shown == 80);
+    REQUIRE(v.rows[0].cut());
+    REQUIRE_FALSE(v.rows[1].cut());
+    REQUIRE(v.cutRows() == 1);
+    for (const int scale : {1, 2}) {
+        INFO("scale " << scale);
+        const QImage img = renderIrcView(v, 8, scale);
+        const QImage plain = renderCanvas(v.canvas, 8, scale);
+        const int gw = 8 * scale, gh = vgaFont().height * scale, bar = gw / 4;
+        for (int py = 0; py < gh; ++py) {
+            CHECK(marks(img, py) == bar);
+            CHECK(img.pixel(img.width() - bar, py) == kIrcCutMark);
+            CHECK(img.pixel(img.width() - 1, py) == kIrcCutMark);
+            CHECK(img.pixel(img.width() - bar - 1, py) == plain.pixel(img.width() - bar - 1, py));
+        }
+        for (int py = gh; py < 2 * gh; ++py)
+            CHECK(marks(img, py) == 0);
+    }
+    // with room for the whole line, no mark
+    const irc::View whole = irc::ircView(c, 483);
+    REQUIRE(whole.cutRows() == 0);
+    const QImage img = renderIrcView(whole, 8);
+    for (int py = 0; py < img.height(); ++py)
+        CHECK(marks(img, py) == 0);
+}
+
 TEST_CASE("a view that fits has no cut mark", "[irc][render]") {
     const Canvas c = colourful(40);
     const irc::View v = irc::ircView(c);

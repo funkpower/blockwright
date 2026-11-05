@@ -68,11 +68,15 @@ std::vector<ShownCell> decodeLine(std::string_view line, const DecodeOptions& op
 
 // One canvas row in the view.
 struct ViewRow {
-    std::size_t bytes = 0;  // the encoded line's size
+    std::size_t bytes = 0;  // the encoded line's size, as written
     int kept = 0;           // cells the line carries (after the trailing black cells are dropped)
     int shown = 0;          // of those, the cells within the budget
     bool trimmed = false;   // a blank row above or below the art, which an export drops
-    bool cut() const { return shown < kept; }
+    // The sender drops cells of the line: some it carries are lost, whether
+    // or not they lie within the view's width (a row of lone wide cells lays
+    // out wider than the canvas, and can be cut past it).
+    bool lost = false;
+    bool cut() const { return lost || shown < kept; }
 };
 
 struct View {
@@ -84,16 +88,19 @@ struct View {
 };
 
 // The view of `canvas` sent as IRC text with `opts`, each line cut to fit
-// `budget` bytes as the ascii.py sender script 1.32.2 or later cuts it
-// (ascii.fit): a line with a colour code inside a cluster the sender first
-// encodes again (encode_irc); a line that then fits is sent whole; a longer
-// one the sender encodes again in its own way (two-digit colour codes, a
-// space or a full block for a solid one-code-point cell, whichever is
-// shorter, a cluster's glyph never traded and no code inside it), sends that
-// whole if it fits, and otherwise keeps the clusters whose glyph ends within
-// budget - 1 bytes of it, the last byte for the reset after them, and loses
-// the rest. The view is the canvas's size, the cells shown as the export
-// draws them, the lost ones blank in the client's background.
+// `budget` bytes as the ascii.py sender script 1.32.2 or later cuts a .txt
+// line: loading it, the script encodes it again (compact: encode_irc, with
+// two-digit colour codes, so it is measured as txtSentBytes measures it, not
+// as written); a line that then fits is sent whole; a longer one the sender
+// encodes again in its own way (two-digit colour codes, a space or a full
+// block for a solid one-code-point cell, whichever is shorter, a cluster's
+// glyph never traded and no code inside it), sends that whole if it fits,
+// and otherwise keeps the clusters whose glyph ends within budget - 1 bytes
+// of it, the last byte for the reset after them, and loses the rest. Where
+// the script's Python's Unicode decides which code points join a cluster,
+// the row keeps the fewest cells any of them keeps. The view is the
+// canvas's size, the cells shown as the export draws them, the lost ones
+// blank in the client's background.
 View ircView(const Canvas& canvas, std::size_t budget = kEfnetWeechatBudget, const EncodeOptions& opts = {});
 
 // A line of a .txt as the ascii script sends it, which is not the line as
@@ -111,7 +118,8 @@ View ircView(const Canvas& canvas, std::size_t budget = kEfnetWeechatBudget, con
 // (joinMask), so the line is sized under each Unicode joinUnicode lists, and
 // a later one, once for each way they cluster it, and this is the
 // largest. Publish to Library and Send to WeeChat hold a .txt to it (#336,
-// #350, #362).
+// #350, #362), and so do the row meter, fit, the IRC view, Export IRC Text
+// and `export --irc` (#364).
 std::size_t txtSentBytes(std::string_view line, std::size_t budget = kEfnetWeechatBudget);
 
 // A .txt line the ascii script cuts: its txtSentBytes, and, when only some

@@ -2,6 +2,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/cp437.h"
+#include "blockwright/irc_view.h"
 
 #include <algorithm>
 #include <array>
@@ -185,7 +186,8 @@ std::optional<std::size_t> budgetFor(std::string_view mask, std::string_view tar
 
 std::vector<MircCell> fitCells(std::span<const MircCell> cells, std::size_t budget, const EncodeOptions& opts) {
     std::vector<MircCell> row(cells.begin(), cells.end());
-    const auto fits = [&] { return encodeCells(row, opts).size() <= budget; };
+    // as the ascii script sends the line, not as it is written (#364)
+    const auto fits = [&] { return txtSentBytes(encodeCells(row, opts), budget) <= budget; };
     if (fits())
         return row;
     // A cell may change a few times (a half block into a solid, the solid

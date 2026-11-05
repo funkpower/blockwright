@@ -369,33 +369,46 @@ expect "--help names XBIN and BIN" 0 'XBIN \(\.xb\) or BIN \(\.bin\)' -- "$cli" 
 expect "--help says export and render refuse" 0 'render refuse to write over their input' -- "$cli" --help
 
 # export --irc: per-line byte report, the budget, and the override
-expect "export --irc" 0 '^17 lines, longest 80 bytes, budget 407: 0 over$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
+expect "export --irc" 0 '^17 lines, longest 80 bytes, 85 sent, budget 407: 0 over$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
 if cmp -s "$data/golden-irc/tux.txt" "$tmp/tux.txt"; then ok "export --irc output is golden-irc's"; else bad "export --irc output differs from golden-irc/tux.txt"; fi
-expect "export --irc reports every line" 0 '^ +13 +80$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
+expect "export --irc reports every line as written and as sent" 0 '^ +13 +80 +85$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
 report=$("$cli" export --irc "$piece" "$tmp/tux.txt" 2>/dev/null)
 if [[ $(grep -cE '^ +[0-9]+ +[0-9]+' <<<"$report") -eq 17 ]]; then ok "export --irc reports 17 lines"; else bad "export --irc report: $report"; fi
-expect "over budget refused" 3 '^ +13 +80  over by 20$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
-expect "over budget listed" 3 'tux\.ans: line 13 is 80 bytes, over the 60-byte budget by 20' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
-expect "over budget counted" 3 '^17 lines, longest 80 bytes, budget 60: 6 over$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+expect "over budget refused" 3 '^ +13 +80 +85  over by 25$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+expect "over budget listed" 3 "tux\\.ans: line 13 is 85 bytes as WeeChat's ascii script sends it, over the 60-byte budget by 25" -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+expect "over budget counted" 3 '^17 lines, longest 80 bytes, 85 sent, budget 60: 11 over$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
 expect "over budget says why" 3 'over\.txt: not written: lines over the budget \(--allow-over-budget writes it anyway\)' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
 if [[ -e $tmp/over.txt ]]; then bad "refused export left an output file"; else ok "refused export writes nothing"; fi
-expect "--allow-over-budget writes" 0 'line 13 is 80 bytes, over the 60-byte budget' -- "$cli" export --irc --budget 60 --allow-over-budget "$piece" "$tmp/over.txt"
+expect "--allow-over-budget writes" 0 'line 13 is 85 bytes .*, over the 60-byte budget' -- "$cli" export --irc --budget 60 --allow-over-budget "$piece" "$tmp/over.txt"
 if cmp -s "$data/golden-irc/tux.txt" "$tmp/over.txt"; then ok "--allow-over-budget writes the lines uncut"; else bad "--allow-over-budget output differs"; fi
-# 80 cells, each a different colour from its neighbour: over 407 bytes
-for i in $(seq 0 79); do printf '\033[%d;%dmx' $((30 + i % 8)) $((40 + (i + 3) % 8)); done > "$tmp/rainbow.ans"
-expect "default budget is 407" 3 '^1 line, longest 4[0-9][0-9] bytes, budget 407: 1 over$' -- "$cli" export --irc "$tmp/rainbow.ans" "$tmp/rainbow.txt"
+# 64 cells, each a different colour from its neighbour: 352 bytes written,
+# over 407 as the ascii script sends it, with two-digit colour codes
+for i in $(seq 0 63); do printf '\033[%d;%dmx' $((30 + i % 8)) $((40 + (i + 3) % 8)); done > "$tmp/rainbow.ans"
+expect "default budget is 407" 3 '^1 line, longest 352 bytes, 448 sent, budget 407: 1 over$' -- "$cli" export --irc "$tmp/rainbow.ans" "$tmp/rainbow.txt"
 expect "--budget raises it" 0 'budget 512: 0 over$' -- "$cli" export --irc --budget 512 "$tmp/rainbow.ans" "$tmp/rainbow.txt"
 # --fit: colours merged until every line is in the budget; text left alone
 for i in $(seq 0 79); do printf '\033[%d;%dm\xdf' $((30 + i % 8)) $((40 + (i + 3) % 8)); done > "$tmp/halves.ans"
-expect "half blocks over the budget" 3 '^1 line, longest 600 bytes, budget 407: 1 over$' -- "$cli" export --irc "$tmp/halves.ans" "$tmp/halves.txt"
-expect "--fit fits them" 0 '^1 line, longest [0-9]+ bytes, budget 407: 0 over$' -- "$cli" export --irc --fit "$tmp/halves.ans" "$tmp/halves.txt"
-expect "--fit marks the line it merged" 0 '^ +1 +[0-9]+  fit: [1-9][0-9]* cells merged$' -- "$cli" export --irc --fit "$tmp/halves.ans" "$tmp/halves.txt"
+expect "half blocks over the budget" 3 '^1 line, longest 600 bytes, 720 sent, budget 407: 1 over$' -- "$cli" export --irc "$tmp/halves.ans" "$tmp/halves.txt"
+expect "--fit fits them" 0 '^1 line, longest [0-9]+ bytes, [0-9]+ sent, budget 407: 0 over$' -- "$cli" export --irc --fit "$tmp/halves.ans" "$tmp/halves.txt"
+expect "--fit marks the line it merged" 0 '^ +1 +[0-9]+ +[0-9]+  fit: [1-9][0-9]* cells merged$' -- "$cli" export --irc --fit "$tmp/halves.ans" "$tmp/halves.txt"
 expect "--fit counts what it merged" 0 '^fit: [1-9][0-9]* cells merged in 1 line$' -- "$cli" export --irc --fit "$tmp/halves.ans" "$tmp/halves.txt"
 if [[ $(wc -c < "$tmp/halves.txt") -le 408 ]]; then ok "--fit writes the fitted line"; else bad "--fit wrote $(wc -c < "$tmp/halves.txt") bytes"; fi
 expect "--fit takes the budget" 0 'budget 300: 0 over$' -- "$cli" export --irc --fit --budget 300 "$tmp/halves.ans" "$tmp/halves.txt"
 expect "--fit never changes text" 3 '^fit: 0 cells merged in 0 lines$' -- "$cli" export --irc --fit "$tmp/rainbow.ans" "$tmp/rainbow.txt"
 expect "--fit leaves a piece in budget alone" 0 '^fit: 0 cells merged in 0 lines$' -- "$cli" export --irc --fit "$piece" "$tmp/tux-fit.txt"
 if cmp -s "$data/golden-irc/tux.txt" "$tmp/tux-fit.txt"; then ok "--fit of a piece in budget is golden-irc's"; else bad "--fit changed a piece in budget"; fi
+# 80 and 67 ★ in bright red and red by turns, on black: 402 and 337 bytes
+# written, which the ascii script sends in 483 and 405 (#364)
+for n in 80 67; do
+  for i in $(seq 1 $n); do
+    if [ $((i % 2)) -eq 1 ]; then printf '\033[1;31;40m\342\230\205'; else printf '\033[0;31;40m\342\230\205'; fi
+  done > "$tmp/stars$n.ans"
+done
+expect "80 stars written in budget are sent over it" 3 '^ +1 +402 +483  over by 76$' -- "$cli" export --irc "$tmp/stars80.ans" "$tmp/stars80.txt"
+expect "80 stars refused" 3 "stars80\\.ans: line 1 is 483 bytes as WeeChat's ascii script sends it, over the 407-byte budget by 76" -- "$cli" export --irc "$tmp/stars80.ans" "$tmp/stars80.txt"
+if [[ -e $tmp/stars80.txt ]]; then bad "80 stars: refused export left a file"; else ok "80 stars: nothing written"; fi
+expect "67 stars are sent in budget" 0 '^1 line, longest 337 bytes, 405 sent, budget 407: 0 over$' -- "$cli" export --irc "$tmp/stars67.ans" "$tmp/stars67.txt"
+expect "--fit leaves 80 stars over: their text can't change" 3 '^fit: 0 cells merged in 0 lines$' -- "$cli" export --irc --fit "$tmp/stars80.ans" "$tmp/stars80.txt"
 # --pad: blank rows and trailing black kept, each line ended on a black block
 printf '\r\n\033[31mx\r\n' > "$tmp/edge.ans"
 expect "export drops a blank top row" 0 '^1 line, longest 5 bytes' -- "$cli" export --irc "$tmp/edge.ans" "$tmp/edge.txt"
@@ -404,7 +417,7 @@ if [[ $(grep -c $'\xe2\x96\x88$' "$tmp/edge.txt") -eq 2 ]]; then ok "--pad ends 
 # --swap-shades: ▓ on red as ░ the other way round, one colour code for the row
 for i in $(seq 0 39); do printf '\033[34;41m\xb2\033[31;44m\xb0'; done > "$tmp/shade.ans"
 expect "shades over the budget" 3 '^1 line, longest 560 bytes' -- "$cli" export --irc "$tmp/shade.ans" "$tmp/shade.txt"
-expect "--swap-shades" 0 '^1 line, longest 244 bytes, budget 407: 0 over$' -- "$cli" export --irc --swap-shades "$tmp/shade.ans" "$tmp/shade.txt"
+expect "--swap-shades" 0 '^1 line, longest 244 bytes, 246 sent, budget 407: 0 over$' -- "$cli" export --irc --swap-shades "$tmp/shade.ans" "$tmp/shade.txt"
 expect "export needs --irc" 2 'export needs a format: --irc' -- "$cli" export "$piece" "$tmp/x.txt"
 expect "export arity" 2 'export takes' -- "$cli" export --irc "$piece"
 expect "--budget must be a number" 2 '--budget takes 1 to 512 bytes' -- "$cli" export --irc --budget lots "$piece" "$tmp/x.txt"
@@ -767,6 +780,22 @@ printf '{"category":7,"category":"sky","tags":[],"ircBytes":9999,"ircBytes":16}\
 mkfifo "$b2/pipe.ans"
 expect "library check: a repeated key" 1 'dup\.ans: sidecar has the key "category" more than once' -- timeout 10 "$cli" library check "$b2"
 expect "library check: a FIFO is never opened" 1 'pipe\.ans: not a regular file, skipped' -- timeout 10 "$cli" library check "$b2"
+# a UTF-8 stamp of 80 ★ in bright red and red by turns, on black, 80x1: its
+# row is written in 402 bytes, which its sidecar records, but WeeChat's
+# ascii script sends it in 483 (#364)
+u8l=$tmp/u8lib; mkdir -p "$u8l"
+{
+  printf '\357\273\277\033[0m'
+  i=0
+  while [ "$i" -lt 40 ]; do printf '\033[0;1;31m\342\230\205\033[0;31m\342\230\205'; i=$((i + 1)); done
+  printf '\033[0m\032SAUCE00%-35s%-20s%-20s20261105' 'Stars' '' ''
+  printf '\000\000\000\000\001\001\120\000\001\000\000\000\000\000\000\001'
+  printf '%022d' 0 | tr 0 '\0'
+} > "$u8l/stars.ans"
+printf '{"category": "sky", "tags": [], "ircBytes": 402, "encoding": "utf-8"}\n' > "$u8l/stars.json"
+expect "library list: a UTF-8 stamp written in 402 bytes" 0 $'^stamp\tsky\tStars\t80x1\t402\t' -- "$cli" library list "$u8l"
+expect "library check: a stamp sent over the budget" 1 'stars\.ans: the widest row is 483 IRC bytes as WeeChat.s ascii script sends it \(402 as written\), over the 407-byte budget' -- "$cli" library check "$u8l"
+expect "library check: a stamp sent over the budget is one problem" 1 '^1 stamp, 0 text styles, 1 problem$' -- "$cli" library check "$u8l"
 # text styles: <slug>.style.json, by its name and its kind
 sl=$tmp/stylelib; mkdir -p "$sl/text"
 cp "$lib/sky/small-star."* "$sl/"
@@ -850,8 +879,8 @@ if cmp -s "$proj/ans.txt" "$proj/proj.txt"; then ok "export of a project matches
 cp -r "$proj/tux" "$proj/tight"
 sed 's/"bytes": 407/"bytes": 60/' "$proj/tight/manifest.json" > "$proj/tight/manifest.json.new" &&
   mv "$proj/tight/manifest.json.new" "$proj/tight/manifest.json"
-expect "export takes the project's budget" 3 '^17 lines, longest 80 bytes, budget 60: 6 over$' -- "$cli" export --irc "$proj/tight" "$proj/tight.txt"
-expect "--budget overrides the project's" 0 '^17 lines, longest 80 bytes, budget 407: 0 over$' -- "$cli" export --irc --budget 407 "$proj/tight" "$proj/tight.txt"
+expect "export takes the project's budget" 3 '^17 lines, longest 80 bytes, 85 sent, budget 60: 11 over$' -- "$cli" export --irc "$proj/tight" "$proj/tight.txt"
+expect "--budget overrides the project's" 0 '^17 lines, longest 80 bytes, 85 sent, budget 407: 0 over$' -- "$cli" export --irc --budget 407 "$proj/tight" "$proj/tight.txt"
 expect "render reads a project" 0 '^$' -- "$cli" render "$proj/tux.bwp" "$proj/tux.png"
 expect "snapshot a directory" 0 '^r1$' -- "$cli" snapshot "$proj/tux"
 expect "snapshot again" 0 '^r2$' -- "$cli" snapshot "$proj/tux"

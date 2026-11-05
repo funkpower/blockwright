@@ -10,6 +10,7 @@
 #include "blockwright/face.h"
 #include "blockwright/font_store.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/lint.h"
 #include "blockwright/lint_rules.h"
 #include "blockwright/project.h"
@@ -213,11 +214,11 @@ std::string faults(const Case& k) {
             out += "lint " + f.ramp + " " + std::string(lint::kindName(f.kind)) + " " + std::to_string(f.x) + "," +
                    std::to_string(f.y) + ": " + f.message + "\n";
 
-    // the budget
+    // the budget, as WeeChat's ascii script sends each line
     const std::vector<std::string> lines = irc::encodeCanvas(drawn);
     for (std::size_t y = 0; y < lines.size(); ++y)
-        if (lines[y].size() > irc::kEfnetWeechatBudget)
-            out += "row " + std::to_string(y) + " is " + std::to_string(lines[y].size()) + " bytes\n";
+        if (const std::size_t sent = irc::txtSentBytes(lines[y]); sent > irc::kEfnetWeechatBudget)
+            out += "row " + std::to_string(y) + " is " + std::to_string(sent) + " bytes\n";
 
     // the columns: each line with the margins, and each drawn row
     const TextLayout layout = layoutText(*k.face->face, k.word->text, {k.word->wrapWidth});

@@ -5,6 +5,8 @@
 #include "plural.h"
 #include "tool.h"
 
+#include "blockwright/irc_view.h"
+
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QEvent>
@@ -125,8 +127,9 @@ const IrcMeter::Row& IrcMeter::row(int y) {
     return r;
 }
 
-irc::Line IrcMeter::encoded(const std::vector<irc::MircCell>& cells) {
+IrcMeter::Measured IrcMeter::encoded(const std::vector<irc::MircCell>& cells) {
     const irc::EncodeOptions o = options();
+    const std::size_t budget = this->budget().bytes;
     std::string key;
     key.reserve(cells.size() * 7 + 10);
     const auto put = [&key](std::uint64_t v, int bytes) {
@@ -140,6 +143,8 @@ irc::Line IrcMeter::encoded(const std::vector<irc::MircCell>& cells) {
     put(fit, 8);
     put(pad, 1);
     put(swapShades, 1);
+    // the sent size is measured against the budget (txtSentBytes)
+    put(budget, 8);
     for (const irc::MircCell& c : cells) {
         const auto& [ch, fg, bg, attrs] = c;
         // A cluster by its code points, not its id: the key says what is
@@ -157,28 +162,41 @@ irc::Line IrcMeter::encoded(const std::vector<irc::MircCell>& cells) {
     // A few canvases' worth of rows, then start again.
     if (cache_.size() >= std::max<std::size_t>(4096, rows_.size() * 8))
         cache_.clear();
-    return cache_.emplace(std::move(key), irc::encodeMircLine(cells, o)).first->second;
+    Measured m{irc::encodeMircLine(cells, o), 0};
+    m.sent = irc::txtSentBytes(m.line.text, budget);
+    return cache_.emplace(std::move(key), std::move(m)).first->second;
 }
 
-std::size_t IrcMeter::bytes(int y) { return row(y).line.text.size(); }
+std::size_t IrcMeter::bytes(int y) { return row(y).m.line.text.size(); }
 
-int IrcMeter::merged(int y) { return row(y).line.merged; }
+std::size_t IrcMeter::sentBytes(int y) { return row(y).m.sent; }
+
+int IrcMeter::merged(int y) { return row(y).m.line.merged; }
 
 IrcMeter::RowState IrcMeter::state(int y) {
-    const irc::Line& l = row(y).line;
-    if (l.text.size() > budget().bytes)
+    const Measured& m = row(y).m;
+    if (m.sent > budget().bytes)
         return RowState::Over;
-    return l.merged > 0 ? RowState::Merged : RowState::Fits;
+    return m.line.merged > 0 ? RowState::Merged : RowState::Fits;
 }
 
 QString IrcMeter::describe(int y) {
-    const irc::Line& l = row(y).line;
-    const std::size_t n = l.text.size();
-    QString s = tr("Row %1: %2 of %3 bytes").arg(y).arg(n).arg(budget().bytes);
-    if (n > budget().bytes)
-        s += tr(", over by %1").arg(n - budget().bytes);
-    if (l.merged > 0)
-        s += plural(l.merged, tr(", %n cell merged to fit"), tr(", %n cells merged to fit"));
+    const Measured& m = row(y).m;
+    const std::size_t limit = budget().bytes;
+    QString s = tr("Row %1: %2 of %3 bytes as WeeChat's ascii script sends it, %4 as written")
+                    .arg(y)
+                    .arg(m.sent)
+                    .arg(limit)
+                    .arg(m.line.text.size());
+    if (m.sent > limit) {
+        s += tr(", over by %1").arg(m.sent - limit);
+        // which Pythons cut it, when only some do
+        const auto over = irc::txtOverBudget({m.line.text}, limit);
+        if (!over.empty() && !over.front().where.empty())
+            s += QLatin1Char(' ') + QString::fromStdString(over.front().where);
+    }
+    if (m.line.merged > 0)
+        s += plural(m.line.merged, tr(", %n cell merged to fit"), tr(", %n cells merged to fit"));
     return s;
 }
 
@@ -232,7 +250,7 @@ std::vector<irc::Line> IrcMeter::lines() {
     std::vector<irc::Line> out;
     out.reserve(rows_.size());
     for (int y = 0; y < int(rows_.size()); ++y)
-        out.push_back(row(y).line);
+        out.push_back(row(y).m.line);
     irc::trimBlankLines(out);
     return out;
 }
@@ -280,7 +298,7 @@ void IrcMeter::paintEvent(QPaintEvent* e) {
     for (int y = first; y <= last; ++y) {
         const QRect band = rowRect(y);
         const RowState st = state(y);
-        const std::size_t n = bytes(y);
+        const std::size_t n = sentBytes(y);
         QColor colour = st == RowState::Over     ? QColor(0xd0, 0x30, 0x30)
                         : st == RowState::Merged ? QColor(0xe0, 0x9a, 0x20)
                                                  : palette().color(QPalette::Mid);

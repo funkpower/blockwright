@@ -11,9 +11,11 @@ QImage renderIrcView(const irc::View& view, int glyphWidth, int scale) {
     const int bar = std::max(1, gw / 4);
     for (int y = 0; y < static_cast<int>(view.rows.size()) && y < view.canvas.height(); ++y) {
         const irc::ViewRow& r = view.rows[std::size_t(y)];
-        if (!r.cut() || r.shown >= view.canvas.width())
+        if (!r.cut())
             continue;
-        const int x0 = r.shown * gw;
+        // at the first lost cell, or at the right edge when every cell the
+        // view shows is sent and the cells lost lie past its width (#364)
+        const int x0 = r.shown < view.canvas.width() ? r.shown * gw : img.width() - bar;
         for (int py = y * gh; py < (y + 1) * gh; ++py) {
             auto* line = reinterpret_cast<QRgb*>(img.scanLine(py));
             std::fill(line + x0, line + std::min(img.width(), x0 + bar), kIrcCutMark);

@@ -11,6 +11,7 @@
 #include "tool.h"
 
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -71,7 +72,7 @@ AnsiDocument noisyPiece() {
 Canvas asSaved(const Document& doc) { return parseAnsi(doc.encode().bytes).canvas; }
 
 // A row of `n` half blocks in changing colours: 40 are 293 bytes as an IRC
-// line.
+// line, 336 as the ascii script sends it at a 300-byte budget.
 CellBlock halfBlockRow(int n = 40) {
     CellBlock b(n, 1);
     for (int x = 0; x < n; ++x)
@@ -93,11 +94,12 @@ QByteArray readAll(const QString& path) {
 
 std::filesystem::path fpath(const QString& p) { return std::filesystem::path(QFile::encodeName(p).toStdString()); }
 
-// An 80x25 project at `path` whose budget is `bytes`: row 3 is 293 bytes as
-// an IRC line and row 4 between 301 and 407.
+// An 80x25 project at `path` whose budget is `bytes`. As the ascii script
+// sends them, row 3 is 292 bytes (249 written) and row 4 369 at a 300-byte
+// budget and 378 at 400 (322 written): over 300, within 400.
 void writeBudgetProject(const QString& path, std::size_t bytes) {
     AnsiDocument d = blankDoc(80, 25);
-    const CellBlock row3 = halfBlockRow(40), row4 = halfBlockRow(50);
+    const CellBlock row3 = halfBlockRow(34), row4 = halfBlockRow(44);
     for (int x = 0; x < row3.width; ++x)
         d.canvas.at(x, 3) = row3.at(x, 0);
     for (int x = 0; x < row4.width; ++x)
@@ -146,7 +148,7 @@ std::vector<std::string> cliExport(const QString& path, bool fit, std::size_t* b
     INFO(r.out.toStdString());
     REQUIRE(r.status == 0);
     REQUIRE(r.written);
-    const QRegularExpressionMatch m = QRegularExpression(QStringLiteral(" bytes, budget (\\d+): ")).match(r.out);
+    const QRegularExpressionMatch m = QRegularExpression(QStringLiteral(" sent, budget (\\d+): ")).match(r.out);
     REQUIRE(m.hasMatch());
     *budget = m.captured(1).toULongLong();
     std::vector<std::string> out;
@@ -215,7 +217,7 @@ void pickDefaultBudget(MainWindow& w) {
 
 } // namespace
 
-TEST_CASE("the IRC meter gives every row's size as the encoder writes it") {
+TEST_CASE("the IRC meter gives every row's size as the encoder writes it and as the script sends it") {
     MainWindow w;
     w.document()->replace(noisyPiece(), QString());
     IrcMeter* m = w.ircMeter();
@@ -228,8 +230,9 @@ TEST_CASE("the IRC meter gives every row's size as the encoder writes it") {
     for (int y = 0; y < saved.height(); ++y) {
         INFO("row " << y);
         CHECK(m->bytes(y) == rows[std::size_t(y)].size());
+        CHECK(m->sentBytes(y) == irc::txtSentBytes(rows[std::size_t(y)], 407));
         CHECK(m->merged(y) == 0);
-        const bool isOver = rows[std::size_t(y)].size() > 407;
+        const bool isOver = irc::txtSentBytes(rows[std::size_t(y)], 407) > 407;
         CHECK((m->state(y) == IrcMeter::RowState::Over) == isOver);
         CHECK((m->state(y) == IrcMeter::RowState::Fits) == !isOver);
         over += isOver;
@@ -245,16 +248,16 @@ TEST_CASE("the IRC meter gives every row's size as the encoder writes it") {
         const irc::Line l = irc::encodeLine(saved, y, m->options());
         CHECK(m->bytes(y) == l.text.size());
         CHECK(m->merged(y) == l.merged);
-        CHECK(m->bytes(y) <= 407);
-        const bool wasOver = rows[std::size_t(y)].size() > 407;
+        CHECK(m->sentBytes(y) <= 407);
+        const bool wasOver = irc::txtSentBytes(rows[std::size_t(y)], 407) > 407;
         CHECK((m->state(y) == IrcMeter::RowState::Merged) == wasOver);
     }
     CHECK(m->describe(0).startsWith(QStringLiteral("Row 0: ")));
     act(w, "ircFit")->trigger();
     CHECK_FALSE(m->fit());
     for (int y = 0; y < saved.height(); ++y)
-        if (rows[std::size_t(y)].size() > 407) {
-            CHECK(m->describe(y).contains(QStringLiteral("over by %1").arg(rows[std::size_t(y)].size() - 407)));
+        if (const std::size_t sent = irc::txtSentBytes(rows[std::size_t(y)], 407); sent > 407) {
+            CHECK(m->describe(y).contains(QStringLiteral("over by %1").arg(sent - 407)));
             break;
         }
 }
@@ -452,14 +455,14 @@ TEST_CASE("Export IRC Text says line for one line over the budget and lines for 
     const QString path = dir.filePath(QStringLiteral("p.txt"));
     QString error;
     CHECK_FALSE(w.exportIrcText(path, &error));
-    CHECK(error == QStringLiteral("1 line over the 200-byte budget"));
+    CHECK(error == QStringLiteral("1 line over the 200-byte budget as WeeChat's ascii script sends it"));
 
     for (int x = 0; x < row.width; ++x)
         d.canvas.at(x, 5) = row.at(x, 0);
     w.document()->replace(d, QString());
     w.document()->setIrcBudget({std::string(irc::kCustomProfile), 200});
     CHECK_FALSE(w.exportIrcText(path, &error));
-    CHECK(error == QStringLiteral("2 lines over the 200-byte budget"));
+    CHECK(error == QStringLiteral("2 lines over the 200-byte budget as WeeChat's ascii script sends them"));
     CHECK_FALSE(QFile::exists(path));
 }
 
@@ -655,10 +658,10 @@ TEST_CASE("an opened project's IRC budget is the one the meter, fit and Export h
     std::size_t cliBudget = 0;
     const std::vector<std::string> plain = cliExport(bwp, false, &cliBudget);
     REQUIRE(cliBudget == 300);
-    const auto cliOver = irc::overBudget(plain, cliBudget);
+    const auto cliOver = irc::txtOverBudget(plain, cliBudget);
     REQUIRE(cliOver.size() == 1);
-    REQUIRE(cliOver[0].bytes > 300);
-    REQUIRE(cliOver[0].bytes <= 407);
+    REQUIRE(cliOver[0].line == 2);
+    REQUIRE(cliOver[0].bytes == 369);
 
     MainWindow w;
     QString error;
@@ -666,9 +669,11 @@ TEST_CASE("an opened project's IRC budget is the one the meter, fit and Export h
     IrcMeter* m = w.ircMeter();
     CHECK(m->budget() == w.document()->extras().ircBudget);
     CHECK(m->budget().bytes == 300);
-    CHECK(m->bytes(3) == 293);
+    CHECK(m->bytes(3) == 249);
+    CHECK(m->sentBytes(3) == 292);
     CHECK(m->state(3) == IrcMeter::RowState::Fits);
-    CHECK(m->bytes(4) == cliOver[0].bytes);
+    CHECK(m->bytes(4) == 322);
+    CHECK(m->sentBytes(4) == cliOver[0].bytes);
     CHECK(m->state(4) == IrcMeter::RowState::Over);
 
     // Export refuses the line the CLI refuses, and writes what the CLI writes
@@ -685,9 +690,9 @@ TEST_CASE("an opened project's IRC budget is the one the meter, fit and Export h
     // fit fits to the project's budget: no line over 300, as --fit writes
     act(w, "ircFit")->trigger();
     const std::vector<std::string> fitted = cliExport(bwp, true, &cliBudget);
-    REQUIRE(irc::overBudget(fitted, 300).empty());
+    REQUIRE(irc::txtOverBudget(fitted, 300).empty());
     CHECK(m->state(4) == IrcMeter::RowState::Merged);
-    CHECK(m->bytes(4) <= 300);
+    CHECK(m->sentBytes(4) <= 300);
     REQUIRE(w.exportIrcText(txt, &error));
     CHECK(readAll(txt).toStdString() == irc::joinLines(fitted));
 
@@ -744,7 +749,7 @@ TEST_CASE("a budget picked in View > IRC > Budget... is an undo step saved with 
     std::size_t cliBudget = 0;
     const std::vector<std::string> lines = cliExport(bwp, false, &cliBudget);
     CHECK(cliBudget == 400);
-    CHECK(irc::overBudget(lines, cliBudget).empty());
+    CHECK(irc::txtOverBudget(lines, cliBudget).empty());
 
     MainWindow again;
     REQUIRE(again.openFile(bwp, &error));
@@ -1030,8 +1035,8 @@ TEST_CASE("with Fit on, a budget change and its undo and redo fit the rows to th
     IrcMeter* m = w.ircMeter();
     const Canvas saved = asSaved(*doc);
     const std::size_t plain = irc::encodeCanvas(saved)[4].size();
-    REQUIRE(plain > 300);
-    REQUIRE(plain <= 400);
+    REQUIRE(irc::txtSentBytes(irc::encodeCanvas(saved)[4], 300) > 300);
+    REQUIRE(irc::txtSentBytes(irc::encodeCanvas(saved)[4], 400) <= 400);
     act(w, "ircFit")->trigger();
     REQUIRE(m->fit());
 
@@ -1043,7 +1048,7 @@ TEST_CASE("with Fit on, a budget change and its undo and redo fit the rows to th
     };
     const irc::Line at300 = fittedTo(300);
     REQUIRE(at300.merged > 0);
-    REQUIRE(at300.text.size() <= 300);
+    REQUIRE(irc::txtSentBytes(at300.text, 300) <= 300);
     const auto fitsAt300 = [&] {
         CHECK(m->options().fit == 300);
         CHECK(m->state(4) == IrcMeter::RowState::Merged);
@@ -1169,4 +1174,38 @@ TEST_CASE("blockwright-cli export --irc warns of the cells IRC text can't hold")
                        QStringLiteral(": 1 cell holds a control character IRC text can't hold and is written as "
                                       "'?' (first: U+0085 at column 3, row 1)")));
     CHECK(readAll(txt).contains("AB?CD"));
+}
+
+TEST_CASE("80 stars written in the budget are over it as the script sends them, and Export refuses them (#364)") {
+    QTemporaryDir dir;
+    MainWindow w;
+    AnsiDocument d = blankDoc(80, 25);
+    // ★ in bright red and red by turns on black: 402 bytes written, 483 sent;
+    // 67 of them on the next row: 337 written, 405 sent
+    for (int x = 0; x < 80; ++x)
+        d.canvas.at(x, 3) = cell(U'★', x % 2 ? Red : LightRed, Black);
+    w.document()->replace(d, QString());
+    IrcMeter* m = w.ircMeter();
+    REQUIRE(m);
+    CHECK(m->bytes(3) == 402);
+    CHECK(m->sentBytes(3) == 483);
+    CHECK(m->state(3) == IrcMeter::RowState::Over);
+    CHECK(m->describe(3).contains(QStringLiteral("483 of 407 bytes")));
+    CHECK(m->describe(3).contains(QStringLiteral("402 as written")));
+    CHECK(m->describe(3).contains(QStringLiteral("over by 76")));
+
+    const QString path = dir.filePath(QStringLiteral("stars.txt"));
+    QString error;
+    CHECK_FALSE(w.exportIrcText(path, &error));
+    CHECK(error == QStringLiteral("1 line over the 407-byte budget as WeeChat's ascii script sends it"));
+    CHECK_FALSE(QFile::exists(path));
+
+    for (int x = 0; x < 80; ++x)
+        d.canvas.at(x, 3) = x < 67 ? cell(U'★', x % 2 ? Red : LightRed, Black) : Cell{};
+    w.document()->replace(d, QString());
+    CHECK(m->bytes(3) == 337);
+    CHECK(m->sentBytes(3) == 405);
+    CHECK(m->state(3) == IrcMeter::RowState::Fits);
+    REQUIRE(w.exportIrcText(path, &error));
+    CHECK(readAll(path).size() > 337);
 }

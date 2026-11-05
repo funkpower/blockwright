@@ -6,6 +6,7 @@
 // oracle is that copy's PIXEL_FONT; mini-reference uses render_mini/parse_irc.
 #include "blockwright/big_text.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/lint.h"
 #include "blockwright/lint_rules.h"
 #include "blockwright/ramp.h"
@@ -201,7 +202,7 @@ TEST_CASE("each big style passes the fixture lint and IRC budget with iCE on and
             CHECK(c.width() <= 80);
             CHECK(ladderFailures(c, ice).empty());
             for (const auto& line : irc::encodeCanvas(c))
-                CHECK(line.size() <= irc::kEfnetWeechatBudget);
+                CHECK(irc::txtSentBytes(line) <= irc::kEfnetWeechatBudget);
             ++drawings;
         }
     }

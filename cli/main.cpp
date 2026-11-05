@@ -563,9 +563,11 @@ IrcSend ircSend(const std::string& in, const IrcArgs& args) {
 }
 
 // Writes the piece as IRC text and reports every line's size in bytes, as
-// the row encoder writes it with the options (ircSend). A line still over
-// the budget is listed and nothing is written, unless allowOver. The cells
-// IRC text writes as '?' (irc::unwritable) are warned of; they don't stop it.
+// the row encoder writes it with the options (ircSend) and as WeeChat's
+// ascii script sends it (irc::txtSentBytes: it writes each line again, with
+// two-digit colour codes, #364). A line the script sends over the budget is
+// listed and nothing is written, unless allowOver. The cells IRC text writes
+// as '?' (irc::unwritable) are warned of; they don't stop it.
 int exportIrc(const std::string& in, const std::string& out, const IrcArgs& args, bool allowOver) {
     refuseSameFile(in, out);
     const IrcSend send = ircSend(in, args);
@@ -574,15 +576,16 @@ int exportIrc(const std::string& in, const std::string& out, const IrcArgs& args
     const bool fit = args.fit;
     const bw::irc::EncodeOptions& opts = send.opts;
     std::vector<std::string> lines;
-    std::size_t longest = 0, fitted = 0;
+    std::size_t longest = 0, longestSent = 0, fitted = 0;
     int merged = 0;
-    std::cout << "line  bytes\n";
+    std::cout << "line  bytes   sent\n";
     for (bw::irc::Line& l : bw::irc::exportLines(doc.canvas, opts)) {
-        const std::size_t n = l.text.size();
+        const std::size_t n = l.text.size(), sent = bw::irc::txtSentBytes(l.text, limit);
         longest = std::max(longest, n);
-        std::cout << std::setw(4) << lines.size() + 1 << "  " << std::setw(5) << n;
-        if (n > limit)
-            std::cout << "  over by " << n - limit;
+        longestSent = std::max(longestSent, sent);
+        std::cout << std::setw(4) << lines.size() + 1 << "  " << std::setw(5) << n << "  " << std::setw(5) << sent;
+        if (sent > limit)
+            std::cout << "  over by " << sent - limit;
         if (l.merged > 0) {
             std::cout << "  fit: " << l.merged << (l.merged == 1 ? " cell" : " cells") << " merged";
             merged += l.merged;
@@ -591,9 +594,9 @@ int exportIrc(const std::string& in, const std::string& out, const IrcArgs& args
         std::cout << "\n";
         lines.push_back(std::move(l.text));
     }
-    const auto over = bw::irc::overBudget(lines, limit);
+    const auto over = bw::irc::txtOverBudget(lines, limit);
     std::cout << lines.size() << (lines.size() == 1 ? " line" : " lines") << ", longest " << longest
-              << " bytes, budget " << limit << ": " << over.size() << " over\n";
+              << " bytes, " << longestSent << " sent, budget " << limit << ": " << over.size() << " over\n";
     if (fit)
         std::cout << "fit: " << merged << (merged == 1 ? " cell" : " cells") << " merged in " << fitted
                   << (fitted == 1 ? " line" : " lines") << "\n";
@@ -603,8 +606,9 @@ int exportIrc(const std::string& in, const std::string& out, const IrcArgs& args
         std::cerr << "blockwright-cli: warning: " << in << ": " << w << "\n";
     if (!over.empty()) {
         for (const auto& o : over)
-            std::cerr << "blockwright-cli: " << in << ": line " << o.line << " is " << o.bytes << " bytes, over the "
-                      << limit << "-byte budget by " << o.bytes - limit << "\n";
+            std::cerr << "blockwright-cli: " << in << ": line " << o.line << " is " << o.bytes
+                      << " bytes as WeeChat's ascii script sends it" << (o.where.empty() ? "" : " " + o.where)
+                      << ", over the " << limit << "-byte budget by " << o.bytes - limit << "\n";
         if (!allowOver) {
             std::cerr << "blockwright-cli: " << out
                       << ": not written: lines over the budget (--allow-over-budget writes it anyway)\n";
@@ -1057,35 +1061,17 @@ int libraryList(const std::optional<std::string>& dir) {
 // library check <dir>: reads every stamp, sidecar and text style under dir
 // and reports each problem on stderr, plus any stamp whose widest row alone
 // is over the IRC byte budget, and any text style whose thumbnail sample
-// can't be drawn or has a row over it: the sample is drawn with iCE colours
-// and, unless the style needs them, without. Exit 1 if there was any.
+// can't be drawn or has a row over it (library::budgetProblems, as WeeChat's
+// ascii script sends the row and as it is written). Exit 1 if there was any.
 int libraryCheck(const std::string& dir) {
     const bw::library::ScanResult r = bw::library::scan(libraryDir(dir));
     std::size_t problems = r.problems.size();
     for (const bw::library::Problem& p : r.problems)
         std::cerr << p.path.string() << ": " << p.message << "\n";
-    const auto overBudget = [&](const std::filesystem::path& path, const std::string& what, std::size_t bytes) {
-        if (bytes <= bw::irc::kEfnetWeechatBudget)
-            return;
-        std::cerr << path.string() << ": " << what << " is " << bytes << " IRC bytes, over the "
-                  << bw::irc::kEfnetWeechatBudget << "-byte budget\n";
+    for (const bw::library::Problem& p : bw::library::budgetProblems(r, bw::irc::kEfnetWeechatBudget)) {
+        std::cerr << p.path.string() << ": " << p.message << "\n";
         ++problems;
-    };
-    for (const bw::library::Stamp& s : r.stamps)
-        overBudget(s.path, "the widest row", s.meta.ircBytes);
-    for (const bw::library::TextStyleEntry& t : r.styles)
-        for (const bool ice : {true, false}) {
-            if (!ice && t.iceRequired)
-                continue;
-            const std::string what = std::string("the sample's widest row with iCE colours ") + (ice ? "on" : "off");
-            try {
-                overBudget(t.path, what, bw::library::widestRowBytes(bw::library::textStyleSample(t.style, ice)));
-            } catch (const std::exception& e) {
-                std::cerr << t.path.string() << ": the sample can't be drawn with iCE colours " << (ice ? "on" : "off")
-                          << ": " << e.what() << "\n";
-                ++problems;
-            }
-        }
+    }
     std::cout << r.stamps.size() << (r.stamps.size() == 1 ? " stamp, " : " stamps, ") << r.styles.size()
               << (r.styles.size() == 1 ? " text style, " : " text styles, ") << problems
               << (problems == 1 ? " problem\n" : " problems\n");

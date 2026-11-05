@@ -6,6 +6,7 @@
 #include "blockwright/generator.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/library.h"
 #include "blockwright/palette.h"
 #include "blockwright/project.h"
@@ -341,7 +342,7 @@ TEST_CASE("every bundled sample, in every variant, lints clean and fits one IRC 
             INFO(bwcli::lintText(r));
             CHECK(r.findings.empty());
             const std::vector<std::string> lines = irc::encodeCanvas(doc.canvas);
-            CHECK(irc::overBudget(lines, saved.ircBudget.bytes).empty());
+            CHECK(irc::txtOverBudget(lines, saved.ircBudget.bytes).empty());
         }
     }
 }

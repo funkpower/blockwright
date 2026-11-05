@@ -4,6 +4,7 @@
 #include "blockwright/frame.h"
 #include "blockwright/ansi.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/library.h"
 
 #include "../cli/lint.h"
@@ -380,11 +381,11 @@ TEST_CASE("every bundled frame style lints clean and fits one IRC line a row at 
             const lint::LintReport r = bwcli::lintDocument(doc, {});
             ++frames;
             if (!r.findings.empty() ||
-                !irc::overBudget(irc::encodeCanvas(doc.canvas), irc::kEfnetWeechatBudget).empty()) {
+                !irc::txtOverBudget(irc::encodeCanvas(doc.canvas)).empty()) {
                 INFO(s.id << " at " << w << "x" << h);
                 INFO(bwcli::lintText(r));
                 CHECK(r.findings.empty());
-                CHECK(irc::overBudget(irc::encodeCanvas(doc.canvas), irc::kEfnetWeechatBudget).empty());
+                CHECK(irc::txtOverBudget(irc::encodeCanvas(doc.canvas)).empty());
             }
         }
     }

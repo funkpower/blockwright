@@ -99,11 +99,16 @@ size_is "render --irc is the canvas's size" "$tmp/irc.png" 960x1920
 if cmp -s "$tmp/irc.png" "$tmp/plain.png"; then bad "render --irc drew the plain render"; else ok "render --irc draws the IRC view, not the canvas"; fi
 expect "render --irc --budget cuts rows" 0 '^IRC view: 116 rows cut at 150 bytes$' -- "$cli" render --irc --budget 150 "$big" "$tmp/irc150.png"
 if cmp -s "$tmp/irc.png" "$tmp/irc150.png"; then bad "render --irc --budget 150 drew no cuts"; else ok "render --irc --budget draws the cuts"; fi
-# the widest line's size fits, and a byte less cuts each line that wide
-sizes=$("$cli" export --irc "$big" "$tmp/irc.txt" | awk 'NR > 1 { print $2 }' | sort -n)
-widest=$(tail -1 <<<"$sizes"); at=$(grep -cx "$widest" <<<"$sizes")
+# the widest line as the ascii script sends it fits, and a byte less cuts
+# the lines export --irc says are over it (#364)
+sizes=$("$cli" export --irc "$big" "$tmp/irc.txt" | awk 'NR > 1 { print $3 }' | sort -n)
+widest=$(tail -1 <<<"$sizes")
+at=$("$cli" export --irc --budget $((widest - 1)) "$big" "$tmp/irc-w1.txt" 2>/dev/null | sed -n 's/^.*: \([0-9][0-9]*\) over$/\1/p')
 expect "render --irc at the widest line's size" 0 "^IRC view: 0 rows cut at $widest bytes\$" -- "$cli" render --irc --budget "$widest" "$big" "$tmp/irc-w.png"
-expect "render --irc a byte under it" 0 "^IRC view: $at rows? cut at $((widest - 1)) bytes\$" -- "$cli" render --irc --budget $((widest - 1)) "$big" "$tmp/irc-w1.png"
+expect "render --irc a byte under it cuts the lines export says are over" 0 "^IRC view: $at rows? cut at $((widest - 1)) bytes\$" -- "$cli" render --irc --budget $((widest - 1)) "$big" "$tmp/irc-w1.png"
+at300=$("$cli" export --irc --budget 300 "$big" "$tmp/irc-300.txt" 2>/dev/null | sed -n 's/^.*: \([0-9][0-9]*\) over$/\1/p')
+if [[ ${at300:-0} -gt 0 ]]; then ok "export --irc --budget 300 has lines over"; else bad "export --irc --budget 300: ${at300:-no} lines over"; fi
+expect "render --irc at 300 cuts the lines export says are over" 0 "^IRC view: ${at300:-x} rows? cut at 300 bytes\$" -- "$cli" render --irc --budget 300 "$big" "$tmp/irc-300.png"
 expect "render --irc --scale --font-width" 0 '^IRC view: 0 rows cut' -- "$cli" render --irc --scale 2 --font-width 9 "$piece" "$tmp/irc-tux.png"
 size_is "render --irc --scale 2 at 9 px" "$tmp/irc-tux.png" 540x544
 expect "render --budget needs --irc" 2 '^blockwright-cli: --budget is a render --irc option$' -- "$cli" render --budget 60 "$piece" "$tmp/x.png"

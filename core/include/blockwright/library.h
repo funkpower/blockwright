@@ -119,6 +119,16 @@ inline constexpr std::size_t kMaxSidecarBytes = std::size_t(1) << 20;
 // encodes the rows (trailing black spaces dropped).
 std::size_t widestRowBytes(const Canvas& canvas);
 
+// The row of `canvas` that WeeChat's ascii script sends in the most bytes
+// at `budget` (irc::txtSentBytes, which the row meter and Export hold to
+// the budget), and that row's bytes as written (#364). The sidecar's
+// ircBytes stays the written size (widestRowBytes).
+struct SentRow {
+    std::size_t sent = 0;
+    std::size_t written = 0;
+};
+SentRow widestSentRow(const Canvas& canvas, std::size_t budget);
+
 // The sidecar as JSON text (keys in a fixed order, two-space indent, a
 // trailing newline), and back. parseSidecar throws LibraryError for
 // anything but an object with exactly the three keys, of the right types,
@@ -327,6 +337,16 @@ struct ScanResult {
     // (a FIFO is never opened), or that can't be read at all.
     std::vector<Problem> problems;
 };
+
+// The rows of a scanned library over `budget` IRC bytes (library check
+// holds them to irc::kEfnetWeechatBudget), in order: each stamp whose
+// widest row is over, then each text style whose thumbnail sample (with
+// iCE colours, and unless the style needs them without) can't be drawn or
+// has a row over. A row is over when WeeChat's ascii script sends it in
+// more bytes than `budget` (widestSentRow, as Export measures it), or when
+// it is written in more (a stamp's sidecar ircBytes, a sample's
+// widestRowBytes); each is one problem (#364).
+std::vector<Problem> budgetProblems(const ScanResult& scanned, std::size_t budget);
 
 // Every stamp under `dir`, recursively: each art file (isArtName) with its
 // pairedSidecar; every text style, each .style.json no stamp pairs

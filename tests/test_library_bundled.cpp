@@ -4,6 +4,7 @@
 // found.
 
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/library.h"
 #include "blockwright/selection.h"
 #include "blockwright/stamp_slice.h"
@@ -108,6 +109,8 @@ TEST_CASE("every bundled stamp's widest IRC row is under the budget") {
         INFO(s.path.string());
         CHECK(s.meta.ircBytes == widestRowBytes(s.art.canvas));
         CHECK(s.meta.ircBytes < irc::kEfnetWeechatBudget);
+        // and as WeeChat's ascii script sends it (#364)
+        CHECK(widestSentRow(s.art.canvas, irc::kEfnetWeechatBudget).sent < irc::kEfnetWeechatBudget);
     }
 }
 
@@ -292,6 +295,7 @@ TEST_CASE("every bundled frame is resizable and re-cuts clean at its minimum, od
             INFO(bwcli::lintText(r));
             CHECK(r.findings.empty());
             CHECK(widestRowBytes(art.canvas) < irc::kEfnetWeechatBudget);
+            CHECK(widestSentRow(art.canvas, irc::kEfnetWeechatBudget).sent < irc::kEfnetWeechatBudget);
             // what repeats in the middle is the opening, blank at any size
             for (int y = sl.top; y < h - sl.bottom; ++y)
                 for (int x = sl.left; x < w - sl.right; ++x)

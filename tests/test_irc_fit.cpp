@@ -4,6 +4,7 @@
 #include "util.h"
 
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 #include "blockwright/project.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -25,6 +26,13 @@ Cell cell(char32_t ch, std::uint8_t fg, std::uint8_t bg) {
 }
 
 irc::MircCell solid(std::uint8_t colour) { return {U' ', colour, colour}; }
+
+// A row's line as the ascii script sends it (irc::txtSentBytes): with no
+// budget, the size it sends a line that fits whole in.
+std::size_t sent(std::span<const irc::MircCell> row, std::size_t budget = 1 << 20, bool swap = false,
+                 bool pad = false) {
+    return irc::txtSentBytes(irc::encodeMircRow(row, swap, pad), budget);
+}
 
 bool same(const irc::MircCell& a, const irc::MircCell& b) {
     return a.ch == b.ch && a.fg == b.fg && a.bg == b.bg;
@@ -148,7 +156,8 @@ TEST_CASE("pad keeps the blank rows above and below the art") {
 
 TEST_CASE("fitCells leaves a row that fits alone") {
     const std::vector<irc::MircCell> row{{U'▀', 4, 2}, {U'x', 0, 1}, solid(3)};
-    const std::size_t size = irc::encodeMircRow(row).size();
+    const std::size_t size = sent(row);
+    REQUIRE(size > irc::encodeMircRow(row).size());
     const auto out = irc::fitCells(row, size);
     REQUIRE(out.size() == row.size());
     for (std::size_t x = 0; x < row.size(); ++x)
@@ -167,10 +176,10 @@ TEST_CASE("fitCells merges the least visible colours first") {
     for (auto& m : merged)
         if (m.bg == 52)
             m = solid(4);
-    const std::size_t budget = irc::encodeMircRow(merged).size();
-    REQUIRE(irc::encodeMircRow(row).size() > budget);
+    const std::size_t budget = sent(merged);
+    REQUIRE(sent(row, budget) > budget);
     const auto out = irc::fitCells(row, budget);
-    CHECK(irc::encodeMircRow(out).size() <= budget);
+    CHECK(sent(out, budget) <= budget);
     int changed = 0;
     for (std::size_t x = 0; x < row.size(); ++x) {
         INFO("cell " << x);
@@ -189,9 +198,9 @@ TEST_CASE("fitCells settles a shade into the colour it covers most") {
     std::vector<irc::MircCell> row;
     for (int i = 0; i < 40; ++i)
         row.push_back({U'░', std::uint8_t(i % 2 ? 2 : 3), 1});
-    const std::size_t budget = irc::encodeMircRow(row).size() * 2 / 3;
+    const std::size_t budget = sent(row) * 2 / 3;
     const auto out = irc::fitCells(row, budget);
-    CHECK(irc::encodeMircRow(out).size() <= budget);
+    CHECK(sent(out, budget) <= budget);
     int changed = 0;
     for (std::size_t x = 0; x < row.size(); ++x)
         if (!same(out[x], row[x])) {
@@ -206,7 +215,7 @@ TEST_CASE("fitCells never changes text, and gives back a row it can't fit") {
     std::vector<irc::MircCell> row;
     for (int i = 0; i < 20; ++i)
         row.push_back({U'a', std::uint8_t(i % 2 ? 4 : 9), 1});
-    const std::size_t budget = irc::encodeMircRow(row).size() - 1;
+    const std::size_t budget = sent(row) - 1;
     const auto out = irc::fitCells(row, budget);
     for (std::size_t x = 0; x < row.size(); ++x)
         CHECK(same(out[x], row[x]));
@@ -217,9 +226,9 @@ TEST_CASE("fitCells never changes text, and gives back a row it can't fit") {
         mixed.push_back({U'a', 0, 1});
         mixed.push_back({U'▀', 4, std::uint8_t(i % 2 ? 52 : 5)});
     }
-    const std::size_t size = irc::encodeMircRow(mixed).size();
+    const std::size_t size = sent(mixed);
     const auto fitted = irc::fitCells(mixed, size - 20);
-    CHECK(irc::encodeMircRow(fitted).size() <= size - 20);
+    CHECK(sent(fitted, size - 20) <= size - 20);
     for (std::size_t x = 0; x < mixed.size(); x += 2)
         CHECK(same(fitted[x], mixed[x]));
 }
@@ -234,9 +243,9 @@ TEST_CASE("fitCells fits a row where no two neighbours share a colour") {
     std::vector<irc::MircCell> once;
     for (const auto& c : row)
         once.push_back(solid(c.fg));
-    const std::size_t budget = irc::encodeMircRow(once).size() - 40;
+    const std::size_t budget = sent(once) - 40;
     const auto out = irc::fitCells(row, budget);
-    CHECK(irc::encodeMircRow(out).size() <= budget);
+    CHECK(sent(out, budget) <= budget);
 }
 
 TEST_CASE("fit measures the row as padded when it pads") {
@@ -247,9 +256,9 @@ TEST_CASE("fit measures the row as padded when it pads") {
         row.push_back(solid(1));
     irc::EncodeOptions pad;
     pad.pad = true;
-    const std::size_t padded = irc::encodeMircRow(row, false, true).size();
+    const std::size_t padded = sent(row, 1 << 20, false, true);
     const auto out = irc::fitCells(row, padded - 10, pad);
-    CHECK(irc::encodeMircRow(out, false, true).size() <= padded - 10);
+    CHECK(sent(out, padded - 10, false, true) <= padded - 10);
     // the black tail is kept: merging it would not save a byte
     for (std::size_t x = 30; x < row.size(); ++x)
         CHECK(same(out[x], row[x]));
@@ -274,15 +283,15 @@ TEST_CASE("encodeLine counts the cells fit changed") {
     CHECK(text.text == irc::encodeCanvas(c)[1]);
 }
 
-TEST_CASE("a 120-row piece over the budget exports with every line in 407 bytes") {
+TEST_CASE("a 120-row piece over the budget exports with every line sent in 407 bytes") {
     const Canvas c = noisyPiece();
     REQUIRE(c.height() == 120);
     const auto plain = irc::exportCanvas(c);
-    REQUIRE(irc::overBudget(plain, 407).size() >= 10);
+    REQUIRE(irc::txtOverBudget(plain, 407).size() >= 10);
     const auto o = fitTo(407);
     const auto lines = irc::exportCanvas(c, o);
     CHECK(lines.size() == plain.size());
-    CHECK(irc::overBudget(lines, 407).empty());
+    CHECK(irc::txtOverBudget(lines, 407).empty());
     // only the rows that were over changed
     const auto rows = irc::encodeCanvas(c, o);
     const auto rawRows = irc::encodeCanvas(c);
@@ -290,7 +299,7 @@ TEST_CASE("a 120-row piece over the budget exports with every line in 407 bytes"
         INFO("row " << y);
         const auto line = irc::encodeLine(c, y, o);
         CHECK(line.text == rows[std::size_t(y)]);
-        CHECK((line.merged > 0) == (rawRows[std::size_t(y)].size() > 407));
+        CHECK((line.merged > 0) == (irc::txtSentBytes(rawRows[std::size_t(y)], 407) > 407));
     }
 }
 
@@ -325,7 +334,7 @@ TEST_CASE("fitCells takes a colour only from the cell or its left neighbour as i
         irc::EncodeOptions o;
         o.pad = rng() % 2 == 0;
         o.swapShades = rng() % 2 == 0;
-        const std::size_t full = irc::encodeMircRow(row, o.swapShades).size();
+        const std::size_t full = sent(row, 1 << 20, o.swapShades, o.pad);
         const std::size_t budget = full * (70 + rng() % 30) / 100;
         const auto out = irc::fitCells(row, budget, o);
         REQUIRE(out.size() == row.size());
@@ -342,4 +351,37 @@ TEST_CASE("fitCells takes a colour only from the cell or its left neighbour as i
     }
     CHECK(fitted > 1000);
     CHECK(foreign == 0);
+}
+
+TEST_CASE("fitCells fits a row written within the budget but sent over it (#364)") {
+    // half blocks, a new pair of one-digit colours each cell: the encoder
+    // writes "\x03" "4,2", the ascii script sends "\x03" "04,02", so the
+    // longest such row written in 407 bytes is sent in more
+    std::vector<irc::MircCell> row;
+    for (int i = 0; i < 80; ++i) {
+        std::vector<irc::MircCell> next = row;
+        next.push_back({U'▀', std::uint8_t(2 + i % 8), std::uint8_t(2 + (i + 3) % 8)});
+        if (irc::encodeMircRow(next).size() > 407)
+            break;
+        row = std::move(next);
+    }
+    REQUIRE(irc::encodeMircRow(row).size() <= 407);
+    REQUIRE(sent(row, 407) > 407);
+    const auto out = irc::fitCells(row, 407);
+    REQUIRE(out.size() == row.size());
+    CHECK_FALSE(std::equal(out.begin(), out.end(), row.begin(), same));
+    CHECK(sent(out, 407) <= 407);
+}
+
+TEST_CASE("fitCells gives back 80 stars sent over the budget: their text can't change (#364)") {
+    // ★ in mIRC 4 and 5 by turns on 1: 402 bytes written, 483 sent
+    std::vector<irc::MircCell> row;
+    for (int i = 0; i < 80; ++i)
+        row.push_back({U'★', std::uint8_t(i % 2 ? 5 : 4), 1});
+    REQUIRE(irc::encodeMircRow(row).size() == 402);
+    REQUIRE(sent(row, 407) == 483);
+    const auto out = irc::fitCells(row, 407);
+    REQUIRE(out.size() == row.size());
+    for (std::size_t x = 0; x < row.size(); ++x)
+        CHECK(same(out[x], row[x]));
 }

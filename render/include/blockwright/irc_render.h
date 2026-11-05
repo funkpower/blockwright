@@ -12,8 +12,9 @@ namespace bw {
 inline constexpr QRgb kIrcCutMark = 0xffff3030;
 
 // The view drawn as renderCanvas draws a canvas, with a bar a quarter of a
-// glyph wide (at least a pixel) in kIrcCutMark at the left edge of the first
-// cell each cut row loses.
+// glyph wide (at least a pixel) in kIrcCutMark on every cut row: at the left
+// edge of the first cell the row loses, or, when the cells it loses all lie
+// past the view's width, at the view's right edge.
 // Throws as renderCanvas does.
 QImage renderIrcView(const irc::View& view, int glyphWidth = 8, int scale = 1);
 
