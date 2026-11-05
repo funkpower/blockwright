@@ -134,7 +134,8 @@ struct Cursor {
 
 // The colours typing writes with: grey on black until a palette picks others.
 // `attrs` is the formatting (attr::Bold, Italic, Underline) the glyph brush
-// writes under the IRC target (#350); typing doesn't write it yet.
+// and typing write under the IRC target (#350); typeCluster and replaceText
+// write whatever it holds, so the caller passes none under ANSI.
 struct Pen {
     Color fg = Color::indexed(Grey);
     Color bg = Color::indexed(Black);
@@ -193,12 +194,13 @@ struct EditResult {
 };
 
 // Writes `cluster` (NFC-normalised, as splitClusters gives one) in the
-// pen's colours at the cursor and moves past it. A wide one (its base two
-// columns, codePointWidth) is written as a pair, its lead at the cursor and
-// its continuation in the same colours right of it, and moves two cells,
-// staying on the lead with `pastEnd` when the continuation is the last
-// column; on the last column it is refused with a notice. A narrow one
-// moves one cell, staying put on the last column, past it. A cluster the
+// pen's colours and formatting at the cursor and moves past it. A wide one
+// (its base two columns, codePointWidth) is written as a pair, its lead at
+// the cursor and its continuation in the same colours and formatting right
+// of it, and moves two cells, staying on the lead with `pastEnd` when the
+// continuation is the last column; on the last column it is refused with a
+// notice. A narrow one moves one cell, staying put on the last column, past
+// it. A cluster the
 // encoding doesn't take changes nothing and is the result's `rejected`; a
 // lone mark (a zero-width base) goes to typeMarks.
 EditResult typeCluster(const Canvas& canvas, Cursor c, std::u32string_view cluster, const Pen& pen,
@@ -209,16 +211,16 @@ EditResult typeGlyph(const Canvas& canvas, Cursor c, char32_t ch, const Pen& pen
 // Joins `marks`, zero-width code points typed with nothing to compose them,
 // to the cluster that ends just left of the cursor on its row (the pair's
 // lead when that cell is a continuation), or with `pastEnd` the one under
-// the cursor, and NFC-normalises the result, keeping the cell's colours;
-// the cursor stays. Refused with a notice at column 0 and when the cluster
-// would hold more than kMaxClusterCodePoints code points; a result the
-// encoding doesn't take is `rejected`.
+// the cursor, and NFC-normalises the result, keeping the cell's colours
+// and formatting; the cursor stays. Refused with a notice at column 0 and
+// when the cluster would hold more than kMaxClusterCodePoints code points;
+// a result the encoding doesn't take is `rejected`.
 EditResult typeMarks(const Canvas& canvas, Cursor c, std::u32string_view marks, const TypingOptions& opts = {});
 
 // Replaces `length` clusters along the cursor's row, starting `start`
 // clusters from the cursor (a pair counts as one), with `text` in the pen's
-// colours, the way a text field takes an input-method commit. The range is
-// clamped to the row. The text, split into clusters, is written from the
+// colours and formatting, the way a text field takes an input-method
+// commit. The range is clamped to the row. The text, split into clusters, is written from the
 // range's start as if typed (anything past the end lands on the row's last
 // cluster, a pair's lead when a pair ends the row; a wide cluster that would
 // start on the last column is dropped and counted in the notice), replaced

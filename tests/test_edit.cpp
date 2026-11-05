@@ -1200,3 +1200,49 @@ TEST_CASE("an input method's UTF-16 range is counted in whole clusters", "[wide]
     CHECK(cv.at(2, 0).ch == Glyph(U'B'));
     CHECK(cv.at(3, 0) == Cell{});
 }
+
+TEST_CASE("typing writes the pen's formatting", "[irc][attrs]") {
+    // #350 slice 3b: a typed cell carries Pen::attrs as the glyph brush's does
+    const std::uint8_t bu = attr::Bold | attr::Underline;
+    const Pen pen{Color::indexed(Yellow), Color::indexed(Blue), bu};
+    Canvas cv(6, 1);
+    // a key's glyph (the F-key sets)
+    EditResult r = typeGlyph(cv, {0, 0}, U'A', pen);
+    REQUIRE(r.edit.changes.size() == 1);
+    CHECK(r.edit.changes[0].after == Cell{U'A', pen.fg, pen.bg, bu, false});
+    land(cv, r);
+    // a wide cluster: both cells of the pair
+    r = typeCluster(cv, r.cursor, U"中", pen, kUtf8);
+    land(cv, r);
+    CHECK(cv.at(1, 0) == Cell{U'中', pen.fg, pen.bg, bu, false});
+    CHECK(cv.at(2, 0) == Cell{Glyph::continuation(), pen.fg, pen.bg, bu, false});
+    // a lone mark joins the cell and keeps its formatting
+    land(cv, typeCluster(cv, {3, 0}, U"e", pen, kUtf8));
+    land(cv, typeMarks(cv, {4, 0}, U"́", kUtf8));
+    CHECK(cv.at(3, 0) == Cell{U'é', pen.fg, pen.bg, bu, false});
+
+    // an input-method commit: each cluster written, a cleared cell blank
+    const Pen italic{Color::indexed(Red), Color::indexed(Black), attr::Italic};
+    Canvas row(6, 1);
+    for (int x = 0; x < 6; ++x)
+        row.at(x, 0) = Cell{U'z', Color::indexed(Grey), Color::indexed(Black), attr::Underline, false};
+    r = replaceText(row, {0, 0}, 0, 4, U"ab中", italic, Cell{}, kUtf8);
+    land(row, r);
+    CHECK(row.at(0, 0) == Cell{U'a', italic.fg, italic.bg, attr::Italic, false});
+    CHECK(row.at(1, 0) == Cell{U'b', italic.fg, italic.bg, attr::Italic, false});
+    CHECK(row.at(2, 0) == Cell{U'中', italic.fg, italic.bg, attr::Italic, false});
+    CHECK(row.at(3, 0) == Cell{Glyph::continuation(), italic.fg, italic.bg, attr::Italic, false});
+    CHECK(row.at(4, 0).attrs == attr::Underline);  // outside the range: as it was
+
+    // a pen without formatting types over a formatted cell without it
+    land(row, typeGlyph(row, {0, 0}, U'q', Pen{}));
+    CHECK(row.at(0, 0) == Cell{U'q', Pen{}.fg, Pen{}.bg, 0, false});
+    land(row, replaceText(row, {1, 0}, 0, 1, U"r", Pen{}, Cell{}, kUtf8));
+    CHECK(row.at(1, 0) == Cell{U'r', Pen{}.fg, Pen{}.bg, 0, false});
+    // and Backspace and Delete clear to the blank, which has none
+    land(row, backspace(row, {2, 0}));
+    CHECK(row.at(1, 0) == Cell{});
+    land(row, deleteCell(row, {2, 0}));
+    CHECK(row.at(2, 0) == Cell{});
+    CHECK(row.at(3, 0) == Cell{});
+}

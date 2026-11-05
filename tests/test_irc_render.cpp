@@ -104,7 +104,12 @@ TEST_CASE("a formatted cell's IRC encoding draws the pixels the cell draws", "[i
     // #360 review: italic shears a full block over its background, and bold
     // widens a half block, so neither may drop a colour or swap the half
     const char32_t glyphs[] = {U'█', U'▀', U'▄', U'▌', U'▐', U'░', U'▒', U'▓', U' ', U'A'};
-    const std::uint8_t formats[] = {attr::Bold, attr::Italic, attr::Underline, attr::Bold | attr::Italic,
+    const std::uint8_t formats[] = {attr::Bold,
+                                    attr::Italic,
+                                    attr::Underline,
+                                    attr::Bold | attr::Italic,
+                                    attr::Bold | attr::Underline,
+                                    attr::Italic | attr::Underline,
                                     attr::Bold | attr::Italic | attr::Underline};
     const std::pair<std::uint8_t, std::uint8_t> colours[] = {{4, 2}, {4, 4}, {1, 1}};
     for (const bool swapShades : {false, true})

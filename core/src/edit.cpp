@@ -394,7 +394,7 @@ EditResult typeCluster(const Canvas& canvas, Cursor c, std::u32string_view clust
     if (wide && c.x == w - 1)
         return {{}, c, {}, utf8(cluster) + " doesn't fit on the last column; not typed"};
     int capped = 0;
-    const Cell cell{glyphOf(cluster, opts, &capped), pen.fg, pen.bg, 0, false};
+    const Cell cell{glyphOf(cluster, opts, &capped), pen.fg, pen.bg, pen.attrs, false};
     std::vector<Cell> row = rowOf(canvas, c.y);
     row[c.x] = cell;
     Cursor next{std::min(c.x + 1, w - 1), c.y, c.x == w - 1};
@@ -499,7 +499,7 @@ EditResult replaceText(const Canvas& canvas, Cursor c, int start, int length, st
     std::vector<int> whole;  // the leads of the pairs written
     for (const std::u32string& k : clusters) {
         const int x = next < w ? next : lastLead();
-        const Cell cell{glyphOf(k, opts, &capped), pen.fg, pen.bg, 0, false};
+        const Cell cell{glyphOf(k, opts, &capped), pen.fg, pen.bg, pen.attrs, false};
         if (codePointWidth(k[0]) == 2) {
             if (x == w - 1) {
                 dropped += k;

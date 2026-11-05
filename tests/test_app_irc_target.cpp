@@ -5,11 +5,13 @@
 
 #include "canvas_view.h"
 #include "document.h"
+#include "irc_meter.h"
 #include "main_window.h"
 #include "palette_widget.h"
 #include "preferences.h"
 #include "settings.h"
 
+#include "blockwright/irc_view.h"
 #include "blockwright/target.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -17,6 +19,8 @@
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QInputMethodEvent>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QTemporaryDir>
@@ -229,4 +233,136 @@ TEST_CASE("Save names the cells whose colour an .ans can't hold", "[app][target]
     CHECK_FALSE(w.saveFile(path, &error));
     CHECK(error.contains(QStringLiteral("nearest of the 16")));
     CHECK(w.saveFile(path, &error, true));
+}
+
+namespace {
+
+void key(QWidget* w, int k, const QString& text = {}) {
+    QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier, text);
+    QApplication::sendEvent(w, &press);
+    QKeyEvent release(QEvent::KeyRelease, k, Qt::NoModifier, text);
+    QApplication::sendEvent(w, &release);
+}
+
+void type(QWidget* w, const QString& text) {
+    for (const QChar c : text)
+        key(w, c.toUpper().unicode(), QString(c));
+}
+
+} // namespace
+
+TEST_CASE("a word typed bold, italic or underlined exports with its codes, at the bytes the meter shows",
+          "[app][target][attrs]") {
+    // #350 slice 3b
+    QTemporaryDir dir;
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    Document* doc = w.document();
+    REQUIRE(doc->setTarget(Target::Irc));
+    const struct {
+        const char* action;
+        std::uint8_t bit;
+        QString word;
+    } words[] = {{"formatBold", attr::Bold, QStringLiteral("bold")},
+                 {"formatItalic", attr::Italic, QStringLiteral("italic")},
+                 {"formatUnderline", attr::Underline, QStringLiteral("under")}};
+    // one row each: "x ", the word in its formatting, " x"
+    for (const auto& r : words) {
+        type(v, QStringLiteral("x "));
+        act(w, r.action)->trigger();
+        REQUIRE(v->pen().attrs == r.bit);
+        type(v, r.word);
+        act(w, r.action)->trigger();
+        REQUIRE(v->pen().attrs == 0);
+        type(v, QStringLiteral(" x"));
+        key(v, Qt::Key_Return);
+    }
+    for (int y = 0; y < 3; ++y) {
+        INFO("row " << y);
+        const int n = int(words[y].word.size());
+        for (int x = 0; x < n + 4; ++x) {
+            INFO("column " << x);
+            const bool inWord = x >= 2 && x < 2 + n;
+            CHECK(doc->canvas().at(x, y).attrs == (inWord ? words[y].bit : 0));
+        }
+    }
+
+    const QString path = dir.filePath(QStringLiteral("words.txt"));
+    QString error;
+    REQUIRE(w.exportIrcText(path, &error));
+    const std::string text = bwtest::readFile(path.toStdString());
+    std::vector<std::string> lines;
+    for (std::size_t at = 0, end; (end = text.find('\n', at)) != std::string::npos; at = end + 1)
+        lines.push_back(text.substr(at, end - at));
+    REQUIRE(lines.size() == 3);
+    CHECK(lines[0] == "\x03" "15,1x \x02" "bold\x02 x");
+    CHECK(lines[1] == "\x03" "15,1x \x1d" "italic\x1d x");
+    CHECK(lines[2] == "\x03" "15,1x \x1f" "under\x1f x");
+    for (int y = 0; y < 3; ++y) {
+        INFO("row " << y);
+        CHECK(w.ircMeter()->bytes(y) == lines[std::size_t(y)].size());
+        // and the IRC view reads the formatting back
+        const std::vector<irc::ShownCell> shown = irc::decodeLine(lines[std::size_t(y)]);
+        for (std::size_t x = 0; x < shown.size(); ++x) {
+            INFO("column " << x);
+            CHECK(shown[x].cell.attrs == doc->canvas().at(int(x), y).attrs);
+        }
+    }
+}
+
+TEST_CASE("typing writes the pen's formatting under IRC on a cells layer only", "[app][target][attrs]") {
+    // #350 slice 3b: as the glyph brush does (GlyphTool::makeBrush)
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    Document* doc = w.document();
+    REQUIRE(doc->setTarget(Target::Irc));
+    const std::uint8_t iu = attr::Italic | attr::Underline;
+    v->setPen(Pen{Color::indexed(LightGreen), Color::indexed(Blue), iu});
+
+    // a key, an F-key glyph and an input-method commit
+    type(v, QStringLiteral("k"));
+    key(v, Qt::Key_F1);
+    QInputMethodEvent commit;
+    commit.setCommitString(QStringLiteral("é"));
+    QApplication::sendEvent(v, &commit);
+    for (int x = 0; x < 3; ++x) {
+        INFO("column " << x);
+        CHECK(doc->canvas().at(x, 0).attrs == iu);
+        CHECK(doc->canvas().at(x, 0).fg == Color::indexed(LightGreen));
+    }
+    CHECK(doc->canvas().at(0, 0).ch == U'k');
+    CHECK(doc->canvas().at(2, 0).ch == U'é');
+    // Backspace clears to a blank without formatting
+    key(v, Qt::Key_Backspace);
+    CHECK(doc->canvas().at(2, 0) == Cell{});
+    // undone, the typing goes with its formatting
+    doc->undoStack()->undo();
+    CHECK(doc->canvas().at(2, 0).attrs == iu);
+    doc->undoStack()->undo();
+    CHECK(doc->canvas().at(2, 0) == Cell{});
+
+    // a Pixels layer holds no formatting: a typed block is written without it
+    const LayerId cells = doc->activeLayer();
+    act(w, "newPixelLayer")->trigger();
+    REQUIRE(doc->active()->props.kind == LayerKind::Pixels);
+    v->setCellCursor({6, 0});
+    type(v, QStringLiteral("█"));
+    CHECK(doc->active()->cells.at(6, 0).ch == U'█');
+    CHECK(doc->active()->cells.at(6, 0).attrs == 0);
+    REQUIRE(doc->setActiveLayer(cells));
+
+    // under ANSI the pen keeps its formatting but typing writes none
+    REQUIRE(doc->setTarget(Target::Ansi));
+    CHECK(v->pen().attrs == iu);
+    v->setCellCursor({0, 1});
+    type(v, QStringLiteral("k"));
+    key(v, Qt::Key_F1);
+    QInputMethodEvent ansiCommit;
+    ansiCommit.setCommitString(QStringLiteral("é"));
+    QApplication::sendEvent(v, &ansiCommit);
+    for (int x = 0; x < 3; ++x) {
+        INFO("column " << x);
+        CHECK(doc->canvas().at(x, 1).attrs == 0);
+        CHECK(doc->canvas().at(x, 1).fg == Color::indexed(LightGreen));
+    }
 }

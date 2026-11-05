@@ -196,6 +196,15 @@ private:
     QPainter& p_;
 };
 
+// The pen typing writes with: its formatting under the IRC target on a
+// cells layer, as the glyph brush writes it (GlyphTool::makeBrush), and
+// none under ANSI or on a Pixels layer (#350 slice 3b).
+Pen typingPen(const Document& doc, Pen pen) {
+    if (doc.target() != Target::Irc || (doc.active() && doc.active()->props.kind == LayerKind::Pixels))
+        pen.attrs = 0;
+    return pen;
+}
+
 } // namespace
 
 CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
@@ -995,7 +1004,7 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
     if (e->key() >= Qt::Key_F1 && e->key() < Qt::Key_F1 + kGlyphSetKeys &&
         !(e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
         finishTool();
-        commit(typeGlyph(cv, cursor_, glyphSetGlyph(glyphSet_, e->key() - Qt::Key_F1), pen_));
+        commit(typeGlyph(cv, cursor_, glyphSetGlyph(glyphSet_, e->key() - Qt::Key_F1), typingPen(*doc_, pen_)));
         return;
     }
     if (isShortcut(e)) {
@@ -1069,8 +1078,8 @@ void CanvasView::typeText(const QString& text, int replaceStart, int replaceLeng
     }
     // the input method's range is in UTF-16 units; replaceText's in clusters
     const ClusterRange range = clusterRange(doc_->layerCanvas(), cursor_, replaceStart, replaceLength);
-    commit(replaceText(doc_->layerCanvas(), cursor_, range.start, range.length, glyphs, pen_, doc_->blankCell(),
-                       opts));
+    commit(replaceText(doc_->layerCanvas(), cursor_, range.start, range.length, glyphs, typingPen(*doc_, pen_),
+                       doc_->blankCell(), opts));
 }
 
 namespace {
