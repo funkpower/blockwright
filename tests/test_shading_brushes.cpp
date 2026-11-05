@@ -566,10 +566,12 @@ TEST_CASE("edge distance is the exact distance to the nearest cell off the shape
 TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]") {
     // Codex round 1, finding 1: a 160x1000 canvas, everything selected
     // The budgets are CPU time in an optimised build; cpuBudget scales them
-    // for a Debug one (#285). 1.5 s covers the slowest machine seen, a
-    // FreeBSD VM built with clang (1.16 s, #288), where GCC on the dev
-    // machine takes 0.18 s; a dab that grows with the canvas's square still
-    // fails.
+    // for a Debug one (#285). GCC and clang on the dev machine take 0.13 to
+    // 0.15 s. The FreeBSD CI machine took 0.42 to 1.16 s (#288), then 1.7 to
+    // 2.6 s on runs where its build and whole suite ran 2 to 3 times slower,
+    // with the brush doing the same work. 6 s covers that; a dab that grows
+    // with the canvas's square, thousands of times the work, still fails.
+    const double bigDab = 6.0;
     const int w = 160, h = 1000;
     const Ramp r = steel();
     FormShadeBrush brush(r);
@@ -585,7 +587,7 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
         const auto edit = paintStroke(c, brush, s, {{40, 250}}, o);
         const double t = bwtest::cpuSeconds() - t0;
         INFO(t << " s");
-        CHECK(t < bwtest::cpuBudget(1.5));
+        CHECK(t < bwtest::cpuBudget(bigDab));
         CHECK(!edit.empty());
     }
     SECTION("every other cell transparent, under the alpha lock") {
@@ -597,7 +599,7 @@ TEST_CASE("form brush's first dab on a big selection is quick", "[shading][form]
         const auto edit = paintStroke(c, brush, s, {{80, 500}}, o);
         const double t = bwtest::cpuSeconds() - t0;
         INFO(t << " s");
-        CHECK(t < bwtest::cpuBudget(1.5));
+        CHECK(t < bwtest::cpuBudget(bigDab));
         // every cell alone among black: no form on it is lint-clean, so
         // none is laid
         CHECK(edit.empty());
