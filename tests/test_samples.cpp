@@ -746,3 +746,33 @@ TEST_CASE("the generator sample keeps its generators, their parameters and a bak
     project::writeZip(p, out / "ridges.bwp");
     CHECK(project::read(out / "ridges.bwp") == p);
 }
+
+TEST_CASE("the generator sample's pines run unbroken from tip to crown") {
+    const project::Project p = project::read(kSamples / "04-generator-ridges");
+    const Layer& pines = named(p.layers, "pines");
+    const int w = pines.cells.width(), h = 2 * pines.cells.height();
+    const auto pixel = [&](int x, int py) -> std::optional<std::uint8_t> {
+        if (x < 0 || x >= w || py < 0 || py >= h)
+            return std::nullopt;
+        const LayerPixels px = layerPixels(pines.cells.at(x, py / 2));
+        return py % 2 == 1 ? px.bottom : px.top;
+    };
+    // a tip is the top pixel of its column, with nothing beside it; down
+    // from it, until the crown widens, every pixel is the tree's green
+    int tips = 0;
+    for (int x = 0; x < w; ++x) {
+        int py = 0;
+        while (py < h && !pixel(x, py))
+            ++py;
+        if (py == h || pixel(x - 1, py) || pixel(x + 1, py))
+            continue;
+        ++tips;
+        for (; py < h && pixel(x, py) && !pixel(x - 1, py) && !pixel(x + 1, py); ++py) {
+            INFO("pixel " << x << "," << py << " (cell " << x << "," << pines.props.y + py / 2 << ")");
+            CHECK(pixel(x, py) == std::optional<std::uint8_t>(Green));
+        }
+        INFO("the crown under the tip at column " << x);
+        CHECK(pixel(x, py).has_value());
+    }
+    CHECK(tips == 6);
+}

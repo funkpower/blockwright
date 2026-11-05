@@ -863,7 +863,8 @@ Layer shore() {
 // Pines on the shore, in half-block pixels: a canopy widening a pixel
 // every third row down, on a two-pixel trunk. Each is lit from the right:
 // green on that side, and black in the shade of each bough, a pixel further
-// round on each row of it.
+// round on each row of it. The tip, the crown's first three rows a pixel
+// wide, has no bough over it to shade, so it stays green.
 Layer pines() {
     struct Pine {
         int cx, height;  // its centre column and height in pixels
@@ -880,7 +881,7 @@ Layer pines() {
             for (int px = t.cx - half; px <= t.cx + half; ++px) {
                 if (px < 0 || px >= w)
                     continue;
-                const bool lit = px - t.cx >= (py - crown) % 3 - 1;
+                const bool lit = py - crown < 3 || px - t.cx >= (py - crown) % 3 - 1;
                 Cell& c = l.cells.at(px, py / 2);
                 c = setLayerPixel(c, py % 2 == 1, trunk ? Brown : lit ? Green : Black);
             }
