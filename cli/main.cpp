@@ -941,23 +941,15 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
     const fs::path samplesDir = bw::samples::bundledDir(bw::library::realBinDir(
         native(QCoreApplication::applicationFilePath()), native(QCoreApplication::applicationDirPath())));
     bwcli::replay::Outcome outcome;
-    // what reading the start changed, said whether or not a step then fails:
-    // the read happened either way (#370)
-    std::vector<std::string> startNotes;
-    const auto sayStartNotes = [&] {
-        for (const std::string& n : startNotes)
-            std::cerr << "blockwright-cli: note: " << stepsPath << ": " << n << "\n";
-    };
+    // what reading the start changed, said before any step runs, whether or
+    // not a step then fails: the read happened either way (#370)
     bw::project::Project startProject;
     try {
-        startProject = bwcli::replay::start(script, fs::path(stepsPath).parent_path(), samplesDir, &startNotes);
+        startProject = bwcli::replay::startSaying(script, fs::path(stepsPath).parent_path(), samplesDir, std::cerr,
+                                                  "blockwright-cli", stepsPath);
     } catch (const Failure& f) {
-        // a sample's variant can fail after the sample itself was read
-        sayStartNotes();
         throw Failure{stepsPath + ": " + f.message};
     }
-    // said before any step runs, so no way a step ends can lose it
-    sayStartNotes();
     try {
         outcome = bwcli::replay::run(script, std::move(startProject));
     } catch (const Failure& f) {

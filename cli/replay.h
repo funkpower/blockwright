@@ -11,6 +11,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,16 @@ struct Outcome {
 // (bwcli::projectReadNotes).
 bw::project::Project start(const bw::steps::Script& script, const std::filesystem::path& dir,
                            const std::filesystem::path& samplesDir, std::vector<std::string>* notes = nullptr);
+
+// start() for a command that replays `stepsPath`: what reading the start
+// changed is said on `err`, a "<program>: note: <stepsPath>: <note>" line
+// each, before it returns or the Failure it throws leaves it (a sample's
+// variant can fail after the sample was read), so before any step runs and
+// whichever way the replay then ends (#370). blockwright-cli replay and
+// blockwright --screenshot both start this way (#383).
+bw::project::Project startSaying(const bw::steps::Script& script, const std::filesystem::path& dir,
+                                 const std::filesystem::path& samplesDir, std::ostream& err,
+                                 const std::string& program, const std::string& stepsPath);
 
 // The longest named ramp's top rung: where the gradient's "to" starts, so
 // a new gradient runs the whole of any ramp.

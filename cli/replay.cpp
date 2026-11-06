@@ -30,6 +30,7 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <ostream>
 
 namespace bwcli::replay {
 
@@ -678,6 +679,23 @@ project::Project start(const steps::Script& script, const fs::path& dir, const f
     p.layers = LayerStack::fromCanvas(Canvas(st.width, st.height));
     p.ice = script.ice.value_or(true);
     return p;
+}
+
+project::Project startSaying(const steps::Script& script, const fs::path& dir, const fs::path& samplesDir,
+                             std::ostream& err, const std::string& program, const std::string& stepsPath) {
+    std::vector<std::string> notes;
+    const auto say = [&] {
+        for (const std::string& n : notes)
+            err << program << ": note: " << stepsPath << ": " << n << "\n";
+    };
+    try {
+        project::Project p = start(script, dir, samplesDir, &notes);
+        say();
+        return p;
+    } catch (const Failure&) {
+        say();
+        throw;
+    }
 }
 
 Outcome run(const steps::Script& script, project::Project project, const Observer& observe) {

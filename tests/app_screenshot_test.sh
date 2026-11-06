@@ -2,8 +2,9 @@
 # blockwright --screenshot (#295) with no display: app_screenshot_test.sh <blockwright> <test data> <scratch dir>
 # The pictures a steps file asks for are written, one PNG each, the size of
 # what they show; a dock the window doesn't have, a tool it doesn't have or
-# a Tool Option out of range names the step and writes nothing; usage errors
-# exit 2. POSIX sh and tools only.
+# a Tool Option out of range names the step and writes nothing, and so does
+# a core error a step raises; a start whose read changed it says so as
+# blockwright-cli replay does; usage errors exit 2. POSIX sh and tools only.
 bin=$1
 data=$2
 tmp=$3
@@ -89,6 +90,49 @@ if [ "$st" -eq 1 ] && [ "$named" = 1 ] && [ ! -e "$tmp/strength" ]; then
   ok "a Tool Option out of range is refused at its step and nothing is written"
 else
   bad "a Tool Option out of range (exit $st): $out"
+fi
+
+# What reading the start changed is said as blockwright-cli replay says it
+# (#383): data/projects/stray-attrs is a 4.0 project with stray attribute
+# bits in two cells, so the note is printed once, on stderr, before any
+# step (here before the step that fails); a 5.0 project says nothing.
+mkdir -p "$tmp/notes"
+cp -R "$data/projects/stray-attrs" "$tmp/notes/stray"
+cp -R "$data/projects/formatted" "$tmp/notes/clean"
+for p in stray clean; do
+  printf '{"version": 1, "start": {"file": "%s"}, "steps": [{"name": "sel", "action": "selectAll", "screenshot": {"of": "window"}}]}\n' \
+    "$p" >"$tmp/notes/$p.json"
+done
+note="blockwright: note: $tmp/notes/stray.json: start: $tmp/notes/stray: cleared attribute bits no earlier build wrote from 2 cells"
+"$bin" --screenshot "$tmp/notes/stray.json" -o "$tmp/notes/stray-shots" >"$tmp/notes/out" 2>"$tmp/notes/err"; st=$?
+n=$(grep -c 'note:' "$tmp/notes/err")
+if [ "$st" -eq 0 ] && [ "$n" = 1 ] && grep -qxF "$note" "$tmp/notes/err" && [ ! -s "$tmp/notes/out" ] &&
+   [ -f "$tmp/notes/stray-shots/01-sel.png" ]; then
+  ok "a start before 5.0 with stray bits says its read note once, on stderr"
+else
+  bad "the stray start's note (exit $st, $n notes): $(cat "$tmp/notes/err") / stdout: $(cat "$tmp/notes/out")"
+fi
+"$bin" --screenshot "$tmp/notes/clean.json" -o "$tmp/notes/clean-shots" >"$tmp/notes/out" 2>"$tmp/notes/err"; st=$?
+if [ "$st" -eq 0 ] && ! grep -q 'note:' "$tmp/notes/err" && [ -f "$tmp/notes/clean-shots/01-sel.png" ]; then
+  ok "a clean start says no note"
+else
+  bad "the clean start (exit $st): $(cat "$tmp/notes/err")"
+fi
+
+# A core error a step raises (#383): the start's next layer id is 0, so its
+# ids are exhausted and New Cells Layer can't make one. The note first, then
+# the step named with the core's message; exit 1, nothing written, and the
+# "before" picture the step asks for never reaches the disk.
+sed 's/"nextLayerId": 2/"nextLayerId": 0/' "$data/projects/stray-attrs/manifest.json" >"$tmp/notes/stray/manifest.json"
+printf '{"version": 1, "start": {"file": "stray"}, "steps": [{"name": "add", "action": "newCellsLayer", "screenshot": {"of": "window", "when": "both"}}]}\n' \
+  >"$tmp/notes/exh.json"
+"$bin" --screenshot "$tmp/notes/exh.json" -o "$tmp/notes/exh-shots" >"$tmp/notes/out" 2>"$tmp/notes/err"; st=$?
+want=$(printf '%s\n%s' "$note" "blockwright: step 1 (add): layer ids exhausted" | sed "s|/stray.json:|/exh.json:|")
+got=$(grep '^blockwright: ' "$tmp/notes/err")
+if [ "$st" -eq 1 ] && [ "$got" = "$want" ] && [ ! -e "$tmp/notes/exh-shots" ]; then
+  ok "a core error at a step fails naming the step, exit 1, nothing written"
+else
+  bad "a core error at a step (exit $st): $(cat "$tmp/notes/err")"
 fi
 
 # A steps file that can't be read is an error, not a crash.

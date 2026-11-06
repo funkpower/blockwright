@@ -32,6 +32,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -812,4 +813,27 @@ TEST_CASE("a project start before 5.0 notes the attribute bits its read cleared"
                              kReplay, kSamples, &notes);
         CHECK(notes.empty());
     }
+}
+
+TEST_CASE("a replay's command says its start's read notes as one line each", "[replay]") {
+    // #383: blockwright-cli replay and blockwright --screenshot both start
+    // through startSaying, so the two say the same note
+    const std::string dot = R"(, "steps": [{"name": "dot", "action": "glyph", "points": [[5, 0]]}]})";
+    const auto said = [&](const std::string& file) {
+        std::ostringstream err;
+        bwcli::replay::startSaying(steps::parse(R"({"version": 1, "start": {"file": ")" + file + R"("})" + dot),
+                                   kReplay, kSamples, err, "prog", "s.json");
+        return err.str();
+    };
+    CHECK(said("../projects/stray-attrs") == "prog: note: s.json: start: " +
+                                                 (kReplay / "../projects/stray-attrs").string() +
+                                                 ": cleared attribute bits no earlier build wrote from 2 cells\n");
+    CHECK(said("../projects/formatted").empty());
+
+    std::ostringstream err;
+    CHECK_THROWS_AS(bwcli::replay::startSaying(
+                        steps::parse(R"({"version": 1, "start": {"file": "nowhere.ans"})" + dot), kReplay,
+                        kSamples, err, "prog", "s.json"),
+                    bwcli::Failure);
+    CHECK(err.str().empty());
 }

@@ -258,7 +258,10 @@ int run(const QString& stepsPath, const QString& outDir) {
         const auto native = [](const QString& p) { return fs::path(QFile::encodeName(p).toStdString()); };
         const fs::path samplesDir = samples::bundledDir(library::realBinDir(
             native(QCoreApplication::applicationFilePath()), native(QCoreApplication::applicationDirPath())));
-        project::Project start = bwcli::replay::start(script, fs::path(path).parent_path(), samplesDir);
+        // what reading the start changed, said as blockwright-cli replay
+        // says it: before any step and before the window is made (#383)
+        project::Project start = bwcli::replay::startSaying(script, fs::path(path).parent_path(), samplesDir,
+                                                            std::cerr, "blockwright", path);
 
         // Default keys and layout whatever the user changed, and nothing
         // the window writes kept.

@@ -188,6 +188,27 @@ TEST_CASE("a screenshot of what the window doesn't have, or off it, names the st
           "step 2 (look): the crop's pixels [1200, 0, 200, 10] are off the 1280 x 800 \"window\"");
 }
 
+TEST_CASE("a core error a step raises in the window fails at the step", "[screenshot]") {
+    // #383: a start whose layer ids are exhausted, so New Cells Layer throws
+    // the core's LayerError; the replay names the step with its message, and
+    // the pictures before it were taken but none after it
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [10, 4]}, "steps": [
+        {"name": "first", "action": "selectAll", "screenshot": {}},
+        {"name": "add", "action": "newCellsLayer", "screenshot": {"when": "both"}}]})");
+    project::Project start = startOf(s);
+    start.layers.reserveIds(0);
+    MainWindow w;
+    std::vector<std::string> taken;
+    std::string failure = "no failure";
+    try {
+        screenshot::take(w, s, std::move(start), [&](const screenshot::Shot& shot) { taken.push_back(shot.stem); });
+    } catch (const bwcli::Failure& f) {
+        failure = f.message;
+    }
+    CHECK(failure == "step 2 (add): layer ids exhausted");
+    CHECK(taken == std::vector<std::string>{"01-first", "02-add-before"});
+}
+
 TEST_CASE("screenshots are written as PNGs, all of them or none", "[screenshot]") {
     const steps::Script s = tutorial();
     std::vector<screenshot::Shot> shots;
