@@ -172,11 +172,77 @@ TEST_CASE("a text style's sample row sent over the budget is a problem though it
                                  " as written), over the " + std::to_string(written) + "-byte budget");
     // with room for what is sent, nothing is over
     CHECK(budgetProblems(scanned, sent.sent).empty());
-    // without "ice": "required" the sample is checked with iCE colours off too
+    // without "ice": "required" the sample is drawn with iCE colours off
+    // too, but that one is within this budget: the problem is still the
+    // iCE-on one alone (the iCE-off check is the next two tests', #384)
     scanned.styles.back().iceRequired = false;
     const std::vector<Problem> both = budgetProblems(scanned, written);
-    REQUIRE_FALSE(both.empty());
+    REQUIRE(both.size() == 1);
     CHECK(both[0].message == over[0].message);
+}
+
+namespace {
+
+// A plate in light blue behind the letters, one colour per letter: with iCE
+// colours off the letters' half blocks can't take the bright plate as their
+// background, so that sample's rows change colour more often and are the
+// wider, written and sent (#384)
+TextStyleEntry brightPlate(bool iceRequired) {
+    TextStyleEntry style = parseTextStyleEntry(
+        std::string(R"({"kind": "text-style", "name": "Bright plate", "category": "test", "tags": [],)") +
+        (iceRequired ? R"( "ice": "required",)" : "") +
+        R"( "effects": [{"kind": "plate", "enabled": true, "colour": 9, "padding": 1},
+                        {"kind": "fill", "enabled": true, "mode": "rainbow", "colour": 7, "ramp": "fire"}]})");
+    REQUIRE(style.iceRequired == iceRequired);
+    style.path = "bright-plate.style.json";
+    return style;
+}
+
+} // namespace
+
+TEST_CASE("a text style's sample with iCE colours off sent over the budget is a problem (#384)") {
+    ScanResult scanned;
+    scanned.styles.push_back(brightPlate(false));
+    const Canvas on = textStyleSample(scanned.styles[0].style, true);
+    const Canvas off = textStyleSample(scanned.styles[0].style, false);
+    // the budget the iCE-off sample is written within and sent over; the
+    // iCE-on sample is written and sent within it
+    const std::size_t budget = widestRowBytes(off);
+    const SentRow sentOff = widestSentRow(off, budget);
+    INFO("iCE on: written " << widestRowBytes(on) << ", sent " << widestSentRow(on, budget).sent
+                            << "; iCE off: written " << budget << ", sent " << sentOff.sent);
+    REQUIRE(widestRowBytes(on) <= budget);
+    REQUIRE(widestSentRow(on, budget).sent <= budget);
+    REQUIRE(sentOff.sent > budget);
+    REQUIRE(sentOff.written <= budget);
+
+    const std::vector<Problem> problems = budgetProblems(scanned, budget);
+    REQUIRE(problems.size() == 1);
+    CHECK(problems[0].path == "bright-plate.style.json");
+    CHECK(problems[0].message == "the sample's widest row with iCE colours off is " + std::to_string(sentOff.sent) +
+                                     " IRC bytes as WeeChat's ascii script sends it (" +
+                                     std::to_string(sentOff.written) + " as written), over the " +
+                                     std::to_string(budget) + "-byte budget");
+    // with room for what is sent, nothing is over
+    CHECK(budgetProblems(scanned, sentOff.sent).empty());
+}
+
+TEST_CASE("a text style that needs iCE colours isn't checked with them off (#384)") {
+    // the same style as the last test's, at the budget its iCE-off sample
+    // is sent over: with "ice": "required" only the iCE-on sample is checked,
+    // and that one is within
+    ScanResult scanned;
+    scanned.styles.push_back(brightPlate(true));
+    const Canvas off = textStyleSample(scanned.styles[0].style, false);
+    const std::size_t budget = widestRowBytes(off);
+    REQUIRE(widestSentRow(off, budget).sent > budget);
+    CHECK(budgetProblems(scanned, budget).empty());
+    // and the iCE-on sample is still checked
+    const std::size_t onSent = widestSentRow(textStyleSample(scanned.styles[0].style, true), budget).sent;
+    REQUIRE(onSent > 0);
+    const std::vector<Problem> problems = budgetProblems(scanned, onSent - 1);
+    REQUIRE(problems.size() == 1);
+    CHECK_THAT(problems[0].message, Catch::Matchers::StartsWith("the sample's widest row with iCE colours on is "));
 }
 
 TEST_CASE("a stamp's widest row is over the budget sent or written, once (#364)") {
