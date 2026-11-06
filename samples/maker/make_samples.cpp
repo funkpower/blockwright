@@ -1236,6 +1236,229 @@ project::Project character(const fs::path& makerDir) {
     return p;
 }
 
+// ---- the Blockwright logo ---------------------------------------------------
+
+constexpr int kBrandW = 80, kBrandH = 18;
+// where the wordmark's layers sit, and their size in cells
+constexpr int kWordX = 26, kWordY = 2, kWordW = 52, kWordH = 15;
+
+// The wordmark, BLOCK over WRIGHT, in half-block pixels, a character a
+// pixel, as it sits in its layers. The strokes are two pixels wide and
+// rounded at the corners by single pixels. Each letter is how the pixel
+// is drawn:
+//   c light cyan   d cyan
+//   D M L under a shade cell, dark, medium or light (▓ ▒ ░ in light cyan
+//     on cyan), a cell's two pixels the same
+// The shade runs down each stroke a rung a row, from light cyan through
+// ▓ ▒ ░ to cyan at the foot, with a stem's left column a rung lighter,
+// where the light from the upper left falls on it.
+const std::vector<std::string>& wordmark() {
+    static const std::vector<std::string> rows = {
+        "ccccc...cc.......cccc....ccccc..cc..cc..............",  //  0
+        "cccccc..cc......cccccc..cccccc..cc..cc..............",
+        "cc..cc..cc......cc..cc..cc......cc.cc...............",
+        "cc..cc..cc......cc..cc..cc......cc.cc...............",
+        "cDDDD...cD......cD..DD..cD......cDDc................",
+        "cDDDDc..cD......cD..DD..cD......cDD.................",  //  5
+        "DM..MM..DM......DM..MM..DM......DMMM................",
+        "DM..MM..DM......DM..MM..DM......DMMM................",
+        "ML..LL..ML......ML..LL..ML......ML.ML...............",
+        "ML..LL..ML......ML..LL..ML......ML.ML...............",
+        "Lddddd..Lddddd..dLdddd..dLdddd..Ld..Ld..............",  // 10
+        "Ldddd...Lddddd...Lddd....Ldddd..Ld..Ld..............",
+        "....................................................",
+        "....................................................",
+        "....................................................",
+        "....................................................",  // 15
+        "cc......cc..ccccc....cccccc...ccccc..cc..cc..cccccc.",
+        "cc......cc..cccccc...cccccc..cccccc..cc..cc..cccccc.",
+        "cc......cc..cc..cc.....cc....cc......cc..cc....cc...",
+        "cc......cc..cc..cc.....cc....cc......cc..cc....cc...",
+        "cD..cD..DD..cD..DD.....DD....cD......cD..cD....cD...",  // 20
+        "cD..cD..DD..cDccDD.....DD....cD.ccc..cDcccD....cD...",
+        "DM..DM..MM..DMcMM......MM....DM.cMM..DMccDM....DM...",
+        "DM..DM..MM..DM.MM......MM....DM..MM..DM..DM....DM...",
+        "ML..ML..LL..ML..ML.....LL....ML..LL..ML..ML....ML...",
+        "ML..ML..LL..ML..ML.....LL....ML..LL..ML..ML....ML...",  // 25
+        "dLdddddddd..Ld...Ld..dddddd..dLdddd..Ld..Ld....Ld...",
+        ".Ldd..ddd...Ld...Ld..dddddd...Ldddd..Ld..Ld....Ld...",
+    };
+    return rows;
+}
+
+char wordmarkAt(int px, int py) {
+    const auto& rows = wordmark();
+    if (py < 0 || py >= int(rows.size()) || px < 0 || px >= int(rows[std::size_t(py)].size()))
+        return '.';
+    return rows[std::size_t(py)][std::size_t(px)];
+}
+
+bool inWordmark(int px, int py) { return wordmarkAt(px, py) != '.'; }
+
+// The pixels of the wordmark's layers no letter closes in: the inside of a
+// B, an O or an R is a counter, and the drop doesn't fill it.
+std::vector<bool> openPixels() {
+    const int pw = kWordW, ph = 2 * kWordH;
+    std::vector<bool> open(std::size_t(pw * ph), false);
+    std::deque<std::pair<int, int>> todo;
+    for (int px = 0; px < pw; ++px)
+        for (int py = 0; py < ph; ++py)
+            if (px == 0 || py == 0 || px == pw - 1 || py == ph - 1)
+                todo.emplace_back(px, py);
+    while (!todo.empty()) {
+        const auto [px, py] = todo.front();
+        todo.pop_front();
+        if (px < 0 || py < 0 || px >= pw || py >= ph || inWordmark(px, py) || open[std::size_t(py * pw + px)])
+            continue;
+        open[std::size_t(py * pw + px)] = true;
+        todo.emplace_back(px + 1, py);
+        todo.emplace_back(px - 1, py);
+        todo.emplace_back(px, py + 1);
+        todo.emplace_back(px, py - 1);
+    }
+    return open;
+}
+
+Layer wordLayer(const std::string& name, const std::function<std::optional<std::uint8_t>(int, int)>& colourAt) {
+    Layer l = makeLayer(LayerKind::Pixels, kWordW, kWordH, name, kWordX, kWordY);
+    for (int py = 0; py < 2 * kWordH; ++py)
+        for (int px = 0; px < kWordW; ++px)
+            if (const auto c = colourAt(px, py))
+                l.cells.at(px, py / 2) = setLayerPixel(l.cells.at(px, py / 2), py % 2 == 1, *c);
+    return l;
+}
+
+// The letters in flat colours: light cyan, and cyan where the shade has
+// gone dark. Under the shade cells it is the colour each mostly shows, so
+// with the shading hidden the letters still go from light to dark.
+Layer letters(bool flat = false) {
+    return wordLayer("letters", [flat](int px, int py) -> std::optional<std::uint8_t> {
+        switch (wordmarkAt(px, py)) {
+        case 'c': case 'D': case 'M': return LightCyan;
+        case 'd': case 'L': return flat ? LightCyan : Cyan;
+        default: return std::nullopt;
+        }
+    });
+}
+
+// The drop: the letters moved one column right and one pixel down, in
+// blue, under them, so they stand out from the black toward the lower
+// right. The letters cover most of it; what shows is a rim along their
+// right and lower edges. It stays out of the counters, and three pixels
+// are taken off one by one where the rule leaves a spur: in the notch of the
+// K, top and bottom, and under the R's bowl, by its leg.
+Layer drop() {
+    const std::vector<bool> open = openPixels();
+    return wordLayer("drop", [&open](int px, int py) -> std::optional<std::uint8_t> {
+        const bool trimmed = (px == 34 && (py == 2 || py == 8)) || (px == 17 && py == 22);
+        if (inWordmark(px - 1, py - 1) && open[std::size_t(py * kWordW + px)] && !trimmed)
+            return Blue;
+        return std::nullopt;
+    });
+}
+
+// The shade cells: ▓ ▒ ░ in light cyan on cyan, over the letters.
+Layer shading() {
+    Layer l = makeLayer(LayerKind::Cells, kWordW, kWordH, "shading", kWordX, kWordY);
+    for (int y = 0; y < kWordH; ++y)
+        for (int x = 0; x < kWordW; ++x)
+            switch (wordmarkAt(x, 2 * y)) {
+            case 'D': l.cells.at(x, y) = cell(U'▓', LightCyan, Cyan); break;
+            case 'M': l.cells.at(x, y) = cell(U'▒', LightCyan, Cyan); break;
+            case 'L': l.cells.at(x, y) = cell(U'░', LightCyan, Cyan); break;
+            default: break;
+            }
+    return l;
+}
+
+// One block of the mark, 10 by 7 cells, at (x, y) of a layer: a white top
+// edge in half blocks, five rows of `body` (the ramp across the face, lit
+// from the left), and a bottom edge half a cell deep in the shadow's
+// colour, which also runs down the last column of the top edge.
+void markBlock(Canvas& c, int x, int y, const std::vector<Cell>& body, std::uint8_t shadow) {
+    for (int i = 0; i < 10; ++i) {
+        c.at(x + i, y) = cell(U'▄', i < 9 ? White : shadow, Black);
+        for (int r = 1; r <= 5; ++r)
+            c.at(x + i, y + r) = body[std::size_t(i)];
+        c.at(x + i, y + 6) = cell(U'▀', shadow, Black);
+    }
+}
+
+// The three white blocks of the mark, stacked in an L: a white edge on the
+// left, the face going from ▓ to ░ in white on grey, and a dark grey side
+// and foot.
+Layer whiteBlocks() {
+    Layer l = makeLayer(LayerKind::Cells, 22, 14, "white blocks", 2, 3);
+    const std::vector<Cell> body = {
+        cell(U'█', White, Black), cell(U'▓', White, Grey), cell(U'▓', White, Grey), cell(U'▓', White, Grey),
+        cell(U'▒', White, Grey),  cell(U'▒', White, Grey), cell(U'░', White, Grey), cell(U'░', White, Grey),
+        cell(U' ', Black, Grey),  cell(U'█', DarkGrey, Black),
+    };
+    markBlock(l.cells, 0, 0, body, DarkGrey);
+    markBlock(l.cells, 0, 7, body, DarkGrey);
+    markBlock(l.cells, 12, 7, body, DarkGrey);
+    return l;
+}
+
+// The gold block that tops the mark, two rows higher than the white one
+// beside it: yellow going through ▓ ▒ ░ to brown, with a brown side
+// and foot.
+Layer goldBlock() {
+    Layer l = makeLayer(LayerKind::Cells, 10, 7, "gold block", 14, 1);
+    const std::vector<Cell> body = {
+        cell(U'█', White, Black),  cell(U'█', Yellow, Black), cell(U'█', Yellow, Black), cell(U'█', Yellow, Black),
+        cell(U'▓', Yellow, Brown), cell(U'▓', Yellow, Brown), cell(U'▒', Yellow, Brown), cell(U'▒', Yellow, Brown),
+        cell(U'░', Yellow, Brown), cell(U' ', Black, Brown),
+    };
+    markBlock(l.cells, 0, 0, body, Brown);
+    return l;
+}
+
+Layer brandBackdrop() {
+    Layer l = makeLayer(LayerKind::Cells, kBrandW, kBrandH, "backdrop");
+    for (int y = 0; y < kBrandH; ++y)
+        for (int x = 0; x < kBrandW; ++x)
+            l.cells.at(x, y) = blackBlock();
+    l.props.locked = true;
+    return l;
+}
+
+project::Project brandLogo(const fs::path& makerDir) {
+    project::Project p;
+    p.layers = LayerStack(kBrandW, kBrandH);
+    p.ice = false;  // the logo's own setting: no bright backgrounds in it
+    p.sauce = sauceFor("Blockwright logo");
+
+    // the first round: the mark and the letters, flat
+    p.layers.add(brandBackdrop());
+    p.layers.add(whiteBlocks());
+    p.layers.add(goldBlock());
+    p.layers.add(letters(true));
+    project::takeSnapshot(p);
+
+    // the second: the letters going dark toward the foot, the drop under
+    // them
+    LayerStack st(kBrandW, kBrandH);
+    for (std::size_t i = 0; i < p.layers.size(); ++i) {
+        Layer l = p.layers[i];
+        l.props.id = 0;
+        if (l.props.name == "letters")
+            st.add(drop());
+        st.add(std::move(l));
+    }
+    p.layers = st;
+    layerNamed(p.layers, "letters").cells = letters().cells;
+    layerNamed(p.layers, "letters").props.alphaLocked = true;
+    project::takeSnapshot(p);
+
+    // the third: the shade cells
+    p.layers.add(shading());
+
+    p.notes = readFile(makerDir / "notes" / "06-blockwright-logo.md");
+    project::takeSnapshot(p);
+    return p;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1253,6 +1476,7 @@ int main(int argc, char** argv) {
         project::writeDirectory(stillLife(BW_MAKER_DIR), out / "03-still-life", raw);
         project::writeDirectory(generatorPiece(BW_MAKER_DIR), out / "04-generator-ridges", raw);
         project::writeDirectory(character(BW_MAKER_DIR), out / "05-character", raw);
+        project::writeDirectory(brandLogo(BW_MAKER_DIR), out / "06-blockwright-logo", raw);
     } catch (const std::exception& e) {
         std::cerr << "bw-make-samples: " << e.what() << "\n";
         return 1;

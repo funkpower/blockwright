@@ -87,7 +87,7 @@ Edit > Preferences.
 
 ## Samples
 
-Four sample projects install with the app and open from the start screen or
+Six sample projects install with the app and open from the start screen or
 Help > Samples:
 
 - `01-layers-showcase`, Harbour at night: every layer kind, both blend modes,
@@ -98,6 +98,11 @@ Help > Samples:
   under alpha locks, with cast shadows and a rim light on layers of their own.
 - `04-generator-ridges`, Ridges at dusk: mountain ridges and stars from two
   shell-script generator layers under pixel pines and a cabin on layers of their own.
+- `05-character`, Traveller: a figure in half-block pixels split into outline,
+  body, face, highlights and shadow layers, with a merged copy to move it whole.
+- `06-blockwright-logo`, Blockwright logo: the program's logo as the layers a
+  block-letter logo is made of: the mark's blocks, pixel lettering, a drop under
+  it and shade cells over it.
 
 ## Command line
 

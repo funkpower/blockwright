@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <regex>
 #include <set>
 #include <string>
@@ -391,7 +392,6 @@ bool insideCanvas(const Layer& l, const LayerStack& s) {
 
 } // namespace
 
-// #207's list of the layer capabilities the set must cover between them.
 TEST_CASE("the bundled samples hold nothing a library version could encode differently") {
     const auto bytes = [](const fs::path& path) {
         std::ifstream f(path, std::ios::binary);
@@ -421,6 +421,7 @@ TEST_CASE("the bundled samples hold nothing a library version could encode diffe
     CHECK(references == 1);
 }
 
+// #207's list of the layer capabilities the set must cover between them.
 TEST_CASE("the bundled samples show every layer capability between them") {
     std::set<LayerKind> kinds;
     std::set<LayerMode> modes;
@@ -974,4 +975,232 @@ TEST_CASE("the character sample keeps its figure on layers of its own, one size 
     CHECK(project::read(out / "dir") == p);
     project::writeZip(p, out / "character.bwp");
     CHECK(project::read(out / "character.bwp") == p);
+}
+
+TEST_CASE("the logo sample takes the program's logo apart into the layers a block-letter logo is made of") {
+    const fs::path dir = kSamples / "06-blockwright-logo";
+    const project::Project p = project::read(dir);
+    CHECK_FALSE(p.ice);
+    REQUIRE(names(p.layers) ==
+            std::vector<std::string>{"backdrop", "white blocks", "gold block", "drop", "letters", "shading"});
+    for (std::size_t i = 0; i < p.layers.size(); ++i)
+        CHECK(p.layers[i].props.visible);
+
+    const Layer& backdrop = named(p.layers, "backdrop");
+    CHECK(backdrop.props.kind == LayerKind::Cells);
+    CHECK(backdrop.props.locked);
+    CHECK(backdrop.cells.width() == p.layers.width());
+    CHECK(backdrop.cells.height() == p.layers.height());
+
+    // the mark's blocks: cells layers smaller than the canvas, placed by
+    // their offset
+    for (const char* name : {"white blocks", "gold block"}) {
+        INFO(name);
+        const Layer& l = named(p.layers, name);
+        CHECK(l.props.kind == LayerKind::Cells);
+        CHECK_FALSE(l.props.locked);
+        CHECK(l.cells.width() < p.layers.width());
+        CHECK(l.cells.height() < p.layers.height());
+        CHECK((l.props.x > 0 && l.props.y > 0));
+        CHECK(insideCanvas(l, p.layers));
+    }
+
+    // the wordmark's three layers, one size and in one place
+    const Layer& letters = named(p.layers, "letters");
+    const Layer& drop = named(p.layers, "drop");
+    const Layer& shading = named(p.layers, "shading");
+    CHECK(letters.props.kind == LayerKind::Pixels);
+    CHECK(drop.props.kind == LayerKind::Pixels);
+    CHECK(shading.props.kind == LayerKind::Cells);
+    CHECK(letters.props.alphaLocked);
+    CHECK_FALSE(drop.props.alphaLocked);
+    CHECK_FALSE(shading.props.alphaLocked);
+    CHECK(insideCanvas(letters, p.layers));
+    for (const Layer* l : {&drop, &shading}) {
+        INFO(l->props.name);
+        CHECK_FALSE(l->props.locked);
+        CHECK(l->props.x == letters.props.x);
+        CHECK(l->props.y == letters.props.y);
+        CHECK(l->cells.width() == letters.cells.width());
+        CHECK(l->cells.height() == letters.cells.height());
+    }
+
+    const auto pixel = [](const Layer& l, int x, int py) -> std::optional<std::uint8_t> {
+        if (x < 0 || py < 0 || x >= l.cells.width() || py >= 2 * l.cells.height())
+            return std::nullopt;
+        const LayerPixels px = layerPixels(l.cells.at(x, py / 2));
+        return py % 2 == 1 ? px.bottom : px.top;
+    };
+    // Each letter pixel's colour as the design gives it, not as the layer
+    // has it: under a shade cell, the colour the shade mostly shows, ▓ and
+    // ▒ light cyan and ░ cyan (the letter goes dark at the ░ rung, so with
+    // the shading hidden it still steps from light to dark); elsewhere
+    // light cyan, and cyan at the foot, the last cell row of each line of
+    // lettering (BLOCK in rows 0 to 5, WRIGHT in rows 8 to 13). The shade
+    // cells themselves are held to the shipped logo below, so this pins
+    // what r2 shows under them.
+    const auto designColour = [&shading](int x, int py) -> std::uint8_t {
+        const Cell& s = shading.cells.at(x, py / 2);
+        if (!s.transparent)
+            return s.ch == U'░' ? Cyan : LightCyan;
+        return py / 2 == 5 || py / 2 == 13 ? Cyan : LightCyan;
+    };
+    int rim = 0, shades = 0, under[2] = {0, 0};
+    for (int py = 0; py < 2 * letters.cells.height(); ++py)
+        for (int x = 0; x < letters.cells.width(); ++x) {
+            INFO("pixel " << x << "," << py);
+            // the letters in two flat colours, each where the design puts it
+            if (const auto c = pixel(letters, x, py)) {
+                CHECK(int(*c) == int(designColour(x, py)));
+                if (!shading.cells.at(x, py / 2).transparent)
+                    ++under[*c == Cyan];
+            }
+            // the drop is blue and the letters moved one column right and
+            // one pixel down; where the letters don't cover it, it shows
+            if (const auto d = pixel(drop, x, py)) {
+                CHECK(*d == Blue);
+                CHECK(pixel(letters, x - 1, py - 1).has_value());
+                if (!pixel(letters, x, py))
+                    ++rim;
+            }
+        }
+    for (int y = 0; y < shading.cells.height(); ++y)
+        for (int x = 0; x < shading.cells.width(); ++x) {
+            const Cell& c = shading.cells.at(x, y);
+            if (c.transparent)
+                continue;
+            INFO("cell " << x << "," << y);
+            // the shade cells, ▓ ▒ ░ in light cyan on cyan, lie on whole cells
+            // of the letters
+            ++shades;
+            CHECK((c.ch == U'▓' || c.ch == U'▒' || c.ch == U'░'));
+            CHECK(c.fg == Color::indexed(LightCyan));
+            CHECK(c.bg == Color::indexed(Cyan));
+            CHECK(pixel(letters, x, 2 * y).has_value());
+            CHECK(pixel(letters, x, 2 * y + 1).has_value());
+        }
+    CHECK(rim > 0);
+    CHECK(shades > 0);
+    // letters under the shading in both colours, so neither rule is empty
+    CHECK(under[0] > 0);
+    CHECK(under[1] > 0);
+
+    // shown together they are the program's own logo, colour for colour: a
+    // half-block, block or blank cell by the two colours it shows, every
+    // other cell as it is
+    const Canvas whole = project::toAnsi(p).canvas;
+    const project::Project brand = project::read(fs::path(BW_BRANDING_DIR) / "logo-large.bwp");
+    const Canvas logo = project::toAnsi(brand).canvas;
+    REQUIRE(whole.width() == logo.width());
+    REQUIRE(whole.height() == logo.height());
+    REQUIRE(p.sauce);
+    REQUIRE(brand.sauce);
+    CHECK(p.sauce->title == brand.sauce->title);
+    CHECK(p.ice == brand.ice);
+    for (int y = 0; y < logo.height(); ++y)
+        for (int x = 0; x < logo.width(); ++x) {
+            INFO("cell " << x << "," << y);
+            const auto a = halfBlocks(whole.at(x, y), false), b = halfBlocks(logo.at(x, y), false);
+            if (a && b)
+                CHECK(*a == *b);
+            else
+                CHECK(whole.at(x, y) == logo.at(x, y));
+        }
+
+    // the variants, each by the layers it shows, all six of them: the mark
+    // and the wordmark each stay as they are in the variant that keeps them,
+    // and the side it drops shows only the backdrop
+    const auto shown = [](const LayerStack& s) {
+        std::set<std::string> out;
+        for (const Layer& l : s.layers())
+            if (l.props.visible)
+                out.insert(l.props.name);
+        return out;
+    };
+    const std::map<std::string, std::set<std::string>> variantShows = {
+        {"No shading", {"backdrop", "white blocks", "gold block", "drop", "letters"}},
+        {"No drop", {"backdrop", "white blocks", "gold block", "letters", "shading"}},
+        {"Wordmark only", {"backdrop", "drop", "letters", "shading"}},
+        {"Mark only", {"backdrop", "white blocks", "gold block"}},
+    };
+    const Canvas bare = [&] {
+        project::Project b = p;
+        for (std::size_t i = 0; i < b.layers.size(); ++i)
+            b.layers[i].props.visible = b.layers[i].props.name == "backdrop";
+        return project::toAnsi(b).canvas;
+    }();
+    const Notes notes = parseNotes(p.notes);
+    // exactly the four, each once, so a repeated name can't stand in for
+    // one of the "only" variants and skip its check
+    std::vector<std::string> variantNames;
+    for (const Variant& v : notes.variants)
+        variantNames.push_back(v.name);
+    std::sort(variantNames.begin(), variantNames.end());
+    std::vector<std::string> expectedNames;
+    for (const auto& [name, layers] : variantShows)
+        expectedNames.push_back(name);
+    REQUIRE(variantNames == expectedNames);
+    const int split = letters.props.x - 1;  // the mark is left of it, the wordmark from it on
+    for (const Variant& v : notes.variants) {
+        INFO(v.name);
+        REQUIRE(variantShows.count(v.name) == 1);
+        project::Project changed = p;
+        REQUIRE_NOTHROW(applyVariant(changed.layers, v));
+        CHECK(shown(changed.layers) == variantShows.at(v.name));
+        const Canvas c = project::toAnsi(changed).canvas;
+        CHECK(c != whole);
+        if (v.name != "Mark only" && v.name != "Wordmark only")
+            continue;
+        const bool markKept = v.name == "Mark only";
+        int kept = 0, cleared = 0;
+        for (int y = 0; y < c.height(); ++y)
+            for (int x = 0; x < c.width(); ++x) {
+                INFO("cell " << x << "," << y);
+                if ((x < split) == markKept) {
+                    CHECK(c.at(x, y) == whole.at(x, y));
+                    kept += whole.at(x, y) != bare.at(x, y);
+                } else {
+                    CHECK(c.at(x, y) == bare.at(x, y));
+                    cleared += whole.at(x, y) != bare.at(x, y);
+                }
+            }
+        // both sides hold something over the backdrop, so neither check is
+        // empty
+        CHECK(kept > 0);
+        CHECK(cleared > 0);
+    }
+
+    // three rounds, each decoded and held to its stage as the layers make
+    // it: the mark and the letters in flat light cyan; the letters
+    // going dark at the foot with the drop under them; the finished logo
+    REQUIRE(p.snapshots.size() == 3);
+    for (int i = 0; i < 3; ++i)
+        CHECK(p.snapshots[std::size_t(i)].round == i + 1);
+    project::Project blockedIn = p, darkFoot = p;
+    for (project::Project* stage : {&blockedIn, &darkFoot})
+        for (std::size_t i = 0; i < stage->layers.size(); ++i) {
+            Layer& l = stage->layers[i];
+            if (l.props.name == "shading" || (stage == &blockedIn && l.props.name == "drop"))
+                l.props.visible = false;
+            if (stage == &blockedIn && l.props.name == "letters")
+                for (int py = 0; py < 2 * l.cells.height(); ++py)
+                    for (int x = 0; x < l.cells.width(); ++x)
+                        if (pixel(l, x, py))
+                            l.cells.at(x, py / 2) = setLayerPixel(l.cells.at(x, py / 2), py % 2 == 1, LightCyan);
+        }
+    const std::vector<Canvas> stages = {project::toAnsi(blockedIn).canvas, project::toAnsi(darkFoot).canvas, whole};
+    CHECK(stages[0] != stages[1]);
+    CHECK(stages[1] != stages[2]);
+    for (std::size_t i = 0; i < 3; ++i) {
+        INFO("r" << i + 1);
+        const AnsiDocument snap = parseAnsi(p.snapshots[i].ans);
+        CHECK(snap.canvas == stages[i]);
+    }
+
+    // it saves back as it reads, as a directory and as a zip
+    const fs::path out = scratch("brand-logo-round-trip");
+    project::writeDirectory(p, out / "dir");
+    CHECK(project::read(out / "dir") == p);
+    project::writeZip(p, out / "brand-logo.bwp");
+    CHECK(project::read(out / "brand-logo.bwp") == p);
 }

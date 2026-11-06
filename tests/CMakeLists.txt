@@ -143,6 +143,7 @@ target_compile_definitions(blockwright-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRE
                                                     BW_TEST_TMP="${BW_TEST_TMP}"
                                                     BW_BUNDLED_LIBRARY="${PROJECT_SOURCE_DIR}/library"
                                                     BW_SAMPLES_SOURCE="${PROJECT_SOURCE_DIR}/samples"
+                                                    BW_BRANDING_DIR="${PROJECT_SOURCE_DIR}/branding"
                                                     BW_SAMPLES_FROM_BINDIR="${BW_SAMPLES_FROM_BINDIR}")
 catch_discover_tests(blockwright-tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 # hidden ([.pool-full]): it fills the process's cluster pool, so it runs alone
