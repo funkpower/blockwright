@@ -152,6 +152,8 @@ void MainWindow::createDocks() {
     lintDock_ = dock(tr("Lint"), "lintDock", lint_);
     ircView_ = new IrcViewDock(&doc_, ircMeter_);
     ircViewDock_ = dock(tr("IRC View"), "ircViewDock", ircView_);
+    // it scrolls with the canvas (#394)
+    ircView_->followCanvas(view_, scroll_);
     // These panels' forms, lists and buttons otherwise add their minimum
     // heights across the right column. Keep the content's own minimums,
     // scrolling the whole panel when the column has less height to share.

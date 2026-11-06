@@ -1,5 +1,6 @@
 #include "lint_dock.h"
 
+#include "canvas_view.h"
 #include "document.h"
 #include "irc_meter.h"
 #include "row_tree.h"
@@ -8,13 +9,19 @@
 #include "blockwright/ramp.h"
 #include "blockwright/render.h"
 
+#include <QAccessible>
+#include <QAccessibleWidget>
 #include <QComboBox>
+#include <QEvent>
 #include <QFont>
 #include <QFutureWatcher>
+#include <QGestureEvent>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMenu>
 #include <QPixmap>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -212,18 +219,127 @@ void LintDock::showReport(lint::LintReport report) {
     summary_->setText(text);
 }
 
+namespace {
+
+// The IRC View's scroll bars. An assistive technology (a screen reader, a
+// switch) sets a bar's value through its accessible interface, and Qt's
+// (QAccessibleScrollBar) sets it as code does, with no slider action, so it
+// would not be told from lineUp's. These bars have their own interface,
+// saying all Qt's does, that sets a value as a drag does: a SliderMove
+// action, then the value.
+class DockScrollBar : public QScrollBar {
+    Q_OBJECT
+public:
+    explicit DockScrollBar(Qt::Orientation orientation);
+
+    // A value the user asked for: the slider's own path (actionTriggered
+    // with SliderMove, then valueChanged), clamped as setValue clamps.
+    void setValueByHand(int value) {
+        const bool tracking = hasTracking();
+        setTracking(true);
+        setSliderPosition(value);
+        setTracking(tracking);
+    }
+};
+
+#if QT_CONFIG(accessibility)
+// QAccessibleScrollBar from public API: the same role, value, range, step,
+// texts, controlling signal and (from Qt 6.11) orientation attribute.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+using AccessibleBarBase = QAccessibleWidgetV2;
+#else
+using AccessibleBarBase = QAccessibleWidget;
+#endif
+
+class AccessibleDockScrollBar : public AccessibleBarBase, public QAccessibleValueInterface {
+public:
+    explicit AccessibleDockScrollBar(DockScrollBar* bar) : AccessibleBarBase(bar, QAccessible::ScrollBar) {
+        addControllingSignal(QStringLiteral("valueChanged(int)"));
+    }
+
+    void* interface_cast(QAccessible::InterfaceType t) override {
+        if (t == QAccessible::ValueInterface)
+            return static_cast<QAccessibleValueInterface*>(this);
+        return AccessibleBarBase::interface_cast(t);
+    }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
+    QList<QAccessible::Attribute> attributeKeys() const override {
+        QList<QAccessible::Attribute> keys = AccessibleBarBase::attributeKeys();
+        keys.append(QAccessible::Attribute::Orientation);
+        return keys;
+    }
+    QVariant attributeValue(QAccessible::Attribute key) const override {
+        if (key == QAccessible::Attribute::Orientation)
+            return QVariant::fromValue(bar()->orientation());
+        return AccessibleBarBase::attributeValue(key);
+    }
+#endif
+    QString text(QAccessible::Text t) const override {
+        if (t == QAccessible::Value)
+            return QString::number(bar()->value());
+        return AccessibleBarBase::text(t);
+    }
+
+    QVariant currentValue() const override { return bar()->value(); }
+    void setCurrentValue(const QVariant& value) override { bar()->setValueByHand(value.toInt()); }
+    QVariant maximumValue() const override { return bar()->maximum(); }
+    QVariant minimumValue() const override { return bar()->minimum(); }
+    QVariant minimumStepSize() const override { return bar()->singleStep(); }
+
+private:
+    DockScrollBar* bar() const { return static_cast<DockScrollBar*>(object()); }
+};
+
+QAccessibleInterface* dockScrollBarAccessible(const QString& className, QObject* object) {
+    if (className == QLatin1String(DockScrollBar::staticMetaObject.className()))
+        if (auto* bar = qobject_cast<DockScrollBar*>(object))
+            return new AccessibleDockScrollBar(bar);
+    return nullptr;
+}
+#endif
+
+DockScrollBar::DockScrollBar(Qt::Orientation orientation) : QScrollBar(orientation) {
+#if QT_CONFIG(accessibility)
+    // once per application: Qt keeps one of each factory, and drops them all
+    // when the application ends
+    QAccessible::installFactory(dockScrollBarAccessible);
+#endif
+}
+
+} // namespace
+
 IrcViewDock::IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent) :
-    FollowsDocument(doc, tr("Updating…"), parent), meter_(meter), picture_(new QLabel), status_(new QLabel(this)) {
+    FollowsDocument(doc, tr("Updating…"), parent), meter_(meter), picture_(new QLabel), status_(new QLabel(this)),
+    scroll_(new QScrollArea(this)) {
     picture_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    auto* scroll = new QScrollArea(this);
-    scroll->setWidget(picture_);
-    scroll->setWidgetResizable(false);
-    scroll->setBackgroundRole(QPalette::Dark);
+    scroll_->setWidget(picture_);
+    scroll_->setWidgetResizable(false);
+    scroll_->setBackgroundRole(QPalette::Dark);
+    scroll_->setHorizontalScrollBar(new DockScrollBar(Qt::Horizontal));
+    scroll_->setVerticalScrollBar(new DockScrollBar(Qt::Vertical));
     status_->setWordWrap(true);
+    // Lined up with the canvas, the picture goes back to its cell when the
+    // range changes (a new picture size, the dock laid out or resized). A
+    // scroll by hand is told by what the user did, not by the value: a
+    // slider action (the bars' arrows, page clicks, drags and wheel, the
+    // wheel and keys on the picture, the bar's menu's Top, Bottom, Page and
+    // Scroll items), an item of a bar's own menu ("Scroll here" sets the
+    // value without an action; the menu tells of its choice before the item
+    // does its work, whether it runs in its own event loop or is left open),
+    // a pan gesture on the picture and an assistive technology's new value
+    // (DockScrollBar's accessible interface makes it a slider action). No other change of a bar's value
+    // (lineUp, the clamp into a new range, ensureVisible) stops following.
+    for (QScrollBar* bar : {scroll_->horizontalScrollBar(), scroll_->verticalScrollBar()}) {
+        connect(bar, &QScrollBar::rangeChanged, this, &IrcViewDock::lineUp);
+        connect(bar, &QScrollBar::actionTriggered, this, &IrcViewDock::scrolledByHand);
+        // the menu is the bar's child, polished as it is first shown
+        bar->installEventFilter(this);
+    }
+    scroll_->viewport()->installEventFilter(this);
 
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(4, 4, 4, 4);
-    lay->addWidget(scroll, 1);
+    lay->addWidget(scroll_, 1);
     lay->addWidget(status_);
     lay->addWidget(staleLabel());
     // open, New and replace come as Document::reset, and an iCE change as
@@ -242,6 +358,74 @@ void IrcViewDock::follow() {
 
 std::size_t IrcViewDock::budget() const { return doc_->extras().ircBudget.bytes; }
 
+void IrcViewDock::followCanvas(CanvasView* view, QAbstractScrollArea* scroll) {
+    canvas_ = view;
+    canvasScroll_ = scroll;
+    // A scroll moves the view in the viewport, a zoom or a new canvas size
+    // resizes it, and the scroll area centres one smaller than its viewport;
+    // the bars say a scroll even while the window has not been shown, when
+    // the view's move events wait.
+    view->installEventFilter(this);
+    for (QScrollBar* bar : {scroll->horizontalScrollBar(), scroll->verticalScrollBar()})
+        connect(bar, &QScrollBar::valueChanged, this, &IrcViewDock::canvasMoved);
+    connect(view, &CanvasView::zoomChanged, this, &IrcViewDock::canvasMoved);
+    canvasKey_.reset();
+    canvasMoved();
+}
+
+bool IrcViewDock::eventFilter(QObject* watched, QEvent* e) {
+    if (watched == canvas_ && (e->type() == QEvent::Move || e->type() == QEvent::Resize))
+        canvasMoved();
+    else if (e->type() == QEvent::ChildPolished
+             && (watched == scroll_->horizontalScrollBar() || watched == scroll_->verticalScrollBar())) {
+        if (auto* menu = qobject_cast<QMenu*>(static_cast<QChildEvent*>(e)->child()))
+            connect(menu, &QMenu::triggered, this, &IrcViewDock::scrolledByHand, Qt::UniqueConnection);
+    } else if (e->type() == QEvent::Gesture && watched == scroll_->viewport()) {
+        // QAbstractScrollArea moves both bars by a pan's delta, after this
+        auto* pan = static_cast<QPanGesture*>(static_cast<QGestureEvent*>(e)->gesture(Qt::PanGesture));
+        if (pan && !pan->delta().isNull())
+            scrolledByHand();
+    }
+    return FollowsDocument::eventFilter(watched, e);
+}
+
+void IrcViewDock::canvasMoved() {
+    if (!canvas_ || !canvasScroll_)
+        return;
+    // Only a scroll (a bar's value, a part of a cell included), a zoom or a
+    // new size of the canvas moves it; the scroll area centring it again in
+    // a resized viewport leaves those alone, and a scroll by hand with them.
+    const CanvasKey key{canvasScroll_->horizontalScrollBar()->value(), canvasScroll_->verticalScrollBar()->value(),
+                        canvas_->zoom(), canvas_->size()};
+    if (key != canvasKey_)
+        following_ = true;
+    canvasKey_ = key;
+    if (!following_)
+        return;
+    // The viewport's top left in the view: past the view's own when it is
+    // scrolled, before it (the view centred) when it is smaller.
+    const QPoint top = canvas_->mapFrom(canvasScroll_->viewport(), QPoint(0, 0));
+    const QPoint cell = canvas_->cellAt(canvas_->toView(QPointF(std::max(0, top.x()), std::max(0, top.y()))));
+    const Canvas& cv = doc_->canvas();
+    origin_ = QPoint(std::clamp(cell.x(), 0, std::max(0, cv.width() - 1)),
+                     std::clamp(cell.y(), 0, std::max(0, cv.height() - 1)));
+    lineUp();
+}
+
+void IrcViewDock::scrolledByHand() { following_ = false; }
+
+void IrcViewDock::lineUp() {
+    // The picture is the view's canvas at 1x, a cell to every glyph's width
+    // and the font's height, so canvas cell (x, y) is the picture's cell
+    // (x, y) by number. The bars clamp to their range.
+    if (!following_ || image_.isNull() || view_.canvas.width() <= 0 || view_.canvas.height() <= 0)
+        return;
+    const int cellW = image_.width() / view_.canvas.width();
+    const int cellH = image_.height() / view_.canvas.height();
+    scroll_->horizontalScrollBar()->setValue(origin_.x() * cellW);
+    scroll_->verticalScrollBar()->setValue(origin_.y() * cellH);
+}
+
 FollowsDocument::Work IrcViewDock::snapshot() {
     // the cells and options Export sends (IrcMeter::lines): as saved with
     // the document's iCE setting, with the row meter's options
@@ -254,6 +438,7 @@ FollowsDocument::Work IrcViewDock::snapshot() {
             image_ = image;
             picture_->setPixmap(QPixmap::fromImage(image_));
             picture_->resize(image_.size());
+            lineUp();
             const int cut = view_.cutRows();
             status_->setText(cut == 0   ? tr("Every line fits %1 bytes").arg(budget)
                              : cut == 1 ? tr("1 row cut at %1 bytes").arg(budget)
@@ -263,3 +448,5 @@ FollowsDocument::Work IrcViewDock::snapshot() {
 }
 
 } // namespace bw
+
+#include "lint_dock.moc"

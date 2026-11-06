@@ -656,6 +656,11 @@ foreach(scale 1.25 1.5)
     COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} ${CMAKE_CROSSCOMPILING_EMULATOR}
             $<TARGET_FILE:blockwright-app-tests> "[dock-height]")
 endforeach()
+# The IRC View dock's origin at a fractional device pixel ratio (#394): the
+# canvas's cell under its viewport's corner, on the canvas's device grid.
+add_test(NAME "IRC View origin at scale 1.25"
+  COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=1.25 ${CMAKE_CROSSCOMPILING_EMULATOR}
+          $<TARGET_FILE:blockwright-app-tests> "[irc-view-dpr]")
 # A layout test that runs after a closed window in the same process still starts
 # from the default layout (#249); ctest otherwise runs each test case alone.
 # The script runs the binary itself, so it runs on the build host only.

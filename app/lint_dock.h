@@ -8,7 +8,9 @@
 // renderIrcView): the cells as saved with the document's iCE setting
 // (irc::sentCanvas), the row meter's encoder options (View > IRC > Fit, Pad,
 // Swap Shades), the mIRC palette, the client's background where IRC drops
-// cells, and a red bar where a line over the budget is cut.
+// cells, and a red bar where a line over the budget is cut. It follows the
+// canvas's scroll (followCanvas): its left column and top row are the canvas
+// viewport's.
 //
 // Both follow the document a moment after each change (kRefreshDelayMs), and
 // only while they are shown: a hidden dock, or one in a tab behind another,
@@ -24,21 +26,27 @@
 
 #include <QImage>
 #include <QPoint>
+#include <QPointer>
+#include <QSize>
 #include <QWidget>
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <utility>
 
 template <typename T>
 class QFutureWatcher;
+class QAbstractScrollArea;
 class QComboBox;
 class QLabel;
+class QScrollArea;
 class QTimer;
 class QTreeWidget;
 
 namespace bw {
 
+class CanvasView;
 class Document;
 class IrcMeter;
 
@@ -182,19 +190,70 @@ public:
     QLabel* picture() const { return picture_; }
     // "Every line fits B bytes" or "N rows cut at B bytes".
     QLabel* statusLabel() const { return status_; }
+    // The scroll area the picture is in.
+    QScrollArea* scrollArea() const { return scroll_; }
+
+    // Follows `view`, the canvas in `scroll`, one way (PLAN §11, #394): on
+    // every scroll, zoom or size change of the canvas the picture scrolls so
+    // that its left column and top row are the canvas viewport's
+    // (canvasOrigin), by cell coordinates, as far as its scroll bars go: the
+    // picture's column x and row y are at canvas column x and row y. That is
+    // a rule about numbers, not content: irc::ircView keeps the canvas's
+    // size, but a lone wide cell gets a continuation in the view and pushes
+    // the rest of its row a column right, so what shows at a column can be
+    // the canvas's column to its left. The canvas's cell is the one under
+    // the viewport's corner on the canvas's own device grid (at a fractional
+    // device pixel ratio the row meter's rowAt can be a row off it, #404).
+    // Scrolled by hand (the bars, their menu, the wheel, the keys, a pan, an
+    // assistive technology's new value; not a value set by code, such as
+    // ensureVisible's; QScroller's kinetic scrolling, which Blockwright does
+    // not enable, would need its own detection), the picture stays
+    // where it is put until the canvas next scrolls, zooms or changes size;
+    // the canvas centred again in a resized viewport is none of those.
+    // Until then it keeps its place when it is redrawn, resized, hidden and
+    // shown. Otherwise it goes back to the canvas's cell whenever its scroll
+    // range changes: a new picture size, the dock resized or first laid out
+    // when it is shown.
+    void followCanvas(CanvasView* view, QAbstractScrollArea* scroll);
+    // The cell at the top left of the canvas's viewport, as last followed.
+    QPoint canvasOrigin() const { return origin_; }
+    // Whether the picture is lined up with the canvas (not scrolled by hand
+    // since the canvas last moved).
+    bool followingCanvas() const { return following_; }
 
 protected:
     Work snapshot() override;
+    bool eventFilter(QObject* watched, QEvent* e) override;
 
 private:
     // Refreshes now if shown, else when next shown.
     void follow();
+    // The canvas scrolled, zoomed or changed size: takes its origin again
+    // and lines the picture up with it.
+    void canvasMoved();
+    // Scrolls the picture to canvasOrigin, if following it.
+    void lineUp();
+    // The user scrolled the picture: it stays where they put it.
+    void scrolledByHand();
 
     IrcMeter* meter_;
     irc::View view_;
     QImage image_;
     QLabel* picture_;
     QLabel* status_;
+    QScrollArea* scroll_;
+    QPointer<CanvasView> canvas_;
+    QPointer<QAbstractScrollArea> canvasScroll_;
+    // What moves the canvas's top-left cell: the bars' values, the zoom and
+    // the view's size (its cells, zoom and letter spacing).
+    struct CanvasKey {
+        int h = 0, v = 0, zoom = 0;
+        QSize size;
+        bool operator==(const CanvasKey&) const = default;
+    };
+    std::optional<CanvasKey> canvasKey_;
+    QPoint origin_;
+    bool following_ = false;
 };
 
 } // namespace bw
