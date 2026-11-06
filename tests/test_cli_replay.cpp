@@ -3,6 +3,7 @@
 // data/replay/tour.json takes every kind of step and writes, every run, the
 // bytes saved beside it in data/replay/tour/.
 
+#include "loss.h"
 #include "read_file.h"
 #include "replay.h"
 
@@ -455,4 +456,55 @@ TEST_CASE("a step that can't be applied stops the replay, named", "[replay]") {
     CHECK_THAT(failure(R"({"version": 1, "start": {"sample": "01-layers-showcase", "variant": "Dusk"},
                            "steps": [{"name": "a", "action": "selectAll"}]})"),
                ContainsSubstring("Dusk"));
+}
+
+TEST_CASE("a core error a step raises is the step's failure, not an abort", "[replay]") {
+    // a valid project whose layer ids are used up: newCellsLayer's add()
+    // throws LayerError, which no step check foresees
+    const steps::Script script = steps::parse(
+        R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [{"name": "add", "action": "newCellsLayer"}]})");
+    project::Project p = bwcli::replay::start(script, kReplay, kSamples);
+    p.layers.reserveIds(0);
+    REQUIRE(p.layers.nextId() == 0);
+    try {
+        bwcli::replay::run(script, p);
+        FAIL("a layer was added with the ids exhausted");
+    } catch (const bwcli::Failure& f) {
+        CHECK(f.message == "step 1 (add): layer ids exhausted");
+    }
+}
+
+TEST_CASE("a read's cleared attribute bits are worded as the app's status bar words them", "[replay][cli]") {
+    // #370: "Opened %1: cleared attribute bits no earlier build wrote from %2"
+    CHECK(bwcli::projectReadNotes({}).empty());
+    CHECK(bwcli::projectReadNotes({.strayAttributes = 1}) ==
+          std::vector<std::string>{"cleared attribute bits no earlier build wrote from 1 cell"});
+    CHECK(bwcli::projectReadNotes({.strayAttributes = 3}) ==
+          std::vector<std::string>{"cleared attribute bits no earlier build wrote from 3 cells"});
+}
+
+TEST_CASE("a project start before 5.0 notes the attribute bits its read cleared", "[replay]") {
+    // #370: data/projects/stray-attrs is a 4.0 project whose first two cells
+    // hold bits no build before 5.0 wrote (bit 5; strikethrough with blink)
+    // and whose third holds blink alone
+    const std::string dot = R"(, "steps": [{"name": "dot", "action": "glyph", "points": [[5, 0]]}]})";
+    std::vector<std::string> notes;
+    const project::Project p = bwcli::replay::start(
+        steps::parse(R"({"version": 1, "start": {"file": "../projects/stray-attrs"})" + dot), kReplay, kSamples, &notes);
+    REQUIRE(notes.size() == 1);
+    CHECK(notes[0] == "start: " + (kReplay / "../projects/stray-attrs").string() +
+                          ": cleared attribute bits no earlier build wrote from 2 cells");
+    const Canvas& c = p.layers[0].cells;
+    CHECK(c.at(0, 0).attrs == 0);
+    CHECK(c.at(1, 0).attrs == attr::Blink);
+    CHECK(c.at(2, 0).attrs == attr::Blink);
+
+    // a clean project, and a flat file, note nothing
+    for (const char* start : {"../projects/unwritable.bwp", "../brushes/sphere-steel.ans"}) {
+        INFO(start);
+        notes.clear();
+        bwcli::replay::start(steps::parse(std::string(R"({"version": 1, "start": {"file": ")") + start + R"("})" + dot),
+                             kReplay, kSamples, &notes);
+        CHECK(notes.empty());
+    }
 }

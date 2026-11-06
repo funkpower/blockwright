@@ -112,4 +112,12 @@ std::vector<std::string> readWarnings(const bw::ReadLoss& loss) {
     return out;
 }
 
+std::vector<std::string> projectReadNotes(const bw::project::ReadNotes& notes) {
+    std::vector<std::string> out;
+    if (const int n = notes.strayAttributes)
+        out.push_back("cleared attribute bits no earlier build wrote from " + std::to_string(n) +
+                      (n == 1 ? " cell" : " cells"));
+    return out;
+}
+
 } // namespace bwcli

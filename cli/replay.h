@@ -32,9 +32,11 @@ struct Outcome {
 // The start the script names: an .ans, XBIN, BIN or project file (relative
 // to `dir`, the steps file's directory), a sample in `samplesDir` by its
 // directory or .bwp name (with its variant made), or a blank canvas. Throws
-// Failure naming "start" when it can't be read.
+// Failure naming "start" when it can't be read. What reading a project
+// changed goes in `notes` when given, "start: <file>: " and the change
+// (bwcli::projectReadNotes).
 bw::project::Project start(const bw::steps::Script& script, const std::filesystem::path& dir,
-                           const std::filesystem::path& samplesDir);
+                           const std::filesystem::path& samplesDir, std::vector<std::string>* notes = nullptr);
 
 // The replay just before or after a step, as the editor would hold it: what
 // the window's screenshots (#295) put in the window.
@@ -50,8 +52,9 @@ using Observer = std::function<void(const Moment&)>;
 // The script's steps applied to `project` in order. Throws Failure naming
 // the step ("step 3 (outline): ...") for one that can't be applied: a point
 // off the canvas, no selection to transform, a layer that can't take the
-// edit or isn't there. `observe`, if given, sees each step before and after
-// it is applied; what it throws stops the replay.
+// edit or isn't there, or any other error the step raises but running out
+// of memory (std::bad_alloc goes through). `observe`, if given, sees each
+// step before and after it is applied; what it throws stops the replay.
 Outcome run(const bw::steps::Script& script, bw::project::Project project, const Observer& observe = {});
 
 // "07": the step's number, as wide as the last step's and at least two.

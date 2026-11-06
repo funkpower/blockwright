@@ -111,12 +111,20 @@ struct Usage {
     std::string message;
 };
 
+// A project as read, and a note on stderr for what the read changed (the
+// attribute bits a project before 5.0 can't hold, cleared), as the app's
+// status bar says it on open (#370). Never stdout, which may be piped art.
 bw::project::Project loadProject(const std::string& path) {
+    bw::project::ReadNotes notes;
+    bw::project::Project p;
     try {
-        return bw::project::read(path);
+        p = bw::project::read(path, &notes);
     } catch (const bw::project::ProjectError& e) {
         throw Failure{path + ": " + e.what()};
     }
+    for (const std::string& n : bwcli::projectReadNotes(notes))
+        std::cerr << "blockwright-cli: note: " << path << ": " << n << "\n";
+    return p;
 }
 
 // --encoding: the character set every .ans a command reads is read as;
@@ -931,9 +939,25 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
     const fs::path samplesDir = bw::samples::bundledDir(bw::library::realBinDir(
         native(QCoreApplication::applicationFilePath()), native(QCoreApplication::applicationDirPath())));
     bwcli::replay::Outcome outcome;
+    // what reading the start changed, said whether or not a step then fails:
+    // the read happened either way (#370)
+    std::vector<std::string> startNotes;
+    const auto sayStartNotes = [&] {
+        for (const std::string& n : startNotes)
+            std::cerr << "blockwright-cli: note: " << stepsPath << ": " << n << "\n";
+    };
+    bw::project::Project startProject;
     try {
-        outcome = bwcli::replay::run(
-            script, bwcli::replay::start(script, fs::path(stepsPath).parent_path(), samplesDir));
+        startProject = bwcli::replay::start(script, fs::path(stepsPath).parent_path(), samplesDir, &startNotes);
+    } catch (const Failure& f) {
+        // a sample's variant can fail after the sample itself was read
+        sayStartNotes();
+        throw Failure{stepsPath + ": " + f.message};
+    }
+    // said before any step runs, so no way a step ends can lose it
+    sayStartNotes();
+    try {
+        outcome = bwcli::replay::run(script, std::move(startProject));
     } catch (const Failure& f) {
         throw Failure{stepsPath + ": " + f.message};
     }

@@ -1051,5 +1051,155 @@ mkdir -p "$rp/many-soft"
 expect "replay: as many outputs as the soft limit allows, raised" 0 '^$' -- bash -c 'ulimit -S -n 32 && exec "$0" "$@"' "$cli" replay "$rp/many.json" -o "$rp/many-soft"
 if [[ $(ls -A "$rp/many-soft" | wc -l) -eq 30 ]]; then ok "replay: the soft limit raised for its outputs"; else bad "replay under a low soft limit wrote: $(ls -A "$rp/many-soft" | tr '\n' ' ')"; fi
 
+# A project before 5.0 with attribute bits no build wrote (#370): every
+# command that reads one clears them, as the app does, and says so in one
+# note on stderr naming the file and the cell count. Its stdout, exit status
+# and outputs are those of the same project without the bits.
+# data/projects/stray-attrs is a 4.0 directory project whose first two cells
+# hold bit 5 and the strikethrough bit (with blink), the third blink alone.
+sa=$tmp/stray-attrs
+mkdir -p "$sa/stray" "$sa/clean"
+cp -R "$data/projects/stray-attrs" "$sa/stray/p"
+# the clean twin: the same project as the CLI writes it back, cleared, and
+# marked 4.0 too, so the two differ only in those bits
+"$cli" unpack "$sa/stray/p" "$sa/clean/p" >/dev/null 2>&1
+sed -e 's/"version": "[0-9.]*"/"version": "4.0"/' "$sa/clean/p/manifest.json" >"$sa/m" && mv "$sa/m" "$sa/clean/p/manifest.json"
+if cmp -s "$sa/stray/p/manifest.json" "$sa/clean/p/manifest.json" && ! cmp -s "$sa/stray/p/layers/1.cells" "$sa/clean/p/layers/1.cells"; then
+  ok "stray attribute bits: the clean twin differs only in its cells"
+else
+  bad "stray attribute bits: the clean twin's manifest differs, or its cells don't"
+fi
+sanote='cleared attribute bits no earlier build wrote from 2 cells'
+# readnote <name> <note> <outputs to compare> -- <args, "p" the project>: the
+# command run in the stray and the clean directory; the stray one's stderr is
+# <note> and then the clean one's, the rest the same, both exit 0
+readnote() {
+  local name=$1 want=$2 outs=$3 d f
+  shift 4
+  for d in stray clean; do
+    rm -f "$sa/$d/out" "$sa/$d/err" "$sa/$d/st"
+    (cd "$sa/$d" && "$cli" "$@" >out 2>err; echo $? >st)
+    tr -d '\r' <"$sa/$d/err" >"$sa/$d/err.n"
+  done
+  if [[ $(cat "$sa/stray/st") != 0 || $(cat "$sa/clean/st") != 0 ]]; then
+    bad "$name: exit $(cat "$sa/stray/st") (clean $(cat "$sa/clean/st")), wanted 0: $(cat "$sa/stray/err")"; return
+  fi
+  if grep -q 'cleared attribute bits' "$sa/clean/err.n"; then bad "$name: a clean project notes cleared bits: $(cat "$sa/clean/err")"; return; fi
+  if ! { printf '%s\n' "$want"; cat "$sa/clean/err.n"; } | cmp -s - "$sa/stray/err.n"; then
+    bad "$name: stderr isn't the note and then the clean project's: $(cat "$sa/stray/err")"; return
+  fi
+  if ! cmp -s "$sa/stray/out" "$sa/clean/out"; then bad "$name: stdout differs from the clean project's: $(cat "$sa/stray/out")"; return; fi
+  for f in $outs; do
+    if ! diff -r "$sa/stray/$f" "$sa/clean/$f" >/dev/null 2>&1; then bad "$name: $f differs from the clean project's"; return; fi
+  done
+  ok "$name"
+}
+pnote="blockwright-cli: note: p: $sanote"
+readnote "stray attribute bits: info notes them" "$pnote" "" -- info p
+readnote "stray attribute bits: convert" "$pnote" "o.ans" -- convert p o.ans
+readnote "stray attribute bits: export --irc" "$pnote" "o.txt" -- export --irc p o.txt
+readnote "stray attribute bits: render --irc" "$pnote" "o.png" -- render --irc p o.png
+readnote "stray attribute bits: shade" "$pnote" "s.ans" -- shade --ramp steel p s.ans
+readnote "stray attribute bits: lint" "$pnote" "" -- lint p
+readnote "stray attribute bits: lint --json, the JSON unchanged" "$pnote" "" -- lint --json p
+readnote "stray attribute bits: pack" "$pnote" "o.bwp" -- pack p o.bwp
+readnote "stray attribute bits: unpack" "$pnote" "u" -- unpack p u
+readnote "stray attribute bits: run-generators" "$pnote" "" -- run-generators p
+for d in stray clean; do
+  printf '{"version": 1, "start": {"file": "p"}, "steps": [{"name": "dot", "action": "glyph", "points": [[5, 0]]}]}' >"$sa/$d/steps.json"
+done
+readnote "stray attribute bits: replay notes its start" "blockwright-cli: note: steps.json: start: p: $sanote" "r" -- replay --project steps.json -o r
+# a step that fails after the start was read: the note, once, then the step's
+# error, as the clean project gives it; exit 1, nothing on stdout or written
+for d in stray clean; do
+  printf '{"version": 1, "start": {"file": "p"}, "steps": [{"name": "gone", "action": "deleteLayer"}]}' >"$sa/$d/fail.json"
+  (cd "$sa/$d" && "$cli" replay fail.json -o rf >out 2>err; echo $? >st)
+  tr -d '\r' <"$sa/$d/err" >"$sa/$d/err.n"
+done
+if [[ $(cat "$sa/stray/st") != 1 || $(cat "$sa/clean/st") != 1 ]]; then
+  bad "stray attribute bits: replay with a failing step: exit $(cat "$sa/stray/st") (clean $(cat "$sa/clean/st")), wanted 1: $(cat "$sa/stray/err")"
+elif [[ -s $sa/stray/out || -e $sa/stray/rf ]]; then
+  bad "stray attribute bits: replay with a failing step wrote stdout or outputs: $(cat "$sa/stray/out")"
+elif [[ $(grep -c 'cleared attribute bits' "$sa/clean/err.n") != 0 || $(wc -l <"$sa/clean/err.n") -ne 1 ]]; then
+  bad "stray attribute bits: replay with a failing step on the clean project: $(cat "$sa/clean/err")"
+elif ! { printf '%s\n' "blockwright-cli: note: fail.json: start: p: $sanote"; cat "$sa/clean/err.n"; } | cmp -s - "$sa/stray/err.n"; then
+  bad "stray attribute bits: replay with a failing step: stderr isn't the note once and then the step's error: $(cat "$sa/stray/err")"
+else
+  ok "stray attribute bits: replay notes its start when a later step fails"
+fi
+# a step that throws a core error (#373): layer ids used up, so newCellsLayer's
+# add() refuses. The note still comes once, before the step's error, which is
+# a normal step error (exit 1), not an abort; nothing on stdout or written
+for d in stray clean; do
+  rm -rf "$sa/$d/px" && cp -R "$sa/$d/p" "$sa/$d/px"
+  sed 's/"nextLayerId": 2/"nextLayerId": 0/' "$sa/$d/px/manifest.json" >"$sa/$d/m" && mv "$sa/$d/m" "$sa/$d/px/manifest.json"
+  printf '{"version": 1, "start": {"file": "px"}, "steps": [{"name": "add", "action": "newCellsLayer"}]}' >"$sa/$d/exh.json"
+  (cd "$sa/$d" && "$cli" replay exh.json -o rx >out 2>err; echo $? >st)
+  tr -d '\r' <"$sa/$d/err" >"$sa/$d/err.n"
+done
+xstep="blockwright-cli: exh.json: step 1 (add): layer ids exhausted"
+if ! grep -q '"nextLayerId": 0' "$sa/stray/px/manifest.json"; then
+  bad "stray attribute bits: replay with a core step error: the fixture's nextLayerId didn't become 0"
+elif [[ $(cat "$sa/stray/st") != 1 || $(cat "$sa/clean/st") != 1 ]]; then
+  bad "stray attribute bits: replay with a core step error: exit $(cat "$sa/stray/st") (clean $(cat "$sa/clean/st")), wanted 1: $(cat "$sa/stray/err")"
+elif [[ -s $sa/stray/out || -e $sa/stray/rx || -s $sa/clean/out || -e $sa/clean/rx ]]; then
+  bad "stray attribute bits: replay with a core step error wrote stdout or outputs: $(cat "$sa/stray/out")"
+elif ! printf '%s\n' "$xstep" | cmp -s - "$sa/clean/err.n"; then
+  bad "stray attribute bits: replay with a core step error on the clean project: stderr isn't the step's error alone: $(cat "$sa/clean/err")"
+elif ! printf '%s\n' "blockwright-cli: note: exh.json: start: px: $sanote" "$xstep" | cmp -s - "$sa/stray/err.n"; then
+  bad "stray attribute bits: replay with a core step error: stderr isn't the note once and then the step's error: $(cat "$sa/stray/err")"
+else
+  ok "stray attribute bits: replay notes its start when a step throws a core error"
+fi
+# add-generator saves the project, so it works on a copy
+if [[ -z ${BW_CLI_WINDOWS:-} ]]; then  # (the generator is a sh script)
+  mkdir -p "$sa/gen"
+  printf '{"command": ["sh", "gen.sh"]}\n' >"$sa/gen/generator.json"
+  printf 'printf "\\033[0;44m  \\033[31mAB"\n' >"$sa/gen/gen.sh"
+  for d in stray clean; do rm -rf "$sa/$d/g" && cp -R "$sa/$d/p" "$sa/$d/g"; done
+  readnote "stray attribute bits: add-generator" "blockwright-cli: note: g: $sanote" "g" -- add-generator g "$sa/gen"
+fi
+# snapshot saves the project cleared, so it reads clean after
+readnote "stray attribute bits: snapshot" "$pnote" "" -- snapshot p
+err=$(cd "$sa/stray" && "$cli" info p 2>&1 >/dev/null)
+if [[ -z $err ]]; then ok "stray attribute bits: saved by snapshot, the project reads with no note"; else bad "stray attribute bits: after snapshot, info says: $err"; fi
+# the same bits in 5.0 or later are refused, not cleared
+cp -R "$data/projects/stray-attrs" "$sa/p5"
+sed -e 's/"version": "4.0"/"version": "5.0"/' "$data/projects/stray-attrs/manifest.json" >"$sa/p5/manifest.json"
+expect "stray attribute bits: refused in a 5.0 project" 1 'layers/1\.cells: layer cells: cell 0 has an unknown attribute$' -- "$cli" info "$sa/p5"
+# a 5.0 project's bold, italic and underline are its own, not stray: no
+# command notes them and they are kept. data/projects/formatted: cell 0 bold,
+# cell 1 italic, underline and blink, cell 2 blink
+fm=$tmp/formatted
+mkdir -p "$fm"
+cp -R "$data/projects/formatted" "$fm/p"
+cp -R "$data/projects/formatted" "$fm/g"
+printf '{"version": 1, "start": {"file": "p"}, "steps": [{"name": "dot", "action": "glyph", "points": [[5, 0]]}]}' >"$fm/steps.json"
+# fmquiet <name> <args>: run in $fm, exit 0 and no note on stderr
+fmquiet() {
+  local name=$1 err st
+  shift
+  err=$(cd "$fm" && "$cli" "$@" 2>&1 >/dev/null); st=$?
+  if [[ $st -ne 0 ]]; then bad "$name: exit $st: $err"; elif grep -q 'note:' <<<"$err"; then bad "$name: stderr: $err"; else ok "$name"; fi
+}
+fmquiet "5.0 formatting: info notes nothing" info p
+fmquiet "5.0 formatting: export --irc notes nothing" export --irc p o.txt
+fmquiet "5.0 formatting: unpack notes nothing" unpack p u
+# (an .ans can't hold the formatting: replay's capture warns of that)
+fmquiet "5.0 formatting: replay notes nothing" replay --allow-lossy --project steps.json -o r
+if [[ -z ${BW_CLI_WINDOWS:-} ]]; then
+  fmquiet "5.0 formatting: add-generator notes nothing" add-generator g "$sa/gen"
+fi
+# bold (^B), italic (^]) and underline (^_) reach the IRC text
+for c in '\002' '\035' '\037'; do
+  if [[ $(tr -dc "$c" <"$fm/o.txt" | wc -c) -ge 1 ]]; then ok "5.0 formatting: export --irc keeps $c"; else bad "5.0 formatting: export --irc lost $c"; fi
+done
+(cd "$fm" && "$cli" export --irc u o2.txt >/dev/null 2>&1)
+if grep -q '"version": "5\.0"' "$fm/u/manifest.json" && cmp -s "$fm/o.txt" "$fm/o2.txt"; then
+  ok "5.0 formatting: unpack writes 5.0 and the same IRC text"
+else
+  bad "5.0 formatting: unpack wrote $(grep '"version"' "$fm/u/manifest.json")"
+fi
+
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]

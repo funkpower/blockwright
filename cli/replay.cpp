@@ -22,10 +22,13 @@
 #include "blockwright/target.h"
 #include "blockwright/width.h"
 #include "blockwright/xbin.h"
+#include "loss.h"
 #include "read_file.h"
 
 #include <algorithm>
+#include <exception>
 #include <memory>
+#include <new>
 #include <optional>
 
 namespace bwcli::replay {
@@ -609,14 +612,20 @@ void step(State& s, const Step& st, Outcome& out) {
     }
 }
 
-project::Project readStartFile(const fs::path& path) {
+project::Project readStartFile(const fs::path& path, std::vector<std::string>* notes) {
     const std::string name = path.string();
     std::error_code ec;
     if (!fs::exists(path, ec))
         throw Failure{"start: " + name + ": no such file"};
     try {
-        if (project::isProject(path))
-            return project::read(path);
+        if (project::isProject(path)) {
+            project::ReadNotes read;
+            project::Project p = project::read(path, &read);
+            if (notes)
+                for (const std::string& n : projectReadNotes(read))
+                    notes->push_back("start: " + name + ": " + n);
+            return p;
+        }
         const std::string data = readFile(name);
         if (data.empty())
             throw Failure{"start: " + name + ": empty file"};
@@ -630,14 +639,14 @@ project::Project readStartFile(const fs::path& path) {
     }
 }
 
-project::Project readSample(const steps::Start& st, const fs::path& samplesDir) {
+project::Project readSample(const steps::Start& st, const fs::path& samplesDir, std::vector<std::string>* notes) {
     for (const samples::Sample& sample : samples::list(samplesDir)) {
         const fs::path& p = sample.path;
         if (p.filename().string() != st.sample && !(p.extension() == ".bwp" && p.stem().string() == st.sample))
             continue;
         if (!sample.problem.empty())
             throw Failure{"start: sample " + st.sample + ": " + sample.problem};
-        project::Project proj = readStartFile(p);
+        project::Project proj = readStartFile(p, notes);
         if (st.variant.empty())
             return proj;
         try {
@@ -665,11 +674,13 @@ project::Project readSample(const steps::Start& st, const fs::path& samplesDir) 
 
 } // namespace
 
-project::Project start(const steps::Script& script, const fs::path& dir, const fs::path& samplesDir) {
+project::Project start(const steps::Script& script, const fs::path& dir, const fs::path& samplesDir,
+                       std::vector<std::string>* notes) {
     const steps::Start& st = script.start;
     switch (st.kind) {
-    case steps::Start::Kind::File: return readStartFile(dir / fs::path(std::u8string(st.file.begin(), st.file.end())));
-    case steps::Start::Kind::Sample: return readSample(st, samplesDir);
+    case steps::Start::Kind::File:
+        return readStartFile(dir / fs::path(std::u8string(st.file.begin(), st.file.end())), notes);
+    case steps::Start::Kind::Sample: return readSample(st, samplesDir, notes);
     case steps::Start::Kind::Blank: break;
     }
     project::Project p;
@@ -693,7 +704,17 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
             out.captures.push_back({stem + "-before", s.p});
         if (observe)
             observe({st, true, s.p, s.active, s.selection});
-        step(s, st, out);
+        try {
+            step(s, st, out);
+        } catch (const Failure&) {
+            throw;
+        } catch (const std::bad_alloc&) {
+            throw;  // main's "out of memory"
+        } catch (const std::exception& e) {
+            // a core error a step's checks don't foresee (ids exhausted, say)
+            // is still this step's error, not an abort
+            fail(st, e.what());
+        }
         if (observe)
             observe({st, false, s.p, s.active, s.selection});
         out.captures.push_back({st.capture == steps::Capture::BeforeAfter ? stem + "-after" : stem, s.p});
