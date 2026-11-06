@@ -36,7 +36,7 @@ TEST_CASE("a steps file reads its start, options and every step's fields", "[ste
         "start": {"blank": [40, 12]},
         "ice": false,
         "steps": [
-            {"name": "head", "action": "outline", "ramp": "steel", "size": 3,
+            {"name": "head", "action": "outline", "ramp": "steel", "size": 3, "pressure": "size",
              "symmetry": {"mode": "radial", "folds": 6}, "button": "right",
              "points": [[1, 2], [3, 4, 0.5]], "capture": "before-after"},
             {"name": "say", "action": "keyboard", "fg": 15, "bg": 1, "at": [2, 3], "text": "hi\nyo"},
@@ -65,6 +65,7 @@ TEST_CASE("a steps file reads its start, options and every step's fields", "[ste
     REQUIRE(head.options.ramp);
     CHECK(head.options.ramp->name == "steel");
     CHECK(head.options.size == 3);
+    CHECK(head.options.pressure == PressureTo::Size);
     REQUIRE(head.options.symmetry);
     CHECK(head.options.symmetry->mode == SymmetryMode::Radial);
     CHECK(head.options.symmetry->folds == 6);
@@ -73,6 +74,7 @@ TEST_CASE("a steps file reads its start, options and every step's fields", "[ste
     const steps::Step& say = s.steps[1];
     CHECK(say.capture == steps::Capture::After);
     CHECK(say.options.fg == 15);
+    CHECK_FALSE(say.options.pressure);
     CHECK(say.options.bg == 1);
     CHECK(say.points == std::vector<steps::Point>{{2, 3, 1.0}});
     CHECK(say.text == U"hi\nyo");
@@ -157,6 +159,17 @@ TEST_CASE("every action the steps file lists parses", "[steps]") {
     CHECK_FALSE(steps::pixelAction("keyboard"));
 }
 
+TEST_CASE("the pressure mode takes the Tool Options names (#382)", "[steps]") {
+    const std::pair<const char*, PressureTo> modes[] = {
+        {"none", PressureTo::Nothing}, {"size", PressureTo::Size}, {"strength", PressureTo::Strength}};
+    for (const auto& [name, mode] : modes) {
+        INFO(name);
+        const steps::Script s =
+            steps::parse(script(std::string(R"({"name": "a", "action": "glyph", "pressure": ")") + name + "\"}"));
+        CHECK(s.steps[0].options.pressure == mode);
+    }
+}
+
 TEST_CASE("what a steps file refuses names the step or the start", "[steps]") {
     struct Case {
         const char* what;
@@ -194,6 +207,10 @@ TEST_CASE("what a steps file refuses names the step or the start", "[steps]") {
         {"too many folds", script(R"({"name": "a", "action": "shade", "symmetry": {"mode": "radial", "folds": 9}})"),
          "step 1 (a)", "folds"},
         {"empty points", script(R"({"name": "a", "action": "shade", "points": []})"), "step 1 (a)", "points"},
+        {"an unknown pressure mode", script(R"({"name": "a", "action": "shade", "pressure": "hard"})"), "step 1 (a)",
+         "pressure"},
+        {"a pressure mode as a number", script(R"({"name": "a", "action": "shade", "pressure": 0.5})"), "step 1 (a)",
+         "pressure"},
         {"pressure past 1", script(R"({"name": "a", "action": "shade", "points": [[1, 1, 1.5]]})"), "step 1 (a)",
          "pressure"},
         {"a point not two numbers", script(R"({"name": "a", "action": "shade", "points": [[1]]})"), "step 1 (a)",

@@ -12,6 +12,7 @@
 #include "main_window.h"
 #include "settings.h"
 #include "tool.h"
+#include "replay.h"
 
 #include "scratch_settings.h"
 #include "system_input.h"
@@ -22,6 +23,7 @@
 #include "blockwright/layer.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
+#include "blockwright/steps.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -1062,6 +1064,47 @@ TEST_CASE("pressing harder on the touch-down cell repaints it at the stronger st
     CHECK(tablet(v, QEvent::TabletRelease, 3, 2, 0.0));
     for (int x = 0; x <= 3; ++x)
         CHECK(rungOf(steel, at(w, x, 1)) == 4);
+}
+
+TEST_CASE("a softer move on the dab's own cell is no dab: the smudge after it paints as the replay's (#382)") {
+    // A move the tool drops would still carry smudge's value on had it been
+    // stamped: the last cell would take rung 7 for 6. Replay drops it by the
+    // same rule (bw::takesDab), so the two agree.
+    const char* steps = R"({"version": 1, "start": {"blank": [3, 1]}, "ice": true, "steps": [
+        {"name": "light", "action": "glyph", "glyph": "█", "fg": 7, "points": [[0, 0]]},
+        {"name": "shade", "action": "glyph", "glyph": "▒", "fg": 7, "bg": 8, "points": [[1, 0], [2, 0]]},
+        {"name": "smear", "action": "smudge", "ramp": "steel", "size": 1, "strength": 1, "pressure": "strength",
+         "points": [[0, 0, 1], [1, 0, 0.25], [1, 0, 0.125], [2, 0, 0.75]]}]})";
+    const steps::Script script = steps::parse(steps);
+    const bwcli::replay::Outcome out = bwcli::replay::run(script, bwcli::replay::start(script, {}, {}));
+    REQUIRE(out.captures.size() == 3);
+    const Canvas& smeared = out.captures[1].project.layers.layers()[0].cells;
+    const Canvas& replayed = out.captures[2].project.layers.layers()[0].cells;
+
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    Document* doc = w.document();
+    doc->clear(3, 1, true);
+    CellEdit e;
+    for (int x = 0; x < 3; ++x)
+        e.changes.push_back({x, 0, doc->layerCanvas().at(x, 0), smeared.at(x, 0)});
+    REQUIRE(doc->edit(e));
+    use(w, "smudge");
+    const Ramp steel = ramp("steel");
+    v->setRamp(steel);
+    v->setBrushSettings(BrushSettings{1, Tip::Square, 1.0, PressureTo::Strength});
+    CHECK(rungOf(steel, at(w, 0, 0)) == 8);
+    CHECK(rungOf(steel, at(w, 1, 0)) == 6);
+    CHECK(rungOf(steel, at(w, 2, 0)) == 6);
+    CHECK(tablet(v, QEvent::TabletPress, 0, 0, 1.0));
+    CHECK(tablet(v, QEvent::TabletMove, 1, 0, 0.25));
+    CHECK(tablet(v, QEvent::TabletMove, 1, 0, 0.125));
+    CHECK(tablet(v, QEvent::TabletMove, 2, 0, 0.75));
+    CHECK(tablet(v, QEvent::TabletRelease, 2, 0, 0.0));
+    CHECK(rungOf(steel, at(w, 0, 0)) == 8);
+    CHECK(rungOf(steel, at(w, 1, 0)) == 7);
+    CHECK(rungOf(steel, at(w, 2, 0)) == 6);
+    CHECK(doc->canvas() == replayed);
 }
 
 TEST_CASE("with iCE off the ramp brush writes no shade that needs a bright background") {

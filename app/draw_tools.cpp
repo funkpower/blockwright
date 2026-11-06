@@ -169,13 +169,12 @@ bool BrushTool::begin(const ToolEvent& e) {
 }
 
 bool BrushTool::extend(const ToolEvent& e) {
-    if (!dabs_.empty() && dabs_.back().x == e.cell.x() && dabs_.back().y == e.cell.y()) {
-        // Pressing harder where the pen is can grow the brush; anything else
-        // here paints nothing new (a stroke paints each cell once).
-        if (brushSettings().pressure == PressureTo::Nothing || e.pressure <= dabs_.back().pressure)
-            return false;
-    }
-    addDab(Dab{e.cell.x(), e.cell.y(), e.pressure});
+    // a move to the last dab's cell is a dab only if it presses harder
+    // with pressure on (bw::takesDab, which replay's strokes go by too)
+    const Dab d{e.cell.x(), e.cell.y(), e.pressure};
+    if (!dabs_.empty() && !takesDab(dabs_.back(), d, brushSettings().pressure))
+        return false;
+    addDab(d);
     return true;
 }
 

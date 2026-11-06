@@ -337,9 +337,11 @@ TEST_CASE("a screenshot shows the Tool Options and pen the step is applied with"
     const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720],
       "steps": [
         {"name": "defaults", "action": "rampShade", "screenshot": {"of": "toolOptions"}},
-        {"name": "soft", "action": "rampShade", "size": 3, "tip": "round", "strength": 0.4, "ramp": "steel",
+        {"name": "soft", "action": "rampShade", "size": 3, "tip": "round", "strength": 0.4, "pressure": "size",
+         "ramp": "steel",
          "fg": 12, "bg": 1, "points": [[5, 3]], "screenshot": {"of": "brushSize"}},
-        {"name": "hard", "action": "rampShade", "size": 7, "strength": 0.9, "ramp": "fire", "fg": 14, "bg": 4,
+        {"name": "hard", "action": "rampShade", "size": 7, "strength": 0.9, "pressure": "strength", "ramp": "fire",
+         "fg": 14, "bg": 4,
          "points": [[10, 3]], "screenshot": {"of": "brushSize", "when": "both"}},
         {"name": "held", "action": "rampShade", "screenshot": {"of": "paletteDock"}}
       ]})");
@@ -369,6 +371,7 @@ TEST_CASE("a screenshot shows the Tool Options and pen the step is applied with"
     CHECK(soft.size == 3);
     CHECK(soft.strength == 40);
     CHECK(soft.tip == QVariant(int(Tip::Round)));
+    CHECK(soft.pressure == QVariant(int(PressureTo::Size)));
     CHECK(soft.ramp == QStringLiteral("steel"));
     CHECK(soft.fg == Color::indexed(12));
     CHECK(soft.bg == Color::indexed(1));
@@ -381,6 +384,7 @@ TEST_CASE("a screenshot shows the Tool Options and pen the step is applied with"
         CHECK(h.size == 7);
         CHECK(h.strength == 90);
         CHECK(h.tip == QVariant(int(Tip::Round)));
+        CHECK(h.pressure == QVariant(int(PressureTo::Strength)));
         CHECK(h.ramp == QStringLiteral("fire"));
         CHECK(h.fg == Color::indexed(14));
         CHECK(h.bg == Color::indexed(4));
@@ -390,6 +394,7 @@ TEST_CASE("a screenshot shows the Tool Options and pen the step is applied with"
     const Shown& held = shown["04-held"];
     CHECK(held.size == 7);
     CHECK(held.strength == 90);
+    CHECK(held.pressure == QVariant(int(PressureTo::Strength)));
     CHECK(held.fg == Color::indexed(14));
     CHECK(held.bg == Color::indexed(4));
 

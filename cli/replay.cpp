@@ -58,6 +58,8 @@ void take(ToolSettings& s, const steps::Options& o) {
         s.brush.tip = *o.tip;
     if (o.strength)
         s.brush.strength = *o.strength;
+    if (o.pressure)
+        s.brush.pressure = *o.pressure;
     if (o.light)
         s.brush.lightDirection = *o.light;
     if (o.ramp)
@@ -467,9 +469,17 @@ void step(State& s, const Step& st, Outcome& out) {
         onCanvas(s, st, false);
         editable(s, st);
         pixelsHold(s, st);
+        // each point's pressure scales what the "pressure" option says, as
+        // a stylus's does in the editor (Stroke::stamp); a point the
+        // editor's tool would drop (a move to the last dab's cell that
+        // doesn't press harder with pressure on) is dropped by the same
+        // rule, takesDab (BrushTool::extend)
         std::vector<Dab> dabs;
-        for (const Point& p : st.points)
-            dabs.push_back(Dab{p.x, p.y, p.pressure});
+        for (const Point& p : st.points) {
+            const Dab d{p.x, p.y, p.pressure};
+            if (dabs.empty() || takesDab(dabs.back(), d, s.brush.pressure))
+                dabs.push_back(d);
+        }
         land(s, st, paintStroke(canvasOf(s), *brush, s.brush, dabs, optionsOf(s)), true, out);
     } else if (a == "halfBlock") {
         onCanvas(s, st, true);

@@ -980,6 +980,13 @@ if cmp -s "$tmp/rgb.txt" "$tmp/rgb-want.txt"; then ok "export --irc writes ^C77"
 rp=$tmp/replay
 mkdir -p "$rp"
 expect "replay --help documents the steps file" 0 '"capture": "before-after"' -- "$cli" replay --help
+expect "replay --help names the pressure mode (#382)" 0 '"pressure" none\|size\|strength' -- "$cli" replay --help
+# a point's pressure scales the size with "pressure": "size", and not with none
+printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "s", "action": "glyph", "size": 4, "pressure": "%s", "points": [[3, 2, 0.25]]}]}' size > "$rp/psize.json"
+printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "s", "action": "glyph", "size": 4, "pressure": "%s", "points": [[3, 2, 0.25]]}]}' none > "$rp/pnone.json"
+expect "replay: pressure to size" 0 '^$' -- "$cli" replay "$rp/psize.json" -o "$rp/psize"
+expect "replay: pressure none" 0 '^$' -- "$cli" replay "$rp/pnone.json" -o "$rp/pnone"
+if ! cmp -s "$rp/psize/01-s.ans" "$rp/pnone/01-s.ans"; then ok "replay: pressure to size changes the stroke"; else bad "replay: pressure to size painted what none does"; fi
 expect "replay: the tour" 0 '^$' -- "$cli" replay "$data/replay/tour.json" -o "$rp/tour"
 if diff -r "$data/replay/tour" "$rp/tour" > /dev/null; then ok "replay: the tour's saved bytes"; else bad "replay: the tour differs from data/replay/tour"; fi
 printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}, {"name": "far", "action": "shade", "points": [[9, 0]]}]}' > "$rp/bad.json"

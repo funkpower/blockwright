@@ -866,7 +866,8 @@ mouse button (default left).
 
   tool strokes   shade rampShade form soft despeckle smudge glyph colorize
                  outline rimLight texture spray: "points": [[x, y], ...]
-                 (cells; [x, y, pressure] for a pressure of 0-1)
+                 (cells; [x, y, pressure] for a pressure of 0-1,
+                 which scales what "pressure" says; 1 when left out)
   half-block     halfBlock: "points" (pixels); line, rectangle, ellipse:
                  "from", "to" (pixels); fill, eyedropper: "at" (a pixel)
   gradient       "from", "to" (cells)
@@ -897,6 +898,7 @@ Options, which hold for the steps after it:
 
   "fg", "bg" 0-15 (7 on 0)   "size" 1-256 (1)   "tip" square|round
   "strength" 0-1 (1)         "light" N|NE|E|SE|S|SW|W|NW (NW)
+  "pressure" none|size|strength (none): what a point's pressure scales
   "ramp" a name or [palette indices, dark to light] (fire)
   "symmetry" none|mirrorX|mirrorY|mirrorXY or
              {"mode": "radial", "folds": 2-8, "centre": [x, y]} (a cell

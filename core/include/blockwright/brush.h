@@ -90,6 +90,15 @@ struct Dab {
     int turns = 0;
 };
 
+// Whether a stroke whose last dab is `last` takes the pointer's move to
+// `next` as a dab. A move to the last dab's own cell is taken only when it
+// presses harder there with pressure on, which can grow the brush; any
+// other repeat paints nothing new (a stroke paints each cell once). The
+// editor's brush tool (BrushTool::extend) and replay take a stroke's
+// points by it, so they stamp the same dabs: a brush that carries a value
+// from dab to dab (smudge) would carry a dropped repeat on.
+bool takesDab(const Dab& last, const Dab& next, PressureTo pressure);
+
 // Symmetry (PLAN §10): every dab of a stroke is repeated as these images.
 // Mirror X reflects columns (x to width - 1 - x), mirror Y rows, mirror XY
 // both (four images); radial turns the dab `folds` times (2-8) about the

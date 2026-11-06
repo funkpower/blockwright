@@ -943,3 +943,18 @@ TEST_CASE("shading a region of a real piece leaves what isn't on the ramp", "[br
             if (!rungOf(r, doc.canvas.at(x, y)))
                 CHECK_FALSE(cellsOf(e).count({x, y}));
 }
+
+TEST_CASE("a move to the last dab's cell is a dab only if it presses harder with pressure on", "[brush]") {
+    const Dab last{4, 2, 0.5};
+    for (const PressureTo p : {PressureTo::Nothing, PressureTo::Size, PressureTo::Strength}) {
+        INFO("pressure " << int(p));
+        // another cell is always a dab, at any pressure
+        CHECK(takesDab(last, Dab{5, 2, 0.1}, p));
+        CHECK(takesDab(last, Dab{4, 3, 0.1}, p));
+        // the same cell no softer, or as hard, is none
+        CHECK_FALSE(takesDab(last, Dab{4, 2, 0.1}, p));
+        CHECK_FALSE(takesDab(last, Dab{4, 2, 0.5}, p));
+        // harder only with pressure on
+        CHECK(takesDab(last, Dab{4, 2, 0.75}, p) == (p != PressureTo::Nothing));
+    }
+}

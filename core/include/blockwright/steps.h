@@ -88,6 +88,7 @@ struct Options {
     std::optional<int> size;              // 1-kMaxBrushSize; default 1
     std::optional<Tip> tip;               // default square
     std::optional<double> strength;       // 0-1; default 1
+    std::optional<PressureTo> pressure;   // what a point's pressure scales; default none
     std::optional<Compass> light;         // default NW
     std::optional<Ramp> ramp;             // default fire
     std::optional<Symmetry> symmetry;     // default none

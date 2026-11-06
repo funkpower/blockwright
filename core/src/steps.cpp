@@ -72,9 +72,9 @@ const std::vector<ActionKeys>& actionKeys() {
 }
 
 const std::set<std::string_view> kOptionKeys = {
-    "fg",       "bg",      "size",   "tip",    "strength", "light",    "ramp",  "symmetry",
-    "form",     "hardness", "outline", "keepLint", "glyph",  "filled", "pencil", "gradient",
-    "texture",  "spray",   "pasteMode",
+    "fg",       "bg",      "size",   "tip",    "strength", "pressure", "light",  "ramp",
+    "symmetry", "form",    "hardness", "outline", "keepLint", "glyph", "filled", "pencil",
+    "gradient", "texture", "spray",   "pasteMode",
 };
 
 const std::set<std::string_view> kStepKeys = {"name", "action", "capture", "screenshot"};
@@ -237,6 +237,10 @@ void readOptions(const std::string& where, const QJsonObject& o, Options& opt) {
         opt.tip = choiceOf<Tip>(where, "tip", o["tip"], {{"square", Tip::Square}, {"round", Tip::Round}});
     if (o.contains("strength"))
         opt.strength = numberOf(where, "strength", o["strength"], 0.0, 1.0);
+    if (o.contains("pressure"))
+        opt.pressure = choiceOf<PressureTo>(
+            where, "pressure", o["pressure"],
+            {{"none", PressureTo::Nothing}, {"size", PressureTo::Size}, {"strength", PressureTo::Strength}});
     if (o.contains("light"))
         opt.light = choiceOf<Compass>(where, "light", o["light"],
                                       {{"N", Compass::N},

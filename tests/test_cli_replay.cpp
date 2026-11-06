@@ -7,10 +7,18 @@
 #include "read_file.h"
 #include "replay.h"
 
+#include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/detail.h"
+#include "blockwright/brushes/drawing.h"
 #include "blockwright/brushes/form.h"
+#include "blockwright/brushes/shading.h"
+#include "blockwright/brushes/smudge.h"
+#include "blockwright/brushes/soft.h"
+#include "blockwright/brushes/spray.h"
+#include "blockwright/brushes/texture.h"
 #include "blockwright/glyph.h"
 #include "blockwright/halfblock.h"
+#include "blockwright/layer.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/steps.h"
@@ -21,8 +29,11 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace bw;
@@ -219,6 +230,300 @@ TEST_CASE("form under mirror symmetry paints what the core brush paints", "[repl
     form.rim = true;
     paintsAsCore(cellsOf(out.captures[0]), cellsOf(out.captures[1]), FormShadeBrush(*findRamp("steel"), form), 3, sym,
                  {{2, 3, 1.0}, {6, 3, 1.0}, {6, 6, 1.0}, {2, 6, 1.0}});
+}
+
+// The cells one before-after step changed.
+int changedCells(const bwcli::replay::Outcome& out) {
+    REQUIRE(out.captures.size() == 2);
+    const Canvas& before = cellsOf(out.captures[0]);
+    const Canvas& after = cellsOf(out.captures[1]);
+    int n = 0;
+    for (int y = 0; y < before.height(); ++y)
+        for (int x = 0; x < before.width(); ++x)
+            n += !(before.at(x, y) == after.at(x, y));
+    return n;
+}
+
+// One stroke on a blank start, captured before and after.
+bwcli::replay::Outcome stroke(const std::string& options, const std::string& points) {
+    return blank(R"({"name": "s", "capture": "before-after", )" + options + R"(, "points": )" + points + "}");
+}
+
+TEST_CASE("pressure to size scales a stroke's footprint by its points' pressure, as a stylus's (#382)",
+          "[replay]") {
+    const std::string glyph = R"("action": "glyph", "size": 4)";
+    // 4 x 0.25 is one cell, 4 x 0.5 two, a full press four
+    CHECK(changedCells(stroke(glyph + R"(, "pressure": "size")", "[[10, 5, 0.25]]")) == 1);
+    CHECK(changedCells(stroke(glyph + R"(, "pressure": "size")", "[[10, 5, 0.5]]")) == 4);
+    CHECK(changedCells(stroke(glyph + R"(, "pressure": "size")", "[[10, 5, 1.0]]")) == 16);
+    // a point at half pressure paints what the size it scales to paints
+    CHECK(cellsOf(stroke(glyph + R"(, "pressure": "size")", "[[10, 5, 0.5]]").captures[1]) ==
+          cellsOf(stroke(R"("action": "glyph", "size": 2)", "[[10, 5, 0.5]]").captures[1]));
+    // pressing harder where the pen is grows the dab, and easing off there
+    // leaves it at the peak, as in the editor
+    CHECK(changedCells(stroke(glyph + R"(, "pressure": "size")", "[[10, 5, 0.25], [10, 5, 1.0], [10, 5, 0.5]]")) ==
+          16);
+    // with no pressure, as at the start, it is ignored
+    for (const char* none : {"", R"(, "pressure": "none")"}) {
+        INFO("options" << none);
+        CHECK(changedCells(stroke(glyph + none, "[[10, 5, 0.25]]")) == 16);
+        CHECK(changedCells(stroke(glyph + none, "[[10, 5, 1.0]]")) == 16);
+    }
+}
+
+TEST_CASE("pressure to strength scales a stroke's strength by its points' pressure, as a stylus's (#382)",
+          "[replay]") {
+    const std::string shade = R"("action": "rampShade", "ramp": "steel")";
+    const auto after = [&](const std::string& options, const char* points) {
+        return cellsOf(stroke(shade + options, points).captures[1]);
+    };
+    // half the pressure paints what half the strength does, not what full does
+    const Canvas half = after(R"(, "pressure": "strength")", "[[3, 3, 0.5]]");
+    CHECK(half == after(R"(, "strength": 0.5)", "[[3, 3, 0.5]]"));
+    CHECK(half != after(R"(, "pressure": "strength")", "[[3, 3, 1.0]]"));
+    CHECK(after(R"(, "pressure": "strength")", "[[3, 3, 1.0]]") == after("", "[[3, 3, 1.0]]"));
+    // the size isn't scaled
+    CHECK(changedCells(stroke(shade + R"(, "size": 3, "pressure": "strength")", "[[3, 3, 0.5]]")) == 9);
+    // with none, a light touch shades as a full one
+    CHECK(after(R"(, "pressure": "none")", "[[3, 3, 0.5]]") == after("", "[[3, 3, 1.0]]"));
+}
+
+TEST_CASE("the pressure mode a step sets holds for the steps after it (#382)", "[replay]") {
+    const auto out = blank(R"({"name": "pick", "action": "glyph", "size": 4, "pressure": "size"},
+                              {"name": "light", "action": "glyph", "points": [[3, 3, 0.25]]},
+                              {"name": "off", "action": "glyph", "pressure": "none", "points": [[12, 3, 0.25]]},
+                              {"name": "still-off", "action": "glyph", "points": [[3, 7, 0.25]]})");
+    REQUIRE(out.captures.size() == 4);
+    const auto set = [](const Canvas& c) {
+        int n = 0;
+        for (int y = 0; y < c.height(); ++y)
+            for (int x = 0; x < c.width(); ++x)
+                n += c.at(x, y).ch != U' ';
+        return n;
+    };
+    CHECK(set(cellsOf(out.captures[1])) == 1);
+    CHECK(set(cellsOf(out.captures[2])) == 1 + 16);
+    CHECK(set(cellsOf(out.captures[3])) == 1 + 16 + 16);
+}
+
+namespace {
+
+// The steel rungs of a row of cells, as digits.
+std::string steelRungs(const Canvas& c, int y = 0) {
+    std::string r;
+    for (int x = 0; x < c.width(); ++x) {
+        const auto rung = rungOf(*findRamp("steel"), c.at(x, y));
+        r += rung ? char('0' + *rung) : '?';
+    }
+    return r;
+}
+
+// What the core stroke (Stroke::stamp, the editor's) paints from `before`.
+Canvas asCore(const Canvas& before, const Brush& brush, const BrushSettings& settings, const std::vector<Dab>& dabs) {
+    Canvas c = before;
+    paintStroke(before, brush, settings, dabs).apply(c);
+    return c;
+}
+
+} // namespace
+
+TEST_CASE("a softer point on the dab's own cell carries nothing on to the smudge after it, as in the editor (#382)",
+          "[replay]") {
+    // The editor's tool drops [1, 0, 0.125] (BrushTool::extend); were it
+    // stamped, smudge would carry it on and paint the next cell a rung
+    // lighter, 877 for the editor's 876.
+    const auto run = [](const char* points) {
+        return replayed(std::string(R"({"version": 1, "start": {"blank": [3, 1]}, "ice": true, "steps": [
+            {"name": "light", "action": "glyph", "glyph": "█", "fg": 7, "points": [[0, 0]]},
+            {"name": "shade", "action": "glyph", "glyph": "▒", "fg": 7, "bg": 8, "points": [[1, 0], [2, 0]]},
+            {"name": "smear", "action": "smudge", "ramp": "steel", "size": 1, "strength": 1,
+             "pressure": "strength", "points": )") +
+                        points + "}]}");
+    };
+    const auto repeat = run("[[0, 0, 1], [1, 0, 0.25], [1, 0, 0.125], [2, 0, 0.75]]");
+    REQUIRE(repeat.captures.size() == 3);
+    CHECK(steelRungs(cellsOf(repeat.captures[1])) == "866");
+    CHECK(steelRungs(cellsOf(repeat.captures[2])) == "876");
+    CHECK(cellsOf(repeat.captures[2]) ==
+          cellsOf(run("[[0, 0, 1], [1, 0, 0.25], [2, 0, 0.75]]").captures[2]));
+}
+
+namespace {
+
+// The core brush a replay step of `action` makes from the Tool Options it
+// starts with (the steel ramp; every other option as it starts), as the
+// editor's tools make it: written out here, not taken from replay.
+std::unique_ptr<Brush> defaultBrush(const std::string& action) {
+    const Ramp steel = *findRamp("steel");
+    const Pen pen;
+    const Compass light = BrushSettings{}.lightDirection;
+    if (action == "shade")
+        return std::make_unique<ShadeBrush>(pen, false);
+    if (action == "rampShade")
+        return std::make_unique<RampShadeBrush>(steel, ShadeDirection::Lighten, kRungsPerStep);
+    if (action == "form")
+        return std::make_unique<FormShadeBrush>(steel, FormOptions{});
+    if (action == "soft")
+        return std::make_unique<SoftShadeBrush>(steel, ShadeDirection::Lighten, 0.0);
+    if (action == "despeckle")
+        return std::make_unique<DespeckleBrush>(steel);
+    if (action == "smudge")
+        return std::make_unique<SmudgeBrush>(steel);
+    if (action == "glyph") {
+        Cell c;
+        c.ch = kFullBlock;
+        c.fg = pen.fg;
+        c.bg = pen.bg;
+        return std::make_unique<GlyphBrush>(c);
+    }
+    if (action == "colorize")
+        return std::make_unique<ColorizeBrush>(pen.fg, std::nullopt);
+    if (action == "outline")
+        return std::make_unique<OutlineBrush>(steel, OutlineShape::Ramp);
+    if (action == "rimLight")
+        return std::make_unique<RimLightBrush>(steel, light, false);
+    if (action == "texture")
+        return std::make_unique<TextureBrush>(steel, TextureOptions{}, light);
+    if (action == "spray")
+        return std::make_unique<SprayBrush>(steel, SprayOptions{}, pen.fg, ShadeDirection::Lighten);
+    FAIL("no brush " << action);
+    throw;
+}
+
+} // namespace
+
+TEST_CASE("a point on the dab's own cell is a dab only if it presses harder with pressure on, anywhere in a stroke "
+          "(#382)",
+          "[replay]") {
+    // BrushTool::extend's rule, wherever the repeat falls: first, mid-stroke
+    // or last. With pressure on a harder press is kept and grows the dab;
+    // a softer one, or any repeat with none, is dropped. Each stroke is held
+    // to the core stroke (Stroke::stamp) of the dabs the editor keeps,
+    // listed by hand.
+    const std::vector<Dab> softer{{30, 17, 0.6}, {33, 15, 0.6}, {36, 17, 1.0}};
+    const std::vector<Dab> harder{{9, 17, 0.6}, {12, 15, 0.4}, {12, 15, 0.9}, {15, 17, 1.0}};
+    const std::vector<Dab> harderDropped{{9, 17, 0.6}, {12, 15, 0.4}, {15, 17, 1.0}};
+    for (const char* brush : {"shade", "rampShade", "form", "soft", "despeckle", "smudge", "glyph", "colorize",
+                              "outline", "rimLight", "texture", "spray"}) {
+        for (const auto& [mode, to] : {std::pair{"none", PressureTo::Nothing}, std::pair{"size", PressureTo::Size},
+                                       std::pair{"strength", PressureTo::Strength}}) {
+            INFO(brush << " pressure " << mode);
+            const auto run = [&](const char* points) {
+                return replayed(std::string(R"({"version": 1, "start": {"file": "sphere-steel.ans"}, "steps": [
+                    {"name": "s", "capture": "before-after", "action": ")") +
+                                    brush + R"(", "size": 5, "strength": 0.5, "ramp": "steel", "pressure": ")" +
+                                    mode + R"(", "points": )" + points + "}]}",
+                                fs::path(BW_TEST_DATA) / "brushes");
+            };
+            const auto core = [&](const bwcli::replay::Outcome& out, const std::vector<Dab>& dabs) {
+                REQUIRE(out.captures.size() == 2);
+                const project::Project& p = out.captures[0].project;
+                StrokeOptions opts = layerStrokeOptions(p.layers.layers()[0]);
+                opts.ice = p.ice;
+                Canvas c = cellsOf(out.captures[0]);
+                paintStroke(c, *defaultBrush(brush), BrushSettings{5, Tip::Square, 0.5, to}, dabs, opts).apply(c);
+                return c;
+            };
+            const bool on = to != PressureTo::Nothing;
+            // softer repeats at the start, mid-stroke and at the end
+            const auto soft = run("[[30, 17, 0.6], [30, 17, 0.4], [33, 15, 0.6], [33, 15, 0.3], [33, 15, 0.6], "
+                                  "[36, 17, 1.0], [36, 17, 0.5]]");
+            CHECK(cellsOf(soft.captures[1]) == core(soft, softer));
+            // a harder repeat mid-stroke, on the sphere's dark side where a
+            // stronger dab has rungs to lighten: a dab with pressure on,
+            // dropped with none
+            const auto hard = run("[[9, 17, 0.6], [12, 15, 0.4], [12, 15, 0.9], [15, 17, 1.0]]");
+            CHECK(cellsOf(hard.captures[1]) == core(hard, on ? harder : harderDropped));
+        }
+    }
+    // and a kept harder repeat paints what its pressure says: size 5 at 0.2
+    // is one cell, at 1.0 five by five
+    CHECK(changedCells(stroke(R"("action": "glyph", "size": 5, "pressure": "size")", "[[10, 5, 0.2], [10, 5, 1.0]]")) ==
+          25);
+}
+
+TEST_CASE("a harder press on the dab's own cell shades as hard as it presses, not as the first touch (#382)",
+          "[replay]") {
+    // strength 1 under pressure to strength, from a blank cell (rung 0): a
+    // quarter press lightens it one rung, a full one kRungsPerStep (4). The
+    // harder repeat is kept, so the cell is left at rung 4, not at the light
+    // touch's 1.
+    const std::string shade = R"("action": "rampShade", "ramp": "steel", "strength": 1, "pressure": "strength")";
+    const auto rungs = [&](const char* points) {
+        const auto out = stroke(shade, points);
+        return std::string{steelRungs(cellsOf(out.captures[0]), 3)[3], steelRungs(cellsOf(out.captures[1]), 3)[3]};
+    };
+    CHECK(rungs("[[3, 3, 0.25]]") == "01");
+    CHECK(rungs("[[3, 3, 1]]") == "04");
+    CHECK(rungs("[[3, 3, 0.25], [3, 3, 1]]") == "04");
+}
+
+TEST_CASE("zero pressure scales the size to one cell and the strength to nothing, as Stroke::stamp does (#382)",
+          "[replay]") {
+    CHECK(changedCells(stroke(R"("action": "glyph", "size": 4, "pressure": "size")", "[[10, 5, 0]]")) == 1);
+    const auto out = stroke(R"("action": "rampShade", "ramp": "steel", "pressure": "strength")", "[[3, 3, 0]]");
+    const Canvas& before = cellsOf(out.captures[0]);
+    const RampShadeBrush shade(*findRamp("steel"), ShadeDirection::Lighten, kRungsPerStep);
+    const Canvas core = asCore(before, shade, BrushSettings{1, Tip::Square, 1.0, PressureTo::Strength}, {{3, 3, 0.0}});
+    CHECK(cellsOf(out.captures[1]) == core);
+    // strength 0 at a full press paints the same
+    CHECK(core == asCore(before, shade, BrushSettings{1, Tip::Square, 0.0, PressureTo::Nothing}, {{3, 3, 1.0}}));
+}
+
+TEST_CASE("a size scaled by pressure is rounded to the nearest cell, halves away from zero, as Stroke::stamp does "
+          "(#382)",
+          "[replay]") {
+    const auto cells = [](int size, const char* p) {
+        return changedCells(stroke(R"("action": "glyph", "pressure": "size", "size": )" + std::to_string(size),
+                                   std::string("[[10, 5, ") + p + "]]"));
+    };
+    CHECK(cells(5, "0.5") == 3 * 3);   // 2.5 -> 3
+    CHECK(cells(5, "0.3") == 2 * 2);   // 1.5 -> 2
+    CHECK(cells(5, "0.29") == 1);      // 1.45 -> 1
+    CHECK(cells(5, "0.7") == 4 * 4);   // 3.5 -> 4
+    CHECK(cells(5, "0.69") == 3 * 3);  // 3.45 -> 3
+    CHECK(cells(3, "0.5") == 2 * 2);   // 1.5 -> 2
+    // the cells are the core's footprint at that size, a round tip's too
+    const auto out = stroke(R"("action": "glyph", "tip": "round", "size": 5, "pressure": "size")", "[[10, 5, 0.7]]");
+    const Canvas& before = cellsOf(out.captures[0]);
+    const Canvas& after = cellsOf(out.captures[1]);
+    std::set<std::pair<int, int>> painted;
+    for (int y = 0; y < before.height(); ++y)
+        for (int x = 0; x < before.width(); ++x)
+            if (!(before.at(x, y) == after.at(x, y)))
+                painted.insert({x, y});
+    const auto tip = footprint(10, 5, 4, Tip::Round, before.width(), before.height());
+    CHECK(painted == std::set<std::pair<int, int>>(tip.begin(), tip.end()));
+    for (const int other : {3, 5}) {
+        const auto t = footprint(10, 5, other, Tip::Round, before.width(), before.height());
+        CHECK(painted != std::set<std::pair<int, int>>(t.begin(), t.end()));
+    }
+}
+
+TEST_CASE("pressure multiplies a strength below 1, as Stroke::stamp does (#382)", "[replay]") {
+    const std::string shade = R"("action": "rampShade", "ramp": "steel")";
+    const auto out = stroke(shade + R"(, "strength": 0.5, "pressure": "strength")", "[[3, 3, 0.5]]");
+    const Canvas& before = cellsOf(out.captures[0]);
+    const RampShadeBrush brush(*findRamp("steel"), ShadeDirection::Lighten, kRungsPerStep);
+    // 0.5 x 0.5: a quarter strength, one rung of the four a full one takes
+    const Canvas quarter = asCore(before, brush, BrushSettings{1, Tip::Square, 0.25, PressureTo::Nothing}, {{3, 3, 1.0}});
+    CHECK(cellsOf(out.captures[1]) == quarter);
+    CHECK(cellsOf(out.captures[1]) ==
+          asCore(before, brush, BrushSettings{1, Tip::Square, 0.5, PressureTo::Strength}, {{3, 3, 0.5}}));
+    CHECK(rungOf(*findRamp("steel"), cellsOf(out.captures[1]).at(3, 3)) == 1);
+    // not what half strength or half pressure alone paints
+    CHECK(cellsOf(out.captures[1]) != cellsOf(stroke(shade + R"(, "strength": 0.5)", "[[3, 3, 1]]").captures[1]));
+}
+
+TEST_CASE("a point without a pressure presses fully under either pressure mode, as a mouse does (#382)",
+          "[replay]") {
+    CHECK(changedCells(stroke(R"("action": "glyph", "size": 4, "pressure": "size")", "[[10, 5]]")) == 16);
+    const std::string shade = R"("action": "rampShade", "ramp": "steel", "strength": 0.5)";
+    const auto out = stroke(shade + R"(, "pressure": "strength")", "[[3, 3]]");
+    const RampShadeBrush brush(*findRamp("steel"), ShadeDirection::Lighten, kRungsPerStep);
+    CHECK(cellsOf(out.captures[1]) == asCore(cellsOf(out.captures[0]), brush,
+                                             BrushSettings{1, Tip::Square, 0.5, PressureTo::Strength}, {{3, 3}}));
+    CHECK(rungOf(*findRamp("steel"), cellsOf(out.captures[1]).at(3, 3)) == 2);
 }
 
 TEST_CASE("outline under radial symmetry paints what the core brush paints", "[replay]") {

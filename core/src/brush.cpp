@@ -566,6 +566,12 @@ CellEdit Stroke::edit() const {
     return e;
 }
 
+bool takesDab(const Dab& last, const Dab& next, PressureTo pressure) {
+    if (last.x != next.x || last.y != next.y)
+        return true;
+    return pressure != PressureTo::Nothing && next.pressure > last.pressure;
+}
+
 CellEdit paintStroke(const Canvas& canvas, const Brush& brush, const BrushSettings& settings,
                       const std::vector<Dab>& dabs, const StrokeOptions& options) {
     Stroke s(canvas, brush, settings, options);
