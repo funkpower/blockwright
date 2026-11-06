@@ -39,10 +39,7 @@ using steps::Button;
 using steps::Point;
 using steps::Step;
 
-namespace {
-
-// The longest named ramp's top rung: where the gradient tool's "to" starts,
-// so a new gradient runs the whole of any ramp.
+// The longest named ramp's top rung.
 int longestTopRung() {
     int top = 0;
     for (const Ramp& r : namedRamps())
@@ -50,41 +47,7 @@ int longestTopRung() {
     return top;
 }
 
-// What Tool Options and the editor hold between steps.
-struct State {
-    project::Project p;
-    LayerId active = 0;
-    Selection selection;
-    std::optional<CellBlock> clipboard;
-
-    Pen pen;
-    BrushSettings brush;
-    Ramp ramp = *findRamp("fire");
-    Symmetry symmetry;
-    FormOptions form;
-    double hardness = 0.0;
-    OutlineShape outline = OutlineShape::Ramp;
-    bool keepLint = false;
-    char32_t glyph = kFullBlock;
-    bool filled = false;
-    Connectivity pencil = Connectivity::Four;
-    GradientShape gradientShape = GradientShape::Linear;
-    GradientBanding gradientBanding = GradientBanding::Cells;
-    int gradientFrom = 0, gradientTo = longestTopRung();
-    TextureOptions texture;
-    SprayOptions spray;
-    PasteMode pasteMode = PasteMode::Normal;
-
-    LayerStack& stack() { return p.layers; }
-    int width() const { return p.layers.width(); }
-    int height() const { return p.layers.height(); }
-    Layer& layer() { return *p.layers.find(active); }
-    std::size_t index() const { return *p.layers.indexOf(active); }
-};
-
-[[noreturn]] void fail(const Step& step, const std::string& why) { throw Failure{steps::stepLabel(step) + ": " + why}; }
-
-void take(State& s, const steps::Options& o) {
+void take(ToolSettings& s, const steps::Options& o) {
     if (o.fg)
         s.pen.fg = Color::indexed(*o.fg);
     if (o.bg)
@@ -130,6 +93,24 @@ void take(State& s, const steps::Options& o) {
     if (o.pasteMode)
         s.pasteMode = *o.pasteMode;
 }
+
+namespace {
+
+// What the editor holds between steps: its document, and Tool Options.
+struct State : ToolSettings {
+    project::Project p;
+    LayerId active = 0;
+    Selection selection;
+    std::optional<CellBlock> clipboard;
+
+    LayerStack& stack() { return p.layers; }
+    int width() const { return p.layers.width(); }
+    int height() const { return p.layers.height(); }
+    Layer& layer() { return *p.layers.find(active); }
+    std::size_t index() const { return *p.layers.indexOf(active); }
+};
+
+[[noreturn]] void fail(const Step& step, const std::string& why) { throw Failure{steps::stepLabel(step) + ": " + why}; }
 
 std::string at(const Point& p) { return "(" + std::to_string(p.x) + ", " + std::to_string(p.y) + ")"; }
 
@@ -702,8 +683,11 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
         const std::string stem = stepNumber(st.number, count) + "-" + st.name;
         if (st.capture == steps::Capture::BeforeAfter)
             out.captures.push_back({stem + "-before", s.p});
-        if (observe)
-            observe({st, true, s.p, s.active, s.selection});
+        if (observe) {
+            ToolSettings set = s;
+            take(set, st.options);
+            observe({st, true, s.p, s.active, s.selection, set});
+        }
         try {
             step(s, st, out);
         } catch (const Failure&) {
@@ -716,7 +700,7 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
             fail(st, e.what());
         }
         if (observe)
-            observe({st, false, s.p, s.active, s.selection});
+            observe({st, false, s.p, s.active, s.selection, s});
         out.captures.push_back({st.capture == steps::Capture::BeforeAfter ? stem + "-after" : stem, s.p});
     }
     return out;

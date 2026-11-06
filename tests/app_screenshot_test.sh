@@ -1,8 +1,9 @@
 #!/bin/sh
 # blockwright --screenshot (#295) with no display: app_screenshot_test.sh <blockwright> <test data> <scratch dir>
 # The pictures a steps file asks for are written, one PNG each, the size of
-# what they show; a dock the window doesn't have names the step and writes
-# nothing; usage errors exit 2. POSIX sh and tools only.
+# what they show; a dock the window doesn't have, a tool it doesn't have or
+# a Tool Option out of range names the step and writes nothing; usage errors
+# exit 2. POSIX sh and tools only.
 bin=$1
 data=$2
 tmp=$3
@@ -54,6 +55,40 @@ if [ "$st" -eq 1 ] && [ "$named" = 1 ] && [ ! -e "$tmp/nope/01-first.png" ]; the
   ok "an unknown dock fails at its step and writes nothing"
 else
   bad "an unknown dock (exit $st): $out"
+fi
+
+# A tool the editor doesn't have, or a Tool Option out of its range: the
+# steps file is refused before the window opens, exit 1, naming the step
+# and what is wrong, and nothing written.
+cat >"$tmp/tool.json" <<'EOF2'
+{"version": 1, "start": {"blank": [10, 4]}, "steps": [
+  {"name": "first", "action": "selectAll", "screenshot": {}},
+  {"name": "paint", "action": "airbrush", "size": 3, "screenshot": {"of": "toolOptions"}}]}
+EOF2
+out=$("$bin" --screenshot "$tmp/tool.json" -o "$tmp/tool" 2>&1); st=$?
+case $out in
+  *'step 2 (paint): unknown action "airbrush"'*) named=1 ;;
+  *) named=0 ;;
+esac
+if [ "$st" -eq 1 ] && [ "$named" = 1 ] && [ ! -e "$tmp/tool" ]; then
+  ok "an unknown tool is refused at its step and nothing is written"
+else
+  bad "an unknown tool (exit $st): $out"
+fi
+cat >"$tmp/strength.json" <<'EOF2'
+{"version": 1, "start": {"blank": [10, 4]}, "steps": [
+  {"name": "first", "action": "selectAll", "screenshot": {}},
+  {"name": "too-strong", "action": "rampShade", "strength": 2, "screenshot": {"of": "toolOptions"}}]}
+EOF2
+out=$("$bin" --screenshot "$tmp/strength.json" -o "$tmp/strength" 2>&1); st=$?
+case $out in
+  *'step 2 (too-strong): '*'"strength"'*) named=1 ;;
+  *) named=0 ;;
+esac
+if [ "$st" -eq 1 ] && [ "$named" = 1 ] && [ ! -e "$tmp/strength" ]; then
+  ok "a Tool Option out of range is refused at its step and nothing is written"
+else
+  bad "a Tool Option out of range (exit $st): $out"
 fi
 
 # A steps file that can't be read is an error, not a crash.

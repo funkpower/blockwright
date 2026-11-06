@@ -696,7 +696,7 @@ void ToolOptions::sync() {
     tip_->setCurrentIndex(tip_->findData(int(s.tip)));
     strength_->setValue(int(std::lround(s.strength * 100)));
     pressure_->setCurrentIndex(pressure_->findData(int(s.pressure)));
-    ramp_->setCurrentIndex(ramp_->findData(QString::fromStdString(view_->ramp().name)));
+    syncRamp();
     lock_->setChecked(view_->lockTransparent());
     merged_->setChecked(view_->sampleMerged());
     light_->setCurrentIndex(light_->findData(int(s.lightDirection)));
@@ -755,6 +755,30 @@ void ToolOptions::sync() {
         rimLint_->setChecked(rimTool_->keepLint());
     // A Library stamp floats in a mode of its own; the dock shows it.
     pasteMode_->setCurrentIndex(pasteMode_->findData(int(select_->effectivePasteMode())));
+}
+
+// A ramp that isn't one of the named ones (a steps file's palette indices)
+// shows as a "Custom" entry with its swatches, last in the list and there
+// only while it is the view's ramp. Choosing it changes nothing: apply()
+// finds no named ramp by its data.
+void ToolOptions::syncRamp() {
+    const QString customData = QStringLiteral("custom");
+    const Ramp& r = view_->ramp();
+    const auto named = findRamp(r.name);
+    int custom = ramp_->findData(customData);
+    if (named && *named == r) {
+        ramp_->setCurrentIndex(ramp_->findData(QString::fromStdString(r.name)));
+        if (custom >= 0)
+            ramp_->removeItem(custom);
+        return;
+    }
+    if (custom < 0) {
+        ramp_->addItem(rampIcon(r), tr("Custom"), customData);
+        custom = ramp_->count() - 1;
+    } else {
+        ramp_->setItemIcon(custom, rampIcon(r));
+    }
+    ramp_->setCurrentIndex(custom);
 }
 
 void ToolOptions::apply() {

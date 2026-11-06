@@ -5,6 +5,7 @@
 // Writing the captures is the command's (main.cpp); everything here is in
 // memory, so a step that fails leaves nothing written.
 
+#include "blockwright/edit.h"
 #include "blockwright/project.h"
 #include "blockwright/steps.h"
 
@@ -38,14 +39,48 @@ struct Outcome {
 bw::project::Project start(const bw::steps::Script& script, const std::filesystem::path& dir,
                            const std::filesystem::path& samplesDir, std::vector<std::string>* notes = nullptr);
 
+// The longest named ramp's top rung: where the gradient's "to" starts, so
+// a new gradient runs the whole of any ramp.
+int longestTopRung();
+
+// What Tool Options and the palette hold between steps: the defaults
+// steps.h lists at the start, and each step's options taken as it is
+// applied (they hold for the steps after it).
+struct ToolSettings {
+    bw::Pen pen;
+    bw::BrushSettings brush;
+    bw::Ramp ramp = *bw::findRamp("fire");
+    bw::Symmetry symmetry;
+    bw::FormOptions form;
+    double hardness = 0.0;
+    bw::OutlineShape outline = bw::OutlineShape::Ramp;
+    bool keepLint = false;
+    char32_t glyph = bw::kFullBlock;
+    bool filled = false;
+    bw::Connectivity pencil = bw::Connectivity::Four;
+    bw::GradientShape gradientShape = bw::GradientShape::Linear;
+    bw::GradientBanding gradientBanding = bw::GradientBanding::Cells;
+    int gradientFrom = 0, gradientTo = longestTopRung();
+    bw::TextureOptions texture;
+    bw::SprayOptions spray;
+    bw::PasteMode pasteMode = bw::PasteMode::Normal;
+};
+
+// `settings` with the options a step sets taken into it.
+void take(ToolSettings& settings, const bw::steps::Options& options);
+
 // The replay just before or after a step, as the editor would hold it: what
-// the window's screenshots (#295) put in the window.
+// the window's screenshots (#295) put in the window. `settings` are the Tool
+// Options and pen the step is applied with, before it as after it: the
+// steps before it left them and the step's own options are taken in, as
+// they are set in the editor before the step's drag or click.
 struct Moment {
     const bw::steps::Step& step;
     bool before;
     const bw::project::Project& project;
     bw::LayerId active;
     const bw::Selection& selection;
+    const ToolSettings& settings;
 };
 using Observer = std::function<void(const Moment&)>;
 

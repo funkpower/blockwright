@@ -36,14 +36,19 @@ struct Shot {
 };
 
 // The script replayed from `start` with `window` showing each screenshot's
-// moment, every picture in memory. The window is resized to the script's
+// moment, every picture in memory. A moment is the replay's project, active
+// layer and selection, the step's tool, and the Tool Options and pen the
+// step is applied with (bwcli::replay::Moment::settings), which Tool Options
+// and the palette show. The window is resized to the script's
 // size (kDefaultWindowSize without one) and its cell cursor hidden. A dock
 // asked for is brought to the front of its tabs, and each shown dock in the
 // picture that follows the document (Lint, IRC View) is waited for until it
 // shows the moment's document. Throws bwcli::Failure naming the step for a
 // step that can't be applied, a dock or widget the window doesn't have, or
-// a crop off it.
-std::vector<Shot> take(MainWindow& window, const steps::Script& script, project::Project start);
+// a crop off it. `taken`, for tests, sees each picture as it is taken,
+// while the window still shows its moment.
+std::vector<Shot> take(MainWindow& window, const steps::Script& script, project::Project start,
+                       const std::function<void(const Shot&)>& taken = {});
 
 // Writes each shot as <dir>/<stem>.png, all of them or none, as
 // `blockwright-cli replay` writes its captures (bwcli::saveAll): every PNG

@@ -90,7 +90,8 @@ int main(int argc, char** argv) {
                          "                   \"crop\": {\"cells\": [x, y, w, h]} | {\"pixels\": [x, y, w, h]},\n"
                          "                   \"when\": \"before\" | \"after\" | \"both\"}, as NN-<name>.png\n"
                          "                  (-before, -after); a top-level \"window\": [w, h] sizes the\n"
-                         "                  window (default 1280 x 800)\n";
+                         "                  window (default 1280 x 800); Tool Options and the palette\n"
+                         "                  show the options and colours each step is applied with\n";
             return 0;
         } else if (!std::strcmp(a, "--list-actions")) {
             listActions = true;

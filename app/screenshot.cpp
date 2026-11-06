@@ -1,8 +1,10 @@
 #include "screenshot.h"
 
 #include "canvas_view.h"
+#include "draw_tools.h"
 #include "lint_dock.h"
 #include "main_window.h"
+#include "select_tool.h"
 #include "settings.h"
 #include "tool.h"
 
@@ -14,6 +16,7 @@
 #include "replay.h"
 #include "save_all.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QBuffer>
 #include <QDockWidget>
@@ -119,22 +122,60 @@ QRect cropOf(MainWindow& w, const steps::Step& step, const Screenshot& shot, QWi
     return QRect(view->mapTo(of, cells.topLeft()), cells.size());
 }
 
+template <class T> T* toolNamed(MainWindow& w, const char* id) {
+    return qobject_cast<T*>(w.tools()->find(QString::fromLatin1(id)));
+}
+
+// The replay's Tool Options and pen put where the editor keeps them (the
+// view and the tools), which Tool Options and the palette follow.
+void showSettings(MainWindow& w, const bwcli::replay::ToolSettings& s) {
+    CanvasView* v = w.canvasView();
+    v->setPen(s.pen);
+    v->setBrushSettings(s.brush);
+    v->setRamp(s.ramp);
+    v->setSymmetry(s.symmetry);
+    v->setFormOptions(s.form);
+    v->setHardness(s.hardness);
+    v->setOutlineShape(s.outline);
+    v->setTextureOptions(s.texture);
+    v->setPencilConnectivity(s.pencil);
+    if (auto* filled = w.findChild<QAction*>(QStringLiteral("filledShapes")))
+        filled->setChecked(s.filled);
+    if (auto* t = toolNamed<GlyphTool>(w, "glyph"))
+        t->setGlyph(s.glyph);
+    if (auto* t = toolNamed<RimLightTool>(w, "rimLight"))
+        t->setKeepLint(s.keepLint);
+    if (auto* t = toolNamed<GradientTool>(w, "gradient")) {
+        t->setShape(s.gradientShape);
+        t->setBanding(s.gradientBanding);
+        t->setRungs(s.gradientFrom, s.gradientTo);
+    }
+    if (auto* t = toolNamed<SprayTool>(w, "spray")) {
+        t->setKind(s.spray.kind);
+        t->setDensity(s.spray.density);
+        t->setSeed(s.spray.seed);
+    }
+    w.selectTool()->setPasteMode(s.pasteMode);
+}
+
 // The replay at `m` put into the window: its project, active layer and
-// selection, and the step's tool, if it has one, chosen as the Tools menu
-// chooses it.
+// selection, the step's tool, if it has one, chosen as the Tools menu
+// chooses it, and the Tool Options and pen the step is applied with.
 void show(MainWindow& w, const bwcli::replay::Moment& m) {
     Document* doc = w.document();
     doc->replace(m.project, QString(), FileForm::ProjectZip);
     doc->setActiveLayer(m.active);
     if (Tool* t = w.tools()->find(QString::fromStdString(m.step.action)))
         w.tools()->setActive(t);
+    showSettings(w, m.settings);
     w.canvasView()->setSelection(m.selection);
     settle();
 }
 
 } // namespace
 
-std::vector<Shot> take(MainWindow& window, const steps::Script& script, project::Project start) {
+std::vector<Shot> take(MainWindow& window, const steps::Script& script, project::Project start,
+                       const std::function<void(const Shot&)>& taken) {
     // As openProject: the renderer takes the canvas first, so one too large
     // to display is refused before the window has it. No step changes the
     // canvas's size.
@@ -179,6 +220,8 @@ std::vector<Shot> take(MainWindow& window, const steps::Script& script, project:
         else if (shot.when == When::Both || m.step.capture == steps::Capture::BeforeAfter)
             stem += "-after";
         shots.push_back({stem, of->grab(r).toImage()});
+        if (taken)
+            taken(shots.back());
     });
     return shots;
 }
