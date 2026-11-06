@@ -28,13 +28,16 @@
 #include <csignal>
 #endif
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <regex>
 #include <set>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 using namespace bw;
@@ -105,6 +108,87 @@ std::string locks(const LayerProperties& p) {
     if (p.alphaLocked)
         out += out.empty() ? "alpha" : ", alpha";
     return out.empty() ? "-" : out;
+}
+
+// A stack's layers bottom first, each with whether it shows: what a variant
+// leaves, its order and its visibility both.
+using StackState = std::vector<std::pair<std::string, bool>>;
+
+StackState stackState(const LayerStack& s) {
+    StackState out;
+    for (const Layer& l : s.layers())
+        out.emplace_back(l.props.name, l.props.visible);
+    return out;
+}
+
+// The layers in `order`, bottom first, all shown but the `hidden` ones.
+StackState stackState(const std::vector<std::string>& order, const std::set<std::string>& hidden) {
+    StackState out;
+    for (const std::string& name : order)
+        out.emplace_back(name, hidden.count(name) == 0);
+    return out;
+}
+
+// A sample's variants are exactly the `expected` ones, each once, so a
+// repeated name can't stand in for another and skip its check, and each
+// leaves the stack in exactly the order and visibility given for it.
+void checkVariants(const project::Project& p, const std::map<std::string, StackState>& expected) {
+    const Notes notes = parseNotes(p.notes);
+    std::vector<std::string> variantNames;
+    for (const Variant& v : notes.variants)
+        variantNames.push_back(v.name);
+    std::sort(variantNames.begin(), variantNames.end());
+    std::vector<std::string> expectedNames;
+    for (const auto& [name, state] : expected)
+        expectedNames.push_back(name);
+    REQUIRE(variantNames == expectedNames);
+    for (const Variant& v : notes.variants) {
+        INFO(v.name);
+        project::Project changed = p;
+        REQUIRE_NOTHROW(applyVariant(changed.layers, v));
+        CHECK(stackState(changed.layers) == expected.at(v.name));
+    }
+}
+
+// The snapshots are rounds 1 to 3, each decoded and the canvas of its stage
+// (a stage left empty, one this host can't make, is skipped).
+void checkSnapshots(const project::Project& p, const std::vector<std::optional<Canvas>>& stages) {
+    REQUIRE(stages.size() == 3);
+    CHECK(stages[0] != stages[1]);
+    CHECK(stages[1] != stages[2]);
+    REQUIRE(p.snapshots.size() == 3);
+    for (std::size_t i = 0; i < 3; ++i) {
+        INFO("r" << i + 1);
+        CHECK(p.snapshots[i].round == int(i) + 1);
+        if (stages[i])
+            CHECK(parseAnsi(p.snapshots[i].ans).canvas == *stages[i]);
+    }
+}
+
+// The narrowest crest or trough of a ridge's top edge (its row in each
+// column), in columns: a level run with both neighbouring runs below it or
+// both above. A line with no crest or trough has none narrower than itself.
+int narrowestTurn(const std::vector<int>& edge) {
+    std::vector<std::pair<int, int>> runs;  // each level run's row and width
+    for (int row : edge) {
+        if (runs.empty() || runs.back().first != row)
+            runs.emplace_back(row, 0);
+        ++runs.back().second;
+    }
+    int narrowest = int(edge.size());
+    for (std::size_t i = 1; i + 1 < runs.size(); ++i)
+        if ((runs[i].first < runs[i - 1].first) == (runs[i].first < runs[i + 1].first))
+            narrowest = std::min(narrowest, runs[i].second);
+    return narrowest;
+}
+
+// The project with the layers named in `hidden` hidden, and nothing else.
+project::Project hiding(const project::Project& p, const std::set<std::string>& hidden) {
+    project::Project out = p;
+    for (std::size_t i = 0; i < out.layers.size(); ++i)
+        if (hidden.count(out.layers[i].props.name))
+            out.layers[i].props.visible = false;
+    return out;
 }
 
 project::Project small(const std::string& notes) {
@@ -610,12 +694,41 @@ TEST_CASE("the still life sample keeps each object, its shadows and its rim ligh
         CHECK_FALSE(project::toAnsi(off).canvas == whole);
     }
 
-    // three rounds: flat, shaded, lit
-    REQUIRE(p.snapshots.size() == 3);
-    for (int i = 0; i < 3; ++i)
-        CHECK(p.snapshots[std::size_t(i)].round == i + 1);
-    CHECK(p.snapshots[0].ans != p.snapshots[1].ans);
-    CHECK(p.snapshots[1].ans != p.snapshots[2].ans);
+    // the variants: the rim light, the shadows, or both, hidden
+    const std::vector<std::string> order{"wall", "table", "shadows", "cylinder", "box", "sphere", "rim light"};
+    checkVariants(p, {
+                         {"No rim light", stackState(order, {"rim light"})},
+                         {"No shadows", stackState(order, {"shadows"})},
+                         {"Form only", stackState(order, {"rim light", "shadows"})},
+                     });
+
+    // three rounds, each decoded and held to its stage: the objects blocked
+    // in flat, each its own shape in one colour, the middle solid colour of
+    // its ramp (the cylinder magenta on violet, the box brown on wood
+    // without its black, the ball blue on sea), over the wall and the table;
+    // each shaded inside its shape, before the shadows and the rim light;
+    // the finished piece
+    project::Project blockedIn = hiding(p, {"shadows", "rim light"});
+    const project::Project shaded = blockedIn;
+    const std::map<std::string, std::uint8_t> flat{{"cylinder", Magenta}, {"box", Brown}, {"sphere", Blue}};
+    for (std::size_t i = 0; i < blockedIn.layers.size(); ++i) {
+        Layer& l = blockedIn.layers[i];
+        if (!flat.count(l.props.name))
+            continue;
+        int filled = 0;
+        for (int y = 0; y < l.cells.height(); ++y)
+            for (int x = 0; x < l.cells.width(); ++x) {
+                Cell& c = l.cells.at(x, y);
+                if (c.transparent)
+                    continue;
+                c.ch = U' ';
+                c.fg = Color::indexed(Black);
+                c.bg = Color::indexed(flat.at(l.props.name));
+                ++filled;
+            }
+        CHECK(filled > 0);
+    }
+    checkSnapshots(p, {project::toAnsi(blockedIn).canvas, project::toAnsi(shaded).canvas, whole});
 
     // it saves back as it reads, as a directory and as a zip
     const fs::path out = scratch("still-life-round-trip");
@@ -720,6 +833,72 @@ TEST_CASE("the generator sample keeps its generators, their parameters and a bak
     CHECK(baked.cells == bake(ridgeLayer, p.ice).cells);
     CHECK_FALSE(named(p.layers, "ridges (seed 12)").cells == ridgeLayer.cells);
 
+    // The first round as the notes give it, on every host and running
+    // nothing: the sky and the stars as the piece keeps them, and under
+    // them two smooth ridges and nothing else. Down each column the cells
+    // are the sky's to the far ridge's edge, then two bands, each in one
+    // look all along the ridge: the far one, the light blue the far ridge
+    // always is, two or three rows deep, then the near one, darker, to the
+    // bottom. Each edge climbs or drops a row a column at most, the far one
+    // between the highest row the piece keeps (18) and the seven under it.
+    // With no roughness each crest and trough of an edge is a rolling one,
+    // four columns across or more, where roughness puts jags a column or
+    // two across on them.
+    {
+        const Canvas r1 = parseAnsi(p.snapshots.at(0).ans).canvas;
+        const Canvas skyAndStars = project::toAnsi(hiding(p, {"ridges", "lake", "shore", "pines", "cabin"})).canvas;
+        REQUIRE(r1.width() == skyAndStars.width());
+        REQUIRE(r1.height() == skyAndStars.height());
+        std::vector<int> farEdge, nearEdge;
+        std::vector<Cell> farLooks, nearLooks;
+        for (int x = 0; x < r1.width(); ++x) {
+            INFO("r1, column " << x);
+            int y = 0;
+            while (y < r1.height() && r1.at(x, y) == skyAndStars.at(x, y))
+                ++y;
+            std::vector<std::pair<int, Cell>> bands;  // under the sky, each run of one look: its top row and look
+            for (; y < r1.height(); ++y)
+                if (bands.empty() || !(r1.at(x, y) == bands.back().second))
+                    bands.emplace_back(y, r1.at(x, y));
+            CHECK(bands.size() == 2);
+            if (bands.size() != 2)
+                continue;
+            farEdge.push_back(bands[0].first);
+            nearEdge.push_back(bands[1].first);
+            farLooks.push_back(bands[0].second);
+            nearLooks.push_back(bands[1].second);
+        }
+        REQUIRE(int(farEdge.size()) == r1.width());
+        for (const Cell& c : farLooks)
+            CHECK(c == farLooks[0]);
+        for (const Cell& c : nearLooks)
+            CHECK(c == nearLooks[0]);
+        const Cell& far = farLooks[0];
+        const Cell& near = nearLooks[0];
+        CHECK(far.ch.codePointOr(kNoCodePoint) == U'█');
+        CHECK(far.fg.paletteIndex() == LightBlue);
+        CHECK(value(near) < value(far));
+        CHECK(value(far) < glow);
+        for (const Cell& c : {far, near})
+            CHECK(skyLooks.count({c.ch.bits(), c.fg.paletteIndex(), c.bg.paletteIndex()}) == 0);
+        for (int x = 0; x < r1.width(); ++x) {
+            INFO("r1, column " << x << ": far edge at row " << farEdge[x] << ", near at " << nearEdge[x]);
+            CHECK(farEdge[x] >= 18);
+            CHECK(farEdge[x] <= 25);
+            CHECK((nearEdge[x] - farEdge[x] == 2 || nearEdge[x] - farEdge[x] == 3));
+            if (x > 0) {
+                CHECK(std::abs(farEdge[x] - farEdge[x - 1]) <= 1);
+                CHECK(std::abs(nearEdge[x] - nearEdge[x - 1]) <= 1);
+            }
+        }
+        CHECK(*std::min_element(farEdge.begin(), farEdge.end()) < *std::max_element(farEdge.begin(), farEdge.end()));
+        CHECK(narrowestTurn(farEdge) >= 4);
+        CHECK(narrowestTurn(nearEdge) >= 4);
+    }
+
+    // where the generator can run, the first round is also the ridges
+    // generator run again at its parameters
+    std::optional<Canvas> twoSmooth;
 #ifndef _WIN32
     // run again, each generator draws the cells it saved
     struct sigaction old {};
@@ -751,13 +930,34 @@ TEST_CASE("the generator sample keeps its generators, their parameters and a bak
             CHECK(generator::run(p, l.props.id) == l.cells);
         }
     }
+    // the first round's ridges: two of them, smooth, the seed and the rest
+    // as the piece keeps them
+    {
+        project::Project first = hiding(p, {"lake", "shore", "pines", "cabin"});
+        const LayerId id = named(first.layers, "ridges").props.id;
+        first.files[generator::directory(id) + std::string(generator::kParamsFile)] =
+            R"({"ridges": 2, "roughness": 0, "seed": 3, "sharp": false, "top": 18})";
+        const Canvas cells = generator::run(first, id);
+        for (std::size_t i = 0; i < first.layers.size(); ++i)
+            if (first.layers[i].props.id == id)
+                first.layers[i].cells = cells;
+        twoSmooth = project::toAnsi(first).canvas;
+    }
 #endif
 
-    // the variants: the baked copy looks as the ridges do, the others change
-    // the picture
+    // the variants, each by the order and visibility it leaves; the baked
+    // copy looks as the ridges do, the others change the picture
+    const std::vector<std::string> order{"sky",  "stars", "ridges", "ridges (seed 12)", "ridges (baked)",
+                                         "lake", "shore", "pines",  "cabin"};
+    checkVariants(p, {
+                         {"Another seed", stackState(order, {"ridges", "ridges (baked)"})},
+                         {"Baked", stackState(order, {"ridges", "ridges (seed 12)"})},
+                         {"No stars", stackState(order, {"stars", "ridges (seed 12)", "ridges (baked)"})},
+                         {"Generated only", stackState(order, {"ridges (seed 12)", "ridges (baked)", "lake", "shore",
+                                                               "pines", "cabin"})},
+                     });
     const Canvas whole = project::toAnsi(p).canvas;
     const Notes notes = parseNotes(p.notes);
-    REQUIRE(notes.variants.size() == 4);
     for (const Variant& v : notes.variants) {
         INFO(v.name);
         project::Project changed = p;
@@ -765,12 +965,14 @@ TEST_CASE("the generator sample keeps its generators, their parameters and a bak
         CHECK((project::toAnsi(changed).canvas == whole) == (v.name == "Baked"));
     }
 
-    // three rounds: two smooth ridges, the parameters kept, finished
-    REQUIRE(p.snapshots.size() == 3);
-    for (int i = 0; i < 3; ++i)
-        CHECK(p.snapshots[std::size_t(i)].round == i + 1);
-    CHECK(p.snapshots[0].ans != p.snapshots[1].ans);
-    CHECK(p.snapshots[1].ans != p.snapshots[2].ans);
+    // three rounds, each decoded and held to its stage, as the notes give
+    // them: the sky, the stars and the first run of the ridges, two smooth
+    // ones; the same with the parameters the piece keeps; the finished
+    // piece with the lake, shore, pines and cabin. The first is held to the notes
+    // above on every host, and here also to the ridges generator run again
+    // at its parameters, where it can run.
+    const project::Project generated = hiding(p, {"lake", "shore", "pines", "cabin"});
+    checkSnapshots(p, {twoSmooth, project::toAnsi(generated).canvas, whole});
 
     const fs::path out = scratch("generator-round-trip");
     project::writeDirectory(p, out / "dir");
@@ -918,11 +1120,22 @@ TEST_CASE("the character sample keeps its figure on layers of its own, one size 
     CHECK(detail > 0);
     CHECK(lights > 0);
 
-    // the variants: the merged copy looks as the parts do, the others change
-    // the picture
+    // the variants, each by the order and visibility it leaves; the merged
+    // copy looks as the parts do, the others change the picture
+    const std::vector<std::string> order{"sky",  "hills",       "meadow",     "shadow",         "outline",
+                                         "body", "face detail", "highlights", "figure (merged)"};
+    checkVariants(p, {
+                         {"No outline", stackState(order, {"figure (merged)", "outline"})},
+                         {"No highlights", stackState(order, {"figure (merged)", "highlights"})},
+                         {"Silhouette", stackState({"sky", "hills", "meadow", "shadow", "body", "face detail",
+                                                    "highlights", "outline", "figure (merged)"},
+                                                   {"figure (merged)"})},
+                         {"One layer", stackState(order, {"shadow", "outline", "body", "face detail", "highlights"})},
+                         {"Scene only", stackState(order, {"shadow", "outline", "body", "face detail", "highlights",
+                                                           "figure (merged)"})},
+                     });
     const Canvas whole = project::toAnsi(p).canvas;
     const Notes notes = parseNotes(p.notes);
-    REQUIRE(notes.variants.size() == 5);
     for (const Variant& v : notes.variants) {
         INFO(v.name);
         project::Project changed = p;
@@ -962,12 +1175,30 @@ TEST_CASE("the character sample keeps its figure on layers of its own, one size 
             CHECK(irc::overBudget(irc::encodeCanvas(doc.canvas), p.ircBudget.bytes).empty());
         }
 
-    // three rounds: the scene, the figure in flat colours, finished
-    REQUIRE(p.snapshots.size() == 3);
-    for (int i = 0; i < 3; ++i)
-        CHECK(p.snapshots[std::size_t(i)].round == i + 1);
-    CHECK(p.snapshots[0].ans != p.snapshots[1].ans);
-    CHECK(p.snapshots[1].ans != p.snapshots[2].ans);
+    // three rounds, each decoded and held to its stage, as the notes give
+    // them: the scene; the figure with its outline and its body in flat
+    // colours, no lit side (the coat's light red red, the pack's
+    // light green green); the finished piece
+    const project::Project sceneOnly =
+        hiding(p, {"shadow", "outline", "body", "face detail", "highlights", "figure (merged)"});
+    project::Project blockedIn = hiding(p, {"shadow", "face detail", "highlights", "figure (merged)"});
+    int flattened = 0;
+    for (std::size_t i = 0; i < blockedIn.layers.size(); ++i) {
+        Layer& l = blockedIn.layers[i];
+        if (l.props.name != "body")
+            continue;
+        for (int py = 0; py < 2 * l.cells.height(); ++py)
+            for (int x = 0; x < l.cells.width(); ++x) {
+                const auto c = pixel(l, x, py);
+                if (c == std::optional<std::uint8_t>(LightRed) || c == std::optional<std::uint8_t>(LightGreen)) {
+                    l.cells.at(x, py / 2) =
+                        setLayerPixel(l.cells.at(x, py / 2), py % 2 == 1, *c == LightRed ? Red : Green);
+                    ++flattened;
+                }
+            }
+    }
+    CHECK(flattened > 0);
+    checkSnapshots(p, {project::toAnsi(sceneOnly).canvas, project::toAnsi(blockedIn).canvas, whole});
 
     // it saves back as it reads, as a directory and as a zip
     const fs::path out = scratch("character-round-trip");
