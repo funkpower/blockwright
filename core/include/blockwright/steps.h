@@ -23,9 +23,9 @@
 // action's object name (newCellsLayer, flipHorizontal), and three names of
 // the replay's own for what the editor does in a dock or by dragging
 // (setActiveLayer, layerProperties, moveSelection). A tool step with no
-// points only sets options, as choosing the tool does. Any step may also
-// set Tool Options (below); what it sets holds for the steps after it, as
-// Tool Options do in the editor. "capture": "before-after"
+// points only sets options, as choosing the tool does. Any step but a view
+// step may also set Tool Options (below); what it sets holds for the steps
+// after it, as Tool Options do in the editor. "capture": "before-after"
 // asks for the canvas before the step as well as after it.
 //
 // Two keys are the window's (#295), which `blockwright --screenshot` reads
@@ -37,6 +37,21 @@
 //                  "when": "before" | "after" | "both"}
 //
 // each key optional (the window, uncropped, after the step).
+//
+// The window's view has a step of its own (#398), "action": "view":
+//
+//   {"name": ..., "action": "view", "zoom": 1-8, "scrollTo": [x, y],
+//    "ircFit": bool, "ircPad": bool, "ircSwapShades": bool}
+//
+// each key optional, at least one given; one left out keeps what the window
+// shows. "zoom" is View > Zoom In / Zoom Out's level, "scrollTo" a cell
+// scrolled to the top left of the canvas's viewport (as far as the scroll
+// bars go; it must be on the canvas), and the three booleans View > IRC's
+// Fit Lines to the Budget, Pad Lines and Swap Shades. It takes effect where
+// it stands, so later steps' screenshots show it until another view step
+// changes it. It changes no cell, so it is no document edit. Only the
+// window has a view: `blockwright-cli replay` refuses a file with a view
+// step (exit status 1), and only `blockwright --screenshot` replays it.
 //
 // Every key is checked: an unknown key, a key the action doesn't take, a
 // value of the wrong kind or out of range is refused, and the error names
@@ -128,6 +143,16 @@ struct Screenshot {
     When when = When::After;
 };
 
+// The view a "view" step sets (#398): each unset keeps the window's.
+// Zoom's limits are CanvasView's (kMinZoom-kMaxZoom).
+constexpr int kMinZoom = 1, kMaxZoom = 8;
+struct View {
+    std::optional<int> zoom;
+    std::optional<Point> scrollTo;  // a cell
+    std::optional<bool> ircFit, ircPad, ircSwapShades;
+    bool operator==(const View&) const = default;
+};
+
 struct Step {
     int number = 0;  // from 1, as the files and errors name it
     std::string name;
@@ -144,6 +169,7 @@ struct Step {
     std::optional<std::string> rename;
     std::optional<bool> visible, locked, alphaLocked;
     std::optional<Screenshot> screenshot;
+    View view;  // view
 };
 
 // The window's size a steps file may set, in pixels.

@@ -18,11 +18,14 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QBuffer>
 #include <QDockWidget>
 #include <QFile>
 #include <QTemporaryDir>
 
+#include <algorithm>
 #include <iostream>
 #include <utility>
 
@@ -158,9 +161,66 @@ void showSettings(MainWindow& w, const bwcli::replay::ToolSettings& s) {
     w.selectTool()->setPasteMode(s.pasteMode);
 }
 
+static_assert(steps::kMinZoom == CanvasView::kMinZoom && steps::kMaxZoom == CanvasView::kMaxZoom,
+              "a view step's zoom is the view's");
+
+// What the view steps so far set (#398), put on the window as the editor
+// sets it: the zoom as Zoom In and Zoom Out set it, View > IRC's toggles
+// checked or not (the row meter and the IRC View follow their actions),
+// then, at that zoom, the scroll bars put the cell at the top left of the
+// viewport, as far as they go. A field no view step has set is left as the
+// window has it. None of it is the document's: no undo step, no edit.
+void showView(MainWindow& w, const steps::View& v) {
+    CanvasView* view = w.canvasView();
+    if (v.zoom)
+        view->setZoom(*v.zoom);
+    const auto check = [&](const char* name, const std::optional<bool>& on) {
+        if (!on)
+            return;
+        if (auto* a = w.findChild<QAction*>(QString::fromLatin1(name)))
+            a->setChecked(*on);
+    };
+    check("ircFit", v.ircFit);
+    check("ircPad", v.ircPad);
+    check("ircSwapShades", v.ircSwapShades);
+    if (v.scrollTo) {
+        // the view resized to the zoom before it is scrolled
+        settle();
+        const QPoint want(v.scrollTo->x, v.scrollTo->y);
+        const QRect cell = view->toWidget(view->cellRect(want));
+        QScrollArea* scroll = w.canvasScroll();
+        // The bars hold whole widget pixels. Each is set to the last value
+        // that keeps the cell's whole rect in view, so its rect starts at the
+        // viewport's corner and a crop of it is taken. At a whole device pixel
+        // ratio the corner is then on the cell, as the IRC View reads it; off
+        // one a cell's edge can fall inside a widget pixel, and the cell
+        // before may show less than that pixel at the edge. The grid's offset
+        // moves with the bar, so the rect is measured again at each value.
+        const auto place = [&](QScrollBar* bar, int start, int (QPoint::*axis)() const) {
+            const auto gap = [&] {
+                const QPoint top = view->mapFrom(scroll->viewport(), QPoint(0, 0));
+                return (view->toWidget(view->cellRect(want)).topLeft().*axis)() - (top.*axis)();
+            };
+            bar->setValue(start);
+            while (gap() < 0 && bar->value() > bar->minimum())
+                bar->setValue(bar->value() - 1);
+            while (bar->value() < bar->maximum()) {
+                bar->setValue(bar->value() + 1);
+                if (gap() < 0) {
+                    bar->setValue(bar->value() - 1);
+                    break;
+                }
+            }
+        };
+        place(scroll->horizontalScrollBar(), cell.left(), &QPoint::x);
+        place(scroll->verticalScrollBar(), cell.top(), &QPoint::y);
+    }
+}
+
 // The replay at `m` put into the window: its project, active layer and
 // selection, the step's tool, if it has one, chosen as the Tools menu
-// chooses it, and the Tool Options and pen the step is applied with.
+// chooses it, the Tool Options and pen the step is applied with, and the
+// view the view steps so far set.
 void show(MainWindow& w, const bwcli::replay::Moment& m) {
     Document* doc = w.document();
     doc->replace(m.project, QString(), FileForm::ProjectZip);
@@ -169,6 +229,8 @@ void show(MainWindow& w, const bwcli::replay::Moment& m) {
         w.tools()->setActive(t);
     showSettings(w, m.settings);
     w.canvasView()->setSelection(m.selection);
+    settle();
+    showView(w, m.view);
     settle();
 }
 

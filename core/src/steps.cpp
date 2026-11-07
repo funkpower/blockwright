@@ -67,6 +67,8 @@ const std::vector<ActionKeys>& actionKeys() {
         {"lowerLayer", {}},
         {"setActiveLayer", {"layer"}},
         {"layerProperties", {"rename", "visible", "locked", "alphaLocked"}},
+        // the window's view (#398)
+        {"view", {"zoom", "scrollTo", "ircFit", "ircPad", "ircSwapShades"}},
     };
     return all;
 }
@@ -436,7 +438,8 @@ Step readStep(const QJsonValue& v, int number) {
     }
     for (auto k = o.begin(); k != o.end(); ++k) {
         const std::string key = utf8(k.key());
-        if (!kStepKeys.count(key) && !kOptionKeys.count(key) &&
+        // a view step is the window's, not the pen's: it takes no Tool Options
+        if (!kStepKeys.count(key) && !(kOptionKeys.count(key) && st.action != "view") &&
             std::find(it->keys.begin(), it->keys.end(), key) == it->keys.end())
             fail(where, st.action + " takes no \"" + key + "\"");
     }
@@ -511,6 +514,26 @@ Step readStep(const QJsonValue& v, int number) {
         st.alphaLocked = boolOf(where, "alphaLocked", o["alphaLocked"]);
     if (st.action == "layerProperties" && !st.rename && !st.visible && !st.locked && !st.alphaLocked)
         fail(where, "layerProperties needs at least one of \"rename\", \"visible\", \"locked\" or \"alphaLocked\"");
+    if (st.action == "view") {
+        View& v = st.view;
+        if (o.contains("zoom"))
+            v.zoom = intOf(where, "zoom", o["zoom"], kMinZoom, kMaxZoom);
+        if (o.contains("scrollTo")) {
+            const QJsonValue& c = o["scrollTo"];
+            if (!c.isArray() || c.toArray().size() != 2)
+                fail(where, "\"scrollTo\" must be [x, y], a cell");
+            v.scrollTo = Point{intOf(where, "scrollTo x", c.toArray()[0], 0, kMaxBlankSide - 1),
+                               intOf(where, "scrollTo y", c.toArray()[1], 0, kMaxBlankSide - 1)};
+        }
+        if (o.contains("ircFit"))
+            v.ircFit = boolOf(where, "ircFit", o["ircFit"]);
+        if (o.contains("ircPad"))
+            v.ircPad = boolOf(where, "ircPad", o["ircPad"]);
+        if (o.contains("ircSwapShades"))
+            v.ircSwapShades = boolOf(where, "ircSwapShades", o["ircSwapShades"]);
+        if (v == View{})
+            fail(where, "view needs at least one of \"zoom\", \"scrollTo\", \"ircFit\", \"ircPad\" or \"ircSwapShades\"");
+    }
     return st;
 }
 

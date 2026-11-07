@@ -84,7 +84,10 @@ void take(ToolSettings& settings, const bw::steps::Options& options);
 // the window's screenshots (#295) put in the window. `settings` are the Tool
 // Options and pen the step is applied with, before it as after it: the
 // steps before it left them and the step's own options are taken in, as
-// they are set in the editor before the step's drag or click.
+// they are set in the editor before the step's drag or click. `view` is
+// what the "view" steps so far have set (#398), each field the last one
+// set, unset where none has: before a view step it is what the steps before
+// it left, after it the step's fields are taken in.
 struct Moment {
     const bw::steps::Step& step;
     bool before;
@@ -92,7 +95,12 @@ struct Moment {
     bw::LayerId active;
     const bw::Selection& selection;
     const ToolSettings& settings;
+    const bw::steps::View& view;
 };
+
+// The script's first "view" step, if any (#398): only the window has a
+// view, so blockwright-cli replay refuses a script with one.
+const bw::steps::Step* viewStep(const bw::steps::Script& script);
 using Observer = std::function<void(const Moment&)>;
 
 // The script's steps applied to `project` in order. Throws Failure naming

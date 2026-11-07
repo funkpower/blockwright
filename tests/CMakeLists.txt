@@ -671,6 +671,13 @@ foreach(scale 1.25 1.5)
     COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} ${CMAKE_CROSSCOMPILING_EMULATOR}
             $<TARGET_FILE:blockwright-app-tests> "[irc-meter-dpr]")
 endforeach()
+# A view step's scrollTo at fractional device pixel ratios (#398): the whole
+# cell the step names is in view at the canvas's viewport corner.
+foreach(scale 1.25 1.5 1.75)
+  add_test(NAME "view step scrollTo at scale ${scale}"
+    COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} ${CMAKE_CROSSCOMPILING_EMULATOR}
+            $<TARGET_FILE:blockwright-app-tests> "[view-dpr]")
+endforeach()
 # A layout test that runs after a closed window in the same process still starts
 # from the default layout (#249); ctest otherwise runs each test case alone.
 # The script runs the binary itself, so it runs on the build host only.

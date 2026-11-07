@@ -1006,6 +1006,14 @@ printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "ac
 expect "replay: a step off the canvas, named" 1 'step 2 \(far\): ' -- "$cli" replay "$rp/bad.json" -o "$rp/bad"
 if [[ ! -e $rp/bad ]]; then ok "replay: a failed replay writes nothing"; else bad "replay wrote files for a failed replay"; fi
 expect "replay: -o is required" 2 "replay needs -o" -- "$cli" replay "$rp/bad.json"
+# a view step (#398) is the window's: replay has no window, so it refuses the
+# file, exit 1 as for a bad step, before the start is read, writing nothing
+printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}, {"name": "zoomed", "action": "view", "zoom": 4, "ircFit": true}]}' > "$rp/view.json"
+expect "replay: a view step is refused, named" 1 "^blockwright-cli: $rp/view\.json: step 2 \(zoomed\): view sets the window's zoom, scroll and IRC options, and blockwright-cli replay has no window; replay this file with blockwright --screenshot$" -- "$cli" replay "$rp/view.json" -o "$rp/view"
+if [[ ! -e $rp/view ]]; then ok "replay: a refused view step writes nothing"; else bad "replay wrote files for a view step"; fi
+printf '{"version": 1, "start": {"file": "missing.ans"}, "steps": [{"name": "fit", "action": "view", "ircFit": true}]}' > "$rp/view-nostart.json"
+expect "replay: a view step is refused before the start is read" 1 'step 1 \(fit\): view sets the window' -- "$cli" replay "$rp/view-nostart.json" -o "$rp/view-nostart"
+expect "replay --help documents the view step (#398)" 0 '^  view +the window.s view, for blockwright --screenshot only:$' -- "$cli" replay --help
 # replay writes .ans files whatever the target, so --target isn't its option
 expect "replay takes no --target" 2 '^blockwright-cli: --target is a lint, pack or unpack option, not a replay option$' -- "$cli" replay --target irc "$data/replay/tour.json" -o "$rp/target"
 if [[ ! -e $rp/target ]]; then ok "replay --target writes nothing"; else bad "replay --target made $rp/target"; fi

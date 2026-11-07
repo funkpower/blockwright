@@ -193,6 +193,8 @@ public:
     IrcViewDock* ircViewWidget() const { return ircView_; }
     QDockWidget* ircViewDock() const { return ircViewDock_; }
     IrcMeter* ircMeter() const { return ircMeter_; }
+    // The scroll area the canvas view is in.
+    QScrollArea* canvasScroll() const { return scroll_; }
     GeneratorRunner* generatorRunner() const { return runner_; }
     // Whether the document's generators may run without asking: its project
     // was trusted this session (main_window_generators.cpp).

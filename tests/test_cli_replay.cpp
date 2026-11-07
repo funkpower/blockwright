@@ -837,3 +837,78 @@ TEST_CASE("a replay's command says its start's read notes as one line each", "[r
                     bwcli::Failure);
     CHECK(err.str().empty());
 }
+
+TEST_CASE("a view step sets the view where it stands and changes no cell (#398)", "[replay][view]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [
+        {"name": "ink", "action": "glyph", "points": [[1, 1]]},
+        {"name": "near", "action": "view", "zoom": 4, "scrollTo": [5, 3], "ircFit": true},
+        {"name": "pad", "action": "view", "ircPad": true, "ircSwapShades": true},
+        {"name": "far", "action": "view", "zoom": 1, "ircFit": false},
+        {"name": "more", "action": "glyph", "points": [[2, 2]]}]})");
+    struct Seen {
+        std::string name;
+        bool before;
+        steps::View view;
+        std::string bytes;
+    };
+    std::vector<Seen> seen;
+    const bwcli::replay::Outcome out =
+        bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples), [&](const bwcli::replay::Moment& m) {
+            seen.push_back({m.step.name, m.before, m.view, ansBytes(m.project)});
+        });
+    REQUIRE(seen.size() == 10);
+    const auto at = [&](const char* name, bool before) -> const Seen& {
+        for (const Seen& x : seen)
+            if (x.name == name && x.before == before)
+                return x;
+        FAIL("no moment " << name);
+        throw;
+    };
+    // nothing set until the first view step, and before it nothing yet
+    CHECK(at("ink", false).view == steps::View{});
+    CHECK(at("near", true).view == steps::View{});
+    // each field the last view step that set it
+    steps::View near;
+    near.zoom = 4;
+    near.scrollTo = steps::Point{5, 3};
+    near.ircFit = true;
+    CHECK(at("near", false).view == near);
+    CHECK(at("pad", true).view == near);
+    steps::View pad = near;
+    pad.ircPad = true;
+    pad.ircSwapShades = true;
+    CHECK(at("pad", false).view == pad);
+    steps::View far = pad;
+    far.zoom = 1;
+    far.ircFit = false;
+    CHECK(at("far", false).view == far);
+    // and it holds for the steps after it
+    CHECK(at("more", true).view == far);
+    CHECK(at("more", false).view == far);
+    // a view step leaves the document as it was
+    CHECK(at("near", false).bytes == at("ink", false).bytes);
+    CHECK(at("far", false).bytes == at("ink", false).bytes);
+    REQUIRE(out.captures.size() == 5);
+    CHECK(ansBytes(out.captures[1].project) == ansBytes(out.captures[0].project));
+    CHECK(out.notes.empty());
+}
+
+TEST_CASE("a view step's scroll cell off the canvas stops the replay, named (#398)", "[replay][view]") {
+    CHECK_THAT(onBlank(R"({"name": "a", "action": "selectAll"}, {"name": "far", "action": "view", "scrollTo": [20, 0]})"),
+               ContainsSubstring("step 2 (far): scrollTo cell (20, 0) is off the 20 x 10 canvas"));
+    CHECK_THAT(onBlank(R"({"name": "low", "action": "view", "scrollTo": [0, 10]})"),
+               ContainsSubstring("step 1 (low): scrollTo cell (0, 10) is off the 20 x 10 canvas"));
+    CHECK(onBlank(R"({"name": "corner", "action": "view", "scrollTo": [19, 9]})") == "(replayed)");
+}
+
+TEST_CASE("viewStep finds a script's first view step, for the CLI to refuse (#398)", "[replay][view]") {
+    const steps::Script none = steps::parse(R"({"version": 1, "start": {"blank": [4, 4]}, "steps": [
+        {"name": "a", "action": "selectAll"}]})");
+    CHECK(bwcli::replay::viewStep(none) == nullptr);
+    const steps::Script two = steps::parse(R"({"version": 1, "start": {"blank": [4, 4]}, "steps": [
+        {"name": "a", "action": "selectAll"}, {"name": "zoomed", "action": "view", "zoom": 3},
+        {"name": "fit", "action": "view", "ircFit": true}]})");
+    const steps::Step* v = bwcli::replay::viewStep(two);
+    REQUIRE(v);
+    CHECK(steps::stepLabel(*v) == "step 2 (zoomed)");
+}

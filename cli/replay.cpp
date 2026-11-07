@@ -105,6 +105,7 @@ struct State : ToolSettings {
     LayerId active = 0;
     Selection selection;
     std::optional<CellBlock> clipboard;
+    steps::View view;  // what the view steps have set (#398)
 
     LayerStack& stack() { return p.layers; }
     int width() const { return p.layers.width(); }
@@ -599,6 +600,22 @@ void step(State& s, const Step& st, Outcome& out) {
             l.props.locked = *st.locked;
         if (st.alphaLocked)
             l.props.alphaLocked = *st.alphaLocked;
+    } else if (a == "view") {
+        // the window's, not the document's: no cell changes
+        const steps::View& v = st.view;
+        if (v.scrollTo && (v.scrollTo->x >= s.width() || v.scrollTo->y >= s.height()))
+            fail(st, "scrollTo cell " + at(*v.scrollTo) + " is off the " + std::to_string(s.width()) + " x " +
+                         std::to_string(s.height()) + " canvas");
+        if (v.zoom)
+            s.view.zoom = v.zoom;
+        if (v.scrollTo)
+            s.view.scrollTo = v.scrollTo;
+        if (v.ircFit)
+            s.view.ircFit = v.ircFit;
+        if (v.ircPad)
+            s.view.ircPad = v.ircPad;
+        if (v.ircSwapShades)
+            s.view.ircSwapShades = v.ircSwapShades;
     } else {
         fail(st, "replay can't apply " + a + " yet");
     }
@@ -714,7 +731,7 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
         if (observe) {
             ToolSettings set = s;
             take(set, st.options);
-            observe({st, true, s.p, s.active, s.selection, set});
+            observe({st, true, s.p, s.active, s.selection, set, s.view});
         }
         try {
             step(s, st, out);
@@ -728,10 +745,17 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
             fail(st, e.what());
         }
         if (observe)
-            observe({st, false, s.p, s.active, s.selection, s});
+            observe({st, false, s.p, s.active, s.selection, s, s.view});
         out.captures.push_back({st.capture == steps::Capture::BeforeAfter ? stem + "-after" : stem, s.p});
     }
     return out;
+}
+
+const steps::Step* viewStep(const steps::Script& script) {
+    for (const Step& st : script.steps)
+        if (st.action == "view")
+            return &st;
+    return nullptr;
 }
 
 std::string stepNumber(int number, int steps) {

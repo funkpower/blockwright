@@ -6,6 +6,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <string>
 
 using namespace bw;
@@ -136,6 +137,81 @@ TEST_CASE("a steps file reads the window's size and each step's screenshot", "[s
 
     // without a "window", the window's replay picks its size
     CHECK_FALSE(steps::parse(script(R"({"name": "a", "action": "selectAll"})")).windowWidth);
+}
+
+TEST_CASE("a view step reads the zoom, a scroll cell and View > IRC's toggles, each left out unset (#398)",
+          "[steps][view]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "all", "action": "view", "zoom": 4, "scrollTo": [12, 7], "ircFit": true, "ircPad": false,
+         "ircSwapShades": true, "screenshot": {"of": "ircView"}},
+        {"name": "zoom-only", "action": "view", "zoom": 8},
+        {"name": "fit-off", "action": "view", "ircFit": false},
+        {"name": "low", "action": "view", "zoom": 1, "scrollTo": [0, 0]},
+        {"name": "plain", "action": "selectAll"})"));
+    REQUIRE(s.steps.size() == 5);
+    const steps::View& all = s.steps[0].view;
+    CHECK(s.steps[0].action == "view");
+    CHECK(all.zoom == 4);
+    REQUIRE(all.scrollTo);
+    CHECK((all.scrollTo->x == 12 && all.scrollTo->y == 7));
+    CHECK(all.ircFit == true);
+    CHECK(all.ircPad == false);
+    CHECK(all.ircSwapShades == true);
+    CHECK(s.steps[0].screenshot);
+
+    const steps::View& zoom = s.steps[1].view;
+    CHECK(zoom.zoom == 8);
+    CHECK_FALSE(zoom.scrollTo);
+    CHECK_FALSE(zoom.ircFit);
+    CHECK_FALSE(zoom.ircPad);
+    CHECK_FALSE(zoom.ircSwapShades);
+
+    const steps::View& fit = s.steps[2].view;
+    CHECK_FALSE(fit.zoom);
+    CHECK(fit.ircFit == false);
+
+    CHECK(s.steps[3].view.zoom == 1);
+    CHECK(s.steps[3].view.scrollTo->x == 0);
+    // another action has no view
+    CHECK(s.steps[4].view == steps::View{});
+    // the zoom levels are the editor's
+    CHECK(steps::kMinZoom == 1);
+    CHECK(steps::kMaxZoom == 8);
+    CHECK(std::find(steps::actions().begin(), steps::actions().end(), "view") != steps::actions().end());
+}
+
+TEST_CASE("a view step's bad value is refused, naming the step (#398)", "[steps][view]") {
+    const std::pair<const char*, const char*> cases[] = {
+        {R"("zoom": 0)", "\"zoom\" must be a whole number 1 to 8"},
+        {R"("zoom": 9)", "\"zoom\" must be a whole number 1 to 8"},
+        {R"("zoom": 2.5)", "\"zoom\" must be a whole number 1 to 8"},
+        {R"("zoom": "4")", "\"zoom\" must be a whole number 1 to 8, not a string"},
+        {R"("scrollTo": [3])", "\"scrollTo\" must be [x, y], a cell"},
+        {R"("scrollTo": {"x": 3, "y": 4})", "\"scrollTo\" must be [x, y], a cell"},
+        {R"("scrollTo": [-1, 0])", "\"scrollTo x\" must be a whole number 0 to 4095"},
+        {R"("scrollTo": [0, 4096])", "\"scrollTo y\" must be a whole number 0 to 4095"},
+        {R"("ircFit": 1)", "\"ircFit\" must be true or false, not a number"},
+        {R"("ircPad": "on")", "\"ircPad\" must be true or false, not a string"},
+        {R"("ircSwapShades": null)", "\"ircSwapShades\" must be true or false, not null"},
+        {R"("ircMeter": true)", "view takes no \"ircMeter\""},
+        {R"("at": [1, 1])", "view takes no \"at\""},
+        // the pen's Tool Options are not the window's
+        {R"("zoom": 4, "fg": 2)", "view takes no \"fg\""},
+        {R"("zoom": 4, "size": 3)", "view takes no \"size\""},
+        {R"("ircFit": true, "pasteMode": "over")", "view takes no \"pasteMode\""},
+        {R"("screenshot": {})", "view needs at least one of \"zoom\", \"scrollTo\", \"ircFit\", \"ircPad\" or \"ircSwapShades\""},
+    };
+    for (const auto& [fields, says] : cases) {
+        INFO(fields);
+        // the second step, so the error names that one
+        const std::string why =
+            refusal(script(std::string(R"({"name": "first", "action": "selectAll"}, {"name": "zoomed", "action": "view", )") +
+                           fields + "}"));
+        CHECK_THAT(why, ContainsSubstring(std::string("step 2 (zoomed): ") + says));
+    }
+    // and a zoom key on another action is refused as before
+    CHECK_THAT(refusal(script(R"({"name": "z", "action": "glyph", "zoom": 4})")),
+               ContainsSubstring("step 1 (z): glyph takes no \"zoom\""));
 }
 
 TEST_CASE("a steps file starts from a file or a sample", "[steps]") {

@@ -6,6 +6,7 @@
 // test_app.cpp.
 
 #include "canvas_view.h"
+#include "irc_meter.h"
 #include "lint_dock.h"
 #include "main_window.h"
 #include "palette_widget.h"
@@ -29,7 +30,10 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QIcon>
+#include <QLabel>
 #include <QRandomGenerator>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSpinBox>
 #include <QTemporaryDir>
 #include <QThread>
@@ -40,6 +44,8 @@
 #endif
 
 #include <filesystem>
+#include <cmath>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <utility>
@@ -532,4 +538,270 @@ TEST_CASE("Tool Options a step doesn't set carry over to another tool", "[screen
         CHECK(shown[stem].second.swatches == iconImage(rampIcon(customRamp({0, 8, 7, 15}))));
         CHECK(light[stem] == QVariant(int(Compass::SE)));
     }
+}
+
+namespace {
+
+// The IRC View the window's document gives with `opts`, as the dock draws it
+// (IrcViewDock::snapshot).
+QImage ircPicture(MainWindow& w, const irc::EncodeOptions& opts) {
+    const Document& doc = *w.document();
+    return renderIrcView(irc::ircView(irc::sentCanvas(doc.canvas(), doc.ansi().ice, doc.target()),
+                                      doc.extras().ircBudget.bytes, opts),
+                         glyphWidth(doc.ansi()));
+}
+
+bool checked(MainWindow& w, const char* action) {
+    auto* a = w.findChild<QAction*>(QString::fromLatin1(action));
+    REQUIRE(a);
+    return a->isChecked();
+}
+
+// The canvas cell at the top left of the canvas's viewport.
+QPoint topLeftCell(MainWindow& w) {
+    CanvasView* v = w.canvasView();
+    const QPoint top = v->mapFrom(w.canvasScroll()->viewport(), QPoint(0, 0));
+    return v->cellAt(v->toView(QPointF(top)));
+}
+
+} // namespace
+
+TEST_CASE("a view step's Fit shows the fitted IRC View and the meter's fit, from where it stands (#398)",
+          "[screenshot][view]") {
+    // a row of blocks in six colours, one dab a step (a stroke joins its
+    // points), far over the 407-byte budget
+    std::string dabs;
+    for (int x = 0; x < 120; ++x)
+        dabs += "{\"name\": \"c" + std::to_string(x) + "\", \"action\": \"glyph\", \"fg\": " +
+                std::to_string(2 + x % 6) + ", \"points\": [[" + std::to_string(x) + ", 0]]},\n";
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [120, 2]}, "window": [1024, 720],
+        "steps": [)" + dabs + R"(
+        {"name": "fit", "action": "view", "ircFit": true, "screenshot": {"of": "ircView", "when": "both"}},
+        {"name": "later", "action": "deselect", "screenshot": {"of": "ircView"}}]})");
+    MainWindow w;
+    IrcViewDock* irc = w.ircViewWidget();
+    std::map<std::string, bool> fitSeen;
+    std::map<std::string, int> cutSeen;
+    std::map<std::string, QImage> shot;
+    const std::vector<screenshot::Shot> shots = screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        INFO(sh.stem);
+        fitSeen[sh.stem] = w.ircMeter()->fit();
+        CHECK(checked(w, "ircFit") == w.ircMeter()->fit());
+        CHECK_FALSE(irc->stale());
+        cutSeen[sh.stem] = irc->view().cutRows();
+        irc::EncodeOptions opts;
+        opts.fit = w.ircMeter()->fit() ? w.ircMeter()->budget().bytes : 0;
+        CHECK(irc->image() == ircPicture(w, opts));
+        CHECK(sh.image == w.ircViewDock()->grab().toImage());
+        shot[sh.stem] = sh.image;
+        // the view's toggle is no edit: nothing to undo, nothing to save
+        CHECK(w.document()->undoStack()->count() == 0);
+        CHECK_FALSE(w.document()->isModified());
+    });
+    REQUIRE(shots.size() == 3);
+    // before the view step, Fit is off and the row is cut; at it and after
+    // it, on, and the row fits
+    CHECK_FALSE(fitSeen["121-fit-before"]);
+    CHECK(cutSeen["121-fit-before"] == 1);
+    CHECK(fitSeen["121-fit-after"]);
+    CHECK(cutSeen["121-fit-after"] == 0);
+    CHECK(fitSeen["122-later"]);
+    CHECK(cutSeen["122-later"] == 0);
+    CHECK(shot["121-fit-before"] != shot["121-fit-after"]);
+    CHECK(irc->statusLabel()->text().startsWith(QStringLiteral("Every line fits")));
+}
+
+TEST_CASE("a view step's Pad and Swap Shades reach the row meter and the IRC View (#398)", "[screenshot][view]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [10, 4]}, "window": [1024, 720],
+        "steps": [
+        {"name": "dot", "action": "glyph", "glyph": "░", "fg": 12, "bg": 4, "points": [[1, 1]]},
+        {"name": "opts", "action": "view", "ircPad": true, "ircSwapShades": true,
+         "screenshot": {"of": "ircView", "when": "both"}},
+        {"name": "swap-off", "action": "view", "ircSwapShades": false, "screenshot": {"of": "ircView"}}]})");
+    MainWindow w;
+    IrcViewDock* irc = w.ircViewWidget();
+    std::map<std::string, irc::EncodeOptions> seen;
+    std::map<std::string, int> kept;
+    screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        INFO(sh.stem);
+        const irc::EncodeOptions o = w.ircMeter()->options();
+        seen[sh.stem] = o;
+        CHECK(checked(w, "ircPad") == o.pad);
+        CHECK(checked(w, "ircSwapShades") == o.swapShades);
+        CHECK(w.ircMeter()->pad() == o.pad);
+        CHECK(w.ircMeter()->swapShades() == o.swapShades);
+        CHECK(irc->image() == ircPicture(w, o));
+        REQUIRE(irc->view().rows.size() == 4);
+        kept[sh.stem] = irc->view().rows[1].kept;
+    });
+    REQUIRE(seen.size() == 3);
+    CHECK_FALSE(seen["02-opts-before"].pad);
+    CHECK_FALSE(seen["02-opts-before"].swapShades);
+    CHECK(seen["02-opts-after"].pad);
+    CHECK(seen["02-opts-after"].swapShades);
+    // a later view step changes one and keeps the other
+    CHECK(seen["03-swap-off"].pad);
+    CHECK_FALSE(seen["03-swap-off"].swapShades);
+    // Pad keeps the row's trailing black, which the view then carries
+    CHECK(kept["02-opts-after"] > kept["02-opts-before"]);
+}
+
+TEST_CASE("a view step's zoom and scroll take effect, and a later one changes them again (#398)",
+          "[screenshot][view]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [120, 60]}, "window": [1024, 720],
+        "steps": [
+        {"name": "dot", "action": "glyph", "fg": 14, "bg": 1, "points": [[30, 20], [31, 21]]},
+        {"name": "near", "action": "view", "zoom": 4, "scrollTo": [30, 20],
+         "screenshot": {"crop": {"cells": [30, 20, 2, 2]}}},
+        {"name": "zoom-only", "action": "view", "zoom": 3, "screenshot": {}},
+        {"name": "back", "action": "view", "zoom": 1, "scrollTo": [0, 0], "screenshot": {}}]})");
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    QScrollArea* scroll = w.canvasScroll();
+    std::map<std::string, int> zoom;
+    std::map<std::string, QPoint> cell, bars;
+    const std::vector<screenshot::Shot> shots = screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        zoom[sh.stem] = v->zoom();
+        cell[sh.stem] = topLeftCell(w);
+        bars[sh.stem] = QPoint(scroll->horizontalScrollBar()->value(), scroll->verticalScrollBar()->value());
+        CHECK(w.document()->undoStack()->count() == 0);
+        CHECK_FALSE(w.document()->isModified());
+    });
+    REQUIRE(shots.size() == 3);
+    CHECK(zoom["02-near"] == 4);
+    CHECK(cell["02-near"] == QPoint(30, 20));
+    // the scroll cell kept at the zoom a later step sets
+    CHECK(zoom["03-zoom-only"] == 3);
+    CHECK(cell["03-zoom-only"] == QPoint(30, 20));
+    CHECK(zoom["04-back"] == 1);
+    CHECK(bars["04-back"] == QPoint(0, 0));
+
+    // the crop is the two cells at zoom 4, drawn as the replay renders them
+    const qreal dpr = w.devicePixelRatioF();
+    const QImage near = shotNamed(shots, "02-near").image.convertToFormat(QImage::Format_RGB32);
+    CHECK((QSizeF(near.size()) / dpr).toSize() == QSize(2 * 8 * 4, 2 * 16 * 4));
+    if (dpr == 1.0)
+        CHECK(near == replayed(s, "02-near", 4).copy(QRect(30 * 8 * 4, 20 * 16 * 4, 2 * 8 * 4, 2 * 16 * 4)));
+}
+
+// Run at 1.25, 1.5 and 1.75 too (tests/CMakeLists.txt): off a whole device pixel
+// ratio a cell's rounded-out widget rect starts inside the cell before it,
+// and the whole cell scrolled to has to be in view for a crop of it.
+TEST_CASE("a view step's scrollTo brings the whole cell to the viewport's corner at any device pixel ratio (#398)",
+          "[screenshot][view][view-dpr]") {
+    const struct {
+        int zoom, x, y;
+    } at[] = {{3, 1, 1}, {1, 7, 3}, {2, 33, 17}, {5, 50, 40}, {7, 2, 9}, {3, 11, 5}, {4, 3, 2}, {6, 19, 23}};
+    std::string views;
+    for (const auto& a : at)
+        views += std::string(views.empty() ? "" : ",\n") + "{\"name\": \"z" + std::to_string(a.zoom) + "-" +
+                 std::to_string(a.x) + "-" + std::to_string(a.y) + "\", \"action\": \"view\", \"zoom\": " +
+                 std::to_string(a.zoom) + ", \"scrollTo\": [" + std::to_string(a.x) + ", " + std::to_string(a.y) +
+                 "], \"screenshot\": {\"crop\": {\"cells\": [" + std::to_string(a.x) + ", " + std::to_string(a.y) +
+                 ", 1, 1]}}}";
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [120, 60]}, "window": [640, 480],
+        "steps": [)" + views + "]}");
+    MainWindow w;
+    const QString scale = qEnvironmentVariable("QT_SCALE_FACTOR");
+    if (!scale.isEmpty())
+        REQUIRE(w.canvasView()->devicePixelRatioF() == scale.toDouble());
+    CanvasView* v = w.canvasView();
+    const bool whole = w.devicePixelRatioF() == std::floor(w.devicePixelRatioF());
+    std::map<std::string, QPoint> corner, gap, further;
+    std::map<std::string, QSize> cellSize;
+    // the cell a shot's step scrolled to, from its stem "NN-zZ-X-Y"
+    const auto cellOf = [](const std::string& stem) {
+        int n = 0, z = 0, x = 0, y = 0;
+        std::sscanf(stem.c_str(), "%d-z%d-%d-%d", &n, &z, &x, &y);
+        return QPoint(x, y);
+    };
+    // how far the cell's rect starts in from the viewport's corner
+    const auto gapOf = [&](const QPoint& cell) {
+        const QPoint top = v->mapFrom(w.canvasScroll()->viewport(), QPoint(0, 0));
+        return v->toWidget(v->cellRect(cell)).topLeft() - top;
+    };
+    const std::vector<screenshot::Shot> shots =
+        screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+            const QPoint cell = cellOf(sh.stem);
+            corner[sh.stem] = topLeftCell(w);
+            gap[sh.stem] = gapOf(cell);
+            cellSize[sh.stem] = v->toWidget(v->cellRect(cell)).size();
+            // the gap one more step of each bar would leave (the next step
+            // scrolls again, so the bars are put back only to be tidy)
+            QPoint more(-1, -1);
+            for (QScrollBar* bar : {w.canvasScroll()->horizontalScrollBar(), w.canvasScroll()->verticalScrollBar()}) {
+                const int was = bar->value();
+                if (was == bar->maximum())
+                    continue;
+                bar->setValue(was + 1);
+                const QPoint g = gapOf(cell);
+                (bar->orientation() == Qt::Horizontal ? more.rx() : more.ry()) =
+                    bar->orientation() == Qt::Horizontal ? g.x() : g.y();
+                bar->setValue(was);
+            }
+            further[sh.stem] = more;
+        });
+    REQUIRE(shots.size() == std::size(at));
+    int n = 0;
+    for (const auto& a : at) {
+        char stem[32];
+        std::snprintf(stem, sizeof stem, "%02d-z%d-%d-%d", ++n, a.zoom, a.x, a.y);
+        INFO(stem);
+        // the cell's whole rect is in view, and one more step of either bar
+        // would cut it: its rect starts at the corner, or a widget pixel in
+        // where a cell's edge falls inside one
+        CHECK(gap[stem].x() >= 0);
+        CHECK(gap[stem].y() >= 0);
+        CHECK(gap[stem].x() <= (whole ? 0 : 1));
+        CHECK(gap[stem].y() <= (whole ? 0 : 1));
+        CHECK(further[stem].x() < 0);
+        CHECK(further[stem].y() < 0);
+        // so the corner is on the cell, or off a whole ratio on the cell
+        // before, which then shows less than a widget pixel
+        if (whole)
+            CHECK(corner[stem] == QPoint(a.x, a.y));
+        CHECK(a.x - corner[stem].x() >= 0);
+        CHECK(a.x - corner[stem].x() <= 1);
+        CHECK(a.y - corner[stem].y() >= 0);
+        CHECK(a.y - corner[stem].y() <= 1);
+        // and a crop of it is taken, the cell's own size
+        const QSize crop = (QSizeF(shotNamed(shots, stem).image.size()) / w.devicePixelRatioF()).toSize();
+        CHECK(crop == cellSize[stem]);
+    }
+}
+
+// Run at the fractional ratios too: a crop of cells not all in view is
+// refused at any ratio, however little of it is cut (#398 review r3).
+TEST_CASE("a crop of cells a device pixel wider than the viewport is refused (#398)", "[screenshot][view][view-dpr]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [120, 60]}, "window": [2048, 720],
+        "steps": [{"name": "size", "action": "deselect", "screenshot": {}},
+                  {"name": "crop", "action": "deselect", "screenshot": {"crop": {"cells": [0, 0, 61, 1]}}}]})");
+    MainWindow w;
+    CHECK_THROWS_AS(screenshot::take(w, s, startOf(s),
+                                     [&](const screenshot::Shot& shot) {
+                                         if (shot.stem != "01-size")
+                                             return;
+                                         QScrollArea* scroll = w.canvasScroll();
+                                         // 61 cells at zoom 2 are 976 device pixels wide;
+                                         // the viewport shows at most 975 of them
+                                         const qreal dpr = w.devicePixelRatioF();
+                                         scroll->viewport()->setFixedSize(int(std::floor(975 / dpr)), 200);
+                                         scroll->horizontalScrollBar()->setValue(0);
+                                         scroll->verticalScrollBar()->setValue(0);
+                                     }),
+                    bwcli::Failure);
+}
+
+TEST_CASE("a steps file with no view step leaves the window's view as it opens (#398)", "[screenshot][view]") {
+    MainWindow fresh;
+    const int zoom = fresh.canvasView()->zoom();
+    const bool fit = fresh.ircMeter()->fit(), pad = fresh.ircMeter()->pad(), swap = fresh.ircMeter()->swapShades();
+    const steps::Script s = tutorial();
+    MainWindow w;
+    screenshot::take(w, s, startOf(s), [&](const screenshot::Shot&) {
+        CHECK(w.canvasView()->zoom() == zoom);
+        CHECK(w.ircMeter()->fit() == fit);
+        CHECK(w.ircMeter()->pad() == pad);
+        CHECK(w.ircMeter()->swapShades() == swap);
+    });
 }

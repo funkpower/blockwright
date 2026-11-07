@@ -914,8 +914,15 @@ mouse button (default left).
                  "layer" (a name), layerProperties "rename", "visible",
                  "locked", "alphaLocked"
 
-A tool step without points only sets Tool Options. Any step may set Tool
-Options, which hold for the steps after it:
+  view           the window's view, for blockwright --screenshot only:
+                 "zoom" 1-8, "scrollTo" [x, y] (a cell on the canvas, put
+                 at the view's top left), "ircFit", "ircPad",
+                 "ircSwapShades" (booleans: View > IRC's Fit, Pad, Swap
+                 Shades); at least one. This command has no window and
+                 refuses a file with a view step (exit status 1)
+
+A tool step without points only sets Tool Options. Any step but a view
+step may set Tool Options, which hold for the steps after it:
 
   "fg", "bg" 0-15 (7 on 0)   "size" 1-256 (1)   "tip" square|round
   "strength" 0-1 (1)         "light" N|NE|E|SE|S|SW|W|NW (NW)
@@ -958,6 +965,12 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
     } catch (const bw::steps::StepsError& e) {
         throw Failure{stepsPath + ": " + e.what()};
     }
+    // only the window has a view (#398): refused before the start is read,
+    // as a bad step is
+    if (const bw::steps::Step* v = bwcli::replay::viewStep(script))
+        throw Failure{stepsPath + ": " + bw::steps::stepLabel(*v) +
+                      ": view sets the window's zoom, scroll and IRC options, and blockwright-cli replay has no "
+                      "window; replay this file with blockwright --screenshot"};
     const auto native = [](const QString& p) { return fs::path(QFile::encodeName(p).toStdString()); };
     const fs::path samplesDir = bw::samples::bundledDir(bw::library::realBinDir(
         native(QCoreApplication::applicationFilePath()), native(QCoreApplication::applicationDirPath())));
