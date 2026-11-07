@@ -888,6 +888,19 @@ if cmp -s "$piece" "$proj/tux/snapshots/r2.ans"; then ok "a snapshot is the flat
 expect "snapshot a zip" 0 '^r1$' -- "$cli" snapshot "$proj/tux.bwp"
 expect "info: snapshots" 0 '^snapshots: +1 \(last r1\)$' -- "$cli" info "$proj/tux.bwp"
 expect "snapshot takes a project" 1 'tux\.ans: not a project' -- "$cli" snapshot "$piece"
+# a project whose last round is r999999999 has no rounds left: snapshot says
+# so for the project, exit 1, and the project is left as it was (#380; it
+# aborted on the core error)
+"$cli" unpack "$piece" "$proj/full" >/dev/null 2>&1
+mkdir -p "$proj/full/snapshots" && cp "$piece" "$proj/full/snapshots/r999999999.ans"
+before=$(find "$proj/full" -type f -exec cksum {} + | sort)
+out=$("$cli" snapshot "$proj/full" 2>&1); st=$?
+if [[ $st -eq 1 && $out == "blockwright-cli: $proj/full: no rounds left after r999999999" ]]; then
+  ok "snapshot with no rounds left: exit 1, one line naming the project"
+else
+  bad "snapshot with no rounds left: exit $st: $out"
+fi
+if [[ $(find "$proj/full" -type f -exec cksum {} + | sort) == "$before" ]]; then ok "snapshot with no rounds left writes nothing"; else bad "snapshot with no rounds left changed the project"; fi
 # a UTF-8 project's snapshots are UTF-8 unless --output-encoding says (#336)
 "$cli" unpack "$u8" "$proj/u8" > /dev/null
 "$cli" convert --output-encoding utf-8 "$proj/u8" "$proj/u8-flat.ans"
@@ -1207,6 +1220,29 @@ if grep -q '"version": "5\.0"' "$fm/u/manifest.json" && cmp -s "$fm/o.txt" "$fm/
 else
   bad "5.0 formatting: unpack wrote $(grep '"version"' "$fm/u/manifest.json")"
 fi
+
+# main's std::exception backstop (#380): an error a command didn't wrap as a
+# Failure ends the run with "blockwright-cli: <command>: <what>" and exit 1,
+# not an abort. BLOCKWRIGHT_CLI_FAULT=save (a test-only hook) throws a
+# std::runtime_error in save() once its temporary is written, before the
+# commit: no output and no temporary is left, and a file there is kept
+fault=$tmp/fault; mkdir -p "$fault"
+out=$(BLOCKWRIGHT_CLI_FAULT=save "$cli" convert "$piece" "$fault/new.ans" 2>&1); st=$?
+if [[ $st -eq 1 && $out == 'blockwright-cli: convert: fault injected at save' ]]; then
+  ok "backstop: convert exits 1 with one line naming the command"
+else
+  bad "backstop: convert: exit $st: $out"
+fi
+if [[ -z $(ls -A "$fault") ]]; then ok "backstop: convert writes nothing"; else bad "backstop: convert left $(ls -A "$fault" | tr '\n' ' ')"; fi
+printf 'kept\n' >"$fault/old.txt"
+err=$(BLOCKWRIGHT_CLI_FAULT=save "$cli" export --irc "$piece" "$fault/old.txt" 2>&1 >/dev/null); st=$?
+if [[ $st -eq 1 && $err == 'blockwright-cli: export: fault injected at save' ]]; then
+  ok "backstop: export --irc exits 1 with one line naming the command"
+else
+  bad "backstop: export --irc: exit $st: $err"
+fi
+if [[ $(cat "$fault/old.txt") == kept && $(ls -A "$fault") == old.txt ]]; then ok "backstop: export --irc keeps the file there"; else bad "backstop: export --irc changed $fault: $(ls -A "$fault" | tr '\n' ' ')"; fi
+expect "the fault hook fires only for its step" 0 '^$' -- env BLOCKWRIGHT_CLI_FAULT=commit "$cli" convert "$piece" "$fault/new.ans"
 
 echo "$fails failure(s)"
 [[ $fails -eq 0 ]]

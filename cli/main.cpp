@@ -43,7 +43,9 @@
 // pack or unpack without --allow-lossy (nothing is written), or a library check that found
 // a problem, or a lossy snapshot without --allow-lossy, or a generator or scene import that failed (nothing is written), 2 usage
 // error, 3 an IRC line over the byte budget without
-// --allow-over-budget (nothing is written), 4 lint reported findings.
+// --allow-over-budget (nothing is written), 4 lint reported findings. An
+// error no command names a file for (main's std::exception backstop) is
+// "blockwright-cli: <command>: <what>", exit 1.
 
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
@@ -86,6 +88,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
@@ -284,6 +287,15 @@ int info(const std::string& path) {
     return kOk;
 }
 
+// Test-only fault hook (#380): with BLOCKWRIGHT_CLI_FAULT set to `step`,
+// throws a std::runtime_error, a type no command wraps as a Failure, so the
+// tests reach main's std::exception backstop part way through a command.
+// std::getenv is standard C++, so it works alike on every platform.
+void faultPoint(std::string_view step) {
+    if (const char* v = std::getenv("BLOCKWRIGHT_CLI_FAULT"); v && step == v)
+        throw std::runtime_error("fault injected at " + std::string(step));
+}
+
 // Writes `bytes` to `path` all or nothing.
 void save(const std::string& out, const std::string& bytes) {
     // a flat file never replaces a project (shade a.bwp a.bwp, say)
@@ -303,6 +315,9 @@ void save(const std::string& out, const std::string& bytes) {
         f.cancelWriting();
         throw Failure{out + ": write failed: " + why};
     }
+    // the temporary is written; an exception here leaves it uncommitted,
+    // which QSaveFile's destructor removes
+    faultPoint("save");
     if (!f.commit())
         throw Failure{out + ": write failed: " + f.errorString().toStdString()};
 }
@@ -434,7 +449,13 @@ int snapshot(const std::string& path, bool allowLossy, std::optional<bw::TextEnc
     if (!bw::project::isProject(path))
         throw Failure{path + ": not a project"};
     bw::project::Project p = loadProject(path);
-    const bw::AnsiOutput res = bw::project::takeSnapshot(p, encoding);
+    bw::AnsiOutput res;
+    try {
+        res = bw::project::takeSnapshot(p, encoding);
+    } catch (const bw::project::ProjectError& e) {
+        // a project whose last round is r999999999 has no rounds left (#380)
+        throw Failure{path + ": " + e.what()};
+    }
     warnLoss(path, res);
     const int round = p.snapshots.back().round;
     if (res.lossy() && !allowLossy)
@@ -1685,6 +1706,12 @@ int main(int argc, char** argv) {
     } catch (const std::length_error&) {
         // Backstop: a string or buffer past its max_size()
         std::cerr << "blockwright-cli: input too large\n";
+        return kBadInput;
+    } catch (const std::exception& e) {
+        // Backstop (#380): an error a command didn't wrap as a Failure (a
+        // core error, a std::filesystem error) ends the run with its message
+        // and exit 1, not std::terminate's abort
+        std::cerr << "blockwright-cli: " << cmd.toStdString() << ": " << e.what() << "\n";
         return kBadInput;
     }
 }
