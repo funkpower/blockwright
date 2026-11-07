@@ -236,9 +236,9 @@ TEST_CASE("a glyph with no CP437 code draws in Unifont (PLAN §16)") {
 }
 
 TEST_CASE("every glyph of the Unicode F-key sets draws in one cell (#350 slice 2)") {
-    // those CP437 lacks (▚, ★) come from Unifont; the few Unifont draws 16
-    // columns wide (★, ☆), though §16 counts them one cell, are squeezed
-    // into it, each pair of columns OR-ed into one
+    // those CP437 lacks (▚, ★) come from Unifont; the ones Unifont draws 16
+    // columns wide (★, ☆ and set 21's sparkles but ⋆), though §16 counts
+    // them one cell, are squeezed into it, each pair of columns OR-ed into one
     const Rgb fg = kPalette[Yellow], bg = kPalette[Black];
     int unifontOnly = 0;
     std::string squeezed;
@@ -271,7 +271,7 @@ TEST_CASE("every glyph of the Unicode F-key sets draws in one cell (#350 slice 2
             checkCell(renderCanvas(oneCell(cp, Color::indexed(Yellow), Color::indexed(Black)), 8), 0, 8, rows, fg, bg);
         }
     CHECK(unifontOnly > 20);
-    CHECK(squeezed == "★☆");
+    CHECK(squeezed == "★☆✦✧✶✷✸✹✱✺❖");
 }
 
 TEST_CASE("a wide glyph draws its left half in the lead and its right in the continuation (PLAN §16)") {

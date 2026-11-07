@@ -741,7 +741,7 @@ void MainWindow::createActions() {
     add(glyphs, tr("&Default Set"), "defaultGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Slash),
         [this] { view_->setGlyphSet(kDefaultGlyphSet); });
     glyphs->addSeparator();
-    // Ctrl+Shift+F1-F10 pick sets 1-10; 11-16 (and the Unicode sets 17-20,
+    // Ctrl+Shift+F1-F10 pick sets 1-10; 11-16 (and the Unicode sets 17-21,
     // shown only under the Unicode typing policy) are reached from this menu
     // or by stepping. Not Moebius's Alt+F-keys: desktops take those (Alt+F4 closes
     // the window), as they do Ctrl+F-keys (KDE and Xfce desktop switching) and

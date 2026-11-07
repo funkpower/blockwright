@@ -5,6 +5,7 @@
 
 #include "canvas_view.h"
 #include "document.h"
+#include "draw_tools.h"
 #include "glyph_bar.h"
 #include "irc_meter.h"
 #include "main_window.h"
@@ -18,6 +19,7 @@
 #include "blockwright/target.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAction>
 #include <QApplication>
@@ -28,7 +30,11 @@
 #include <QMouseEvent>
 #include <QStatusBar>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QUndoStack>
+
+#include <algorithm>
+#include <string>
 
 using namespace bw;
 
@@ -495,7 +501,9 @@ TEST_CASE("an IRC document with a CP437 .ans types and draws ▚ and ★ (#350 s
     press(v, 0, QStringLiteral("★"));
     CHECK(doc->canvas().at(2, 0).ch == U'★');
     CHECK(v->cellCursor() == Cursor{3, 0});
-    // stepping wraps over all 20
+    // stepping wraps over all 21: on from 20 to 21, then round to 1
+    act(w, "nextGlyphSet")->trigger();
+    CHECK(v->glyphSet() == kGlyphSetCount - 1);
     act(w, "nextGlyphSet")->trigger();
     CHECK(v->glyphSet() == 0);
     act(w, "previousGlyphSet")->trigger();
@@ -512,7 +520,7 @@ TEST_CASE("an IRC document with a CP437 .ans types and draws ▚ and ★ (#350 s
           QStringLiteral("3 cells hold a glyph with no CP437 code and will be written as '?': "
                          "▚ at 0,0; ★ in 2 cells, first at 1,0"));
 
-    // back to ANSI: set 20 reads as the default, and comes back under IRC
+    // back to ANSI: set 21 reads as the default, and comes back under IRC
     doc->undoStack()->undo();  // the typed ★
     doc->undoStack()->undo();  // F9
     doc->undoStack()->undo();  // F5
@@ -533,6 +541,141 @@ TEST_CASE("an IRC document with a CP437 .ans types and draws ▚ and ★ (#350 s
     CHECK(v->glyphSet() == kCp437GlyphSetCount - 1);
     doc->undoStack()->redo();
     CHECK(v->glyphSet() == kCp437GlyphSetCount - 1);
+}
+
+namespace {
+
+// Set 21 (#399), as the Glyphs menu and the glyph bar name it and as the
+// glyph-set line spells it out.
+const QString kSparkles = QStringLiteral("✦✧✶✷✸✹⋆✱✺❖");
+const QString kSparklesSpaced = QStringLiteral("✦ ✧ ✶ ✷ ✸ ✹ ⋆ ✱ ✺ ❖");
+
+} // namespace
+
+TEST_CASE("the glyph brush paints ✦ from set 21 in an IRC or a UTF-8 document (#399)", "[app][target]") {
+    const bool irc = GENERATE(true, false);
+    INFO((irc ? "IRC" : "UTF-8 .ans"));
+    StoredGlyphSet restore;
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    if (irc) {
+        act(w, "targetIrc")->trigger();
+        REQUIRE(doc->target() == Target::Irc);
+    } else {
+        QString error;
+        REQUIRE(w.openFile(QString::fromStdString((bwtest::dataDir() / "utf8/tux-utf8.ans").string()), &error));
+        REQUIRE(doc->target() == Target::Ansi);
+        REQUIRE(doc->textEncoding() == TextEncoding::Utf8);
+    }
+    REQUIRE(v->typingPolicy() == TypingPolicy::Unicode);
+
+    // picked from the Glyphs menu, set 21 shows in the glyph-set line and
+    // the glyph bar
+    QAction* set21 = act(w, "glyphSet21");
+    CHECK(set21->text() == QStringLiteral("Set 21: ") + kSparkles);
+    CHECK(set21->isVisible());
+    set21->trigger();
+    CHECK(v->glyphSet() == 20);
+    CHECK(set21->isChecked());
+    CHECK(w.glyphSetLabel()->text() == QStringLiteral("F-keys set 21: ") + kSparklesSpaced);
+    CHECK(w.glyphBar()->setBox()->currentText() == QStringLiteral("Set 21: ") + kSparkles);
+
+    // F1 picks ✦ for the glyph brush, and a click paints it in the pen's colours
+    act(w, "glyphTool")->trigger();
+    auto* brush = qobject_cast<GlyphTool*>(w.tools()->active());
+    REQUIRE(brush);
+    press(v, Qt::Key_F1);
+    CHECK(brush->glyph() == U'✦');
+    v->setForeground(LightCyan);
+    v->setBackground(Blue);
+    click(v, v->cellRect(QPoint(3, 1)).center(), Qt::LeftButton);
+    const Cell painted = doc->canvas().at(3, 1);
+    CHECK(painted.ch == U'✦');
+    CHECK(painted.fg == Color::indexed(LightCyan));
+    CHECK(painted.bg == Color::indexed(Blue));
+    // the glyph bar's F2 picks ✧ as the key does
+    w.glyphBar()->cell(1)->click();
+    CHECK(brush->glyph() == U'✧');
+
+    // and it is written as its UTF-8 bytes, E2 9C A6
+    const std::string sparkle = "\xE2\x9C\xA6";
+    if (irc) {
+        const std::vector<std::string> lines =
+            irc::exportCanvas(irc::sentCanvas(doc->canvas(), true, Target::Irc));
+        CHECK(std::count_if(lines.begin(), lines.end(),
+                            [&](const std::string& l) { return l.find(sparkle) != std::string::npos; }) == 1);
+    } else {
+        const AnsiOutput out = doc->encode(ArtFormat::Ansi, TextEncoding::Utf8);
+        CHECK(out.bytes.find(sparkle) != std::string::npos);
+        CHECK(lossDescription(out).isEmpty());
+    }
+}
+
+TEST_CASE("stepping reaches set 21 under the Unicode policy and wraps; under CP437 it is hidden (#399)",
+          "[app][target]") {
+    StoredGlyphSet restore;
+    MainWindow w;
+    CanvasView* v = w.canvasView();
+    QAction* set21 = act(w, "glyphSet21");
+    // an ANSI document with a CP437 .ans hides it, from the menu, the glyph
+    // bar and stepping
+    REQUIRE(v->typingPolicy() == TypingPolicy::Cp437);
+    CHECK_FALSE(set21->isVisible());
+    CHECK_FALSE(visibleGlyphSets(w).contains(QStringLiteral("glyphSet21")));
+    CHECK(w.glyphBar()->setBox()->findText(QStringLiteral("Set 21: ") + kSparkles) == -1);
+    act(w, "glyphSet16")->trigger();
+    act(w, "nextGlyphSet")->trigger();
+    CHECK(v->glyphSet() == 0);
+    act(w, "previousGlyphSet")->trigger();
+    CHECK(v->glyphSet() == kCp437GlyphSetCount - 1);
+
+    // under IRC set 20 steps on to 21, the last, which wraps to 1 and back
+    act(w, "targetIrc")->trigger();
+    REQUIRE(v->typingPolicy() == TypingPolicy::Unicode);
+    CHECK(set21->isVisible());
+    CHECK(visibleGlyphSets(w).contains(QStringLiteral("glyphSet21")));
+    CHECK(w.glyphBar()->setBox()->count() == 21);
+    CHECK(w.glyphBar()->setBox()->itemText(20) == QStringLiteral("Set 21: ") + kSparkles);
+    act(w, "glyphSet20")->trigger();
+    act(w, "nextGlyphSet")->trigger();
+    CHECK(v->glyphSet() == 20);
+    CHECK(set21->isChecked());
+    CHECK(w.glyphSetLabel()->text() == QStringLiteral("F-keys set 21: ") + kSparklesSpaced);
+    CHECK(w.glyphBar()->setBox()->currentData().toInt() == 20);
+    act(w, "nextGlyphSet")->trigger();
+    CHECK(v->glyphSet() == 0);
+    act(w, "previousGlyphSet")->trigger();
+    CHECK(v->glyphSet() == 20);
+    act(w, "previousGlyphSet")->trigger();
+    CHECK(v->glyphSet() == 19);
+    // the glyph bar's list picks it too
+    w.glyphBar()->setBox()->activated(20);
+    CHECK(v->glyphSet() == 20);
+    // set 21 has no key of its own: 11-21 are picked from the menu or by stepping
+    CHECK(set21->shortcut().isEmpty());
+    CHECK(w.glyphSetLabel()->toolTip().contains(QStringLiteral("every set is in the Glyphs menu")));
+}
+
+TEST_CASE("a stored set 21 is kept under CP437 and comes back with an IRC document (#399)", "[app][target]") {
+    StoredGlyphSet restore;
+    appSettings()->setValue(QStringLiteral("glyphSet/index"), QStringLiteral("20"));
+    {
+        MainWindow w;
+        CanvasView* v = w.canvasView();
+        REQUIRE(v->typingPolicy() == TypingPolicy::Cp437);
+        CHECK(v->glyphSet() == kDefaultGlyphSet);
+        CHECK(appSettings()->value(QStringLiteral("glyphSet/index")).toInt() == 20);
+        act(w, "targetIrc")->trigger();
+        CHECK(v->glyphSet() == 20);
+        CHECK(act(w, "glyphSet21")->isChecked());
+        CHECK(w.glyphSetLabel()->text() == QStringLiteral("F-keys set 21: ") + kSparklesSpaced);
+    }
+    // one past the last set is out of range, as before, and reads as set 6
+    appSettings()->setValue(QStringLiteral("glyphSet/index"), QStringLiteral("21"));
+    MainWindow w;
+    act(w, "targetIrc")->trigger();
+    CHECK(w.canvasView()->glyphSet() == kDefaultGlyphSet);
 }
 
 TEST_CASE("an ANSI document with a CP437 .ans refuses ▚ and ★, naming the target (#350 slice 2)", "[app][target]") {

@@ -4,6 +4,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
 #include "blockwright/brushes/despeckle.h"
+#include "blockwright/cp437.h"
 #include "blockwright/edit.h"
 #include "blockwright/glyph_sets.h"
 #include "blockwright/layer.h"
@@ -402,13 +403,14 @@ TEST_CASE("typing a Unicode glyph writes it under the Unicode policy and nothing
     CHECK(cp437.rejected == U"中");
 }
 
-TEST_CASE("four Unicode F-key sets follow Moebius's, offered only under the Unicode policy") {
+TEST_CASE("five Unicode F-key sets follow Moebius's, offered only under the Unicode policy") {
     CHECK(glyphSetCount(TypingPolicy::Cp437) == 16);
-    CHECK(glyphSetCount(TypingPolicy::Unicode) == 20);
+    CHECK(glyphSetCount(TypingPolicy::Unicode) == 21);
     CHECK(glyphSet(16) == GlyphSet{U'▖', U'▗', U'▘', U'▝', U'▚', U'▞', U'▙', U'▛', U'▜', U'▟'});
     CHECK(glyphSet(17) == GlyphSet{U'▁', U'▂', U'▃', U'▄', U'▅', U'▆', U'▇', U'█', U'▔', U'▕'});
     CHECK(glyphSet(18) == GlyphSet{U'▏', U'▎', U'▍', U'▌', U'▋', U'▊', U'▉', U'█', U'▐', U'▕'});
     CHECK(glyphSet(19) == GlyphSet{U'◢', U'◣', U'◤', U'◥', U'◆', U'◇', U'○', U'●', U'★', U'☆'});
+    CHECK(glyphSet(20) == GlyphSet{U'✦', U'✧', U'✶', U'✷', U'✸', U'✹', U'⋆', U'✱', U'✺', U'❖'});
     for (int s = kCp437GlyphSetCount; s < kGlyphSetCount; ++s)
         for (int k = 0; k < kGlyphSetKeys; ++k) {
             INFO("set " << s + 1 << " F" << k + 1);
@@ -416,6 +418,43 @@ TEST_CASE("four Unicode F-key sets follow Moebius's, offered only under the Unic
             const char32_t ch = glyphSetGlyph(s, k);
             CHECK(isTypeable(std::u32string_view(&ch, 1), TypingPolicy::Unicode));
         }
+}
+
+TEST_CASE("set 21 holds ✦ and sparkles no other set has, each one plain narrow cell (#399)") {
+    // The maintainer's ruling: a new set 21 for ✦ and the ornaments no set
+    // had; the sets before it are unchanged (the test above).
+    constexpr int kSparkles = 20;
+    REQUIRE(kGlyphSetCount == kSparkles + 1);
+    const GlyphSet& set = glyphSet(kSparkles);
+    CHECK(set[0] == U'✦');
+    // the index still wraps, now round set 21
+    CHECK(glyphSet(-1) == set);
+    CHECK(glyphSet(kSparkles + 1) == glyphSet(0));
+    for (int k = 0; k < kGlyphSetKeys; ++k) {
+        const char32_t ch = set[static_cast<std::size_t>(k)];
+        INFO("F" << k + 1 << " U+" << std::hex << unsigned(ch));
+        // no glyph twice in the set, nor in any other set
+        for (int j = 0; j < k; ++j)
+            CHECK(set[static_cast<std::size_t>(j)] != ch);
+        for (int s = 0; s < kSparkles; ++s)
+            for (int j = 0; j < kGlyphSetKeys; ++j) {
+                INFO("set " << s + 1 << " F" << j + 1);
+                CHECK(glyphSetGlyph(s, j) != ch);
+            }
+        // a single code point one column wide on every receiver: no CP437
+        // code (so Unifont draws it), not a width a reader's older table
+        // gives otherwise, no joiner, typeable only under the Unicode policy
+        CHECK(codePointWidth(ch) == 1);
+        CHECK_FALSE(widthVaries(ch));
+        CHECK(joinMask(ch) == 0);
+        CHECK_FALSE(unicodeToCp437(ch));
+        CHECK(isTypeable(std::u32string_view(&ch, 1), TypingPolicy::Unicode));
+        CHECK_FALSE(isTypeable(std::u32string_view(&ch, 1), TypingPolicy::Cp437));
+        // none a client may draw as a colour emoji (Emoji=Yes: ✳ ✴ ❇) or a
+        // CJK terminal two columns wide (East Asian Ambiguous: ✽)
+        for (const char32_t no : {U'✳', U'✴', U'❇', U'✽'})
+            CHECK(ch != no);
+    }
 }
 
 TEST_CASE("a drawn edit keeps the dither mark only on a cell it leaves looking the same", "[dither]") {

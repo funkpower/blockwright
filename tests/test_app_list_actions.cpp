@@ -270,7 +270,7 @@ TEST_CASE("the action dump's standard keys are the ones Qt gives a generic Linux
 
 TEST_CASE("the action dump lists the glyph sets an ANSI document hides, and where they are offered", "[list-actions]") {
     // #400: the dump's window has a new ANSI document, whose CP437 typing
-    // policy hides sets 17-20; they are actions of the app all the same.
+    // policy hides sets 17-21; they are actions of the app all the same.
     MainWindow w;
     REQUIRE(w.document()->target() == Target::Ansi);
     for (int i = kCp437GlyphSetCount + 1; i <= kGlyphSetCount; ++i)
@@ -295,10 +295,20 @@ TEST_CASE("the action dump lists the glyph sets an ANSI document hides, and wher
         else
             CHECK_FALSE(o.contains(QStringLiteral("offeredWhen")));
     }
+    // set 21, the sparkles (#399): last, offered as 17-20 are, with no key
+    const QJsonObject set21 = byId(list, QStringLiteral("glyphSet21"));
+    CHECK(sets.size() == 21);
+    CHECK(sets.back() == QStringLiteral("glyphSet21"));
+    CHECK(set21.value(QStringLiteral("text")).toString() == QStringLiteral("Set 21: ✦✧✶✷✸✹⋆✱✺❖"));
+    CHECK(set21.value(QStringLiteral("offeredWhen")).toString() == QStringLiteral("in IRC and UTF-8 documents"));
+    CHECK(set21.value(QStringLiteral("shortcuts")).toArray().isEmpty());
+    CHECK_FALSE(set21.value(QStringLiteral("inSheet")).toBool());
     // The same dump from a window whose document offers them: only "checked"
     // follows the document.
     MainWindow irc;
     REQUIRE(irc.document()->setTarget(Target::Irc));
     REQUIRE(irc.findChild<QAction*>(QStringLiteral("glyphSet20"))->isVisible());
     CHECK(byId(dumped(irc), QStringLiteral("glyphSet20")) == byId(list, QStringLiteral("glyphSet20")));
+    REQUIRE(irc.findChild<QAction*>(QStringLiteral("glyphSet21"))->isVisible());
+    CHECK(byId(dumped(irc), QStringLiteral("glyphSet21")) == set21);
 }

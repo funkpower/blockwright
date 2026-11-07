@@ -38,7 +38,7 @@ QList<QAction*> windowActions(QWidget* window);
 // The dynamic property, a QString, of an action a policy of the document
 // can hide (setVisible(false)) that stays an action of the app while hidden
 // (#400): it says where the action is offered, as a phrase that ends "only
-// ..." ("in IRC and UTF-8 documents" for the Unicode glyph sets 17-20).
+// ..." ("in IRC and UTF-8 documents" for the Unicode glyph sets 17-21).
 // Such an action is listed, and can be given a key, whether it is shown or
 // not: bindableActions(), shortcutEntries(), --list-actions ("offeredWhen")
 // and Preferences > Shortcuts, which says when it is hidden. Its key is

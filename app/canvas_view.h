@@ -98,7 +98,7 @@ public:
 
     // The F-key glyph set (glyph_sets.h), wrapping round at either end of
     // the sets the typing policy offers; kept in the settings between runs
-    // (glyphSet/index, 0-19). A kept Unicode set (16-19) under the CP437
+    // (glyphSet/index, 0-20). A kept Unicode set (16-20) under the CP437
     // policy reads as the default set, and comes back under Unicode.
     int glyphSet() const;
     void setGlyphSet(int set);

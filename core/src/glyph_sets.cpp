@@ -29,13 +29,17 @@ constexpr std::uint8_t kSets[kCp437GlyphSetCount][kGlyphSetKeys] = {
     {47, 92, 40, 41, 123, 125, 91, 93, 96, 39},          // /\(){}[]`'
 };
 
-// The Unicode sets (#350 slice 2): every glyph narrow by the width table
-// (PLAN §16, Width) and drawn by Unifont where CP437 has no code for it.
+// The Unicode sets (#350 slice 2, #399): every glyph narrow by the width
+// table (PLAN §16, Width) and drawn by Unifont where CP437 has no code for
+// it. Set 21 holds no code point with the Emoji property (✳ ✴ ❇), which a
+// client may draw as a two-column colour emoji, and none East Asian
+// Ambiguous (✽), which a CJK-locale terminal draws two columns wide.
 constexpr GlyphSet kUnicodeSets[kGlyphSetCount - kCp437GlyphSetCount] = {
     {U'▖', U'▗', U'▘', U'▝', U'▚', U'▞', U'▙', U'▛', U'▜', U'▟'},  // quadrants
     {U'▁', U'▂', U'▃', U'▄', U'▅', U'▆', U'▇', U'█', U'▔', U'▕'},  // lower eighths, upper and right one
     {U'▏', U'▎', U'▍', U'▌', U'▋', U'▊', U'▉', U'█', U'▐', U'▕'},  // left eighths, right half and eighth
     {U'◢', U'◣', U'◤', U'◥', U'◆', U'◇', U'○', U'●', U'★', U'☆'},  // wedges, diamonds, circles, stars
+    {U'✦', U'✧', U'✶', U'✷', U'✸', U'✹', U'⋆', U'✱', U'✺', U'❖'},  // sparkles, stars, asterisks (#399)
 };
 
 std::array<GlyphSet, kGlyphSetCount> build() {

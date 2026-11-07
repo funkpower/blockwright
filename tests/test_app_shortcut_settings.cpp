@@ -933,3 +933,86 @@ TEST_CASE("an open Keyboard Shortcuts sheet's hidden note follows the document's
     CHECK(tip().contains(hidden));
     sheet->close();
 }
+
+// #399: set 21, the sparkles, is a Unicode set as 17-20 are, so it follows
+// #400's rules; the keys kept before it existed load as they were.
+TEST_CASE("glyph set 21 is hidden by a CP437 document yet bindable, and older kept keys load unchanged",
+          "[shortcuts][preferences]") {
+    ShortcutsCleared cleared;
+    StoredGlyphSet stored;
+    const QKeySequence k20 = [] {
+        MainWindow probe;
+        return freeKey(probe);
+    }();
+    // what a profile from before set 21 keeps: a key for set 20, none for set 3
+    keep("glyphSet20", k20.toString(QKeySequence::PortableText));
+    keep("glyphSet3", QString());
+
+    MainWindow w;
+    REQUIRE(w.document()->target() == Target::Ansi);
+    QAction* set21 = action(w, "glyphSet21");
+    CHECK(set21->text() == QStringLiteral("Set 21: ✦✧✶✷✸✹⋆✱✺❖"));
+    CHECK_FALSE(set21->isVisible());
+    CHECK(bindableActions(&w).contains(set21));
+    CHECK(set21->property(kOfferedWhenProperty).toString() == QStringLiteral("in IRC and UTF-8 documents"));
+    // no default key, and none kept for it
+    CHECK(set21->shortcuts().isEmpty());
+    CHECK(action(w, "glyphSet20")->shortcuts() == QList<QKeySequence>{k20});
+    CHECK(action(w, "glyphSet3")->shortcuts().isEmpty());
+    for (int i = 1; i <= kGlyphSetKeys; ++i)
+        if (i != 3)
+            CHECK(action(w, QStringLiteral("glyphSet%1").arg(i).toLatin1().constData())->shortcut() ==
+                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key(Qt::Key_F1 + i - 1)));
+    CHECK(keptNames() == QStringList{QStringLiteral("glyphSet20"), QStringLiteral("glyphSet3")});
+    CHECK(shortcutClashes(&w).isEmpty());
+
+    // Preferences > Shortcuts lists it with the hidden note, and gives it a key
+    const QKeySequence k21 = freeKey(w);
+    REQUIRE(k21 != k20);
+    {
+        ShortcutsEditor e(&w);
+        e.select(set21);
+        REQUIRE(e.selected() == set21);
+        REQUIRE(e.tree()->currentItem());
+        CHECK(e.tree()->currentItem()->text(0) == shortcutName(set21->text()) + kHiddenNote);
+        REQUIRE(e.assign(k21));
+        e.apply();
+    }
+    CHECK(set21->shortcuts() == QList<QKeySequence>{k21});
+    CHECK(kept("glyphSet21") == k21.toString(QKeySequence::PortableText));
+    CHECK(kept("glyphSet20") == k20.toString(QKeySequence::PortableText));
+    CHECK(isKept("glyphSet3"));
+
+    // Help > Keyboard Shortcuts lists it once it has a key, saying it is hidden here
+    {
+        ShortcutsDialog sheet(&w);
+        QTreeWidgetItem* row = nullptr;
+        for (int i = 0; i < sheet.tree()->topLevelItemCount(); ++i)
+            for (int j = 0; j < sheet.tree()->topLevelItem(i)->childCount(); ++j)
+                if (sheet.tree()->topLevelItem(i)->child(j)->text(0) == shortcutName(set21->text()))
+                    row = sheet.tree()->topLevelItem(i)->child(j);
+        REQUIRE(row);
+        CHECK(row->text(1) == native(k21));
+        CHECK(row->toolTip(0).contains(QStringLiteral("Hidden in this document")));
+    }
+
+    // its key picks nothing while the document hides it, and set 21 under IRC
+    showActive(w);
+    auto* label = w.findChild<QLabel*>(QStringLiteral("glyphSetLabel"));
+    REQUIRE(label);
+    pressKey(w, k21);
+    CHECK(w.canvasView()->glyphSet() == kDefaultGlyphSet);
+    CHECK_FALSE(label->toolTip().contains(native(k21)));
+    action(w, "targetIrc")->trigger();
+    REQUIRE(set21->isVisible());
+    pressKey(w, k21);
+    CHECK(w.canvasView()->glyphSet() == 20);
+    CHECK(label->text().startsWith(QStringLiteral("F-keys set 21: ✦")));
+    // a run of F-keys under the same modifiers is named as one range
+    if (k21[0].key() == k20[0].key() + 1 && k21[0].keyboardModifiers() == k20[0].keyboardModifiers())
+        CHECK(label->toolTip().contains(QStringLiteral("%1 to %2 pick sets 20-21").arg(native(k20), native(k21))));
+    else
+        CHECK(label->toolTip().contains(QStringLiteral("%1 picks set 21").arg(native(k21))));
+    pressKey(w, k20);
+    CHECK(w.canvasView()->glyphSet() == 19);
+}
