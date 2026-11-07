@@ -1,0 +1,13 @@
+{"version": 1, "start": {"blank": [20, 4]}, "steps": [
+  {"name": "name", "action": "layerProperties", "rename": "ground"},
+  {"name": "red-bar", "action": "halfBlock", "fg": 4, "points": [[5, 0], [5, 7]]},
+  {"name": "red-top", "action": "halfBlock", "fg": 4, "points": [[18, 6]]},
+  {"name": "blue-bottom", "action": "halfBlock", "fg": 1, "points": [[18, 7]]},
+  {"name": "ghost", "action": "newCellsLayer", "rename": "ghost"},
+  {"name": "green-bar", "action": "halfBlock", "fg": 2, "points": [[10, 0], [10, 7]]},
+  {"name": "hide", "action": "layerProperties", "visible": false},
+  {"name": "paint", "action": "newCellsLayer", "rename": "paint"},
+  {"name": "dots", "action": "newPixelLayer", "rename": "dots"},
+  {"name": "magenta-bar", "action": "halfBlock", "fg": 5, "points": [[15, 0], [15, 7]]},
+  {"name": "back", "action": "setActiveLayer", "layer": "ground"}
+]}

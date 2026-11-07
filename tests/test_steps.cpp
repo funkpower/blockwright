@@ -502,3 +502,45 @@ TEST_CASE("what a steps file refuses names the step or the start", "[steps]") {
         CHECK_THAT(why, ContainsSubstring(c.says));
     }
 }
+
+TEST_CASE("fill and the eyedropper read sampleMerged, unset without it (#419)", "[steps][sample-merged]") {
+    const steps::Script s = steps::parse(script(R"({"name": "on", "action": "fill", "sampleMerged": true, "at": [1, 1]},
+        {"name": "off", "action": "eyedropper", "sampleMerged": false, "at": [1, 1]},
+        {"name": "set", "action": "fill", "sampleMerged": true},
+        {"name": "plain", "action": "fill", "at": [1, 1]})"));
+    REQUIRE(s.steps.size() == 4);
+    CHECK(s.steps[0].options.sampleMerged == true);
+    CHECK(s.steps[1].options.sampleMerged == false);
+    // a fill step with no "at" only sets it, as choosing the tool does
+    CHECK(s.steps[2].options.sampleMerged == true);
+    CHECK(s.steps[2].points.empty());
+    CHECK_FALSE(s.steps[3].options.sampleMerged.has_value());
+}
+
+TEST_CASE("sampleMerged of the wrong kind, or on a step that doesn't take it, is refused naming the step (#419)",
+          "[steps][sample-merged]") {
+    const std::pair<std::string, std::string> wrongKind[] = {
+        {R"("sampleMerged": 1)", "\"sampleMerged\" must be true or false, not a number"},
+        {R"("sampleMerged": "true")", "\"sampleMerged\" must be true or false, not a string"},
+        {R"("sampleMerged": null)", "\"sampleMerged\" must be true or false, not null"},
+        {R"("sampleMerged": [true])", "\"sampleMerged\" must be true or false, not an array"},
+    };
+    for (const char* action : {"fill", "eyedropper"}) {
+        for (const auto& [field, says] : wrongKind) {
+            INFO(action << " " << field);
+            const std::string why = refusal(script(std::string(R"({"name": "first", "action": "selectAll"},
+                {"name": "pick", "action": ")") + action + R"(", "at": [1, 1], )" + field + "}"));
+            CHECK_THAT(why, ContainsSubstring("step 2 (pick): " + says));
+        }
+    }
+    // only the two tools that show Sample merged in Tool Options take it,
+    // the other half-block tools and the selection's paste included
+    for (const char* action : {"halfBlock", "line", "rectangle", "ellipse", "shade", "glyph", "gradient", "keyboard",
+                               "paste", "selectAll", "newCellsLayer", "setActiveLayer", "layerProperties", "view",
+                               "canvasSize"}) {
+        INFO(action);
+        const std::string why = refusal(script(std::string(R"({"name": "first", "action": "selectAll"},
+            {"name": "other", "action": ")") + action + R"(", "sampleMerged": true})"));
+        CHECK_THAT(why, ContainsSubstring(std::string("step 2 (other): ") + action + " takes no \"sampleMerged\""));
+    }
+}

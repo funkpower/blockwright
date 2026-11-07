@@ -892,6 +892,7 @@ mouse button (default left).
                  which scales what "pressure" says; 1 when left out)
   half-block     halfBlock: "points" (pixels); line, rectangle, ellipse:
                  "from", "to" (pixels); fill, eyedropper: "at" (a pixel)
+                 and "sampleMerged" (below)
   gradient       "from", "to" (cells)
   keyboard       "at" (a cell), "text" (NFC-composed, as typing is; a
                  newline starts the next row at the "at" column). What
@@ -946,7 +947,8 @@ before the step; a step with none, or a point the picture doesn't show, is
 refused.
 
 A tool step without points only sets Tool Options. Any step but a view or
-canvasSize step may set Tool Options, which hold for the steps after it:
+canvasSize step may set Tool Options, which hold for the steps after it (but
+for "sampleMerged", which only fill and eyedropper take):
 
   "fg", "bg" 0-15 (7 on 0)   "size" 1-256 (1)   "tip" square|round
   "strength" 0-1 (1)         "light" N|NE|E|SE|S|SW|W|NW (NW)
@@ -963,6 +965,11 @@ canvasSize step may set Tool Options, which hold for the steps after it:
               "from": rung, "to": rung}
   "texture" {"kind": scales|foliage|hoard|brick|noise, "density", "seed"}
   "spray" {"kind": stars|haze|smoke, "density", "seed"}
+  "sampleMerged" bool (off): Sample merged. Off, fill floods the active
+             layer's pixels and the eyedropper picks from it (nothing
+             from a transparent cell or pixel); on, both read every
+             visible layer as the canvas shows it, and fill paints the
+             region it found there into the active layer
 
 The editor opens on the bottom layer, with nothing selected. A step that
 can't be applied (an unknown action or key, a value out of range, a point

@@ -42,8 +42,9 @@ const std::vector<ActionKeys>& actionKeys() {
         {"line", {"from", "to", "button"}},
         {"rectangle", {"from", "to", "button"}},
         {"ellipse", {"from", "to", "button"}},
-        {"fill", {"at", "button"}},
-        {"eyedropper", {"at", "button"}},
+        // Tool Options' Sample merged is these two tools' alone
+        {"fill", {"at", "button", "sampleMerged"}},
+        {"eyedropper", {"at", "button", "sampleMerged"}},
         // cells again
         {"gradient", {"from", "to", "button"}},
         {"keyboard", {"at", "text"}},
@@ -304,6 +305,8 @@ void readOptions(const std::string& where, const QJsonObject& o, Options& opt) {
         if (g.contains("to"))
             opt.gradientTo = intOf(where, "gradient to", g["to"], 0, kRungsPerStep * 15);
     }
+    if (o.contains("sampleMerged"))
+        opt.sampleMerged = boolOf(where, "sampleMerged", o["sampleMerged"]);
     if (o.contains("pasteMode"))
         opt.pasteMode = choiceOf<PasteMode>(
             where, "pasteMode", o["pasteMode"],

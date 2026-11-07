@@ -31,6 +31,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -1155,4 +1156,277 @@ TEST_CASE("a canvasSize step pulls a set symmetry centre onto the new canvas, as
             kept = m.settings.symmetry.centre;
     });
     CHECK(kept == std::pair{10, 4});
+}
+
+// ---- Sample merged (#419) ---------------------------------------------------
+//
+// data/replay/layered.bwp (made by layered-start.json) is 20 x 4, bottom
+// to top:
+//   ground  cells: a red bar down column 5; cell (18, 3) a red top pixel
+//           over a blue bottom one; black elsewhere
+//   ghost   cells, hidden: a green bar down column 10
+//   paint   cells, all clear
+//   dots    pixels: a magenta bar down column 15
+// so the canvas shows black regions in columns 0-4 and 6-14 (the hidden
+// green bar not among what it shows, the magenta one above "paint" among
+// it), and the editor opens on "ground".
+
+namespace {
+
+bwcli::replay::Outcome layered(const std::string& steps) {
+    return replayed(R"({"version": 1, "start": {"file": "layered.bwp"}, "steps": [)" + steps + "]}");
+}
+
+// Both halves of a cell as halfblock.h reads them, or nothing for a clear one.
+std::optional<std::pair<int, int>> halves(const Cell& c) {
+    if (c.transparent)
+        return std::nullopt;
+    const auto h = halfBlocks(c);
+    REQUIRE(h);
+    return std::pair{int(h->top), int(h->bottom)};
+}
+
+// The columns of row `y` of `layer` that hold both halves `colour`.
+std::vector<int> columnsOf(const Layer& layer, int y, int colour) {
+    std::vector<int> xs;
+    for (int x = 0; x < layer.cells.width(); ++x)
+        if (halves(layer.cells.at(x, y)) == std::pair{colour, colour})
+            xs.push_back(x);
+    return xs;
+}
+
+std::vector<int> span(int from, int to) {
+    std::vector<int> v;
+    for (int x = from; x <= to; ++x)
+        v.push_back(x);
+    return v;
+}
+
+// The pen after each step of `steps`, by step name.
+std::map<std::string, Pen> pensAfter(const std::string& json, project::Project start) {
+    std::map<std::string, Pen> pens;
+    bwcli::replay::run(steps::parse(json), std::move(start), [&](const bwcli::replay::Moment& m) {
+        if (!m.before)
+            pens[m.step.name] = m.settings.pen;
+    });
+    return pens;
+}
+
+project::Project layeredStart() {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"file": "layered.bwp"},
+                                             "steps": [{"name": "a", "action": "selectAll"}]})");
+    return bwcli::replay::start(s, kReplay, kSamples);
+}
+
+} // namespace
+
+TEST_CASE("the layered start is the one the Sample merged tests describe (#419)", "[replay][sample-merged]") {
+    const project::Project p = layeredStart();
+    REQUIRE(layerNames(p) == std::vector<std::string>{"ground", "ghost", "paint", "dots"});
+    CHECK_FALSE(layerNamed(p, "ghost").props.visible);
+    CHECK(layerNamed(p, "dots").props.kind == LayerKind::Pixels);
+    CHECK(columnsOf(layerNamed(p, "ground"), 0, Red) == std::vector<int>{5});
+    CHECK(columnsOf(layerNamed(p, "ghost"), 2, Green) == std::vector<int>{10});
+    CHECK(halves(layerNamed(p, "ground").cells.at(18, 3)) == std::pair{int(Red), int(Blue)});
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 20; ++x)
+            CHECK(layerNamed(p, "paint").cells.at(x, y).transparent);
+    CHECK(layerPixels(layerNamed(p, "dots").cells.at(15, 3)) == LayerPixels{Magenta, Magenta});
+}
+
+TEST_CASE("fill floods the active layer, or with sampleMerged what the canvas shows (#419)",
+          "[replay][sample-merged]") {
+    // off (the default, and false said outright), the clear "paint" layer is
+    // one region: the whole layer is filled
+    for (const char* key : {"", R"("sampleMerged": false, )"}) {
+        INFO("key: " << key);
+        const auto out = layered(std::string(R"({"name": "to-paint", "action": "setActiveLayer", "layer": "paint"},
+            {"name": "fill", "action": "fill", "fg": 14, )") + key + R"("at": [0, 0]})");
+        const Layer& paint = layerNamed(out.captures.back().project, "paint");
+        for (int y = 0; y < 4; ++y)
+            CHECK(columnsOf(paint, y, Yellow) == span(0, 19));
+    }
+
+    // on, the region is the canvas's black one in columns 0-4: the red bar
+    // below bounds it
+    const auto out = layered(R"({"name": "to-paint", "action": "setActiveLayer", "layer": "paint"},
+        {"name": "merged", "action": "fill", "fg": 14, "sampleMerged": true, "at": [0, 0]},
+        {"name": "held", "action": "fill", "fg": 11, "at": [7, 0]},
+        {"name": "half", "action": "fill", "fg": 14, "at": [18, 6]},
+        {"name": "off", "action": "fill", "fg": 9, "sampleMerged": false, "at": [19, 0]})");
+    const auto paintAfter = [&](int capture) -> const Layer& {
+        return layerNamed(out.captures[std::size_t(capture)].project, "paint");
+    };
+    for (int y = 0; y < 4; ++y) {
+        INFO("row " << y);
+        CHECK(columnsOf(paintAfter(1), y, Yellow) == span(0, 4));
+        // held for the next step: the hidden green bar in column 10 bounds
+        // nothing, and the magenta bar above "paint" in column 15 does,
+        // though none of its colour is copied into "paint"
+        CHECK(columnsOf(paintAfter(2), y, LightCyan) == span(6, 14));
+        CHECK(paintAfter(2).cells.at(5, y).transparent);
+        CHECK(paintAfter(2).cells.at(15, y).transparent);
+    }
+    // the red top pixel of (18, 3) is a region of one: the cell's other half
+    // keeps the blue that showed through the clear cell
+    CHECK(halves(paintAfter(3).cells.at(18, 3)) == std::pair{int(Yellow), int(Blue)});
+    CHECK(paintAfter(3).cells.at(18, 2).transparent);
+    CHECK(paintAfter(3).cells.at(17, 3).transparent);
+    // the layers it doesn't paint are as they started
+    const project::Project start = layeredStart();
+    for (const char* name : {"ground", "ghost", "dots"})
+        CHECK(layerNamed(out.captures[3].project, name).cells == layerNamed(start, name).cells);
+    // off again: "paint"'s own clear pixels around (19, 0), columns 15-19;
+    // (18, 3) took the blue under it when its top half was painted, so it
+    // is no clear pixel of "paint" now and the fill leaves it
+    const Layer& off = paintAfter(4);
+    for (int y = 0; y < 4; ++y)
+        CHECK(columnsOf(off, y, LightBlue) == (y == 3 ? std::vector<int>{15, 16, 17, 19} : span(15, 19)));
+    CHECK(halves(off.cells.at(18, 3)) == std::pair{int(Yellow), int(Blue)});
+    CHECK(off.cells.at(5, 0).transparent);
+}
+
+TEST_CASE("a sampleMerged fill on a pixels layer paints the region into that layer's pixels (#419)",
+          "[replay][sample-merged]") {
+    const auto merged = layered(R"({"name": "to-dots", "action": "setActiveLayer", "layer": "dots"},
+        {"name": "fill", "action": "fill", "fg": 12, "sampleMerged": true, "at": [7, 1]})");
+    const Layer& dots = layerNamed(merged.captures.back().project, "dots");
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 20; ++x) {
+            INFO("cell " << x << ", " << y);
+            if (x >= 6 && x <= 14)
+                CHECK(layerPixels(dots.cells.at(x, y)) == LayerPixels{LightRed, LightRed});
+            else if (x == 15)
+                CHECK(layerPixels(dots.cells.at(x, y)) == LayerPixels{Magenta, Magenta});
+            else
+                CHECK(dots.cells.at(x, y).transparent);
+        }
+    // off, the layer's own clear pixels left of its bar are the region
+    const auto own = layered(R"({"name": "to-dots", "action": "setActiveLayer", "layer": "dots"},
+        {"name": "fill", "action": "fill", "fg": 12, "at": [7, 1]})");
+    const Layer& all = layerNamed(own.captures.back().project, "dots");
+    CHECK(layerPixels(all.cells.at(0, 0)) == LayerPixels{LightRed, LightRed});
+    CHECK(layerPixels(all.cells.at(14, 3)) == LayerPixels{LightRed, LightRed});
+    CHECK(all.cells.at(16, 0).transparent);
+    CHECK(layerPixels(all.cells.at(15, 0)) == LayerPixels{Magenta, Magenta});
+}
+
+TEST_CASE("a sampleMerged fill under the alpha lock paints no clear cell (#419)", "[replay][sample-merged]") {
+    const auto out = layered(R"({"name": "to-paint", "action": "setActiveLayer", "layer": "paint"},
+        {"name": "lock", "action": "layerProperties", "alphaLocked": true},
+        {"name": "fill", "action": "fill", "fg": 14, "sampleMerged": true, "at": [0, 0]})");
+    REQUIRE(out.notes.size() == 1);
+    CHECK_THAT(out.notes[0], ContainsSubstring("step 3 (fill): changes nothing"));
+}
+
+TEST_CASE("the eyedropper picks from the active layer, or with sampleMerged from what the canvas shows (#419)",
+          "[replay][sample-merged]") {
+    const std::string json = R"({"version": 1, "start": {"file": "layered.bwp"}, "steps": [
+        {"name": "to-paint", "action": "setActiveLayer", "layer": "paint"},
+        {"name": "own", "action": "eyedropper", "at": [5, 0]},
+        {"name": "below", "action": "eyedropper", "sampleMerged": true, "at": [5, 0]},
+        {"name": "hidden", "action": "eyedropper", "fg": 14, "at": [10, 0]},
+        {"name": "above", "action": "eyedropper", "at": [15, 1]},
+        {"name": "half", "action": "eyedropper", "button": "right", "at": [18, 7]},
+        {"name": "to-dots", "action": "setActiveLayer", "layer": "dots"},
+        {"name": "dots-own", "action": "eyedropper", "sampleMerged": false, "fg": 14, "at": [5, 0]},
+        {"name": "dots-merged", "action": "eyedropper", "sampleMerged": true, "at": [5, 0]}]})";
+    const auto pens = pensAfter(json, layeredStart());
+    // the clear "paint" layer has nothing at (5, 0): the pen is as it was
+    CHECK(pens.at("own").fg == Color::indexed(Grey));
+    CHECK(pens.at("below").fg == Color::indexed(Red));
+    // the hidden green bar isn't shown: black is
+    CHECK(pens.at("hidden").fg == Color::indexed(Black));
+    CHECK(pens.at("above").fg == Color::indexed(Magenta));
+    CHECK(pens.at("half").bg == Color::indexed(Blue));
+    CHECK(pens.at("half").fg == Color::indexed(Magenta));
+    CHECK(pens.at("dots-own").fg == Color::indexed(Yellow));
+    CHECK(pens.at("dots-merged").fg == Color::indexed(Red));
+
+    const auto out = replayed(json);
+    REQUIRE(out.notes.size() == 2);
+    CHECK_THAT(out.notes[0], ContainsSubstring("step 2 (own): pixel (5, 0) is transparent"));
+    CHECK_THAT(out.notes[1], ContainsSubstring("step 8 (dots-own): pixel (5, 0) is transparent"));
+}
+
+TEST_CASE("over a shade under a pixels layer, sampleMerged reads the shade as the canvas shows it (#419)",
+          "[replay][sample-merged]") {
+    // a grey-on-black light shade on "ground" at (2, 1): no half block, so
+    // the composite has no pixels there to flood or pick as a pixels
+    // layer's own would be read
+    const std::string shade = R"({"name": "shade", "action": "glyph", "glyph": "░", "fg": 7, "bg": 0, "points": [[2, 1]]},
+        {"name": "to-dots", "action": "setActiveLayer", "layer": "dots"},)";
+    // the editor's merged fill floods the composite as a cells layer's
+    // pixels, and a shade is no pixel it can fill: nothing changes
+    const auto fill = layered(shade + R"({"name": "fill", "action": "fill", "fg": 12, "sampleMerged": true, "at": [2, 2]})");
+    REQUIRE(fill.notes.size() == 1);
+    CHECK_THAT(fill.notes[0], ContainsSubstring("step 3 (fill): changes nothing"));
+    // a merged pick takes the shade's foreground (pickColour on the canvas)
+    const std::string pick = R"({"version": 1, "start": {"file": "layered.bwp"}, "steps": [)" + shade +
+                             R"({"name": "pick", "action": "eyedropper", "sampleMerged": true, "fg": 14, "at": [2, 2]},
+        {"name": "pick-bg", "action": "eyedropper", "button": "right", "bg": 3, "at": [2, 3]}]})";
+    const auto pens = pensAfter(pick, layeredStart());
+    CHECK(pens.at("pick").fg == Color::indexed(Grey));
+    CHECK(pens.at("pick-bg").bg == Color::indexed(Black));
+}
+
+TEST_CASE("under IRC a left eyedropper pick takes the formatting of the cell it reads, as the editor's does (#419)",
+          "[replay][sample-merged][irc]") {
+    // a bold red block on the bottom layer, a clear cells layer over it
+    project::Project p;
+    Canvas c(4, 1);
+    Cell bold;
+    bold.ch = kFullBlock;
+    bold.fg = Color::indexed(Red);
+    bold.attrs = attr::Bold;
+    c.at(1, 0) = bold;
+    p.layers = LayerStack::fromCanvas(c);
+    p.layers.add(makeLayer(LayerKind::Cells, 4, 1, "top"));
+    p.target = Target::Irc;
+    const auto pensFor = [&](const std::string& steps) {
+        return pensAfter(R"({"version": 1, "start": {"blank": [4, 1]}, "steps": [)" + steps + "]}", p);
+    };
+    const auto pens = pensFor(R"({"name": "ground", "action": "eyedropper", "at": [1, 0]},
+        {"name": "reset", "action": "eyedropper", "at": [0, 0]},
+        {"name": "to-top", "action": "setActiveLayer", "layer": "top"},
+        {"name": "own", "action": "eyedropper", "at": [1, 0]},
+        {"name": "merged", "action": "eyedropper", "sampleMerged": true, "at": [1, 0]},
+        {"name": "right", "action": "eyedropper", "button": "right", "at": [0, 0]})");
+    CHECK(pens.at("ground").attrs == attr::Bold);
+    CHECK(pens.at("reset").attrs == 0);
+    CHECK(pens.at("own").attrs == 0);  // nothing picked from the clear cell
+    CHECK(pens.at("merged").attrs == attr::Bold);
+    CHECK(pens.at("merged").fg == Color::indexed(Red));
+    CHECK(pens.at("right").attrs == attr::Bold);  // the right button picks no formatting
+    // the glyph brush paints with the pen's formatting, as the editor's does
+    const auto glyph = bwcli::replay::run(
+        steps::parse(R"({"version": 1, "start": {"blank": [4, 1]}, "steps": [
+            {"name": "to-top", "action": "setActiveLayer", "layer": "top"},
+            {"name": "merged", "action": "eyedropper", "sampleMerged": true, "at": [1, 0]},
+            {"name": "glyph", "action": "glyph", "glyph": "A", "points": [[2, 0]]}]})"),
+        p);
+    const Cell& a = layerNamed(glyph.captures.back().project, "top").cells.at(2, 0);
+    CHECK(a.ch == U'A');
+    CHECK(a.attrs == attr::Bold);
+    // under ANSI the pen keeps no formatting from a pick
+    p.target = Target::Ansi;
+    CHECK(pensFor(R"({"name": "ground", "action": "eyedropper", "at": [1, 0]})").at("ground").attrs == 0);
+}
+
+TEST_CASE("the Sample merged steps file writes the bytes saved for it (#419)", "[replay][sample-merged]") {
+    const steps::Script s = steps::parse(bwcli::readFile((kReplay / "sample-merged.json").string()));
+    const bwcli::replay::Outcome out = bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples));
+    CHECK(out.notes.empty());
+    std::set<std::string> saved;
+    for (const auto& e : fs::directory_iterator(kReplay / "sample-merged"))
+        saved.insert(e.path().filename().string());
+    std::set<std::string> written;
+    for (const auto& c : out.captures) {
+        INFO(c.stem);
+        written.insert(c.stem + ".ans");
+        const fs::path golden = kReplay / "sample-merged" / (c.stem + ".ans");
+        REQUIRE(fs::exists(golden));
+        CHECK(ansBytes(c.project) == bwcli::readFile(golden.string()));
+    }
+    CHECK(written == saved);
 }

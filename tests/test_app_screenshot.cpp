@@ -27,6 +27,7 @@
 
 #include <QAction>
 #include <QBuffer>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QDockWidget>
@@ -1200,4 +1201,43 @@ TEST_CASE("a start canvas too large to display at its 9 px cells is refused at t
     // at 8 px the start is taken and the same-size step changes nothing
     MainWindow eight;
     CHECK(screenshot::take(eight, s, big).empty());
+}
+
+TEST_CASE("a screenshot shows the Sample merged a fill or eyedropper step sets, held for the steps after (#419)",
+          "[screenshot]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720],
+      "steps": [
+        {"name": "off", "action": "fill", "screenshot": {"of": "sampleMerged"}},
+        {"name": "on", "action": "fill", "sampleMerged": true, "at": [3, 3],
+         "screenshot": {"of": "sampleMerged", "when": "both"}},
+        {"name": "held", "action": "eyedropper", "at": [3, 3], "screenshot": {"of": "sampleMerged"}},
+        {"name": "again", "action": "fill", "sampleMerged": false, "screenshot": {"of": "sampleMerged"}}
+      ]})");
+    MainWindow w;
+    struct Seen {
+        bool checked = false, visible = false, view = false;
+        QImage picture;
+    };
+    std::map<std::string, Seen> seen;
+    screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& shot) {
+        QCheckBox* box = w.toolOptions()->sampleMergedBox();
+        seen[shot.stem] = {box->isChecked(), box->isVisibleTo(w.toolOptions()), w.canvasView()->sampleMerged(),
+                           shot.image};
+    });
+    REQUIRE(seen.size() == 5);
+    for (const auto& [stem, x] : seen) {
+        INFO(stem);
+        CHECK(x.visible);
+        CHECK(x.view == x.checked);  // the box is the view's own setting
+    }
+    CHECK_FALSE(seen["01-off"].checked);
+    // before the step as after it: the option it is applied with
+    CHECK(seen["02-on-before"].checked);
+    CHECK(seen["02-on-after"].checked);
+    CHECK(seen["03-held"].checked);
+    CHECK_FALSE(seen["04-again"].checked);
+    // and the picture is of it: the same box drawn ticked and not
+    CHECK(seen["01-off"].picture.size() == seen["02-on-after"].picture.size());
+    CHECK(seen["01-off"].picture != seen["02-on-after"].picture);
+    CHECK(seen["01-off"].picture == seen["04-again"].picture);
 }

@@ -75,6 +75,7 @@ struct ToolSettings {
     bw::TextureOptions texture;
     bw::SprayOptions spray;
     bw::PasteMode pasteMode = bw::PasteMode::Normal;
+    bool sampleMerged = false;  // fill and the eyedropper (CanvasView::sampleMerged)
 };
 
 // `settings` with the options a step sets taken into it.

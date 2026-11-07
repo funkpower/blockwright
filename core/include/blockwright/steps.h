@@ -24,7 +24,8 @@
 // three names of the replay's own for what the editor does in a dock or by
 // dragging (setActiveLayer, layerProperties, moveSelection). A tool step
 // with no points only sets options, as choosing the tool does. Any step but
-// a view or canvasSize step may also set Tool Options (below); what it sets
+// a view or canvasSize step may also set Tool Options (below), but for
+// "sampleMerged", which only a fill or eyedropper step takes; what it sets
 // holds for the steps after it, as Tool Options do in the editor.
 // "capture": "before-after" asks for the canvas before the step as well as
 // after it.
@@ -142,6 +143,10 @@ struct Options {
     std::optional<TextureOptions> texture;
     std::optional<SprayOptions> spray;
     std::optional<PasteMode> pasteMode;   // paste and moveSelection; default normal
+    // Sample merged: fill floods by, and the eyedropper picks from, the
+    // composite instead of the active layer; default off. Only a fill or
+    // eyedropper step sets it, as only those tools show it.
+    std::optional<bool> sampleMerged;
 };
 
 // A point of a stroke: a cell for the brushes, a half-block pixel (x, and a

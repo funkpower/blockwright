@@ -96,6 +96,8 @@ void take(ToolSettings& s, const steps::Options& o) {
         s.spray = *o.spray;
     if (o.pasteMode)
         s.pasteMode = *o.pasteMode;
+    if (o.sampleMerged)
+        s.sampleMerged = *o.sampleMerged;
 }
 
 namespace {
@@ -253,6 +255,9 @@ std::unique_ptr<Brush> brushFor(State& s, const Step& step) {
         c.ch = s.glyph;
         c.fg = s.pen.fg;
         c.bg = s.pen.bg;
+        // the pen's formatting (an IRC eyedropper pick's), as GlyphTool::makeBrush
+        if (s.p.target == Target::Irc && s.layer().props.kind != LayerKind::Pixels)
+            c.attrs = s.pen.attrs;
         return std::make_unique<GlyphBrush>(c);
     }
     if (a == "colorize")
@@ -273,15 +278,23 @@ std::uint8_t colourFor(const State& s, const Step& step) {
     return (step.button == Button::Right ? s.pen.bg : s.pen.fg).paletteIndex();
 }
 
-// The eyedropper on the active layer alone (the editor's default): nothing
-// from a transparent cell or pixel.
+// What the canvas shows: every visible layer composited (Document::canvas),
+// what Sample merged reads.
+Canvas compositeOf(State& s) { return composite(s.stack(), CompositeOptions{s.p.ice, Cell{}}); }
+
+// The eyedropper (EyedropperTool::mousePress): on the active layer alone
+// (the editor's default) nothing from a transparent cell or pixel; with
+// Sample merged, what the canvas shows. Under the IRC target a left pick
+// also takes the cell's formatting into the pen.
 void eyedropper(State& s, const Step& step, Outcome& out) {
     const Point p = step.points[0];
-    const Canvas cv = canvasOf(s);
+    const Canvas cv = s.sampleMerged ? compositeOf(s) : canvasOf(s);
     const Cell& cell = cv.at(p.x, p.y / 2);
     const bool bg = step.button == Button::Right;
     std::optional<Color> c;
-    if (s.layer().props.kind == LayerKind::Pixels) {
+    if (s.sampleMerged) {
+        c = pickColour(cv, p.x, p.y, bg, s.p.ice);
+    } else if (s.layer().props.kind == LayerKind::Pixels) {
         const LayerPixels px = layerPixels(cell);
         if (const std::optional<std::uint8_t> half = p.y % 2 ? px.bottom : px.top)
             c = Color::indexed(*half);
@@ -293,6 +306,8 @@ void eyedropper(State& s, const Step& step, Outcome& out) {
         return;
     }
     (bg ? s.pen.bg : s.pen.fg) = *c;
+    if (!bg && s.p.target == Target::Irc)
+        s.pen.attrs = cell.attrs & attr::Formatting;
 }
 
 // "U+2605", or "U+0071 U+0302" for a cluster.
@@ -533,8 +548,33 @@ void step(State& s, const Step& st, Outcome& out) {
         editable(s, st);
         const StrokeOptions o = optionsOf(s);
         const Canvas cv = canvasOf(s);
-        const auto px = floodPixels(cv, st.points[0].x, st.points[0].y, o);
-        land(s, st, plotPixels(cv, px, colourFor(s, st), o, mirror(s)), true, out);
+        const Point press = st.points[0];
+        if (!s.sampleMerged) {
+            const auto px = floodPixels(cv, press.x, press.y, o);
+            land(s, st, plotPixels(cv, px, colourFor(s, st), o, mirror(s)), true, out);
+        } else {
+            // FillTool with Sample merged: the region found in the
+            // composite, which is flat cells (the layer's lock is for the
+            // paint), painted into the active layer. On a cells layer, not
+            // alpha-locked, a pixel lands in a clear cell over what that
+            // cell shows through to (Document::shownBelow), so the half
+            // outside the region keeps that and nothing is copied from the
+            // layers above.
+            StrokeOptions merged = o;
+            merged.lockTransparent = false;
+            merged.pixelLayer = false;
+            const auto px = floodPixels(compositeOf(s), press.x, press.y, merged);
+            Canvas base = cv;
+            if (!o.pixelLayer && !o.lockTransparent) {
+                const std::size_t index = s.index();
+                const CompositeOptions opts{s.p.ice, Cell{}};
+                for (int y = 0; y < base.height(); ++y)
+                    for (int x = 0; x < base.width(); ++x)
+                        if (base.at(x, y).transparent)
+                            base.at(x, y) = compositeCellBelow(s.stack(), index, x, y, opts);
+            }
+            land(s, st, plotPixels(base, px, colourFor(s, st), o, mirror(s)), true, out);
+        }
     } else if (a == "eyedropper") {
         onCanvas(s, st, true);
         eyedropper(s, st, out);

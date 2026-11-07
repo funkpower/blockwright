@@ -1,0 +1,8 @@
+{"version": 1, "start": {"file": "layered.bwp"}, "steps": [
+  {"name": "paint", "action": "setActiveLayer", "layer": "paint"},
+  {"name": "fill-merged", "action": "fill", "fg": 14, "sampleMerged": true, "at": [0, 0]},
+  {"name": "fill-held", "action": "fill", "fg": 11, "at": [7, 0]},
+  {"name": "fill-half", "action": "fill", "fg": 14, "at": [18, 6]},
+  {"name": "pick-merged", "action": "eyedropper", "at": [15, 1]},
+  {"name": "fill-own", "action": "fill", "sampleMerged": false, "at": [19, 0]}
+]}

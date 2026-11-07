@@ -8,6 +8,7 @@
 #include "draw_tools.h"
 #include "layers_dock.h"
 #include "main_window.h"
+#include "replay.h"
 #include "scratch_settings.h"
 #include "select_tool.h"
 #include "tool.h"
@@ -19,6 +20,7 @@
 #include "blockwright/layer.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
+#include "blockwright/steps.h"
 #include "blockwright/text.h"
 #include "blockwright/text_style.h"
 
@@ -47,7 +49,9 @@
 #include <QTreeWidget>
 #include <QUndoStack>
 
+#include <filesystem>
 #include <limits>
+#include <string>
 #include <type_traits>
 
 using namespace bw;
@@ -1685,4 +1689,117 @@ TEST_CASE("New and closing with the Layers dock's rename editor open ask about t
     QApplication::processEvents();
     CHECK(doc->undoStack()->count() == steps);
     doc->undoStack()->setClean();
+}
+
+TEST_CASE("a steps file's sampleMerged fill and eyedropper do what the editor's do with Sample merged (#419)",
+          "[layers][replay]") {
+    // the layered start of the replay's tests: a red bar under a hidden
+    // green one, a clear cells layer, a magenta pixels layer over it all
+    const std::filesystem::path dir = std::filesystem::path(BW_TEST_DATA) / "replay";
+    const std::string head = R"({"version": 1, "start": {"file": "layered.bwp"}, "steps": [)";
+    // and a grey-on-black light shade on the bottom layer at cell (2, 1), a
+    // cell the composite holds no half-block pixels in
+    const steps::Script s0 = steps::parse(
+        head + R"({"name": "a", "action": "glyph", "glyph": "░", "fg": 7, "bg": 0, "points": [[2, 1]]}]})");
+    const project::Project start = bwcli::replay::run(s0, bwcli::replay::start(s0, dir, {})).captures.back().project;
+
+    const std::string layer = GENERATE("ground", "paint", "dots");
+    const bool merged = GENERATE(false, true);
+    const char* tool = GENERATE("fill", "eyedropper");
+    const QPoint at = GENERATE(QPoint(0, 0), QPoint(2, 2), QPoint(2, 3), QPoint(7, 1), QPoint(10, 3), QPoint(15, 2),
+                               QPoint(18, 6), QPoint(18, 7));
+    const bool right = GENERATE(false, true);
+    INFO(layer << (merged ? " merged " : " own ") << tool << " at " << at.x() << ", " << at.y()
+               << (right ? " right" : " left"));
+
+    // the replay: the pen 14 on 3, then the click
+    const std::string json = head + R"({"name": "to", "action": "setActiveLayer", "layer": ")" + layer + R"("},
+        {"name": "click", "action": ")" + tool + R"(", "fg": 14, "bg": 3, "sampleMerged": )" +
+                             (merged ? "true" : "false") + R"(, "button": ")" + (right ? "right" : "left") +
+                             R"(", "at": [)" + std::to_string(at.x()) + ", " + std::to_string(at.y()) + "]}]}";
+    std::optional<project::Project> replayed;
+    Pen replayPen;
+    bwcli::replay::run(steps::parse(json), start, [&](const bwcli::replay::Moment& m) {
+        if (!m.before && m.step.name == "click") {
+            replayed = m.project;
+            replayPen = m.settings.pen;
+        }
+    });
+    REQUIRE(replayed);
+
+    // the editor: the same project open, the layer chosen in the dock, the
+    // pen set, Sample merged ticked or not, the click
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    doc->replace(start, QString(), FileForm::ProjectZip);
+    LayerId id = 0;
+    for (std::size_t i = 0; i < doc->layers().size(); ++i)
+        if (doc->layers()[i].props.name == layer)
+            id = doc->layers()[i].props.id;
+    REQUIRE(doc->setActiveLayer(id));
+    use(w, tool);
+    w.toolOptions()->sampleMergedBox()->setChecked(merged);
+    REQUIRE(v->sampleMerged() == merged);
+    v->setForeground(Yellow);
+    v->setBackground(Cyan);
+    drag(v, {at}, right ? Qt::RightButton : Qt::LeftButton);
+
+    CHECK(v->pen().fg == replayPen.fg);
+    CHECK(v->pen().bg == replayPen.bg);
+    CHECK(v->pen().attrs == replayPen.attrs);
+    REQUIRE(doc->layers().size() == replayed->layers.size());
+    for (std::size_t i = 0; i < doc->layers().size(); ++i) {
+        INFO("layer " << doc->layers()[i].props.name);
+        CHECK(doc->layers()[i].cells == replayed->layers[i].cells);
+    }
+}
+
+TEST_CASE("under IRC the glyph brush paints with the formatting a steps file's eyedropper picked, as the editor's (#419)",
+          "[layers][replay]") {
+    // a bold red block on the bottom layer, a clear cells layer over it
+    project::Project p;
+    Canvas c(4, 1);
+    Cell bold;
+    bold.ch = kFullBlock;
+    bold.fg = Color::indexed(Red);
+    bold.attrs = attr::Bold;
+    c.at(1, 0) = bold;
+    p.layers = LayerStack::fromCanvas(c);
+    const LayerId top = p.layers.add(makeLayer(LayerKind::Cells, 4, 1, "top"));
+    p.target = Target::Irc;
+    const bool merged = GENERATE(false, true);
+    INFO((merged ? "merged" : "own"));
+
+    // merged, the pick is made on "top" and reads the bold cell below it;
+    // not, it is made on the bottom layer itself
+    const std::string json = std::string(R"({"version": 1, "start": {"blank": [4, 1]}, "steps": [)") +
+                             (merged ? R"({"name": "to-top", "action": "setActiveLayer", "layer": "top"},)" : "") +
+                             R"({"name": "pick", "action": "eyedropper", "sampleMerged": )" +
+                             (merged ? "true" : "false") + R"(, "at": [1, 0]},
+        {"name": "glyph", "action": "glyph", "glyph": "A", "points": [[2, 0]]}]})";
+    const auto out = bwcli::replay::run(steps::parse(json), p);
+
+    MainWindow w;
+    Document* doc = w.document();
+    CanvasView* v = w.canvasView();
+    doc->replace(p, QString(), FileForm::ProjectZip);
+    REQUIRE(doc->setActiveLayer(merged ? top : doc->layers()[0].props.id));
+    use(w, "eyedropper");
+    w.toolOptions()->sampleMergedBox()->setChecked(merged);
+    drag(v, {QPoint(1, 0)});
+    REQUIRE(v->pen().attrs == attr::Bold);
+    use(w, "glyph");
+    auto* glyph = dynamic_cast<GlyphTool*>(w.tools()->active());
+    REQUIRE(glyph);
+    glyph->setGlyph(U'A');
+    drag(v, {QPoint(2, 0)});
+
+    const project::Project& replayed = out.captures.back().project;
+    REQUIRE(doc->layers().size() == replayed.layers.size());
+    for (std::size_t i = 0; i < doc->layers().size(); ++i) {
+        INFO("layer " << doc->layers()[i].props.name);
+        CHECK(doc->layers()[i].cells == replayed.layers[i].cells);
+    }
+    CHECK(doc->active()->cells.at(2, 0).attrs == attr::Bold);
 }

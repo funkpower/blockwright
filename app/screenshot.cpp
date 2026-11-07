@@ -192,6 +192,7 @@ void showSettings(MainWindow& w, const bwcli::replay::ToolSettings& s) {
     v->setOutlineShape(s.outline);
     v->setTextureOptions(s.texture);
     v->setPencilConnectivity(s.pencil);
+    v->setSampleMerged(s.sampleMerged);
     if (auto* filled = w.findChild<QAction*>(QStringLiteral("filledShapes")))
         filled->setChecked(s.filled);
     if (auto* t = toolNamed<GlyphTool>(w, "glyph"))
