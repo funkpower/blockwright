@@ -248,6 +248,13 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
         setSelection({});
         fitSymmetryCentre();
     });
+    // A Canvas Size step, its undo or redo: what a tool or a layer drag holds
+    // was worked out on the old canvas; the step gives the selection.
+    connect(doc_, &Document::canvasResized, this, [this] {
+        cancelTool();
+        fitSymmetryCentre();
+    });
+    connect(doc_, &Document::selectionRequested, this, &CanvasView::setSelection);
     // Undo or redo of any command, a format change among them, and a format
     // change made any other way end a drag: what it shows was worked out
     // on the document before.
@@ -403,7 +410,13 @@ void CanvasView::setCellCursor(Cursor c) {
     // On the canvas and never on a continuation (PLAN §16, Cursor and
     // typing), judged on the cells typing writes to.
     const Canvas& cv = doc_->layerCanvas();
-    const Cursor on = moveCursor(cv, c, 0, 0);
+    Cursor on = moveCursor(cv, c, 0, 0);
+    // a continuation left on column 0 (a layer moved left past its lead)
+    // has no lead to go to, so the cursor takes the cell after it; on a
+    // one-column canvas it is the only cell, shown as a space (PLAN §16),
+    // and a mark typed there is refused (typeMarks)
+    if (on.x == 0 && on.x + 1 < cv.width() && cv.contains(on.x, on.y) && cv.at(on.x, on.y).ch.isContinuation())
+        on.x = 1;
     // Past the end only where the caller put it: on the last column, or on a
     // lead whose continuation is the last column.
     c = {on.x, on.y, c.pastEnd && on.x == c.x && on.y == c.y && atRowEnd(cv, on)};
@@ -653,11 +666,12 @@ void CanvasView::followCaret() {
 void CanvasView::canvasReset() {
     updateSize();
     update();
-    const Cursor c = moveCursor(doc_->canvas(), cursor_, 0, 0);
-    if (c != cursor_) {
-        cursor_ = c;
-        emit cursorMoved(cursor_);
-    }
+    // The cursor is fitted to the new canvas by the rules every cursor
+    // follows, on the active layer's cells: one judged on other cells (the
+    // composite) could drop a past-the-end mark that is still right, which
+    // would be a move, and the view would scroll to a cursor that didn't
+    // move (PLAN §5, Canvas Size).
+    setCellCursor(cursor_);
 }
 
 void CanvasView::cellsChanged(const QRegion& cells) {

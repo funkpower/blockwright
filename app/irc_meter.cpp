@@ -52,6 +52,7 @@ IrcMeter::IrcMeter(Document* doc, CanvasView* view, GutterScrollArea* scroll)
     resetRows();
     connect(doc_, &Document::cellsChanged, this, &IrcMeter::invalidate);
     connect(doc_, &Document::reset, this, &IrcMeter::resetRows);
+    connect(doc_, &Document::canvasResized, this, &IrcMeter::resetRows);
     connect(doc_, &Document::formatChanged, this, &IrcMeter::resetRows);
     connect(doc_, &Document::ircBudgetChanged, this, &IrcMeter::resetRows);
     connect(doc_, &Document::targetChanged, this, &IrcMeter::resetRows);

@@ -430,6 +430,11 @@ EditResult typeMarks(const Canvas& canvas, Cursor c, std::u32string_view marks, 
         return {{}, c, {}, named(marks) + " has no character before it to join; not typed"};
     const int x = past ? c.x : leadOf(canvas, c.x - 1, c.y);
     const Cell& target = canvas.at(x, c.y);
+    // a continuation left in column 0 has its lead off the canvas (a layer
+    // moved left past it): there is no character here to join, and writing
+    // a mark over half the pair would blank the other half
+    if (target.ch.isContinuation())
+        return {{}, c, {}, named(marks) + " has no character before it to join; not typed"};
     std::u32string joined;
     for (const char32_t cp : codePoints(target.ch))
         joined += cp;

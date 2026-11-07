@@ -732,6 +732,19 @@ TEST_CASE("a lone mark joins the cluster left of the cursor", "[wide]") {
     r = typeMarks(Canvas(4, 1), {0, 0}, U"́", kUnicode);
     CHECK(r.edit.empty());
     CHECK(r.notice == "U+0301 has no character before it to join; not typed");
+    // and onto a continuation in column 0, whose lead is off the canvas
+    // (a layer moved left past it), just after it or past the end of a
+    // one-column row
+    cv = Canvas(4, 1);
+    cv.at(0, 0).ch = Glyph::continuation();
+    r = typeMarks(cv, {1, 0}, U"́", kUnicode);
+    CHECK(r.edit.empty());
+    CHECK(r.notice == "U+0301 has no character before it to join; not typed");
+    cv = Canvas(1, 1);
+    cv.at(0, 0).ch = Glyph::continuation();
+    r = typeMarks(cv, {0, 0, true}, U"́", kUnicode);
+    CHECK(r.edit.empty());
+    CHECK(r.notice == "U+0301 has no character before it to join; not typed");
     // and as a 17th code point
     cv = Canvas(4, 1);
     land(cv, typeCluster(cv, {0, 0}, U"q" + std::u32string(15, U'̂'), pen, kUnicode));

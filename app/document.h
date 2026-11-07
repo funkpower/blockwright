@@ -17,12 +17,14 @@
 // it holds (ProjectExtras) to save back.
 
 #include "blockwright/ansi.h"
+#include "blockwright/canvas_size.h"
 #include "blockwright/xbin.h"
 #include "blockwright/composite.h"
 #include "blockwright/edit.h"
 #include "blockwright/generator.h"
 #include "blockwright/layer.h"
 #include "blockwright/project.h"
+#include "blockwright/selection.h"
 #include "blockwright/text.h"
 
 #include <QObject>
@@ -239,6 +241,15 @@ public:
     // Sets the format without the stack; the undo commands call this.
     void applyFormat(const DocumentFormat& format);
 
+    // Canvas Size (PLAN §5, bw::resizeCanvas): the canvas made width by
+    // height, the old one placed at `anchor`, as one undo step ("Canvas
+    // Size") that also moves the view's selection and cursor with the cells
+    // (`selection` and `cursor` are the view's now; undo puts them back).
+    // False, with the reason in `error`, for a size canvasSizeProblem
+    // refuses; true and nothing pushed when the size is the canvas's.
+    bool resizeCanvas(int width, int height, Anchor anchor, const Selection& selection, Cursor cursor,
+                      QString* error = nullptr);
+
     // ---- layers ------------------------------------------------------------
 
     const LayerStack& layers() const { return stack_; }
@@ -443,6 +454,14 @@ signals:
     // An undo command was done or undone: the cursor goes back to where it
     // was when the edit was made (undo) or where the edit left it (redo).
     void cursorRequested(bw::Cursor cursor);
+    // A Canvas Size step was done or undone: the view's selection is to be
+    // this one (after the canvas has its new size; see canvasResized).
+    void selectionRequested(const bw::Selection& selection);
+    // The canvas changed size in a Canvas Size step, its undo or redo; the
+    // undo stack, path and everything else reset covers stay as they were.
+    // Emitted before layersChanged, cellsChanged, selectionRequested and
+    // cursorRequested, so the views take the size first.
+    void canvasResized();
     // The file behind the document or its form (form()) changed.
     void pathChanged(const QString& path);
     // textEncoding() changed: on open, new or a save that made the file the
@@ -498,6 +517,7 @@ private:
     friend class IrcBudgetCommand;
     friend class TargetCommand;
     friend class FormatCommand;
+    friend class CanvasSizeCommand;
 
     void setModified(bool on);
     // Copies the TheDraw font file `face` names from the fonts folder (or
@@ -521,6 +541,9 @@ private:
     static QRegion otherCells(const Canvas& a, QPoint aAt, const Canvas& b, QPoint bAt, CellRect rect);
     // Starts over with `stack`, its bottom layer active.
     void resetLayers(LayerStack stack);
+    // A Canvas Size step's stack (or the one before it), the active layer
+    // kept, then the selection and cursor the view is to show.
+    void applyCanvasSize(LayerStack stack, const Selection& selection, Cursor cursor);
     // The layer edit (Layer::cells coordinates) applied to layer `id`
     // forwards or backwards: the layer, the composite and layerCanvas()
     // updated and cellsChanged emitted.

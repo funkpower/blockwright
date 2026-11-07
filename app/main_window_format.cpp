@@ -1,10 +1,11 @@
 // The MainWindow parts for the document format: File > SAUCE..., the
-// View menu's iCE colours and letter-spacing toggles, Format > Target, and
-// Edit > Preferences... (the fonts folder TheDraw faces come from, the
-// target new documents take).
+// View menu's iCE colours and letter-spacing toggles, Format > Canvas
+// Size..., Format > Target, and Edit > Preferences... (the fonts folder
+// TheDraw faces come from, the target new documents take).
 
 #include "main_window.h"
 
+#include "canvas_size_dialog.h"
 #include "canvas_view.h"
 #include "palette_widget.h"
 #include "library_dock.h"
@@ -16,6 +17,7 @@
 #include <QActionGroup>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QStatusBar>
 
 #include <stdexcept>
@@ -38,6 +40,14 @@ void MainWindow::createFormatActions(QMenu* view) {
 }
 
 void MainWindow::createTargetActions(QMenu* format) {
+    // No key of its own: Photoshop's Ctrl+Alt+C is AltGr+C on Windows, which
+    // types (PLAN §4, keyboard mode), and Preferences > Shortcuts can give
+    // it one.
+    QAction* size = format->addAction(tr("Canvas &Size..."), this, &MainWindow::canvasSize);
+    size->setObjectName(QStringLiteral("canvasSize"));
+    size->setStatusTip(tr("Make the canvas another size, keeping it at a side, a corner or the centre"));
+    size->setToolTip(size->statusTip());
+    format->addSeparator();
     QMenu* target = format->addMenu(tr("&Target"));
     target->setObjectName(QStringLiteral("targetMenu"));
     auto* group = new QActionGroup(this);
@@ -142,6 +152,65 @@ void MainWindow::setNinePx(bool on) {
     // the renderer still goes back to the document's width
     if (!doc_.setLetterSpacing(on ? 9 : 8))
         formatChanged();
+}
+
+void MainWindow::canvasSize() {
+    // what the tool holds lands first, so the dialog starts at the size and
+    // the step moves what the canvas shows
+    view_->finishTool();
+    CanvasSizeDialog dialog(QSize(doc_.canvas().width(), doc_.canvas().height()), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    QString error;
+    if (!resizeCanvas(dialog.canvasSize(), dialog.anchor(), &error))
+        QMessageBox::warning(this, tr("Canvas Size"), tr("The canvas can't be made that size: %1.").arg(error));
+}
+
+bool MainWindow::resizeCanvas(QSize size, Anchor anchor, QString* error) {
+    view_->finishTool();
+    if (const auto problem = canvasSizeProblem(doc_.layers(), size.width(), size.height())) {
+        *error = QString::fromStdString(*problem);
+        return false;
+    }
+    if (size == QSize(doc_.canvas().width(), doc_.canvas().height()))
+        return true;
+    // As newCanvas: the renderer takes the size first, so one too large to
+    // display leaves the document as it was; the step's canvasResized
+    // points it at the document's canvas.
+    const int gw = glyphWidth(doc_.ansi());
+    const Canvas candidate(size.width(), size.height());
+    try {
+        renderer_.setCanvas(&candidate, gw);
+    } catch (const std::exception&) {
+        renderer_.setCanvas(&doc_.canvas(), gw);
+        *error = tr("the canvas is too large to display");
+        return false;
+    }
+    if (!doc_.resizeCanvas(size.width(), size.height(), anchor, view_->selection(), view_->cellCursor(), error)) {
+        renderer_.setCanvas(&doc_.canvas(), gw);
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::canvasResized() {
+    // Letter spacing is an undo step too, so every state an undo or redo
+    // comes back to was shown before at its own spacing. Should one still
+    // not fit at 9 px it is shown at 8, which every canvas within the
+    // limits fits.
+    const int gw = glyphWidth(doc_.ansi());
+    try {
+        renderer_.setCanvas(&doc_.canvas(), gw);
+    } catch (const std::exception&) {
+        try {
+            renderer_.setCanvas(&doc_.canvas(), 8);
+            statusBar()->showMessage(tr("The canvas is too large to display at 9 px; shown at 8 px"), 5000);
+        } catch (const std::exception&) {
+        }
+    }
+    view_->canvasReset();
+    preview_->canvasReset();
+    updateStatus();
 }
 
 void MainWindow::formatChanged() {

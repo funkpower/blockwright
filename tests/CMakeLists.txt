@@ -80,6 +80,7 @@ add_executable(blockwright-tests
   test_irc_fit.cpp
   test_irc_target.cpp
   test_layers.cpp
+  test_canvas_size.cpp
   test_library.cpp
   test_library_bundled.cpp
   test_stamp_slice.cpp
@@ -588,6 +589,7 @@ add_executable(blockwright-app-tests
   test_app.cpp
   test_app_brush.cpp
   test_app_layers.cpp
+  test_app_canvas_size.cpp
   test_app_layer_style.cpp
   test_app_layer_move.cpp
   test_app_cli_shade.cpp

@@ -65,6 +65,8 @@ add_library(blockwright_app STATIC
   reference_scale.cpp
   reference_scale.h
   row_tree.h
+  canvas_size_dialog.cpp
+  canvas_size_dialog.h
   sauce_dialog.cpp
   sauce_dialog.h
   screenshot.cpp

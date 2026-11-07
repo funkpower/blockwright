@@ -1,6 +1,7 @@
 #include "document.h"
 #include "font_scanner.h"
 
+#include "blockwright/render.h"
 #include "blockwright/style_draw.h"
 #include "blockwright/text.h"
 
@@ -296,6 +297,34 @@ private:
     std::vector<LayerPropsEdit> restyles_;
 };
 
+// Canvas Size (PLAN §5): the stack before the step, which undo puts back
+// whole, so every layer's cells, offset and reference picture come back
+// exactly; redo works the step out again from it (bw::resizeCanvas is
+// deterministic), with the cell width it was first done at.
+class CanvasSizeCommand : public QUndoCommand {
+public:
+    CanvasSizeCommand(Document* doc, LayerStack before, int width, int height, CellShift shift, int cellWidth,
+                      Selection selectionBefore, Selection selectionAfter, Cursor cursorBefore, Cursor cursorAfter)
+        : QUndoCommand(Document::tr("Canvas Size")), doc_(doc), before_(std::move(before)), width_(width),
+          height_(height), shift_(shift), cellWidth_(cellWidth), selectionBefore_(selectionBefore),
+          selectionAfter_(selectionAfter), cursorBefore_(cursorBefore), cursorAfter_(cursorAfter) {}
+
+    void redo() override {
+        doc_->applyCanvasSize(resizeCanvas(before_, width_, height_, shift_, cellWidth_), selectionAfter_,
+                              cursorAfter_);
+    }
+    void undo() override { doc_->applyCanvasSize(before_, selectionBefore_, cursorBefore_); }
+
+private:
+    Document* doc_;
+    LayerStack before_;
+    int width_, height_;
+    CellShift shift_;
+    int cellWidth_;
+    Selection selectionBefore_, selectionAfter_;
+    Cursor cursorBefore_, cursorAfter_;
+};
+
 Document::Document(QObject* parent) : QObject(parent), doc_(blank()) {
     resetLayers(LayerStack::fromCanvas(doc_.canvas));
     connect(&undo_, &QUndoStack::cleanChanged, this, [this](bool clean) { setModified(!clean); });
@@ -535,6 +564,47 @@ void Document::applyFormat(const DocumentFormat& format) {
     emit formatChanged();
     if (!cells.isEmpty())
         emit cellsChanged(cells);
+}
+
+bool Document::resizeCanvas(int width, int height, Anchor anchor, const Selection& selection, Cursor cursor,
+                            QString* error) {
+    if (const auto problem = canvasSizeProblem(stack_, width, height)) {
+        if (error)
+            *error = QString::fromStdString(*problem);
+        return false;
+    }
+    if (width == stack_.width() && height == stack_.height())
+        return true;
+    emit layersAboutToChange();
+    emit commandAboutToPush();
+    const CellShift shift = anchorShift(stack_.width(), stack_.height(), width, height, anchor);
+    const CellRect moved{selection.bounds().x + shift.dx, selection.bounds().y + shift.dy,
+                         selection.bounds().width, selection.bounds().height};
+    const CellRect kept = intersect(moved, {0, 0, width, height});
+    const Selection after = selection.empty() || kept.empty() ? Selection() : Selection(kept);
+    // past the end stays where the cursor's cell stays; the view keeps it
+    // only while that cell is still at the row's end
+    const int toX = std::clamp(cursor.x + shift.dx, 0, width - 1), toY = std::clamp(cursor.y + shift.dy, 0, height - 1);
+    const Cursor to{toX, toY, cursor.pastEnd && toX == cursor.x + shift.dx && toY == cursor.y + shift.dy};
+    undo_.push(new CanvasSizeCommand(this, stack_, width, height, shift, glyphWidth(doc_), selection, after, cursor,
+                                     to));
+    return true;
+}
+
+void Document::applyCanvasSize(LayerStack stack, const Selection& selection, Cursor cursor) {
+    const LayerId active = active_;
+    // ids given since either stack was made aren't given again (PLAN §5)
+    const LayerId next = stack_.nextId();
+    stack_ = std::move(stack);
+    stack_.reserveIds(next);
+    active_ = stack_.find(active) ? active : stack_.empty() ? 0 : stack_[0].props.id;
+    doc_.canvas = composite(stack_, compositeOptions());
+    refreshLayerCanvas();
+    emit canvasResized();
+    emit layersChanged();
+    emit cellsChanged(QRegion(0, 0, stack_.width(), stack_.height()));
+    emit selectionRequested(selection);
+    emit cursorRequested(cursor);
 }
 
 void Document::replace(AnsiDocument doc, const QString& path) {
@@ -1108,7 +1178,12 @@ bool Document::applyGeneratorRun(std::uint64_t serial, LayerId id, const std::op
     // undone, and it must be done: a step that came after it, though undone
     // since, holds the cells this one has now as its cells before, so this
     // one's can't change under it.
+    // A Canvas Size step after it, done or undone, holds the whole stack
+    // from before or after it, cells included, so this step's cells can't
+    // change under it either (PLAN §5, Canvas Size).
     for (int i = undo_.count() - 1; i >= 0; --i) {
+        if (dynamic_cast<const CanvasSizeCommand*>(undo_.command(i)))
+            return false;
         const auto* c = dynamic_cast<const LayerPropsCommand*>(undo_.command(i));
         if (!c || !c->generator() || c->layerId() != id)
             continue;

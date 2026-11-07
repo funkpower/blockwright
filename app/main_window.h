@@ -261,6 +261,14 @@ public:
     // for a size outside 1 x 1 to kMaxColumns x kMaxRows or one too large
     // to display, leaving the document as it was.
     bool newCanvas(QSize size, bool ice, QString* error);
+    // Format > Canvas Size... once its dialog is accepted: the canvas made
+    // `size` (in cells), the old one at `anchor` (Document::resizeCanvas),
+    // the selection and cursor moving with the cells, without asking
+    // anything. A floating selection is stamped first. False, and `error`,
+    // for a size outside 1 x 1 to kMaxColumns x kMaxRows, layers too large
+    // for a project or a canvas too large to display, leaving the document
+    // as it was.
+    bool resizeCanvas(QSize size, Anchor anchor, QString* error);
     // File > Open Recent, filled from the recent list each time it opens.
     QMenu* openRecentMenu() const { return openRecentMenu_; }
     // Opens the Python scene at `path` as a new project, a generator layer
@@ -394,8 +402,12 @@ private:
     void fillSamplesMenu();
     // The iCE and letter-spacing toggles (main_window_format.cpp).
     void createFormatActions(QMenu* view);
-    // Format > Target (main_window_format.cpp).
+    // Format > Canvas Size... and Format > Target (main_window_format.cpp).
     void createTargetActions(QMenu* format);
+    // Format > Canvas Size...: the dialog, then resizeCanvas.
+    void canvasSize();
+    // The renderer and views take the canvas's new size (Document::canvasResized).
+    void canvasResized();
     // The target label, Format > Target and the palette follow the
     // document's target.
     void updateTarget();

@@ -483,6 +483,7 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     connect(helpToggle_, &QToolButton::toggled, this, &ToolOptions::showHelp);
     connect(tools, &ToolRegistry::activeChanged, this, &ToolOptions::showFor);
     connect(view_->document(), &Document::reset, this, &ToolOptions::fitCentre);
+    connect(view_->document(), &Document::canvasResized, this, &ToolOptions::fitCentre);
     connect(view_, &CanvasView::brushChanged, this, &ToolOptions::sync);
     connect(view_, &CanvasView::symmetryChanged, this, &ToolOptions::sync);
     if (glyphTool_)

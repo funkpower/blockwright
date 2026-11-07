@@ -13,6 +13,7 @@
 #include "scratch_settings.h"
 #include "settings.h"
 
+#include "blockwright/canvas_size.h"
 #include "blockwright/generator.h"
 #include "blockwright/project.h"
 
@@ -432,6 +433,37 @@ TEST_CASE("a result for a step that a newer step on its layer superseded is drop
     d.undoStack()->undo();
     CHECK(row(d, o.id) == "###");
     CHECK(params(d, o.id) == "(none)");
+}
+
+TEST_CASE("a result for a step that a Canvas Size step came after is dropped, undone or not") {
+    // Canvas Size holds the whole stack from before it, so a late result
+    // can't amend the step under it (the round-1 review's repro)
+    BarsWindow o;
+    Document& d = *o.w.document();
+    Truster trust(QMessageBox::No);
+    std::vector<quint64> serials;
+    QObject::connect(&d, &Document::generatorRunWanted, [&](LayerId, quint64 s) { serials.push_back(s); });
+    const std::string dir = generator::directory(o.id);
+    REQUIRE(row(d, o.id) == "###");
+    REQUIRE(d.setGeneratorParam(o.id, "count", 4.0));
+    REQUIRE(serials.size() == 1);
+    const std::optional<std::string> params4 = d.keptFile(dir + "params.json");
+    const std::optional<std::string> spec = d.keptFile(dir + "generator.json");
+    const Canvas four = generator::run(d.project(), o.id);
+    REQUIRE(d.resizeCanvas(14, 3, Anchor::TopLeft, Selection(), Cursor{}, nullptr));
+
+    CHECK_FALSE(d.applyGeneratorRun(serials[0], o.id, params4, spec, four));
+    CHECK(row(d, o.id) == "###");
+    d.undoStack()->undo();
+    CHECK(d.layers().width() == 12);
+    CHECK(row(d, o.id) == "###");
+    // undone, the resize still holds the stack after it
+    CHECK_FALSE(d.applyGeneratorRun(serials[0], o.id, params4, spec, four));
+    CHECK(row(d, o.id) == "###");
+    d.undoStack()->redo();
+    CHECK(d.layers().width() == 14);
+    CHECK(row(d, o.id) == "###");
+    CHECK(d.keptFile(dir + "params.json") == params4);
 }
 
 TEST_CASE("a slow run overtaken by a newer step that is then undone leaves undo and redo consistent") {

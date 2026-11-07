@@ -533,6 +533,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         preview_->cellsChanged(cells);
     });
     connect(&doc_, &Document::reset, this, &MainWindow::canvasReset);
+    connect(&doc_, &Document::canvasResized, this, &MainWindow::canvasResized);
     connect(&doc_, &Document::formatChanged, this, &MainWindow::formatChanged);
     connect(&doc_, &Document::modifiedChanged, this, &MainWindow::updateTitle);
     connect(&doc_, &Document::pathChanged, this, &MainWindow::updateTitle);
