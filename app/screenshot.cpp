@@ -28,6 +28,10 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QTemporaryDir>
+#include <QFont>
+#include <QFontDatabase>
+#include <QPainter>
+#include <QPen>
 
 #include <algorithm>
 #include <iostream>
@@ -127,6 +131,47 @@ QRect cropOf(MainWindow& w, const steps::Step& step, const Screenshot& shot, QWi
         fail(step, "the crop's cells " + rect + " are not all in view in the " + size(w.width(), w.height()) +
                        " window");
     return QRect(view->mapTo(of, cells.topLeft()), cells.size());
+}
+
+// Where "pointer": true puts the arrow's tip in the picture of `of` cropped
+// to `r`: the middle of the cell steps::pointerAt gives, or of the half of
+// it a half-block pixel is. It has to be on the canvas the viewport shows,
+// and in the picture.
+// `at` is inside `area`, its right and bottom edges excluded: an arrow
+// whose tip is on them is drawn wholly outside it.
+bool holds(const QRectF& area, QPointF at) {
+    return at.x() >= area.left() && at.y() >= area.top() && at.x() < area.right() && at.y() < area.bottom();
+}
+
+QPointF pointerTip(MainWindow& w, const bwcli::replay::Moment& m, QWidget* of, const QRect& r) {
+    const steps::Step& step = m.step;
+    const steps::Point p = *steps::pointerAt(step, m.before);
+    CanvasView* view = w.canvasView();
+    if (of != view && !of->isAncestorOf(view))
+        fail(step, "a pointer needs \"of\" to hold the canvas, and \"" + step.screenshot->of + "\" doesn't");
+    const bool pixel = !step.rect && steps::pixelAction(step.action);
+    const int row = pixel ? (p.y >= 0 ? p.y / 2 : (p.y - 1) / 2) : p.y;
+    QRectF cell(view->toWidget(view->cellRect(QPoint(p.x, row))));
+    if (pixel) {
+        cell.setHeight(cell.height() / 2);
+        if (p.y != row * 2)
+            cell.translate(0, cell.height());
+    }
+    const QPointF at = cell.center();
+    const std::string where = (pixel ? "pixel [" : "cell [") + std::to_string(p.x) + ", " + std::to_string(p.y) + "]";
+    const Canvas& cv = w.document()->canvas();
+    if (p.x < 0 || row < 0 || p.x >= cv.width() || row >= cv.height())
+        fail(step, "the pointer's " + where + " is off the " +
+                       (pixel ? size(cv.width(), cv.height() * 2) + " pixel" : size(cv.width(), cv.height())) + " canvas");
+    QRect shown = view->rect();
+    if (QWidget* port = view->parentWidget())
+        shown &= QRect(view->mapFrom(port, QPoint(0, 0)), port->size());
+    if (!holds(QRectF(shown), at))
+        fail(step, "the pointer's " + where + " is not in view in the " + size(w.width(), w.height()) + " window");
+    const QPointF tip = view->mapTo(of, at) - QPointF(r.topLeft());
+    if (!holds(QRectF(QPointF(0, 0), QSizeF(r.size())), tip))
+        fail(step, "the pointer's " + where + " is outside the picture");
+    return tip;
 }
 
 template <class T> T* toolNamed(MainWindow& w, const char* id) {
@@ -265,6 +310,85 @@ void show(MainWindow& w, const bwcli::replay::Moment& m) {
 
 } // namespace
 
+QPainterPath pointerArrow() {
+    QPainterPath arrow;
+    arrow.addPolygon(QPolygonF{{0, 0}, {0, 16}, {4, 12}, {7, 18}, {9, 17}, {6, 11}, {11, 11}, {0, 0}});
+    arrow.closeSubpath();
+    return arrow;
+}
+
+QRect pointerBounds() {
+    // the path's box, its white edge, the half pixel it is moved by and
+    // a pixel of antialiasing
+    return pointerArrow().boundingRect().adjusted(-2, -2, 3, 3).toAlignedRect();
+}
+
+void drawPointer(QPixmap& picture, QPointF tip) {
+    QPainter p(&picture);
+    p.setRenderHint(QPainter::Antialiasing);
+    // on the middle of the pixel, so its one-pixel edge covers whole pixels
+    p.translate(tip + QPointF(0.5, 0.5));
+    p.setPen(QPen(Qt::white, 1.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+    p.setBrush(Qt::black);
+    p.drawPath(pointerArrow());
+}
+
+QByteArray renamedFont(QByteArray font, std::string_view family) {
+    if (family.size() != std::string_view("Noto Sans").size())
+        return {};
+    const auto u16 = [&](qsizetype at) { return (quint8(font[at]) << 8) | quint8(font[at + 1]); };
+    const auto u32 = [&](qsizetype at) { return (quint32(u16(at)) << 16) | quint32(u16(at + 2)); };
+    if (font.size() < 12)
+        return {};
+    qsizetype offset = 0, length = 0;
+    for (int i = 0, tables = u16(4); i < tables && 12 + 16 * (i + 1) <= font.size(); ++i) {
+        const qsizetype record = 12 + 16 * i;
+        if (font.mid(record, 4) == QByteArrayLiteral("name") && u32(record + 8) + u32(record + 12) <= quint32(font.size())) {
+            offset = u32(record + 8);
+            length = u32(record + 12);
+        }
+    }
+    if (length == 0)
+        return {};
+    const auto utf16 = [](const QByteArray& s) {
+        QByteArray out;
+        for (char c : s)
+            out.append('\0').append(c);
+        return out;
+    };
+    const QByteArray spaced(family.data(), qsizetype(family.size()));
+    const QByteArray joined = QByteArray(spaced).replace(' ', "");
+    const std::pair<QByteArray, QByteArray> renames[] = {{"Noto Sans", spaced},
+                                                         {"NotoSans", joined},
+                                                         {utf16("Noto Sans"), utf16(spaced)},
+                                                         {utf16("NotoSans"), utf16(joined)}};
+    QByteArray table = font.mid(offset, length);
+    for (const auto& [from, to] : renames)
+        table.replace(from, to);
+    if (table.size() != length)
+        return {};
+    font.replace(offset, length, table);
+    return font;
+}
+
+std::string useBundledFont() {
+    for (const char* file : {":/ui-font/NotoSans-Regular.ttf", ":/ui-font/NotoSans-Bold.ttf"}) {
+        QFile f(QString::fromLatin1(file));
+        if (!f.open(QIODevice::ReadOnly))
+            return std::string(file) + ": " + f.errorString().toStdString();
+        const int id = QFontDatabase::addApplicationFontFromData(renamedFont(f.readAll(), kUiFontFamily));
+        if (QFontDatabase::applicationFontFamilies(id) != QStringList{QString::fromLatin1(kUiFontFamily)})
+            return std::string(file) + ": the font database didn't take it";
+    }
+    QFont font(QString::fromLatin1(kUiFontFamily), kUiFontPointSize);
+    // what the machine's font configuration would choose, fixed: light
+    // hinting and greyscale antialiasing
+    font.setHintingPreference(QFont::PreferVerticalHinting);
+    font.setStyleStrategy(QFont::StyleStrategy(QFont::PreferAntialias | QFont::NoSubpixelAntialias));
+    QApplication::setFont(font);
+    return {};
+}
+
 QByteArray FixedScreens::configuration() {
     return QByteArrayLiteral(
         "{\"windowFrameMargins\": false, \"screens\": [\n"
@@ -365,12 +489,18 @@ std::vector<Shot> take(MainWindow& window, const steps::Script& script, project:
         if (!of->isVisible())
             fail(m.step, "\"" + shot.of + "\" is hidden in the window");
         const QRect r = cropOf(window, m.step, shot, of);
+        std::optional<QPointF> tip;
+        if (shot.pointer)
+            tip = pointerTip(window, m, of, r);
         std::string stem = bwcli::replay::stepNumber(m.step.number, count) + "-" + m.step.name;
         if (m.before)
             stem += "-before";
         else if (shot.when == When::Both || m.step.capture == steps::Capture::BeforeAfter)
             stem += "-after";
-        shots.push_back({stem, of->grab(r).toImage()});
+        QPixmap picture = of->grab(r);
+        if (tip)
+            drawPointer(picture, *tip);
+        shots.push_back({stem, picture.toImage(), tip});
         if (taken)
             taken(shots.back());
     });

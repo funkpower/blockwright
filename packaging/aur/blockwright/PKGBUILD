@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc='Editor for ANSI and IRC block art'
 arch=('x86_64' 'aarch64')
 url='https://git.pumpin.online/funkpower/blockwright'
-license=('GPL-3.0-or-later' 'CC-BY-SA-4.0' 'MIT' 'OFL-1.1 OR GPL-2.0-or-later WITH Font-exception-2.0')
+license=('GPL-3.0-or-later' 'CC-BY-SA-4.0' 'MIT' 'OFL-1.1 OR GPL-2.0-or-later WITH Font-exception-2.0' 'OFL-1.1')
 depends=('glibc' 'hicolor-icon-theme' 'libgcc' 'libstdc++' 'libzip' 'qt6-base' 'qt6-svg' 'zstd')
 makedepends=('catch2' 'cmake' 'ninja')
 checkdepends=('noto-fonts' 'python')
@@ -36,4 +36,5 @@ package() {
   install -Dm644 "$src/third_party/unifont/OFL-1.1.txt" "$lic/LICENSE.unifont-OFL"
   install -Dm644 "$src/third_party/unifont/COPYING" "$lic/LICENSE.unifont-GPL"
   install -Dm644 "$src/third_party/tabler-icons/LICENSE" "$lic/LICENSE.tabler-icons"
+  install -Dm644 "$src/third_party/noto-sans/OFL.txt" "$lic/LICENSE.noto-sans"
 }

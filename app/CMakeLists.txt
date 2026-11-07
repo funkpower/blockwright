@@ -149,6 +149,13 @@ qt_add_resources(blockwright_app "tool_icons" PREFIX "/tool-icons" BASE ${BW_TAB
   ${BW_TABLER_ICONS}/square.svg
   ${BW_TABLER_ICONS}/typography.svg
 )
+# The UI font of blockwright --screenshot (PLAN §9, #295): Noto Sans,
+# regular and bold, at :/ui-font/
+set(BW_NOTO_SANS ${PROJECT_SOURCE_DIR}/third_party/noto-sans)
+qt_add_resources(blockwright_app "ui_font" PREFIX "/ui-font" BASE ${BW_NOTO_SANS} FILES
+  ${BW_NOTO_SANS}/NotoSans-Regular.ttf
+  ${BW_NOTO_SANS}/NotoSans-Bold.ttf
+)
 # The logos and the app icon (#205): :/branding/logo-large.ans (the start
 # screen's), :/branding/logo-small.ans (the About box's) and
 # :/branding/blockwright-<size>.png, the icon branding/render writes to

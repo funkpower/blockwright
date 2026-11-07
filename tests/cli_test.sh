@@ -994,6 +994,19 @@ rp=$tmp/replay
 mkdir -p "$rp"
 expect "replay --help documents the steps file" 0 '"capture": "before-after"' -- "$cli" replay --help
 expect "replay --help names the pressure mode (#382)" 0 '"pressure" none\|size\|strength' -- "$cli" replay --help
+expect "replay --help gives NN's digits past 99 steps" 0 '^never fewer than two \(001 to 120 for 120 steps\)\. Nothing is written unless$' -- "$cli" replay --help
+long=$("$cli" replay --help | awk '/^Applies/ { p = 1 } p && /^$/ { exit } p && length > 79')
+if [[ -z $long ]]; then ok "replay --help's first paragraph fits 79 columns"; else bad "replay --help's first paragraph runs past 79 columns: $long"; fi
+# 120 steps are numbered 001 to 120, as replay --help says
+{ printf '{"version": 1, "start": {"blank": [4, 2]}, "steps": [{"name": "s", "action": "selectAll"}'
+  i=2; while [[ $i -le 120 ]]; do printf ', {"name": "s", "action": "selectAll"}'; i=$((i + 1)); done
+  printf ']}'; } > "$rp/steps120.json"
+expect "replay: 120 steps" 0 '^$' -- "$cli" replay "$rp/steps120.json" -o "$rp/steps120"
+if [[ -f $rp/steps120/001-s.ans && -f $rp/steps120/120-s.ans && ! -e $rp/steps120/01-s.ans ]]; then
+  ok "replay numbers 120 steps 001 to 120"
+else
+  bad "replay numbered 120 steps: $(ls "$rp/steps120" | head -3)"
+fi
 # a point's pressure scales the size with "pressure": "size", and not with none
 printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "s", "action": "glyph", "size": 4, "pressure": "%s", "points": [[3, 2, 0.25]]}]}' size > "$rp/psize.json"
 printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "s", "action": "glyph", "size": 4, "pressure": "%s", "points": [[3, 2, 0.25]]}]}' none > "$rp/pnone.json"
@@ -1015,7 +1028,8 @@ printf '{"version": 1, "start": {"file": "missing.ans"}, "steps": [{"name": "fit
 expect "replay: a view step is refused before the start is read" 1 'step 1 \(fit\): view sets the window' -- "$cli" replay "$rp/view-nostart.json" -o "$rp/view-nostart"
 expect "replay --help documents the view step (#398)" 0 '^  view +the window.s view, for blockwright --screenshot only:$' -- "$cli" replay --help
 expect "replay --help documents the window's size (#295)" 0 '^here: a top-level "window": \[w, h\], the window.s size in pixels' -- "$cli" replay --help
-expect "replay --help documents a step's screenshot and its scale (#295)" 0 '^ +"when": "before" \| "after" \| "both", "scale": 1 \| 2\}$' -- "$cli" replay --help
+expect "replay --help documents a step's screenshot and its scale (#295)" 0 '^ +"when": "before" \| "after" \| "both", "scale": 1 \| 2,$' -- "$cli" replay --help
+expect "replay --help documents a screenshot's pointer (#295)" 0 '^ +"pointer": true \| false\}$' -- "$cli" replay --help
 # replay writes .ans files whatever the target, so --target isn't its option
 expect "replay takes no --target" 2 '^blockwright-cli: --target is a lint, pack or unpack option, not a replay option$' -- "$cli" replay --target irc "$data/replay/tour.json" -o "$rp/target"
 if [[ ! -e $rp/target ]]; then ok "replay --target writes nothing"; else bad "replay --target made $rp/target"; fi

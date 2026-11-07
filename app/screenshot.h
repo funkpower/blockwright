@@ -10,13 +10,19 @@
 #include "blockwright/steps.h"
 
 #include <QImage>
+#include <QPainterPath>
+#include <QPixmap>
+#include <QPointF>
+#include <QRect>
 #include <QSize>
 #include <QString>
 #include <QTemporaryFile>
 
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace bw {
@@ -65,7 +71,38 @@ struct Shot {
     // picture before it too or the step is marked "capture": "before-after".
     std::string stem;
     QImage image;
+    // "pointer": true's arrow tip in the picture, in its pixels at scale 1
+    // (the image's logical pixels); empty for a picture without one.
+    std::optional<QPointF> pointer;
 };
+
+// The arrow "pointer": true draws, around its tip at (0, 0), in logical
+// pixels: a plain black arrow with a white edge, as tall as a desktop's
+// default pointer. It is drawn as a path, so a picture at scale 2 has it
+// at twice the pixels, not enlarged.
+QPainterPath pointerArrow();
+// What drawPointer may change around the tip, in logical pixels.
+QRect pointerBounds();
+// The arrow drawn on `picture` with its tip at `tip`, in its logical pixels.
+void drawPointer(QPixmap& picture, QPointF tip);
+
+// The family `blockwright --screenshot` sets as the application's font:
+// the bundled Noto Sans (third_party/noto-sans/, in the resources at
+// :/ui-font/), renamed so no Noto Sans installed on the machine can stand
+// in for it (#253).
+inline constexpr char kUiFontFamily[] = "Bw Screen";
+// The application font's size under --screenshot, in points (at the fixed
+// screens' 96 dpi, 13 1/3 pixels).
+inline constexpr int kUiFontPointSize = 10;
+// Registers the bundled regular and bold Noto Sans under kUiFontFamily and
+// makes it the application's font at kUiFontPointSize. Empty when it
+// worked, else why not.
+std::string useBundledFont();
+// `font` (a TrueType file) with every "Noto Sans" in its name table, and
+// the PostScript name's "NotoSans", renamed to `family`, nine characters as
+// "Noto Sans" is so the records keep their lengths; nothing else in it
+// changes. Empty when it can't be.
+QByteArray renamedFont(QByteArray font, std::string_view family);
 
 // The script replayed from `start` with `window` showing each screenshot's
 // moment, every picture in memory. A picture at "scale": 1 is taken with the

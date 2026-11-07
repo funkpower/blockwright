@@ -68,11 +68,12 @@ AboutDialog::AboutDialog(QWidget* parent) : QDialog(parent) {
 
     auto* text = new QLabel(
         tr("<p><b>Blockwright</b> %1 (%2)</p><p>ANSI and IRC art editor. GPL-3.0-or-later.</p>"
-           "<p>%3</p><p>%4</p><p>%5</p>")
+           "<p>%3</p><p>%4</p><p>%5</p><p>%6</p>")
             .arg(QStringLiteral(BLOCKWRIGHT_VERSION), QStringLiteral(BLOCKWRIGHT_GIT_COMMIT),
                  QString::fromUtf8(kFontCredit).toHtmlEscaped().replace('\n', ' '),
                  QString::fromUtf8(kUnifontCredit).toHtmlEscaped().replace('\n', ' '),
-                 QString::fromUtf8(kIconCredit).toHtmlEscaped().replace('\n', ' ')),
+                 QString::fromUtf8(kIconCredit).toHtmlEscaped().replace('\n', ' '),
+                 QString::fromUtf8(kUiFontCredit).toHtmlEscaped().replace('\n', ' ')),
         this);
     text->setObjectName(QStringLiteral("aboutText"));
     text->setWordWrap(true);

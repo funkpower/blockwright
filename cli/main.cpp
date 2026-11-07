@@ -848,16 +848,17 @@ Applies a steps file's edits to its start through the editor's own brushes,
 shapes, selection and layer operations, and writes the canvas (flattened,
 with SAUCE) after each step: NN-<name>.ans, or NN-<name>-before.ans and
 NN-<name>-after.ans for a step marked "capture": "before-after". NN is the
-step's number from 01. Nothing is written unless every step applies. <dir>
-is made if it isn't there. Every file is made in memory, written to a
-temporary beside it as convert writes its output, and only once all are
-written moved into place, so a write that fails leaves no new file; a
-directory in the way is refused before anything is written. An existing
-file is written through a symlink and keeps its permissions, and one that
-isn't writable is refused. Files already in <dir> are left as they are unless
-this run writes one of the same name: replay a shorter script into an
-empty directory to have only its captures. The same file writes the same
-bytes every run.
+step's number from 01, with as many digits as the number of steps has and
+never fewer than two (001 to 120 for 120 steps). Nothing is written unless
+every step applies. <dir> is made if it isn't there. Every file is made in
+memory, written to a temporary beside it as convert writes its output, and
+only once all are written moved into place, so a write that fails leaves no
+new file; a directory in the way is refused before anything is written. An
+existing file is written through a symlink and keeps its permissions, and
+one that isn't writable is refused. Files already in <dir> are left as they
+are unless this run writes one of the same name: replay a shorter script
+into an empty directory to have only its captures. The same file writes the
+same bytes every run.
 
 Options:
   -o, --output <dir>   where the files go (required)
@@ -927,12 +928,17 @@ a side; 1280 x 800 without one), and a step's
 
   "screenshot": {"of": "window" | a dock or widget's object name,
                  "crop": {"cells": [x, y, w, h]} | {"pixels": [x, y, w, h]},
-                 "when": "before" | "after" | "both", "scale": 1 | 2}
+                 "when": "before" | "after" | "both", "scale": 1 | 2,
+                 "pointer": true | false}
 
-each key optional (the whole window after the step, at scale 1). A crop in
-cells needs "of" to hold the canvas; one in pixels is in "of"'s pixels.
-"scale": 2 draws the picture at device pixel ratio 2, twice the pixels each
-way, from the window laid out at the same size.
+each key optional (the whole window after the step, at scale 1, with no
+pointer). A crop in cells needs "of" to hold the canvas; one in pixels is in
+"of"'s pixels. "scale": 2 draws the picture at device pixel ratio 2, twice
+the pixels each way, from the window laid out at the same size. "pointer":
+true draws a mouse pointer at the step's last point ("to", "at", the last of
+"points", a select "rect"'s bottom-right cell), or at its first in a picture
+before the step; a step with none, or a point the picture doesn't show, is
+refused.
 
 A tool step without points only sets Tool Options. Any step but a view
 step may set Tool Options, which hold for the steps after it:

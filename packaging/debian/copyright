@@ -31,16 +31,17 @@ Files: packaging/linux/online.pumpin.funkpower.blockwright.metainfo.xml
 Copyright: 2026 funkpower
 License: CC0-1.0
 
-Files: tests/data/fonts/*
+Files: third_party/noto-sans/*
 Copyright: 2022 The Noto Project Authors
 License: OFL-1.1
-Comment: Used by the tests only; not installed.
+Comment: Built into the program as the window's font of blockwright
+ --screenshot, under a family name of its own; the layout tests measure in it.
 
 Files: third_party/oldschool-pc-fonts/fon2inc.py
        third_party/oldschool-pc-fonts/README.md
        third_party/tabler-icons/README.md
        third_party/unifont/README.md
-       tests/data/fonts/README.md
+       third_party/noto-sans/README.md
 Copyright: 2026 funkpower
 License: GPL-3+
 

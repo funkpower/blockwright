@@ -196,6 +196,64 @@ for d in 'semi;dir' 'col:dir' 'plain dir'; do
   if [ -z "$left" ]; then ok "a TMPDIR of '$d' is left empty"; else bad "a TMPDIR of '$d' holds $left"; fi
 done
 
+# A pointer (#295): "pointer": false is no pointer at all, the same bytes;
+# true draws one, and a step the pointer doesn't make is refused by name.
+cat >"$tmp/pointer.json" <<'EOF'
+{"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720], "steps": [
+  {"name": "stroke", "action": "glyph", "glyph": "#", "points": [[2, 2], [3, 2], [4, 2]],
+   "screenshot": {"crop": {"cells": [0, 0, 8, 4]}}}]}
+EOF
+sed 's/"crop"/"pointer": false, "crop"/' "$tmp/pointer.json" >"$tmp/pointer-off.json"
+sed 's/"crop"/"pointer": true, "crop"/' "$tmp/pointer.json" >"$tmp/pointer-on.json"
+"$bin" --screenshot "$tmp/pointer.json" -o "$tmp/pointer-none" >/dev/null 2>&1
+"$bin" --screenshot "$tmp/pointer-off.json" -o "$tmp/pointer-off" >/dev/null 2>&1
+out=$("$bin" --screenshot "$tmp/pointer-on.json" -o "$tmp/pointer-on" 2>&1); st=$?
+f=01-stroke.png
+if [ -f "$tmp/pointer-none/$f" ] && cmp -s "$tmp/pointer-none/$f" "$tmp/pointer-off/$f"; then
+  ok "\"pointer\": false gives the same bytes as no \"pointer\""
+else
+  bad "\"pointer\": false differs from no \"pointer\""
+fi
+if [ "$st" -eq 0 ] && [ -f "$tmp/pointer-on/$f" ] && ! cmp -s "$tmp/pointer-none/$f" "$tmp/pointer-on/$f" \
+   && [ "$(png_size "$tmp/pointer-on/$f")" = "$(png_size "$tmp/pointer-none/$f")" ]; then
+  ok "\"pointer\": true draws a pointer in a picture of the same size"
+else
+  bad "\"pointer\": true (exit $st): $out"
+fi
+cat >"$tmp/pointer-bad.json" <<'EOF'
+{"version": 1, "start": {"blank": [20, 8]}, "steps": [
+  {"name": "all", "action": "selectAll", "screenshot": {"pointer": true}}]}
+EOF
+out=$("$bin" --screenshot "$tmp/pointer-bad.json" -o "$tmp/pointer-bad" 2>&1); st=$?
+case $out in
+  *'(all)'*'"screenshot pointer" needs a step the pointer makes'*) named=1 ;;
+  *) named=0 ;;
+esac
+if [ "$st" -eq 1 ] && [ "$named" = 1 ] && [ ! -e "$tmp/pointer-bad" ]; then
+  ok "a pointer on a step the pointer doesn't make is refused by name"
+else
+  bad "a pointer on a selectAll step (exit $st): $out"
+fi
+
+# The window's font is the bundled one (#295): with no fonts from the
+# machine at all, the Layers dock's title, header and rows are drawn the
+# same, byte for byte. Only those: the status bar and the Glyphs bar draw
+# block glyphs Noto Sans lacks in a system font (PLAN §9), whose height can
+# move the docks' lower edges.
+printf '<?xml version="1.0"?>\n<fontconfig></fontconfig>\n' >"$tmp/no-fonts.conf"
+cat >"$tmp/layers.json" <<'EOF'
+{"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720], "steps": [
+  {"name": "ink", "action": "newCellsLayer", "rename": "ink",
+   "screenshot": {"crop": {"pixels": [762, 200, 244, 90]}}}]}
+EOF
+"$bin" --screenshot "$tmp/layers.json" -o "$tmp/layers-fonts" >/dev/null 2>&1
+out=$(FONTCONFIG_FILE="$tmp/no-fonts.conf" "$bin" --screenshot "$tmp/layers.json" -o "$tmp/layers-none" 2>&1); st=$?
+if [ "$st" -eq 0 ] && [ -f "$tmp/layers-fonts/01-ink.png" ] && cmp -s "$tmp/layers-fonts/01-ink.png" "$tmp/layers-none/01-ink.png"; then
+  ok "the Layers dock's rows are the same picture without the machine's fonts"
+else
+  bad "without the machine's fonts (exit $st) the Layers dock's rows differ: $out"
+fi
+
 # A steps file that can't be read is an error, not a crash.
 out=$("$bin" --screenshot "$tmp/missing.json" -o "$tmp/missing" 2>&1); st=$?
 if [ "$st" -eq 1 ]; then ok "a missing steps file exits 1"; else bad "a missing steps file (exit $st): $out"; fi
@@ -215,6 +273,10 @@ esac
 case $out in
   *'and a screenshot'"'"'s "scale": 2 draws that picture at'*) ok "--help gives \"scale\" as a screenshot's" ;;
   *) bad "--help doesn't give \"scale\" as a screenshot's: $out" ;;
+esac
+case $out in
+  *'"pointer": true draws a mouse pointer at the step'"'"'s'*) ok "--help gives \"pointer\" as a screenshot's" ;;
+  *) bad "--help doesn't give \"pointer\" as a screenshot's: $out" ;;
 esac
 
 rm -rf "$tmp"

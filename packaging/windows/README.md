@@ -112,4 +112,4 @@ copies one sans family from `/usr/share/fonts` (Noto Sans, else DejaVu Sans;
 `-DBW_WINE_FONTS=<files>` names others) into the build's `wine-fonts` and
 `wine-run` points `QT_QPA_FONTDIR` there. Wine's FreeType hints them a
 pixel or two apart from Linux's; the Tool Options layout tests draw with the
-Noto Sans in `tests/data/fonts` and fit under wine too.
+Noto Sans in `third_party/noto-sans` and fit under wine too.

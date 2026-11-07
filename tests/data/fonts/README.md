@@ -1,5 +1,0 @@
-# Noto Sans (test font)
-
-- **Files:** `NotoSans-Regular.ttf` and `NotoSans-Bold.ttf`, unchanged. The app tests load them (`UiFont` in `tests/test_app_workspace.cpp`) so the Tool Options layout tests measure the same font on every machine, whatever fonts it has installed. They are test data only: the program doesn't ship or load them.
-- **Source:** Noto Sans v2.015, <https://github.com/notofonts/latin-greek-cyrillic>, release `NotoSans-v2.015` (`https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip`, SHA-256 `0c34df072a3fa7efbb7cbf34950e1f971a4447cffe365d3a359e2d4089b958f5`), files `NotoSans/hinted/ttf/NotoSans-Regular.ttf` (SHA-256 `478c558ea716033cd60c03438f628dfa75694dcf6b5f6d505a2f05fd2b4f3823`), `NotoSans/hinted/ttf/NotoSans-Bold.ttf` (SHA-256 `1df075a380fc7cb898acf64c1f7b3b4dd780de3caa860178bf929de35817a913`) and `OFL.txt`.
-- **Licence:** SIL Open Font License 1.1; the copyright notice and the full text are in `OFL.txt`, as shipped in the release.

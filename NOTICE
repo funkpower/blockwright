@@ -34,8 +34,12 @@ It includes third-party material under its own licence:
   this file (share/doc/blockwright/tabler-icons/); in the source tree,
   third_party/tabler-icons/.
 
-The test suite (not installed) also includes Noto Sans Regular and Bold
-v2.015, Copyright 2022 The Noto Project Authors,
-https://github.com/notofonts/latin-greek-cyrillic, licensed under the SIL
-Open Font License 1.1. The font files are unchanged. Source, version and
-licence text: tests/data/fonts/ in the source tree.
+- Noto Sans Regular and Bold v2.015, Copyright 2022 The Noto Project
+  Authors, https://github.com/notofonts/latin-greek-cyrillic, licensed
+  under the SIL Open Font License 1.1: the window's font in the pictures
+  blockwright --screenshot takes, and the font the layout tests measure
+  in. The program renames the font's family when it loads it; the font
+  files themselves are unchanged. Source, version and licence text: in an
+  install, the noto-sans/ directory beside this file
+  (share/doc/blockwright/noto-sans/); in the source tree,
+  third_party/noto-sans/.

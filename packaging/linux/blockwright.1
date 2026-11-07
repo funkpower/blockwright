@@ -70,15 +70,19 @@ before or after the step or both
 .RB ( """when""" ),
 at device pixel ratio 1 or 2
 .RB ( """scale""" ;
-a picture at 2 has twice the pixels each way).
+a picture at 2 has twice the pixels each way),
+with a mouse pointer at the step's last point, or its first in a picture
+before the step
+.RB ( """pointer""" ).
 The steps file's top-level
 .B """window"""
 sets the window's size, 1280 x 800 without one, at either scale.
-The window has default settings, the Fusion style, and fixed screens at
-96 dpi that nothing in the environment rescales, so a steps file makes the
-same pictures on every run.
-A step that fails, a dock or widget the window doesn't have, or a crop off
-its target writes nothing and exits 1 naming the step.
+The window has default settings, the Fusion style, the bundled Noto Sans
+at 10 points as its font, and fixed screens at 96 dpi that nothing in the
+environment rescales, so a steps file makes the same pictures on every run.
+A step that fails, a dock or widget the window doesn't have, a crop off
+its target, or a pointer on a step with no point or off the picture writes
+nothing and exits 1 naming the step.
 .SH FILES
 .TP
 .I /usr/share/blockwright/library/

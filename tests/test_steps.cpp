@@ -7,7 +7,9 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <string>
+#include <utility>
 
 using namespace bw;
 using Catch::Matchers::ContainsSubstring;
@@ -156,6 +158,77 @@ TEST_CASE("a step's screenshot reads its scale, 1 without one (#295)", "[steps][
         } catch (const steps::StepsError& e) {
             CHECK(std::string(e.what()).rfind("step 1 (a): \"screenshot scale\" must be a whole number 1 to 2", 0) == 0);
         }
+    }
+}
+
+TEST_CASE("a step's screenshot reads its pointer, off without one (#295)", "[steps][screenshot]") {
+    const steps::Script s = steps::parse(script(R"({"name": "none", "action": "glyph", "points": [[1, 1]], "screenshot": {}},
+        {"name": "off", "action": "glyph", "points": [[1, 1]], "screenshot": {"pointer": false}},
+        {"name": "on", "action": "glyph", "points": [[1, 1], [4, 2]], "screenshot": {"pointer": true}})"));
+    REQUIRE(s.steps.size() == 3);
+    CHECK_FALSE(s.steps[0].screenshot->pointer);
+    CHECK_FALSE(s.steps[1].screenshot->pointer);
+    CHECK(s.steps[2].screenshot->pointer);
+    for (const char* bad : {"1", "0", "\"true\"", "null", "[true]", "{}", "\"outline\""}) {
+        INFO(bad);
+        try {
+            steps::parse(script(std::string(R"({"name": "a", "action": "glyph", "points": [[1, 1]], "screenshot": {"pointer": )") +
+                                bad + "}}"));
+            FAIL("accepted");
+        } catch (const steps::StepsError& e) {
+            CHECK(std::string(e.what()).rfind("step 1 (a): \"screenshot pointer\" must be true or false", 0) == 0);
+        }
+    }
+}
+
+TEST_CASE("a pointer sits at a step's last point after it and its first before it (#295)", "[steps][screenshot]") {
+    const steps::Script s = steps::parse(script(R"({"name": "stroke", "action": "glyph", "points": [[1, 1], [2, 1], [5, 3]]},
+        {"name": "drag", "action": "line", "from": [1, 2], "to": [9, 14]},
+        {"name": "click", "action": "fill", "at": [3, 4]},
+        {"name": "type", "action": "keyboard", "at": [2, 6], "text": "hi"},
+        {"name": "paste", "action": "paste", "at": [7, 1]},
+        {"name": "area", "action": "select", "rect": [8, 6, 2, 1]},
+        {"name": "options", "action": "glyph"},
+        {"name": "flip", "action": "flipHorizontal"},
+        {"name": "shift", "action": "move", "by": [1, 0]},
+        {"name": "look", "action": "view", "zoom": 2})"));
+    const auto at = [&](int i, bool before) {
+        const std::optional<steps::Point> p = steps::pointerAt(s.steps[std::size_t(i)], before);
+        return p ? std::make_pair(p->x, p->y) : std::make_pair(-1, -1);
+    };
+    CHECK(at(0, false) == std::make_pair(5, 3));
+    CHECK(at(0, true) == std::make_pair(1, 1));
+    CHECK(at(1, false) == std::make_pair(9, 14));
+    CHECK(at(1, true) == std::make_pair(1, 2));
+    CHECK(at(2, false) == std::make_pair(3, 4));
+    CHECK(at(2, true) == std::make_pair(3, 4));
+    CHECK(at(3, false) == std::make_pair(2, 6));
+    CHECK(at(4, false) == std::make_pair(7, 1));
+    // a rect is dragged from its top-left corner to its bottom-right one,
+    // whichever corners the file gives
+    CHECK(at(5, true) == std::make_pair(2, 1));
+    CHECK(at(5, false) == std::make_pair(8, 6));
+    for (int i = 6; i < 10; ++i)
+        for (const bool before : {false, true})
+            CHECK(at(i, before) == std::make_pair(-1, -1));
+}
+
+TEST_CASE("a pointer on a step the pointer doesn't make is refused, naming the step (#295)", "[steps][screenshot]") {
+    for (const char* step : {R"({"name": "no-points", "action": "glyph", "glyph": "#")",
+                             R"({"name": "flip", "action": "flipHorizontal")",
+                             R"({"name": "shift", "action": "moveSelection", "by": [1, 1])",
+                             R"({"name": "layer", "action": "newCellsLayer")",
+                             R"({"name": "look", "action": "view", "zoom": 2)"}) {
+        INFO(step);
+        const std::string name = std::string(step).substr(10, std::string(step).find('"', 10) - 10);
+        try {
+            steps::parse(script(std::string(step) + R"(, "screenshot": {"pointer": true}})"));
+            FAIL("accepted");
+        } catch (const steps::StepsError& e) {
+            CHECK(std::string(e.what()).rfind("step 1 (" + name + "): \"screenshot pointer\" needs a step the pointer makes", 0) == 0);
+        }
+        // and without the pointer it is read
+        CHECK_NOTHROW(steps::parse(script(std::string(step) + R"(, "screenshot": {"pointer": false}})")));
     }
 }
 

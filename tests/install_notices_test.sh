@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The licence, font, Unifont and icon notices install with the binary:
+# The licence, font, Unifont, Noto Sans and icon notices install with the binary:
 #   install_notices_test.sh <build dir> <source dir> <scratch dir> <full bindir> <full docdir> [<config>]
 #
 # <full bindir> and <full docdir> are the build's CMAKE_INSTALL_FULL_BINDIR and
@@ -27,10 +27,12 @@ bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 
 notices=(LICENSE NOTICE oldschool-pc-fonts/LICENSE oldschool-pc-fonts/README.md
          tabler-icons/LICENSE tabler-icons/README.md
-         unifont/OFL-1.1.txt unifont/COPYING unifont/README.md)
+         unifont/OFL-1.1.txt unifont/COPYING unifont/README.md
+         noto-sans/OFL.txt noto-sans/README.md)
 sources=(LICENSE NOTICE third_party/oldschool-pc-fonts/LICENSE third_party/oldschool-pc-fonts/README.md
          third_party/tabler-icons/LICENSE third_party/tabler-icons/README.md
-         third_party/unifont/OFL-1.1.txt third_party/unifont/COPYING third_party/unifont/README.md)
+         third_party/unifont/OFL-1.1.txt third_party/unifont/COPYING third_party/unifont/README.md
+         third_party/noto-sans/OFL.txt third_party/noto-sans/README.md)
 
 # has_notices <name> <dir>: the notices are in <dir>, unchanged
 has_notices() {
@@ -90,6 +92,21 @@ finds_unifont() {
   fi
 }
 
+# finds_noto <name> <dir>: <dir>/NOTICE sends the reader to Noto Sans's
+# notices by a path that exists there, and to the source tree's copy
+finds_noto() {
+  local t; t=$(tr -s ' \n' ' ' < "$2/NOTICE")
+  if [[ $t != *"the noto-sans/ directory beside this file (share/doc/blockwright/noto-sans/)"* ]]; then
+    bad "$1: NOTICE does not name share/doc/blockwright/noto-sans/"
+  elif [[ ! -f $2/noto-sans/OFL.txt || ! -f $2/noto-sans/README.md ]]; then
+    bad "$1: no noto-sans/ beside NOTICE in $2"
+  elif [[ $t != *"in the source tree, third_party/noto-sans/."* ]]; then
+    bad "$1: NOTICE does not name third_party/noto-sans/"
+  else
+    ok "$1"
+  fi
+}
+
 # icon_credit <name> <gui>: the GUI's --version credits the icons
 icon_credit() {
   local out; out=$("$2" --version 2>&1)
@@ -131,6 +148,7 @@ has_notices "staged install carries the notices" "$stage$docdir"
 finds_fonts "staged NOTICE points to the font notices" "$stage$docdir"
 finds_icons "staged NOTICE points to the icon notices" "$stage$docdir"
 finds_unifont "staged NOTICE points to the Unifont notices" "$stage$docdir"
+finds_noto "staged NOTICE points to the Noto Sans notices" "$stage$docdir"
 credits "installed --version credits the font" "$stage$bindir/blockwright-cli"
 credits "installed GUI --version credits the font" "$stage$bindir/blockwright"
 icon_credit "installed GUI --version credits the icons" "$stage$bindir/blockwright"
@@ -202,6 +220,7 @@ has_notices "install-dev carries the notices" "$prefix/share/doc/blockwright"
 finds_fonts "install-dev NOTICE points to the font notices" "$prefix/share/doc/blockwright"
 finds_icons "install-dev NOTICE points to the icon notices" "$prefix/share/doc/blockwright"
 finds_unifont "install-dev NOTICE points to the Unifont notices" "$prefix/share/doc/blockwright"
+finds_noto "install-dev NOTICE points to the Noto Sans notices" "$prefix/share/doc/blockwright"
 credits "blockwright-cli-dev --version credits the font" "$home/.local/bin/blockwright-cli-dev"
 credits "blockwright-dev --version credits the font" "$home/.local/bin/blockwright-dev"
 icon_credit "blockwright-dev --version credits the icons" "$home/.local/bin/blockwright-dev"

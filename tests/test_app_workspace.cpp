@@ -11,6 +11,7 @@
 #include "glyph_bar.h"
 #include "lint_dock.h"
 #include "main_window.h"
+#include "screenshot.h"
 #include "palette_widget.h"
 #include "scratch_settings.h"
 #include "select_tool.h"
@@ -172,9 +173,9 @@ struct ClearLayout {
     ~ClearLayout() { bwtest::resetScratchSettings(); }
 };
 
+// The bundled Noto Sans, from the app's resources (third_party/noto-sans/).
 QString bundledFont(bool bold) {
-    return QString::fromStdString(
-        (bwtest::dataDir() / "fonts" / (bold ? "NotoSans-Bold.ttf" : "NotoSans-Regular.ttf")).string());
+    return bold ? QStringLiteral(":/ui-font/NotoSans-Bold.ttf") : QStringLiteral(":/ui-font/NotoSans-Regular.ttf");
 }
 
 // The font revision in a 'head' table (16.16 fixed point at offset 4), or "?".
@@ -225,37 +226,19 @@ std::pair<qsizetype, qsizetype> fontTableRange(const QByteArray& font, const cha
 constexpr char kLayoutFamily[] = "Bw Layout";
 static_assert(sizeof(kLayoutFamily) == sizeof("Noto Sans"));
 
-// The file at `path` with every "Noto Sans" in its name table (and the
-// PostScript name's "NotoSans") renamed to kLayoutFamily, in the Mac Roman and
-// the UTF-16 records alike. Nothing else in the font changes.
+// The file at `path` renamed to kLayoutFamily as --screenshot renames it
+// (screenshot::renamedFont): every "Noto Sans" in its name table, and the
+// PostScript name's "NotoSans", in the Mac Roman and the UTF-16 records
+// alike. Nothing else in the font changes.
 QByteArray renamedBundledFont(const QString& path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
         return {};
-    QByteArray font = file.readAll();
-    const auto [offset, length] = fontTableRange(font, "name");
-    if (length == 0)
-        return {};
-    const auto utf16 = [](const char* s) {
-        QByteArray out;
-        for (; *s; ++s)
-            out.append('\0').append(*s);
-        return out;
-    };
-    const QByteArray spaced(kLayoutFamily), joined = QByteArray(kLayoutFamily).replace(' ', "");
-    const std::pair<QByteArray, QByteArray> renames[] = {{"Noto Sans", spaced},
-                                                         {"NotoSans", joined},
-                                                         {utf16("Noto Sans"), utf16(kLayoutFamily)},
-                                                         {utf16("NotoSans"), utf16(joined.constData())}};
-    QByteArray table = font.mid(offset, length);
-    for (const auto& [from, to] : renames)
-        table.replace(from, to);
-    font.replace(offset, length, table);
-    return font;
+    return screenshot::renamedFont(file.readAll(), kLayoutFamily);
 }
 
 // Sets the application's font for a test and puts the old one back: Noto
-// Sans at `pointSize`, from tests/data/fonts, so the layout tests measure
+// Sans at `pointSize`, from the app's resources, so the layout tests measure
 // the same font on every machine (#236). 10 pt is the desktop default the
 // panels are sized for; 9 pt is the test platform's own size.
 struct UiFont {

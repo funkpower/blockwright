@@ -363,9 +363,11 @@ IrcBudgetDialog::IrcBudgetDialog(const project::IrcBudget& budget, QWidget* pare
     auto* hint = new QLabel(tr("A line is relayed as \":mask PRIVMSG #channel :text\" in 512 bytes. "
                                "Give your mask and the channel to work out the room left."));
     hint->setWordWrap(true);
-    // #393: Publish and Send never loosen the library's limit.
+    // #393: Publish and Send never loosen the library's limit; an
+    // ANSI-target CP437 Send sends no .txt, so it checks no budget (§14).
     auto* publishNote = new QLabel(tr("Publish to Library and Send to WeeChat hold lines to this budget or to "
-                                      "%1 bytes, the ascii script's EFnet limit, whichever is less.")
+                                      "%1 bytes, the ascii script's EFnet limit, whichever is less. A Send "
+                                      "with the ANSI target in CP437 sends no .txt and checks no budget.")
                                        .arg(irc::kEfnetWeechatBudget));
     publishNote->setObjectName(QStringLiteral("ircPublishNote"));
     publishNote->setWordWrap(true);

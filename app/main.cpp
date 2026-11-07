@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
             // The version stays the first line, for the scripts that read it
             std::cout << "blockwright " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n\n"
                       << bw::kLogoText << "\n"
-                      << bw::kFontCredit << bw::kUnifontCredit << bw::kIconCredit;
+                      << bw::kFontCredit << bw::kUnifontCredit << bw::kIconCredit << bw::kUiFontCredit;
             return 0;
         } else if (!std::strcmp(a, "--help") || !std::strcmp(a, "-h")) {
             messagesToConsole();
@@ -89,13 +89,17 @@ int main(int argc, char** argv) {
                          "                  the window, a dock or a crop for each step's \"screenshot\":\n"
                          "                  {\"of\": \"window\" | a dock or widget's object name,\n"
                          "                   \"crop\": {\"cells\": [x, y, w, h]} | {\"pixels\": [x, y, w, h]},\n"
-                         "                   \"when\": \"before\" | \"after\" | \"both\", \"scale\": 1 | 2},\n"
+                         "                   \"when\": \"before\" | \"after\" | \"both\", \"scale\": 1 | 2,\n"
+                         "                   \"pointer\": true | false},\n"
                          "                  as NN-<name>.png (-before, -after); a top-level\n"
                          "                  \"window\": [w, h] sizes the window (default 1280 x 800),\n"
                          "                  and a screenshot's \"scale\": 2 draws that picture at\n"
-                         "                  device pixel ratio 2, twice the pixels each way; Tool\n"
+                         "                  device pixel ratio 2, twice the pixels each way;\n"
+                         "                  \"pointer\": true draws a mouse pointer at the step's\n"
+                         "                  last point (its first in a picture before it); Tool\n"
                          "                  Options and the palette show the options and colours\n"
-                         "                  each step is applied with\n";
+                         "                  each step is applied with; the window's font is the\n"
+                         "                  bundled Noto Sans at 10 pt\n";
             return 0;
         } else if (!std::strcmp(a, "--list-actions")) {
             listActions = true;
@@ -174,6 +178,12 @@ int main(int argc, char** argv) {
     if (screenshot) {
         QApplication::setStyle(QStringLiteral("Fusion"));
         QApplication::setPalette(QApplication::style()->standardPalette());
+        // the bundled UI font at a fixed size, so text doesn't depend on the
+        // machine's fonts (but for the block and shade glyphs it lacks)
+        if (const std::string why = bw::screenshot::useBundledFont(); !why.empty()) {
+            std::cerr << "blockwright: the bundled UI font can't be loaded: " << why << "\n";
+            return 1;
+        }
         bw::useLinuxStandardKeys();
         return bw::screenshot::run(QString::fromLocal8Bit(screenshotSteps), QString::fromLocal8Bit(screenshotDir));
     }

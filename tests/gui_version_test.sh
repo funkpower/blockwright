@@ -35,6 +35,12 @@ if grep -q 'Includes icons from Tabler Icons, MIT licence, https://tabler.io/ico
 else
   bad "--version has no icon credit: $out"
 fi
+if grep -q '^Includes Noto Sans, (c) 2022 The Noto Project Authors, SIL OFL 1.1,$' <<<"$out" \
+   && grep -q '^https://github.com/notofonts/latin-greek-cyrillic; notices in ' <<<"$out"; then
+  ok "--version credits Noto Sans"
+else
+  bad "--version has no Noto Sans credit: $out"
+fi
 logo=$(tr -d '\r' <"${BW_LOGO:?BW_LOGO is unset}")
 if [[ $(tr -d '\r' <<<"$out") == *"$logo"* ]]; then ok "--version shows the logo"; else bad "--version has no logo: $out"; fi
 out=$(env -u DISPLAY -u WAYLAND_DISPLAY "$bin" --help 2>&1); st=$?

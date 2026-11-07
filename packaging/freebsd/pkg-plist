@@ -2,6 +2,8 @@ bin/blockwright
 bin/blockwright-cli
 %%DOCSDIR%%/LICENSE
 %%DOCSDIR%%/NOTICE
+%%DOCSDIR%%/noto-sans/OFL.txt
+%%DOCSDIR%%/noto-sans/README.md
 %%DOCSDIR%%/oldschool-pc-fonts/LICENSE
 %%DOCSDIR%%/oldschool-pc-fonts/README.md
 %%DOCSDIR%%/tabler-icons/LICENSE

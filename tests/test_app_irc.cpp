@@ -515,11 +515,13 @@ TEST_CASE("the IRC budget dialog takes a preset, a number or a mask and channel"
     IrcBudgetDialog again(project::IrcBudget{"custom", 300});
     CHECK(again.budget() == project::IrcBudget{"custom", 300});
 
-    // #393: it says Publish and Send never go past the library's 407
+    // #393: it says Publish and Send never go past the library's 407, and
+    // that an ANSI-target CP437 Send checks no budget (§14)
     auto* note = d.findChild<QLabel*>(QStringLiteral("ircPublishNote"));
     REQUIRE(note);
     CHECK(note->text() == QStringLiteral("Publish to Library and Send to WeeChat hold lines to this budget or to "
-                                         "407 bytes, the ascii script's EFnet limit, whichever is less."));
+                                         "407 bytes, the ascii script's EFnet limit, whichever is less. A Send "
+                                         "with the ANSI target in CP437 sends no .txt and checks no budget."));
 
     // the range the CLI's --budget and a project take (#303)
     CHECK(d.bytesBox()->minimum() == int(irc::kMinBudget));

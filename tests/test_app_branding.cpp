@@ -326,6 +326,7 @@ TEST_CASE("Help > About Blockwright shows the small logo drawn by the renderer",
     CHECK(text->text().contains(QStringLiteral("VileR")));
     CHECK(text->text().contains(QStringLiteral("Tabler Icons")));
     CHECK(text->text().contains(QStringLiteral("GNU Unifont")));
+    CHECK(text->text().contains(QStringLiteral("Includes Noto Sans, (c) 2022 The Noto Project Authors, SIL OFL 1.1,")));
     // a second time shows the same dialog
     about->trigger();
     CHECK(w.findChildren<AboutDialog*>().size() == 1);

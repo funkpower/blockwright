@@ -381,7 +381,7 @@ Start readStart(const QJsonValue& v) {
 // A step's "screenshot" (#295). Whether the widget it names is there, and
 // the crop on it, is the window's to check when it takes the picture.
 Screenshot readScreenshot(const std::string& where, const QJsonValue& v) {
-    const QJsonObject o = objectOf(where, "screenshot", v, {"of", "crop", "when", "scale"});
+    const QJsonObject o = objectOf(where, "screenshot", v, {"of", "crop", "when", "scale", "pointer"});
     Screenshot shot;
     if (o.contains("of")) {
         shot.of = stringOf(where, "screenshot of", o["of"]);
@@ -394,6 +394,8 @@ Screenshot readScreenshot(const std::string& where, const QJsonValue& v) {
             {{"before", Screenshot::When::Before}, {"after", Screenshot::When::After}, {"both", Screenshot::When::Both}});
     if (o.contains("scale"))
         shot.scale = intOf(where, "screenshot scale", o["scale"], 1, 2);
+    if (o.contains("pointer"))
+        shot.pointer = boolOf(where, "screenshot pointer", o["pointer"]);
     if (o.contains("crop")) {
         const QJsonObject c = objectOf(where, "screenshot crop", o["crop"], {"cells", "pixels"});
         if (c.size() != 1)
@@ -536,6 +538,9 @@ Step readStep(const QJsonValue& v, int number) {
         if (v == View{})
             fail(where, "view needs at least one of \"zoom\", \"scrollTo\", \"ircFit\", \"ircPad\" or \"ircSwapShades\"");
     }
+    if (st.screenshot && st.screenshot->pointer && !pointerAt(st, false))
+        fail(where, "\"screenshot pointer\" needs a step the pointer makes, with \"points\", \"from\" and \"to\", "
+                    "\"at\" or select's \"rect\"; this " + st.action + " step has none");
     return st;
 }
 
@@ -554,6 +559,15 @@ const std::vector<std::string_view>& actions() {
 bool pixelAction(std::string_view action) {
     return action == "halfBlock" || action == "line" || action == "rectangle" || action == "ellipse" ||
            action == "fill" || action == "eyedropper";
+}
+
+std::optional<Point> pointerAt(const Step& step, bool before) {
+    if (step.rect)
+        return before ? Point{step.rect->x, step.rect->y}
+                      : Point{step.rect->x + step.rect->width - 1, step.rect->y + step.rect->height - 1};
+    if (step.points.empty())
+        return std::nullopt;
+    return before ? step.points.front() : step.points.back();
 }
 
 std::string stepLabel(const Step& step) { return "step " + std::to_string(step.number) + " (" + step.name + ")"; }

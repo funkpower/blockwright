@@ -94,7 +94,7 @@ lintian -I --pedantic ../blockwright_<version>-1_*.changes
 
 `dh_auto_test` runs the tests with `QT_QPA_PLATFORM=offscreen` against the
 packaged Catch2 3 (`BW_FETCH_CATCH2=OFF`). The layout tests measure the docks
-in the Noto Sans in `tests/data/fonts`, registered under a family name of its
+in the Noto Sans in `third_party/noto-sans`, registered under a family name of its
 own, so a Noto Sans the build root has installed can't take its place. The build
 profile `nocheck` (`DEB_BUILD_PROFILES=nocheck DEB_BUILD_OPTIONS=nocheck`, and
 `apt-get build-dep -o APT::Build-Profiles=nocheck ./`) builds without the
@@ -143,7 +143,8 @@ rpmlint packaging/rpm/blockwright.spec ~/rpmbuild/SRPMS/*.src.rpm ~/rpmbuild/RPM
 `%check` validates the desktop entry and AppStream metadata and runs the tests
 (`--without check` skips the tests). `LICENSE`, `NOTICE` and the bundled
 fonts' and icons' licences (`LICENSE.oldschool-pc-fonts`,
-`LICENSE.unifont-OFL`, `LICENSE.unifont-GPL`, `LICENSE.tabler-icons`) are `%license` files in
+`LICENSE.unifont-OFL`, `LICENSE.unifont-GPL`, `LICENSE.tabler-icons`,
+`LICENSE.noto-sans`) are `%license` files in
 `/usr/share/licenses/blockwright/`, which an install with `tsflags=nodocs`
 keeps. The same notices are also in `/usr/share/doc/blockwright/`, where
 `NOTICE` and `--version` say they are; its `LICENSE` links to the `%license`
@@ -241,7 +242,7 @@ same reason as `noto-fonts` on Arch. The install block that
 serves Linux (desktop entry, metainfo, icons, man pages) applies unchanged,
 and the man pages land in `share/man`. `LICENSE` names the program's GPL
 and the bundled fonts' and icons' licences (CC BY-SA 4.0, MIT, OFL 1.1 for
-Unifont), and `pkg-plist` lists their notices under `%%DOCSDIR%%`; the
+Unifont and Noto Sans), and `pkg-plist` lists their notices under `%%DOCSDIR%%`; the
 `install_notices_freebsd_plist` test fails when the install's notices and
 the plist part ways. The `distinfo` in the tree is a
 template: `scripts/release` writes the port for its tarball, with

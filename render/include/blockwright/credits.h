@@ -27,4 +27,11 @@ inline constexpr const char* kUnifontCredit =
 inline constexpr const char* kIconCredit =
     "Includes icons from Tabler Icons, MIT licence, https://tabler.io/icons; notices in " BW_NOTICES_DIR "\n";
 
+// Noto Sans, the window's font under blockwright --screenshot (OFL 1.1),
+// printed by the GUI's --version and shown in its About box: only the GUI
+// ships it.
+inline constexpr const char* kUiFontCredit =
+    "Includes Noto Sans, (c) 2022 The Noto Project Authors, SIL OFL 1.1,\n"
+    "https://github.com/notofonts/latin-greek-cyrillic; notices in " BW_NOTICES_DIR "\n";
+
 } // namespace bw

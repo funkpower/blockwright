@@ -717,20 +717,36 @@ TEST_CASE("a run leaves nothing it started running whichever way it ends", "[gen
 TEST_CASE("a generator flooding stdout and stderr is stopped promptly and in bounded memory",
           "[generator][run][process]") {
     // Four children on each pipe, or eight on stderr, writing as fast as
-    // they can until the pipe closes: the cap and the deadline must hold
-    // while the data keeps coming, and what the run holds stays near the cap.
-    const std::string both = "for i in 1 2 3 4; do cat /dev/zero & cat /dev/zero >&2 & done; wait\n";
-    const std::string errOnly = "for i in 1 2 3 4 5 6 7 8; do cat /dev/zero >&2 & done; wait\n";
-    const gen::RunOptions brief{std::chrono::milliseconds(300)};
+    // they can: the cap and the deadline must hold while the data keeps
+    // coming, and what the run holds stays near the cap. Each case gets a
+    // deadline only its own limit can beat: the stdout cap has a minute, far
+    // more than reading 32 MiB takes on a loaded machine, so the cap is what
+    // stops it (the message says which limit did), and it must do so within
+    // a few seconds; the stderr flood never reaches the cap, so the 300 ms
+    // deadline stops it. Each stdout writer ends after 64 MiB, eight times
+    // the cap between the four, so a cap that fails to hold fails here on
+    // the message and the memory check instead of reading without end.
+    using std::chrono::milliseconds;
+    struct Case {
+        std::string script, why;
+        milliseconds timeout, within;
+    };
+    const Case cases[] = {
+        {"for i in 1 2 3 4; do head -c " + std::to_string(2 * gen::kMaxOutputBytes) +
+             " /dev/zero & cat /dev/zero >&2 & done; wait\n",
+         "wrote more than", milliseconds(60'000), milliseconds(5'000)},
+        {"for i in 1 2 3 4 5 6 7 8; do cat /dev/zero >&2 & done; wait\n", "took longer than 300 ms; stopped",
+         milliseconds(300), milliseconds(1500)},
+    };
     const long long rss0 = peakRss();
-    for (const auto& [script, why] : {std::pair{both, std::string("wrote more than")},
-                                      std::pair{errOnly, std::string("took longer than 300 ms; stopped")}}) {
-        INFO(why);
+    for (const Case& c : cases) {
+        INFO(c.why);
         project::Project p = dotsProject();
         const project::Project before = p;
         const auto t0 = std::chrono::steady_clock::now();
-        CHECK_THROWS_WITH(gen::add(p, shGenerator(script), "g", brief), ContainsSubstring(why));
-        CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1500));
+        CHECK_THROWS_WITH(gen::add(p, shGenerator(c.script), "g", gen::RunOptions{c.timeout}),
+                          ContainsSubstring(c.why));
+        CHECK(std::chrono::steady_clock::now() - t0 < c.within);
         CHECK(p == before);
     }
     // the stdout cap (32 MiB) and the stderr tail are what a run holds
@@ -895,9 +911,12 @@ TEST_CASE("no run starts once killRunning has begun though it found no group",
 }
 
 TEST_CASE("failed generator startup does not reap another child", "[generator][run][process]") {
+    // The sibling outlives any wait the failed start could do on it, so a
+    // run that waited for it would take its whole life; the bound leaves a
+    // slow machine room and is still far short of that.
     const pid_t sibling = ::fork();
     if (sibling == 0) {
-        ::sleep(2);
+        ::sleep(60);
         ::_exit(0);
     }
     REQUIRE(sibling > 0);
@@ -907,10 +926,16 @@ TEST_CASE("failed generator startup does not reap another child", "[generator][r
     CHECK_THROWS_WITH(gen::add(p, {{"generator.json", R"({"command":["/blockwright-no-such-program"]})"}}, "g",
                                quick),
                       ContainsSubstring("could not run"));
-    CHECK(std::chrono::steady_clock::now() - before < std::chrono::milliseconds(500));
+    CHECK(std::chrono::steady_clock::now() - before < std::chrono::milliseconds(10'000));
 
+    // still ours to reap, and still running: nothing took it
     int status;
-    CHECK(::waitpid(sibling, &status, 0) == sibling);
+    const pid_t ours = ::waitpid(sibling, &status, WNOHANG);
+    CHECK(ours == 0);
+    if (ours == 0) {
+        ::kill(sibling, SIGKILL);
+        CHECK(::waitpid(sibling, &status, 0) == sibling);
+    }
 }
 
 TEST_CASE("a run refuses to start while SIGCHLD is ignored", "[generator][run][process]") {

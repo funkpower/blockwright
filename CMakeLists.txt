@@ -143,6 +143,8 @@ install(FILES third_party/tabler-icons/LICENSE third_party/tabler-icons/README.m
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/tabler-icons)
 install(FILES third_party/unifont/OFL-1.1.txt third_party/unifont/COPYING third_party/unifont/README.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/unifont)
+install(FILES third_party/noto-sans/OFL.txt third_party/noto-sans/README.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}/noto-sans)
 
 # The desktop entry, icon, AppStream metadata and manual pages of a Linux
 # (freedesktop) install, which the distribution packages and the AppImage carry.

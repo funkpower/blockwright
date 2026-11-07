@@ -35,11 +35,14 @@
 //   "screenshot": {"of": "window" | a dock's or widget's object name,
 //                  "crop": {"cells": [x, y, w, h]} | {"pixels": [x, y, w, h]},
 //                  "when": "before" | "after" | "both",
-//                  "scale": 1 | 2}
+//                  "scale": 1 | 2,
+//                  "pointer": bool}
 //
-// each key optional (the window, uncropped, after the step, at scale 1).
-// "scale": 2 draws the picture at device pixel ratio 2, twice the pixels
-// each way, from the same window laid out at the same size.
+// each key optional (the window, uncropped, after the step, at scale 1, no
+// pointer). "scale": 2 draws the picture at device pixel ratio 2, twice the
+// pixels each way, from the same window laid out at the same size.
+// "pointer": true draws an arrow mouse pointer with its tip at the step's
+// pointer position (pointerAt): only a step the pointer makes may ask.
 //
 // The window's view has a step of its own (#398), "action": "view":
 //
@@ -145,6 +148,7 @@ struct Screenshot {
     int x = 0, y = 0, width = 0, height = 0;  // the crop: canvas cells, or pixels of `of`
     When when = When::After;
     int scale = 1;  // the picture's device pixel ratio, 1 or 2
+    bool pointer = false;  // an arrow drawn at the step's pointer (pointerAt)
 };
 
 // The view a "view" step sets (#398): each unset keeps the window's.
@@ -191,6 +195,14 @@ struct Script {
 const std::vector<std::string_view>& actions();
 // Whether the action works in half-block pixels (its points are pixels).
 bool pixelAction(std::string_view action);
+// Where the mouse pointer is in a picture of `step` (#295): a point of its
+// own (a cell, or a half-block pixel for a pixelAction), the last one after
+// the step (a stroke's or drag's end, the click) and the first before it
+// (where the press starts); select's rect is dragged from its top-left
+// corner to its bottom-right one. Empty for a step the pointer doesn't make
+// (a menu or dock action, a move "by", a tool step with no points, a view
+// step), which can't ask for "pointer".
+std::optional<Point> pointerAt(const Step& step, bool before);
 // "step 3 (outline-head)": how errors name a step.
 std::string stepLabel(const Step& step);
 

@@ -5,8 +5,9 @@ Summary:        Editor for ANSI and IRC block art
 
 # GPL-3.0-or-later: the program; CC-BY-SA-4.0: the bundled VGA and BIOS
 # glyph bitmaps; MIT: the bundled Tabler icons; OFL-1.1 OR GPL-2.0-or-later
-# WITH Font-exception-2.0: the bundled GNU Unifont glyphs
-License:        GPL-3.0-or-later AND CC-BY-SA-4.0 AND MIT AND (OFL-1.1 OR GPL-2.0-or-later WITH Font-exception-2.0)
+# WITH Font-exception-2.0: the bundled GNU Unifont glyphs; OFL-1.1: the
+# bundled Noto Sans
+License:        GPL-3.0-or-later AND CC-BY-SA-4.0 AND MIT AND (OFL-1.1 OR GPL-2.0-or-later WITH Font-exception-2.0) AND OFL-1.1
 URL:            https://git.pumpin.online/funkpower/blockwright
 Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}.tar.gz
 
@@ -58,6 +59,7 @@ cp -p third_party/oldschool-pc-fonts/LICENSE LICENSE.oldschool-pc-fonts
 cp -p third_party/unifont/OFL-1.1.txt LICENSE.unifont-OFL
 cp -p third_party/unifont/COPYING LICENSE.unifont-GPL
 cp -p third_party/tabler-icons/LICENSE LICENSE.tabler-icons
+cp -p third_party/noto-sans/OFL.txt LICENSE.noto-sans
 
 %build
 # Builders have no network: the tests use the packaged Catch2 3
@@ -78,7 +80,7 @@ export QT_QPA_PLATFORM=offscreen
 %endif
 
 %files
-%license LICENSE NOTICE LICENSE.oldschool-pc-fonts LICENSE.unifont-OFL LICENSE.unifont-GPL LICENSE.tabler-icons
+%license LICENSE NOTICE LICENSE.oldschool-pc-fonts LICENSE.unifont-OFL LICENSE.unifont-GPL LICENSE.tabler-icons LICENSE.noto-sans
 # NOTICE, and the bundled fonts' and icons' licences beside it where NOTICE
 # and --version say they are; the %%license copies are the ones nodocs keeps
 %doc %{_pkgdocdir}/

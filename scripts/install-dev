@@ -138,10 +138,10 @@ echo "$full" > "$stamp"
 stage=$prefix.new
 rm -rf "$stage" "$prefix.old"
 DESTDIR= cmake --install "$build" --config "$config" --prefix "$stage" >/dev/null
-# The font's CC BY-SA 4.0, Unifont's OFL and the icons' MIT attribution have to ship with the binary
+# The font's CC BY-SA 4.0, Unifont's and Noto Sans's OFL and the icons' MIT attribution have to ship with the binary
 for f in LICENSE NOTICE oldschool-pc-fonts/LICENSE oldschool-pc-fonts/README.md \
          unifont/OFL-1.1.txt unifont/COPYING unifont/README.md \
-         tabler-icons/LICENSE tabler-icons/README.md; do
+         tabler-icons/LICENSE tabler-icons/README.md noto-sans/OFL.txt noto-sans/README.md; do
   if [[ ! -f $stage/share/doc/blockwright/$f ]]; then
     echo "install-dev: the install left out share/doc/blockwright/$f; keeping the old dev build" >&2
     rm -rf "$stage"; exit 1

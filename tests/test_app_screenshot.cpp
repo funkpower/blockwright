@@ -31,6 +31,11 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QFileInfo>
+#include <QFont>
+#include <QFontDatabase>
+#include <QFontInfo>
+#include <QRawFont>
+#include <QApplication>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QJsonArray>
@@ -115,7 +120,163 @@ std::string failureOf(const steps::Script& s) {
     return "no failure";
 }
 
+// The pictures of a stroke, a half-block click and a select drag at
+// `scale`, with "pointer": `pointer` on each, or no "pointer" key at all
+// when `pointer` is empty.
+std::vector<screenshot::Shot> pointerShots(int scale, const char* pointer) {
+    const std::string extra = std::string(pointer ? std::string(", \"pointer\": ") + pointer : "") +
+                              ", \"scale\": " + std::to_string(scale);
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720], "steps": [
+        {"name": "stroke", "action": "glyph", "glyph": "#", "fg": 14, "bg": 1, "points": [[2, 2], [3, 2], [6, 4]],
+         "screenshot": {"when": "both")" + extra + R"(}},
+        {"name": "dot", "action": "halfBlock", "fg": 12, "points": [[8, 3]],
+         "screenshot": {"crop": {"cells": [5, 0, 6, 4]})" + extra + R"(}},
+        {"name": "area", "action": "select", "rect": [1, 1, 4, 3],
+         "screenshot": {"of": "canvasView")" + extra + R"(}}]})");
+    MainWindow w;
+    return screenshot::take(w, s, startOf(s));
+}
+
+// With "pointer": true each picture differs from the one without it, and
+// only in the arrow's box around its tip; the tip is where pointerAt says,
+// in the picture's logical pixels.
+void checkPointer(int scale) {
+    const std::vector<screenshot::Shot> on = pointerShots(scale, "true");
+    const std::vector<screenshot::Shot> off = pointerShots(scale, "false");
+    const std::vector<screenshot::Shot> plain = pointerShots(scale, nullptr);
+    REQUIRE(on.size() == 4);
+    REQUIRE(off.size() == 4);
+    REQUIRE(plain.size() == 4);
+    for (std::size_t i = 0; i < on.size(); ++i) {
+        INFO(on[i].stem);
+        // without it, the same bytes as a file that doesn't name it
+        CHECK_FALSE(off[i].pointer);
+        CHECK(off[i].image == plain[i].image);
+        REQUIRE(on[i].pointer);
+        const QImage a = on[i].image.convertToFormat(QImage::Format_RGB32);
+        const QImage b = off[i].image.convertToFormat(QImage::Format_RGB32);
+        REQUIRE(a.size() == b.size());
+        CHECK(a.devicePixelRatio() == scale);
+        const QPointF tip = *on[i].pointer;
+        const QRect box(QPoint(int(std::floor(tip.x())), int(std::floor(tip.y()))) * scale +
+                            screenshot::pointerBounds().topLeft() * scale,
+                        screenshot::pointerBounds().size() * scale);
+        QRect changed;
+        for (int y = 0; y < a.height(); ++y)
+            for (int x = 0; x < a.width(); ++x)
+                if (a.pixel(x, y) != b.pixel(x, y))
+                    changed |= QRect(x, y, 1, 1);
+        CAPTURE(tip.x(), tip.y(), changed.x(), changed.y(), changed.width(), changed.height());
+        CHECK_FALSE(changed.isEmpty());
+        CHECK(box.contains(changed));
+        // the arrow's tip pixel is drawn, black or its white edge
+        const QRgb at = a.pixel(QPoint(int(tip.x()), int(tip.y())) * scale + QPoint(scale / 2, scale / 2));
+        CHECK(at != b.pixel(QPoint(int(tip.x()), int(tip.y())) * scale + QPoint(scale / 2, scale / 2)));
+    }
+}
+
 } // namespace
+
+TEST_CASE("a pointer is drawn at the step's point, and only around it (#295)", "[screenshot]") {
+    checkPointer(1);
+    // where: the stroke's first cell before it and its last after it, the
+    // middle of the lower half of the half-block pixel's cell, the select
+    // rect's bottom-right corner
+    const std::vector<screenshot::Shot> on = pointerShots(1, "true");
+    MainWindow w;
+    const int zoom = w.canvasView()->zoom();
+    const QSize cell(8 * zoom, 16 * zoom);
+    CHECK(*on[2].pointer == QPointF((8 - 5) * cell.width() + cell.width() / 2.0, 1 * cell.height() + cell.height() * 3 / 4.0));
+    CHECK(*on[3].pointer == QPointF(4 * cell.width() + cell.width() / 2.0, 3 * cell.height() + cell.height() / 2.0));
+    // the stroke's two pictures: the tip moved from its first cell to its last
+    const QPointF moved = *on[1].pointer - *on[0].pointer;
+    CHECK(moved == QPointF(4 * cell.width(), 2 * cell.height()));
+}
+
+TEST_CASE("a pointer is drawn at twice the pixels at scale 2 (#295)", "[.][screenshot-scale]") {
+    checkPointer(2);
+    // the same place in the picture's logical pixels as at scale 1
+    const std::vector<screenshot::Shot> one = pointerShots(1, "true"), two = pointerShots(2, "true");
+    for (std::size_t i = 0; i < one.size(); ++i)
+        CHECK(*one[i].pointer == *two[i].pointer);
+    // drawn at the ratio: not the scale 1 arrow enlarged
+    const QImage a = one[2].image.convertToFormat(QImage::Format_RGB32);
+    CHECK(two[2].image.convertToFormat(QImage::Format_RGB32) !=
+          a.scaled(a.size() * 2, Qt::IgnoreAspectRatio, Qt::FastTransformation));
+}
+
+TEST_CASE("a pointer off the picture or out of view names the step (#295)", "[screenshot]") {
+    const auto failing = [](const char* step) {
+        return failureOf(steps::parse(std::string(R"({"version": 1, "start": {"blank": [200, 100]}, "window": [1024, 720], "steps": [)") +
+                                      step + "]}"));
+    };
+    CHECK(failing(R"({"name": "dock", "action": "glyph", "points": [[1, 1]], "screenshot": {"of": "layers", "pointer": true}})") ==
+          "step 1 (dock): a pointer needs \"of\" to hold the canvas, and \"layers\" doesn't");
+    CHECK(failing(R"({"name": "far", "action": "glyph", "points": [[190, 90]], "screenshot": {"pointer": true}})") ==
+          "step 1 (far): the pointer's cell [190, 90] is not in view in the 1024 x 720 window");
+    CHECK(failing(R"({"name": "cropped", "action": "glyph", "points": [[1, 1], [9, 1]],
+                    "screenshot": {"crop": {"cells": [0, 0, 4, 4]}, "pointer": true}})") ==
+          "step 1 (cropped): the pointer's cell [9, 1] is outside the picture");
+    // a point off the canvas, before the replay refuses it
+    CHECK(failing(R"({"name": "off", "action": "glyph", "points": [[250, 1]], "screenshot": {"pointer": true, "when": "before"}})") ==
+          "step 1 (off): the pointer's cell [250, 1] is off the 200 x 100 canvas");
+    // a pixel's canvas is given in pixels, as the replay gives it
+    CHECK(failing(R"({"name": "off", "action": "halfBlock", "points": [[5, 217]], "screenshot": {"pointer": true, "when": "before"}})") ==
+          "step 1 (off): the pointer's pixel [5, 217] is off the 200 x 200 pixel canvas");
+}
+
+TEST_CASE("a pointer on the picture's right or bottom edge is outside it (#295)", "[screenshot]") {
+    // at zoom 3, scrolled to cell [3, 1], pixel [7, 5]'s hotspot is the
+    // canvas view's (180, 132): a crop 180 wide or 132 high ends on it
+    const auto shot = [](const char* crop) {
+        return failureOf(steps::parse(std::string(R"({"version": 1, "start": {"blank": [60, 30]}, "window": [1024, 720], "steps": [
+            {"name": "look", "action": "view", "zoom": 3, "scrollTo": [3, 1]},
+            {"name": "dot", "action": "halfBlock", "fg": 12, "points": [[7, 5]],
+             "screenshot": {"of": "canvasView", "pointer": true, "crop": {"pixels": )") + crop + "}}}]}"));
+    };
+    CHECK(shot("[0, 0, 180, 200]") == "step 2 (dot): the pointer's pixel [7, 5] is outside the picture");
+    CHECK(shot("[100, 0, 200, 132]") == "step 2 (dot): the pointer's pixel [7, 5] is outside the picture");
+    CHECK(shot("[0, 0, 181, 200]") == "no failure");
+    CHECK(shot("[100, 0, 200, 133]") == "no failure");
+}
+
+TEST_CASE("the UI font of blockwright --screenshot is the bundled Noto Sans, whatever the machine has (#295)", "[screenshot][ui-font]") {
+    const QFont saved = QApplication::font();
+    // the app doesn't load it unless --screenshot asks
+    CHECK_FALSE(QFontDatabase::families().contains(QString::fromLatin1(screenshot::kUiFontFamily)));
+    CHECK(QApplication::font().family() != QLatin1String(screenshot::kUiFontFamily));
+    REQUIRE(screenshot::useBundledFont().empty());
+    const QFont f = QApplication::font();
+    CHECK(QFontInfo(f).family() == QLatin1String(screenshot::kUiFontFamily));
+    CHECK(f.pointSize() == screenshot::kUiFontPointSize);
+    CHECK(f.hintingPreference() == QFont::PreferVerticalHinting);
+    // each style drawn from the bundled file, not a Noto Sans on the machine
+    for (const char* file : {":/ui-font/NotoSans-Regular.ttf", ":/ui-font/NotoSans-Bold.ttf"}) {
+        INFO(file);
+        QFont styled = f;
+        styled.setBold(QByteArray(file).contains("Bold"));
+        const QByteArray want = QRawFont(QString::fromLatin1(file), 10).fontTable("head");
+        REQUIRE_FALSE(want.isEmpty());
+        CHECK(QRawFont::fromFont(styled).fontTable("head") == want);
+        CHECK(QRawFont::fromFont(styled).familyName() == QLatin1String(screenshot::kUiFontFamily));
+    }
+    // a widget made now takes it
+    MainWindow w;
+    CHECK(QFontInfo(w.toolOptionsDock()->font()).family() == QLatin1String(screenshot::kUiFontFamily));
+    QApplication::setFont(saved);
+}
+
+TEST_CASE("the font renamer keeps a font's length and refuses a name of another length (#295)", "[ui-font]") {
+    QFile file(QStringLiteral(":/ui-font/NotoSans-Regular.ttf"));
+    REQUIRE(file.open(QIODevice::ReadOnly));
+    const QByteArray font = file.readAll();
+    CHECK(screenshot::renamedFont(font, "Bw Screen").size() == font.size());
+    const QByteArray renamed = screenshot::renamedFont(font, "Bw Screen");
+    CHECK(renamed.contains(QByteArray("\0B\0w\0 \0S\0c\0r\0e\0e\0n", 18)));
+    CHECK_FALSE(renamed.contains(QByteArray("\0N\0o\0t\0o\0 \0S\0a\0n\0s", 18)));
+    CHECK(screenshot::renamedFont(font, "Short").isEmpty());
+    CHECK(screenshot::renamedFont(QByteArray("not a font"), "Bw Screen").isEmpty());
+}
 
 TEST_CASE("a screenshot replay takes the window, a dock and a crop at the steps that ask", "[screenshot]") {
     const steps::Script s = tutorial();
