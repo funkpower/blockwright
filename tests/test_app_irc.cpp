@@ -103,7 +103,7 @@ QByteArray readAll(const QString& path) {
 std::filesystem::path fpath(const QString& p) { return std::filesystem::path(QFile::encodeName(p).toStdString()); }
 
 // An 80x25 project at `path` whose budget is `bytes`. As the ascii script
-// sends them, row 3 is 292 bytes (249 written) and row 4 369 at a 300-byte
+// sends them, row 3 is 285 bytes (249 written) and row 4 369 at a 300-byte
 // budget and 378 at 400 (322 written): over 300, within 400.
 void writeBudgetProject(const QString& path, std::size_t bytes) {
     AnsiDocument d = blankDoc(80, 25);
@@ -754,7 +754,7 @@ TEST_CASE("an opened project's IRC budget is the one the meter, fit and Export h
     CHECK(m->budget() == w.document()->extras().ircBudget);
     CHECK(m->budget().bytes == 300);
     CHECK(m->bytes(3) == 249);
-    CHECK(m->sentBytes(3) == 292);
+    CHECK(m->sentBytes(3) == 285);
     CHECK(m->state(3) == IrcMeter::RowState::Fits);
     CHECK(m->bytes(4) == 322);
     CHECK(m->sentBytes(4) == cliOver[0].bytes);

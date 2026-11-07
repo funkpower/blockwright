@@ -180,8 +180,14 @@ TEST_CASE("encodeMircRow tries foreground 1 when a background changes under a tw
 }
 
 TEST_CASE("encodeMircRow keeps the first of equally short ways") {
-    // a space and a block cost the same here, and the space comes first
-    CHECK(irc::encodeMircRow(cells({{U' ', 1, 1}, {U',', 4, 2}})) == "\x03" "1,1 \x03" "4,2,");
+    // as written a space and a block cost the same here, and the space comes
+    // first
+    const std::vector<MircCell> row = cells({{U' ', 1, 1}, {U',', 4, 2}});
+    CHECK(irc::detail::encodeMircRowWith(row, false, false, irc::detail::Objective::Written).line ==
+          "\x03" "1,1 \x03" "4,2,");
+    // as sent the block is a byte shorter: the script writes no background
+    // for it
+    CHECK(irc::encodeMircRow(row) == "\x03" "1\xE2\x96\x88\x03" "4,2,");
 }
 
 TEST_CASE("encodeMircRow's byte count can't wrap") {

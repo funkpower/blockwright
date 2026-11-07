@@ -2,21 +2,31 @@
 
 #include "blockwright/cell.h"
 #include "blockwright/cp437.h"
+#include "blockwright/irc_view.h"
+#include "blockwright/width.h"
 
 #include <algorithm>
 #include <climits>
+#include <limits>
+#include <tuple>
 #include <utility>
 #include <vector>
 
-// Write a row of cells as one IRC line in as few bytes as possible.
+// Write a row of cells as one IRC line in as few bytes as possible, as
+// WeeChat's ascii script sends it.
 //
 // Many cells can be drawn more than one way: a space shows only its
 // background, so it looks the same as a full block in that colour; a top
 // half block is a bottom half block with the colours swapped; any glyph whose
 // colours match is a solid cell. Which way is shortest depends on the colour
 // codes around it, so the encoder searches all of them for the line with the
-// fewest bytes. Colour numbers are written with one digit wherever the next
-// character can't be read as part of the number.
+// fewest bytes as sent, and of those the fewest as written (#411). The script
+// writes each line again before it sends it (irc::txtSentBytes), every colour
+// number with two digits and no code where a cell's colours don't change, and
+// the budget is counted on that; a line shortest as written can send more,
+// since a code that sets a background grows from four bytes to six. Colour
+// numbers are written with one digit wherever the next character can't be
+// read as part of the number.
 //
 // A colour code that has to carry a colour its glyph doesn't show (the
 // foreground in front of a space's background, or a background written with a
@@ -284,24 +294,64 @@ void colourMoves(State cur, const Way& way, const Hints& next, char32_t g, std::
 // whitespace lose its background.
 constexpr char kEndGuard = '\x0f';
 
-// The colour state, and whether the last glyph was a space.
+// The bytes the script spends on a cell's codes as it writes the line again
+// (sender::encode in irc_view.cpp): one a toggle, then a colour code with
+// two-digit numbers, six bytes with a background and three without, where
+// the cell's colours differ from the ones it last wrote. A space it treats as
+// showing only its background unless it is underlined, so it writes none for
+// a space whose background is the one already set, and leaves its foreground
+// where it was (`sentFg`), whatever code the encoder wrote in front of it.
+// `fg`, `bg` and `attrs` are the colours and formatting the cell is drawn in,
+// and the script's background and formatting are always the encoder's
+// (`sentBg`, `sentAttrs`). The encoder never takes a colour back to the
+// client's default, so the script's reset (a bare ^C) doesn't arise; nor does
+// a glyph it reads as a control (C0, which no cell holds).
+detail::Cost sentCodes(int& sentFg, int sentBg, std::uint8_t sentAttrs, int fg, int bg, std::uint8_t attrs,
+                       const Way& way) {
+    const std::uint8_t diff = (sentAttrs ^ attrs) & attr::Formatting;
+    detail::Cost cost = ((diff & attr::Bold) ? 1 : 0) + ((diff & attr::Italic) ? 1 : 0) + ((diff & attr::Underline) ? 1 : 0);
+    const bool space = way.glyph == U' ' && !(attrs & attr::Underline);
+    int want = fg;
+    if (space) {
+        if (bg == sentBg)
+            return cost;
+        if (fg == kDefault)
+            want = sentFg;
+    }
+    if (want == sentFg && bg == sentBg)
+        return cost;
+    if (bg != kDefault && bg != sentBg) {
+        sentFg = want;
+        return cost + 6;
+    }
+    sentFg = want;
+    return cost + 3 + (way.first == U',' ? 2 : 0);
+}
+
+// The colour state, whether the last glyph was a space and, when the search
+// counts bytes as sent, the foreground the script last wrote, which a space
+// can leave behind the encoder's.
 struct Key {
     State state;
     bool space = false;
+    int sentFg = kDefault;
     auto operator<=>(const Key&) const = default;
 };
 
-// Any state is one colour code (at most 6 bytes) from any other, so an entry
-// further than that behind the best can't win. With formatting in the row it
-// is a colour code and three toggles.
+// Any state is one colour code (at most 6 bytes, as written or as sent) from
+// any other, so an entry further than that behind the best can't win. With
+// formatting in the row it is a colour code and three toggles.
 constexpr detail::Cost kSlack = 6;
 constexpr detail::Cost kFormattingSlack = 9;
 
 struct Entry {
     Key key;
+    // the foreground the script last wrote on this entry's line
+    int sentFg = kDefault;
     // 64 bits: a cell costs at most 13 bytes, so no row that fits in memory
     // reaches the top
-    detail::Cost cost = 0;
+    detail::Cost sent = 0;
+    detail::Cost written = 0;
     // An index into the layer before, which holds at most one entry per key:
     // 100 foregrounds (the 99 and the default) x 100 backgrounds x 8
     // formattings x 2.
@@ -332,25 +382,20 @@ std::uint8_t nearestMirc(std::uint32_t rgb) {
 }
 
 std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades, bool solidEnd) {
-    return detail::encodeMircRowFrom(cells, swapShades, 0, solidEnd);
+    return detail::encodeMircRowWith(cells, swapShades, solidEnd, detail::Objective::Sent).line;
 }
 
 bool detail::withinSlack(Cost cost, Cost best, Cost slack) { return cost - best <= slack; }
 
 std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swapShades, Cost start, bool solidEnd) {
-    for (std::size_t i = 0; i < cells.size(); ++i) {
-        const MircCell& c = cells[i];
-        bool valid = c.fg < kMircRgb.size() && c.bg < kMircRgb.size();
-        if (c.ch.isContinuation())
-            valid = valid && i > 0 && !cells[i - 1].ch.isContinuation();
-        else
-            for (const char32_t cp : codePoints(c.ch))
-                valid = valid && scalar(cp);
-        if (!valid)
-            throw IrcError("the IRC encoder was given an invalid cell");
-    }
-    if (cells.empty())
-        return {};
+    return encodeMircRowWith(cells, swapShades, solidEnd, Objective::Sent, start).line;
+}
+
+namespace {
+
+detail::Encoded search(std::span<const MircCell> cells, bool swapShades, bool solidEnd, detail::Objective objective,
+                       detail::Cost start) {
+    const bool bySent = objective == detail::Objective::Sent;
     const bool formatted = std::any_of(cells.begin(), cells.end(), [](const MircCell& c) { return c.attrs & attr::Formatting; });
     const detail::Cost slack = formatted ? kFormattingSlack : kSlack;
     // One layer of reachable (state, cost) entries per cell, each pointing
@@ -358,7 +403,7 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
     std::vector<std::vector<Entry>> layers;
     layers.reserve(cells.size());
     Entry first;
-    first.cost = start;
+    first.sent = first.written = start;
     std::vector<Entry> cur{first};
     std::vector<Entry> next;
     std::vector<Move> mv;
@@ -384,7 +429,8 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
         if (cell.ch.isContinuation()) {
             // the lead drew both columns: every entry goes on as it is
             for (std::size_t i = 0; i < cur.size(); ++i)
-                next.push_back({cur[i].key, cur[i].cost, static_cast<std::uint32_t>(i), Code{}, cell.ch});
+                next.push_back({cur[i].key, cur[i].sentFg, cur[i].sent, cur[i].written, static_cast<std::uint32_t>(i), Code{},
+                                cell.ch});
             std::swap(cur, next);
             layers.push_back(cur);
             continue;
@@ -399,28 +445,40 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
                 const Way& way = options.way[w];
                 moves(e.key.state, way, after, attrs, mv);
                 for (const Move& m : mv) {
-                    const detail::Cost cost = e.cost + m.code.len + way.bytes;
-                    const Key key{m.state, way.glyph == U' '};
-                    const Entry entry{key, cost, static_cast<std::uint32_t>(i), m.code, way.glyph};
+                    int sentFg = e.sentFg;
+                    const detail::Cost sent = e.sent +
+                                              sentCodes(sentFg, e.key.state.bg, e.key.state.attrs, m.state.fg,
+                                                        m.state.bg, m.state.attrs, way) +
+                                              way.bytes;
+                    const detail::Cost written = e.written + m.code.len + way.bytes;
+                    // by bytes as written, the script's foreground is no part
+                    // of the state: entries merge as they did before #411
+                    const Key key{m.state, way.glyph == U' ', bySent ? sentFg : kDefault};
+                    const Entry entry{key, sentFg, sent, written, static_cast<std::uint32_t>(i), m.code, way.glyph};
                     const auto x = std::find_if(next.begin(), next.end(), [&](const Entry& n) { return n.key == key; });
                     if (x == next.end())
                         next.push_back(entry);
-                    else if (cost < x->cost)
+                    else if (bySent ? std::pair(sent, written) < std::pair(x->sent, x->written) : written < x->written)
                         *x = entry;
                 }
             }
         }
-        detail::Cost best = next.front().cost;
+        const auto measure = [bySent](const Entry& e) { return bySent ? e.sent : e.written; };
+        detail::Cost best = measure(next.front());
         for (const Entry& e : next)
-            best = std::min(best, e.cost);
-        std::erase_if(next, [&](const Entry& e) { return !detail::withinSlack(e.cost, best, slack); });
+            best = std::min(best, measure(e));
+        std::erase_if(next, [&](const Entry& e) { return !detail::withinSlack(measure(e), best, slack); });
         std::swap(cur, next);
         layers.push_back(cur);
     }
-    const auto finish = [](const Entry& e) { return e.cost + (e.key.space ? 1 : 0); };
-    const auto last = std::min_element(cur.begin(), cur.end(), [&](const Entry& a, const Entry& b) {
-        return std::pair(finish(a), a.key) < std::pair(finish(b), b.key);
-    });
+    // a line that ends in a space has a reset written after it, and is sent
+    // with one
+    const auto end = [](const Entry& e) { return detail::Cost(e.key.space ? 1 : 0); };
+    const auto rank = [&](const Entry& e) {
+        return bySent ? std::tuple(e.sent + end(e), e.written + end(e), e.key)
+                      : std::tuple(e.written + end(e), detail::Cost(0), e.key);
+    };
+    const auto last = std::min_element(cur.begin(), cur.end(), [&](const Entry& a, const Entry& b) { return rank(a) < rank(b); });
     // Walk back from the cheapest last entry, then write the pieces in order.
     std::vector<const Entry*> path(layers.size());
     std::uint32_t at = static_cast<std::uint32_t>(last - cur.begin());
@@ -429,7 +487,7 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
         at = path[l]->prev;
     }
     std::string line;
-    line.reserve(static_cast<size_t>(finish(*last) - start));
+    line.reserve(static_cast<size_t>(last->written + end(*last) - start));
     for (const Entry* e : path) {
         line.append(e->code.buf.data(), e->code.len);
         if (!e->glyph.isContinuation())
@@ -438,7 +496,79 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
     }
     if (last->key.space)
         line += kEndGuard;
-    return line;
+    return {std::move(line), last->sent + end(*last), last->written + end(*last)};
+}
+
+} // namespace
+
+namespace {
+
+// Whether the count as sent follows the script on this row: no cell starts
+// with a code point the script joins to the cell before it under any Unicode
+// (joinMask), and none holds a control, which it drops or reads as a code; a
+// cluster is left to the measure too.
+bool sentModelled(std::span<const MircCell> cells) {
+    for (const MircCell& c : cells) {
+        if (c.ch.isContinuation())
+            continue;
+        const auto cps = codePoints(c.ch);
+        if (cps.size != 1)
+            return false;
+        const char32_t cp = cps[0];
+        if (cp < 0x20 || cp == 0x7F || joinMask(cp) != 0)
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+detail::Encoded detail::encodeMircRowWith(std::span<const MircCell> cells, bool swapShades, bool solidEnd,
+                                          Objective objective, Cost start) {
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        const MircCell& c = cells[i];
+        bool valid = c.fg < kMircRgb.size() && c.bg < kMircRgb.size();
+        if (c.ch.isContinuation())
+            valid = valid && i > 0 && !cells[i - 1].ch.isContinuation();
+        else
+            for (const char32_t cp : codePoints(c.ch))
+                valid = valid && scalar(cp);
+        if (!valid)
+            throw IrcError("the IRC encoder was given an invalid cell");
+    }
+    if (cells.empty())
+        return {{}, start, start};
+    constexpr std::size_t kNoBudget = std::numeric_limits<std::size_t>::max();
+    // A row the count as sent doesn't follow (a cell the script joins to the
+    // cell before it, or a control it drops) is written shortest as written,
+    // and its bytes as sent are measured.
+    if (!sentModelled(cells)) {
+        Encoded out = search(cells, swapShades, solidEnd, Objective::Written, start);
+        out.sent = start + txtSentBytes(out.line, kNoBudget);
+        return out;
+    }
+    Encoded out = search(cells, swapShades, solidEnd, objective, start);
+    if (objective == Objective::Written)
+        return out;
+    Encoded written = search(cells, swapShades, solidEnd, Objective::Written, start);
+    // On a formatted row the script's foreground can lag the encoder's (a
+    // bold or italic space), which the slack doesn't allow for: an entry it
+    // prunes can still send fewer bytes.
+    if (std::pair(written.sent, written.written) < std::pair(out.sent, out.written))
+        return written;
+    if (out.line == written.line)
+        return out;
+    // Over its budget the script sends a line in its own shortest encoding
+    // where that is shorter (txtSentBytes), so a line that sends fewer bytes
+    // as written out can still send more than the line shortest as written
+    // once both are over. The line is kept only where it sends no more at any
+    // budget: the same bytes and no more at the least, or no more than the
+    // other line ever sends.
+    const std::size_t sent = out.sent - start, other = written.sent - start;
+    const std::size_t otherLeast = txtSentBytes(written.line, 0);
+    const bool noMore =
+        sent <= otherLeast || (sent == other && txtSentBytes(out.line, 0) <= otherLeast);
+    return noMore ? out : written;
 }
 
 } // namespace bw::irc

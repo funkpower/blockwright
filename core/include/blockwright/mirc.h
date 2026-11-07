@@ -49,7 +49,10 @@ struct MircCell {
     std::uint8_t attrs = 0;
 };
 
-// The shortest IRC line that draws `cells`, without a line ending. With
+// The shortest IRC line that draws `cells`, without a line ending: the
+// fewest bytes as WeeChat's ascii script sends it (irc::txtSentBytes, which
+// writes every colour number with two digits), and of those the fewest as
+// written. With
 // `swapShades` the encoder may also draw ░ as ▓ with the colours reversed,
 // and ▒ as itself reversed; the patterns differ a little, so it is opt-in.
 // With `solidEnd` a last cell of one colour (a blank, a full block, or a glyph
@@ -76,6 +79,23 @@ bool withinSlack(Cost cost, Cost best, Cost slack = 6);
 // encodeMircRow with the search's byte count starting at `start` rather than
 // 0, so tests can reach the top of the cost range with a short row.
 std::string encodeMircRowFrom(std::span<const MircCell> cells, bool swapShades, Cost start, bool solidEnd = false);
+
+// What the search counts: bytes as sent, then as written (encodeMircRow); or
+// bytes as written alone, the encoder before #411, for tests to compare
+// against.
+enum class Objective { Sent, Written };
+
+// A line and its size in bytes as sent (txtSentBytes, the size the script
+// writes it in before any cut) and as written, each counted from `start`.
+struct Encoded {
+    std::string line;
+    Cost sent = 0;
+    Cost written = 0;
+};
+
+// encodeMircRow with the search's objective and its byte counts.
+Encoded encodeMircRowWith(std::span<const MircCell> cells, bool swapShades, bool solidEnd, Objective objective,
+                          Cost start = 0);
 
 } // namespace detail
 

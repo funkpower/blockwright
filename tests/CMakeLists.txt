@@ -88,6 +88,7 @@ add_executable(blockwright-tests
   test_lint_rules.cpp
   test_irc_view.cpp
   test_mirc.cpp
+  test_mirc_sent.cpp
   test_outline.cpp
   test_outline_property.cpp
   test_pipeline.cpp
