@@ -26,7 +26,8 @@ struct AnchorLook {
     const char* name;
 };
 
-// Each anchor's arrow points the way the canvas grows from it.
+// Each anchor's arrow points toward the side or corner it keeps the canvas
+// at (the centre's is a dot); the canvas grows or is cut on the other sides.
 constexpr std::array<AnchorLook, 9> kLooks = {{{"↖", QT_TRANSLATE_NOOP("CanvasSizeDialog", "Top left")},
                                                {"↑", QT_TRANSLATE_NOOP("CanvasSizeDialog", "Top")},
                                                {"↗", QT_TRANSLATE_NOOP("CanvasSizeDialog", "Top right")},
