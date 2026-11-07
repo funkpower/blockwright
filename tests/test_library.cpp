@@ -759,7 +759,7 @@ TEST_CASE("the bundled test library reads clean") {
     CHECK(r.problems.empty());
     REQUIRE(r.stamps.size() == 2);
     CHECK(r.stamps[0].name == "Tux");
-    CHECK(r.stamps[0].meta.ircBytes == 80);
+    CHECK(r.stamps[0].meta.ircBytes == 79);
     CHECK(r.stamps[1].name == "Small star");
 }
 

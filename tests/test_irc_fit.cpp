@@ -151,7 +151,7 @@ TEST_CASE("pad keeps the blank rows above and below the art") {
         INFO("row " << y);
         CHECK(lines[y] == "\x03" "1,1  █");
     }
-    CHECK(lines[1] == "\x03" "1,1 \x03" "15a\x03" "1█");
+    CHECK(lines[1] == "\x03" "15,1 a\x03" "1█");
 }
 
 TEST_CASE("fitCells leaves a row that fits alone") {

@@ -125,7 +125,7 @@ open(sys.argv[1],"wb").write((row+"\x1b[0m\r\n"+"\x1b[0;37;40m"+"A"*80+"\x1b[0m\
 EOF
 over=$tmp/over.ans
 python3 -I "$tmp/mk_over.py" "$over"
-expect "export --irc: the line is over" 3 '444 bytes' -- "$cli" export --irc "$over" "$tmp/over.txt"
+expect "export --irc: the line is over" 3 '420 bytes' -- "$cli" export --irc "$over" "$tmp/over.txt"
 expect "render --irc cuts the line export sends" 0 '^IRC view: 1 row cut at 407 bytes$' -- "$cli" render --irc "$over" "$tmp/over.png"
 expect "render --irc --fit draws it fit" 0 '^IRC view: 0 rows cut at 407 bytes$' -- "$cli" render --irc --fit "$over" "$tmp/over-fit.png"
 if cmp -s "$tmp/over.png" "$tmp/over-fit.png"; then bad "render --irc --fit drew the unfit line"; else ok "render --irc --fit draws the fit line"; fi

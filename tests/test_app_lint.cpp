@@ -170,8 +170,8 @@ QImage ircNow(const Document& doc) {
 
 // An 80x5 piece in which each of View > IRC's encoder options and the iCE
 // setting changes what Export sends. Rows 0 and 4 are blank: an export drops
-// them unless padded. Row 1 is #297's: 444 bytes, over the 407-byte budget,
-// and 406 once fit. Row 2 is shades that swap shorter, then black cells that
+// them unless padded. Row 1 is #297's: 420 bytes, over the 407-byte budget,
+// and 407 once fit. Row 2 is shades that swap shorter, then black cells that
 // pad keeps. Row 3 starts with four spaces on bright blue (9), which go as
 // dark blue (mIRC 2) with iCE off (#301). iCE is off.
 AnsiDocument sendPiece() {
@@ -530,7 +530,7 @@ TEST_CASE("the IRC View dock shows the lines Export writes, with Fit, Pad, Swap 
 
     // nothing on: row 1 is over the budget and cut; the blank rows are dropped
     CHECK(showsExport() == 1);
-    CHECK(irc->view().rows[1].bytes == 444);
+    CHECK(irc->view().rows[1].bytes == 420);
     CHECK(irc->view().rows[1].cut());
     CHECK(irc->view().rows[0].trimmed);
     CHECK(irc->view().rows[4].trimmed);
@@ -544,7 +544,7 @@ TEST_CASE("the IRC View dock shows the lines Export writes, with Fit, Pad, Swap 
     REQUIRE(meter->fit());
     CHECK(irc->stale());
     CHECK(showsExport() == 0);
-    CHECK(irc->view().rows[1].bytes == 341);
+    CHECK(irc->view().rows[1].bytes == 346);
     CHECK(irc->view().rows[1].bytes == meter->bytes(1));
     // the blank row 0 is dropped, so row 1 is the file's first line
     CHECK(meter->sentBytes(1) == irc::txtSentBytes(linesOf(fileBytes(txt).toStdString())[0]));

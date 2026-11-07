@@ -564,10 +564,10 @@ TEST_CASE("the IRC view's cut is the one the ascii.py sender 1.32.2 makes") {
         for (int i = 0; i < 10; ++i)
             row.push_back(cell(U'z', 7, 1));
         cuts.push_back({"full block and space with a mark", row,
-                        "\x03" "15,5x\x03" "5,3\xE2\x96\x88\xCC\x81\x03" "15y\x03" "5,5 \x03" "5,2\xE2\x96\x88\xCC\x81\x03"
-                        "5,5 \x03" "15 \xCC\x81\x03" "3,3 \x03" "15,2zzzzzzzzzz",
-                        8, {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4,
-                            4, 4, 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 8, 8, 8}});
+                        "\x03" "15,5x\x03" "5,3\xE2\x96\x88\xCC\x81\x03" "15y\x03" "5,2\xE2\x96\x88\xE2\x96\x88\xCC\x81\x03"
+                        "15,5  \xCC\x81\x03" "3,3 \x03" "15,2zzzzzzzzzz",
+                        8, {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5,
+                            5, 5, 5, 5, 5, 6, 6, 6, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}});
     }
     {
         // a mark and a ZWJ in cells of their own, in other colours than the

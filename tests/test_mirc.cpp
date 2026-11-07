@@ -173,11 +173,15 @@ TEST_CASE("encodeMircRow keeps every entry within six bytes of the best") {
 }
 
 TEST_CASE("encodeMircRow tries foreground 1 when a background changes under a two-digit foreground") {
-    CHECK(irc::encodeMircRow(cells({{U' ', 1, 10}, {U' ', 1, 4}, {U' ', 1, 1}})) == "\x03" "10█\x03" "1,4 █");
+    // the space after the 'a' shows only its background, and the cell after it
+    // asks for no other colour, so 1 is the cheapest foreground to write
+    CHECK(irc::encodeMircRow(cells({{U'a', 10, 12}, {U' ', 1, 14}, {U'\u00a0', 14, 14}})) ==
+          "\x03" "10,12a\x03" "1,14  \x0f");
 }
 
 TEST_CASE("encodeMircRow keeps the first of equally short ways") {
-    CHECK(irc::encodeMircRow(cells({{U' ', 1, 1}, {U',', 4, 1}})) == "\x03" "1,1 \x03" "4,1,");
+    // a space and a block cost the same here, and the space comes first
+    CHECK(irc::encodeMircRow(cells({{U' ', 1, 1}, {U',', 4, 2}})) == "\x03" "1,1 \x03" "4,2,");
 }
 
 TEST_CASE("encodeMircRow's byte count can't wrap") {

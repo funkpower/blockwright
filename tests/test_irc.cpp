@@ -4,10 +4,12 @@
 
 #include "blockwright/cp437.h"
 #include "blockwright/irc.h"
+#include "blockwright/irc_view.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <tuple>
 
 using namespace bw;
 namespace fs = std::filesystem;
@@ -188,6 +190,79 @@ TEST_CASE("overBudget lists the lines longer than the budget") {
     CHECK(over[1].bytes == 5);
     CHECK(irc::overBudget(lines, 5).empty());
     CHECK(irc::joinLines(lines) == "abc\nabcd\n\nabcde\n");
+}
+
+// #401: a colour code that has to set a colour its glyph doesn't show (a
+// space's foreground, a block's background) sets the one the next cell needs.
+TEST_CASE("a space's foreground is the next cell's when that saves a code") {
+    // ^C1,1 ^C0A drew these in 8 bytes
+    CHECK(irc::encodeRow(std::vector{cell(U' ', Black, Black), cell(U'A', White, Black)}) == "\x03" "0,1 A");
+    // ^C1,1 ^C4A
+    CHECK(irc::encodeRow(std::vector{cell(U' ', Black, Black), cell(U'A', LightRed, Black)}) == "\x03" "4,1 A");
+    // a background change: ^C0,1A^C0,2 ^C8B
+    CHECK(irc::encodeRow(std::vector{cell(U'A', White, Black), cell(U' ', Blue, Blue), cell(U'B', Yellow, Blue)}) ==
+          "\x03" "0,1A\x03" "8,2 B");
+}
+
+TEST_CASE("a block's background is the next cell's when that saves a code") {
+    // ^C4█^C2█ drew these in 10 bytes: the space now carries the block's
+    // colour as its background and the next cell's as its foreground
+    CHECK(irc::encodeRow(std::vector{cell(U'█', LightRed, Black), cell(U' ', Grey, Blue)}) == "\x03" "2,4 █");
+    // ^C0,1A^C4█^C2█
+    CHECK(irc::encodeRow(std::vector{cell(U'A', White, Black), cell(U'█', LightRed, Black), cell(U' ', Grey, Blue)}) ==
+          "\x03" "0,1A\x03" "2,4 █");
+}
+
+namespace {
+
+// What a cell looks like, whichever of the ways that draw it the encoder
+// picked: one colour for a solid cell, two for a half block, the glyph and
+// both colours for anything else.
+std::tuple<char32_t, int, int> looks(char32_t ch, int fg, int bg) {
+    if (ch == U'\0' || ch == U' ' || ch == U'\u00a0') return {U'█', bg, bg};
+    if (ch == U'█' || fg == bg) return {U'█', fg, fg};
+    switch (ch) {
+    case U'▀': return {U'▀', fg, bg};
+    case U'▄': return {U'▀', bg, fg};
+    case U'▌': return {U'▌', fg, bg};
+    case U'▐': return {U'▌', bg, fg};
+    default: return {ch, fg, bg};
+    }
+}
+
+} // namespace
+
+TEST_CASE("every golden piece's rows read back as the cells they were made from") {
+    std::vector<fs::path> pieces;
+    for (const auto& e : fs::directory_iterator(bwtest::dataDir() / "golden"))
+        if (e.path().extension() == ".ans")
+            pieces.push_back(e.path());
+    std::sort(pieces.begin(), pieces.end());
+    REQUIRE(pieces.size() >= 12);
+    for (const auto& p : pieces) {
+        DYNAMIC_SECTION(p.filename().string()) {
+            const Canvas c = parseAnsi(bwtest::readFile(p)).canvas;
+            const auto lines = irc::encodeCanvas(c);
+            REQUIRE(int(lines.size()) == c.height());
+            for (int y = 0; y < c.height(); ++y) {
+                INFO("row " << y + 1);
+                const auto shown = irc::decodeLine(lines[std::size_t(y)]);
+                REQUIRE(int(shown.size()) <= c.width());
+                for (int x = 0; x < c.width(); ++x) {
+                    INFO("column " << x + 1);
+                    const Cell& src = c.at(x, y);
+                    const auto want = looks(src.ch.codePointOr(U'?'), irc::mircColor(src.fg), irc::mircColor(src.bg));
+                    if (x >= int(shown.size())) {
+                        // the trailing black cells IRC drops
+                        CHECK(want == std::tuple<char32_t, int, int>{U'█', 1, 1});
+                        continue;
+                    }
+                    const irc::MircCell& got = shown[std::size_t(x)].cell;
+                    CHECK(looks(got.ch.codePointOr(U'?'), got.fg, got.bg) == want);
+                }
+            }
+        }
+    }
 }
 
 // tests/data/golden-irc/<piece>.txt is the fixed IRC output for

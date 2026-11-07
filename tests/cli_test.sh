@@ -369,17 +369,17 @@ expect "--help names XBIN and BIN" 0 'XBIN \(\.xb\) or BIN \(\.bin\)' -- "$cli" 
 expect "--help says export and render refuse" 0 'render refuse to write over their input' -- "$cli" --help
 
 # export --irc: per-line byte report, the budget, and the override
-expect "export --irc" 0 '^17 lines, longest 80 bytes, 85 sent, budget 407: 0 over$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
+expect "export --irc" 0 '^17 lines, longest 79 bytes, 84 sent, budget 407: 0 over$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
 if cmp -s "$data/golden-irc/tux.txt" "$tmp/tux.txt"; then ok "export --irc output is golden-irc's"; else bad "export --irc output differs from golden-irc/tux.txt"; fi
-expect "export --irc reports every line as written and as sent" 0 '^ +13 +80 +85$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
+expect "export --irc reports every line as written and as sent" 0 '^ +13 +79 +84$' -- "$cli" export --irc "$piece" "$tmp/tux.txt"
 report=$("$cli" export --irc "$piece" "$tmp/tux.txt" 2>/dev/null)
 if [[ $(grep -cE '^ +[0-9]+ +[0-9]+' <<<"$report") -eq 17 ]]; then ok "export --irc reports 17 lines"; else bad "export --irc report: $report"; fi
-expect "over budget refused" 3 '^ +13 +80 +85  over by 25$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
-expect "over budget listed" 3 "tux\\.ans: line 13 is 85 bytes as WeeChat's ascii script sends it, over the 60-byte budget by 25" -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
-expect "over budget counted" 3 '^17 lines, longest 80 bytes, 85 sent, budget 60: 11 over$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+expect "over budget refused" 3 '^ +13 +79 +84  over by 24$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+expect "over budget listed" 3 "tux\\.ans: line 13 is 84 bytes as WeeChat's ascii script sends it, over the 60-byte budget by 24" -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
+expect "over budget counted" 3 '^17 lines, longest 79 bytes, 84 sent, budget 60: 8 over$' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
 expect "over budget says why" 3 'over\.txt: not written: lines over the budget \(--allow-over-budget writes it anyway\)' -- "$cli" export --irc --budget 60 "$piece" "$tmp/over.txt"
 if [[ -e $tmp/over.txt ]]; then bad "refused export left an output file"; else ok "refused export writes nothing"; fi
-expect "--allow-over-budget writes" 0 'line 13 is 85 bytes .*, over the 60-byte budget' -- "$cli" export --irc --budget 60 --allow-over-budget "$piece" "$tmp/over.txt"
+expect "--allow-over-budget writes" 0 'line 13 is 84 bytes .*, over the 60-byte budget' -- "$cli" export --irc --budget 60 --allow-over-budget "$piece" "$tmp/over.txt"
 if cmp -s "$data/golden-irc/tux.txt" "$tmp/over.txt"; then ok "--allow-over-budget writes the lines uncut"; else bad "--allow-over-budget output differs"; fi
 # 64 cells, each a different colour from its neighbour: 352 bytes written,
 # over 407 as the ascii script sends it, with two-digit colour codes
@@ -729,8 +729,8 @@ expect "unknown option" 2 'Unknown option' -- "$cli" --bogus
 # library list / check
 lib=$data/library
 expect "library check: a good library" 0 '^2 stamps, 0 text styles, 0 problems$' -- "$cli" library check "$lib"
-expect "library list: tab-separated" 0 $'^stamp\tsky\tSmall star\t5x3\t16\t-\tstar,night\t.*[/\\\\]sky[/\\\\]small-star\\.ans$' -- "$cli" library list "$lib"
-expect "library list: sorted by path" 0 $'^stamp\tfigures\tTux\t30x17\t80\t-\tpenguin,linux\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$lib"
+expect "library list: tab-separated" 0 $'^stamp\tsky\tSmall star\t5x3\t14\t-\tstar,night\t.*[/\\\\]sky[/\\\\]small-star\\.ans$' -- "$cli" library list "$lib"
+expect "library list: sorted by path" 0 $'^stamp\tfigures\tTux\t30x17\t79\t-\tpenguin,linux\t' -- bash -c '"$1" library list "$2" | head -1' _ "$cli" "$lib"
 expect "library list: no dir lists the bundled and user libraries" 0 $'^stamp\tsky\tSmall star\t' -- env BLOCKWRIGHT_BUNDLED_LIBRARY="$lib" BLOCKWRIGHT_USER_LIBRARY="$tmp/no-user-lib" "$cli" library list
 expect "library check: missing dir" 1 'nope: not a directory' -- "$cli" library check "$tmp/nope"
 expect "library check: needs a dir" 2 'library check takes one directory' -- "$cli" library check
@@ -738,12 +738,12 @@ expect "library: needs a subcommand" 2 'library needs a subcommand' -- "$cli" li
 expect "library: unknown subcommand" 2 "unknown library subcommand 'frob'" -- "$cli" library frob
 expect "library: refuses other commands' options" 2 '--scale is a render or replay option, not a library option' -- "$cli" library list --scale 2
 bl=$tmp/badlib; mkdir -p "$bl"
-cp "$lib/sky/small-star.ans" "$bl/bytes.ans"; sed 's/"ircBytes": 16/"ircBytes": 17/' "$lib/sky/small-star.json" > "$bl/bytes.json"
+cp "$lib/sky/small-star.ans" "$bl/bytes.ans"; sed 's/"ircBytes": 14/"ircBytes": 15/' "$lib/sky/small-star.json" > "$bl/bytes.json"
 cp "$lib/sky/small-star.ans" "$bl/key.ans"; sed 's/"tags"/"tag"/' "$lib/sky/small-star.json" > "$bl/key.json"
 cp "$lib/sky/small-star.ans" "$bl/nosidecar.ans"
 cp "$lib/sky/small-star.json" "$bl/orphan.json"
 printf '\033[0;33mx\033[0m\r\n' > "$bl/nosauce.ans"; cp "$lib/sky/small-star.json" "$bl/nosauce.json"
-expect "library check: wrong byte count" 1 'bytes\.ans: sidecar says the widest row is 17 IRC bytes; the art.s is 16' -- "$cli" library check "$bl"
+expect "library check: wrong byte count" 1 'bytes\.ans: sidecar says the widest row is 15 IRC bytes; the art.s is 14' -- "$cli" library check "$bl"
 expect "library check: unknown key" 1 'key\.ans: sidecar has an unknown key "tag"' -- "$cli" library check "$bl"
 expect "library check: no sidecar" 1 'nosidecar\.ans: no sidecar nosidecar\.json' -- "$cli" library check "$bl"
 expect "library check: orphan sidecar" 1 'orphan\.json: sidecar with no orphan\.ans' -- "$cli" library check "$bl"
@@ -776,7 +776,7 @@ expect "library check: counts" 1 "^0 stamps, 0 text styles, $problems problems\$
 expect "library list: problems are warnings" 0 'warning: .*orphan\.json: sidecar with no orphan\.ans' -- "$cli" library list "$bl"
 b2=$tmp/badlib2; mkdir -p "$b2"
 cp "$lib/sky/small-star.ans" "$b2/dup.ans"
-printf '{"category":7,"category":"sky","tags":[],"ircBytes":9999,"ircBytes":16}\n' > "$b2/dup.json"
+printf '{"category":7,"category":"sky","tags":[],"ircBytes":9999,"ircBytes":14}\n' > "$b2/dup.json"
 mkfifo "$b2/pipe.ans"
 expect "library check: a repeated key" 1 'dup\.ans: sidecar has the key "category" more than once' -- timeout 10 "$cli" library check "$b2"
 expect "library check: a FIFO is never opened" 1 'pipe\.ans: not a regular file, skipped' -- timeout 10 "$cli" library check "$b2"
@@ -879,8 +879,8 @@ if cmp -s "$proj/ans.txt" "$proj/proj.txt"; then ok "export of a project matches
 cp -r "$proj/tux" "$proj/tight"
 sed 's/"bytes": 407/"bytes": 60/' "$proj/tight/manifest.json" > "$proj/tight/manifest.json.new" &&
   mv "$proj/tight/manifest.json.new" "$proj/tight/manifest.json"
-expect "export takes the project's budget" 3 '^17 lines, longest 80 bytes, 85 sent, budget 60: 11 over$' -- "$cli" export --irc "$proj/tight" "$proj/tight.txt"
-expect "--budget overrides the project's" 0 '^17 lines, longest 80 bytes, 85 sent, budget 407: 0 over$' -- "$cli" export --irc --budget 407 "$proj/tight" "$proj/tight.txt"
+expect "export takes the project's budget" 3 '^17 lines, longest 79 bytes, 84 sent, budget 60: 8 over$' -- "$cli" export --irc "$proj/tight" "$proj/tight.txt"
+expect "--budget overrides the project's" 0 '^17 lines, longest 79 bytes, 84 sent, budget 407: 0 over$' -- "$cli" export --irc --budget 407 "$proj/tight" "$proj/tight.txt"
 expect "render reads a project" 0 '^$' -- "$cli" render "$proj/tux.bwp" "$proj/tux.png"
 expect "snapshot a directory" 0 '^r1$' -- "$cli" snapshot "$proj/tux"
 expect "snapshot again" 0 '^r2$' -- "$cli" snapshot "$proj/tux"

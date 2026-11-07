@@ -18,6 +18,11 @@
 // fewest bytes. Colour numbers are written with one digit wherever the next
 // character can't be read as part of the number.
 //
+// A colour code that has to carry a colour its glyph doesn't show (the
+// foreground in front of a space's background, or a background written with a
+// block's foreground) may carry one the next cell needs, so the next cell
+// needs no code of its own (#401).
+//
 // A pair's lead is written as its cluster's UTF-8 bytes in its own colours,
 // one way only, and its continuation as nothing: the continuation costs no
 // byte and takes the line through unchanged, so no code goes between them.
@@ -105,6 +110,49 @@ Ways ways(const MircCell& mc, bool swapShades, bool lead) {
     return Ways{{{w, w}}, 1};
 }
 
+// The colours the cells after a cell may need: those of the first one whose
+// ways ask for a colour other than the one the cell shows, past any drawn in
+// that colour alone. A code in front of a solid cell may set them where its
+// glyph doesn't show the colour.
+struct Hints {
+    std::array<int, 2> fg{kDefault, kDefault};
+    std::array<int, 2> bg{kDefault, kDefault};
+};
+
+// The colour a cell's first way shows; for a solid cell, the solid's.
+int shown(const Ways& w) { return w.way[0].fg == kDefault ? w.way[0].bg : w.way[0].fg; }
+
+// Every cell's hints, from the right: a cell drawn in its own colour `s`
+// alone is skipped, and the hints are those of the cell after it.
+std::vector<Hints> hintsAfter(std::span<const Ways> all) {
+    std::vector<Hints> out(all.size());
+    for (std::size_t c = all.size(); c-- > 0;) {
+        if (all[c].n == 0)
+            continue;
+        const int s = shown(all[c]);
+        const auto only = [s](int x) { return x == kDefault || x == s; };
+        for (std::size_t j = c + 1; j < all.size(); ++j) {
+            const Ways& w = all[j];
+            if (w.n == 0)
+                continue;  // a continuation needs nothing
+            bool same = true;
+            for (int k = 0; k < w.n; ++k)
+                same = same && only(w.way[k].fg) && only(w.way[k].bg);
+            if (same) {
+                // every colour it asks for is s, so it shows s too
+                out[c] = out[j];
+                break;
+            }
+            for (int k = 0; k < w.n; ++k) {
+                out[c].fg[size_t(k)] = w.way[k].fg;
+                out[c].bg[size_t(k)] = w.way[k].bg;
+            }
+            break;
+        }
+    }
+    return out;
+}
+
 bool asciiDigit(char32_t ch) { return ch >= U'0' && ch <= U'9'; }
 
 // A run of formatting codes: the longest is nine bytes (a colour code and
@@ -157,19 +205,19 @@ Code toggles(std::uint8_t from, std::uint8_t to) {
     return c;
 }
 
-void colourMoves(State cur, const Way& way, char32_t g, std::vector<Move>& out);
+void colourMoves(State cur, const Way& way, const Hints& next, char32_t g, std::vector<Move>& out);
 
 // The ways to get from `cur` to a state that draws `way` with formatting
 // `attrs`: (codes, new state). The toggles go after the colour code.
-void moves(State cur, const Way& way, std::uint8_t attrs, std::vector<Move>& out) {
+void moves(State cur, const Way& way, const Hints& next, std::uint8_t attrs, std::vector<Move>& out) {
     out.clear();
     const Code t = toggles(cur.attrs, attrs);
     if (t.len == 0) {
-        colourMoves(cur, way, way.first, out);
+        colourMoves(cur, way, next, way.first, out);
         return;
     }
     // a toggle byte ends a colour number and is no comma
-    colourMoves(cur, way, U'\x02', out);
+    colourMoves(cur, way, next, U'\x02', out);
     for (Move& m : out) {
         for (std::uint8_t i = 0; i < t.len; ++i)
             m.code.push(t.buf[i]);
@@ -178,19 +226,23 @@ void moves(State cur, const Way& way, std::uint8_t attrs, std::vector<Move>& out
 }
 
 // The colour codes from `cur` to colours that draw `way`, `g` the character
-// after them: (codes, new state), the formatting left as it is.
-void colourMoves(State cur, const Way& way, char32_t g, std::vector<Move>& out) {
+// after them: (codes, new state), the formatting left as it is. `next` is
+// what the cells after it may need, for a colour the glyph doesn't show.
+void colourMoves(State cur, const Way& way, const Hints& next, char32_t g, std::vector<Move>& out) {
     const bool bgChange = way.bg != kDefault && cur.bg != way.bg;
     const bool fgChange = way.fg != kDefault && cur.fg != way.fg;
     if (bgChange) {
         // a background needs a foreground number in front of it; when the
-        // glyph doesn't care which, try the one already set and short ones
+        // glyph doesn't care which, try the one already set, short ones and
+        // the ones the next cell needs
         const int b = way.bg;
-        std::array<int, 3> fgs = {way.fg != kDefault ? way.fg : cur.fg, kDefault, kDefault};
+        std::array<int, 5> fgs = {way.fg != kDefault ? way.fg : cur.fg, kDefault, kDefault, kDefault, kDefault};
         if (way.fg == kDefault) {
             fgs[1] = b;
             if (cur.fg != kDefault && cur.fg >= 10)
                 fgs[2] = 1;
+            fgs[3] = next.fg[0];
+            fgs[4] = next.fg[1];
         }
         for (size_t i = 0; i < fgs.size(); ++i) {
             const int f = fgs[i];
@@ -215,6 +267,16 @@ void colourMoves(State cur, const Way& way, char32_t g, std::vector<Move>& out) 
         out.push_back({c, {f, cur.bg, cur.attrs}});
     } else {
         out.push_back({Code::colour(f, kDefault, g), {f, cur.bg, cur.attrs}});
+    }
+    if (way.bg != kDefault)
+        return;
+    // the glyph (a block) shows no background: the code may set the one the
+    // next cell needs
+    for (size_t i = 0; i < next.bg.size(); ++i) {
+        const int b = next.bg[i];
+        if (b == kDefault || b == cur.bg || (i > 0 && b == next.bg[0]))
+            continue;
+        out.push_back({Code::colour(f, b, g), {f, b, cur.attrs}});
     }
 }
 
@@ -300,7 +362,22 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
     std::vector<Entry> cur{first};
     std::vector<Entry> next;
     std::vector<Move> mv;
-    mv.reserve(3);
+    mv.reserve(5);
+    // every cell's ways first, so a code can look at the cells after it
+    std::vector<Ways> all(cells.size(), Ways{{}, 0});
+    for (std::size_t c = 0; c < cells.size(); ++c) {
+        if (cells[c].ch.isContinuation())
+            continue;
+        const bool lead = c + 1 < cells.size() && cells[c + 1].ch.isContinuation();
+        Ways& options = all[c];
+        options = ways(cells[c], swapShades, lead);
+        // solid() lists the space first
+        if (solidEnd && c + 1 == cells.size() && options.n == 2 && options.way[0].glyph == U' ') {
+            options.way[0] = options.way[1];
+            options.n = 1;
+        }
+    }
+    const std::vector<Hints> hints = hintsAfter(all);
     for (std::size_t c = 0; c < cells.size(); ++c) {
         const MircCell& cell = cells[c];
         next.clear();
@@ -312,19 +389,15 @@ std::string detail::encodeMircRowFrom(std::span<const MircCell> cells, bool swap
             layers.push_back(cur);
             continue;
         }
-        const bool lead = c + 1 < cells.size() && cells[c + 1].ch.isContinuation();
-        Ways options = ways(cell, swapShades, lead);
+        const Ways& options = all[c];
         const std::uint8_t attrs = cell.attrs & attr::Formatting;
-        // solid() lists the space first
-        if (solidEnd && c + 1 == cells.size() && options.n == 2 && options.way[0].glyph == U' ') {
-            options.way[0] = options.way[1];
-            options.n = 1;
-        }
+        // only a solid cell's ways leave a colour free
+        const Hints& after = hints[c];
         for (size_t i = 0; i < cur.size(); ++i) {
             const Entry& e = cur[i];
             for (int w = 0; w < options.n; ++w) {
                 const Way& way = options.way[w];
-                moves(e.key.state, way, attrs, mv);
+                moves(e.key.state, way, after, attrs, mv);
                 for (const Move& m : mv) {
                     const detail::Cost cost = e.cost + m.code.len + way.bytes;
                     const Key key{m.state, way.glyph == U' '};
