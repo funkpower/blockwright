@@ -14,6 +14,7 @@
 #include "blockwright/irc_view.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAbstractButton>
 #include <QAction>
@@ -21,6 +22,8 @@
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
+#include <QHelpEvent>
+#include <QImage>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QProcess>
@@ -29,10 +32,14 @@
 #include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolTip>
 #include <QUndoStack>
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <optional>
+#include <string>
 
 using namespace bw;
 
@@ -215,6 +222,76 @@ void pickDefaultBudget(MainWindow& w) {
     REQUIRE(ran);
 }
 
+
+// An 80x50 piece with no blank row: even rows half blocks in changing
+// colours, over the default budget; odd rows plain letters, within it.
+AnsiDocument stripedPiece() {
+    AnsiDocument d = blankDoc(80, 50);
+    const CellBlock over = halfBlockRow(80);
+    for (int y = 0; y < d.canvas.height(); ++y)
+        for (int x = 0; x < d.canvas.width(); ++x)
+            d.canvas.at(x, y) = y % 2 == 0 ? over.at(x, 0) : cell(U'x', 7, 0);
+    return d;
+}
+
+// The canvas row under meter pixel row `y` as the canvas draws it (PLAN §4):
+// view pixel row v is device rows start + scale * v on, start the first whole
+// device pixel in the view and scale the ratio rounded down (at least 1), so
+// the row is the one whose device rows hold the pixel's top edge.
+int canvasRowUnder(const QWidget& w, const IrcMeter* m, const CanvasView* view, int y) {
+    const double dpr = view->devicePixelRatioF();
+    const int scale = std::max(1, int(std::floor(dpr + 1e-9)));
+    const int start = int(std::ceil(view->mapTo(&w, QPoint(0, 0)).y() * dpr - 1e-9));
+    const double edge = m->mapTo(&w, QPoint(0, y)).y() * dpr;
+    const int rowDevice = view->cellRect(QPoint(0, 0)).height() * scale;
+    return int(std::floor((edge - start) / rowDevice));
+}
+
+// The view row under meter pixel row `y` by the canvas's own pointer mapping.
+int viewRowUnder(const QWidget& w, const IrcMeter* m, const CanvasView* view, int y) {
+    const QPoint in = view->mapFrom(&w, m->mapTo(&w, QPoint(0, y)));
+    return view->cellAt(view->toView(QPointF(in))).y();
+}
+
+// The tooltip the meter shows with the pointer at `pos`.
+std::string tooltipAt(IrcMeter* m, QPoint pos) {
+    QToolTip::hideText();
+    QHelpEvent he(QEvent::ToolTip, pos, m->mapToGlobal(pos));
+    QApplication::sendEvent(m, &he);
+    return QToolTip::isVisible() ? QToolTip::text().toStdString() : std::string();
+}
+
+// A main window 1600x900 showing stripedPiece at `zoom`, with the meter.
+struct StripedWindow {
+    MainWindow w;
+    IrcMeter* m = nullptr;
+    CanvasView* view = nullptr;
+    QScrollBar* v = nullptr;
+
+    explicit StripedWindow(int zoom) {
+        w.resize(1600, 900);
+        w.show();
+        w.document()->replace(stripedPiece(), QString());
+        m = w.ircMeter();
+        view = w.canvasView();
+        auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+        REQUIRE(scroll);
+        REQUIRE(m->isVisible());
+        view->setZoom(zoom);
+        QApplication::processEvents();
+        v = scroll->verticalScrollBar();
+        REQUIRE(v->maximum() > 0);
+        const QString scale = qEnvironmentVariable("QT_SCALE_FACTOR");
+        if (!scale.isEmpty())
+            REQUIRE(view->devicePixelRatioF() == scale.toDouble());
+    }
+    void scrollTo(int value) {
+        v->setValue(value);
+        QApplication::processEvents();
+        REQUIRE(v->value() == value);
+    }
+    int canvasRow(int y) const { return canvasRowUnder(w, m, view, y); }
+};
 } // namespace
 
 TEST_CASE("the IRC meter gives every row's size as the encoder writes it and as the script sends it") {
@@ -1208,4 +1285,151 @@ TEST_CASE("80 stars written in the budget are over it as the script sends them, 
     CHECK(m->state(3) == IrcMeter::RowState::Fits);
     REQUIRE(w.exportIrcText(path, &error));
     CHECK(readAll(path).size() > 337);
+}
+
+// #404: the meter maps a pixel to a row as the canvas maps the pointer to a
+// cell, on the canvas's device grid. Run at device pixel ratios 1.25 and 1.5
+// too (tests/CMakeLists.txt), where a canvas row is a fractional number of
+// logical pixels: at 1.25 and zoom 4 a row is 64 device pixels, 51.2 logical,
+// and dividing by the 52 of a band rounded outward put the top slice of row n
+// (about 0.8 n logical pixels deep) in row n - 1.
+TEST_CASE("the IRC meter's row under a pixel is the canvas's cell under it, at any device pixel ratio (#404)",
+          "[irc-meter-dpr]") {
+    const int zoom = GENERATE(4, 3);
+    CAPTURE(zoom);
+    StripedWindow sw(zoom);
+    IrcMeter* m = sw.m;
+    CanvasView* view = sw.view;
+    const qreal dpr = view->devicePixelRatioF();
+    const int rows = sw.w.document()->canvas().height();
+
+    // Codex's counterexample (round 2 of #403): scrolled 103 down at zoom 4,
+    // the meter's top pixel is level with view y 103, 128.75 device pixels at
+    // 1.25, in row 2 (from 128); floor(103 / 52) is 1. At 1 it is row 1.
+    if (zoom == 4) {
+        sw.scrollTo(103);
+        REQUIRE(view->mapFrom(&sw.w, m->mapTo(&sw.w, QPoint(0, 0))).y() == 103);
+        if (dpr == 1.25)
+            CHECK(m->rowAt(0) == 2);
+        if (dpr == 1.0)
+            CHECK(m->rowAt(0) == 1);
+    }
+
+    for (const int s : {0, 103, 1000, sw.v->maximum()}) {
+        CAPTURE(s);
+        sw.scrollTo(std::min(s, sw.v->maximum()));
+        // every meter pixel row: rowAt is the canvas row under it
+        int wrong = 0, firstWrong = -1;
+        for (int y = 0; y < m->height(); ++y) {
+            const int want = sw.canvasRow(y);
+            REQUIRE(viewRowUnder(sw.w, m, view, y) == want);
+            if (m->rowAt(y) != want && wrong++ == 0)
+                firstWrong = y;
+        }
+        CAPTURE(firstWrong);
+        CHECK(wrong == 0);
+
+        // every row on screen: its band is the pixels under it, the bands
+        // tile the meter, and at a whole ratio a band is the canvas row's
+        // logical rect, as before
+        const int first = std::max(0, sw.canvasRow(0));
+        const int last = std::min(rows - 1, sw.canvasRow(m->height() - 1));
+        REQUIRE(first <= last);
+        if (s == sw.v->maximum())
+            CHECK(last == rows - 1);
+        for (int n = first; n <= last; ++n) {
+            CAPTURE(n);
+            const QRect r = m->rowRect(n);
+            CHECK(r.left() == 0);
+            CHECK(r.width() == m->width());
+            REQUIRE(r.height() > 0);
+            CHECK(sw.canvasRow(r.top()) == n);
+            CHECK(sw.canvasRow(r.top() - 1) == n - 1);
+            CHECK(sw.canvasRow(r.bottom()) == n);
+            CHECK(sw.canvasRow(r.bottom() + 1) == n + 1);
+            CHECK(m->rowRect(n + 1).top() == r.bottom() + 1);
+            if (dpr == 1.0)
+                CHECK(r == QRect(0, m->mapFrom(&sw.w, view->mapTo(&sw.w, QPoint(0, 0))).y() +
+                                        view->toWidget(view->cellRect(QPoint(0, n))).top(),
+                                 m->width(), view->toWidget(view->cellRect(QPoint(0, n))).height()));
+        }
+    }
+}
+
+TEST_CASE("the IRC meter's tooltip names the canvas row under the pointer, at any device pixel ratio (#404)",
+          "[irc-meter-dpr]") {
+    StripedWindow sw(4);
+    IrcMeter* m = sw.m;
+    const qreal dpr = sw.view->devicePixelRatioF();
+    const int rows = sw.w.document()->canvas().height();
+    const int x = m->width() / 2;
+
+    // the issue's repro: scrolled to the bottom, the middle of the last
+    // row's band names the last row
+    sw.scrollTo(sw.v->maximum());
+    const QRect lastBand = m->rowRect(rows - 1);
+    const std::string tip = tooltipAt(m, QPoint(x, lastBand.center().y()));
+    CHECK(tip == m->describe(rows - 1).toStdString());
+    CHECK(tip.rfind("Row " + std::to_string(rows - 1) + ": ", 0) == 0);
+
+    // Codex's counterexample: the top pixel, scrolled 103 down, is row 2 at 1.25
+    sw.scrollTo(103);
+    if (dpr == 1.25)
+        CHECK(tooltipAt(m, QPoint(x, 0)) == m->describe(2).toStdString());
+    CHECK(tooltipAt(m, QPoint(x, 0)) == m->describe(sw.canvasRow(0)).toStdString());
+
+    // the top, middle and bottom pixel of every band on screen
+    for (const int s : {0, sw.v->maximum()}) {
+        CAPTURE(s);
+        sw.scrollTo(s);
+        const int first = std::max(0, sw.canvasRow(0));
+        const int last = std::min(rows - 1, sw.canvasRow(m->height() - 1));
+        for (int n = first; n <= last; ++n) {
+            const QRect r = m->rowRect(n);
+            for (const int y : {r.top(), r.center().y(), r.bottom()}) {
+                if (y < 0 || y >= m->height())
+                    continue;
+                CAPTURE(n, y);
+                CHECK(tooltipAt(m, QPoint(x, y)) == m->describe(sw.canvasRow(y)).toStdString());
+            }
+        }
+    }
+    QToolTip::hideText();
+}
+
+TEST_CASE("the IRC meter paints each row's bar in the canvas row's band, in a partial repaint too (#404)",
+          "[irc-meter-dpr]") {
+    StripedWindow sw(4);
+    IrcMeter* m = sw.m;
+    const qreal dpr = m->devicePixelRatioF();
+    const int rows = sw.w.document()->canvas().height();
+    const QColor over(0xd0, 0x30, 0x30), fits = m->palette().color(QPalette::Mid);
+    REQUIRE(fits != m->palette().color(QPalette::Window));
+    for (int n = 0; n < rows; ++n)
+        REQUIRE(m->state(n) == (n % 2 == 0 ? IrcMeter::RowState::Over : IrcMeter::RowState::Fits));
+    // a device pixel at the left of the bar, in logical pixel row y of an
+    // image grabbed from the meter's pixel row `top`
+    const auto at = [&](const QImage& img, int y, int top) {
+        return img.pixelColor(int(std::floor(1.5 * dpr)), int(std::floor((y - top + 0.5) * dpr))).name().toStdString();
+    };
+
+    for (const int s : {0, 1000, sw.v->maximum()}) {
+        CAPTURE(s);
+        sw.scrollTo(s);
+        const QImage full = m->grab().toImage();
+        const int first = std::max(0, sw.canvasRow(0));
+        const int last = std::min(rows - 1, sw.canvasRow(m->height() - 1));
+        for (int n = first; n <= last; ++n) {
+            CAPTURE(n);
+            const QRect r = m->rowRect(n);
+            if (r.top() < 0 || r.bottom() >= m->height())
+                continue;  // a band cut by the meter's edge
+            const std::string want = (n % 2 == 0 ? over : fits).name().toStdString();
+            CHECK(at(full, r.center().y(), 0) == want);
+            // a repaint of the top of the band alone paints the band's row
+            const QRect part(0, r.top(), m->width(), std::min(8, r.height() - 1));
+            const QImage img = m->grab(part).toImage();
+            CHECK(at(img, r.top() + part.height() / 2, r.top()) == want);
+        }
+    }
 }

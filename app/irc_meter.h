@@ -89,8 +89,14 @@ public:
     int merged(int y);
     RowState state(int y);
     // Row y's band in the meter's own coordinates: the canvas row's top and
-    // height wherever the view is scrolled and zoomed.
+    // height wherever the view is scrolled and zoomed, the meter pixels
+    // rowAt gives row y. Bands don't overlap: at a fractional device pixel
+    // ratio a pixel two canvas rows share is the upper row's.
     QRect rowRect(int y) const;
+    // The canvas row under meter pixel row y, as the canvas maps the pointer
+    // to a cell (on its device grid); off the canvas, below 0 or past its
+    // last row.
+    int rowAt(int y) const;
     // What the tooltip over row y says.
     QString describe(int y);
 
@@ -132,7 +138,8 @@ private:
     // The view's tool, or its edit in progress, changed.
     void toolChanged();
     void pendingChanged();
-    int rowAt(int y) const;
+    // The first meter pixel row rowAt gives `row` or a row below it.
+    int firstPixel(int row) const;
 
     Document* doc_;
     CanvasView* view_;

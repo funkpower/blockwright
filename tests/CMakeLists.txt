@@ -661,6 +661,13 @@ endforeach()
 add_test(NAME "IRC View origin at scale 1.25"
   COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=1.25 ${CMAKE_CROSSCOMPILING_EMULATOR}
           $<TARGET_FILE:blockwright-app-tests> "[irc-view-dpr]")
+# The IRC row meter's rows at fractional device pixel ratios (#404): the
+# canvas's row under each meter pixel, on the canvas's device grid.
+foreach(scale 1.25 1.5)
+  add_test(NAME "IRC meter rows at scale ${scale}"
+    COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} ${CMAKE_CROSSCOMPILING_EMULATOR}
+            $<TARGET_FILE:blockwright-app-tests> "[irc-meter-dpr]")
+endforeach()
 # A layout test that runs after a closed window in the same process still starts
 # from the default layout (#249); ctest otherwise runs each test case alone.
 # The script runs the binary itself, so it runs on the build host only.

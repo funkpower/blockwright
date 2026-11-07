@@ -255,17 +255,40 @@ std::vector<irc::Line> IrcMeter::lines() {
     return out;
 }
 
-QRect IrcMeter::rowRect(int y) const {
-    const QRect cell = view_->toWidget(view_->cellRect(QPoint(0, y)));
-    const QPoint top = mapFrom(window(), view_->mapTo(window(), cell.topLeft()));
-    return QRect(0, top.y(), width(), cell.height());
+// The meter maps its pixels to rows as the canvas maps the pointer to cells
+// (#404): a meter pixel row's top edge, at the same height in the canvas
+// view, through the view's device grid (CanvasView::toView, then cellAt). At
+// a fractional device pixel ratio a row is a fractional number of logical
+// pixels, and a logical pixel two rows share is the row its top edge is in,
+// the upper one, as it is for a click on the canvas there. The bands
+// (rowRect) are the meter pixels rowAt gives to each row, so they tile the
+// meter without overlapping, and the tooltip, its rect and the painted bars
+// agree with the canvas.
+int IrcMeter::rowAt(int y) const {
+    if (view_->cellRect(QPoint(0, 0)).height() <= 0)
+        return -1;
+    const QPoint v = view_->mapFrom(window(), mapTo(window(), QPoint(0, y)));
+    return view_->cellAt(view_->toView(QPointF(0, v.y()))).y();
 }
 
-int IrcMeter::rowAt(int y) const {
-    const QRect first = rowRect(0);
-    if (first.height() <= 0)
-        return -1;
-    return int(std::floor(double(y - first.top()) / first.height()));
+int IrcMeter::firstPixel(int row) const {
+    // The canvas row's logical rect rounded outward starts on the row's first
+    // pixel or on the one before it, which rowAt gives the row above; the
+    // steps either way keep this rowAt's exactly, rounding included.
+    const QRect cell = view_->toWidget(view_->cellRect(QPoint(0, row)));
+    int p = mapFrom(window(), view_->mapTo(window(), cell.topLeft())).y();
+    for (int i = 0; i < 4 && rowAt(p - 1) >= row; ++i)
+        --p;
+    for (int i = 0; i < 4 && rowAt(p) < row; ++i)
+        ++p;
+    return p;
+}
+
+QRect IrcMeter::rowRect(int y) const {
+    if (view_->cellRect(QPoint(0, 0)).height() <= 0)
+        return {};
+    const int top = firstPixel(y);
+    return QRect(0, top, width(), std::max(0, firstPixel(y + 1) - top));
 }
 
 QSize IrcMeter::sizeHint() const { return {fontMetrics().horizontalAdvance(QStringLiteral("00000")) + 12, 0}; }
