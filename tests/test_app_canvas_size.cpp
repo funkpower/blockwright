@@ -6,12 +6,15 @@
 
 #include "blockwright/canvas_size.h"
 #include "blockwright/composite.h"
+#include "blockwright/steps.h"
+#include "blockwright/text_source.h"
 
 #include "canvas_size_dialog.h"
 #include "canvas_view.h"
 #include "document.h"
 #include "irc_meter.h"
 #include "main_window.h"
+#include "replay.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -669,4 +672,81 @@ TEST_CASE("a resize judges an unchanged cursor on the active layer's cells, as t
     CHECK(view->cellCursor() == Cursor{78, 0, true});
     CHECK(bar->value() == away);
     CHECK(moves == 0);
+}
+
+TEST_CASE("a steps file's canvasSize step gives what the dialog gives, at every anchor, growing and shrinking (#420)",
+          "[canvasSize][replay]") {
+    constexpr Anchor kAnchors[] = {Anchor::TopLeft,    Anchor::Top,    Anchor::TopRight,
+                                   Anchor::Left,       Anchor::Centre, Anchor::Right,
+                                   Anchor::BottomLeft, Anchor::Bottom, Anchor::BottomRight};
+    const QSize sizes[] = {QSize(15, 9), QSize(7, 4), QSize(13, 3)};
+    for (const bool nine : {false, true})
+        for (const QSize size : sizes)
+            for (const Anchor anchor : kAnchors) {
+                INFO((nine ? "9 px, " : "8 px, ") << size.width() << "x" << size.height() << " at "
+                                                  << anchorName(anchor));
+                MainWindow w;
+                paint(w);
+                if (nine)
+                    action(w, "ninePx")->trigger();
+                Document* doc = w.document();
+                // a canvas-sized pixels layer follows the canvas; a text layer moves
+                REQUIRE(doc->addLayer(LayerKind::Pixels));
+                TextSource text;
+                text.text = U"C";
+                text.face.name = "mini";
+                REQUIRE(doc->addTextLayer(text, 3, 2));
+                const project::Project start = doc->project();
+                w.canvasView()->setSelection(Selection(CellRect{6, 3, 4, 3}));
+
+                QString error;
+                REQUIRE(w.resizeCanvas(size, anchor, &error));
+
+                const steps::Script s = steps::parse(
+                    R"({"version": 1, "start": {"blank": [1, 1]}, "steps": [
+                        {"name": "box", "action": "select", "rect": [6, 3, 9, 5]},
+                        {"name": "resize", "action": "canvasSize", "size": [)" +
+                    std::to_string(size.width()) + ", " + std::to_string(size.height()) + R"(], "anchor": ")" +
+                    std::string(anchorName(anchor)) + R"("}]})");
+                Selection replayedSelection;
+                const auto out = bwcli::replay::run(s, start, [&](const bwcli::replay::Moment& m) {
+                    if (!m.before && m.step.name == "resize")
+                        replayedSelection = m.selection;
+                });
+                REQUIRE(out.captures.size() == 2);
+                const project::Project& resized = out.captures[1].project;
+                CHECK(resized.layers == doc->layers());
+                CHECK(resized.sauce == doc->project().sauce);
+                CHECK(replayedSelection == w.canvasView()->selection());
+            }
+}
+
+TEST_CASE("a steps file's canvasSize step keeps the symmetry centre where the view keeps it (#420 review)",
+          "[canvasSize][replay]") {
+    constexpr Anchor kAnchors[] = {Anchor::TopLeft, Anchor::Centre, Anchor::BottomRight};
+    const QSize sizes[] = {QSize(5, 3), QSize(9, 5), QSize(16, 9)};
+    for (const QSize size : sizes)
+        for (const Anchor anchor : kAnchors) {
+            INFO(size.width() << "x" << size.height() << " at " << anchorName(anchor));
+            MainWindow w;
+            paint(w);
+            w.canvasView()->setSymmetry(Symmetry{SymmetryMode::Radial, 2, std::pair{8, 4}});
+            const project::Project start = w.document()->project();
+            QString error;
+            REQUIRE(w.resizeCanvas(size, anchor, &error));
+
+            const steps::Script s = steps::parse(
+                R"({"version": 1, "start": {"blank": [1, 1]}, "steps": [
+                    {"name": "sym", "action": "glyph", "symmetry": {"mode": "radial", "folds": 2, "centre": [8, 4]}},
+                    {"name": "resize", "action": "canvasSize", "size": [)" +
+                std::to_string(size.width()) + ", " + std::to_string(size.height()) + R"(], "anchor": ")" +
+                std::string(anchorName(anchor)) + R"("}]})");
+            std::optional<std::pair<int, int>> centre;
+            bwcli::replay::run(s, start, [&](const bwcli::replay::Moment& m) {
+                if (!m.before && m.step.name == "resize")
+                    centre = m.settings.symmetry.centre;
+            });
+            REQUIRE(w.canvasView()->symmetryChoice().centre);
+            CHECK(centre == w.canvasView()->symmetryChoice().centre);
+        }
 }

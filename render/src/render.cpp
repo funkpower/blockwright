@@ -1,5 +1,6 @@
 #include "blockwright/render.h"
 
+#include "blockwright/canvas_size.h"
 #include "blockwright/cp437.h"
 #include "blockwright/pc_fonts.h"
 #include "unifont.h"
@@ -171,7 +172,7 @@ const BitmapFont& vgaFont() {
 int glyphWidth(const AnsiDocument& doc, const RenderOptions& opts) {
     if (opts.fontWidth)
         return opts.fontWidth;
-    return doc.sauce && doc.sauce->letterSpacing() == 2 ? 9 : 8;
+    return canvasCellWidth(doc.sauce);
 }
 
 std::uint8_t glyphIndex(char32_t ch) { return unicodeToCp437(ch).value_or('?'); }

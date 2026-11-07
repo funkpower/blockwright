@@ -914,6 +914,11 @@ mouse button (default left).
                  deleteLayer, raiseLayer, lowerLayer, setActiveLayer
                  "layer" (a name), layerProperties "rename", "visible",
                  "locked", "alphaLocked"
+  canvas         canvasSize "size": [w, h] (1-400 by 1-5000 cells),
+                 "anchor": top-left|top|top-right|left|centre|right|
+                 bottom-left|bottom|bottom-right (top-left): Format >
+                 Canvas Size..., applied as the dialog applies it; the
+                 selection moves with the cells and is cut to the canvas
 
   view           the window's view, for blockwright --screenshot only:
                  "zoom" 1-8, "scrollTo" [x, y] (a cell on the canvas, put
@@ -940,8 +945,8 @@ true draws a mouse pointer at the step's last point ("to", "at", the last of
 before the step; a step with none, or a point the picture doesn't show, is
 refused.
 
-A tool step without points only sets Tool Options. Any step but a view
-step may set Tool Options, which hold for the steps after it:
+A tool step without points only sets Tool Options. Any step but a view or
+canvasSize step may set Tool Options, which hold for the steps after it:
 
   "fg", "bg" 0-15 (7 on 0)   "size" 1-256 (1)   "tip" square|round
   "strength" 0-1 (1)         "light" N|NE|E|SE|S|SW|W|NW (NW)

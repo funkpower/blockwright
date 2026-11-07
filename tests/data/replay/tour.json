@@ -49,6 +49,7 @@
     {"name": "to-dots", "action": "setActiveLayer", "layer": "dots"},
     {"name": "lock", "action": "layerProperties", "alphaLocked": true, "locked": true},
     {"name": "to-hidden", "action": "setActiveLayer", "layer": "hidden"},
-    {"name": "delete", "action": "deleteLayer"}
+    {"name": "delete", "action": "deleteLayer"},
+    {"name": "canvas-size", "action": "canvasSize", "size": [80, 40], "anchor": "centre"}
   ]
 }

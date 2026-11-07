@@ -16,6 +16,7 @@
 #include "blockwright/brushes/soft.h"
 #include "blockwright/brushes/spray.h"
 #include "blockwright/brushes/texture.h"
+#include "blockwright/canvas_size.h"
 #include "blockwright/glyph.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
@@ -29,6 +30,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <set>
@@ -113,7 +115,7 @@ TEST_CASE("the tour writes the bytes saved for it, every step a capture", "[repl
     CHECK(written == saved);
     CHECK(out.captures.size() == s.steps.size() + 3);  // three before-after steps
     CHECK(out.captures.front().stem == "01-type");
-    CHECK(out.captures.back().stem == "43-delete");
+    CHECK(out.captures.back().stem == "44-canvas-size");
 }
 
 TEST_CASE("a replay writes the same bytes every run", "[replay]") {
@@ -911,4 +913,246 @@ TEST_CASE("viewStep finds a script's first view step, for the CLI to refuse (#39
     const steps::Step* v = bwcli::replay::viewStep(two);
     REQUIRE(v);
     CHECK(steps::stepLabel(*v) == "step 2 (zoomed)");
+}
+
+namespace {
+
+// Each anchor's shift from 4x3 to 7x6 (growing) and to 1x2 (shrinking), as
+// Format > Canvas Size... places the old canvas: left/top 0, centre half the
+// change (towards zero), right/bottom all of it.
+struct AnchorCase {
+    const char* name;
+    int growX, growY, shrinkX, shrinkY;
+};
+constexpr AnchorCase kAnchorCases[] = {
+    {"top-left", 0, 0, 0, 0},     {"top", 1, 0, -1, 0},     {"top-right", 3, 0, -3, 0},
+    {"left", 0, 1, 0, 0},         {"centre", 1, 1, -1, 0},  {"right", 3, 1, -3, 0},
+    {"bottom-left", 0, 3, 0, -1}, {"bottom", 1, 3, -1, -1}, {"bottom-right", 3, 3, -3, -1},
+};
+
+// A 4x3 start, every cell a letter of its own, then a canvasSize step.
+bwcli::replay::Outcome resized(int w, int h, const std::string& anchor) {
+    return replayed(R"({"version": 1, "start": {"blank": [4, 3]}, "steps": [
+        {"name": "letters", "action": "keyboard", "at": [0, 0], "text": "abcd\nefgh\nijkl"},
+        {"name": "resize", "action": "canvasSize", "size": [)" +
+                    std::to_string(w) + ", " + std::to_string(h) + R"(], "anchor": ")" + anchor + R"("}]})");
+}
+
+// The cells after resized(): each old cell moved by (dx, dy), blank where none lands.
+void checkShifted(const Canvas& c, int w, int h, int dx, int dy) {
+    REQUIRE(c.width() == w);
+    REQUIRE(c.height() == h);
+    const std::u32string letters = U"abcdefghijkl";
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            INFO("cell " << x << "," << y);
+            const int ox = x - dx, oy = y - dy;
+            const bool old = ox >= 0 && ox < 4 && oy >= 0 && oy < 3;
+            CHECK(c.at(x, y).ch == (old ? letters[std::size_t(oy * 4 + ox)] : U' '));
+        }
+}
+
+} // namespace
+
+TEST_CASE("a canvasSize step places the old canvas by its anchor, growing and shrinking, as the dialog does (#420)",
+          "[replay][canvasSize]") {
+    for (const AnchorCase& a : kAnchorCases) {
+        INFO(a.name);
+        const auto grown = resized(7, 6, a.name);
+        REQUIRE(grown.captures.size() == 2);
+        checkShifted(flat(grown.captures[1].project), 7, 6, a.growX, a.growY);
+        // the capture before it is the old size
+        CHECK(flat(grown.captures[0].project).width() == 4);
+
+        const auto shrunk = resized(1, 2, a.name);
+        checkShifted(flat(shrunk.captures[1].project), 1, 2, a.shrinkX, a.shrinkY);
+        // the core's own shift is the same
+        const CellShift g = anchorShift(4, 3, 7, 6, *anchorFromName(a.name));
+        CHECK((g.dx == a.growX && g.dy == a.growY));
+        const CellShift s = anchorShift(4, 3, 1, 2, *anchorFromName(a.name));
+        CHECK((s.dx == a.shrinkX && s.dy == a.shrinkY));
+    }
+}
+
+TEST_CASE("a canvasSize step with no anchor keeps the top-left corner, as the dialog opens", "[replay][canvasSize]") {
+    const auto out = replayed(R"({"version": 1, "start": {"blank": [4, 3]}, "steps": [
+        {"name": "letters", "action": "keyboard", "at": [0, 0], "text": "abcd\nefgh\nijkl"},
+        {"name": "resize", "action": "canvasSize", "size": [6, 5]}]})");
+    checkShifted(flat(out.captures[1].project), 6, 5, 0, 0);
+}
+
+TEST_CASE("a canvasSize step's golden: a piece grown from its top right and cut to its bottom right writes the saved bytes (#420)",
+          "[replay][canvasSize]") {
+    const auto out = replayed(R"({"version": 1, "start": {"file": "../brushes/sphere-steel.ans"}, "steps": [
+        {"name": "grow", "action": "canvasSize", "size": [84, 38], "anchor": "top-right"},
+        {"name": "shrink", "action": "canvasSize", "size": [50, 20], "anchor": "bottom-right"}]})");
+    REQUIRE(out.captures.size() == 2);
+    CHECK(ansBytes(out.captures[0].project) == bwcli::readFile((kReplay / "canvas-size" / "01-grow.ans").string()));
+    CHECK(ansBytes(out.captures[1].project) == bwcli::readFile((kReplay / "canvas-size" / "02-shrink.ans").string()));
+}
+
+TEST_CASE("a canvasSize step moves the selection with the cells and cuts it to the canvas (#420)",
+          "[replay][canvasSize]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [10, 8]}, "steps": [
+        {"name": "box", "action": "select", "rect": [2, 3, 5, 4]},
+        {"name": "grow", "action": "canvasSize", "size": [14, 10], "anchor": "bottom-right"},
+        {"name": "cut", "action": "canvasSize", "size": [8, 6], "anchor": "top-left"},
+        {"name": "gone", "action": "canvasSize", "size": [3, 3], "anchor": "top-left"}]})");
+    std::vector<Selection> after;
+    bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples), [&](const bwcli::replay::Moment& m) {
+        if (!m.before)
+            after.push_back(m.selection);
+    });
+    REQUIRE(after.size() == 4);
+    CHECK(after[0].bounds() == CellRect{2, 3, 4, 2});
+    CHECK(after[1].bounds() == CellRect{6, 5, 4, 2});  // moved by (4, 2)
+    CHECK(after[2].bounds() == CellRect{6, 5, 2, 1});  // what is left on the 8x6 canvas
+    CHECK(after[3].empty());                          // nothing is left on 3x3
+}
+
+namespace {
+
+// A 10x6 project at 9 px cells with a layer of each kind a resize treats
+// its own way: a canvas-sized cells and pixels layer (they follow the
+// canvas), a smaller cells layer off the corner and a reference picture
+// (they move by the shift).
+project::Project layered() {
+    project::Project p;
+    p.layers = LayerStack(10, 6);
+    Layer bg = makeLayer(LayerKind::Cells, 10, 6, "Background");
+    for (int y = 0; y < 6; ++y)
+        for (int x = 0; x < 10; ++x)
+            bg.cells.at(x, y).ch = char32_t(U'a' + (x + y) % 26);
+    p.layers.add(std::move(bg));
+    Layer dots = makeLayer(LayerKind::Pixels, 10, 6, "dots");
+    dots.cells.at(9, 5).ch = kFullBlock;
+    p.layers.add(std::move(dots));
+    Layer patch = makeLayer(LayerKind::Cells, 3, 2, "patch", 4, 1);
+    patch.cells.at(0, 0).ch = U'#';
+    p.layers.add(std::move(patch));
+    Layer ref = makeLayer(LayerKind::Reference, 10, 6, "sketch");
+    ref.props.reference = ReferenceImage{};
+    ref.props.reference->x = 5;
+    ref.props.reference->y = -3;
+    ref.props.reference->width = 160;
+    ref.props.reference->height = 96;
+    p.layers.add(std::move(ref));
+    p.sauce = Sauce{};
+    p.sauce->flags = 2 << 1;  // 9 px letter spacing
+    return p;
+}
+
+} // namespace
+
+TEST_CASE("a canvasSize step resizes every layer of a project as the dialog does, and later steps see the new size "
+          "(#420)",
+          "[replay][canvasSize]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [1, 1]}, "steps": [
+        {"name": "grow", "action": "canvasSize", "size": [16, 9], "anchor": "bottom-right"},
+        {"name": "to-bg", "action": "setActiveLayer", "layer": "Background"},
+        {"name": "corner", "action": "glyph", "glyph": "X", "points": [[15, 8]]}]})");
+    const project::Project p = layered();
+    const auto out = bwcli::replay::run(s, p);
+    REQUIRE(out.captures.size() == 3);
+    const project::Project& grown = out.captures[0].project;
+    CHECK(grown.layers.width() == 16);
+    CHECK(grown.layers.height() == 9);
+    // canvas-sized cells and pixels layers follow the canvas, their cells moved by (6, 3)
+    const Layer& bg = layerNamed(grown, "Background");
+    CHECK(bg.bounds() == CellRect{0, 0, 16, 9});
+    CHECK(bg.cells.at(6, 3).ch == U'a');
+    CHECK(bg.cells.at(15, 8).ch == char32_t(U'a' + 14));
+    CHECK(bg.cells.at(5, 3).ch == U' ');
+    const Layer& dots = layerNamed(grown, "dots");
+    CHECK(dots.bounds() == CellRect{0, 0, 16, 9});
+    CHECK(dots.cells.at(15, 8).ch == kFullBlock);
+    // a smaller layer keeps its size and moves by the shift
+    CHECK(layerNamed(grown, "patch").bounds() == CellRect{10, 4, 3, 2});
+    // a reference picture moves by the shift in canvas pixels: 6 cells of 9 px across, 3 of 16 px down
+    const Layer& ref = layerNamed(grown, "sketch");
+    CHECK(ref.props.reference->x == 5 + 6 * 9);
+    CHECK(ref.props.reference->y == -3 + 3 * 16);
+    // the same as the core's resize the dialog runs
+    CHECK(grown.layers == resizeCanvas(p.layers, 16, 9, anchorShift(10, 6, 16, 9, Anchor::BottomRight), 9));
+    // the new corner is on the canvas for the steps after
+    CHECK(layerNamed(out.captures[2].project, "Background").cells.at(15, 8).ch == U'X');
+}
+
+TEST_CASE("a canvasSize step's project writes and reads back at the new size, as replay --project writes it (#420)",
+          "[replay][canvasSize]") {
+    const fs::path dir = fs::path(BW_TEST_TMP) / "replay-canvas-size";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    project::Project start = layered();
+    // a reference layer with no picture writes as one
+    start.layers[3].props.reference.reset();
+    project::writeZip(start, dir / "start.bwp");
+    const auto out = replayed(R"({"version": 1, "start": {"file": "start.bwp"}, "steps": [
+        {"name": "shrink", "action": "canvasSize", "size": [7, 4], "anchor": "centre"}]})",
+                              dir);
+    REQUIRE(out.captures.size() == 1);
+    const project::Project& shrunk = out.captures[0].project;
+    {
+        std::ofstream f(dir / "01-shrink.bwp", std::ios::binary);
+        f << project::zipBytes(shrunk);
+    }
+    const project::Project back = project::read(dir / "01-shrink.bwp");
+    CHECK(back.layers.width() == 7);
+    CHECK(back.layers.height() == 4);
+    CHECK(back.layers == shrunk.layers);
+    CHECK(layerNames(back) == std::vector<std::string>{"Background", "dots", "patch", "sketch"});
+    // shrinking 10x6 to 7x4 about the centre takes (-1, -1)
+    CHECK(layerNamed(back, "Background").cells.at(0, 0).ch == char32_t(U'a' + 2));
+    CHECK(layerNamed(back, "patch").bounds() == CellRect{3, 0, 3, 2});
+    fs::remove_all(dir);
+}
+
+TEST_CASE("a canvasSize step refuses what the dialog refuses, and a later point off the new canvas, named (#420)",
+          "[replay][canvasSize]") {
+    // a point the old canvas had and the new one hasn't
+    CHECK(onBlank(R"({"name": "cut", "action": "canvasSize", "size": [5, 5]},
+                     {"name": "far", "action": "glyph", "points": [[7, 2]]})") ==
+          "step 2 (far): cell (7, 2) is off the 5 x 5 canvas");
+    // more cells than a project holds: nine canvas-sized layers at the largest size
+    std::string layers;
+    for (int i = 0; i < 8; ++i)
+        layers += R"({"name": "l)" + std::to_string(i) + R"(", "action": "newCellsLayer"}, )";
+    CHECK_THAT(onBlank(layers + R"({"name": "huge", "action": "canvasSize", "size": [400, 5000]})"),
+               ContainsSubstring("step 9 (huge): the canvas can't be made 400 x 5000: "));
+    // the canvas's own size changes nothing, and says so
+    const auto same = blank(R"({"name": "same", "action": "canvasSize", "size": [20, 10], "anchor": "centre"})");
+    REQUIRE(same.notes.size() == 1);
+    CHECK(same.notes[0] == "step 1 (same): changes nothing");
+    CHECK(flat(same.captures[0].project).width() == 20);
+}
+
+TEST_CASE("a canvasSize step pulls a set symmetry centre onto the new canvas, as the view does (#420 review)",
+          "[replay][canvasSize]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [
+        {"name": "sym", "action": "glyph", "glyph": "X", "symmetry": {"mode": "radial", "folds": 2, "centre": [10, 4]}},
+        {"name": "cut", "action": "canvasSize", "size": [10, 10]},
+        {"name": "dot", "action": "glyph", "points": [[9, 2]]}]})");
+    std::vector<std::optional<std::pair<int, int>>> centres;
+    const auto out = bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples), [&](const bwcli::replay::Moment& m) {
+        if (!m.before)
+            centres.push_back(m.settings.symmetry.centre);
+    });
+    REQUIRE(centres.size() == 3);
+    CHECK(centres[0] == std::pair{10, 4});
+    CHECK(centres[1] == std::pair{9, 4});
+    // the dot turns about (9, 4), so its image is at (9, 6); about the old
+    // (10, 4) it would be at (11, 6), off the canvas
+    const Canvas c = flat(out.captures.back().project);
+    CHECK(c.at(9, 2).ch == U'X');
+    CHECK(c.at(9, 6).ch == U'X');
+    // a centre the new canvas still holds stays where it is
+    const steps::Script grown = steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [
+        {"name": "sym", "action": "glyph", "symmetry": {"mode": "radial", "folds": 2, "centre": [10, 4]}},
+        {"name": "grow", "action": "canvasSize", "size": [30, 12], "anchor": "centre"}]})");
+    std::optional<std::pair<int, int>> kept;
+    bwcli::replay::run(grown, bwcli::replay::start(grown, kReplay, kSamples), [&](const bwcli::replay::Moment& m) {
+        if (!m.before)
+            kept = m.settings.symmetry.centre;
+    });
+    CHECK(kept == std::pair{10, 4});
 }

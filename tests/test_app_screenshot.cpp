@@ -16,6 +16,7 @@
 #include "tool.h"
 #include "tool_options.h"
 
+#include "blockwright/canvas_size.h"
 #include "blockwright/composite.h"
 #include "blockwright/irc_render.h"
 #include "blockwright/ramp.h"
@@ -1112,3 +1113,91 @@ TEST_CASE("the screens' file is put where the platform's arguments can name it, 
     }
 }
 #endif
+
+TEST_CASE("a canvasSize step resizes the window's canvas, and the steps after it draw on the new one (#420)",
+          "[screenshot][canvasSize]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [6, 4]}, "window": [1024, 720], "steps": [
+        {"name": "dot", "action": "glyph", "glyph": "#", "fg": 14, "bg": 1, "points": [[0, 0], [5, 3]]},
+        {"name": "grow", "action": "canvasSize", "size": [10, 7], "anchor": "centre",
+         "screenshot": {"crop": {"cells": [0, 0, 10, 7]}}},
+        {"name": "corner", "action": "glyph", "glyph": "#", "fg": 12, "points": [[9, 6]],
+         "screenshot": {"of": "canvasView"}}]})");
+    MainWindow w;
+    std::map<std::string, QSize> size;
+    std::map<std::string, Canvas> shown;
+    int zoom = 0;
+    const std::vector<screenshot::Shot> shots = screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        size[sh.stem] = QSize(w.document()->canvas().width(), w.document()->canvas().height());
+        shown[sh.stem] = w.document()->canvas();
+        zoom = w.canvasView()->zoom();
+    });
+    REQUIRE(shots.size() == 2);
+    CHECK(size["02-grow"] == QSize(10, 7));
+    CHECK(size["03-corner"] == QSize(10, 7));
+    // what the window holds is what the CLI's replay leaves
+    const bwcli::replay::Outcome out = bwcli::replay::run(s, startOf(s));
+    REQUIRE(out.captures.size() == 3);
+    CHECK(shown["02-grow"] == composite(out.captures[1].project.layers, {out.captures[1].project.ice, Cell{}}));
+    CHECK(shown["03-corner"] == composite(out.captures[2].project.layers, {out.captures[2].project.ice, Cell{}}));
+    // the old corners moved by (2, 1)
+    CHECK(shown["02-grow"].at(2, 1).ch == U'#');
+    CHECK(shown["02-grow"].at(7, 4).ch == U'#');
+    CHECK(shown["03-corner"].at(9, 6).ch == U'#');
+    // the picture is the whole new canvas, drawn as the replay renders it
+    const qreal dpr = w.devicePixelRatioF();
+    const QImage grow = shotNamed(shots, "02-grow").image.convertToFormat(QImage::Format_RGB32);
+    CHECK((QSizeF(grow.size()) / dpr).toSize() == QSize(10 * 8 * zoom, 7 * 16 * zoom));
+    if (dpr == 1.0)
+        CHECK(grow == replayed(s, "02-grow", zoom));
+}
+
+TEST_CASE("a canvasSize step to a canvas too large to display is refused, named, as the dialog refuses it (#420)",
+          "[screenshot][canvasSize]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [4, 2]}, "steps": [
+        {"name": "dot", "action": "glyph", "points": [[1, 1]]},
+        {"name": "huge", "action": "canvasSize", "size": [400, 5000], "screenshot": {"crop": {"cells": [0, 0, 2, 2]}}}]})");
+    // at 9 px a cell the largest canvas is too wide for the renderer, as in the dialog
+    project::Project nine = startOf(s);
+    nine.sauce = Sauce{};
+    nine.sauce->flags = 2 << 1;
+    // whether or not the step asks for a picture
+    const steps::Script unseen = steps::parse(R"({"version": 1, "start": {"blank": [4, 2]}, "steps": [
+        {"name": "dot", "action": "glyph", "points": [[1, 1]]},
+        {"name": "huge", "action": "canvasSize", "size": [400, 5000]}]})");
+    for (const steps::Script* script : {&s, &unseen}) {
+        MainWindow w;
+        try {
+            screenshot::take(w, *script, nine);
+            FAIL("a canvas too large to display was taken");
+        } catch (const bwcli::Failure& f) {
+            CHECK(f.message == "step 2 (huge): the canvas is too large to display");
+        }
+    }
+    // at 8 px it is shown
+    MainWindow w;
+    CHECK(screenshot::take(w, s, startOf(s)).size() == 1);
+    CHECK(w.document()->canvas().width() == 400);
+    CHECK(w.document()->canvas().height() == 5000);
+}
+
+TEST_CASE("a start canvas too large to display at its 9 px cells is refused at the start, not at a same-size canvasSize step (#420 review)",
+          "[screenshot][canvasSize]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [4, 2]}, "steps": [
+        {"name": "same", "action": "canvasSize", "size": [400, 5000]}]})");
+    // a start no blank can give, as a project file can: the largest canvas
+    project::Project big = startOf(s);
+    big.layers = resizeCanvas(big.layers, 400, 5000, CellShift{}, 8);
+    project::Project nine = big;
+    nine.sauce = Sauce{};
+    nine.sauce->flags = 2 << 1;
+    MainWindow w;
+    try {
+        screenshot::take(w, s, nine);
+        FAIL("a canvas too large to display was taken");
+    } catch (const bwcli::Failure& f) {
+        CHECK(f.message == "start: the canvas is too large to display");
+    }
+    // at 8 px the start is taken and the same-size step changes nothing
+    MainWindow eight;
+    CHECK(screenshot::take(eight, s, big).empty());
+}

@@ -108,4 +108,14 @@ LayerStack resizeCanvas(const LayerStack& stack, int width, int height, CellShif
     return out;
 }
 
+int canvasCellWidth(const std::optional<Sauce>& sauce) { return sauce && sauce->letterSpacing() == 2 ? 9 : 8; }
+
+Selection resizedSelection(const Selection& selection, CellShift shift, int width, int height) {
+    if (selection.empty())
+        return {};
+    const CellRect& b = selection.bounds();
+    const CellRect kept = intersect(CellRect{b.x + shift.dx, b.y + shift.dy, b.width, b.height}, {0, 0, width, height});
+    return kept.empty() ? Selection() : Selection(kept);
+}
+
 } // namespace bw

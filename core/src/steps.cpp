@@ -1,5 +1,7 @@
 #include "blockwright/steps.h"
 
+#include "blockwright/ansi.h"
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -67,6 +69,8 @@ const std::vector<ActionKeys>& actionKeys() {
         {"lowerLayer", {}},
         {"setActiveLayer", {"layer"}},
         {"layerProperties", {"rename", "visible", "locked", "alphaLocked"}},
+        // the canvas: Format > Canvas Size... (#420)
+        {"canvasSize", {"size", "anchor"}},
         // the window's view (#398)
         {"view", {"zoom", "scrollTo", "ircFit", "ircPad", "ircSwapShades"}},
     };
@@ -416,6 +420,8 @@ Screenshot readScreenshot(const std::string& where, const QJsonValue& v) {
     return shot;
 }
 
+bool takesNoOptions(std::string_view action) { return action == "view" || action == "canvasSize"; }
+
 Step readStep(const QJsonValue& v, int number) {
     Step st;
     st.number = number;
@@ -442,15 +448,17 @@ Step readStep(const QJsonValue& v, int number) {
     }
     for (auto k = o.begin(); k != o.end(); ++k) {
         const std::string key = utf8(k.key());
-        // a view step is the window's, not the pen's: it takes no Tool Options
-        if (!kStepKeys.count(key) && !(kOptionKeys.count(key) && st.action != "view") &&
+        // a view step is the window's, not the pen's, and a canvasSize step's
+        // "size" is the canvas's: neither takes Tool Options
+        if (!kStepKeys.count(key) && !(kOptionKeys.count(key) && !takesNoOptions(st.action)) &&
             std::find(it->keys.begin(), it->keys.end(), key) == it->keys.end())
             fail(where, st.action + " takes no \"" + key + "\"");
     }
     if (o.contains("capture"))
         st.capture = choiceOf<Capture>(where, "capture", o["capture"],
                                        {{"after", Capture::After}, {"before-after", Capture::BeforeAfter}});
-    readOptions(where, o, st.options);
+    if (!takesNoOptions(st.action))
+        readOptions(where, o, st.options);
     if (o.contains("screenshot"))
         st.screenshot = readScreenshot(where, o["screenshot"]);
     if (o.contains("button"))
@@ -518,6 +526,21 @@ Step readStep(const QJsonValue& v, int number) {
         st.alphaLocked = boolOf(where, "alphaLocked", o["alphaLocked"]);
     if (st.action == "layerProperties" && !st.rename && !st.visible && !st.locked && !st.alphaLocked)
         fail(where, "layerProperties needs at least one of \"rename\", \"visible\", \"locked\" or \"alphaLocked\"");
+    if (st.action == "canvasSize") {
+        if (!o.contains("size"))
+            fail(where, "canvasSize needs \"size\": [width, height], the new canvas in cells");
+        const QJsonValue& z = o["size"];
+        if (!z.isArray() || z.toArray().size() != 2)
+            fail(where, "\"size\" must be [width, height], the new canvas in cells");
+        st.canvasWidth = intOf(where, "size width", z.toArray()[0], 1, kMaxColumns);
+        st.canvasHeight = intOf(where, "size height", z.toArray()[1], 1, kMaxRows);
+        if (o.contains("anchor")) {
+            std::vector<std::pair<std::string_view, Anchor>> names;
+            for (int i = 0; i < 9; ++i)
+                names.emplace_back(anchorName(Anchor(i)), Anchor(i));
+            st.anchor = choiceOf<Anchor>(where, "anchor", o["anchor"], names);
+        }
+    }
     if (st.action == "view") {
         View& v = st.view;
         if (o.contains("zoom"))

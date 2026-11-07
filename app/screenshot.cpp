@@ -9,6 +9,7 @@
 #include "tool.h"
 
 #include "blockwright/canvas_renderer.h"
+#include "blockwright/canvas_size.h"
 #include "blockwright/composite.h"
 #include "blockwright/library.h"
 #include "blockwright/samples.h"
@@ -450,14 +451,13 @@ FixedScreens::FixedScreens() {
 
 std::vector<Shot> take(MainWindow& window, const steps::Script& script, project::Project start,
                        const std::function<void(const Shot&)>& taken) {
-    // As openProject: the renderer takes the canvas first, so one too large
-    // to display is refused before the window has it. No step changes the
-    // canvas's size.
+    // As openProject: the renderer takes the canvas first, at its cell
+    // width, so one too large to display is refused before the window has it.
     {
         const Canvas flat = composite(start.layers, {start.ice, Cell{}});
         AtlasRenderer probe;
         try {
-            probe.setCanvas(&flat, 8);
+            probe.setCanvas(&flat, canvasCellWidth(start.sauce));
         } catch (const std::exception&) {
             throw Failure{"start: the canvas is too large to display"};
         }
@@ -469,7 +469,24 @@ std::vector<Shot> take(MainWindow& window, const steps::Script& script, project:
 
     std::vector<Shot> shots;
     const int count = int(script.steps.size());
+    QSize sizeBefore;
     bwcli::replay::run(script, std::move(start), [&](const bwcli::replay::Moment& m) {
+        // a canvasSize step is refused as the dialog refuses it
+        // (MainWindow::resizeCanvas) when the renderer can't take the new
+        // canvas at its cell width, whether or not the step asks for a
+        // picture; at the canvas's own size it does nothing, as the dialog
+        const QSize size(m.project.layers.width(), m.project.layers.height());
+        if (m.before)
+            sizeBefore = size;
+        else if (m.step.action == "canvasSize" && size != sizeBefore) {
+            const Canvas candidate(m.project.layers.width(), m.project.layers.height());
+            AtlasRenderer probe;
+            try {
+                probe.setCanvas(&candidate, canvasCellWidth(m.project.sauce));
+            } catch (const std::exception&) {
+                fail(m.step, "the canvas is too large to display");
+            }
+        }
         if (!m.step.screenshot)
             return;
         const Screenshot& shot = *m.step.screenshot;

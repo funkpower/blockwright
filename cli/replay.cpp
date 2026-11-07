@@ -12,6 +12,7 @@
 #include "blockwright/brushes/soft.h"
 #include "blockwright/brushes/spray.h"
 #include "blockwright/brushes/texture.h"
+#include "blockwright/canvas_size.h"
 #include "blockwright/composite.h"
 #include "blockwright/edit.h"
 #include "blockwright/halfblock.h"
@@ -459,6 +460,31 @@ void moveLayer(State& s, const Step& st) {
     l.props.reference->y = place((long long)l.props.reference->y + st.dy);
 }
 
+// Format > Canvas Size... as the dialog applies it (Document::resizeCanvas):
+// a size canvasSizeProblem refuses stops the replay, the canvas's own size
+// changes nothing, and any other is every layer through resizeCanvas, with
+// the selection moved and cut with the cells, and a set symmetry centre
+// pulled onto the canvas. The active layer and the clipboard stay as they
+// are.
+void canvasSize(State& s, const Step& st, Outcome& out) {
+    const int w = st.canvasWidth, h = st.canvasHeight;
+    if (const auto problem = canvasSizeProblem(s.stack(), w, h))
+        fail(st, "the canvas can't be made " + std::to_string(w) + " x " + std::to_string(h) + ": " + *problem);
+    if (w == s.width() && h == s.height()) {
+        // the dialog's OK at the same size does nothing either
+        out.notes.push_back(steps::stepLabel(st) + ": changes nothing");
+        return;
+    }
+    const CellShift shift = anchorShift(s.width(), s.height(), w, h, st.anchor);
+    s.selection = resizedSelection(s.selection, shift, w, h);
+    s.p.layers = resizeCanvas(s.p.layers, w, h, shift, canvasCellWidth(s.p.sauce));
+    // a set symmetry centre stays on the canvas, as the view keeps it
+    // (CanvasView::fitSymmetryCentre)
+    if (s.symmetry.centre)
+        s.symmetry.centre = std::pair{std::clamp(s.symmetry.centre->first, 0, w - 1),
+                                      std::clamp(s.symmetry.centre->second, 0, h - 1)};
+}
+
 void step(State& s, const Step& st, Outcome& out) {
     centreOnCanvas(s, st);
     take(s, st.options);
@@ -600,6 +626,8 @@ void step(State& s, const Step& st, Outcome& out) {
             l.props.locked = *st.locked;
         if (st.alphaLocked)
             l.props.alphaLocked = *st.alphaLocked;
+    } else if (a == "canvasSize") {
+        canvasSize(s, st, out);
     } else if (a == "view") {
         // the window's, not the document's: no cell changes
         const steps::View& v = st.view;

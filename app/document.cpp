@@ -578,16 +578,13 @@ bool Document::resizeCanvas(int width, int height, Anchor anchor, const Selectio
     emit layersAboutToChange();
     emit commandAboutToPush();
     const CellShift shift = anchorShift(stack_.width(), stack_.height(), width, height, anchor);
-    const CellRect moved{selection.bounds().x + shift.dx, selection.bounds().y + shift.dy,
-                         selection.bounds().width, selection.bounds().height};
-    const CellRect kept = intersect(moved, {0, 0, width, height});
-    const Selection after = selection.empty() || kept.empty() ? Selection() : Selection(kept);
+    const Selection after = resizedSelection(selection, shift, width, height);
     // past the end stays where the cursor's cell stays; the view keeps it
     // only while that cell is still at the row's end
     const int toX = std::clamp(cursor.x + shift.dx, 0, width - 1), toY = std::clamp(cursor.y + shift.dy, 0, height - 1);
     const Cursor to{toX, toY, cursor.pastEnd && toX == cursor.x + shift.dx && toY == cursor.y + shift.dy};
-    undo_.push(new CanvasSizeCommand(this, stack_, width, height, shift, glyphWidth(doc_), selection, after, cursor,
-                                     to));
+    undo_.push(new CanvasSizeCommand(this, stack_, width, height, shift, canvasCellWidth(doc_.sauce), selection, after,
+                                     cursor, to));
     return true;
 }
 

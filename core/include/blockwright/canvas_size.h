@@ -3,6 +3,8 @@
 // placed in the new one by an anchor. Crop to Selection and Trim (#397's
 // later slices) are this with a shift they work out themselves.
 #include "blockwright/layer.h"
+#include "blockwright/sauce.h"
+#include "blockwright/selection.h"
 
 #include <cstdint>
 #include <optional>
@@ -52,5 +54,16 @@ std::optional<std::string> canvasSizeProblem(const LayerStack& stack, int width,
 // the next id and every other property stay as they are. `shift` may put
 // the old canvas anywhere; nothing here checks the size (canvasSizeProblem).
 LayerStack resizeCanvas(const LayerStack& stack, int width, int height, CellShift shift, int cellWidth);
+
+// The cell width, in canvas pixels, resizeCanvas moves a reference picture
+// by for a document with `sauce`: 9 with SAUCE's 9 px letter spacing, 8
+// otherwise (render's glyphWidth with no font width of its own).
+int canvasCellWidth(const std::optional<Sauce>& sauce);
+
+// The selection after the resize: its bounds moved by `shift` and cut to
+// the width by height canvas, or none if nothing of it is left.
+// Document::resizeCanvas (Format > Canvas Size...) and the replay's
+// canvasSize step (PLAN §9) both take it from here.
+Selection resizedSelection(const Selection& selection, CellShift shift, int width, int height);
 
 } // namespace bw

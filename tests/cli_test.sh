@@ -1015,6 +1015,12 @@ expect "replay: pressure none" 0 '^$' -- "$cli" replay "$rp/pnone.json" -o "$rp/
 if ! cmp -s "$rp/psize/01-s.ans" "$rp/pnone/01-s.ans"; then ok "replay: pressure to size changes the stroke"; else bad "replay: pressure to size painted what none does"; fi
 expect "replay: the tour" 0 '^$' -- "$cli" replay "$data/replay/tour.json" -o "$rp/tour"
 if diff -r "$data/replay/tour" "$rp/tour" > /dev/null; then ok "replay: the tour's saved bytes"; else bad "replay: the tour differs from data/replay/tour"; fi
+# a canvasSize step (#420): the project replay --project writes is the new size
+printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "action": "glyph", "points": [[7, 3]]}, {"name": "grow", "action": "canvasSize", "size": [12, 6], "anchor": "centre"}]}' > "$rp/cs.json"
+expect "replay: a canvasSize step" 0 '^$' -- "$cli" replay --project "$rp/cs.json" -o "$rp/cs"
+if "$cli" info "$rp/cs/02-grow.bwp" | grep -q '^size: *12x6$'; then ok "replay --project: a canvasSize step's project is 12x6"; else bad "replay --project: a canvasSize step's project isn't 12x6"; fi
+printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "cut", "action": "canvasSize", "size": [4, 4]}, {"name": "far", "action": "glyph", "points": [[6, 1]]}]}' > "$rp/csfar.json"
+expect "replay: a point off the canvas a canvasSize step made, named" 1 'step 2 \(far\): cell \(6, 1\) is off the 4 x 4 canvas' -- "$cli" replay "$rp/csfar.json" -o "$rp/csfar"
 printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}, {"name": "far", "action": "shade", "points": [[9, 0]]}]}' > "$rp/bad.json"
 expect "replay: a step off the canvas, named" 1 'step 2 \(far\): ' -- "$cli" replay "$rp/bad.json" -o "$rp/bad"
 if [[ ! -e $rp/bad ]]; then ok "replay: a failed replay writes nothing"; else bad "replay wrote files for a failed replay"; fi

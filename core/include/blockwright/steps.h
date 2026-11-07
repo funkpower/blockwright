@@ -20,13 +20,14 @@
 // a-z 0-9 - _, starting with a letter or digit: it names the step's output
 // files. The action is what the editor calls it: a tool's id (the Tools
 // menu's <id>Tool actions) for a stroke, a shape or a click, or a menu
-// action's object name (newCellsLayer, flipHorizontal), and three names of
-// the replay's own for what the editor does in a dock or by dragging
-// (setActiveLayer, layerProperties, moveSelection). A tool step with no
-// points only sets options, as choosing the tool does. Any step but a view
-// step may also set Tool Options (below); what it sets holds for the steps
-// after it, as Tool Options do in the editor. "capture": "before-after"
-// asks for the canvas before the step as well as after it.
+// action's object name (newCellsLayer, flipHorizontal, canvasSize), and
+// three names of the replay's own for what the editor does in a dock or by
+// dragging (setActiveLayer, layerProperties, moveSelection). A tool step
+// with no points only sets options, as choosing the tool does. Any step but
+// a view or canvasSize step may also set Tool Options (below); what it sets
+// holds for the steps after it, as Tool Options do in the editor.
+// "capture": "before-after" asks for the canvas before the step as well as
+// after it.
 //
 // Two keys are the window's (#295), which `blockwright --screenshot` reads
 // and `blockwright-cli replay` passes over: a top-level "window": [w, h],
@@ -43,6 +44,20 @@
 // pixels each way, from the same window laid out at the same size.
 // "pointer": true draws an arrow mouse pointer with its tip at the step's
 // pointer position (pointerAt): only a step the pointer makes may ask.
+//
+// Format > Canvas Size... is a step too (#420), "action": "canvasSize":
+//
+//   {"name": ..., "action": "canvasSize", "size": [w, h],
+//    "anchor": "top-left" | "top" | "top-right" | "left" | "centre"
+//              | "right" | "bottom-left" | "bottom" | "bottom-right"}
+//
+// "size" is the new canvas in cells, 1 to kMaxColumns by 1 to kMaxRows
+// (ansi.h, the dialog's limits), and "anchor" the dialog's anchor, where
+// the old canvas sits in the new one (top-left without one, where the
+// dialog starts). It is applied as the dialog applies it (resizeCanvas,
+// with the selection moved and cut by resizedSelection), and the steps
+// after it are checked against the new size. Its "size" is the canvas's,
+// so it takes no Tool Options, as a view step takes none.
 //
 // The window's view has a step of its own (#398), "action": "view":
 //
@@ -71,6 +86,7 @@
 #include "blockwright/brushes/gradient.h"
 #include "blockwright/brushes/spray.h"
 #include "blockwright/brushes/texture.h"
+#include "blockwright/canvas_size.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
@@ -178,6 +194,9 @@ struct Step {
     std::optional<bool> visible, locked, alphaLocked;
     std::optional<Screenshot> screenshot;
     View view;  // view
+    // canvasSize: the new size in cells and where the old canvas sits in it
+    int canvasWidth = 0, canvasHeight = 0;
+    Anchor anchor = Anchor::TopLeft;
 };
 
 // The window's size a steps file may set, in pixels.
@@ -200,8 +219,8 @@ bool pixelAction(std::string_view action);
 // the step (a stroke's or drag's end, the click) and the first before it
 // (where the press starts); select's rect is dragged from its top-left
 // corner to its bottom-right one. Empty for a step the pointer doesn't make
-// (a menu or dock action, a move "by", a tool step with no points, a view
-// step), which can't ask for "pointer".
+// (a menu or dock action, canvasSize, a move "by", a tool step with no
+// points, a view step), which can't ask for "pointer".
 std::optional<Point> pointerAt(const Step& step, bool before);
 // "step 3 (outline-head)": how errors name a step.
 std::string stepLabel(const Step& step);

@@ -307,6 +307,79 @@ TEST_CASE("a view step's bad value is refused, naming the step (#398)", "[steps]
                ContainsSubstring("step 1 (z): glyph takes no \"zoom\""));
 }
 
+TEST_CASE("a canvasSize step reads the new size and the anchor, top-left when left out (#420)",
+          "[steps][canvasSize]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "grow", "action": "canvasSize", "size": [30, 12], "anchor": "centre", "capture": "before-after"},
+        {"name": "plain", "action": "canvasSize", "size": [1, 1]},
+        {"name": "largest", "action": "canvasSize", "size": [400, 5000], "anchor": "bottom-right",
+         "screenshot": {"of": "window"}})"));
+    REQUIRE(s.steps.size() == 3);
+    CHECK(s.steps[0].action == "canvasSize");
+    CHECK(s.steps[0].canvasWidth == 30);
+    CHECK(s.steps[0].canvasHeight == 12);
+    CHECK(s.steps[0].anchor == Anchor::Centre);
+    CHECK(s.steps[0].capture == steps::Capture::BeforeAfter);
+    CHECK(s.steps[1].canvasWidth == 1);
+    CHECK(s.steps[1].canvasHeight == 1);
+    CHECK(s.steps[1].anchor == Anchor::TopLeft);
+    CHECK(s.steps[2].canvasWidth == kMaxColumns);
+    CHECK(s.steps[2].canvasHeight == kMaxRows);
+    CHECK(s.steps[2].anchor == Anchor::BottomRight);
+    CHECK(s.steps[2].screenshot);
+    // no Tool Options: "size" is the canvas's, not the brush's
+    CHECK_FALSE(s.steps[0].options.size);
+    CHECK(std::find(steps::actions().begin(), steps::actions().end(), "canvasSize") != steps::actions().end());
+
+    // every anchor the dialog has, by the dialog's names
+    for (int i = 0; i < 9; ++i) {
+        const Anchor a = Anchor(i);
+        INFO(anchorName(a));
+        const steps::Script one = steps::parse(script(std::string(R"({"name": "a", "action": "canvasSize", "size": [5, 5], "anchor": ")") +
+                                                      std::string(anchorName(a)) + "\"}"));
+        CHECK(one.steps[0].anchor == a);
+    }
+}
+
+TEST_CASE("a canvasSize step's bad value is refused, naming the step (#420)", "[steps][canvasSize]") {
+    const std::pair<const char*, const char*> cases[] = {
+        {R"("anchor": "top")", "canvasSize needs \"size\": [width, height], the new canvas in cells"},
+        {R"("size": 3)", "\"size\" must be [width, height], the new canvas in cells"},
+        {R"("size": [3])", "\"size\" must be [width, height], the new canvas in cells"},
+        {R"("size": [3, 2, 1])", "\"size\" must be [width, height], the new canvas in cells"},
+        {R"("size": {"w": 3, "h": 2})", "\"size\" must be [width, height], the new canvas in cells"},
+        {R"("size": [0, 3])", "\"size width\" must be a whole number 1 to 400"},
+        {R"("size": [401, 3])", "\"size width\" must be a whole number 1 to 400"},
+        {R"("size": [3.5, 2])", "\"size width\" must be a whole number 1 to 400"},
+        {R"("size": ["3", 2])", "\"size width\" must be a whole number 1 to 400, not a string"},
+        {R"("size": [3, 0])", "\"size height\" must be a whole number 1 to 5000"},
+        {R"("size": [3, 5001])", "\"size height\" must be a whole number 1 to 5000"},
+        {R"("size": [3, 2], "anchor": "middle")",
+         "\"anchor\" takes top-left, top, top-right, left, centre, right, bottom-left, bottom, bottom-right, not \"middle\""},
+        {R"("size": [3, 2], "anchor": "center")", "\"anchor\" takes top-left, top, top-right, left, centre, right, bottom-left, bottom, bottom-right, not \"center\""},
+        {R"("size": [3, 2], "anchor": 4)", "\"anchor\" must be a string, not a number"},
+        {R"("size": [3, 2], "at": [1, 1])", "canvasSize takes no \"at\""},
+        {R"("size": [3, 2], "zoom": 2)", "canvasSize takes no \"zoom\""},
+        {R"("size": [3, 2], "width": 3)", "canvasSize takes no \"width\""},
+        // the pen's Tool Options are not the canvas's
+        {R"("size": [3, 2], "fg": 2)", "canvasSize takes no \"fg\""},
+        {R"("size": [3, 2], "pasteMode": "over")", "canvasSize takes no \"pasteMode\""},
+        // nothing for a pointer to show
+        {R"("size": [3, 2], "screenshot": {"pointer": true})",
+         "\"screenshot pointer\" needs a step the pointer makes"},
+    };
+    for (const auto& [fields, says] : cases) {
+        INFO(fields);
+        const std::string why =
+            refusal(script(std::string(R"({"name": "first", "action": "selectAll"}, {"name": "grow", "action": "canvasSize", )") +
+                           fields + "}"));
+        CHECK_THAT(why, ContainsSubstring(std::string("step 2 (grow): ") + says));
+    }
+    // and an anchor on another action is refused as before
+    CHECK_THAT(refusal(script(R"({"name": "z", "action": "glyph", "anchor": "top"})")),
+               ContainsSubstring("step 1 (z): glyph takes no \"anchor\""));
+}
+
 TEST_CASE("a steps file starts from a file or a sample", "[steps]") {
     const steps::Script f = steps::parse(R"({"version": 1, "start": {"file": "art/piece.bwp"}, "steps": [{"name": "all", "action": "selectAll"}]})");
     CHECK(f.start.kind == steps::Start::Kind::File);
