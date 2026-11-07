@@ -27,11 +27,18 @@
 #include <QAction>
 #include <QBuffer>
 #include <QComboBox>
+#include <QDir>
 #include <QDockWidget>
 #include <QFile>
+#include <QFileInfo>
+#include <QGuiApplication>
 #include <QIcon>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QRandomGenerator>
+#include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSpinBox>
@@ -49,6 +56,7 @@
 #include <map>
 #include <string>
 #include <utility>
+#include <optional>
 #include <vector>
 
 using namespace bw;
@@ -805,3 +813,141 @@ TEST_CASE("a steps file with no view step leaves the window's view as it opens (
         CHECK(w.ircMeter()->swapShades() == swap);
     });
 }
+
+// "scale": 2 (#295) runs on FixedScreens' two screens: this case's ctest
+// entry gives the app tests the same screens, from the same configuration.
+TEST_CASE("the app tests' screens are the ones blockwright --screenshot fixes", "[.][screenshot-scale]") {
+    const QJsonArray want =
+        QJsonDocument::fromJson(screenshot::FixedScreens::configuration()).object()["screens"].toArray();
+    const QList<QScreen*> have = QGuiApplication::screens();
+    REQUIRE(have.size() == want.size());
+    REQUIRE(want.size() == 2);
+    CHECK(QGuiApplication::primaryScreen() == have[0]);
+    for (int i = 0; i < have.size(); ++i) {
+        const QJsonObject o = want[i].toObject();
+        INFO(o["name"].toString().toStdString());
+        CHECK(have[i]->name() == o["name"].toString());
+        // the configuration is in device pixels; a screen's ratio is its
+        // dpi over the base dpi, and its fonts are at 96 logical dpi
+        const qreal ratio = o["logicalDpi"].toDouble() / o["logicalBaseDpi"].toDouble();
+        CHECK(have[i]->devicePixelRatio() == ratio * o["dpr"].toDouble());
+        CHECK(have[i]->devicePixelRatio() == i + 1);
+        CHECK(have[i]->geometry() == QRect(o["x"].toInt(), o["y"].toInt(), int(o["width"].toInt() / ratio),
+                                           int(o["height"].toInt() / ratio)));
+        CHECK(have[i]->geometry().size() == QSize(4096, 4096));
+        CHECK(have[i]->logicalDotsPerInch() == 96);
+    }
+}
+
+TEST_CASE("a scale 2 picture is drawn at device pixel ratio 2, the window laid out as at 1", "[.][screenshot-scale]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720], "steps": [
+        {"name": "one", "action": "glyph", "glyph": "#", "fg": 14, "bg": 1, "points": [[2, 2], [3, 2], [4, 2]],
+         "screenshot": {"of": "toolOptions"}},
+        {"name": "two", "action": "deselect", "screenshot": {"of": "toolOptions", "scale": 2}},
+        {"name": "cells", "action": "deselect", "screenshot": {"crop": {"cells": [2, 2, 3, 1]}, "scale": 2}},
+        {"name": "back", "action": "deselect", "screenshot": {"of": "toolOptions", "when": "both"}}]})");
+    MainWindow w;
+    std::map<std::string, QSize> laidOut;
+    std::map<std::string, qreal> ratio;
+    const std::vector<screenshot::Shot> shots = screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& shot) {
+        laidOut[shot.stem] = w.toolOptionsDock()->size();
+        ratio[shot.stem] = w.devicePixelRatioF();
+        CHECK(w.size() == QSize(1024, 720));
+    });
+    CHECK(ratio["01-one"] == 1.0);
+    CHECK(ratio["02-two"] == 2.0);
+    CHECK(ratio["03-cells"] == 2.0);
+    // back on the first screen for a picture at scale 1, before the step as after it
+    CHECK(ratio["04-back-before"] == 1.0);
+    CHECK(ratio["04-back-after"] == 1.0);
+
+    // twice the pixels each way, of a dock laid out at the same size
+    const QImage one = shotNamed(shots, "01-one").image;
+    const QImage two = shotNamed(shots, "02-two").image;
+    CHECK(laidOut["02-two"] == laidOut["01-one"]);
+    CHECK(one.size() == laidOut["01-one"]);
+    CHECK(two.size() == laidOut["02-two"] * 2);
+    CHECK(two.devicePixelRatio() == 2.0);
+    // drawn at the ratio, not the picture at 1 enlarged: its text has detail
+    // a doubled pixel can't hold
+    CHECK(two.convertToFormat(QImage::Format_RGB32) !=
+          one.scaled(one.size() * 2, Qt::IgnoreAspectRatio, Qt::FastTransformation).convertToFormat(QImage::Format_RGB32));
+    // and the same picture again at 1 when the window comes back
+    CHECK(shotNamed(shots, "04-back-after").image.convertToFormat(QImage::Format_RGB32) ==
+          one.convertToFormat(QImage::Format_RGB32));
+
+    // a crop of cells is those cells at twice the view's pixels, the canvas
+    // drawn as the replay's renders it at twice the zoom
+    const int zoom = w.canvasView()->zoom();
+    const QImage cells = shotNamed(shots, "03-cells").image.convertToFormat(QImage::Format_RGB32);
+    REQUIRE(cells.size() == QSize(3 * 8 * zoom * 2, 16 * zoom * 2));
+    CHECK(cells == replayed(s, "03-cells", zoom * 2)
+                       .copy(QRect(2 * 8 * zoom * 2, 2 * 16 * zoom * 2, 3 * 8 * zoom * 2, 16 * zoom * 2)));
+}
+
+TEST_CASE("a scale 2 picture with no screen at device pixel ratio 2 names its step", "[screenshot]") {
+    for (QScreen* screen : QGuiApplication::screens())
+        if (screen->devicePixelRatio() == 2.0)
+            return;  // the scale's own ctest entry has one
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [10, 4]}, "steps": [
+        {"name": "first", "action": "selectAll", "screenshot": {}},
+        {"name": "sharp", "action": "deselect", "screenshot": {"of": "layers", "scale": 2}}]})");
+    CHECK(failureOf(s) == "step 2 (sharp): no screen draws at scale 2");
+}
+
+#ifdef Q_OS_UNIX
+TEST_CASE("the screens' file is put where the platform's arguments can name it, and release() removes it (#295)",
+          "[screenshot]") {
+    // FixedScreens sets and clears these; the test gives them back.
+    const char* const kept[] = {"TMPDIR", "QT_QPA_PLATFORM", "QT_SCALE_FACTOR", "QT_SCREEN_SCALE_FACTORS",
+                                "QT_AUTO_SCREEN_SCALE_FACTOR", "QT_ENABLE_HIGHDPI_SCALING",
+                                "QT_SCALE_FACTOR_ROUNDING_POLICY", "QT_FONT_DPI", "QT_USE_PHYSICAL_DPI",
+                                "QT_DPI_ADJUSTMENT_POLICY"};
+    std::vector<std::optional<QByteArray>> was;
+    for (const char* v : kept)
+        was.push_back(qEnvironmentVariableIsSet(v) ? std::optional(qgetenv(v)) : std::nullopt);
+
+    QTemporaryDir root;
+    REQUIRE(root.isValid());
+    // a folder that isn't there can't be written, so /tmp is
+    for (const QString name : {QStringLiteral("semi;dir"), QStringLiteral("col:dir"), QStringLiteral("plain"),
+                               QStringLiteral("not there")}) {
+        CAPTURE(name.toStdString());
+        const QString folder = root.path() + QLatin1Char('/') + name;
+        const bool there = name != QLatin1String("not there");
+        if (there)
+            REQUIRE(QDir().mkpath(folder));
+        qputenv("TMPDIR", QFile::encodeName(folder));
+        QString path;
+        {
+            screenshot::FixedScreens screens;
+            REQUIRE(screens.error().empty());
+            path = screens.path();
+            CHECK_FALSE(path.contains(QLatin1Char(';')));
+            CHECK_FALSE(path.contains(QLatin1Char(':')));
+            CHECK(qgetenv("QT_QPA_PLATFORM") == "offscreen:configfile=" + QFile::encodeName(path));
+            if (name == QLatin1String("plain"))
+                CHECK(QFileInfo(path).absolutePath() == QFileInfo(folder).absoluteFilePath());
+            else
+                CHECK(QFileInfo(path).absolutePath() == QStringLiteral("/tmp"));
+            QFile f(path);
+            REQUIRE(f.open(QIODevice::ReadOnly));
+            CHECK(f.readAll() == screenshot::FixedScreens::configuration());
+            f.close();
+            screens.release();
+            CHECK_FALSE(QFileInfo::exists(path));
+        }
+        if (there)
+            CHECK(QDir(folder).entryList(QDir::NoDotAndDotDot | QDir::AllEntries | QDir::Hidden).isEmpty());
+        else
+            CHECK_FALSE(QFileInfo::exists(folder));
+    }
+
+    for (std::size_t i = 0; i < was.size(); ++i) {
+        if (was[i])
+            qputenv(kept[i], *was[i]);
+        else
+            qunsetenv(kept[i]);
+    }
+}
+#endif

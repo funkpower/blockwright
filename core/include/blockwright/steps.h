@@ -34,9 +34,12 @@
 //
 //   "screenshot": {"of": "window" | a dock's or widget's object name,
 //                  "crop": {"cells": [x, y, w, h]} | {"pixels": [x, y, w, h]},
-//                  "when": "before" | "after" | "both"}
+//                  "when": "before" | "after" | "both",
+//                  "scale": 1 | 2}
 //
-// each key optional (the window, uncropped, after the step).
+// each key optional (the window, uncropped, after the step, at scale 1).
+// "scale": 2 draws the picture at device pixel ratio 2, twice the pixels
+// each way, from the same window laid out at the same size.
 //
 // The window's view has a step of its own (#398), "action": "view":
 //
@@ -141,6 +144,7 @@ struct Screenshot {
     Crop crop = Crop::None;
     int x = 0, y = 0, width = 0, height = 0;  // the crop: canvas cells, or pixels of `of`
     When when = When::After;
+    int scale = 1;  // the picture's device pixel ratio, 1 or 2
 };
 
 // The view a "view" step sets (#398): each unset keeps the window's.

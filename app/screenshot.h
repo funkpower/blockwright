@@ -12,6 +12,7 @@
 #include <QImage>
 #include <QSize>
 #include <QString>
+#include <QTemporaryFile>
 
 #include <filesystem>
 #include <functional>
@@ -24,8 +25,39 @@ class MainWindow;
 
 namespace screenshot {
 
-// The window's size when the steps file gives none.
+// The window's size when the steps file gives none, in the window's own
+// pixels at every scale: a "scale": 2 picture of it is 2560 x 1600.
 inline constexpr QSize kDefaultWindowSize{1280, 800};
+
+// The screens `blockwright --screenshot` runs on, whatever the machine has:
+// offscreen, two side by side, each 4096 pixels a side (the largest window a
+// steps file may ask for) at 96 dpi, the first at device pixel ratio 1 and
+// the primary screen, the second at 2 for "scale": 2. Made before the
+// QApplication: it writes the offscreen platform's configuration file,
+// points QT_QPA_PLATFORM at it and clears what would scale the screens or
+// their fonts from the environment (QT_SCALE_FACTOR, QT_SCREEN_SCALE_FACTORS,
+// QT_FONT_DPI and the like). The file goes in the temporary folder, or (on Unix) in
+// /tmp when that folder can't be written or has a ':' or ';' in its path
+// (the platform's arguments are split at ':', its list of platforms at ';').
+// The platform reads it once, as the QApplication is made: release() then
+// removes it, and so does going.
+class FixedScreens {
+public:
+    FixedScreens();
+    // empty when it worked, else why not
+    const std::string& error() const { return error_; }
+    // The configuration file, as QT_QPA_PLATFORM names it.
+    const QString& path() const { return path_; }
+    // Remove the file, once the QApplication has read it.
+    void release() { file_.remove(); }
+    // The configuration file's contents.
+    static QByteArray configuration();
+
+private:
+    QTemporaryFile file_;
+    QString path_;
+    std::string error_;
+};
 
 struct Shot {
     // "03-stroke": the replay's name for the step's capture, with "-before"
@@ -36,7 +68,10 @@ struct Shot {
 };
 
 // The script replayed from `start` with `window` showing each screenshot's
-// moment, every picture in memory. A moment is the replay's project, active
+// moment, every picture in memory. A picture at "scale": 1 is taken with the
+// window on the primary screen, one at "scale": 2 with the window moved to
+// a screen at device pixel ratio 2 (FixedScreens has one), the same size in
+// its own pixels; no such screen fails at the step. A moment is the replay's project, active
 // layer and selection, the step's tool, and the Tool Options and pen the
 // step is applied with (bwcli::replay::Moment::settings), which Tool Options
 // and the palette show. The window is resized to the script's

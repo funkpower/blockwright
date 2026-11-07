@@ -7,6 +7,11 @@ blockwright \- editor for ANSI and IRC block art
 .br
 .B blockwright
 .BR \-\-help | \-\-version
+.br
+.B blockwright \-\-screenshot
+.I steps.json
+.B \-o
+.I dir
 .SH DESCRIPTION
 .B blockwright
 draws block art on the 80-column CP437 grid: shading ramps, brushes, stamps
@@ -44,6 +49,36 @@ Print the usage and exit.
 .BR \-v ", " \-\-version
 Print the version, the commit it was built from, and the credits of the
 bundled font and icons, and exit.
+.TP
+.BI \-\-screenshot " steps.json " \-o " dir"
+Replay a steps file (the format
+.B "blockwright-cli replay \-\-help"
+gives) in the window, offscreen, and write a PNG for each step whose
+.B """screenshot"""
+asks for one, as
+.IR NN \- name .png
+or
+.IR NN \- name \-before.png
+and
+.IR NN \- name \-after.png
+for a step pictured before and after.
+A screenshot is of the whole window, a dock or a widget by its object name
+.RB ( """of""" ),
+optionally cropped to canvas cells or to pixels
+.RB ( """crop""" ),
+before or after the step or both
+.RB ( """when""" ),
+at device pixel ratio 1 or 2
+.RB ( """scale""" ;
+a picture at 2 has twice the pixels each way).
+The steps file's top-level
+.B """window"""
+sets the window's size, 1280 x 800 without one, at either scale.
+The window has default settings, the Fusion style, and fixed screens at
+96 dpi that nothing in the environment rescales, so a steps file makes the
+same pictures on every run.
+A step that fails, a dock or widget the window doesn't have, or a crop off
+its target writes nothing and exits 1 naming the step.
 .SH FILES
 .TP
 .I /usr/share/blockwright/library/

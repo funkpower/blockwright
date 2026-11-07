@@ -381,7 +381,7 @@ Start readStart(const QJsonValue& v) {
 // A step's "screenshot" (#295). Whether the widget it names is there, and
 // the crop on it, is the window's to check when it takes the picture.
 Screenshot readScreenshot(const std::string& where, const QJsonValue& v) {
-    const QJsonObject o = objectOf(where, "screenshot", v, {"of", "crop", "when"});
+    const QJsonObject o = objectOf(where, "screenshot", v, {"of", "crop", "when", "scale"});
     Screenshot shot;
     if (o.contains("of")) {
         shot.of = stringOf(where, "screenshot of", o["of"]);
@@ -392,6 +392,8 @@ Screenshot readScreenshot(const std::string& where, const QJsonValue& v) {
         shot.when = choiceOf<Screenshot::When>(
             where, "screenshot when", o["when"],
             {{"before", Screenshot::When::Before}, {"after", Screenshot::When::After}, {"both", Screenshot::When::Both}});
+    if (o.contains("scale"))
+        shot.scale = intOf(where, "screenshot scale", o["scale"], 1, 2);
     if (o.contains("crop")) {
         const QJsonObject c = objectOf(where, "screenshot crop", o["crop"], {"cells", "pixels"});
         if (c.size() != 1)

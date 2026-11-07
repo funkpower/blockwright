@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <vector>
 
 #ifdef _WIN32
@@ -88,10 +89,13 @@ int main(int argc, char** argv) {
                          "                  the window, a dock or a crop for each step's \"screenshot\":\n"
                          "                  {\"of\": \"window\" | a dock or widget's object name,\n"
                          "                   \"crop\": {\"cells\": [x, y, w, h]} | {\"pixels\": [x, y, w, h]},\n"
-                         "                   \"when\": \"before\" | \"after\" | \"both\"}, as NN-<name>.png\n"
-                         "                  (-before, -after); a top-level \"window\": [w, h] sizes the\n"
-                         "                  window (default 1280 x 800); Tool Options and the palette\n"
-                         "                  show the options and colours each step is applied with\n";
+                         "                   \"when\": \"before\" | \"after\" | \"both\", \"scale\": 1 | 2},\n"
+                         "                  as NN-<name>.png (-before, -after); a top-level\n"
+                         "                  \"window\": [w, h] sizes the window (default 1280 x 800),\n"
+                         "                  and a screenshot's \"scale\": 2 draws that picture at\n"
+                         "                  device pixel ratio 2, twice the pixels each way; Tool\n"
+                         "                  Options and the palette show the options and colours\n"
+                         "                  each step is applied with\n";
             return 0;
         } else if (!std::strcmp(a, "--list-actions")) {
             listActions = true;
@@ -130,11 +134,18 @@ int main(int argc, char** argv) {
         std::cerr << "blockwright: usage: blockwright --screenshot <steps.json> -o <dir>\n";
         return 2;
     }
+    // Offscreen on fixed screens, one at device pixel ratio 1 and one at 2,
+    // in Qt's own Fusion style: as for --list-actions, the desktop's theme
+    // and style are not loaded, and nothing in the environment scales the
+    // screens or their fonts. The screens' file is read as the app is made.
+    std::optional<bw::screenshot::FixedScreens> screens;
     if (screenshot) {
         messagesToConsole();
-        // Offscreen, in Qt's own Fusion style: as for --list-actions, the
-        // desktop's theme and style are not loaded.
-        qputenv("QT_QPA_PLATFORM", "offscreen");
+        screens.emplace();
+        if (!screens->error().empty()) {
+            std::cerr << "blockwright: " << screens->error() << "\n";
+            return 1;
+        }
         qunsetenv("QT_QPA_PLATFORMTHEME");
         qunsetenv("QT_STYLE_OVERRIDE");
     }
@@ -147,6 +158,8 @@ int main(int argc, char** argv) {
     // Qt's own options (-platform, -style, ...) are not offered: QApplication
     // would take them out of argv, but they were refused above.
     QApplication app(argc, argv);
+    if (screens)
+        screens->release();
     QApplication::setApplicationName(QStringLiteral("Blockwright"));
     QApplication::setApplicationVersion(QStringLiteral(BLOCKWRIGHT_VERSION " (" BLOCKWRIGHT_GIT_COMMIT ")"));
     // The dev install runs as blockwright-dev, with a .desktop file of that

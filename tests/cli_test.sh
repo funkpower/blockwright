@@ -1014,6 +1014,8 @@ if [[ ! -e $rp/view ]]; then ok "replay: a refused view step writes nothing"; el
 printf '{"version": 1, "start": {"file": "missing.ans"}, "steps": [{"name": "fit", "action": "view", "ircFit": true}]}' > "$rp/view-nostart.json"
 expect "replay: a view step is refused before the start is read" 1 'step 1 \(fit\): view sets the window' -- "$cli" replay "$rp/view-nostart.json" -o "$rp/view-nostart"
 expect "replay --help documents the view step (#398)" 0 '^  view +the window.s view, for blockwright --screenshot only:$' -- "$cli" replay --help
+expect "replay --help documents the window's size (#295)" 0 '^here: a top-level "window": \[w, h\], the window.s size in pixels' -- "$cli" replay --help
+expect "replay --help documents a step's screenshot and its scale (#295)" 0 '^ +"when": "before" \| "after" \| "both", "scale": 1 \| 2\}$' -- "$cli" replay --help
 # replay writes .ans files whatever the target, so --target isn't its option
 expect "replay takes no --target" 2 '^blockwright-cli: --target is a lint, pack or unpack option, not a replay option$' -- "$cli" replay --target irc "$data/replay/tour.json" -o "$rp/target"
 if [[ ! -e $rp/target ]]; then ok "replay --target writes nothing"; else bad "replay --target made $rp/target"; fi

@@ -678,6 +678,19 @@ foreach(scale 1.25 1.5 1.75)
     COMMAND ${BW_APP_TEST_ENV} QT_SCALE_FACTOR=${scale} ${CMAKE_CROSSCOMPILING_EMULATOR}
             $<TARGET_FILE:blockwright-app-tests> "[view-dpr]")
 endforeach()
+# "scale": 2 screenshots (#295) on the screens blockwright --screenshot
+# fixes (screenshot::FixedScreens): one at device pixel ratio 1, one at 2.
+# The first case checks these are its screens.
+set(config "${CMAKE_CURRENT_BINARY_DIR}/offscreen-screenshot-screens.json")
+file(WRITE "${config}"
+  "{\"windowFrameMargins\": false, \"screens\": [\n"
+  " {\"name\": \"scale1\", \"x\": 0, \"y\": 0, \"width\": 4096, \"height\": 4096,"
+  " \"logicalDpi\": 96, \"logicalBaseDpi\": 96, \"dpr\": 1},\n"
+  " {\"name\": \"scale2\", \"x\": 4096, \"y\": 0, \"width\": 8192, \"height\": 8192,"
+  " \"logicalDpi\": 192, \"logicalBaseDpi\": 96, \"dpr\": 1}]}\n")
+add_test(NAME "screenshots at scale 2"
+  COMMAND ${BW_APP_TEST_ENV} QT_QPA_PLATFORM=offscreen:configfile=${config}
+          ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:blockwright-app-tests> "[screenshot-scale]")
 # A layout test that runs after a closed window in the same process still starts
 # from the default layout (#249); ctest otherwise runs each test case alone.
 # The script runs the binary itself, so it runs on the build host only.

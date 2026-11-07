@@ -139,6 +139,26 @@ TEST_CASE("a steps file reads the window's size and each step's screenshot", "[s
     CHECK_FALSE(steps::parse(script(R"({"name": "a", "action": "selectAll"})")).windowWidth);
 }
 
+TEST_CASE("a step's screenshot reads its scale, 1 without one (#295)", "[steps][screenshot]") {
+    const steps::Script s = steps::parse(script(R"({"name": "one", "action": "selectAll", "screenshot": {}},
+        {"name": "also", "action": "selectAll", "screenshot": {"scale": 1}},
+        {"name": "two", "action": "selectAll", "screenshot": {"of": "layers", "scale": 2}})"));
+    REQUIRE(s.steps.size() == 3);
+    CHECK(s.steps[0].screenshot->scale == 1);
+    CHECK(s.steps[1].screenshot->scale == 1);
+    CHECK(s.steps[2].screenshot->scale == 2);
+    for (const char* bad : {"0", "3", "1.5", "\"2\"", "true", "null", "[2]"}) {
+        INFO(bad);
+        try {
+            steps::parse(script(std::string(R"({"name": "a", "action": "selectAll", "screenshot": {"scale": )") + bad +
+                                "}}"));
+            FAIL("accepted");
+        } catch (const steps::StepsError& e) {
+            CHECK(std::string(e.what()).rfind("step 1 (a): \"screenshot scale\" must be a whole number 1 to 2", 0) == 0);
+        }
+    }
+}
+
 TEST_CASE("a view step reads the zoom, a scroll cell and View > IRC's toggles, each left out unset (#398)",
           "[steps][view]") {
     const steps::Script s = steps::parse(script(R"(
@@ -311,8 +331,8 @@ TEST_CASE("what a steps file refuses names the step or the start", "[steps]") {
         {"a screenshot not an object", script(R"({"name": "a", "action": "selectAll", "screenshot": "window"})"),
          "step 1 (a)", "screenshot"},
         {"an unknown screenshot key",
-         script(R"({"name": "a", "action": "selectAll", "screenshot": {"of": "window", "scale": 3}})"), "step 1 (a)",
-         "scale"},
+         script(R"({"name": "a", "action": "selectAll", "screenshot": {"of": "window", "zoom": 2}})"), "step 1 (a)",
+         "zoom"},
         {"an empty screenshot of", script(R"({"name": "a", "action": "selectAll", "screenshot": {"of": ""}})"),
          "step 1 (a)", "of"},
         {"an unknown screenshot when",

@@ -18,8 +18,12 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDir>
+#include <QScreen>
+#include <QWindow>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QStringList>
 #include <QBuffer>
 #include <QDockWidget>
 #include <QFile>
@@ -217,6 +221,31 @@ void showView(MainWindow& w, const steps::View& v) {
     }
 }
 
+// The window on the screen a picture at `scale` is taken on: the primary
+// screen for 1, the first at device pixel ratio 2 for 2. It is moved there
+// at its size in its own pixels and laid out again at that screen's ratio.
+void putOnScreenFor(MainWindow& w, const steps::Step& step, int scale) {
+    QScreen* to = QGuiApplication::primaryScreen();
+    if (scale != 1) {
+        to = nullptr;
+        for (QScreen* s : QGuiApplication::screens())
+            if (s->devicePixelRatio() == scale) {
+                to = s;
+                break;
+            }
+        if (!to)
+            fail(step, "no screen draws at scale " + std::to_string(scale));
+    }
+    if (w.screen() == to)
+        return;
+    w.move(to->geometry().topLeft());
+    if (QWindow* h = w.windowHandle(); h && h->screen() != to)
+        h->setScreen(to);
+    settle();
+    if (w.screen() != to)
+        fail(step, "the window couldn't be moved to the screen at scale " + std::to_string(scale));
+}
+
 // The replay at `m` put into the window: its project, active layer and
 // selection, the step's tool, if it has one, chosen as the Tools menu
 // chooses it, the Tool Options and pen the step is applied with, and the
@@ -235,6 +264,65 @@ void show(MainWindow& w, const bwcli::replay::Moment& m) {
 }
 
 } // namespace
+
+QByteArray FixedScreens::configuration() {
+    return QByteArrayLiteral(
+        "{\"windowFrameMargins\": false, \"screens\": [\n"
+        " {\"name\": \"scale1\", \"x\": 0, \"y\": 0, \"width\": 4096, \"height\": 4096,"
+        " \"logicalDpi\": 96, \"logicalBaseDpi\": 96, \"dpr\": 1},\n"
+        " {\"name\": \"scale2\", \"x\": 4096, \"y\": 0, \"width\": 8192, \"height\": 8192,"
+        " \"logicalDpi\": 192, \"logicalBaseDpi\": 96, \"dpr\": 1}]}\n");
+}
+
+static_assert(steps::kMaxWindowSide <= 4096, "the fixed screens hold the largest window");
+
+namespace {
+
+// The platform's arguments are split at ':' and its list of platforms at ';'.
+bool platformCanHold(const QString& path) {
+    return !path.contains(QLatin1Char(':')) && !path.contains(QLatin1Char(';'));
+}
+
+} // namespace
+
+FixedScreens::FixedScreens() {
+    const QByteArray json = configuration();
+    QStringList folders{QDir::tempPath()};
+#ifdef Q_OS_UNIX
+    if (folders.front() != QLatin1String("/tmp"))
+        folders << QStringLiteral("/tmp");
+#endif
+    std::string why;
+    for (const QString& folder : folders) {
+        file_.setFileTemplate(folder + QStringLiteral("/blockwright-screens-XXXXXX.json"));
+        // A path with a ':' (a drive letter) may do relative to the current folder.
+        QString path = file_.fileTemplate();
+        if (!platformCanHold(path))
+            path = QDir::current().relativeFilePath(path);
+        if (!platformCanHold(path)) {
+            why = folder.toStdString() + " has a ':' or ';' in its path, which the platform's arguments can't hold";
+            continue;
+        }
+        if (!file_.open() || file_.write(json) != json.size() || !file_.flush()) {
+            why = folder.toStdString() + ": " + file_.errorString().toStdString();
+            file_.remove();
+            continue;
+        }
+        path_ = file_.fileName();
+        if (!platformCanHold(path_))
+            path_ = QDir::current().relativeFilePath(path_);
+        break;
+    }
+    if (path_.isEmpty()) {
+        error_ = "the screens' configuration file can't be written: " + why;
+        return;
+    }
+    qputenv("QT_QPA_PLATFORM", "offscreen:configfile=" + QFile::encodeName(path_));
+    for (const char* v : {"QT_SCALE_FACTOR", "QT_SCREEN_SCALE_FACTORS", "QT_AUTO_SCREEN_SCALE_FACTOR",
+                          "QT_ENABLE_HIGHDPI_SCALING", "QT_SCALE_FACTOR_ROUNDING_POLICY", "QT_FONT_DPI",
+                          "QT_USE_PHYSICAL_DPI", "QT_DPI_ADJUSTMENT_POLICY"})
+        qunsetenv(v);
+}
 
 std::vector<Shot> take(MainWindow& window, const steps::Script& script, project::Project start,
                        const std::function<void(const Shot&)>& taken) {
@@ -264,6 +352,7 @@ std::vector<Shot> take(MainWindow& window, const steps::Script& script, project:
         using When = Screenshot::When;
         if (shot.when == (m.before ? When::After : When::Before))
             return;
+        putOnScreenFor(window, m.step, shot.scale);
         show(window, m);
         QWidget* of = target(window, m.step, shot.of);
         // a dock in a tab behind another is brought to the front, as

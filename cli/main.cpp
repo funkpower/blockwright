@@ -921,6 +921,19 @@ mouse button (default left).
                  Shades); at least one. This command has no window and
                  refuses a file with a view step (exit status 1)
 
+Two keys are the window's, read by blockwright --screenshot and passed over
+here: a top-level "window": [w, h], the window's size in pixels (320-4096
+a side; 1280 x 800 without one), and a step's
+
+  "screenshot": {"of": "window" | a dock or widget's object name,
+                 "crop": {"cells": [x, y, w, h]} | {"pixels": [x, y, w, h]},
+                 "when": "before" | "after" | "both", "scale": 1 | 2}
+
+each key optional (the whole window after the step, at scale 1). A crop in
+cells needs "of" to hold the canvas; one in pixels is in "of"'s pixels.
+"scale": 2 draws the picture at device pixel ratio 2, twice the pixels each
+way, from the window laid out at the same size.
+
 A tool step without points only sets Tool Options. Any step but a view
 step may set Tool Options, which hold for the steps after it:
 

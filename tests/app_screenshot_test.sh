@@ -135,6 +135,67 @@ else
   bad "a core error at a step (exit $st): $(cat "$tmp/notes/err")"
 fi
 
+# "scale": 2 (#295): the same pictures drawn at device pixel ratio 2, twice
+# the pixels each way, from the same 1024 x 720 window.
+sed -e 's/"of": "toolOptions"}/"of": "toolOptions", "scale": 2}/' \
+    -e 's/"when": "both"}/"when": "both", "scale": 2}/' \
+    -e 's/"cells": \[1, 1, 6, 3\]}}/"cells": [1, 1, 6, 3]}, "scale": 2}/' \
+    -e 's/"pixels": \[0, 0, 120, 40\]}}/"pixels": [0, 0, 120, 40]}, "scale": 2}/' \
+    "$data/screenshot/tutorial.json" >"$tmp/twice.json"
+n=$(grep -c '"scale": 2' "$tmp/twice.json")
+if [ "$n" = 4 ]; then ok "the tutorial at scale 2"; else bad "the tutorial at scale 2 has $n scaled pictures"; fi
+out=$("$bin" --screenshot "$tmp/twice.json" -o "$tmp/twice" 2>&1); st=$?
+if [ "$st" -eq 0 ]; then ok "--screenshot at scale 2 exits 0"; else bad "--screenshot at scale 2 (exit $st): $out"; fi
+size=$(png_size "$tmp/twice/02-stroke-after.png" 2>/dev/null)
+if [ "$size" = "2048 1440" ]; then ok "the window at scale 2 is 2048 x 1440"; else bad "the window at scale 2 is $size"; fi
+size=$(png_size "$tmp/twice/06-corner.png" 2>/dev/null)
+if [ "$size" = "240 80" ]; then ok "the pixel crop at scale 2 is 240 x 80"; else bad "the pixel crop at scale 2 is $size"; fi
+size=$(png_size "$tmp/twice/04-box.png" 2>/dev/null)
+if [ "$size" = "192 192" ]; then ok "the cell crop at scale 2 is 192 x 192"; else bad "the cell crop at scale 2 is $size"; fi
+# the Layers dock wasn't asked for at 2: as at 1, byte for byte
+if cmp -s "$tmp/twice/03-ink.png" "$tmp/shots/03-ink.png"; then
+  ok "a picture at scale 1 beside them is the one the tutorial takes"
+else
+  bad "03-ink.png differs between the tutorial and its scale 2 copy"
+fi
+# the same file twice, the same bytes
+out=$("$bin" --screenshot "$tmp/twice.json" -o "$tmp/again" 2>&1); st=$?
+same=1
+for f in "$tmp"/twice/*.png; do
+  cmp -s "$f" "$tmp/again/$(basename "$f")" || same=0
+done
+if [ "$st" -eq 0 ] && [ "$same" = 1 ]; then ok "the scale 2 pictures are the same bytes every run"; else bad "a second run at scale 2 (exit $st) differs: $out"; fi
+
+# The screens are fixed: what the environment says about scaling the
+# screens or their fonts changes nothing, at scale 1 or 2.
+out=$(QT_SCALE_FACTOR=1.5 QT_SCREEN_SCALE_FACTORS=2 QT_FONT_DPI=144 QT_USE_PHYSICAL_DPI=1 \
+      QT_QPA_PLATFORM=offscreen:configfile="$tmp/nothing.json" \
+      "$bin" --screenshot "$tmp/twice.json" -o "$tmp/scaled" 2>&1); st=$?
+same=1
+for f in "$tmp"/twice/*.png; do
+  cmp -s "$f" "$tmp/scaled/$(basename "$f")" || same=0
+done
+if [ "$st" -eq 0 ] && [ "$same" = 1 ]; then
+  ok "the environment's scale and font dpi change no picture"
+else
+  bad "under the environment's scale (exit $st) the pictures differ: $out $(png_size "$tmp/scaled/02-stroke-after.png" 2>/dev/null)"
+fi
+
+# The screens' file goes in TMPDIR, or in /tmp when the platform's arguments
+# can't name it there (they are split at ':' and ';'). It is never left behind.
+for d in 'semi;dir' 'col:dir' 'plain dir'; do
+  mkdir -p "$tmp/tmpdir/$d"
+  rm -f "$tmp/tmpdir-out/02-stroke-after.png"
+  out=$(TMPDIR="$tmp/tmpdir/$d" "$bin" --screenshot "$data/screenshot/tutorial.json" -o "$tmp/tmpdir-out" 2>&1); st=$?
+  if [ "$st" -eq 0 ] && [ -f "$tmp/tmpdir-out/02-stroke-after.png" ]; then
+    ok "a TMPDIR of '$d' takes the pictures"
+  else
+    bad "a TMPDIR of '$d' (exit $st): $out"
+  fi
+  left=$(ls -A "$tmp/tmpdir/$d")
+  if [ -z "$left" ]; then ok "a TMPDIR of '$d' is left empty"; else bad "a TMPDIR of '$d' holds $left"; fi
+done
+
 # A steps file that can't be read is an error, not a crash.
 out=$("$bin" --screenshot "$tmp/missing.json" -o "$tmp/missing" 2>&1); st=$?
 if [ "$st" -eq 1 ]; then ok "a missing steps file exits 1"; else bad "a missing steps file (exit $st): $out"; fi
@@ -150,6 +211,10 @@ out=$("$bin" --help 2>&1)
 case $out in
   *'--screenshot'*) ok "--help lists --screenshot" ;;
   *) bad "--help has no --screenshot: $out" ;;
+esac
+case $out in
+  *'and a screenshot'"'"'s "scale": 2 draws that picture at'*) ok "--help gives \"scale\" as a screenshot's" ;;
+  *) bad "--help doesn't give \"scale\" as a screenshot's: $out" ;;
 esac
 
 rm -rf "$tmp"
