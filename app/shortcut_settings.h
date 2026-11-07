@@ -40,8 +40,9 @@ inline constexpr char kStandardKeyProperty[] = "bwStandardKey";
 QList<QKeySequence> standardKeys(QAction* a, QKeySequence::StandardKey key);
 void useLinuxStandardKeys(bool on = true);
 
-// The windowActions() a key can be given: visible, not a separator or a
-// submenu, with an objectName of their own (not Qt's "_q_" ones), each once.
+// The windowActions() a key can be given: visible or hidden by a policy
+// (offeredByPolicy()), not a separator or a submenu, with an objectName of
+// their own (not Qt's "_q_" ones), each once.
 QList<QAction*> bindableActions(QWidget* window);
 
 // The keys `a` had before a setting changed them.

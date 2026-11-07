@@ -755,6 +755,10 @@ void MainWindow::createActions() {
         QAction* set = add(glyphs, tr("Set %1: %2").arg(i + 1).arg(shown), "", key,
                            [this, i] { view_->setGlyphSet(i); });
         set->setObjectName(QStringLiteral("glyphSet%1").arg(i + 1));
+        // Hidden while the typing policy is CP437 (updateGlyphSet), but still
+        // an action a key can be given (#400).
+        if (i >= kCp437GlyphSetCount)
+            set->setProperty(kOfferedWhenProperty, tr("in IRC and UTF-8 documents"));
         set->setCheckable(true);
         group->addAction(set);
         glyphSetActions_ << set;
@@ -817,14 +821,17 @@ void MainWindow::updateGlyphSet() {
             return std::nullopt;
         return k[0];
     };
+    // Only the sets the typing policy offers: a hidden set's key does nothing.
+    const int offered = glyphSetCount(view_->typingPolicy());
+    const qsizetype shown = std::min<qsizetype>(glyphSetActions_.size(), offered);
     QStringList picks;
-    for (qsizetype i = 0; i < glyphSetActions_.size(); ++i) {
+    for (qsizetype i = 0; i < shown; ++i) {
         const QAction* first = glyphSetActions_[i];
         if (first->shortcut().isEmpty())
             continue;
         qsizetype last = i;
         if (const auto from = fkey(first))
-            while (last + 1 < glyphSetActions_.size()) {
+            while (last + 1 < shown) {
                 const auto to = fkey(glyphSetActions_[last + 1]);
                 if (!to || to->keyboardModifiers() != from->keyboardModifiers() ||
                     to->key() != from->key() + int(last + 1 - i))
@@ -846,7 +853,6 @@ void MainWindow::updateGlyphSet() {
     tips << (picks.isEmpty() ? tr("Every set is in the Glyphs menu")
                              : tr("%1; every set is in the Glyphs menu").arg(picks.join(QStringLiteral(", "))));
     glyphSetLabel_->setToolTip(tips.join(QLatin1Char('\n')));
-    const int offered = glyphSetCount(view_->typingPolicy());
     for (qsizetype i = 0; i < glyphSetActions_.size(); ++i)
         glyphSetActions_[i]->setVisible(i < offered);
     if (set < glyphSetActions_.size())

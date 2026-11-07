@@ -50,7 +50,9 @@ QList<QAction*> bindableActions(QWidget* window) {
     QSet<QString> names;
     for (QAction* a : windowActions(window)) {
         const QString name = a->objectName();
-        if (a->isSeparator() || !a->isVisible() || QMenu::menuInAction(a) || name.isEmpty() ||
+        // An action a policy hides stays bindable (#400), so its kept key
+        // is applied and still holds the key against the others.
+        if (a->isSeparator() || (!a->isVisible() && !offeredByPolicy(a)) || QMenu::menuInAction(a) || name.isEmpty() ||
             name.startsWith(QStringLiteral("_q_")) || names.contains(name))
             continue;
         names.insert(name);
@@ -246,8 +248,15 @@ ShortcutsEditor::ShortcutsEditor(QWidget* window, QWidget* parent) : QWidget(par
             g->setFirstColumnSpanned(true);
             g->setFlags(Qt::ItemIsEnabled);
         }
-        auto* item = new QTreeWidgetItem(g, {e.name});
-        item->setToolTip(0, e.action->toolTip());
+        // A row for an action the document hides says so (#400).
+        const QString note = policyHiddenNote(e.action);
+        auto* item = new QTreeWidgetItem(
+            g, {note.isEmpty() ? e.name
+                               : tr("%1 (hidden: offered only %2)")
+                                     .arg(e.name, e.action->property(kOfferedWhenProperty).toString())});
+        item->setToolTip(0, note.isEmpty() ? e.action->toolTip() : e.action->toolTip() + QLatin1Char('\n') + note);
+        if (!note.isEmpty())
+            item->setForeground(0, palette().brush(QPalette::Disabled, QPalette::Text));
         rows_.insert(e.action, item);
         showRow(item);
     }

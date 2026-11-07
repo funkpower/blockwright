@@ -6,6 +6,7 @@
 // shows up in it without anything here being edited.
 
 #include <QDialog>
+#include <QHash>
 #include <QKeySequence>
 #include <QList>
 #include <QString>
@@ -13,6 +14,7 @@
 class QAction;
 class QLineEdit;
 class QTreeWidget;
+class QTreeWidgetItem;
 
 namespace bw {
 
@@ -33,7 +35,24 @@ QString shortcutName(const QString& text);
 // has added to nothing.
 QList<QAction*> windowActions(QWidget* window);
 
-// The windowActions() that have a key and are visible: the menu bar's
+// The dynamic property, a QString, of an action a policy of the document
+// can hide (setVisible(false)) that stays an action of the app while hidden
+// (#400): it says where the action is offered, as a phrase that ends "only
+// ..." ("in IRC and UTF-8 documents" for the Unicode glyph sets 17-20).
+// Such an action is listed, and can be given a key, whether it is shown or
+// not: bindableActions(), shortcutEntries(), --list-actions ("offeredWhen")
+// and Preferences > Shortcuts, which says when it is hidden. Its key is
+// kept while it is hidden and counts against every other action's, though
+// Qt fires it only while it is shown.
+inline constexpr char kOfferedWhenProperty[] = "bwOfferedWhen";
+
+// Whether `a` carries kOfferedWhenProperty, so that hidden it still counts.
+bool offeredByPolicy(const QAction* a);
+// For an action a policy hides now (offeredByPolicy() and not visible), a
+// sentence for its tooltip saying so; empty otherwise.
+QString policyHiddenNote(const QAction* a);
+
+// The windowActions() that have a key and are visible (or offeredByPolicy()): the menu bar's
 // grouped by menu, the rest by dock or under "Other". A key shown after a
 // tab in an action's text (Edit > Delete's, which the canvas handles)
 // counts as one, and a list of them there as each. With `keyedOnly` false, those without a key too.
@@ -68,6 +87,7 @@ private:
     QWidget* window_;
     QLineEdit* filter_;
     QTreeWidget* tree_;
+    QHash<QAction*, QTreeWidgetItem*> rows_;  // reload()'s row for each action
 };
 
 // Shows `window`'s sheet, reloaded. The window has one, made the first time

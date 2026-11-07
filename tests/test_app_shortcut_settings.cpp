@@ -4,6 +4,7 @@
 // middle drag pans the canvas. main() is in test_app.cpp.
 
 #include "canvas_view.h"
+#include "document.h"
 #include "main_window.h"
 #include "preferences.h"
 #include "settings.h"
@@ -13,6 +14,8 @@
 #include "system_input.h"
 
 #include "blockwright/canvas.h"
+#include "blockwright/glyph_sets.h"
+#include "blockwright/target.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -33,6 +36,12 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QTreeWidget>
+
+// QtGui's shortcut dispatch, as QTest's key clicks use it: the focus
+// widget sees ShortcutOverride, then the window's shortcuts get the key.
+Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject* o, ulong timestamp, int k, Qt::KeyboardModifiers mods,
+                                               const QString& text = QString(), bool autorep = false,
+                                               ushort count = 1);
 
 using namespace bw;
 
@@ -686,4 +695,241 @@ TEST_CASE("a middle press during a tool's drag doesn't pan, with no other button
     CHECK(w.document()->canvas() == before);
     mouse(v, QEvent::MouseButtonRelease, globalAt(v, {5, 2}), Qt::LeftButton, Qt::NoButton);
     CHECK(w.document()->canvas() != before);
+}
+
+namespace {
+
+// Restores the stored glyph set when a test is done with it.
+struct StoredGlyphSet {
+    QVariant was = appSettings()->value(QStringLiteral("glyphSet/index"));
+    StoredGlyphSet() { appSettings()->setValue(QStringLiteral("glyphSet/index"), kDefaultGlyphSet); }
+    ~StoredGlyphSet() { appSettings()->setValue(QStringLiteral("glyphSet/index"), was); }
+};
+
+// `k` (one key) as the application delivers it to the focused canvas: a
+// shortcut takes it if one is enabled for it, else the canvas gets it.
+void pressKey(MainWindow& w, const QKeySequence& k) {
+    const QKeyCombination c = k[0];
+    if (qt_sendShortcutOverrideEvent(w.canvasView(), 0, int(c.key()), c.keyboardModifiers()))
+        return;
+    QKeyEvent down(QEvent::KeyPress, int(c.key()), c.keyboardModifiers());
+    QApplication::sendEvent(w.canvasView(), &down);
+    QKeyEvent up(QEvent::KeyRelease, int(c.key()), c.keyboardModifiers());
+    QApplication::sendEvent(w.canvasView(), &up);
+}
+
+void showActive(MainWindow& w) {
+    w.show();
+    w.activateWindow();
+    QApplication::processEvents();
+    w.canvasView()->setFocus();
+    REQUIRE(QApplication::activeWindow() == &w);
+}
+
+const QString kHiddenNote = QStringLiteral(" (hidden: offered only in IRC and UTF-8 documents)");
+
+} // namespace
+
+// #400: the maintainer's ruling keeps glyph sets 17-20 bindable while the
+// document's typing policy hides them.
+TEST_CASE("Preferences > Shortcuts lists the glyph sets an ANSI document hides, and says so",
+          "[shortcuts][preferences]") {
+    ShortcutsCleared cleared;
+    MainWindow w;
+    REQUIRE(w.document()->target() == Target::Ansi);
+    ShortcutsEditor e(&w);
+    for (int i = kCp437GlyphSetCount + 1; i <= kGlyphSetCount; ++i) {
+        INFO(i);
+        QAction* a = action(w, QStringLiteral("glyphSet%1").arg(i).toLatin1().constData());
+        REQUIRE_FALSE(a->isVisible());
+        CHECK(bindableActions(&w).contains(a));
+        e.select(a);
+        REQUIRE(e.selected() == a);
+        REQUIRE(e.tree()->currentItem());
+        CHECK(e.tree()->currentItem()->text(0) == shortcutName(a->text()) + kHiddenNote);
+        CHECK(e.tree()->currentItem()->toolTip(0).contains(QStringLiteral("Hidden in this document")));
+    }
+    // a set the document shows has no note
+    QAction* set16 = action(w, "glyphSet16");
+    e.select(set16);
+    REQUIRE(e.selected() == set16);
+    CHECK(e.tree()->currentItem()->text(0) == shortcutName(set16->text()));
+    CHECK_FALSE(e.tree()->currentItem()->toolTip(0).contains(QStringLiteral("Hidden")));
+
+    // A hidden set can be given a key there, which OK applies and keeps.
+    QAction* set18 = action(w, "glyphSet18");
+    const QKeySequence k = freeKey(w);
+    e.select(set18);
+    REQUIRE(e.assign(k));
+    e.apply();
+    CHECK(set18->shortcuts() == QList<QKeySequence>{k});
+    CHECK(kept("glyphSet18") == k.toString(QKeySequence::PortableText));
+
+    // Once the document offers the sets the note goes.
+    action(w, "targetIrc")->trigger();
+    REQUIRE(set18->isVisible());
+    ShortcutsEditor irc(&w);
+    irc.select(set18);
+    REQUIRE(irc.selected() == set18);
+    CHECK(irc.tree()->currentItem()->text(0) == shortcutName(set18->text()));
+}
+
+TEST_CASE("a key kept for a hidden glyph set survives startup and works once the document offers it",
+          "[shortcuts][preferences]") {
+    ShortcutsCleared cleared;
+    StoredGlyphSet stored;
+    const QKeySequence k = [] {
+        MainWindow probe;
+        return freeKey(probe);
+    }();
+    keep("glyphSet18", k.toString(QKeySequence::PortableText));
+
+    MainWindow w;
+    QAction* set18 = action(w, "glyphSet18");
+    REQUIRE(w.document()->target() == Target::Ansi);
+    REQUIRE_FALSE(set18->isVisible());
+    CHECK(set18->shortcuts() == QList<QKeySequence>{k});
+    // Preferences > Shortcuts has it, and OK keeps it.
+    {
+        ShortcutsEditor e(&w);
+        CHECK(e.keys(set18) == QList<QKeySequence>{k});
+        e.apply();
+    }
+    CHECK(kept("glyphSet18") == k.toString(QKeySequence::PortableText));
+    CHECK(set18->shortcuts() == QList<QKeySequence>{k});
+    // Help > Keyboard Shortcuts lists it, saying it is hidden here.
+    {
+        ShortcutsDialog sheet(&w);
+        QTreeWidgetItem* row = nullptr;
+        for (int i = 0; i < sheet.tree()->topLevelItemCount(); ++i)
+            for (int j = 0; j < sheet.tree()->topLevelItem(i)->childCount(); ++j)
+                if (sheet.tree()->topLevelItem(i)->child(j)->text(0) == shortcutName(set18->text()))
+                    row = sheet.tree()->topLevelItem(i)->child(j);
+        REQUIRE(row);
+        CHECK(row->text(1) == native(k));
+        CHECK(row->toolTip(0).contains(QStringLiteral("Hidden in this document")));
+    }
+
+    // While the document hides the set, its key picks nothing, and the
+    // glyph-set line's tooltip doesn't name it.
+    showActive(w);
+    auto* label = w.findChild<QLabel*>(QStringLiteral("glyphSetLabel"));
+    REQUIRE(label);
+    REQUIRE(w.canvasView()->glyphSet() == kDefaultGlyphSet);
+    pressKey(w, k);
+    CHECK(w.canvasView()->glyphSet() == kDefaultGlyphSet);
+    CHECK_FALSE(label->toolTip().contains(native(k)));
+
+    // Under the IRC target it is offered, and the key picks it.
+    action(w, "targetIrc")->trigger();
+    REQUIRE(w.document()->target() == Target::Irc);
+    REQUIRE(set18->isVisible());
+    CHECK(set18->shortcuts() == QList<QKeySequence>{k});
+    pressKey(w, k);
+    CHECK(w.canvasView()->glyphSet() == 17);
+    CHECK(set18->isChecked());
+    CHECK(label->toolTip().contains(QStringLiteral("%1 picks set 18").arg(native(k))));
+}
+
+TEST_CASE("a hidden glyph set's key is a conflict as a shown action's is", "[shortcuts][preferences]") {
+    ShortcutsCleared cleared;
+    const QKeySequence save = MainWindow().findChild<QAction*>(QStringLiteral("save"))->shortcut();
+    REQUIRE_FALSE(save.isEmpty());
+    // At startup a kept key for a hidden set wins over another action's default...
+    keep("glyphSet19", save.toString(QKeySequence::PortableText));
+    {
+        MainWindow w;
+        REQUIRE_FALSE(action(w, "glyphSet19")->isVisible());
+        CHECK(action(w, "glyphSet19")->shortcuts() == QList<QKeySequence>{save});
+        CHECK(action(w, "save")->shortcuts().isEmpty());
+        CHECK(shortcutClashes(&w).isEmpty());
+
+        // ...and Preferences refuses it to a shown action, and a shown
+        // action's key to a hidden set.
+        ShortcutsEditor e(&w);
+        e.select(action(w, "saveAs"));
+        CHECK_FALSE(e.assign(save));
+        CHECK(e.message()->text().contains(
+            QStringLiteral("already the key for %1").arg(shortcutName(action(w, "glyphSet19")->text()))));
+        QAction* set20 = action(w, "glyphSet20");
+        REQUIRE_FALSE(set20->isVisible());
+        e.select(set20);
+        REQUIRE(e.selected() == set20);
+        const QKeySequence saveAs = action(w, "saveAs")->shortcut();
+        REQUIRE_FALSE(saveAs.isEmpty());
+        CHECK_FALSE(e.assign(saveAs));
+        CHECK(e.message()->text().contains(QStringLiteral("already the key for Save As")));
+        CHECK(e.keys(set20).isEmpty());
+    }
+    ShortcutsCleared::clear();
+    // A key kept for a hidden set and for a shown action goes to the
+    // earlier of them, the set (the Glyphs menu comes before Help), as for
+    // two shown actions; the later loses it.
+    const QKeySequence k = [] {
+        MainWindow probe;
+        return freeKey(probe);
+    }();
+    keep("glyphSet17", k.toString(QKeySequence::PortableText));
+    keep("about", k.toString(QKeySequence::PortableText));
+    MainWindow w;
+    REQUIRE_FALSE(action(w, "glyphSet17")->isVisible());
+    CHECK(action(w, "glyphSet17")->shortcuts() == QList<QKeySequence>{k});
+    CHECK(action(w, "about")->shortcuts().isEmpty());
+    CHECK(shortcutClashes(&w).isEmpty());
+}
+
+TEST_CASE("applyShortcutSettings gives a glyph set the document hides its kept key", "[shortcuts][preferences]") {
+    // Not only at startup, where the window applies the settings before its
+    // first document hides the sets: on a window whose ANSI document hides
+    // them already.
+    ShortcutsCleared cleared;
+    MainWindow w;
+    QAction* set18 = action(w, "glyphSet18");
+    REQUIRE_FALSE(set18->isVisible());
+    const QKeySequence save = action(w, "save")->shortcut();
+    REQUIRE_FALSE(save.isEmpty());
+    keep("glyphSet18", save.toString(QKeySequence::PortableText));
+    applyShortcutSettings(&w);
+    CHECK(set18->shortcuts() == QList<QKeySequence>{save});
+    CHECK(action(w, "save")->shortcuts().isEmpty());
+    CHECK(shortcutClashes(&w).isEmpty());
+    // and a set it has no kept key for gets its default back
+    ShortcutsCleared::clear();
+    applyShortcutSettings(&w);
+    CHECK(set18->shortcuts().isEmpty());
+    CHECK(action(w, "save")->shortcuts() == QList<QKeySequence>{save});
+}
+
+TEST_CASE("an open Keyboard Shortcuts sheet's hidden note follows the document's policy",
+          "[shortcuts][preferences]") {
+    // Review of #400, round 1: the sheet is modeless, so the target can
+    // change under it.
+    ShortcutsCleared cleared;
+    const QKeySequence k = [] {
+        MainWindow probe;
+        return freeKey(probe);
+    }();
+    keep("glyphSet18", k.toString(QKeySequence::PortableText));
+    MainWindow w;
+    QAction* set18 = action(w, "glyphSet18");
+    REQUIRE(w.document()->target() == Target::Ansi);
+    ShortcutsDialog* sheet = showShortcuts(&w);
+    const auto tip = [&] {
+        for (int i = 0; i < sheet->tree()->topLevelItemCount(); ++i)
+            for (int j = 0; j < sheet->tree()->topLevelItem(i)->childCount(); ++j)
+                if (QTreeWidgetItem* row = sheet->tree()->topLevelItem(i)->child(j);
+                    row->text(0) == shortcutName(set18->text()))
+                    return row->toolTip(0);
+        FAIL("no row for glyphSet18");
+        return QString();
+    };
+    const QString hidden = QStringLiteral("Hidden in this document");
+    CHECK(tip().contains(hidden));
+    action(w, "targetIrc")->trigger();
+    REQUIRE(set18->isVisible());
+    CHECK_FALSE(tip().contains(hidden));
+    action(w, "targetAnsi")->trigger();
+    REQUIRE_FALSE(set18->isVisible());
+    CHECK(tip().contains(hidden));
+    sheet->close();
 }

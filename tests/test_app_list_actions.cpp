@@ -5,10 +5,14 @@
 // desktop's, whatever the platform theme. main() is in test_app.cpp.
 
 #include "action_list.h"
+#include "document.h"
 #include "help_text.h"
 #include "main_window.h"
 #include "shortcut_settings.h"
 #include "shortcuts_dialog.h"
+
+#include "blockwright/glyph_sets.h"
+#include "blockwright/target.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -44,14 +48,15 @@ QJsonObject byId(const QJsonArray& list, const QString& id) {
 }
 
 // The menus' actions, but not the entries of the lists of files File > Open
-// Recent and Help > Samples hold, which are no actions of the app's.
+// Recent and Help > Samples hold, which are no actions of the app's; those
+// a policy of the document hides count (#400).
 void menuActions(const QList<QAction*>& actions, QList<QAction*>* out) {
     for (QAction* a : actions) {
         if (QMenu* sub = QMenu::menuInAction(a)) {
             if (sub->objectName() != QStringLiteral("samplesMenu") && sub->objectName() != QStringLiteral("openRecent"))
                 menuActions(sub->actions(), out);
         }
-        else if (!a->isSeparator() && a->isVisible())
+        else if (!a->isSeparator() && (a->isVisible() || offeredByPolicy(a)))
             out->push_back(a);
     }
 }
@@ -261,4 +266,39 @@ TEST_CASE("the action dump's standard keys are the ones Qt gives a generic Linux
         CHECK(QKeySequence::listToString(a->shortcuts(), QKeySequence::PortableText).toStdString() ==
               QKeySequence::listToString(it.value(), QKeySequence::PortableText).toStdString());
     }
+}
+
+TEST_CASE("the action dump lists the glyph sets an ANSI document hides, and where they are offered", "[list-actions]") {
+    // #400: the dump's window has a new ANSI document, whose CP437 typing
+    // policy hides sets 17-20; they are actions of the app all the same.
+    MainWindow w;
+    REQUIRE(w.document()->target() == Target::Ansi);
+    for (int i = kCp437GlyphSetCount + 1; i <= kGlyphSetCount; ++i)
+        REQUIRE_FALSE(w.findChild<QAction*>(QStringLiteral("glyphSet%1").arg(i))->isVisible());
+    const QJsonArray list = dumped(w);
+    QStringList sets, want;
+    for (const QJsonValue& v : list) {
+        const QString id = v.toObject().value(QStringLiteral("id")).toString();
+        if (id.startsWith(QStringLiteral("glyphSet")) && id.back().isDigit())
+            sets << id;
+    }
+    for (int i = 1; i <= kGlyphSetCount; ++i)
+        want << QStringLiteral("glyphSet%1").arg(i);
+    CHECK(sets == want);
+    for (int i = 1; i <= kGlyphSetCount; ++i) {
+        const QJsonObject o = byId(list, QStringLiteral("glyphSet%1").arg(i));
+        INFO(i);
+        CHECK(o.value(QStringLiteral("menu")).toString() == QStringLiteral("Glyphs"));
+        CHECK(o.value(QStringLiteral("text")).toString().startsWith(QStringLiteral("Set %1: ").arg(i)));
+        if (i > kCp437GlyphSetCount)
+            CHECK(o.value(QStringLiteral("offeredWhen")).toString() == QStringLiteral("in IRC and UTF-8 documents"));
+        else
+            CHECK_FALSE(o.contains(QStringLiteral("offeredWhen")));
+    }
+    // The same dump from a window whose document offers them: only "checked"
+    // follows the document.
+    MainWindow irc;
+    REQUIRE(irc.document()->setTarget(Target::Irc));
+    REQUIRE(irc.findChild<QAction*>(QStringLiteral("glyphSet20"))->isVisible());
+    CHECK(byId(dumped(irc), QStringLiteral("glyphSet20")) == byId(list, QStringLiteral("glyphSet20")));
 }

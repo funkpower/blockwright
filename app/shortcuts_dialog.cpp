@@ -60,6 +60,21 @@ QDockWidget* dockOf(const QAction* a) {
 
 } // namespace
 
+bool offeredByPolicy(const QAction* a) { return !a->property(kOfferedWhenProperty).toString().isEmpty(); }
+
+QString policyHiddenNote(const QAction* a) {
+    if (a->isVisible() || !offeredByPolicy(a))
+        return {};
+    return ShortcutsDialog::tr("Hidden in this document: offered only %1. A key given to it is kept, and works there.")
+        .arg(a->property(kOfferedWhenProperty).toString());
+}
+
+namespace {
+QString withNote(const QString& tip, const QString& note) {
+    return note.isEmpty() ? tip : tip.isEmpty() ? note : tip + QLatin1Char('\n') + note;
+}
+} // namespace
+
 QString shortcutName(const QString& text) {
     QString s = text.left(text.indexOf(QLatin1Char('\t')));
     QString out;
@@ -107,7 +122,7 @@ QList<ShortcutEntry> shortcutEntries(QWidget* window, bool keyedOnly) {
     QList<ShortcutEntry> out;
     QSet<const QAction*> seen;
     const auto take = [&](QAction* a, const QString& group) {
-        if (a->isSeparator() || !a->isVisible() || seen.contains(a))
+        if (a->isSeparator() || (!a->isVisible() && !offeredByPolicy(a)) || seen.contains(a))
             return;
         const QString keys = keyText(a);
         if (keys.isEmpty() && keyedOnly)
@@ -175,10 +190,19 @@ ShortcutsDialog::ShortcutsDialog(QWidget* window) : QDialog(window), window_(win
     connect(filter_, &QLineEdit::textChanged, this, &ShortcutsDialog::setFilter);
     resize(460, 560);
     reload();
+    // The sheet is modeless, so a policy can hide or show an action under it
+    // (#400): its row's note follows.
+    for (const ShortcutEntry& e : shortcutEntries(window_, false))
+        if (offeredByPolicy(e.action))
+            connect(e.action, &QAction::visibleChanged, this, [this, a = e.action] {
+                if (QTreeWidgetItem* row = rows_.value(a))
+                    row->setToolTip(0, withNote(a->toolTip(), policyHiddenNote(a)));
+            });
 }
 
 void ShortcutsDialog::reload() {
     tree_->clear();
+    rows_.clear();
     QHash<QString, QTreeWidgetItem*> groups;
     QFont bold = tree_->font();
     bold.setBold(true);
@@ -191,7 +215,8 @@ void ShortcutsDialog::reload() {
         }
         auto* item = new QTreeWidgetItem(g, {e.name, e.keys});
         item->setData(0, kSearchRole, searchText(e.action, e.name, e.keys));
-        item->setToolTip(0, e.action->toolTip());
+        item->setToolTip(0, withNote(e.action->toolTip(), policyHiddenNote(e.action)));
+        rows_.insert(e.action, item);
     }
     tree_->expandAll();
     setFilter(filter_->text());

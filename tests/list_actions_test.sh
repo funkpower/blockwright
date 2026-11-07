@@ -2,7 +2,8 @@
 # blockwright --list-actions with no display and an empty profile:
 # list_actions_test.sh <scratch dir> <python3> <blockwright>...
 # It prints a JSON array of actions with unique ids and exits 0, shows no
-# window (there is no display to show one on), and leaves the profile empty;
+# window (there is no display to show one on), lists all 20 glyph sets though
+# its ANSI document hides 17-20, and leaves the profile empty;
 # with a file named it is a usage error. Its standard keys are a generic
 # Linux desktop's, and the desktop's platform, theme and style don't change
 # a byte of it.
@@ -34,9 +35,15 @@ want = {"quit": ["Ctrl+Q"], "undo": ["Ctrl+Z", "F14", "Undo"], "redo": ["Ctrl+Sh
         "saveAs": ["Ctrl+Shift+S"], "selectAll": ["Ctrl+A"]}
 for id, k in want.items():
     assert keys[id] == k, f"{id} has {keys[id]}, not {k}"
+# Every glyph set, though the dump's ANSI document hides 17-20 (#400).
+sets = [i for i in ids if i.startswith("glyphSet") and i[8:].isdigit()]
+assert sets == ["glyphSet%d" % n for n in range(1, 21)], f"glyph sets {sets}"
+offered = [a["id"] for a in actions if a["id"] in sets and a.get("offeredWhen") == "in IRC and UTF-8 documents"]
+assert offered == sets[16:], f"offeredWhen on {offered}"
 tools = [a for a in actions if "tool" in a]
 assert tools and all(a.get("help") == "tools/" + a["tool"] for a in tools), "a tool without its help id"
-print(len(actions), "actions,", sum(a["inSheet"] for a in actions), "with a key,", len(tools), "tools")
+print(len(actions), "actions,", sum(a["inSheet"] for a in actions), "with a key,", len(tools), "tools,",
+      len(sets), "glyph sets")
 PY
 ); then ok "JSON: $summary"; else bad "JSON: $(head -c 400 "$tmp/out.json")"; fi
 written=$(cd "$profile" && find . -mindepth 1 ! -path ./cache ! -path ./cache/fontconfig ! -path './cache/fontconfig/*' | sort)

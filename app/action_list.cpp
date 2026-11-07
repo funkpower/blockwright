@@ -74,6 +74,8 @@ QJsonArray actionList(QWidget* window) {
             if (!help::toolText(tool).isEmpty())
                 o[QStringLiteral("help")] = QStringLiteral("tools/") + tool;
         }
+        if (const QString when = a->property(kOfferedWhenProperty).toString(); !when.isEmpty())
+            o[QStringLiteral("offeredWhen")] = when;
         o[QStringLiteral("inSheet")] = keyed.contains(a);
         out.append(o);
     }

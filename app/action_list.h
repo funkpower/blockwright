@@ -7,6 +7,8 @@
 // docks', then "Other". Only actions with an id are in it, the ones
 // Preferences > Shortcuts can give a key (bindableActions): not submenus,
 // and not the entries of lists like File > Open Recent and Help > Samples.
+// An action the document's policy hides is in it all the same (#400): the
+// window's first document is a new ANSI one, which hides glyph sets 17-20.
 // The sheet lists no action without an id (a test holds it to that).
 //
 // One object per action:
@@ -30,6 +32,10 @@
 //   "tool"        for a Tools menu action, the tool id; absent otherwise
 //   "help"        the help id (help_text.h), "tools/<tool id>", when the tool
 //                 has help text; absent otherwise
+//   "offeredWhen" for an action a policy of the document can hide, where it
+//                 is offered ("in IRC and UTF-8 documents" for glyph sets
+//                 17-20), whether it is hidden in the dump's window or not;
+//                 absent otherwise
 //   "inSheet"     whether Help > Keyboard Shortcuts lists it (it has a key)
 
 #include <QByteArray>
