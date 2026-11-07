@@ -10,6 +10,7 @@
 #include "blockwright/irc.h"
 #include "blockwright/irc_view.h"
 #include "blockwright/pipeline.h"
+#include "blockwright/project.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1065,6 +1066,55 @@ TEST_CASE("Publish to Library takes the .txt from the lines it is given, and hol
     }
     CHECK_THROWS_AS(requireBudget(*r.lines, r.budget), PipelineError);
     CHECK_NOTHROW(requireBudget(*r.lines, r.budget + 1));
+}
+
+TEST_CASE("Publish and Send hold a .txt to the tighter of the document's budget and 407", "[pipeline]") {
+    // #393, the maintainer's ruling: a tighter document budget is never
+    // loosened, and the ascii library's 407 always holds.
+    CHECK(sendBudget(300) == SendBudget{300, BudgetSource::Document});
+    CHECK(sendBudget(406) == SendBudget{406, BudgetSource::Document});
+    CHECK(sendBudget(irc::kMinBudget) == SendBudget{irc::kMinBudget, BudgetSource::Document});
+    CHECK(sendBudget(407) == SendBudget{407, BudgetSource::Library});
+    CHECK(sendBudget(450) == SendBudget{407, BudgetSource::Library});
+    CHECK(sendBudget(irc::kMaxBudget) == SendBudget{407, BudgetSource::Library});
+    CHECK(sendBudget(project::IrcBudget{}.bytes) == SendBudget{});
+
+    // The refusal names the budget it enforced, and whose it is.
+    const std::vector<std::string> lines{"ok", std::string(400, 'x')};
+    REQUIRE(irc::txtSentBytes(lines[1]) == 400);
+    try {
+        requireBudget(lines, 350, BudgetSource::Document);
+        FAIL("no error");
+    } catch (const PipelineError& e) {
+        CHECK(std::string(e.what()) ==
+              "over the document's own 350-byte IRC budget as WeeChat's ascii script sends it: line 2 is 400 bytes");
+    }
+    CHECK_NOTHROW(requireBudget(lines, 400, BudgetSource::Document));
+
+    Library lib("send-budget");
+    PublishRequest r = request(lib);
+    r.lines = lines;
+    const SendBudget tight = sendBudget(350);
+    r.budget = tight.bytes;
+    r.budgetSource = tight.source;
+    try {
+        planPublish(r);
+        FAIL("published a line over the document's budget");
+    } catch (const PipelineError& e) {
+        CHECK(std::string(e.what()) ==
+              "over the document's own 350-byte IRC budget as WeeChat's ascii script sends it: line 2 is 400 bytes");
+    }
+    r.lines = std::vector<std::string>{"ok", std::string(450, 'x')};
+    const SendBudget loose = sendBudget(450);
+    r.budget = loose.bytes;
+    r.budgetSource = loose.source;
+    try {
+        planPublish(r);
+        FAIL("published a line over 407");
+    } catch (const PipelineError& e) {
+        CHECK(std::string(e.what()) == "over the 407-byte IRC budget as WeeChat's ascii script sends it, so it "
+                                       "would be cut on IRC: line 2 is 450 bytes");
+    }
 }
 
 TEST_CASE("Send to WeeChat's arguments carry the .txt's size and its name", "[pipeline][utf8]") {

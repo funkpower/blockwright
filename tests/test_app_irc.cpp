@@ -24,6 +24,7 @@
 #include <QFile>
 #include <QHelpEvent>
 #include <QImage>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QProcess>
@@ -513,6 +514,12 @@ TEST_CASE("the IRC budget dialog takes a preset, a number or a mask and channel"
     // a custom budget opens as custom
     IrcBudgetDialog again(project::IrcBudget{"custom", 300});
     CHECK(again.budget() == project::IrcBudget{"custom", 300});
+
+    // #393: it says Publish and Send never go past the library's 407
+    auto* note = d.findChild<QLabel*>(QStringLiteral("ircPublishNote"));
+    REQUIRE(note);
+    CHECK(note->text() == QStringLiteral("Publish to Library and Send to WeeChat hold lines to this budget or to "
+                                         "407 bytes, the ascii script's EFnet limit, whichever is less."));
 
     // the range the CLI's --budget and a project take (#303)
     CHECK(d.bytesBox()->minimum() == int(irc::kMinBudget));

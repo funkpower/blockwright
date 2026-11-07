@@ -47,6 +47,12 @@ public:
     // and which Send sends no .txt for.
     std::optional<std::vector<std::string>> ircText() const;
 
+    // The budget Publish and Send hold the .txt's lines to (#393): the
+    // document's own IRC budget (View > IRC > Budget..., the row meter's)
+    // when it is tighter than the ascii script's EFnet one
+    // (irc::kEfnetWeechatBudget, 407), else 407 (pipeline::sendBudget).
+    pipeline::SendBudget sendBudget() const;
+
     // The piece name suggested for the document: pipeline::slugFrom its
     // file's base name, empty for an unsaved document.
     QString defaultSlug() const;
@@ -59,7 +65,8 @@ public:
     std::optional<pipeline::PublishPlan> planPublish(const QString& library, const QString& slug,
                                                      const QString& tags, QString* error,
                                                      bool allowLossy = false);
-    // Writes `plan`; false and `error` if it fails.
+    // Writes `plan`; false and `error` if it fails, or if sendBudget is no
+    // longer the budget the plan held the .txt to.
     bool publish(const pipeline::PublishPlan& plan, QString* error);
 
     struct SendResult {
@@ -71,9 +78,8 @@ public:
     // over ssh, with ircText as <slug>-r<round>.txt beside it when there is
     // one, and reloads WeeChat's ascii script; waits for ssh to finish.
     // A floating selection is stamped first. An .ans that would lose data is
-    // refused unless `allowLossy`, and a .txt with a line over the ascii
-    // script's EFnet budget (irc::kEfnetWeechatBudget) is refused, as
-    // Publish refuses it.
+    // refused unless `allowLossy`, and a .txt with a line over sendBudget is
+    // refused, as Publish refuses it.
     SendResult sendToWeechat(const QString& host, const QString& wipDir, const QString& slug, int round,
                              bool allowLossy = false);
     // The ssh program run ("ssh" unless set).

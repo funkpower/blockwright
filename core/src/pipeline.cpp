@@ -552,12 +552,22 @@ std::vector<std::string> ircLines(std::string_view ans) {
     return irc::exportCanvas(parseAnsi(ans, {.encoding = TextEncoding::Cp437}).canvas);
 }
 
-void requireBudget(const std::vector<std::string>& lines, std::size_t budget) {
+SendBudget sendBudget(std::size_t documentBudget) {
+    if (documentBudget < irc::kEfnetWeechatBudget)
+        return {documentBudget, BudgetSource::Document};
+    return {};
+}
+
+void requireBudget(const std::vector<std::string>& lines, std::size_t budget, BudgetSource source) {
     const auto over = irc::txtOverBudget(lines, budget);
     if (over.empty())
         return;
-    std::string why = "over the " + std::to_string(budget) +
-                      "-byte IRC budget as WeeChat's ascii script sends it, so it would be cut on IRC:";
+    std::string why =
+        source == BudgetSource::Document
+            ? "over the document's own " + std::to_string(budget) +
+                  "-byte IRC budget as WeeChat's ascii script sends it:"
+            : "over the " + std::to_string(budget) +
+                  "-byte IRC budget as WeeChat's ascii script sends it, so it would be cut on IRC:";
     for (std::size_t i = 0; i < over.size(); ++i)
         why += (i ? ", line " : " line ") + std::to_string(over[i].line) + " is " + std::to_string(over[i].bytes) +
                " bytes" + (over[i].where.empty() ? "" : " " + over[i].where);
@@ -576,6 +586,7 @@ PublishPlan planPublish(const PublishRequest& r) {
 
     PublishPlan plan;
     plan.key = std::string(kArtist) + "/" + r.slug;
+    plan.budget = {r.budget, r.budgetSource};
     plan.ansPath = dir / (r.slug + ".ans");
     plan.txtPath = dir / (r.slug + ".txt");
     plan.tagsPath = r.library / ".tags.json";
@@ -600,7 +611,7 @@ PublishPlan planPublish(const PublishRequest& r) {
             throw PipelineError(std::string("the piece can't be read back as IRC text: ") + e.what());
         }
     }
-    requireBudget(lines, r.budget);
+    requireBudget(lines, r.budget, r.budgetSource);
     plan.ans = r.ans;
     plan.txt = irc::joinLines(lines);
 

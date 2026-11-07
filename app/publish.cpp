@@ -94,6 +94,9 @@ std::optional<pipeline::PublishPlan> Publisher::planPublish(const QString& libra
         r.tags = pipeline::parseTags(tags.toStdString());
         r.ans = out.bytes;
         r.lines = ircText();
+        const pipeline::SendBudget budget = sendBudget();
+        r.budget = budget.bytes;
+        r.budgetSource = budget.source;
         r.now = QDateTime::currentSecsSinceEpoch();
         return pipeline::planPublish(r);
     } catch (const pipeline::PipelineError& e) {
@@ -103,6 +106,13 @@ std::optional<pipeline::PublishPlan> Publisher::planPublish(const QString& libra
 }
 
 bool Publisher::publish(const pipeline::PublishPlan& plan, QString* error) {
+    // The .txt was held to the budget when the plan was worked out; one the
+    // document has had since may hold it to another (#393).
+    if (plan.budget != sendBudget()) {
+        *error = tr("The document's IRC budget changed after the publish was worked out, so nothing was written; "
+                    "publish again to hold the lines to it");
+        return false;
+    }
     try {
         pipeline::publish(plan);
         return true;
@@ -125,6 +135,10 @@ std::optional<std::vector<std::string>> Publisher::ircText() const {
     return irc::exportCanvas(irc::sentCanvas(doc->canvas(), doc->ansi().ice, doc->target()));
 }
 
+pipeline::SendBudget Publisher::sendBudget() const {
+    return pipeline::sendBudget(window_->document()->extras().ircBudget.bytes);
+}
+
 int Publisher::nextRound(const QString& slug) const { return appSettings()->value(roundKey(slug), 0).toInt() + 1; }
 
 Publisher::SendResult Publisher::sendToWeechat(const QString& host, const QString& wipDir, const QString& slug,
@@ -140,8 +154,10 @@ Publisher::SendResult Publisher::sendToWeechat(const QString& host, const QStrin
     const std::string text = ircLines ? irc::joinLines(*ircLines) : std::string();
     QStringList args;
     try {
-        if (ircLines)
-            pipeline::requireBudget(*ircLines, irc::kEfnetWeechatBudget);
+        if (ircLines) {
+            const pipeline::SendBudget budget = sendBudget();
+            pipeline::requireBudget(*ircLines, budget.bytes, budget.source);
+        }
         for (const std::string& a :
              pipeline::sshArguments({host.toStdString(), wipDir.toStdString()}, slug.toStdString(), round,
                                     out.bytes.size(), ircLines ? std::optional(text.size()) : std::nullopt))

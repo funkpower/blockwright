@@ -38,7 +38,8 @@ void MainWindow::createIrcActions(QMenu* file, QMenu* view) {
     a->setToolTip(tr("The canvas as IRC lines, one message each, as the row meter measures them"));
     connect(a, &QAction::triggered, this, &MainWindow::exportIrc);
     // Above File > Publish to Library. Publish writes its own lines: plain,
-    // without fit or pad, against the EFnet / WeeChat budget (PLAN §8).
+    // without fit or pad, against the tighter of the document's budget and
+    // the EFnet / WeeChat one (PLAN §8, §9; #393).
     file->insertAction(findChild<QAction*>(QStringLiteral("publishToLibrary")), a);
 
     QMenu* m = view->addMenu(tr("I&RC"));

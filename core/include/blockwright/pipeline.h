@@ -66,10 +66,29 @@ std::string dateIndexJson(const DateIndex& index, bool newline);
 // makes them from the file: parsed, then irc::exportCanvas.
 std::vector<std::string> ircLines(std::string_view ans);
 
-// Throws PipelineError naming every line of a .txt the ascii script would
-// cut on IRC: over `budget` bytes as it sends the line (irc::txtSentBytes),
-// not as the line is written.
-void requireBudget(const std::vector<std::string>& lines, std::size_t budget);
+// Whose budget a .txt is held to, which the refusal names.
+enum class BudgetSource {
+    Library,   // the ascii script's EFnet one, irc::kEfnetWeechatBudget
+    Document,  // the document's own (its project's ircBudget), tighter
+};
+
+// The budget Publish and Send hold a .txt to (#393): the document's own IRC
+// budget when it is tighter than the ascii script's (irc::kEfnetWeechatBudget),
+// else that one, so a line the row meter calls over is never published and
+// the library's limit always holds.
+struct SendBudget {
+    std::size_t bytes = irc::kEfnetWeechatBudget;
+    BudgetSource source = BudgetSource::Library;
+    bool operator==(const SendBudget&) const = default;
+};
+SendBudget sendBudget(std::size_t documentBudget);
+
+// Throws PipelineError naming every line of a .txt over `budget` bytes as
+// the ascii script sends the line (irc::txtSentBytes), not as it is
+// written: under BudgetSource::Library a line the script would cut on IRC,
+// under BudgetSource::Document one over the document's own budget.
+void requireBudget(const std::vector<std::string>& lines, std::size_t budget,
+                   BudgetSource source = BudgetSource::Library);
 
 struct PublishRequest {
     std::filesystem::path library;  // the ascii library's root
@@ -82,6 +101,7 @@ struct PublishRequest {
     std::optional<std::vector<std::string>> lines;
     std::int64_t now = 0;           // the date a piece new to the index gets
     std::size_t budget = irc::kEfnetWeechatBudget;
+    BudgetSource budgetSource = BudgetSource::Library;  // whose `budget` is
 };
 
 // What the library held when a publish was worked out: the bytes of each
@@ -102,6 +122,7 @@ struct PublishPlan {
     bool replaces = false;          // <slug>.ans or <slug>.txt is there already
     bool dated = false;             // the piece is new to .dates.json
     LibraryState basis;             // the library the plan was worked out from
+    SendBudget budget;              // what the .txt was held to (the request's)
 };
 
 // Works out the publish without writing anything. The piece's tags are the

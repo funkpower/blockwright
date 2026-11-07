@@ -1186,6 +1186,166 @@ TEST_CASE("Publish to Library and Send to WeeChat refuse a .txt the ascii script
     CHECK_FALSE(ssh.ran());
 }
 
+namespace {
+
+// The document as one row of 'x's under the IRC target, as many as make its
+// .txt one line of `sent` bytes as WeeChat's ascii script sends it (the
+// line's colour code included), with `budget` as its own IRC budget (none:
+// it keeps the one it has).
+void plainRow(Fixture& f, std::size_t sent, std::optional<std::size_t> budget) {
+    const auto put = [&](int width) {
+        AnsiDocument doc = f.w.document()->ansi();
+        doc.canvas = Canvas(width, 1);
+        for (int x = 0; x < width; ++x)
+            doc.canvas.at(x, 0).ch = U'x';
+        f.w.document()->replace(doc, f.w.document()->path());
+        f.w.document()->setTarget(Target::Irc);
+        REQUIRE(f.w.document()->target() == Target::Irc);
+        if (budget)
+            f.w.document()->setIrcBudget({std::string(irc::kCustomProfile), *budget});
+        const auto lines = f.p->ircText();
+        REQUIRE(lines);
+        REQUIRE(lines->size() == 1);
+        return irc::txtSentBytes(lines->front());
+    };
+    const std::size_t extra = put(int(sent)) - sent;  // the line's colour code
+    REQUIRE(put(int(sent - extra)) == sent);
+}
+
+// Publish's and Send's answers for the document: Publish's error (empty if
+// it would publish) and whether Send went ahead (`message` its refusal).
+struct Outcome {
+    QString publishError;
+    bool sent = false;
+    QString sendMessage;
+};
+Outcome tryBoth(Fixture& f) {
+    Outcome o;
+    QString error;
+    if (!f.p->planPublish(f.library(), QStringLiteral("row"), {}, &error, true))
+        o.publishError = error.isEmpty() ? QStringLiteral("?") : error;
+    RecordingSsh ssh("RELOADED\n");
+    f.p->setSshProgram(ssh.program);
+    const auto r =
+        f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/ascii/wip"), QStringLiteral("row"), 1, true);
+    o.sent = r.ok;
+    o.sendMessage = r.message;
+    CHECK(ssh.ran() == r.ok);
+    return o;
+}
+
+const QString kCutAt407 =
+    QStringLiteral("over the 407-byte IRC budget as WeeChat's ascii script sends it, so it would be cut on IRC: ");
+
+} // namespace
+
+TEST_CASE("Publish to Library and Send to WeeChat hold the .txt to a document budget tighter than 407") {
+    // #393: the row meter calls the line over, so Publish and Send refuse it,
+    // and say which budget they enforced.
+    Fixture f;
+    plainRow(f, 400, 350);
+    CHECK(f.p->sendBudget() == pipeline::SendBudget{350, pipeline::BudgetSource::Document});
+    const QString refusal = QStringLiteral(
+        "over the document's own 350-byte IRC budget as WeeChat's ascii script sends it: line 1 is 400 bytes");
+    Outcome o = tryBoth(f);
+    CHECK(o.publishError == refusal);
+    CHECK_FALSE(o.sent);
+    CHECK(o.sendMessage == refusal);
+    CHECK_FALSE(QFile::exists(f.library() + QStringLiteral("/funkpower/row.txt")));
+
+    // Through the dialog, the warning shows the same budget.
+    const QString lib = f.library();
+    bool warned = false;
+    QString warning;
+    QTimer::singleShot(0, &f.w, [&] {
+        auto* d = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(d);
+        REQUIRE(d->objectName() == QStringLiteral("publishDialog"));
+        d->findChild<QLineEdit*>(QStringLiteral("publishLibrary"))->setText(lib);
+        d->findChild<QLineEdit*>(QStringLiteral("publishSlug"))->setText(QStringLiteral("row"));
+        answer(&f.w, QMessageBox::Ok, &warning, &warned);
+        d->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+    });
+    f.p->publishInteractive();
+    CHECK(warned);
+    CHECK(warning == QStringLiteral("Could not publish:\n") + refusal);
+
+    // At the document's budget the line goes.
+    f.w.document()->setIrcBudget({std::string(irc::kCustomProfile), 400});
+    CHECK(f.p->sendBudget() == pipeline::SendBudget{400, pipeline::BudgetSource::Document});
+    o = tryBoth(f);
+    CHECK(o.publishError.isEmpty());
+    CHECK(o.sent);
+}
+
+TEST_CASE("Publish to Library writes nothing when the document's budget changed after the plan") {
+    // Codex, #408 round 1: a plan worked out under one budget is not written
+    // under another.
+    Fixture f;
+    plainRow(f, 400, 400);
+    QString error;
+    auto plan = f.p->planPublish(f.library(), QStringLiteral("row"), {}, &error, true);
+    REQUIRE(plan);
+    CHECK(plan->budget == pipeline::SendBudget{400, pipeline::BudgetSource::Document});
+    f.w.document()->setIrcBudget({std::string(irc::kCustomProfile), 350});
+    CHECK_FALSE(f.p->publish(*plan, &error));
+    CHECK(error == QStringLiteral("The document's IRC budget changed after the publish was worked out, so nothing "
+                                  "was written; publish again to hold the lines to it"));
+    CHECK_FALSE(QFile::exists(f.library() + QStringLiteral("/funkpower/row.txt")));
+    CHECK_FALSE(QFile::exists(f.library() + QStringLiteral("/funkpower/row.ans")));
+    CHECK_FALSE(f.p->planPublish(f.library(), QStringLiteral("row"), {}, &error, true));
+
+    // A change that leaves the budget Publish enforces as it was is no change:
+    // 450 and 500 both hold the line to 407.
+    plainRow(f, 407, 450);
+    plan = f.p->planPublish(f.library(), QStringLiteral("row"), {}, &error, true);
+    REQUIRE(plan);
+    CHECK(plan->budget == pipeline::SendBudget{});
+    f.w.document()->setIrcBudget({std::string(irc::kCustomProfile), 500});
+    CHECK(f.p->publish(*plan, &error));
+    CHECK(QFile::exists(f.library() + QStringLiteral("/funkpower/row.txt")));
+}
+
+TEST_CASE("Publish to Library and Send to WeeChat hold the .txt to 407 under a looser document budget") {
+    // #393: the library's limit holds whatever the document allows.
+    Fixture f;
+    plainRow(f, 450, 450);
+    CHECK(f.p->sendBudget() == pipeline::SendBudget{407, pipeline::BudgetSource::Library});
+    Outcome o = tryBoth(f);
+    CHECK(o.publishError == kCutAt407 + QStringLiteral("line 1 is 450 bytes"));
+    CHECK_FALSE(o.sent);
+    CHECK(o.sendMessage == o.publishError);
+
+    plainRow(f, 408, 450);
+    o = tryBoth(f);
+    CHECK(o.publishError == kCutAt407 + QStringLiteral("line 1 is 408 bytes"));
+    CHECK_FALSE(o.sent);
+
+    plainRow(f, 407, 450);
+    o = tryBoth(f);
+    CHECK(o.publishError.isEmpty());
+    CHECK(o.sent);
+}
+
+TEST_CASE("Publish to Library and Send to WeeChat hold the .txt to 407 for a document with no budget of its own") {
+    Fixture f;
+    REQUIRE(f.w.document()->extras().ircBudget == project::IrcBudget{});
+    CHECK(f.p->sendBudget() == pipeline::SendBudget{});
+    CHECK(f.p->sendBudget().bytes == 407);
+
+    plainRow(f, 450, std::nullopt);
+    REQUIRE(f.w.document()->extras().ircBudget == project::IrcBudget{});
+    Outcome o = tryBoth(f);
+    CHECK(o.publishError == kCutAt407 + QStringLiteral("line 1 is 450 bytes"));
+    CHECK_FALSE(o.sent);
+    CHECK(o.sendMessage == o.publishError);
+
+    plainRow(f, 407, std::nullopt);
+    o = tryBoth(f);
+    CHECK(o.publishError.isEmpty());
+    CHECK(o.sent);
+}
+
 int main(int argc, char** argv) {
     // The settings and the Library go to scratch folders, never the user's.
     QTemporaryDir scratch;
