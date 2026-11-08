@@ -430,8 +430,8 @@ Start readStart(const QJsonValue& v) {
     if (o.contains("file")) {
         s.kind = Start::Kind::File;
         s.file = stringOf(where, "file", o["file"]);
-        if (s.file.empty())
-            fail(where, "\"file\" is empty");
+        if (const auto why = pathProblem(s.file))
+            fail(where, "\"file\" " + *why);
     } else if (o.contains("sample")) {
         s.kind = Start::Kind::Sample;
         s.sample = stringOf(where, "sample", o["sample"]);
@@ -778,6 +778,21 @@ Script parse(std::string_view json) {
                                              "Ctrl+click sets, on this step or an earlier clone step");
     }
     return s;
+}
+
+std::optional<std::string> pathProblem(std::string_view path) {
+    if (path.empty())
+        return "is empty";
+    if (path.find('\0') != std::string_view::npos)
+        return "holds a NUL character";
+    const std::string quoted = "\"" + std::string(path) + "\"";
+    if (path.find('\\') != std::string_view::npos)
+        return quoted + " has a \\ in it; write / between directories, relative to the steps file";
+    const bool drive = path.size() >= 2 && path[1] == ':' &&
+                       ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'));
+    if (path.front() == '/' || drive)
+        return quoted + " is absolute; a steps file names its files relative to its own directory";
+    return std::nullopt;
 }
 
 } // namespace bw::steps

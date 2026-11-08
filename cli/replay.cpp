@@ -19,6 +19,7 @@
 #include "blockwright/edit.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
+#include "blockwright/library.h"
 #include "blockwright/samples.h"
 #include "blockwright/selection.h"
 #include "blockwright/shapes.h"
@@ -30,11 +31,23 @@
 #include "read_file.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <exception>
 #include <memory>
 #include <new>
 #include <optional>
 #include <ostream>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#define BW_REPLAY_POSIX 1
+#else
+#include <fstream>
+#define BW_REPLAY_POSIX 0
+#endif
 
 namespace bwcli::replay {
 
@@ -808,21 +821,90 @@ void step(State& s, const Step& st, Outcome& out) {
     }
 }
 
+// The regular file at `p`, read through its opened handle
+// (library::readRegularFile), so a FIFO or device swapped in after the
+// checks can't block or flood the read. Throws Failure "<p>: <why>": no such
+// file, is a directory, not a regular file, larger than `limit` bytes, or
+// the system's reason.
+std::string readChecked(const fs::path& p, std::size_t limit) {
+    const std::string name = p.string();
+    const auto refuse = [&](const std::string& why) { return Failure{name + ": " + why}; };
+    std::error_code ec;
+    const fs::file_status status = fs::status(p, ec);
+    if (status.type() == fs::file_type::not_found)
+        throw refuse("no such file");
+    if (ec)
+        throw refuse(ec.message());
+    if (status.type() == fs::file_type::directory)
+        throw refuse("is a directory");
+    if (status.type() != fs::file_type::regular)
+        throw refuse("not a regular file");
+    try {
+        return library::readRegularFile(p, limit);
+    } catch (const library::LibraryError& e) {
+        const std::string what = e.what();
+        if (what == "is not a regular file")
+            throw refuse("not a regular file");
+        if (what.rfind("is larger than ", 0) == 0)
+            throw refuse("larger than " + std::to_string(limit) + " bytes, the most it may be");
+        throw refuse(what);
+    }
+}
+
+// Whether the regular file at `p` starts with a zip's magic, read through a
+// handle opened without blocking and checked with fstat, so a FIFO swapped
+// in can't block it; anything else (gone, not regular, unreadable) is false
+// and left for readChecked to name.
+bool zipMagic(const fs::path& p) {
+    char sig[4] = {};
+#if BW_REPLAY_POSIX
+    int fd;
+    do
+        fd = ::open(p.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    while (fd < 0 && errno == EINTR);
+    if (fd < 0)
+        return false;
+    struct stat st {};
+    std::size_t got = 0;
+    if (::fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+        while (got < sizeof sig) {
+            const ssize_t n = ::read(fd, sig + got, sizeof sig - got);
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n <= 0)
+                break;
+            got += std::size_t(n);
+        }
+    ::close(fd);
+    return got == sizeof sig && std::memcmp(sig, "PK\x03\x04", 4) == 0;
+#else
+    std::ifstream in(p, std::ios::binary);
+    in.read(sig, sizeof sig);
+    return in.gcount() == 4 && std::memcmp(sig, "PK\x03\x04", 4) == 0;
+#endif
+}
+
 project::Project readStartFile(const fs::path& path, std::vector<std::string>* notes) {
     const std::string name = path.string();
     std::error_code ec;
     if (!fs::exists(path, ec))
         throw Failure{"start: " + name + ": no such file"};
+    const auto readProject = [&] {
+        project::ReadNotes read;
+        project::Project p = project::read(path, &read);
+        if (notes)
+            for (const std::string& n : projectReadNotes(read))
+                notes->push_back("start: " + name + ": " + n);
+        return p;
+    };
     try {
-        if (project::isProject(path)) {
-            project::ReadNotes read;
-            project::Project p = project::read(path, &read);
-            if (notes)
-                for (const std::string& n : projectReadNotes(read))
-                    notes->push_back("start: " + name + ": " + n);
-            return p;
-        }
-        const std::string data = readFile(name);
+        if (fs::is_directory(path, ec) && project::isProject(path))
+            return readProject();
+        // a file is sniffed and read through checked handles, so nothing
+        // opens it by path but a zip project's reader (#448)
+        if (zipMagic(path))
+            return readProject();
+        const std::string data = readChecked(path, project::kMaxEntryBytes);
         if (data.empty())
             throw Failure{"start: " + name + ": empty file"};
         return project::fromAnsi(parseArt(data, artFormatOf(name, data)));
@@ -870,12 +952,19 @@ project::Project readSample(const steps::Start& st, const fs::path& samplesDir, 
 
 } // namespace
 
+fs::path resolve(const fs::path& dir, const std::string& path) {
+    return dir / fs::path(std::u8string(path.begin(), path.end()));
+}
+
 project::Project start(const steps::Script& script, const fs::path& dir, const fs::path& samplesDir,
                        std::vector<std::string>* notes) {
     const steps::Start& st = script.start;
     switch (st.kind) {
     case steps::Start::Kind::File:
-        return readStartFile(dir / fs::path(std::u8string(st.file.begin(), st.file.end())), notes);
+        // the parser refuses these; a Script made in code meets the same rule
+        if (const auto why = steps::pathProblem(st.file))
+            throw Failure{"start: \"file\" " + *why};
+        return readStartFile(resolve(dir, st.file), notes);
     case steps::Start::Kind::Sample: return readSample(st, samplesDir, notes);
     case steps::Start::Kind::Blank: break;
     }
@@ -883,6 +972,26 @@ project::Project start(const steps::Script& script, const fs::path& dir, const f
     p.layers = LayerStack::fromCanvas(Canvas(st.width, st.height));
     p.ice = script.ice.value_or(true);
     return p;
+}
+
+void load(steps::Script& script, const fs::path& dir) {
+    for (const Step& st : script.steps) {
+        for (const steps::FileRef& f : st.files) {
+            if (const auto why = steps::pathProblem(f.path))
+                fail(st, "\"" + f.key + "\" " + *why);
+            const fs::path p = resolve(dir, f.path);
+            if (const auto had = script.files.find(f.path); had != script.files.end()) {
+                if (had->second.size() > f.maxBytes)
+                    fail(st, p.string() + ": larger than " + std::to_string(f.maxBytes) + " bytes, the most it may be");
+                continue;
+            }
+            try {
+                script.files.emplace(f.path, readChecked(p, f.maxBytes));
+            } catch (const Failure& e) {
+                fail(st, e.message);
+            }
+        }
+    }
 }
 
 AnsiDocument document(const project::Project& project, const std::optional<std::string>& today) {

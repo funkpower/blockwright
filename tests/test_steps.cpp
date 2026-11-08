@@ -396,6 +396,51 @@ TEST_CASE("a steps file starts from a file or a sample", "[steps]") {
     CHECK(s.start.variant == "Day");
 }
 
+TEST_CASE("a steps file's paths are relative to it, never absolute (#422)", "[steps]") {
+    // relative, .. included: tutorials may share a folder beside theirs
+    for (const char* ok : {"piece.ans", "art/piece.bwp", "../brushes/sphere-steel.ans", "./a.ans", "..", "~/x.ans"}) {
+        INFO(ok);
+        CHECK_FALSE(steps::pathProblem(ok));
+        CHECK(steps::parse(std::string(R"({"version": 1, "start": {"file": ")") + ok +
+                           R"("}, "steps": [{"name": "all", "action": "selectAll"}]})")
+                  .start.file == ok);
+    }
+    const std::string relative = "; a steps file names its files relative to its own directory";
+    const std::pair<std::string, std::string> refused[] = {
+        {"", "is empty"},
+        {std::string("a\0b.ans", 7), "holds a NUL character"},
+        {"/tmp/piece.ans", "\"/tmp/piece.ans\" is absolute" + relative},
+        {"/", "\"/\" is absolute" + relative},
+        {"C:/art/piece.ans", "\"C:/art/piece.ans\" is absolute" + relative},
+        {"c:piece.ans", "\"c:piece.ans\" is absolute" + relative},
+        {"art\\piece.ans", "\"art\\piece.ans\" has a \\ in it; write / between directories, relative to the steps file"},
+        {"\\piece.ans", "\"\\piece.ans\" has a \\ in it; write / between directories, relative to the steps file"},
+        {"\\\\host\\share\\piece.ans",
+         "\"\\\\host\\share\\piece.ans\" has a \\ in it; write / between directories, relative to the steps file"},
+    };
+    for (const auto& [path, why] : refused) {
+        INFO(path);
+        CHECK(steps::pathProblem(path) == why);
+    }
+    // the start's "file" is refused so, naming the start and the key: an
+    // absolute start was taken as it stood before #422
+    const auto startOf = [](const std::string& file) {
+        try {
+            steps::parse(R"({"version": 1, "start": {"file": )" + file +
+                         R"(}, "steps": [{"name": "all", "action": "selectAll"}]})");
+        } catch (const steps::StepsError& e) {
+            return std::string(e.what());
+        }
+        return std::string("parsed");
+    };
+    CHECK(startOf(R"("/tmp/piece.ans")") == "start: \"file\" \"/tmp/piece.ans\" is absolute" + relative);
+    CHECK(startOf(R"("C:\\art\\piece.ans")") ==
+          "start: \"file\" \"C:\\art\\piece.ans\" has a \\ in it; write / between directories, relative to the "
+          "steps file");
+    CHECK(startOf(R"("")") == "start: \"file\" is empty");
+    CHECK(startOf(R"("a\u0000b")") == "start: \"file\" holds a NUL character");
+}
+
 TEST_CASE("every action the steps file lists parses", "[steps]") {
     CHECK(steps::actions().size() > 30);
     CHECK(steps::pixelAction("halfBlock"));

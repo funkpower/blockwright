@@ -882,6 +882,13 @@ A steps file is JSON:
    "ice": true,                              a blank start's iCE colours (default on)
    "steps": [{"name": "base-ramp", "action": "gradient", ...}, ...]}
 
+A path in a steps file, "file" here, is relative to the steps file's
+directory, with / between directories, and .. may leave that directory. An
+absolute path (/..., C:...) and one with a \ in it are refused, so a steps
+file and the files beside it replay the same anywhere. A missing or
+unreadable file stops the replay before any step is applied, naming the
+step (or "start") and the path.
+
 Each step has a "name" (1-64 of a-z 0-9 - _, starting with a letter or
 digit) and an "action", the editor's name for it. Points are [x, y]: cells,
 or for the half-block tools (halfBlock, line, rectangle, ellipse, fill,
@@ -1064,8 +1071,10 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
     // not a step then fails: the read happened either way (#370)
     bw::project::Project startProject;
     try {
-        startProject = bwcli::replay::startSaying(script, fs::path(stepsPath).parent_path(), samplesDir, std::cerr,
-                                                  "blockwright-cli", stepsPath);
+        const fs::path stepsDir = fs::path(stepsPath).parent_path();
+        startProject = bwcli::replay::startSaying(script, stepsDir, samplesDir, std::cerr, "blockwright-cli", stepsPath);
+        // every file a step reads, before any step runs (#422)
+        bwcli::replay::load(script, stepsDir);
     } catch (const Failure& f) {
         throw Failure{stepsPath + ": " + f.message};
     }

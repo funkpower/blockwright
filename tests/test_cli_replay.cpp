@@ -30,11 +30,15 @@
 #include "blockwright/text.h"
 #include "blockwright/xbin.h"
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -45,6 +49,11 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 using namespace bw;
 using Catch::Matchers::ContainsSubstring;
@@ -860,6 +869,169 @@ TEST_CASE("a step that can't be applied stops the replay, named", "[replay]") {
     CHECK_THAT(failure(R"({"version": 1, "start": {"sample": "01-layers-showcase", "variant": "Dusk"},
                            "steps": [{"name": "a", "action": "selectAll"}]})"),
                ContainsSubstring("Dusk"));
+}
+
+TEST_CASE("a start file is found from the steps file's directory, never from an absolute path (#422)",
+          "[replay][paths]") {
+    const std::string dot = R"(, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 0]]}]})";
+    const auto startFrom = [&](const std::string& file) {
+        return bwcli::replay::start(steps::parse(R"({"version": 1, "start": {"file": ")" + file + "\"}" + dot), kReplay,
+                                    kSamples);
+    };
+    // relative, and through ..: the same piece either way
+    const project::Project beside = startFrom("layered.bwp");
+    CHECK(beside.layers.size() > 1);
+    const project::Project up = startFrom("../replay/layered.bwp");
+    CHECK(project::toAnsi(up).canvas == project::toAnsi(beside).canvas);
+    CHECK(bwcli::replay::resolve(kReplay, "../fonts/x.tdf") == kReplay / "../fonts/x.tdf");
+
+    // an absolute path is refused even when the file is there: the parser
+    // refuses it, and start() refuses one in a Script made in code
+    const std::string abs = fs::absolute(kReplay / "layered.bwp").string();
+    REQUIRE(fs::exists(abs));
+    const std::string says =
+        "start: \"file\" \"" + abs + "\" is absolute; a steps file names its files relative to its own directory";
+    try {
+        startFrom(abs);
+        FAIL("an absolute start was read");
+    } catch (const steps::StepsError& e) {
+        CHECK(std::string(e.what()) == says);
+    }
+    steps::Script made = steps::parse(R"({"version": 1, "start": {"file": "layered.bwp"})" + dot);
+    made.start.file = abs;
+    try {
+        bwcli::replay::start(made, kReplay, kSamples);
+        FAIL("an absolute start was read");
+    } catch (const bwcli::Failure& f) {
+        CHECK(f.message == says);
+    }
+
+    // a missing start names the start and the path it looked for
+    try {
+        startFrom("nowhere/piece.ans");
+        FAIL("a missing start was read");
+    } catch (const bwcli::Failure& f) {
+        CHECK(f.message == "start: " + (kReplay / "nowhere/piece.ans").string() + ": no such file");
+    }
+#ifndef _WIN32
+    // a start that isn't a regular file is refused, not read: a FIFO would
+    // block the read and a device would flood it
+    QTemporaryDir tmp;
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    REQUIRE(::mkfifo((dir / "fifo.ans").c_str(), 0600) == 0);
+    fs::create_symlink("/dev/zero", dir / "zero.ans");
+    // art over the most an entry may hold is refused from its size, before
+    // a byte is read, whatever a zip project may hold (a sparse file)
+    {
+        std::ofstream(dir / "big.ans", std::ios::binary) << "x";
+        fs::resize_file(dir / "big.ans", project::kMaxTotalBytes + 1);
+        try {
+            bwcli::replay::start(steps::parse(R"({"version": 1, "start": {"file": "big.ans"})" + dot), dir, kSamples);
+            FAIL("a start over the limit was read");
+        } catch (const bwcli::Failure& f) {
+            CHECK(f.message == "start: " + (dir / "big.ans").string() + ": larger than " +
+                                   std::to_string(project::kMaxEntryBytes) + " bytes, the most it may be");
+        }
+        fs::remove(dir / "big.ans");
+    }
+    // a directory that isn't a project is no start either
+    fs::create_directory(dir / "folder");
+    try {
+        bwcli::replay::start(steps::parse(R"({"version": 1, "start": {"file": "folder"})" + dot), dir, kSamples);
+        FAIL("a directory was read as a start");
+    } catch (const bwcli::Failure& f) {
+        CHECK(f.message == "start: " + (dir / "folder").string() + ": is a directory");
+    }
+    for (const std::string name : {"fifo.ans", "zero.ans"}) {
+        steps::Script s = steps::parse(R"({"version": 1, "start": {"file": ")" + name + "\"}" + dot);
+        try {
+            bwcli::replay::start(s, dir, kSamples);
+            FAIL("a start that isn't a regular file was read: " + name);
+        } catch (const bwcli::Failure& f) {
+            CHECK(f.message == "start: " + (dir / name).string() + ": not a regular file");
+        }
+    }
+#endif
+}
+
+TEST_CASE("the load pass reads every file a step names before the replay runs (#422)", "[replay][paths]") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path root = QFile::encodeName(tmp.path()).toStdString();
+    const fs::path dir = root / "tutorial";
+    fs::create_directories(dir / "fonts");
+    fs::create_directories(root / "shared");
+    const auto write = [](const fs::path& p, const std::string& bytes) {
+        std::ofstream(p, std::ios::binary) << bytes;
+    };
+    write(dir / "fonts/a.tdf", "font");
+    write(root / "shared/b.png", "picture");
+
+    // no action names a file yet, so a step's files are set in code, as the
+    // parser will set them for "tdf", "style" and "file"
+    const auto script = [](std::vector<steps::FileRef> first, std::vector<steps::FileRef> second = {}) {
+        steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [4, 2]}, "steps": [
+            {"name": "title", "action": "selectAll"}, {"name": "trace", "action": "selectAll"}]})");
+        s.steps[0].files = std::move(first);
+        s.steps[1].files = std::move(second);
+        return s;
+    };
+    const auto refusal = [&](steps::Script s, const fs::path& from = {}) {
+        try {
+            bwcli::replay::load(s, from.empty() ? dir : from);
+        } catch (const bwcli::Failure& f) {
+            return f.message;
+        }
+        return std::string("loaded");
+    };
+
+    SECTION("relative paths, .. among them, are read by their paths as written") {
+        steps::Script s = script({{"tdf", "fonts/a.tdf", 4}}, {{"file", "../shared/b.png", 64}, {"tdf", "fonts/a.tdf", 8}});
+        bwcli::replay::load(s, dir);
+        CHECK(s.files == std::map<std::string, std::string>{{"fonts/a.tdf", "font"}, {"../shared/b.png", "picture"}});
+        // and the replay runs as it would without them
+        CHECK(bwcli::replay::run(s, bwcli::replay::start(s, dir, kSamples)).captures.size() == 2);
+    }
+    SECTION("a missing file names the step and the path") {
+        CHECK(refusal(script({}, {{"file", "refs/sketch.png", 64}})) ==
+              "step 2 (trace): " + (dir / "refs/sketch.png").string() + ": no such file");
+    }
+    SECTION("an absolute path, or one pathProblem refuses, names the step and the key") {
+        const std::string abs = (dir / "fonts/a.tdf").string();
+        CHECK(refusal(script({{"tdf", abs, 64}})) ==
+              "step 1 (title): \"tdf\" \"" + abs + "\" is absolute; a steps file names its files relative to its own "
+              "directory");
+        CHECK(refusal(script({{"file", "fonts\\a.tdf", 64}})) ==
+              "step 1 (title): \"file\" \"fonts\\a.tdf\" has a \\ in it; write / between directories, relative to "
+              "the steps file");
+    }
+    SECTION("a directory or a device is not a file") {
+        CHECK(refusal(script({{"tdf", "fonts", 64}})) == "step 1 (title): " + (dir / "fonts").string() + ": is a directory");
+#ifndef _WIN32
+        CHECK(refusal(script({{"file", "null", 64}}), "/dev") == "step 1 (title): /dev/null: not a regular file");
+        REQUIRE(::mkfifo((dir / "fonts/fifo.tdf").c_str(), 0600) == 0);
+        CHECK(refusal(script({{"tdf", "fonts/fifo.tdf", 64}})) ==
+              "step 1 (title): " + (dir / "fonts/fifo.tdf").string() + ": not a regular file");
+#endif
+    }
+    SECTION("a file over its step's limit is refused, and a second step's smaller limit holds") {
+        CHECK(refusal(script({{"tdf", "fonts/a.tdf", 3}})) ==
+              "step 1 (title): " + (dir / "fonts/a.tdf").string() + ": larger than 3 bytes, the most it may be");
+        CHECK(refusal(script({{"tdf", "fonts/a.tdf", 4}}, {{"tdf", "fonts/a.tdf", 2}})) ==
+              "step 2 (trace): " + (dir / "fonts/a.tdf").string() + ": larger than 2 bytes, the most it may be");
+    }
+#ifndef _WIN32
+    SECTION("an unreadable file says why") {
+        if (::geteuid() == 0)
+            SKIP("root reads a file without permissions");
+        const fs::path locked = dir / "fonts/locked.tdf";
+        write(locked, "x");
+        fs::permissions(locked, fs::perms::none);
+        const std::string why = refusal(script({{"tdf", "fonts/locked.tdf", 64}}));
+        fs::permissions(locked, fs::perms::owner_all);
+        CHECK(why == "step 1 (title): " + locked.string() + ": can't be read: " + std::strerror(EACCES));
+    }
+#endif
 }
 
 TEST_CASE("a core error a step raises is the step's failure, not an abort", "[replay]") {

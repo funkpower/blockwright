@@ -1082,6 +1082,28 @@ expect "replay: a view step is refused, named" 1 "^blockwright-cli: $rp/view\.js
 if [[ ! -e $rp/view ]]; then ok "replay: a refused view step writes nothing"; else bad "replay wrote files for a view step"; fi
 printf '{"version": 1, "start": {"file": "missing.ans"}, "steps": [{"name": "fit", "action": "view", "ircFit": true}]}' > "$rp/view-nostart.json"
 expect "replay: a view step is refused before the start is read" 1 'step 1 \(fit\): view sets the window' -- "$cli" replay "$rp/view-nostart.json" -o "$rp/view-nostart"
+# paths in a steps file (#422): relative to its directory, .. allowed; an
+# absolute start is refused when the file is there, naming the start, and
+# nothing is written; a missing one names the start and the path it looked for
+mkdir -p "$rp/paths/tut"
+cp "$data/brushes/sphere-steel.ans" "$rp/paths/piece.ans"
+printf '{"version": 1, "start": {"file": "../piece.ans"}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}]}' > "$rp/paths/tut/up.json"
+expect "replay: a start file through .. is read" 0 '' -- "$cli" replay "$rp/paths/tut/up.json" -o "$rp/paths/up"
+if [[ -f $rp/paths/up/01-dot.ans ]]; then ok "replay: a start through .. writes its capture"; else bad "replay: no capture from a start through .."; fi
+printf '{"version": 1, "start": {"file": "%s"}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}]}' "$rp/paths/piece.ans" > "$rp/paths/abs.json"
+expect "replay: an absolute start is refused, naming the start" 1 "^blockwright-cli: $rp/paths/abs\.json: start: \"file\" \"$rp/paths/piece\.ans\" is absolute; a steps file names its files relative to its own directory\$" -- "$cli" replay "$rp/paths/abs.json" -o "$rp/paths/abs"
+if [[ ! -e $rp/paths/abs ]]; then ok "replay: a refused absolute start writes nothing"; else bad "replay wrote files for an absolute start"; fi
+printf '{"version": 1, "start": {"file": "art\\\\piece.ans"}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}]}' > "$rp/paths/bs.json"
+expect "replay: a start with a backslash is refused" 1 "^blockwright-cli: $rp/paths/bs\\.json: start: \"file\" \"art\\\\piece\\.ans\" has a \\\\ in it; write / between directories, relative to the steps file\$" -- "$cli" replay "$rp/paths/bs.json" -o "$rp/paths/bs"
+if [[ ! -e $rp/paths/bs ]]; then ok "replay: a refused backslash start writes nothing"; else bad "replay wrote files for a backslash start"; fi
+printf '{"version": 1, "start": {"file": "nowhere/piece.ans"}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}]}' > "$rp/paths/missing.json"
+expect "replay: a missing start names the start and the path" 1 "^blockwright-cli: $rp/paths/missing\.json: start: $rp/paths/nowhere/piece\.ans: no such file\$" -- "$cli" replay "$rp/paths/missing.json" -o "$rp/paths/missing"
+if [[ ! -e $rp/paths/missing ]]; then ok "replay: a missing start writes nothing"; else bad "replay wrote files for a missing start"; fi
+# a FIFO start is refused, not opened: opening it would wait for a writer
+mkfifo "$rp/paths/fifo.ans"
+printf '{"version": 1, "start": {"file": "fifo.ans"}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}]}' > "$rp/paths/fifo.json"
+expect "replay: a FIFO start is not a regular file" 1 "^blockwright-cli: $rp/paths/fifo\\.json: start: $rp/paths/fifo\\.ans: not a regular file\$" -- "$cli" replay "$rp/paths/fifo.json" -o "$rp/paths/fifo"
+expect "replay --help says paths are relative and absolute ones refused (#422)" 0 '^absolute path \(/\.\.\., C:\.\.\.\) and one with a \\ in it are refused, so a steps$' -- "$cli" replay --help
 expect "replay --help documents the view step (#398)" 0 '^  view +the window.s view, for blockwright --screenshot only:$' -- "$cli" replay --help
 expect "replay --help documents the window's size (#295)" 0 '^here: a top-level "window": \[w, h\], the window.s size in pixels' -- "$cli" replay --help
 expect "replay --help documents a step's screenshot and its scale (#295)" 0 '^ +"when": "before" \| "after" \| "both", "scale": 1 \| 2,$' -- "$cli" replay --help

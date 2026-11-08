@@ -135,6 +135,20 @@ else
   bad "a core error at a step (exit $st): $(cat "$tmp/notes/err")"
 fi
 
+# Paths (#422): the window reads a steps file's paths as blockwright-cli
+# replay does, so an absolute start is refused, naming the start, when the
+# file is there, and nothing is written.
+printf '{"version": 1, "start": {"file": "%s"}, "steps": [{"name": "sel", "action": "selectAll", "screenshot": {"of": "window"}}]}\n' \
+  "$tmp/notes/clean" >"$tmp/notes/abs.json"
+"$bin" --screenshot "$tmp/notes/abs.json" -o "$tmp/notes/abs-shots" >"$tmp/notes/out" 2>"$tmp/notes/err"; st=$?
+want="blockwright: $tmp/notes/abs.json: start: \"file\" \"$tmp/notes/clean\" is absolute; a steps file names its files relative to its own directory"
+got=$(grep '^blockwright: ' "$tmp/notes/err")
+if [ "$st" -eq 1 ] && [ "$got" = "$want" ] && [ ! -e "$tmp/notes/abs-shots" ]; then
+  ok "an absolute start is refused, naming the start, nothing written"
+else
+  bad "an absolute start (exit $st): $(cat "$tmp/notes/err")"
+fi
+
 # "scale": 2 (#295): the same pictures drawn at device pixel ratio 2, twice
 # the pixels each way, from the same 1024 x 720 window.
 sed -e 's/"of": "toolOptions"}/"of": "toolOptions", "scale": 2}/' \

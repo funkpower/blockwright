@@ -12,6 +12,7 @@
 //     "start": {"file": "piece.ans"} | {"file": "piece.bwp"}
 //              | {"sample": "01-layers-showcase", "variant": "Day"}
 //              | {"blank": [80, 25]},
+//              (a path relative to the steps file: pathProblem below)
 //     "ice": true,                     optional: the iCE setting of a blank start
 //     "steps": [ {step}, ... ]
 //   }
@@ -136,7 +137,9 @@
 #include "blockwright/selection.h"
 #include "blockwright/text_source.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -152,6 +155,26 @@ constexpr int kMaxBlankSide = 4096;
 class StepsError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
+};
+
+// Paths in a steps file (#422): "start"'s "file", and every file a step
+// reads, is named relative to the steps file's directory with `/` between
+// directories, so the file and what it names replay the same anywhere.
+// `..` may leave that directory (tutorials share a fonts folder). Returns
+// why `path` can't be one, to be said after the key's quoted name:
+// empty, a NUL in it, a `\` in it (a separator only Windows reads, and the
+// start of a UNC path), or absolute (a leading `/`, or a drive letter and
+// `:`). The path is quoted in what it says, but for a NUL.
+std::optional<std::string> pathProblem(std::string_view path);
+
+// A file a step reads (#422): the key that names it ("tdf", "file"), its
+// path as written (pathProblem passes it) and the most bytes it may hold.
+// The load pass (bwcli::replay::load) reads each into Script::files before
+// the replay runs, so applying a step does no I/O.
+struct FileRef {
+    std::string key;
+    std::string path;
+    std::size_t maxBytes = 0;
 };
 
 struct Start {
@@ -275,6 +298,10 @@ struct Step {
     Anchor anchor = Anchor::TopLeft;
     // clone: the source cell Ctrl+click sets before the stroke (#418)
     std::optional<Point> source;
+    // The files the step reads (#422), in the order it names them. No
+    // action names one yet: TheDraw faces, style files and reference
+    // pictures will.
+    std::vector<FileRef> files;
 };
 
 // The window's size a steps file may set, in pixels.
@@ -286,6 +313,9 @@ struct Script {
     std::optional<bool> ice;
     std::optional<int> windowWidth, windowHeight;  // "window": [w, h]
     std::vector<Step> steps;
+    // Each step's files' bytes by their paths as written, the load pass's
+    // (bwcli::replay::load); empty until it runs.
+    std::map<std::string, std::string> files;
 };
 
 // The actions a steps file may name, in the order PLAN §9 lists them.

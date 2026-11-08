@@ -34,9 +34,14 @@ struct Outcome {
     std::vector<std::string> notes;
 };
 
+// A path a steps file names (steps::pathProblem passes it), as a path from
+// `dir`, the steps file's directory (#422).
+std::filesystem::path resolve(const std::filesystem::path& dir, const std::string& path);
+
 // The start the script names: an .ans, XBIN, BIN or project file (relative
-// to `dir`, the steps file's directory), a sample in `samplesDir` by its
-// directory or .bwp name (with its variant made), or a blank canvas. Throws
+// to `dir`, the steps file's directory, through resolve; an absolute path
+// is refused), a sample in `samplesDir` by its directory or .bwp name (with
+// its variant made), or a blank canvas. Throws
 // Failure naming "start" when it can't be read. What reading a project
 // changed goes in `notes` when given, "start: <file>: " and the change
 // (bwcli::projectReadNotes).
@@ -52,6 +57,18 @@ bw::project::Project start(const bw::steps::Script& script, const std::filesyste
 bw::project::Project startSaying(const bw::steps::Script& script, const std::filesystem::path& dir,
                                  const std::filesystem::path& samplesDir, std::ostream& err,
                                  const std::string& program, const std::string& stepsPath);
+
+// The load pass (#422): every file the script's steps read (Step::files),
+// resolved from `dir` as the start is and read into script.files, before
+// the replay runs, so run() does no I/O and a missing file stops the replay
+// before any step is applied. blockwright-cli replay and blockwright
+// --screenshot both load so, after the start. Throws Failure naming the
+// step and the path resolved ("step 3 (title): <dir>/fonts/x.tdf: no such
+// file"), or the key for a path steps::pathProblem refuses, for a file that
+// isn't there, isn't a regular file or can't be read, and one larger than
+// its step allows. A path named twice is read once and holds to the
+// smaller limit.
+void load(bw::steps::Script& script, const std::filesystem::path& dir);
 
 // A capture's canvas as replay writes it (project::toAnsi). A project with
 // no SAUCE record gets a fresh one, dated `today` (CCYYMMDD) when given and
