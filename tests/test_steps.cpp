@@ -776,6 +776,26 @@ TEST_CASE("every bundled face, case, alignment and big style is a text option (#
                          std::string(TextSource::kMaxLength, 'a') + "\"}")) == "(accepted)");
 }
 
+TEST_CASE("a text step refuses a C1 control as it refuses C0 and DEL, and types from U+00A0 (#428)", "[steps][text]") {
+    for (const char* code : {"0080", "0085", "009F"}) {
+        INFO(code);
+        CHECK(refusal(script(std::string(R"({"name": "tx", "action": "text", "at": [1, 1], "text": "a\u)") + code +
+                             R"(b"})")) ==
+              std::string("step 1 (tx): \"text\" holds a control character the Text tool doesn't type (U+") + code +
+                  "); only \"\\n\", Enter, starts a new line");
+    }
+    // the same words as for C0 and DEL
+    CHECK(refusal(script(R"({"name": "tx", "action": "text", "at": [1, 1], "text": "a\u007fb"})")) ==
+          "step 1 (tx): \"text\" holds a control character the Text tool doesn't type (U+007F); only \"\\n\", "
+          "Enter, starts a new line");
+    // the first character past C1, no-break space, and the one after it
+    const steps::Script s = steps::parse(script(R"({"name": "nb", "action": "text", "at": [0, 0], "text": "a\u00a0b"},
+        {"name": "ex", "action": "text", "at": [0, 4], "text": "\u00a1"})"));
+    REQUIRE(s.steps.size() == 2);
+    CHECK(s.steps[0].text == U"a\u00a0b");
+    CHECK(s.steps[1].text == U"\u00a1");
+}
+
 TEST_CASE("a text step's bad value is refused, naming the step (#421)", "[steps][text]") {
     const std::pair<std::string, std::string> cases[] = {
         {R"("at": [1, 1])", "text needs \"text\" to type at its \"at\" cell"},

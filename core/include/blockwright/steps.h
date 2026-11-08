@@ -108,14 +108,15 @@
 // made active, its letters' top-left cell at "at" (makeTextLayer), as the
 // tool makes it from the first character typed. "at" and "text" go
 // together; "text" is 1 to TextSource::kMaxLength characters, none of them
-// a control character but "\n". "textOptions" is the tool's Tool Options,
-// each key optional (a bundled face's name, the rest as the dock shows
-// them); only a text step takes it, and what it sets holds for later text
-// steps, as Tool Options keep what a new text layer starts with. The step's
-// click comes first, so its options set the new layer's; a text step with
-// no "at" only sets them, and when the active layer is a live text layer
-// that isn't locked it sets them on that layer too, as Tool Options with
-// the Text tool chosen do (TextTool::setSettings).
+// a control character (C0, DEL or C1, typedInText in text.h) but "\n".
+// "textOptions" is the tool's Tool Options, each key optional (a bundled
+// face's name, the rest as the dock shows them); only a text step takes it,
+// and what it sets holds for later text steps, as Tool Options keep what a
+// new text layer starts with. The step's click comes first, so its options
+// set the new layer's; a text step with no "at" only sets them, and when
+// the active layer is a live text layer that isn't locked it sets them on
+// that layer too, as Tool Options with the Text tool chosen do
+// (TextTool::setSettings).
 //
 // Every key is checked: an unknown key, a key the action doesn't take, a
 // value of the wrong kind or out of range is refused, and the error names

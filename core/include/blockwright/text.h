@@ -80,6 +80,13 @@ struct TextRender {
 // out and drawn.
 std::u32string casedText(const TextSource& source);
 
+// Whether the Text tool types `ch`: anything but a control character, C0
+// (U+0000-U+001F), DEL (U+007F) or C1 (U+0080-U+009F). No face draws one
+// (pixel faces and TheDraw fonts hold ASCII glyphs only), and a UTF-8 .ans
+// and IRC text can't hold a C1 control either. Enter is a key of its own,
+// "\n" in the text. A text step (steps.h) refuses what this refuses.
+bool typedInText(char32_t ch);
+
 TextRender renderText(const TextSource& source, const Face& face);
 
 // The source drawn in `face` with `style` (see above), with iCE colours

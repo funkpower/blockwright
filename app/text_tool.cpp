@@ -546,6 +546,9 @@ bool TextTool::resume() {
 
 bool TextTool::keyPress(QKeyEvent* e) {
     const QString t = e->text();
+    // a key typing anything but C0 and DEL is the tool's: inputText types
+    // what typedInText allows and drops the rest, a C1 control too, so the
+    // key never reaches the canvas's cell typing, which would refuse it aloud
     const bool printable =
         std::any_of(t.begin(), t.end(), [](QChar c) { return c.unicode() >= 0x20 && c.unicode() != 0x7f; });
     if (!editing_ && !spot_) {
@@ -648,7 +651,7 @@ bool TextTool::inputText(const QString& text, int replaceStart, int replaceLengt
         return true;
     std::u32string typed;
     for (char32_t ch : text.toUcs4())
-        if (ch >= 0x20 && ch != 0x7f)
+        if (typedInText(ch))
             typed += ch;
     // the input method's offsets count UTF-16 units from the cursor
     const std::u32string& source = l ? l->props.text->text : defaults_.text;

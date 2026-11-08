@@ -99,6 +99,8 @@ std::optional<std::string> boxProblem(const Box& box) {
 
 } // namespace
 
+bool typedInText(char32_t ch) { return ch >= 0x20 && !(ch >= 0x7f && ch <= 0x9f); }
+
 std::u32string casedText(const TextSource& source) {
     std::u32string text = source.text;
     if (source.textCase == TextCase::Capitals)

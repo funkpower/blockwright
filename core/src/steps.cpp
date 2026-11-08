@@ -3,6 +3,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/big_text.h"
 #include "blockwright/face.h"
+#include "blockwright/text.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -556,12 +557,13 @@ Step readStep(const QJsonValue& v, int number) {
                                      : "\"text\" needs an \"at\" cell to start from");
     if (st.action == "text" && o.contains("text")) {
         // as typed: the Text tool takes the characters as they come, Enter
-        // as a new line, and types no other control character
+        // as a new line, and types no other control character, C0, DEL or
+        // C1 (typedInText)
         st.text = QString::fromStdString(stringOf(where, "text", o["text"])).toStdU32String();
         if (st.text.empty() || st.text.size() > TextSource::kMaxLength)
             fail(where, "\"text\" must be 1 to " + std::to_string(TextSource::kMaxLength) + " characters");
         for (const char32_t ch : st.text)
-            if ((ch < 0x20 && ch != U'\n') || ch == 0x7f) {
+            if (ch != U'\n' && !typedInText(ch)) {
                 char hex[16];
                 std::snprintf(hex, sizeof hex, "U+%04X", unsigned(ch));
                 fail(where, std::string("\"text\" holds a control character the Text tool doesn't type (") + hex +

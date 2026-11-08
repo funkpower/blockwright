@@ -166,6 +166,17 @@ void checkSaves(const Project& p, const fs::path& dir) {
 
 // ---- drawing ----------------------------------------------------------------
 
+TEST_CASE("the Text tool types no C0, DEL or C1 control, and everything else (#428)", "[text]") {
+    for (const char32_t ch : {0x00u, 0x09u, 0x0au, 0x1bu, 0x1fu, 0x7fu, 0x80u, 0x85u, 0x9bu, 0x9fu}) {
+        INFO(unsigned(ch));
+        CHECK_FALSE(typedInText(ch));
+    }
+    for (const char32_t ch : {0x20u, 0x41u, 0x7eu, 0xa0u, 0xa1u, 0xe9u, 0x2588u, 0x1f600u}) {
+        INFO(unsigned(ch));
+        CHECK(typedInText(ch));
+    }
+}
+
 TEST_CASE("a source draws its face's pixels as half blocks in its colour", "[text][render]") {
     const TestFace face;
     TextSource s = source(U"AB");

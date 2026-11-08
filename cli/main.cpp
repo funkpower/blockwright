@@ -904,7 +904,8 @@ mouse button (default left).
   gradient       "from", "to" (cells)
   text           the Text tool: "at" (a cell), "text" (as typed, not
                  NFC-composed, 1-4096 characters; "\n" is Enter, any
-                 other control character is refused): a click at "at",
+                 other control character, U+0000-U+001F, U+007F or
+                 U+0080-U+009F, is refused): a click at "at",
                  off every visible, unlocked text layer (a click on one
                  would edit it and is refused), then the text typed
                  there, making a new live text layer "Text N" above the

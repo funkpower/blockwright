@@ -914,6 +914,38 @@ TEST_CASE("an input method's replacement replaces text before the text cursor", 
     }
 }
 
+TEST_CASE("the Text tool drops C1 controls, typed or committed, as it drops C0 and DEL (#428)", "[text]") {
+    MainWindow w;
+    Document* d = w.document();
+    makeText(w, QStringLiteral("a"));
+    const int steps = d->undoStack()->count();
+    // dropped quietly: the canvas's cell typing never sees the key, so it
+    // doesn't report a glyph it can't type
+    QStringList rejected;
+    QObject::connect(w.canvasView(), &CanvasView::glyphRejected, [&](const QString& r) { rejected << r; });
+    for (const char16_t ch : {u'\u0080', u'\u0085', u'\u009f', u'\u007f', u'\u001b'}) {
+        INFO(unsigned(ch));
+        key(w.canvasView(), Qt::Key_unknown, QString(QChar(ch)));
+        QInputMethodEvent im;
+        im.setCommitString(QString(QChar(ch)));
+        QApplication::sendEvent(w.canvasView(), &im);
+    }
+    CHECK(sourceOf(d).text == U"a");
+    CHECK(d->undoStack()->count() == steps);
+    CHECK(rejected.isEmpty());
+    // a commit keeps what it may type around a C1 control
+    QInputMethodEvent mixed;
+    mixed.setCommitString(QString::fromUcs4(U"b\u0085c"));
+    QApplication::sendEvent(w.canvasView(), &mixed);
+    CHECK(sourceOf(d).text == U"abc");
+    // no-break space and the character after it are typed both ways
+    key(w.canvasView(), Qt::Key_unknown, QString(QChar(u'\u00a0')));
+    QInputMethodEvent im;
+    im.setCommitString(QString(QChar(u'\u00a1')));
+    QApplication::sendEvent(w.canvasView(), &im);
+    CHECK(sourceOf(d).text == U"abc\u00a0\u00a1");
+}
+
 TEST_CASE("End and Home keep the text cursor on its line at a wrap", "[text]") {
     MainWindow w;
     Document* d = w.document();
