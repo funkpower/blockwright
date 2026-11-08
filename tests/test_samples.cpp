@@ -981,6 +981,50 @@ TEST_CASE("the generator sample keeps its generators, their parameters and a bak
     CHECK(project::read(out / "ridges.bwp") == p);
 }
 
+#ifndef _WIN32
+TEST_CASE("the generator sample's ridges stay on a canvas shorter than the highest row the form allows") {
+    // Highest row goes to 33, which fits the sample's 34 rows; on a shorter
+    // canvas no peak still rises above it, and the far ridge lies along the
+    // last rows, so it shows in every column (#442)
+    const project::Project sample = project::read(kSamples / "04-generator-ridges");
+    const std::string from = generator::directory(named(sample.layers, "ridges").props.id);
+    std::map<std::string, std::string> files;
+    for (const auto& [path, bytes] : sample.files)
+        if (path.starts_with(from))
+            files[path.substr(from.size())] = bytes;
+    REQUIRE(files.count(std::string(generator::kSpecFile)) == 1);
+    struct sigaction old {};
+    REQUIRE(::sigaction(SIGCHLD, nullptr, &old) == 0);
+    struct Restore {
+        struct sigaction old;
+        ~Restore() { ::sigaction(SIGCHLD, &old, nullptr); }
+    } restore{old};
+    struct sigaction dfl {};
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    REQUIRE(::sigaction(SIGCHLD, &dfl, nullptr) == 0);
+    for (const auto& [height, top, roughness] :
+         std::vector<std::tuple<int, int, double>>{{25, 33, 0.3}, {25, 33, 1}, {25, 24, 0.3}, {34, 33, 1}, {6, 33, 0.3}}) {
+        INFO(height << " rows, top " << top << ", roughness " << roughness);
+        AnsiDocument doc;
+        doc.canvas = Canvas(80, height);
+        project::Project p = project::fromAnsi(doc);
+        files[std::string(generator::kParamsFile)] = R"({"ridges": 3, "roughness": )" + std::to_string(roughness) +
+                                                     R"(, "seed": 3, "sharp": false, "top": )" + std::to_string(top) +
+                                                     "}";
+        const LayerId id = generator::add(p, files, "ridges");
+        const Canvas& cells = p.layers.find(id)->cells;
+        REQUIRE(cells.height() == height);
+        for (int x = 0; x < cells.width(); ++x) {
+            INFO("column " << x);
+            CHECK_FALSE(cells.at(x, height - 1).transparent);
+            for (int y = 0; y < std::min(top, height - 1); ++y)
+                CHECK(cells.at(x, y).transparent);
+        }
+    }
+}
+#endif
+
 TEST_CASE("the generator sample's pines run unbroken from tip to crown") {
     const project::Project p = project::read(kSamples / "04-generator-ridges");
     const Layer& pines = named(p.layers, "pines");

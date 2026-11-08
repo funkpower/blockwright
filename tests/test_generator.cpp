@@ -15,6 +15,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
 #include <QJsonDocument>
 #include <QJsonObject>
 
@@ -39,6 +43,7 @@
 
 using namespace bw;
 using Catch::Matchers::ContainsSubstring;
+using Catch::Matchers::EndsWith;
 namespace fs = std::filesystem;
 namespace gen = bw::generator;
 
@@ -551,6 +556,46 @@ TEST_CASE("a generator that fails, hangs or floods leaves the project as it was"
     refreshFails("echo oops >&2; exit 2\n", "sh exited with status 2:\noops");
     refreshFails("exit 1\n", "sh exited with status 1");
     refreshFails("kill -9 $$\n", "sh crashed");
+    // a program that names its own file by its full path, as Python's
+    // traceback does, names it from the generator's directory, not from the
+    // random temporary copy it ran in, written as given or with links
+    // resolved; the directory itself is named as the generator's (#441)
+    const auto namesNoTempDir = [&] {
+        project::Project q = good;
+        q.files[script] = "echo \"File $PWD/gen.sh, line 1\" >&2; echo \"in $(pwd -P)\" >&2;"
+                          " echo \"File $(pwd -P)/sub/x.py\" >&2; echo \"left $(pwd -P).\" >&2; exit 4\n";
+        try {
+            gen::refresh(q, id, quick);
+            FAIL("no throw");
+        } catch (const gen::GeneratorError& e) {
+            const std::string what = e.what();
+            CHECK_THAT(what, EndsWith("sh exited with status 4:\nFile ./gen.sh, line 1\nin <generator dir>\n"
+                                      "File ./sub/x.py\nleft <generator dir>."));
+            CHECK(what.find(QDir::tempPath().toStdString()) == std::string::npos);
+            CHECK(what.find(QFileInfo(QDir::tempPath()).canonicalFilePath().toStdString()) == std::string::npos);
+        }
+    };
+    namesNoTempDir();
+    {
+        // under a TMPDIR reached through a link, as macOS's /var is, the
+        // program sees the resolved path
+        QTemporaryDir real;
+        REQUIRE(real.isValid());
+        const fs::path base(QFile::encodeName(real.path()).toStdString());
+        fs::create_directory(base / "real");
+        fs::create_directory_symlink(base / "real", base / "link");
+        const QByteArray oldTmp = qgetenv("TMPDIR");
+        const bool hadTmp = qEnvironmentVariableIsSet("TMPDIR");
+        qputenv("TMPDIR", QFile::encodeName(QString::fromStdString((base / "link").string())));
+        struct Restore {
+            QByteArray old;
+            bool had;
+            ~Restore() { had ? qputenv("TMPDIR", old) : qunsetenv("TMPDIR"); }
+        } restore{oldTmp, hadTmp};
+        REQUIRE(QDir::tempPath() != QFileInfo(QDir::tempPath()).canonicalFilePath());
+        INFO("TMPDIR through a link");
+        namesNoTempDir();
+    }
     // the end of a long stderr, from a line start
     refreshFails("i=0; while [ $i -lt 400 ]; do echo \"line $i of the noise\" >&2; i=$((i+1)); done; exit 5\n",
                  "status 5:\nline ");

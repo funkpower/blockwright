@@ -8,6 +8,7 @@
 #include <QDeadlineTimer>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -33,6 +34,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -615,6 +617,46 @@ std::string tail(const QByteArray& s, qsizetype n) {
     return t.trimmed().toStdString();
 }
 
+// `text` with the directory a program ran in, whether written as given,
+// with its links resolved or with native separators, replaced: a path in it
+// becomes `./name` and the directory itself `<generator dir>`. The temporary
+// directory's random path is not one the reader has (and would carry TMPDIR
+// into a log), while the rest of a path names their own file.
+std::string hideRunDir(std::string text, const std::string& dir) {
+    std::vector<std::string> forms;
+    const auto addForm = [&](const QString& d) {
+        for (QString f : {d, QDir::toNativeSeparators(d)}) {
+            while (f.size() > 1 && (f.endsWith(u'/') || f.endsWith(u'\\')))
+                f.chop(1);
+            if (std::string s = utf8(f); s.size() > 1 && std::find(forms.begin(), forms.end(), s) == forms.end())
+                forms.push_back(std::move(s));
+        }
+    };
+    const QString given = QString::fromStdString(dir);
+    addForm(given);
+    addForm(QFileInfo(given).canonicalFilePath());
+    // the longest first, so a form that holds another goes whole
+    std::sort(forms.begin(), forms.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+    const auto nameChar = [&](std::size_t i) {
+        const unsigned char c = i < text.size() ? static_cast<unsigned char>(text[i]) : ' ';
+        return std::isalnum(c) || c == '_' || c == '-';
+    };
+    for (const std::string& f : forms)
+        for (std::size_t at = text.find(f); at != std::string::npos; at = text.find(f, at)) {
+            const std::size_t end = at + f.size();
+            const char next = end < text.size() ? text[end] : ' ';
+            // a longer name (`<dir>2`, `<dir>.bak`) is another path
+            if (nameChar(end) || (next == '.' && nameChar(end + 1))) {
+                at = end;
+                continue;
+            }
+            const std::string_view to = next == '/' || next == '\\' ? "." : "<generator dir>";
+            text.replace(at, f.size(), to);
+            at += to.size();
+        }
+    return text;
+}
+
 } // namespace
 
 std::string directory(LayerId id) { return "scripts/" + std::to_string(id) + "/"; }
@@ -1115,7 +1157,7 @@ std::string execute(Slot& slot, const std::vector<std::string>& argv, const std:
     }
     if (!stopped.empty())
         fail(name + ": " + stopped);
-    const std::string said = tail(err, 2000);
+    const std::string said = hideRunDir(tail(err, 2000), dir);
     const std::string stderrNote = said.empty() ? "" : ":\n" + said;
     if (ended->si_code != CLD_EXITED)
         fail(name + ": " + program + " crashed" + stderrNote);
@@ -1220,7 +1262,7 @@ std::string execute(Slot& slot, const std::vector<std::string>& argv, const std:
     }
     if (!stopped.empty())
         fail(name + ": " + stopped);
-    const std::string said = tail(err, 2000);
+    const std::string said = hideRunDir(tail(err, 2000), dir);
     const std::string stderrNote = said.empty() ? "" : ":\n" + said;
     // an exception's NTSTATUS (0xC…), as an access violation leaves
     if ((code & 0xC0000000u) == 0xC0000000u)

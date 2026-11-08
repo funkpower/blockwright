@@ -73,6 +73,11 @@ END {
     rough = field(params, "roughness") + 0
     top = field(params, "top") + 0
     sharp = field(params, "sharp") == "true"
+    # no peak rises above `top`, and none of the far ridge goes under the
+    # last row: on a canvas shorter than `top`, or than the rows under it the
+    # ridge would take, it lies along the last rows, so every column shows it
+    if (top > h - 1)
+        top = h - 1
 
     # the PC palette's order (blue 1, red 4) to SGR's (red 1, blue 4)
     split("0 4 2 6 1 5 3 7", a, " ")
@@ -110,6 +115,8 @@ END {
                 y = top + int((1 - v) * 7 + 0.5)
                 if (y < top)
                     y = top
+                if (y > h - 1)
+                    y = h - 1
             } else {
                 y = ridge[r - 1, x] + (v > 0.5 ? 3 : 2)
                 # a row a column: the other of the two where it would be two

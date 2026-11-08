@@ -702,6 +702,14 @@ if [[ -z $out ]]; then ok "info with a foreign option prints no info"; else bad 
 if [[ -z $(ls -A "$foreign") ]]; then ok "commands with a foreign option write nothing"; else bad "foreign options wrote: $(ls -A "$foreign")"; fi
 expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert, shade, pack, unpack, snapshot or replay option, not a render option$' -- \
   "$cli" render "$piece" "$foreign/late.png" --allow-lossy
+# a one-letter option is named as it is typed, with one dash (#443)
+expect "render refuses -o with one dash" 2 '^blockwright-cli: -o is a replay option, not a render option$' -- \
+  "$cli" render "$piece" -o "$foreign/short.png"
+expect "render refuses --output by its short name" 2 '^blockwright-cli: -o is a replay option, not a render option$' -- \
+  "$cli" render "$piece" --output "$foreign/long.png"
+expect "a long option keeps two dashes" 2 '^blockwright-cli: --project is a replay option, not a convert option$' -- \
+  "$cli" convert --project "$piece" "$foreign/proj.ans"
+if [[ -z $(ls -A "$foreign") ]]; then ok "a refused -o writes nothing"; else bad "a refused -o wrote: $(ls -A "$foreign")"; fi
 
 expect "export bad input" 1 'nope\.ans: No such file' -- "$cli" export --irc "$tmp/nope.ans" "$tmp/x.txt"
 expect "export unwritable output" 1 'no/such/dir/out\.txt' -- "$cli" export --irc "$piece" "$tmp/no/such/dir/out.txt"

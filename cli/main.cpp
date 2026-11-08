@@ -1215,6 +1215,12 @@ int libraryCheck(const std::string& dir) {
     return problems ? kBadInput : kOk;
 }
 
+// An option as it is typed: `-o` for a one-letter name, `--name` for a long one.
+std::string optionName(const QCommandLineOption& o) {
+    const std::string n = o.names().first().toStdString();
+    return (n.size() == 1 ? "-" : "--") + n;
+}
+
 } // namespace
 
 // render --irc's entry in the command list spells these out.
@@ -1557,7 +1563,7 @@ int main(int argc, char** argv) {
             for (std::size_t i = 0; i < cmds.size(); ++i)
                 owner += std::string(i == 0 ? "" : i + 1 == cmds.size() ? " or " : ", ") + cmds[i];
             const bool vowel = std::string_view("aeiou").find(owner[0]) != std::string_view::npos;
-            return usage(("--" + o->names().first().toStdString() + " is " + (vowel ? "an " : "a ") + owner +
+            return usage((optionName(*o) + " is " + (vowel ? "an " : "a ") + owner +
                           " option, not a " + cmd.toStdString() + " option")
                              .c_str());
         }
@@ -1606,7 +1612,7 @@ int main(int argc, char** argv) {
             if (!parser.isSet(ircOpt))
                 for (const QCommandLineOption* o : {&budgetOpt, &fitOpt, &padOpt, &swapShadesOpt})
                     if (parser.isSet(*o))
-                        return usage(("--" + o->names().first().toStdString() + " is a render --irc option").c_str());
+                        return usage((optionName(*o) + " is a render --irc option").c_str());
             std::optional<IrcArgs> irc;
             if (parser.isSet(ircOpt))
                 irc = ircArgs();
@@ -1772,7 +1778,7 @@ int main(int argc, char** argv) {
             if (!parser.isSet(renderOpt))
                 for (const QCommandLineOption* o : {&scaleOpt, &fontWidthOpt})
                     if (parser.isSet(*o))
-                        return usage(("--" + o->names().first().toStdString() + " is a replay --render option").c_str());
+                        return usage((optionName(*o) + " is a replay --render option").c_str());
             ReplayArgs a;
             a.outDir = parser.value(outputOpt).toStdString();
             a.project = parser.isSet(projectOpt);
