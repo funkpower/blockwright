@@ -18,8 +18,10 @@
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
 #include "blockwright/library.h"
+#include "blockwright/project.h"
 #include "blockwright/render.h"
 #include "blockwright/stamp_slice.h"
+#include "blockwright/text.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -486,6 +488,213 @@ TEST_CASE("placing a stamp never changes the Paste Mode setting; a pick during t
         press(v, Qt::Key_Return);
         CHECK(s->pasteMode() == PasteMode::Transparent);
     }
+}
+
+// #433: a layer that can't take a stamp is refused when the stamp is placed,
+// with the reason, as the Library's text style is: nothing floats, and the
+// canvas and the undo history stay as they were.
+TEST_CASE("placing a stamp on a layer that can't take it says why and changes nothing", "[library][layers]") {
+    project::Project p;
+    p.layers = LayerStack(80, 25);
+    const LayerId bottom = p.layers.add(makeLayer(LayerKind::Cells, 80, 25));
+    p.layers.find(bottom)->cells.at(1, 1).ch = U'a';
+    TextSource source;
+    source.text = U"x";
+    source.wrapWidth = TextSource::kMaxWrapWidth;
+    const LayerId text = p.layers.add(makeTextLayer(source));
+    const LayerId generator = p.layers.add(makeLayer(LayerKind::Generator, 80, 25));
+    const LayerId reference = p.layers.add(makeLayer(LayerKind::Reference, 80, 25));
+    const LayerId pixels = p.layers.add(makeLayer(LayerKind::Pixels, 80, 25));
+
+    Fixture f;
+    Document* doc = f.w.document();
+    doc->replace(p, QStringLiteral("stamp.bwp"), FileForm::ProjectZip);
+    const fs::path star = bwtest::dataDir() / "library" / "sky" / "small-star.ans";
+
+    QString expected;
+    SECTION("locked") {
+        REQUIRE(doc->setActiveLayer(bottom));
+        LayerProperties props = doc->active()->props;
+        props.locked = true;
+        REQUIRE(doc->setLayerProperties(bottom, props, QStringLiteral("Lock")));
+        expected = QStringLiteral("the layer is locked");
+    }
+    SECTION("hidden") {
+        REQUIRE(doc->setActiveLayer(bottom));
+        LayerProperties props = doc->active()->props;
+        props.visible = false;
+        REQUIRE(doc->setLayerProperties(bottom, props, QStringLiteral("Hide")));
+        expected = QStringLiteral("the layer is hidden");
+    }
+    SECTION("live text") {
+        REQUIRE(doc->setActiveLayer(text));
+        expected = QStringLiteral("a live Text layer is drawn from its text");
+    }
+    SECTION("generator") {
+        REQUIRE(doc->setActiveLayer(generator));
+        expected = QStringLiteral("a Generator layer is drawn by its generator");
+    }
+    SECTION("reference") {
+        REQUIRE(doc->setActiveLayer(reference));
+        expected = QStringLiteral("a Reference layer holds a picture, not cells");
+    }
+    SECTION("pixels, a stamp with glyphs other than half blocks") {
+        REQUIRE(doc->setActiveLayer(pixels));
+        // the star's · ─ ☼, each once
+        expected = QStringLiteral("a Pixels layer holds no ·─☼");
+    }
+    const Canvas canvas = doc->canvas();
+    const LayerStack layers = doc->layers();
+    const int steps = doc->undoStack()->count();
+    const int index = doc->undoStack()->index();
+    const auto unchanged = [&] {
+        CHECK_FALSE(f.w.selectTool()->floating());
+        CHECK(doc->canvas() == canvas);
+        CHECK(doc->layers().layers() == layers.layers());
+        CHECK(doc->undoStack()->count() == steps);
+        CHECK(doc->undoStack()->index() == index);
+    };
+
+    QString error;
+    CHECK_FALSE(f.w.placeStamp(star, {2, 2}, &error));
+    CHECK(error == expected);
+    unchanged();
+
+    // dropped from the dock, it says so in the status bar
+    const std::unique_ptr<QMimeData> mime = dragged(f.dock, QStringLiteral("Small star"));
+    CHECK(drop(f.w.canvasView(), mime.get(), {2, 2}));
+    CHECK(f.w.statusBar()->currentMessage() ==
+          QStringLiteral("Could not place %1: %2").arg(QString::fromStdString(star.string()), expected));
+    // Enter lands nothing, for nothing floats
+    press(f.w.canvasView(), Qt::Key_Return);
+    unchanged();
+}
+
+TEST_CASE("a stamp still floats and lands on a layer that can take it", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    QString error;
+
+    SECTION("a Pixels layer and a stamp of half blocks and blanks") {
+        CellBlock block(3, 1);
+        block.at(0, 0).ch = U'█';
+        block.at(1, 0).ch = U' ';
+        block.at(2, 0).ch = U'▀';
+        block.at(2, 0).fg = Color::indexed(Red);
+        block.at(2, 0).bg = Color::indexed(Blue);
+        const fs::path path = fspath(QDir(f.user.path()).filePath(QStringLiteral("halves.ans")));
+        library::writeStamp(path, library::encodeStamp("Halves", "test", {}, block, false, std::nullopt));
+        f.dock->rescan();
+        REQUIRE(doc->addLayer(LayerKind::Pixels));
+        const int steps = doc->undoStack()->count();
+        REQUIRE(f.w.placeStamp(path, {4, 4}, &error));
+        REQUIRE(s->floating());
+        press(f.w.canvasView(), Qt::Key_Return);
+        CHECK(doc->undoStack()->count() == steps + 1);
+        CHECK(halfBlocks(doc->canvas().at(6, 4)) == HalfPair{Red, Blue});
+    }
+    SECTION("a rasterised Text layer") {
+        project::Project p;
+        p.layers = LayerStack(80, 25);
+        p.layers.add(makeLayer(LayerKind::Cells, 80, 25));
+        const LayerId id = p.layers.add(makeLayer(LayerKind::Text, 80, 25));
+        doc->replace(p, QStringLiteral("stamp.bwp"), FileForm::ProjectZip);
+        REQUIRE(doc->setActiveLayer(id));
+        REQUIRE(doc->editable());
+        const int steps = doc->undoStack()->count();
+        REQUIRE(f.w.placeStamp(bwtest::dataDir() / "library" / "sky" / "small-star.ans", {10, 5}, &error));
+        REQUIRE(s->floating());
+        press(f.w.canvasView(), Qt::Key_Return);
+        CHECK(doc->undoStack()->count() == steps + 1);
+        CHECK(doc->canvas().at(12, 5).ch == Glyph(U'·'));
+    }
+}
+
+TEST_CASE("a stamp is checked as it is: a Pixels layer refuses ▌ ▐ though a turn makes them half blocks",
+          "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    CellBlock block(3, 1);
+    block.at(0, 0).ch = U'▌';
+    block.at(1, 0).ch = U'█';
+    block.at(2, 0).ch = U'▐';
+    const fs::path path = fspath(QDir(f.user.path()).filePath(QStringLiteral("sides.ans")));
+    library::writeStamp(path, library::encodeStamp("Sides", "test", {}, block, false, std::nullopt));
+    f.dock->rescan();
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    const Canvas canvas = doc->canvas();
+    const int steps = doc->undoStack()->count();
+    QString error;
+    CHECK_FALSE(f.w.placeStamp(path, {4, 4}, &error));
+    CHECK(error == QStringLiteral("a Pixels layer holds no ▌▐"));
+    CHECK_FALSE(f.w.selectTool()->floating());
+    CHECK(doc->canvas() == canvas);
+    CHECK(doc->undoStack()->count() == steps);
+}
+
+TEST_CASE("a refused stamp leaves a block that already floats floating", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    write(f.w, 0, 0, QStringLiteral("ab"));
+    SelectTool* s = f.w.selectTool();
+    f.w.tools()->setActive(s);
+    s->select({0, 0, 2, 1});
+    s->copy();
+    f.w.canvasView()->setCellCursor({5, 3});
+    s->paste();
+    REQUIRE(s->floating());
+    LayerProperties props = doc->active()->props;
+    props.locked = true;
+    REQUIRE(doc->setLayerProperties(doc->activeLayer(), props, QStringLiteral("Lock")));
+    // the lock is a document change: it cancels the paste, so float it again
+    f.w.tools()->setActive(s);
+    s->paste();
+    REQUIRE(s->floating());
+    const int steps = doc->undoStack()->count();
+    QString error;
+    CHECK_FALSE(f.w.placeStamp(bwtest::dataDir() / "library" / "sky" / "small-star.ans", {10, 5}, &error));
+    CHECK(error == QStringLiteral("the layer is locked"));
+    CHECK(s->floating());
+    CHECK(s->floatingPos() == QPoint(5, 3));
+    CHECK(doc->undoStack()->count() == steps);
+}
+
+// Fallback review round 1 on #435: the check comes after the tool before
+// has landed what it holds, so the Text tool's emptied new layer is gone
+// and the stamp goes on the layer under it.
+TEST_CASE("a stamp placed while the Text tool holds the emptied text layer it made lands on the layer under it",
+          "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    const LayerId background = doc->activeLayer();
+    const size_t layers = doc->layers().size();
+    f.w.tools()->setActive(QStringLiteral("text"));
+    {
+        CanvasView* v = f.w.canvasView();
+        const QPointF at = v->cellRect(QPoint(2, 1)).center();
+        for (const QEvent::Type type : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+            QMouseEvent e(type, at, v->mapToGlobal(at), Qt::LeftButton,
+                          type == QEvent::MouseButtonPress ? Qt::MouseButtons(Qt::LeftButton) : Qt::NoButton,
+                          Qt::NoModifier);
+            QApplication::sendEvent(v, &e);
+        }
+    }
+    press(f.w.canvasView(), Qt::Key_A, QStringLiteral("A"));
+    press(f.w.canvasView(), Qt::Key_Backspace, QStringLiteral("\b"));
+    REQUIRE(doc->layers().size() == layers + 1);
+    REQUIRE(doc->active()->props.text);
+    REQUIRE(doc->active()->props.text->text.empty());
+
+    QString error;
+    CHECK(f.w.placeStamp(bwtest::dataDir() / "library" / "sky" / "small-star.ans", {10, 5}, &error));
+    INFO("error: " << error.toStdString());
+    CHECK(error.isEmpty());
+    CHECK(doc->activeLayer() == background);
+    CHECK(doc->layers().size() == layers);
+    REQUIRE(f.w.selectTool()->floating());
+    press(f.w.canvasView(), Qt::Key_Return);
+    CHECK(doc->canvas().at(12, 5).ch == Glyph(U'·'));
 }
 
 TEST_CASE("a stamp that can't be read is reported, not placed") {

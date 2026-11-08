@@ -15,7 +15,11 @@
 #include "text_tool.h"
 #include "tool.h"
 
+#include "blockwright/glyph.h"
+#include "blockwright/halfblock.h"
+#include "blockwright/layer.h"
 #include "blockwright/library.h"
+#include "blockwright/selection.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -28,6 +32,7 @@
 #include <algorithm>
 #include <exception>
 #include <optional>
+#include <vector>
 
 namespace bw {
 
@@ -100,6 +105,48 @@ QString iceProblem(const library::TextStyleEntry& entry, bool ice) {
     return entry.iceRequired && !ice
                ? MainWindow::tr("%1 needs iCE colours, which are off (View > iCE Colours)").arg(QString::fromStdString(entry.name))
                : QString();
+}
+
+// The glyphs of `block` a Pixels layer can't hold, each once in reading
+// order: what fitLayerEdit refuses when the stamp lands there in transparent
+// mode (its blank cells and holes write nothing, a half pixel is held).
+QString unheldOnPixels(const CellBlock& block) {
+    QString out;
+    std::vector<Glyph> seen;
+    for (const Cell& c : block.cells) {
+        if (c.transparent || isBlank(c) || c.ch.isContinuation() || halfBlocks(c, true))
+            continue;
+        if (std::find(seen.begin(), seen.end(), c.ch) != seen.end())
+            continue;
+        seen.push_back(c.ch);
+        for (const char32_t cp : codePoints(c.ch))
+            out += QString::fromUcs4(&cp, 1);
+    }
+    return out;
+}
+
+// Why the active layer can't take `block` as a stamp (Document::editable and
+// fitLayerEdit's reasons), or nothing when it can.
+QString stampProblem(const Document& doc, const CellBlock& block) {
+    const Layer* l = doc.active();
+    if (!l)
+        return MainWindow::tr("there is no active layer");
+    if (l->props.locked)
+        return MainWindow::tr("the layer is locked");
+    if (!l->props.visible)
+        return MainWindow::tr("the layer is hidden");
+    switch (l->props.kind) {
+    case LayerKind::Cells: return {};
+    case LayerKind::Text:
+        return l->props.text ? MainWindow::tr("a live Text layer is drawn from its text") : QString();
+    case LayerKind::Generator: return MainWindow::tr("a Generator layer is drawn by its generator");
+    case LayerKind::Reference: return MainWindow::tr("a Reference layer holds a picture, not cells");
+    case LayerKind::Pixels:
+        if (const QString unheld = unheldOnPixels(block); !unheld.isEmpty())
+            return MainWindow::tr("a Pixels layer holds no %1").arg(unheld);
+        return {};
+    }
+    return {};
 }
 
 } // namespace
@@ -178,7 +225,16 @@ bool MainWindow::placeStamp(const std::filesystem::path& path, QPoint cell, QStr
         *error = tr("the stamp is empty");
         return false;
     }
+    // The tool before lands what it holds first: the Text tool's new layer,
+    // emptied, goes, and the layer under it is the one the stamp goes on.
     tools_->setActive(selectTool_);
+    // A layer that can't take the stamp is refused here, before anything
+    // floats: the float would show nothing and land nothing. A block that
+    // already floats stays floating.
+    if (const QString why = stampProblem(doc_, block); !why.isEmpty()) {
+        *error = why;
+        return false;
+    }
     const Canvas& cv = doc_.canvas();
     cell = {std::clamp(cell.x(), 0, cv.width() - 1), std::clamp(cell.y(), 0, cv.height() - 1)};
     view_->setCellCursor({cell.x(), cell.y()});
