@@ -5,12 +5,14 @@
 // saving and exporting running nothing. tests/data/generators/bars draws
 // `count` `glyph`s in colour `ink`, and fails when `fail` is set.
 
+#include "canvas_view.h"
 #include "document.h"
 #include "generator_form.h"
 #include "generator_runner.h"
 #include "layers_dock.h"
 #include "main_window.h"
 #include "scratch_settings.h"
+#include "select_tool.h"
 #include "settings.h"
 
 #include "blockwright/canvas_size.h"
@@ -33,6 +35,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -1135,4 +1138,40 @@ TEST_CASE("a run queued behind another isn't lost when its layer goes and comes 
     REQUIRE(waitFor([&] { return idle(o.w); }));
     CHECK(runner->started() == 2);
     CHECK(row(d, o.id) == "######");
+}
+
+TEST_CASE("a float on a Generator layer the undo of Bake Layer gives back is refused for the layer's reason, not lost (#433)") {
+    BarsWindow o;
+    Document& d = *o.w.document();
+    REQUIRE(waitFor([&] { return idle(o.w); }));
+    REQUIRE(row(d, o.id) == "###");
+    REQUIRE(d.bakeLayer(o.id));
+    REQUIRE(d.layers().find(o.id)->props.kind == LayerKind::Cells);
+    SelectTool* s = o.w.selectTool();
+    o.w.tools()->setActive(s);
+    REQUIRE(o.w.tools()->active() == s);
+    s->select({0, 0, 2, 1});
+    const auto key = [&](int k, const QString& text = {}) {
+        QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier, text);
+        QApplication::sendEvent(o.w.canvasView(), &press);
+        QKeyEvent release(QEvent::KeyRelease, k, Qt::NoModifier, text);
+        QApplication::sendEvent(o.w.canvasView(), &release);
+    };
+    key(Qt::Key_Down);  // lifts the two cells a row down
+    REQUIRE(s->floating());
+    d.undoStack()->undo();  // the bake undone: a Generator layer again
+    REQUIRE(d.layers().find(o.id)->props.kind == LayerKind::Generator);
+    REQUIRE(s->floating());
+    const Canvas canvas = d.canvas();
+    const int steps = d.undoStack()->count();
+    key(Qt::Key_Return, QStringLiteral("\r"));
+    CHECK(o.w.statusBar()->currentMessage()
+          == QStringLiteral("Could not put the floating selection down: a Generator layer is drawn by its generator; "
+                            "press Esc to drop it"));
+    CHECK(s->floating());
+    CHECK(d.canvas() == canvas);
+    CHECK(d.undoStack()->count() == steps);
+    key(Qt::Key_Escape);
+    CHECK(!s->floating());
+    CHECK(d.canvas() == canvas);
 }

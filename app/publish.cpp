@@ -80,8 +80,12 @@ QString Publisher::defaultSlug() const {
 std::optional<pipeline::PublishPlan> Publisher::planPublish(const QString& library, const QString& slug,
                                                             const QString& tags, QString* error,
                                                             bool allowLossy) {
-    // A floating selection is published where it floats, as Save does.
-    window_->canvasView()->finishTool();
+    // A floating selection is published where it floats, as Save does;
+    // one that can't land stops it.
+    if (const QString why = window_->canvasView()->finishTool(); !why.isEmpty()) {
+        *error = tr("the floating selection can't land: %1").arg(why);
+        return std::nullopt;
+    }
     const AnsiOutput out = payload();
     if (out.lossy() && !allowLossy) {
         *error = lossRefusal(out);
@@ -144,7 +148,10 @@ int Publisher::nextRound(const QString& slug) const { return appSettings()->valu
 Publisher::SendResult Publisher::sendToWeechat(const QString& host, const QString& wipDir, const QString& slug,
                                                int round, bool allowLossy) {
     SendResult result;
-    window_->canvasView()->finishTool();
+    if (const QString why = window_->canvasView()->finishTool(); !why.isEmpty()) {
+        result.message = tr("the floating selection can't land: %1").arg(why);
+        return result;
+    }
     const AnsiOutput out = payload();
     if (out.lossy() && !allowLossy) {
         result.message = lossRefusal(out);
@@ -310,7 +317,10 @@ void Publisher::sendInteractive() {
         return;
 
     // Stamped before the loss check below, so the warning covers it.
-    window_->canvasView()->finishTool();
+    if (const QString why = window_->canvasView()->finishTool(); !why.isEmpty()) {
+        QMessageBox::warning(window_, tr("Send to WeeChat"), tr("the floating selection can't land: %1").arg(why));
+        return;
+    }
     QString target = QStringLiteral("%1:%2/%3")
                          .arg(hostName, wipDir, QString::fromStdString(pipeline::wipName(name.toStdString(), roundNo)));
     const bool text = ircText().has_value();

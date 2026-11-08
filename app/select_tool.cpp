@@ -4,6 +4,7 @@
 #include "document.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/brushes/drawing.h"
 #include "blockwright/canvas_renderer.h"
 #include "blockwright/render.h"
 
@@ -47,8 +48,10 @@ void SelectTool::activate(CanvasView* v) {
 
 void SelectTool::deactivate() {
     // Switching tools keeps a floating selection's cells where they float,
-    // and the selection with them.
-    stamp();
+    // and the selection with them. The registry doesn't switch from a float
+    // that can't land (release); one the view lets go of all the same goes.
+    if (!stamp())
+        cancel();
     drag_ = Drag::None;
     for (const auto& c : connections_)
         disconnect(c);
@@ -76,9 +79,8 @@ void SelectTool::setPasteMode(PasteMode mode) {
 }
 
 void SelectTool::select(const CellRect& rect) {
-    if (!view())
+    if (!view() || !stamp())
         return;
-    stamp();
     setSelection(Selection(rect));
 }
 
@@ -97,6 +99,8 @@ void SelectTool::lift() {
     floatPos_ = {liftedFrom_.bounds().x, liftedFrom_.bounds().y};
     floating_ = lifted_ = true;
     resizable_.reset();
+    floatName_.clear();
+    refusal_.clear();
     previewStale_ = true;
     emit changed();
 }
@@ -108,6 +112,7 @@ void SelectTool::setFloatPos(QPoint pos) {
     pos.setY(std::clamp(pos.y(), 1 - float_.height, cv.height() - 1));
     floatPos_ = pos;
     setSelection(Selection({pos.x(), pos.y(), float_.width, float_.height}));
+    refusal_.clear();  // moved, turned or re-cut: the next stamp looks again
     previewStale_ = true;
     emit changed();
 }
@@ -120,16 +125,84 @@ void SelectTool::moveBy(int dx, int dy) {
         setFloatPos(floatPos_ + QPoint(dx, dy));
 }
 
-void SelectTool::stamp() {
+namespace {
+
+// The glyphs as text, for a message.
+QString glyphText(const std::vector<Glyph>& glyphs) {
+    QString out;
+    for (const Glyph g : glyphs)
+        if (!g.isContinuation())
+            for (const char32_t cp : codePoints(g))
+                out += QString::fromUcs4(&cp, 1);
+    return out.isEmpty() ? SelectTool::tr("a wide character") : out;
+}
+
+} // namespace
+
+QString SelectTool::landingProblem(const CellEdit& edit, bool* turnable) const {
+    const Document* doc = view()->document();
+    // A layer step's undo or redo (a lock, a hide, a bake) can leave a float
+    // on a layer that takes no edit without a layersAboutToChange (which
+    // drops one that can't land), and a lift doesn't check the layer: its
+    // landing is refused for the layer's reason, as the Library's is
+    // (Document::editProblem), rather than written to nothing.
+    if (QString why = doc->editProblem(); !why.isEmpty())
+        return why;
+    const std::vector<Glyph> unheld = doc->unheldGlyphs(edit);
+    if (unheld.empty())
+        return {};
+    if (turnable) {
+        // whether a quarter turn of the float would land: each cell's glyph
+        // turned, as the cells' places don't change what a layer holds
+        CellEdit turned = edit;
+        for (CellChange& c : turned.changes)
+            c.after.ch = rotateGlyph(c.after.ch, true);
+        *turnable = doc->unheldGlyphs(turned).empty();
+    }
+    return tr("a Pixels layer holds no %1").arg(glyphText(unheld));
+}
+
+CellEdit SelectTool::withSideways(const CellEdit& edit) const {
+    CellEdit out = edit;
+    const Canvas& c = canvas();
+    for (int y = 0; y < float_.height; ++y)
+        for (int x = 0; x < float_.width; ++x) {
+            const Cell& cell = float_.at(x, y);
+            const int cx = floatPos_.x() + x, cy = floatPos_.y() + y;
+            if (!pixelsHoldTurned(cell.ch.codePointOr(0)) || !c.contains(cx, cy))
+                continue;
+            Cell shown = cell;
+            shown.transparent = false;
+            out.changes.push_back({cx, cy, c.at(cx, cy), shown});
+        }
+    return out;
+}
+
+bool SelectTool::stamp() {
     if (!view() || !floating_)
-        return;
+        return true;
     const Document* doc = view()->document();
     const CellEdit edit = stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), effectivePasteMode(),
                                      lifted_ ? &liftedFrom_ : nullptr, doc->blankCell(), doc->pastePixels());
+    // Checked as it would land, mirror mode's copy too: a float the layer
+    // can't hold stays floating, as it was, and nothing is written.
+    bool turnable = false;
+    if (const QString why = landingProblem(view()->mirrored(withSideways(edit)), &turnable); !why.isEmpty()) {
+        refusal_ = why;
+        const QString what = floatName_.isEmpty() ? tr("Could not put the floating selection down: %1").arg(why)
+                                                  : tr("Could not place %1: %2").arg(floatName_, why);
+        view()->notify(turnable ? tr("%1; rotate it (Selection > Rotate) or press Esc to drop it").arg(what)
+                                : tr("%1; press Esc to drop it").arg(what));
+        previewStale_ = true;
+        emit changed();
+        return false;
+    }
     const bool lifted = lifted_;
     floating_ = lifted_ = false;
     floatMode_.reset();
     resizable_.reset();
+    floatName_.clear();
+    refusal_.clear();
     drag_ = Drag::None;
     dropResizeRollback();
     previewStale_ = true;
@@ -138,6 +211,7 @@ void SelectTool::stamp() {
     const bool applied = view()->applyEdit(edit);
     setSelection(!applied && lifted ? liftedFrom_ : Selection({floatPos_.x(), floatPos_.y(), float_.width, float_.height}));
     emit changed();
+    return true;
 }
 
 void SelectTool::cancel() {
@@ -146,6 +220,8 @@ void SelectTool::cancel() {
         floating_ = false;
         floatMode_.reset();
         resizable_.reset();
+        floatName_.clear();
+        refusal_.clear();
         dropResizeRollback();
         setSelection(std::exchange(lifted_, false) ? liftedFrom_ : Selection());
         previewStale_ = true;
@@ -199,6 +275,8 @@ void SelectTool::clear() {
         floating_ = lifted_ = false;
         floatMode_.reset();
         resizable_.reset();
+        floatName_.clear();
+        refusal_.clear();
         drag_ = Drag::None;
         dropResizeRollback();
         setSelection({});
@@ -217,12 +295,14 @@ void SelectTool::paste() {
     floatBlock(clipboard_, {c.x, c.y});
 }
 
-void SelectTool::floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode,
-                            const std::optional<StampSlice>& slice) {
+bool SelectTool::floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode,
+                            const std::optional<StampSlice>& slice, const QString& name) {
     if (!view() || block.empty())
-        return;
-    stamp();
+        return false;
+    if (!stamp())
+        return false;
     floatMode_ = mode;
+    floatName_ = name;
     resizable_.reset();
     if (slice && sliceProblem(block, *slice).empty())
         resizable_ = Resizable{block, *slice, {}, block, *slice};
@@ -231,6 +311,7 @@ void SelectTool::floatBlock(const CellBlock& block, QPoint cell, std::optional<P
     lifted_ = false;
     drag_ = Drag::None;
     setFloatPos(cell);
+    return true;
 }
 
 void SelectTool::transform(Transform t) {
@@ -281,7 +362,8 @@ bool SelectTool::mousePress(const ToolEvent& e) {
         dragFrom_ = floatPos_;
         return true;
     }
-    stamp();
+    if (!stamp())
+        return true;  // a float that can't land stays, and the click with it
     if (selection().contains(c.x(), c.y())) {
         drag_ = Drag::Pending;  // a move, once the mouse moves
         return true;
@@ -415,9 +497,15 @@ void SelectTool::updatePreview() const {
     if (!view() || !floating_)
         return;
     const Document* doc = view()->document();
-    pending_ = view()->mirrored(stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), effectivePasteMode(),
-                                           lifted_ ? &liftedFrom_ : nullptr, doc->blankCell(), doc->pastePixels()));
-    preview_.set(*view(), pending_);
+    const CellEdit edit = stampBlock(canvas(), float_, floatPos_.x(), floatPos_.y(), effectivePasteMode(),
+                                     lifted_ ? &liftedFrom_ : nullptr, doc->blankCell(), doc->pastePixels());
+    pending_ = view()->mirrored(edit);
+    // A float the layer can't hold shows its cells as they are, over the
+    // composite, until it is turned or dropped; it lands nothing.
+    if (const CellEdit check = view()->mirrored(withSideways(edit)); !landingProblem(check).isEmpty())
+        preview_.setUnheld(*view(), check);
+    else
+        preview_.set(*view(), pending_);
 }
 
 const CellEdit& SelectTool::pending() const {

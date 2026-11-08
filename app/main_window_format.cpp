@@ -156,8 +156,11 @@ void MainWindow::setNinePx(bool on) {
 
 void MainWindow::canvasSize() {
     // what the tool holds lands first, so the dialog starts at the size and
-    // the step moves what the canvas shows
-    view_->finishTool();
+    // the step moves what the canvas shows; a float that can't land stops it
+    if (const QString why = view_->finishTool(); !why.isEmpty()) {
+        statusBar()->showMessage(tr("Canvas size not changed: the floating selection can't land: %1").arg(why), 5000);
+        return;
+    }
     CanvasSizeDialog dialog(QSize(doc_.canvas().width(), doc_.canvas().height()), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
@@ -167,7 +170,10 @@ void MainWindow::canvasSize() {
 }
 
 bool MainWindow::resizeCanvas(QSize size, Anchor anchor, QString* error) {
-    view_->finishTool();
+    if (const QString why = view_->finishTool(); !why.isEmpty()) {
+        *error = tr("the floating selection can't land: %1").arg(why);
+        return false;
+    }
     if (const auto problem = canvasSizeProblem(doc_.layers(), size.width(), size.height())) {
         *error = QString::fromStdString(*problem);
         return false;

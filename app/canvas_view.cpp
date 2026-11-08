@@ -226,11 +226,15 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     // Undo and redo put the cursor back where the edit was made or left it.
     connect(doc_, &Document::cursorRequested, this, &CanvasView::setCellCursor);
     // Undo, redo or any edit the view didn't push changes the cells under
-    // the tool; a new canvas drops the selection too.
-    connect(doc_, &Document::cellsChanged, this, [this] {
+    // the tool; a new canvas drops the selection too. So does a change of
+    // the active layer's own cells or place that leaves the composite as it
+    // was (activeCellsReplaced).
+    const auto underTool = [this] {
         if (!ownEdit_)
             cancelTool();
-    });
+    };
+    connect(doc_, &Document::cellsChanged, this, underTool);
+    connect(doc_, &Document::activeCellsReplaced, this, underTool);
     // The sets offered follow the typing policy, which follows the target
     // and the encoding.
     for (auto signal : {&Document::reset, &Document::targetChanged, &Document::encodingChanged})
@@ -267,10 +271,18 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
         endLayerMove(false);
     });
     // A layer panel change lands what the tool holds on the layer it was
-    // editing first. The alpha lock is the active layer's, so a change of
-    // layer properties or of active layer changes the brush settings; a new
-    // active layer is other cells under the tool.
-    connect(doc_, &Document::layersAboutToChange, this, &CanvasView::finishTool);
+    // editing first. A floating selection that can't land is dropped, with
+    // nothing written: the step can't wait for it, and the layer it floated
+    // on may not be the one it would land on after (#451). The alpha lock is
+    // the active layer's, so a change of layer properties or of active layer
+    // changes the brush settings; a new active layer is other cells under
+    // the tool.
+    connect(doc_, &Document::layersAboutToChange, this, [this] {
+        if (const QString why = finishTool(); !why.isEmpty()) {
+            notify(tr("Dropped the floating selection, which can't land: %1").arg(why));
+            cancelTool();
+        }
+    });
     connect(doc_, &Document::layersChanged, this, &CanvasView::brushSettingsChanged);
     // a reference layer's picture, place or opacity changes no cell
     connect(doc_, &Document::layersChanged, this, qOverload<>(&QWidget::update));
@@ -563,11 +575,12 @@ void CanvasView::cancelDrag() {
     tool_->cancelDrag();
 }
 
-void CanvasView::finishTool() {
+QString CanvasView::finishTool() {
     endLayerMove(false);
     if (tool_)
         tool_->finish();
     syncDrag();
+    return tool_ ? tool_->unlanded() : QString();
 }
 
 void CanvasView::setMirror(bool on) {
@@ -1028,14 +1041,21 @@ void CanvasView::keyPressEvent(QKeyEvent* e) {
         case Qt::Key_End: setCellCursor({cv.width() - 1, cursor_.y}); return;
         case Qt::Key_Return:
         case Qt::Key_Enter: setCellCursor(moveCursor(cv, {0, cursor_.y}, 0, 1)); return;
-        case Qt::Key_Backspace: finishTool(); commit(backspace(cv, cursor_, doc_->blankCell())); return;
-        case Qt::Key_Delete: finishTool(); commit(deleteCell(cv, cursor_, doc_->blankCell())); return;
+        case Qt::Key_Backspace:
+            if (finishTool().isEmpty())
+                commit(backspace(cv, cursor_, doc_->blankCell()));
+            return;
+        case Qt::Key_Delete:
+            if (finishTool().isEmpty())
+                commit(deleteCell(cv, cursor_, doc_->blankCell()));
+            return;
         default: break;
         }
     }
     if (e->key() >= Qt::Key_F1 && e->key() < Qt::Key_F1 + kGlyphSetKeys &&
         !(e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
-        finishTool();
+        if (!finishTool().isEmpty())
+            return;
         commit(typeGlyph(cv, cursor_, glyphSetGlyph(glyphSet(), e->key() - Qt::Key_F1), typingPen(*doc_, pen_),
                          typingPolicy()));
         return;
@@ -1101,8 +1121,10 @@ void CanvasView::typeText(const QString& text, int replaceStart, int replaceLeng
     }
     if (glyphs.empty() && replaceLength <= 0)
         return;
-    // A floating selection lands first; the typing goes on top of it.
-    finishTool();
+    // A floating selection lands first; the typing goes on top of it. One
+    // that can't land keeps the typing off (stamp said why).
+    if (!finishTool().isEmpty())
+        return;
     // A lone mark typed with nothing to compose it joins the cluster before
     // the cursor.
     if (replaceStart == 0 && replaceLength <= 0 &&
@@ -1234,9 +1256,15 @@ int CanvasView::referenceHandleAt(QPoint p) const {
 }
 
 void CanvasView::beginLayerMove(QPoint p) {
-    finishTool();
+    const QString unlanded = finishTool();
     setFocus(Qt::MouseFocusReason);
     const QPoint cell = cellAt(p);
+    if (!unlanded.isEmpty()) {
+        // the float stays on the layer as it stands; the drag moves nothing
+        layerMove_ = LayerMove{0, cell, {}, {}, {}};
+        emit layerMoveStatus(tr("Cannot move layer: the floating selection can't land: %1").arg(unlanded));
+        return;
+    }
     const Layer* layer = doc_->active();
     const bool reference = layer && layer->props.kind == LayerKind::Reference;
     if (!layer || layer->props.locked || !layer->props.visible || (reference && !layer->props.reference)) {

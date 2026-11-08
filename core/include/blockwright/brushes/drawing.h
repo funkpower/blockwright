@@ -36,6 +36,12 @@ char32_t dabGlyph(char32_t ch, const Dab& d);
 // halfBlocks reads as two pixels.
 bool pixelsHoldGlyph(char32_t ch);
 
+// Whether a Pixels layer can't hold `ch` but holds it turned a quarter
+// (rotateGlyph, either way): ▌ and ▐, which turn to ▀ and ▄. A Library
+// stamp holding them may float on a Pixels layer, to be turned before it
+// lands (PLAN §12).
+bool pixelsHoldTurned(char32_t ch);
+
 // The glyphs a Pixels layer can't hold that the glyph brush writes for `ch`
 // under `symmetry` on a width × height canvas (dabGlyph of each of
 // symmetryDabs's images), each once in image order: `ch` itself alone when

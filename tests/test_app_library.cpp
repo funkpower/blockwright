@@ -22,11 +22,14 @@
 #include "blockwright/render.h"
 #include "blockwright/stamp_slice.h"
 #include "blockwright/text.h"
+#include "blockwright/text_style.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAction>
 #include <QApplication>
+#include <QBuffer>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -43,6 +46,7 @@
 #include <QMouseEvent>
 #include <QSpinBox>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QPointingDevice>
 #include <QPushButton>
@@ -611,26 +615,558 @@ TEST_CASE("a stamp still floats and lands on a layer that can take it", "[librar
     }
 }
 
-TEST_CASE("a stamp is checked as it is: a Pixels layer refuses ▌ ▐ though a turn makes them half blocks",
-          "[library][layers]") {
-    Fixture f;
-    Document* doc = f.w.document();
+// #433: a stamp whose only glyphs a Pixels layer can't hold are ▌ ▐ floats
+// there, as a quarter turn of the float makes them ▀ ▄; it lands only once
+// none is left. ▌ ▐ in red on blue, so a turn shows in the colours.
+// As text, so a failed check shows it.
+std::string str(const QString& s) { return s.toStdString(); }
+
+CellBlock sides() {
     CellBlock block(3, 1);
     block.at(0, 0).ch = U'▌';
     block.at(1, 0).ch = U'█';
     block.at(2, 0).ch = U'▐';
+    for (Cell& c : block.cells) {
+        c.fg = Color::indexed(Red);
+        c.bg = Color::indexed(Blue);
+    }
+    return block;
+}
+
+fs::path writeSides(Fixture& f, const CellBlock& block = sides()) {
     const fs::path path = fspath(QDir(f.user.path()).filePath(QStringLiteral("sides.ans")));
     library::writeStamp(path, library::encodeStamp("Sides", "test", {}, block, false, std::nullopt));
     f.dock->rescan();
+    return path;
+}
+
+QString refused(const fs::path& path, const QString& glyphs, bool turnable = true) {
+    return QStringLiteral("Could not place %1: a Pixels layer holds no %2; %3")
+        .arg(QString::fromStdString(path.string()), glyphs,
+             turnable ? QStringLiteral("rotate it (Selection > Rotate) or press Esc to drop it")
+                      : QStringLiteral("press Esc to drop it"));
+}
+
+// A left click on `cell`: a press and a release there.
+void click(CanvasView* v, QPoint cell) {
+    const QPointF at = v->toWidget(v->cellRect(cell)).center();
+    for (const QEvent::Type type : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+        QMouseEvent e(type, at, v->mapToGlobal(at), Qt::LeftButton,
+                      type == QEvent::MouseButtonPress ? Qt::MouseButtons(Qt::LeftButton) : Qt::NoButton,
+                      Qt::NoModifier);
+        QApplication::sendEvent(v, &e);
+    }
+}
+
+TEST_CASE("a ▌ ▐ stamp floats on a Pixels layer and lands only once a turn makes them ▀ ▄ (#433)",
+          "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const fs::path path = writeSides(f);
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    const Canvas canvas = doc->canvas();
+    const int steps = doc->undoStack()->count();
+    const QImage before = v->grab().toImage();
+
+    QString error;
+    REQUIRE(f.w.placeStamp(path, {4, 4}, &error));
+    CHECK(error.isEmpty());
+    REQUIRE(s->floating());
+    // it shows as it is, though the layer can't take it as it is
+    const QImage floated = v->grab().toImage();
+    const QRect left = v->toWidget(v->cellRect(QPoint(4, 4)));
+    const QPoint inLeft(left.left() + left.width() / 4, left.center().y());
+    CHECK(floated.pixel(inLeft) != before.pixel(inLeft));
+
+    // Enter: refused, said why, nothing written, still floating
+    press(v, Qt::Key_Return);
+    CHECK(str(f.w.statusBar()->currentMessage()) == str(refused(path, QStringLiteral("▌▐"))));
+    CHECK(str(s->unlanded()) == str(QStringLiteral("a Pixels layer holds no ▌▐")));
+    REQUIRE(s->floating());
+    CHECK(s->floatingPos() == QPoint(4, 4));
+    CHECK(s->floatingBlock().width == 3);
+    CHECK(doc->canvas() == canvas);
+    CHECK(doc->undoStack()->count() == steps);
+    CHECK(v->grab().toImage().pixel(inLeft) == floated.pixel(inLeft));
+
+    SECTION("turned clockwise, ▌ █ ▐ is ▀ █ ▄ down a column, and lands") {
+        act(f.w, "rotateClockwise")->trigger();
+        CHECK(s->unlanded().isEmpty());
+        press(v, Qt::Key_Return);
+        CHECK_FALSE(s->floating());
+        CHECK(doc->undoStack()->count() == steps + 1);
+        CHECK(halfBlocks(doc->canvas().at(4, 4)) == HalfPair{Red, Blue});
+        CHECK(halfBlocks(doc->canvas().at(4, 5)) == HalfPair{Red, Red});
+        CHECK(halfBlocks(doc->canvas().at(4, 6)) == HalfPair{Blue, Red});
+        CHECK(doc->canvas().at(5, 4) == canvas.at(5, 4));
+    }
+    SECTION("turned counter-clockwise, ▐ comes up as ▀ and ▌ goes down as ▄") {
+        act(f.w, "rotateCounterClockwise")->trigger();
+        press(v, Qt::Key_Return);
+        CHECK_FALSE(s->floating());
+        CHECK(doc->undoStack()->count() == steps + 1);
+        CHECK(halfBlocks(doc->canvas().at(4, 4)) == HalfPair{Red, Blue});
+        CHECK(halfBlocks(doc->canvas().at(4, 5)) == HalfPair{Red, Red});
+        CHECK(halfBlocks(doc->canvas().at(4, 6)) == HalfPair{Blue, Red});
+    }
+    SECTION("a flip keeps them on their sides, and a half turn too") {
+        act(f.w, "flipHorizontal")->trigger();
+        press(v, Qt::Key_Return);
+        CHECK(s->floating());
+        act(f.w, "flipVertical")->trigger();
+        press(v, Qt::Key_Return);
+        CHECK(s->floating());
+        act(f.w, "rotateClockwise")->trigger();
+        act(f.w, "rotateClockwise")->trigger();
+        press(v, Qt::Key_Return);
+        CHECK(s->floating());
+        CHECK(str(f.w.statusBar()->currentMessage()) == str(refused(path, QStringLiteral("▌▐"))));
+        CHECK(doc->canvas() == canvas);
+        CHECK(doc->undoStack()->count() == steps);
+    }
+    SECTION("moved, it is checked again where it lands") {
+        press(v, Qt::Key_Right);
+        CHECK(s->unlanded().isEmpty());
+        press(v, Qt::Key_Return);
+        CHECK(s->floating());
+        CHECK(s->floatingPos() == QPoint(5, 4));
+        CHECK(str(s->unlanded()) == str(QStringLiteral("a Pixels layer holds no ▌▐")));
+    }
+    SECTION("Esc drops it, as before") {
+        press(v, Qt::Key_Escape);
+        CHECK_FALSE(s->floating());
+        CHECK(s->unlanded().isEmpty());
+        CHECK(doc->canvas() == canvas);
+        CHECK(doc->undoStack()->count() == steps);
+    }
+}
+
+TEST_CASE("a stamp with a glyph a Pixels layer can't hold but ▌ ▐ is still refused before it floats (#433)",
+          "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    CellBlock block = sides();
+    QString expected;
+    SECTION("▌ with a shade") {
+        block.at(1, 0).ch = U'░';
+        expected = QStringLiteral("a Pixels layer holds no ▌░▐");
+    }
+    SECTION("a shade alone") {
+        block = CellBlock(1, 1);
+        block.at(0, 0).ch = U'▒';
+        expected = QStringLiteral("a Pixels layer holds no ▒");
+    }
+    const fs::path path = writeSides(f, block);
     REQUIRE(doc->addLayer(LayerKind::Pixels));
     const Canvas canvas = doc->canvas();
     const int steps = doc->undoStack()->count();
     QString error;
     CHECK_FALSE(f.w.placeStamp(path, {4, 4}, &error));
-    CHECK(error == QStringLiteral("a Pixels layer holds no ▌▐"));
+    CHECK(str(error) == str(expected));
     CHECK_FALSE(f.w.selectTool()->floating());
     CHECK(doc->canvas() == canvas);
     CHECK(doc->undoStack()->count() == steps);
+}
+
+TEST_CASE("a stamp of ▀ and ▌ floats, but no turn lands it (#433)", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CellBlock block = sides();
+    block.at(1, 0).ch = U'▀';
+    const fs::path path = writeSides(f, block);
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    const Canvas canvas = doc->canvas();
+    QString error;
+    REQUIRE(f.w.placeStamp(path, {4, 4}, &error));
+    press(f.w.canvasView(), Qt::Key_Return);
+    CHECK(str(f.w.statusBar()->currentMessage()) == str(refused(path, QStringLiteral("▌▐"), false)));
+    act(f.w, "rotateClockwise")->trigger();
+    press(f.w.canvasView(), Qt::Key_Return);
+    // the ▀ is on its side now
+    CHECK(str(f.w.statusBar()->currentMessage()) == str(refused(path, QStringLiteral("▐"), false)));
+    CHECK(s->floating());
+    CHECK(doc->canvas() == canvas);
+}
+
+TEST_CASE("every way a float that can't land would land refuses it, or drops it (#433)", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const LayerId background = doc->activeLayer();
+    const fs::path path = writeSides(f);
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    QString error;
+    REQUIRE(f.w.placeStamp(path, {4, 4}, &error));
+    REQUIRE(s->floating());
+    const Canvas canvas = doc->canvas();
+    const LayerStack layers = doc->layers();
+    const int steps = doc->undoStack()->count();
+    const QString why = QStringLiteral("a Pixels layer holds no ▌▐");
+    const QString cantLand = QStringLiteral("the floating selection can't land: ") + why;
+    const auto kept = [&] {
+        CHECK(s->floating());
+        CHECK(s->floatingPos() == QPoint(4, 4));
+        CHECK(str(s->unlanded()) == str(why));
+        CHECK(doc->canvas() == canvas);
+        CHECK(doc->layers().layers() == layers.layers());
+        CHECK(doc->undoStack()->count() == steps);
+    };
+    const auto dropped = [&] {
+        CHECK_FALSE(s->floating());
+        CHECK(doc->canvas() == canvas);
+    };
+
+    SECTION("a click on it") {
+        click(v, {5, 4});
+        CHECK(str(f.w.statusBar()->currentMessage()) == str(refused(path, QStringLiteral("▌▐"))));
+        kept();
+    }
+    SECTION("a click outside it keeps the selection too") {
+        click(v, {20, 10});
+        kept();
+        CHECK(v->selection() == Selection({4, 4, 3, 1}));
+    }
+    SECTION("Select All and Deselect") {
+        act(f.w, "selectAll")->trigger();
+        kept();
+        act(f.w, "deselect")->trigger();
+        kept();
+        CHECK(v->selection() == Selection({4, 4, 3, 1}));
+    }
+    SECTION("another tool: the switch is refused") {
+        f.w.tools()->setActive(QStringLiteral("text"));
+        CHECK(f.w.tools()->active() == s);
+        CHECK(v->tool() == s);
+        CHECK(act(f.w, "selectTool")->isChecked());
+        kept();
+    }
+    SECTION("typing") {
+        f.w.tools()->setActive(s);
+        press(v, Qt::Key_A, QStringLiteral("a"));
+        press(v, Qt::Key_Backspace, QStringLiteral("\b"));
+        press(v, Qt::Key_F1);
+        kept();
+        // Delete is the select tool's, and drops a float, as before
+        press(v, Qt::Key_Delete);
+        dropped();
+        CHECK(doc->undoStack()->count() == steps);
+    }
+    SECTION("another stamp, or a paste, over it") {
+        CHECK_FALSE(f.w.placeStamp(path, {10, 5}, &error));
+        CHECK(str(error) == str(cantLand));
+        kept();
+        CHECK(s->floatingBlock().width == 3);
+        s->copy();
+        s->paste();
+        kept();
+    }
+    SECTION("saving, a snapshot, a canvas size, an IRC export") {
+        const QString file = QDir(f.user.path()).filePath(QStringLiteral("out.ans"));
+        CHECK_FALSE(f.w.saveFile(file, &error));
+        CHECK(str(error) == str(cantLand));
+        CHECK_FALSE(QFile::exists(file));
+        error.clear();
+        CHECK(f.w.snapshot(&error) == 0);
+        CHECK(str(error) == str(cantLand));
+        error.clear();
+        CHECK_FALSE(f.w.resizeCanvas({100, 30}, Anchor::TopLeft, &error));
+        CHECK(str(error) == str(cantLand));
+        CHECK(doc->canvas().width() == 80);
+        error.clear();
+        const QString txt = QDir(f.user.path()).filePath(QStringLiteral("out.txt"));
+        CHECK_FALSE(f.w.exportIrcText(txt, &error));
+        CHECK(str(error) == str(cantLand));
+        CHECK_FALSE(QFile::exists(txt));
+        kept();
+    }
+    SECTION("another active layer drops it, and says so") {
+        REQUIRE(doc->setActiveLayer(background));
+        CHECK(str(f.w.statusBar()->currentMessage()) ==
+              str(QStringLiteral("Dropped the floating selection, which can't land: ") + why));
+        dropped();
+        CHECK(doc->undoStack()->count() == steps);
+    }
+    SECTION("undo drops it, and undoes the step before") {
+        doc->undoStack()->undo();
+        CHECK_FALSE(s->floating());
+        CHECK(doc->canvas() == canvas);
+    }
+    SECTION("Esc drops it") {
+        press(v, Qt::Key_Escape);
+        dropped();
+        CHECK(doc->undoStack()->count() == steps);
+    }
+}
+
+TEST_CASE("closing with a float that can't land asks first, though nothing else changed (#433)",
+          "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    const fs::path path = writeSides(f);
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    doc->undoStack()->setClean();
+    QString error;
+    REQUIRE(f.w.placeStamp(path, {4, 4}, &error));
+    REQUIRE_FALSE(doc->isModified());
+    QString text;
+    QTimer::singleShot(0, &f.w, [&] {
+        if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            text = box->text();
+            box->button(QMessageBox::Cancel)->click();
+        }
+    });
+    f.w.show();
+    CHECK_FALSE(f.w.close());
+    INFO(str(text));
+    CHECK(text.startsWith(QStringLiteral("The floating selection can't land (a Pixels layer holds no ▌▐): discarding "
+                                         "drops it.")));
+    CHECK(f.w.selectTool()->floating());
+}
+
+TEST_CASE("closing a changed document with a float that can't land names both (#433)", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    write(f.w, 10, 10, QStringLiteral("x"));
+    const fs::path path = writeSides(f);
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    QString error;
+    REQUIRE(f.w.placeStamp(path, {4, 4}, &error));
+    REQUIRE(doc->isModified());
+    QString text;
+    QTimer::singleShot(0, &f.w, [&] {
+        if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            text = box->text();
+            box->button(QMessageBox::Cancel)->click();
+        }
+    });
+    f.w.show();
+    CHECK_FALSE(f.w.close());
+    INFO(str(text));
+    CHECK(text.startsWith(QStringLiteral("The canvas has unsaved changes, and the floating selection can't land (a "
+                                         "Pixels layer holds no ▌▐): it can't be saved, and discarding drops it "
+                                         "with them.")));
+    CHECK(f.w.selectTool()->floating());
+}
+
+TEST_CASE("a half pixel lifted and turned on its side is refused, not landed as an erase (#433)",
+          "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    // one pixel, as the half-block brush draws it on a clear pixel layer
+    CellEdit e;
+    e.changes.push_back({3, 3, doc->layerCanvas().at(3, 3), pixelLayerCell(LayerPixels{std::uint8_t(Red), {}})});
+    REQUIRE(doc->edit(e));
+    const Canvas layer = doc->layerCanvas();
+    const int steps = doc->undoStack()->count();
+    f.w.tools()->setActive(s);
+    s->select({3, 3, 1, 1});
+    press(v, Qt::Key_Right);
+    REQUIRE(s->floating());
+    act(f.w, "rotateClockwise")->trigger();  // ▀ → ▐: a pixel on its side
+    press(v, Qt::Key_Return);
+    CHECK(str(f.w.statusBar()->currentMessage()) ==
+          str(QStringLiteral("Could not put the floating selection down: a Pixels layer holds no ▐; rotate it "
+                             "(Selection > Rotate) or press Esc to drop it")));
+    CHECK(s->floating());
+    CHECK(doc->layerCanvas() == layer);
+    CHECK(doc->undoStack()->count() == steps);
+    SECTION("another quarter turn lands it as a bottom pixel") {
+        act(f.w, "rotateClockwise")->trigger();  // ▐ → ▄
+        press(v, Qt::Key_Return);
+        CHECK_FALSE(s->floating());
+        CHECK(doc->undoStack()->count() == steps + 1);
+        CHECK(layerPixels(doc->layerCanvas().at(4, 3)) == LayerPixels{{}, std::uint8_t(Red)});
+        CHECK(layerPixels(doc->layerCanvas().at(3, 3)) == LayerPixels{});
+    }
+    SECTION("Esc puts it back") {
+        press(v, Qt::Key_Escape);
+        CHECK_FALSE(s->floating());
+        CHECK(doc->layerCanvas() == layer);
+    }
+}
+
+TEST_CASE("a Layers panel step drops a float that can't land, and says so (#433)", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const LayerId background = doc->activeLayer();
+    write(f.w, 4, 4, QStringLiteral("xxx"));
+    const fs::path path = writeSides(f);
+    const LayerId pixels = doc->addLayer(LayerKind::Pixels);
+    REQUIRE(pixels);
+    QString error;
+    REQUIRE(f.w.placeStamp(path, {4, 4}, &error));
+    REQUIRE(s->floating());
+    const Canvas layer = doc->layerCanvas();
+    SECTION("another layer hidden") {
+        REQUIRE(doc->setLayerVisible(background, false));
+    }
+    SECTION("the layer under it deleted") {
+        REQUIRE(doc->removeLayer(background));
+    }
+    SECTION("its layer moved below another") {
+        REQUIRE(doc->moveLayer(pixels, 0));
+    }
+    SECTION("its layer locked; a turn then lands nothing") {
+        LayerProperties p = doc->active()->props;
+        p.locked = true;
+        REQUIRE(doc->setLayerProperties(pixels, p, QStringLiteral("Lock Layer")));
+        act(f.w, "rotateClockwise")->trigger();
+        press(v, Qt::Key_Return);
+    }
+    CHECK(str(f.w.statusBar()->currentMessage()) ==
+          str(QStringLiteral("Dropped the floating selection, which can't land: a Pixels layer holds no ▌▐")));
+    CHECK_FALSE(s->floating());
+    REQUIRE(doc->activeLayer() == pixels);
+    CHECK(doc->layerCanvas() == layer);
+}
+
+TEST_CASE("a float that undo leaves on a locked or hidden layer is refused there, not lost (#433)",
+          "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const fs::path path = writeSides(f);
+    const LayerId pixels = doc->addLayer(LayerKind::Pixels);
+    REQUIRE(pixels);
+    QString why;
+    SECTION("locked, then unlocked") {
+        LayerProperties p = doc->active()->props;
+        p.locked = true;
+        REQUIRE(doc->setLayerProperties(pixels, p, QStringLiteral("Lock Layer")));
+        p.locked = false;
+        REQUIRE(doc->setLayerProperties(pixels, p, QStringLiteral("Unlock Layer")));
+        why = QStringLiteral("the layer is locked");
+    }
+    SECTION("hidden, then shown") {
+        REQUIRE(doc->setLayerVisible(pixels, false));
+        REQUIRE(doc->setLayerVisible(pixels, true));
+        why = QStringLiteral("the layer is hidden");
+    }
+    QString error;
+    REQUIRE(f.w.placeStamp(path, {4, 4}, &error));
+    act(f.w, "undo")->trigger();  // the lock or the hide is back, under the float
+    REQUIRE(s->floating());
+    const Canvas layer = doc->layerCanvas();
+    const int steps = doc->undoStack()->count();
+    act(f.w, "rotateClockwise")->trigger();  // the glyphs would land now
+    press(v, Qt::Key_Return);
+    CHECK(str(f.w.statusBar()->currentMessage()) ==
+          str(QStringLiteral("Could not place %1: %2; press Esc to drop it")
+                  .arg(QString::fromStdString(path.string()), why)));
+    CHECK(s->floating());
+    CHECK(doc->layerCanvas() == layer);
+    CHECK(doc->undoStack()->count() == steps);
+    press(v, Qt::Key_Escape);
+    CHECK_FALSE(s->floating());
+    CHECK(doc->layerCanvas() == layer);
+}
+
+TEST_CASE("a lift turned on its side is refused in every paste mode, opaque or a half pixel (#433)",
+          "[library][layers]") {
+    const PasteMode mode = GENERATE(PasteMode::Normal, PasteMode::Transparent, PasteMode::Under);
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    CellEdit e;
+    SECTION("an opaque ▀") {
+        e.changes.push_back(
+            {3, 3, doc->layerCanvas().at(3, 3), pixelLayerCell(LayerPixels{std::uint8_t(Red), std::uint8_t(Blue)})});
+    }
+    SECTION("a half pixel") {
+        e.changes.push_back({3, 3, doc->layerCanvas().at(3, 3), pixelLayerCell(LayerPixels{std::uint8_t(Red), {}})});
+    }
+    // a pixel where the float goes down, which Under mode doesn't write over
+    e.changes.push_back(
+        {4, 3, doc->layerCanvas().at(4, 3), pixelLayerCell(LayerPixels{std::uint8_t(Blue), std::uint8_t(Blue)})});
+    REQUIRE(doc->edit(e));
+    const Canvas layer = doc->layerCanvas();
+    const int steps = doc->undoStack()->count();
+    f.w.tools()->setActive(s);
+    s->setPasteMode(mode);
+    s->select({3, 3, 1, 1});
+    press(v, Qt::Key_Right);
+    REQUIRE(s->floating());
+    act(f.w, "rotateClockwise")->trigger();  // ▀ → ▐
+    press(v, Qt::Key_Return);
+    INFO("mode " << int(mode) << ": " << str(f.w.statusBar()->currentMessage()));
+    CHECK(s->floating());
+    CHECK(doc->layerCanvas() == layer);
+    CHECK(doc->undoStack()->count() == steps);
+}
+
+TEST_CASE("a paste or a lift on a Pixels layer gets the same landing check (#433)", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const LayerId background = doc->activeLayer();
+    const LayerId pixels = doc->addLayer(LayerKind::Pixels);
+    REQUIRE(pixels);
+    const QString unnamed = QStringLiteral(
+        "Could not put the floating selection down: a Pixels layer holds no %1; rotate it (Selection > Rotate) or "
+        "press Esc to drop it");
+
+    SECTION("a ▌ copied from a cells layer") {
+        REQUIRE(doc->setActiveLayer(background));
+        write(f.w, 0, 0, QStringLiteral("▌"));
+        f.w.tools()->setActive(s);
+        s->select({0, 0, 1, 1});
+        s->copy();
+        s->deselect();
+        REQUIRE(doc->setActiveLayer(pixels));
+        const Canvas canvas = doc->canvas();
+        const int steps = doc->undoStack()->count();
+        v->setCellCursor({6, 2});
+        s->paste();
+        REQUIRE(s->floating());
+        press(v, Qt::Key_Return);
+        CHECK(str(f.w.statusBar()->currentMessage()) == str(unnamed.arg(QStringLiteral("▌"))));
+        CHECK(s->floating());
+        CHECK(doc->canvas() == canvas);
+        CHECK(doc->undoStack()->count() == steps);
+        act(f.w, "rotateClockwise")->trigger();
+        press(v, Qt::Key_Return);
+        CHECK_FALSE(s->floating());
+        CHECK(doc->undoStack()->count() == steps + 1);
+        CHECK(doc->canvas().at(6, 2).ch == Glyph(U'▀'));
+    }
+    SECTION("a ▀ lifted and turned on its side") {
+        CellEdit e;
+        Cell c;
+        c.ch = U'▀';
+        c.fg = Color::indexed(Red);
+        c.bg = Color::indexed(Blue);
+        e.changes.push_back({3, 3, doc->layerCanvas().at(3, 3), c});
+        REQUIRE(doc->edit(e));
+        const Canvas canvas = doc->canvas();
+        const int steps = doc->undoStack()->count();
+        f.w.tools()->setActive(s);
+        s->select({3, 3, 1, 1});
+        press(v, Qt::Key_Right);
+        REQUIRE(s->floating());
+        act(f.w, "rotateClockwise")->trigger();
+        press(v, Qt::Key_Return);
+        CHECK(str(f.w.statusBar()->currentMessage()) == str(unnamed.arg(QStringLiteral("▐"))));
+        CHECK(s->floating());
+        CHECK(doc->canvas() == canvas);
+        CHECK(doc->undoStack()->count() == steps);
+        // Esc puts it back where it was lifted from, as it was
+        press(v, Qt::Key_Escape);
+        CHECK_FALSE(s->floating());
+        CHECK(halfBlocks(doc->canvas().at(3, 3)) == HalfPair{Red, Blue});
+    }
 }
 
 TEST_CASE("a refused stamp leaves a block that already floats floating", "[library][layers]") {
@@ -1921,4 +2457,143 @@ TEST_CASE("Save to Library refuses insets the selection can't be cut by") {
               .isEmpty());
     CHECK(error.contains(QStringLiteral("can't be resizable")));
     CHECK_FALSE(QFileInfo::exists(QDir(f.user.path()).filePath(QStringLiteral("bar.ans"))));
+}
+TEST_CASE("a float lifted on a Reference layer is refused for the layer's reason, not lost (#433)", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    QImage image(8, 8, QImage::Format_RGB32);
+    image.fill(Qt::red);
+    QByteArray bytes;
+    QBuffer out(&bytes);
+    REQUIRE(out.open(QIODevice::WriteOnly));
+    REQUIRE(image.save(&out, "PNG"));
+    write(f.w, 2, 2, QStringLiteral("ab"));
+    const LayerId ref =
+        doc->addReferenceLayer(ReferenceImage{std::make_shared<const std::string>(bytes.toStdString()), 0, 0, 80, 40, 100});
+    REQUIRE(ref);
+    REQUIRE(doc->activeLayer() == ref);
+    f.w.tools()->setActive(s);
+    s->select({2, 2, 2, 1});
+    press(v, Qt::Key_Down);
+    REQUIRE(s->floating());
+    const Canvas canvas = doc->canvas();
+    const int steps = doc->undoStack()->count();
+    press(v, Qt::Key_Return, QStringLiteral("\r"));
+    CHECK(str(f.w.statusBar()->currentMessage()) ==
+          "Could not put the floating selection down: a Reference layer holds a picture, not cells; press Esc to drop it");
+    CHECK(s->floating());
+    CHECK(doc->canvas() == canvas);
+    CHECK(doc->undoStack()->count() == steps);
+    press(v, Qt::Key_Escape);
+    CHECK_FALSE(s->floating());
+    CHECK(doc->canvas() == canvas);
+}
+
+TEST_CASE("Delete on a lifted float that can't land drops it and clears the lift's source, one step (#433)",
+          "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    CellEdit e;
+    e.changes.push_back({3, 3, doc->layerCanvas().at(3, 3), pixelLayerCell(LayerPixels{std::uint8_t(Red), {}})});
+    REQUIRE(doc->edit(e));
+    const Cell blank = doc->layerCanvas().at(4, 4);
+    const int steps = doc->undoStack()->count();
+    f.w.tools()->setActive(s);
+    s->select({3, 3, 1, 1});
+    press(v, Qt::Key_Right);
+    act(f.w, "rotateClockwise")->trigger();  // ▀ → ▐: can't land
+    press(v, Qt::Key_Return);
+    REQUIRE(s->floating());
+    REQUIRE(str(s->unlanded()) == "a Pixels layer holds no ▐");
+    press(v, Qt::Key_Delete);
+    // as before the PR: the float goes, and the lift's source is cleared
+    CHECK_FALSE(s->floating());
+    CHECK(doc->layerCanvas().at(3, 3) == blank);
+    CHECK(doc->layerCanvas().at(4, 3) == blank);
+    CHECK(doc->undoStack()->count() == steps + 1);
+}
+
+TEST_CASE("the undo of an edit under a covering layer drops a lift, as the active layer's cells changed under it (#433)",
+          "[library][layers]") {
+    // PLAN §4 Tools: the view cancels the tool on "an undo or redo that
+    // changes cells or the active layer's cells"; §4 Selections: an undo or
+    // redo that changes cells drops a float.
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const LayerId below = doc->activeLayer();
+    REQUIRE(doc->addLayer(LayerKind::Cells));
+    for (int y = 2; y <= 4; ++y)
+        write(f.w, 3, y, QStringLiteral("######"));  // the layer above covers (3..8, 2..4)
+    REQUIRE(doc->setActiveLayer(below));
+    const Canvas composite = doc->canvas();
+    write(f.w, 5, 3, QStringLiteral("x"));  // under the cover: the composite is as it was
+    REQUIRE(doc->layerCanvas().at(5, 3).ch.codePoint().value() == U'x');
+    REQUIRE(doc->canvas() == composite);
+    f.w.tools()->setActive(s);
+    s->select({4, 2, 3, 3});
+    press(v, Qt::Key_Right);  // lift, one cell right
+    REQUIRE(s->floating());
+    doc->undoStack()->undo();  // the x is undone
+    REQUIRE(doc->layerCanvas().at(5, 3).ch.codePoint().value() != U'x');
+    CHECK_FALSE(s->floating());
+    if (s->floating()) {
+        press(v, Qt::Key_Return, QStringLiteral("\r"));
+        const Canvas& layer = doc->layerCanvas();
+        bool resurrected = false;
+        for (int y = 0; y < layer.height(); ++y)
+            for (int x = 0; x < layer.width(); ++x)
+                resurrected |= layer.at(x, y).ch.codePoint().value() == U'x';
+        INFO("the undone x is in the layer again after the landing, at (6,3): "
+             << (layer.at(6, 3).ch.codePoint().value() == U'x'));
+        CHECK_FALSE(resurrected);
+    }
+}
+
+TEST_CASE("Bake Layer Style and its undo keep a plain selection (#433)", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    write(f.w, 5, 3, QStringLiteral("x"));
+    LayerProperties p = doc->active()->props;
+    p.style = TextStyle{{Effect{true, GlowEffect{"fire", 12, 12}}}};
+    REQUIRE(doc->setLayerProperties(doc->activeLayer(), p, QStringLiteral("Style")));
+    f.w.tools()->setActive(s);
+    s->select({4, 2, 3, 3});
+    act(f.w, "bakeLayer")->trigger();
+    REQUIRE_FALSE(doc->active()->props.style);
+    CHECK(s->selection() == Selection(CellRect{4, 2, 3, 3}));
+    doc->undoStack()->undo();
+    REQUIRE(doc->active()->props.style);
+    CHECK(s->selection() == Selection(CellRect{4, 2, 3, 3}));
+}
+
+TEST_CASE("the undo of a covered layer's move drops a lift, as the cells under it changed (#433)", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const LayerId below = doc->activeLayer();
+    write(f.w, 5, 3, QStringLiteral("x"));
+    REQUIRE(doc->addLayer(LayerKind::Cells));
+    for (int y = 2; y <= 4; ++y)
+        write(f.w, 3, y, QStringLiteral("######"));  // covers (3..8, 2..4)
+    REQUIRE(doc->setActiveLayer(below));
+    LayerProperties p = doc->active()->props;
+    p.x += 1;
+    REQUIRE(doc->setLayerProperties(below, p, QStringLiteral("Move Layer")));
+    REQUIRE(doc->layerCanvas().at(6, 3).ch.codePoint().value() == U'x');
+    f.w.tools()->setActive(s);
+    s->select({5, 2, 3, 3});
+    press(v, Qt::Key_Right);
+    REQUIRE(s->floating());
+    doc->undoStack()->undo();  // the layer moves back: x is at (5,3) again
+    REQUIRE(doc->layerCanvas().at(5, 3).ch.codePoint().value() == U'x');
+    CHECK_FALSE(s->floating());
 }

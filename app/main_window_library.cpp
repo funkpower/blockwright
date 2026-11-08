@@ -15,6 +15,7 @@
 #include "text_tool.h"
 #include "tool.h"
 
+#include "blockwright/brushes/drawing.h"
 #include "blockwright/glyph.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
@@ -128,23 +129,17 @@ QString unheldOnPixels(const CellBlock& block) {
 // Why the active layer can't take `block` as a stamp (Document::editable and
 // fitLayerEdit's reasons), or nothing when it can.
 QString stampProblem(const Document& doc, const CellBlock& block) {
-    const Layer* l = doc.active();
-    if (!l)
-        return MainWindow::tr("there is no active layer");
-    if (l->props.locked)
-        return MainWindow::tr("the layer is locked");
-    if (!l->props.visible)
-        return MainWindow::tr("the layer is hidden");
-    switch (l->props.kind) {
-    case LayerKind::Cells: return {};
-    case LayerKind::Text:
-        return l->props.text ? MainWindow::tr("a live Text layer is drawn from its text") : QString();
-    case LayerKind::Generator: return MainWindow::tr("a Generator layer is drawn by its generator");
-    case LayerKind::Reference: return MainWindow::tr("a Reference layer holds a picture, not cells");
-    case LayerKind::Pixels:
-        if (const QString unheld = unheldOnPixels(block); !unheld.isEmpty())
-            return MainWindow::tr("a Pixels layer holds no %1").arg(unheld);
+    if (QString why = doc.editProblem(); !why.isEmpty())
+        return why;
+    if (doc.active()->props.kind != LayerKind::Pixels)
         return {};
+    // ▌ ▐ alone float: a quarter turn makes them ▀ ▄, and the landing
+    // refuses them if they are still there (SelectTool::stamp). Any other
+    // glyph the layer can't hold is refused here, with them.
+    if (const QString unheld = unheldOnPixels(block); !unheld.isEmpty()) {
+        const auto cps = unheld.toUcs4();
+        if (!std::all_of(cps.begin(), cps.end(), [](char32_t cp) { return pixelsHoldTurned(cp); }))
+            return MainWindow::tr("a Pixels layer holds no %1").arg(unheld);
     }
     return {};
 }
@@ -193,6 +188,11 @@ LayerId MainWindow::newStyledText(const library::TextStyleEntry& entry, QPoint c
     const Canvas& cv = doc_.canvas();
     cell = {std::clamp(cell.x(), 0, cv.width() - 1), std::clamp(cell.y(), 0, cv.height() - 1)};
     tools_->setActive(text);
+    if (tools_->active() != text) {
+        // the tool before kept what it couldn't land (a floating selection)
+        *error = tr("the floating selection can't land: %1").arg(tools_->active()->unlanded());
+        return 0;
+    }
     const LayerId id = text->placeStyled(cell, U"Text", entry.style);
     if (!id) {
         *error = tr("the text can't be drawn in %1").arg(QString::fromStdString(entry.name));
@@ -239,8 +239,12 @@ bool MainWindow::placeStamp(const std::filesystem::path& path, QPoint cell, QStr
     cell = {std::clamp(cell.x(), 0, cv.width() - 1), std::clamp(cell.y(), 0, cv.height() - 1)};
     view_->setCellCursor({cell.x(), cell.y()});
     // Whatever floats already lands first, in its own mode; the stamp floats
-    // in transparent mode without changing the Paste Mode setting.
-    selectTool_->floatBlock(block, cell, PasteMode::Transparent, stamp->meta.slice);
+    // in transparent mode without changing the Paste Mode setting. One that
+    // can't land stays floating, and this stamp doesn't float.
+    if (!selectTool_->floatBlock(block, cell, PasteMode::Transparent, stamp->meta.slice, qpath(path))) {
+        *error = tr("the floating selection can't land: %1").arg(selectTool_->unlanded());
+        return false;
+    }
     view_->setFocus();
     return true;
 }

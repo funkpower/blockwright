@@ -3,11 +3,13 @@
 // undo step and Cancel as none, Save as Preset, Bake of text, cells and
 // pixels layers, and the Layers dock's Style column.
 
+#include "canvas_view.h"
 #include "document.h"
 #include "irc_meter.h"
 #include "layer_style_dialog.h"
 #include "layers_dock.h"
 #include "main_window.h"
+#include "select_tool.h"
 
 #include "blockwright/composite.h"
 #include "blockwright/face.h"
@@ -29,6 +31,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -658,4 +661,56 @@ TEST_CASE("the Layers dock shows a layer's style and a double-click there opens 
     // Bake takes the style away and the cell empties
     REQUIRE(doc->bakeLayer(id));
     CHECK(tree->topLevelItem(0)->text(LayersDock::StyleColumn).isEmpty());
+}
+
+TEST_CASE("the undo of Bake Layer Style under a lift drops the float, as the layer's cells changed under it (#433)",
+          "[style]") {
+    MainWindow w;
+    Document* doc = w.document();
+    const LayerId id = open(w, artLayer(LayerKind::Cells));
+    LayerProperties p = layerOf(doc, id).props;
+    p.style = TextStyle{{Effect{true, GlowEffect{"fire", 12, 12}}}};
+    REQUIRE(doc->setLayerProperties(id, p, QStringLiteral("Style")));
+    const Canvas raw = layerOf(doc, id).cells;
+    act(w, QStringLiteral("bakeLayer"))->trigger();
+    REQUIRE_FALSE(layerOf(doc, id).props.style);
+    const Canvas baked = layerOf(doc, id).cells;
+    REQUIRE_FALSE(baked == raw);  // the glow is in the layer's cells now
+    SelectTool* s = w.selectTool();
+    w.tools()->setActive(s);
+    const CellRect source{4, 2, 3, 3};  // the block and its baked glow
+    s->select(source);
+    const auto key = [&](int k, const QString& text = {}) {
+        QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier, text);
+        QApplication::sendEvent(w.canvasView(), &press);
+    };
+    SECTION("undo") {
+        key(Qt::Key_Right);  // lifts the block and its glow a cell right
+        REQUIRE(s->floating());
+        doc->undoStack()->undo();  // Bake Layer Style undone: the raw block and its style again
+        REQUIRE(layerOf(doc, id).props.style);
+        REQUIRE(layerOf(doc, id).cells == raw);
+        // dropped, as for any undo that changes the cells under it: the
+        // layer as the undo left it, the selection on the lift's source
+        CHECK_FALSE(s->floating());
+        CHECK(s->selection().bounds() == source);
+        const int steps = doc->undoStack()->count();
+        key(Qt::Key_Return, QStringLiteral("\r"));
+        CHECK(layerOf(doc, id).cells == raw);
+        CHECK(doc->undoStack()->count() == steps);
+    }
+    SECTION("redo") {
+        doc->undoStack()->undo();
+        REQUIRE(layerOf(doc, id).cells == raw);
+        key(Qt::Key_Right);  // lifts the raw block a cell right
+        REQUIRE(s->floating());
+        doc->undoStack()->redo();  // baked again: the glow in the layer's cells
+        REQUIRE(layerOf(doc, id).cells == baked);
+        CHECK_FALSE(s->floating());
+        CHECK(s->selection().bounds() == source);
+        const int steps = doc->undoStack()->count();
+        key(Qt::Key_Return, QStringLiteral("\r"));
+        CHECK(layerOf(doc, id).cells == baked);
+        CHECK(doc->undoStack()->count() == steps);
+    }
 }

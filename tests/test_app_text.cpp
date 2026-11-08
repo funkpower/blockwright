@@ -8,6 +8,7 @@
 #include "layers_dock.h"
 #include "main_window.h"
 #include "preferences.h"
+#include "select_tool.h"
 #include "settings.h"
 #include "text_options.h"
 #include "text_tool.h"
@@ -44,6 +45,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QStyleOptionViewItem>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -2147,4 +2149,38 @@ TEST_CASE("a window deleted with an edit in the Big colours box applies it while
     CHECK(probe.late == 0);
     CHECK(probe.early == 1);
     CHECK(applied == 1);
+}
+
+TEST_CASE("a float on a live Text layer is refused for the layer's reason, not lost (#433)", "[text]") {
+    MainWindow w;
+    Document* d = w.document();
+    makeText(w, QStringLiteral("Hi"));
+    const LayerId id = d->activeLayer();
+    SECTION("Bake Text, a lift, then the bake undone") {
+        act(w, QStringLiteral("bakeLayer"))->trigger();
+        REQUIRE(d->layers().find(id)->props.kind == LayerKind::Cells);
+    }
+    SECTION("a lift on the live layer") {}
+    SelectTool* s = w.selectTool();
+    w.tools()->setActive(s);
+    REQUIRE(w.tools()->active() == s);
+    s->select({2, 1, 2, 1});
+    key(w.canvasView(), Qt::Key_Down);  // lifts the two cells a row down
+    REQUIRE(s->floating());
+    if (!d->layers().find(id)->props.text)
+        d->undoStack()->undo();  // Bake Text undone: a live Text layer again
+    REQUIRE(d->layers().find(id)->props.text);
+    REQUIRE(s->floating());
+    const Canvas canvas = d->canvas();
+    const int steps = d->undoStack()->count();
+    key(w.canvasView(), Qt::Key_Return, QStringLiteral("\r"));
+    CHECK(w.statusBar()->currentMessage()
+          == QStringLiteral("Could not put the floating selection down: a live Text layer is drawn from its text; "
+                            "press Esc to drop it"));
+    CHECK(s->floating());
+    CHECK(d->canvas() == canvas);
+    CHECK(d->undoStack()->count() == steps);
+    key(w.canvasView(), Qt::Key_Escape);
+    CHECK(!s->floating());
+    CHECK(d->canvas() == canvas);
 }

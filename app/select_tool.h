@@ -16,6 +16,11 @@
 // the tool. A floating selection doesn't: switching tools, typing or saving
 // stamps it, and undo, redo or a new canvas drops it (cancel).
 //
+// A float the active layer can't hold (▌ ▐ on a pixel layer, which a
+// quarter turn makes ▀ ▄) floats and shows as it is, but doesn't land: each
+// stamp of it is refused with the reason in the status bar, and the float
+// stays where it is until it is turned or dropped (PLAN §12).
+//
 // The clipboard is the tool's own: cells with their colours, which the
 // system clipboard has no format for.
 
@@ -70,8 +75,10 @@ public:
     // `mode`, this float stamps in that mode instead of the setting, which
     // stays as it was; the mode ends when the float lands or is dropped.
     // With `slice` (one sliceProblem passes), the float is resizable.
-    void floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode = std::nullopt,
-                    const std::optional<StampSlice>& slice = std::nullopt);
+    // `name` names it in a refused landing's message (a stamp's file).
+    // False, and nothing floated, when a float before it can't land.
+    bool floatBlock(const CellBlock& block, QPoint cell, std::optional<PasteMode> mode = std::nullopt,
+                    const std::optional<StampSlice>& slice = std::nullopt, const QString& name = {});
     // Whether the floating selection is resizable, and its slice as it
     // stands (flips and rotations turn it with the cells).
     bool resizable() const { return floating_ && resizable_.has_value(); }
@@ -102,8 +109,14 @@ public:
     void transform(Transform t);
     // Moves the floating selection, lifting the selected cells first.
     void moveBy(int dx, int dy);
-    // Writes the floating selection onto the canvas.
-    void stamp();
+    // Writes the floating selection onto the canvas. False, the float
+    // still floating and nothing written, when the active layer can't hold
+    // it (Document::unheldGlyphs): the status bar says why. True otherwise,
+    // and with nothing floating.
+    bool stamp();
+    // Why the floating selection can't land, as its last stamp found:
+    // "a Pixels layer holds no ▌"; empty when it may, or nothing floats.
+    QString unlanded() const override { return floating_ ? refusal_ : QString(); }
 
     void activate(CanvasView* view) override;
     void deactivate() override;
@@ -114,6 +127,8 @@ public:
     // the drag picked it up and stays floating; a new rectangle just ends.
     void cancelDrag() override;
     void finish() override { stamp(); }
+    // A switch to another tool lands the float first; refused when it can't.
+    bool release() override { return stamp(); }
     bool dragging() const override { return drag_ != Drag::None; }
     bool mousePress(const ToolEvent& e) override;
     bool mouseMove(const ToolEvent& e) override;
@@ -152,6 +167,17 @@ private:
     void dropResizeRollback();
     // A Resize drag's dragged side to the cell edge nearest `px`.
     void resizeToward(QPoint px);
+    // Why `edit`, a stamp of the float, can't land on the active layer
+    // (Document::unheldGlyphs), or nothing; `turnable`, when given, is set
+    // to whether a quarter turn of the float would let it.
+    QString landingProblem(const CellEdit& edit, bool* turnable = nullptr) const;
+    // The edit as the landing check reads it: every ▌ ▐ the float holds
+    // added at its place as the glyph it is, whether or not the paste writes
+    // it (a transparent ▌ ▐ is a half pixel on its side, which holds no
+    // pixel and which stampBlock leaves out; Under mode skips a cell over
+    // one that isn't blank), so a float that holds one is refused rather
+    // than landing as an erase of what it was lifted from.
+    CellEdit withSideways(const CellEdit& edit) const;
     // What stamping would write, as a 1x picture of the cells it changes.
     void updatePreview() const;
 
@@ -165,6 +191,8 @@ private:
     PasteMode mode_ = PasteMode::Normal;
     std::optional<PasteMode> floatMode_;  // this float's own mode
     std::optional<Resizable> resizable_;  // this float's own slice
+    QString floatName_;                   // floatBlock's name for it
+    QString refusal_;  // why the last stamp of this float was refused, until it changes
 
     Drag drag_ = Drag::None;
     QPoint dragStart_, dragOffset_;

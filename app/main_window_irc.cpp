@@ -72,7 +72,10 @@ void MainWindow::editIrcBudget() {
 }
 
 bool MainWindow::exportIrcText(const QString& path, QString* error, bool allowOverBudget) {
-    view_->finishTool();
+    if (const QString why = view_->finishTool(); !why.isEmpty()) {
+        *error = tr("the floating selection can't land: %1").arg(why);
+        return false;
+    }
     const std::vector<std::string> lines = texts(ircMeter_->lines());
     // as the ascii script sends each line, which it writes again (#364)
     const auto over = irc::txtOverBudget(lines, ircMeter_->budget().bytes);
@@ -93,7 +96,10 @@ bool MainWindow::exportIrcText(const QString& path, QString* error, bool allowOv
 }
 
 void MainWindow::exportIrc() {
-    view_->finishTool();
+    if (const QString why = view_->finishTool(); !why.isEmpty()) {
+        statusBar()->showMessage(tr("Not exported: the floating selection can't land: %1").arg(why), 5000);
+        return;
+    }
     const std::vector<std::string> lines = texts(ircMeter_->lines());
     const std::size_t budget = ircMeter_->budget().bytes;
     const auto over = irc::txtOverBudget(lines, budget);

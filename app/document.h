@@ -279,6 +279,9 @@ public:
     // that is visible and not locked, and not a live text layer (one with a
     // source: its cells are drawn from it).
     bool editable() const;
+    // Why edit() takes no edits now, as the status bar says it (\"the layer
+    // is locked\"…), or nothing when editable() is true.
+    QString editProblem() const;
 
     // The layer panel's changes, each one undo command (QUndoStack) that
     // applies it now; each emits commandAboutToPush, and then
@@ -436,6 +439,12 @@ public:
     // (its styled cells, on a styled layer: all of them), for coverageAbove;
     // otherwise it is left empty.
     CellEdit previewEdit(const CellEdit& edit, CellEdit* layerCells = nullptr);
+    // The glyphs `edit` (built on layerCanvas()) writes that the active
+    // layer can't hold, which make edit() refuse it: on a pixel layer, each
+    // opaque cell's glyph but a blank, █ ▀ or ▄ (halfBlocks), once each, in
+    // reading order. Empty on any other layer. A floating selection checks
+    // its landing with it (SelectTool::stamp).
+    std::vector<Glyph> unheldGlyphs(const CellEdit& edit) const;
 
     // The cells an edit changes: those whose before and after differ
     // (identical, so a mark moving counts).
@@ -450,6 +459,11 @@ signals:
     // (coverageAbove) may have changed. Emitted only while the stack shows a
     // reference layer; a change that emits layersChanged doesn't emit it.
     void layerCellsChanged(const QRegion& cells);
+    // The active layer's own cells or place changed where the composite
+    // stayed as it was, so no cellsChanged: an edit under a layer that covers
+    // it, or its undo or redo; a covered layer's move; Bake Layer of a style
+    // the compositor draws. The cells under a tool changed all the same.
+    void activeCellsReplaced();
     // The whole canvas was replaced (open, new): sizes may have changed.
     void reset();
     void modifiedChanged(bool modified);

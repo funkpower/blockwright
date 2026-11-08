@@ -92,6 +92,13 @@ public:
     // calls it before an edit of its own (typing) and before the document is
     // saved or its unsaved changes are checked.
     virtual void finish() {}
+    // Why what is in progress can't be written (finish() left it as it
+    // was: a floating selection the active layer can't hold), or nothing.
+    virtual QString unlanded() const { return {}; }
+    // The registry calls it before another tool becomes active: finishes
+    // what is in progress, and whether it could. False keeps this tool
+    // active.
+    virtual bool release() { return true; }
 
     // Draws, in view pixels, cells as the canvas will hold them once the
     // tool finishes (a floating selection): over the canvas, under the
@@ -153,11 +160,18 @@ public:
     // (Document::previewEdit), to draw over the view's canvas, and the
     // active layer's cells it changes (its layerCells).
     void set(const CanvasView& view, const CellEdit& edit);
+    // Keeps `edit`'s opaque cells as they are, over the composite, for an
+    // edit the active layer can't hold (previewEdit has nothing for it);
+    // no layerCells.
+    void setUnheld(const CanvasView& view, const CellEdit& edit);
     const CellEdit& layerCells() const { return layerCells_; }
     // Draws it in view pixels, the part within `exposed`.
     void paint(QPainter& p, const CanvasView& view, const QRect& exposed) const;
 
 private:
+    // Sorts changes_ row-major, each cell once, and bounds them.
+    void settle(const CanvasView& view);
+
     std::vector<CellChange> changes_;  // on the canvas, row-major
     QRect cells_;                      // their bounding box, in cells
     CellEdit layerCells_;
@@ -174,6 +188,9 @@ public:
     Tool* find(const QString& id) const;
 
     Tool* active() const { return active_; }
+    // Makes `tool` active, once the active tool lets go (Tool::release);
+    // when it doesn't, activeChanged is emitted for the tool that stays, so
+    // what shows the active tool shows it again.
     void setActive(Tool* tool);
     void setActive(const QString& id) { setActive(find(id)); }
 

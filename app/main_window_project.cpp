@@ -79,8 +79,12 @@ AnsiOutput MainWindow::saveLoss(const QString& path, FileForm form, std::optiona
 
 bool MainWindow::writeFile(const QString& path, FileForm form, QString* error, bool allowLossy,
                            std::optional<TextEncoding> encoding) {
-    // A floating selection is saved where it floats.
-    view_->finishTool();
+    // A floating selection is saved where it floats; one that can't land
+    // stops the save.
+    if (const QString why = view_->finishTool(); !why.isEmpty()) {
+        *error = tr("the floating selection can't land: %1").arg(why);
+        return false;
+    }
     const AnsiOutput out = saveLoss(path, form, encoding);
     if (out.lossy() && !allowLossy) {
         *error = lossDescription(out);
@@ -119,7 +123,10 @@ bool MainWindow::saveAsDirectory() {
 }
 
 int MainWindow::snapshot(QString* error, bool allowLossy) {
-    view_->finishTool();
+    if (const QString why = view_->finishTool(); !why.isEmpty()) {
+        *error = tr("the floating selection can't land: %1").arg(why);
+        return 0;
+    }
     if (doc_.form() == FileForm::Ansi) {
         *error = tr("only a project keeps snapshots: save it as a project first");
         return 0;
@@ -138,11 +145,12 @@ int MainWindow::snapshot(QString* error, bool allowLossy) {
 }
 
 void MainWindow::takeSnapshot() {
-    view_->finishTool();
+    QString error = view_->finishTool();
+    if (!error.isEmpty())
+        error = tr("the floating selection can't land: %1").arg(error);
     project::Snapshot s;
     AnsiOutput out;
-    QString error;
-    if (doc_.form() == FileForm::Ansi || !doc_.nextSnapshot(&s, &out, &error)) {
+    if (!error.isEmpty() || doc_.form() == FileForm::Ansi || !doc_.nextSnapshot(&s, &out, &error)) {
         QMessageBox::warning(this, tr("Take Snapshot"), tr("Could not take a snapshot:\n%1").arg(error));
         return;
     }

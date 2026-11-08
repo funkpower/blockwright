@@ -165,8 +165,10 @@ public:
     void notify(const QString& text) { emit statusNotice(text); }
     // The tool writes what it has in progress (a floating selection) as an
     // edit: before the view's own edits, and before the document is saved
-    // or checked for unsaved changes.
-    void finishTool();
+    // or checked for unsaved changes. Returns why it couldn't (a floating
+    // selection the active layer can't hold, Tool::unlanded), which leaves
+    // it as it was, or nothing; the caller then doesn't go on.
+    QString finishTool();
 
     // The selected cells, clipped to the canvas; empty for none. It stays
     // across tool switches and is cleared by a new canvas.

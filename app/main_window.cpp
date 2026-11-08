@@ -1028,7 +1028,10 @@ bool MainWindow::saveAsFile() {
 }
 
 bool MainWindow::saveInteractive(const QString& path, FileForm form, std::optional<TextEncoding> encoding) {
-    view_->finishTool();
+    if (const QString why = view_->finishTool(); !why.isEmpty()) {
+        statusBar()->showMessage(tr("Not saved: the floating selection can't land: %1").arg(why), 5000);
+        return false;
+    }
     const AnsiOutput out = saveLoss(path, form, encoding);
     if (out.lossy()) {
         const auto answer = QMessageBox::warning(
@@ -1075,11 +1078,23 @@ bool MainWindow::maybeSave() {
     // otherwise commit it after this check, with nobody asked (#241).
     commitFocusedEdit();
     // A floating selection is an unsaved change: stamped, it marks the
-    // document modified and is saved with it.
-    view_->finishTool();
-    if (!doc_.isModified())
+    // document modified and is saved with it. One that can't land is
+    // unsaved too: Save keeps it (saveInteractive refuses), Discard drops it.
+    const QString unlanded = view_->finishTool();
+    if (!doc_.isModified() && unlanded.isEmpty())
         return true;
-    QString text = tr("The canvas has unsaved changes.");
+    // Save can't keep a float that can't land, so the prompt says so; a
+    // modified document's other changes are still named, as Discard drops
+    // them too.
+    QString text;
+    if (unlanded.isEmpty())
+        text = tr("The canvas has unsaved changes.");
+    else if (doc_.isModified())
+        text = tr("The canvas has unsaved changes, and the floating selection can't land (%1): it can't be saved, "
+                  "and discarding drops it with them.")
+                   .arg(unlanded);
+    else
+        text = tr("The floating selection can't land (%1): discarding drops it.").arg(unlanded);
     // Save writes the .ans, which can't hold the layers or an IRC budget:
     // they stay open. An untitled document asks for a name first, and
     // only an .ans name loses them.

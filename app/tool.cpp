@@ -43,10 +43,23 @@ void EditPreview::clear() {
 
 void EditPreview::set(const CanvasView& view, const CellEdit& edit) {
     clear();
-    const Canvas& cv = view.document()->canvas();
     // The tool's edit is on the active layer; what it shows is the
     // composite with it applied.
     changes_ = view.document()->previewEdit(edit, &layerCells_).changes;
+    settle(view);
+}
+
+void EditPreview::setUnheld(const CanvasView& view, const CellEdit& edit) {
+    clear();
+    const Canvas& cv = view.document()->canvas();
+    for (const CellChange& c : edit.changes)
+        if (!c.after.transparent && c.x >= 0 && c.y >= 0 && c.x < cv.width() && c.y < cv.height())
+            changes_.push_back({c.x, c.y, cv.at(c.x, c.y), c.after});
+    settle(view);
+}
+
+void EditPreview::settle(const CanvasView& view) {
+    const Canvas& cv = view.document()->canvas();
     const auto rowMajor = [](const CellChange& a, const CellChange& b) {
         return a.y != b.y ? a.y < b.y : a.x < b.x;
     };
@@ -127,6 +140,10 @@ Tool* ToolRegistry::find(const QString& id) const {
 void ToolRegistry::setActive(Tool* tool) {
     if (!tool || tool == active_ || !tools_.contains(tool))
         return;
+    if (active_ && !active_->release()) {
+        emit activeChanged(active_);
+        return;
+    }
     active_ = tool;
     emit activeChanged(tool);
 }

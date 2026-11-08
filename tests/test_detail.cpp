@@ -171,6 +171,17 @@ TEST_CASE("a pixels layer can't hold a half block a radial quarter turn puts on 
     CHECK(pixelsUnheldGlyphs(U'*', mirror, 21, 11) == V{U'*'});
 }
 
+TEST_CASE("a pixels layer holds ▌ ▐ turned a quarter, and nothing else it can't hold (#433)", "[brush][layers]") {
+    for (const char32_t ch : {U'▌', U'▐'}) {
+        CHECK(pixelsHoldTurned(ch));
+        CHECK(pixelsHoldGlyph(rotateGlyph(ch, true)));
+        CHECK(pixelsHoldGlyph(rotateGlyph(ch, false)));
+    }
+    // what the layer holds already, and what no turn makes a half block
+    for (const char32_t ch : {U'█', U'▀', U'▄', U' ', U'\0', U'░', U'▒', U'▓', U'*', U'─', U'│'})
+        CHECK_FALSE(pixelsHoldTurned(ch));
+}
+
 TEST_CASE("radial images keep their ends in 64 bits when joined", "[symmetry][brush]") {
     // Codex round 1 #5: four folds about cell (0, 0) of a 10x10 canvas; the
     // quarter turn of (-200, INT_MIN) is (2^32, -100), beyond int. Saturated

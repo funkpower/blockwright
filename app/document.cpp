@@ -1,6 +1,7 @@
 #include "document.h"
 #include "font_scanner.h"
 
+#include "blockwright/halfblock.h"
 #include "blockwright/render.h"
 #include "blockwright/style_draw.h"
 #include "blockwright/text.h"
@@ -883,12 +884,53 @@ PastePixels Document::pastePixels() const {
     return {l && l->props.kind == LayerKind::Pixels, doc_.ice};
 }
 
+std::vector<Glyph> Document::unheldGlyphs(const CellEdit& edit) const {
+    const Layer* l = active();
+    if (!l || l->props.kind != LayerKind::Pixels)
+        return {};
+    // as fitLayerEdit refuses a change: on the layer, its last change to a cell
+    CellEdit e = toLayerEdit(*l, edit);
+    std::stable_sort(e.changes.begin(), e.changes.end(),
+                     [](const CellChange& a, const CellChange& b) { return a.y != b.y ? a.y < b.y : a.x < b.x; });
+    std::vector<Glyph> out;
+    bool half = false;  // a wide character's second half, its lead off the edit
+    for (const CellChange& c : e.changes) {
+        if (c.after.transparent || halfBlocks(c.after, true))
+            continue;
+        if (c.after.ch.isContinuation())
+            half = true;
+        else if (std::find(out.begin(), out.end(), c.after.ch) == out.end())
+            out.push_back(c.after.ch);
+    }
+    if (out.empty() && half)
+        out.push_back(Glyph::continuation());
+    return out;
+}
+
 Cell Document::shownBelow(int x, int y) const {
     return compositeCellBelow(stack_, stack_.indexOf(active_).value_or(0), x, y, compositeOptions());
 }
 
 std::function<Cell(int, int)> Document::below() const {
     return [this](int x, int y) { return shownBelow(x, y); };
+}
+
+QString Document::editProblem() const {
+    const Layer* l = active();
+    if (!l)
+        return tr("there is no active layer");
+    if (l->props.locked)
+        return tr("the layer is locked");
+    if (!l->props.visible)
+        return tr("the layer is hidden");
+    switch (l->props.kind) {
+    case LayerKind::Cells:
+    case LayerKind::Pixels: return {};
+    case LayerKind::Text: return l->props.text ? tr("a live Text layer is drawn from its text") : QString();
+    case LayerKind::Generator: return tr("a Generator layer is drawn by its generator");
+    case LayerKind::Reference: return tr("a Reference layer holds a picture, not cells");
+    }
+    return {};
 }
 
 bool Document::editable() const {
@@ -1321,6 +1363,8 @@ void Document::applyLayerEdit(LayerId id, const CellEdit& layerEdit, bool revert
         const QRegion cells = recomposite(dirty);
         if (!cells.isEmpty())
             emit cellsChanged(cells);
+        else if (id == active_ && !layerEdit.changes.empty())
+            emit activeCellsReplaced();
         if (!dirty.empty())
             touchLayerCells(QRect(dirty.x, dirty.y, dirty.width, dirty.height));
         return;
@@ -1349,6 +1393,8 @@ void Document::applyLayerEdit(LayerId id, const CellEdit& layerEdit, bool revert
     const QRegion cells = changedCells(diff);
     if (!cells.isEmpty())
         emit cellsChanged(cells);
+    else if (id == active_ && !layerEdit.changes.empty())
+        emit activeCellsReplaced();
     if (cover)
         touchLayerCells(changedCells(touched));
 }
@@ -1431,6 +1477,9 @@ void Document::putProperties(const LayerPropsEdit& edit, bool revert) {
         return;
     const LayerProperties was = layer->props;
     const CellRect before = layer->bounds();
+    // the active layer's cells, to tell a tool whether they changed under it
+    // where the composite didn't (activeCellsReplaced)
+    const std::optional<Canvas> cellsWere = id == active_ ? std::optional<Canvas>(layer->cells) : std::nullopt;
     // a step changing a live text layer's source replaces its cells
     const bool redrawn = applyEdit(*layer, edit, revert, fontSources());
     const LayerProperties& now = layer->props;
@@ -1443,6 +1492,8 @@ void Document::putProperties(const LayerPropsEdit& edit, bool revert) {
     emit layersChanged();
     if (!cells.isEmpty())
         emit cellsChanged(cells);
+    else if (cellsWere && (before != layer->bounds() || (redrawn && !(*cellsWere == layer->cells))))
+        emit activeCellsReplaced();
 }
 
 void Document::makeActive(LayerId id) {

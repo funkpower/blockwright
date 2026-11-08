@@ -60,6 +60,10 @@ bool pixelsHoldGlyph(char32_t ch) {
     return halfBlocks(c).has_value();
 }
 
+bool pixelsHoldTurned(char32_t ch) {
+    return !pixelsHoldGlyph(ch) && pixelsHoldGlyph(rotateGlyph(ch, true)) && pixelsHoldGlyph(rotateGlyph(ch, false));
+}
+
 std::vector<char32_t> pixelsUnheldGlyphs(char32_t ch, const Symmetry& symmetry, int width, int height) {
     if (!pixelsHoldGlyph(ch))
         return {ch};
