@@ -5,6 +5,7 @@
 // Writing the captures is the command's (main.cpp); everything here is in
 // memory, so a step that fails leaves nothing written.
 
+#include "blockwright/brushes/clone.h"
 #include "blockwright/edit.h"
 #include "blockwright/project.h"
 #include "blockwright/steps.h"
@@ -84,6 +85,11 @@ struct ToolSettings {
     bw::TextureOptions texture;
     bw::SprayOptions spray;
     bw::PasteMode pasteMode = bw::PasteMode::Normal;
+    // The clone stamp's (#418): Tool Options' Aligned (on), and the source
+    // the clone steps so far set with the distance their strokes set, which
+    // the editor's CloneTool keeps across strokes as these are kept across
+    // steps.
+    bw::CloneSource clone;
     bool sampleMerged = false;  // fill and the eyedropper (CanvasView::sampleMerged)
 };
 

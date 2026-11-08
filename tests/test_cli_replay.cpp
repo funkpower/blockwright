@@ -7,6 +7,7 @@
 #include "read_file.h"
 #include "replay.h"
 
+#include "blockwright/brushes/clone.h"
 #include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/drawing.h"
@@ -1214,6 +1215,321 @@ TEST_CASE("a canvasSize step pulls a set symmetry centre onto the new canvas, as
     CHECK(kept == std::pair{10, 4});
 }
 
+namespace {
+
+// A 20x10 cells canvas whose every cell differs from its neighbours: a
+// letter for the column, colours for the row.
+Layer patternLayer(const std::string& name, char32_t first = U'a') {
+    Layer l = makeLayer(LayerKind::Cells, 20, 10, name);
+    for (int y = 0; y < 10; ++y)
+        for (int x = 0; x < 20; ++x) {
+            Cell& c = l.cells.at(x, y);
+            c.ch = char32_t(first + x);
+            c.transparent = false;
+            c.fg = Color::indexed(std::uint8_t(1 + y % 15));
+            c.bg = Color::indexed(std::uint8_t(y % 8));
+        }
+    return l;
+}
+
+project::Project patterned() {
+    project::Project p;
+    p.layers = LayerStack(20, 10);
+    p.layers.add(patternLayer("Background"));
+    return p;
+}
+
+const Canvas& patternCells() {
+    static const Canvas c = patterned().layers.layers()[0].cells;
+    return c;
+}
+
+bwcli::replay::Outcome onPattern(const std::string& steps, project::Project start = patterned()) {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [)" + steps + "]}");
+    return bwcli::replay::run(s, std::move(start));
+}
+
+std::string refusedOnPattern(const std::string& steps, project::Project start = patterned()) {
+    try {
+        onPattern(steps, std::move(start));
+    } catch (const bwcli::Failure& f) {
+        return f.message;
+    }
+    return "(replayed)";
+}
+
+// The cells two canvases differ in, as "x,y: ch/fg/bg vs ch/fg/bg" lines; empty when they agree.
+std::string cellDiff(const Canvas& a, const Canvas& b) {
+    if (a.width() != b.width() || a.height() != b.height())
+        return "sizes differ";
+    std::ostringstream o;
+    const auto cell = [&](const Cell& c) {
+        std::ostringstream t;
+        t << std::uint32_t(c.ch.codePointOr(U'?')) << "/" << int(c.fg.kind) << int(c.bg.kind) << "/" << int(c.attrs) << int(c.transparent) << "/" << int(c.fg.index) << "/" << int(c.bg.index);
+        return t.str();
+    };
+    for (int y = 0; y < a.height(); ++y)
+        for (int x = 0; x < a.width(); ++x)
+            if (!(a.at(x, y) == b.at(x, y)))
+                o << x << "," << y << ": " << cell(a.at(x, y)) << " vs " << cell(b.at(x, y)) << "\n";
+    return o.str();
+}
+
+// What the core clone paints: `clone` begins a stroke over `dabs` on
+// `before` and lands it, as CloneTool's stroke does.
+Canvas cloned(const Canvas& before, CloneSource& clone, const std::vector<Dab>& dabs, int size, Tip tip = Tip::Square,
+              const StrokeOptions& opts = {}) {
+    const std::optional<CloneBrush> brush = clone.beginStroke(dabs[0].x, dabs[0].y);
+    REQUIRE(brush);
+    BrushSettings settings;
+    settings.size = size;
+    settings.tip = tip;
+    Canvas out = before;
+    paintStroke(before, *brush, settings, dabs, opts).apply(out);
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("a clone step copies what the core clone brush copies, from its source (#418)", "[replay][clone]") {
+    const auto out = onPattern(R"({"name": "pick", "action": "clone", "source": [2, 3]},
+        {"name": "stamp", "action": "clone", "size": 3, "points": [[12, 5], [14, 6], [15, 6]], "capture": "before-after"})");
+    REQUIRE(out.captures.size() == 3);
+    // setting the source changes no cell
+    CHECK(cellsOf(out.captures[0]) == patternCells());
+    const Canvas& before = cellsOf(out.captures[1]);
+    CloneSource clone;
+    clone.setSource(2, 3);
+    const Canvas want = cloned(before, clone, {{12, 5, 1.0}, {14, 6, 1.0}, {15, 6, 1.0}}, 3);
+    CHECK(cellDiff(cellsOf(out.captures[2]), want) == "");
+    CHECK_FALSE(want == before);
+    // the stroke's first dab copies the source itself
+    CHECK(cellsOf(out.captures[2]).at(12, 5) == before.at(2, 3));
+    CHECK(cellsOf(out.captures[2]).at(13, 6) == before.at(3, 4));
+}
+
+TEST_CASE("a source and a stroke on one step: the source is set first (#418)", "[replay][clone]") {
+    const auto one = onPattern(R"({"name": "stamp", "action": "clone", "source": [4, 1], "points": [[10, 7]]})");
+    const auto two = onPattern(R"({"name": "pick", "action": "clone", "source": [4, 1]},
+                                  {"name": "stamp", "action": "clone", "points": [[10, 7]]})");
+    CHECK(cellsOf(one.captures[0]) == cellsOf(two.captures[1]));
+    CHECK(cellsOf(one.captures[0]).at(10, 7) == patternCells().at(4, 1));
+}
+
+TEST_CASE("aligned clone strokes keep the distance the first set; not aligned, each starts at the source (#418)",
+          "[replay][clone]") {
+    for (const bool aligned : {true, false}) {
+        INFO("aligned " << aligned);
+        const std::string a = aligned ? "true" : "false";
+        const auto out = onPattern(R"({"name": "pick", "action": "clone", "source": [1, 1], "aligned": )" + a + R"(},
+            {"name": "one", "action": "clone", "points": [[10, 2], [11, 2]]},
+            {"name": "two", "action": "clone", "points": [[5, 7], [6, 7]]},
+            {"name": "three", "action": "clone", "size": 2, "points": [[15, 5]]})");
+        REQUIRE(out.captures.size() == 4);
+        CloneSource clone;
+        clone.aligned = aligned;
+        clone.setSource(1, 1);
+        Canvas want = cellsOf(out.captures[0]);
+        want = cloned(want, clone, {{10, 2, 1.0}, {11, 2, 1.0}}, 1);
+        CHECK(cellsOf(out.captures[1]) == want);
+        want = cloned(want, clone, {{5, 7, 1.0}, {6, 7, 1.0}}, 1);
+        CHECK(cellsOf(out.captures[2]) == want);
+        want = cloned(want, clone, {{15, 5, 1.0}}, 2);
+        CHECK(cellsOf(out.captures[3]) == want);
+        // aligned, the second stroke reads (5, 7) + (1, 1) - (10, 2), off the canvas: nothing changes
+        if (aligned)
+            CHECK(cellsOf(out.captures[2]).at(5, 7) == patternCells().at(5, 7));
+        else
+            CHECK(cellsOf(out.captures[2]).at(5, 7) == patternCells().at(1, 1));
+    }
+}
+
+TEST_CASE("a new source starts the distance over, and Aligned set on a later step holds (#418)", "[replay][clone]") {
+    const auto out = onPattern(R"({"name": "pick", "action": "clone", "source": [1, 1]},
+        {"name": "one", "action": "clone", "points": [[10, 2]]},
+        {"name": "repick", "action": "clone", "source": [3, 3]},
+        {"name": "two", "action": "clone", "points": [[12, 8]]},
+        {"name": "off", "action": "clone", "aligned": false},
+        {"name": "pen", "action": "glyph", "points": [[0, 9]]},
+        {"name": "three", "action": "clone", "points": [[16, 4]]},
+        {"name": "four", "action": "clone", "points": [[17, 6]]})");
+    REQUIRE(out.captures.size() == 8);
+    CHECK(cellsOf(out.captures[1]).at(10, 2) == patternCells().at(1, 1));
+    CHECK(cellsOf(out.captures[3]).at(12, 8) == patternCells().at(3, 3));
+    // not aligned now: every stroke starts at the source again
+    CHECK(cellsOf(out.captures[6]).at(16, 4) == patternCells().at(3, 3));
+    CHECK(cellsOf(out.captures[7]).at(17, 6) == patternCells().at(3, 3));
+}
+
+TEST_CASE("the distance is kept by a stroke that changes nothing, as the editor's finished stroke keeps it (#418)",
+          "[replay][clone]") {
+    // the first stroke copies (1, 1) onto itself; the next, aligned, copies from (8, 5)
+    const auto out = onPattern(R"({"name": "pick", "action": "clone", "source": [1, 1]},
+        {"name": "same", "action": "clone", "points": [[1, 1]]},
+        {"name": "next", "action": "clone", "points": [[8, 5]]})");
+    REQUIRE(out.captures.size() == 3);
+    CHECK(cellsOf(out.captures[1]) == patternCells());
+    CHECK(cellsOf(out.captures[2]).at(8, 5) == patternCells().at(8, 5));
+    const auto fresh = onPattern(R"({"name": "pick", "action": "clone", "source": [1, 1]},
+        {"name": "next", "action": "clone", "points": [[8, 5]]})");
+    CHECK(cellsOf(fresh.captures[1]).at(8, 5) == patternCells().at(1, 1));
+}
+
+TEST_CASE("a clone stroke under mirror and radial symmetry paints what the core brush paints (#418)",
+          "[replay][clone]") {
+    const std::pair<const char*, SymmetryMode> modes[] = {{"mirrorX", SymmetryMode::MirrorX},
+                                                          {"mirrorY", SymmetryMode::MirrorY},
+                                                          {"mirrorXY", SymmetryMode::MirrorXY},
+                                                          {"radial", SymmetryMode::Radial}};
+    for (const auto& [name, mode] : modes) {
+        for (const Tip tip : {Tip::Square, Tip::Round}) {
+            const std::string tipName = tip == Tip::Round ? "round" : "square";
+            INFO(name << " " << tipName);
+            const auto out = onPattern(std::string(R"({"name": "s", "action": "clone", "source": [3, 2], "size": 3, "tip": ")") +
+                                       tipName + R"(", "symmetry": ")" + name +
+                                       R"(", "points": [[5, 3], [7, 4], [9, 4]], "capture": "before-after"})");
+            REQUIRE(out.captures.size() == 2);
+            StrokeOptions opts;
+            opts.symmetry.mode = mode;
+            const std::vector<Dab> dabs = {{5, 3, 1.0}, {7, 4, 1.0}, {9, 4, 1.0}};
+            CloneSource clone;
+            clone.setSource(3, 2);
+            const Canvas want = cloned(cellsOf(out.captures[0]), clone, dabs, 3, tip, opts);
+            CHECK(cellsOf(out.captures[1]) == want);
+            // and the symmetry did something
+            CloneSource plain;
+            plain.setSource(3, 2);
+            CHECK_FALSE(cloned(cellsOf(out.captures[0]), plain, dabs, 3, tip) == want);
+        }
+    }
+}
+
+TEST_CASE("a clone stroke lands only in the selection, as the editor's (#418)", "[replay][clone]") {
+    const auto out = onPattern(R"({"name": "sel", "action": "select", "rect": [10, 0, 12, 9]},
+        {"name": "s", "action": "clone", "source": [5, 5], "size": 5, "points": [[11, 5]]})");
+    const Canvas& c = cellsOf(out.captures[1]);
+    CHECK(c.at(9, 5) == patternCells().at(9, 5));
+    CHECK(c.at(13, 5) == patternCells().at(13, 5));
+    CHECK(c.at(10, 5) == patternCells().at(4, 5));
+    CHECK(c.at(11, 5) == patternCells().at(5, 5));
+    CHECK(c.at(12, 7) == patternCells().at(6, 7));
+}
+
+namespace {
+
+// Background (the pattern), a hidden layer "ghost" over it filled with
+// other letters, and "ink" on top: "xyz" at (2, 2) on transparent cells.
+project::Project inked() {
+    project::Project p = patterned();
+    Layer ghost = patternLayer("ghost", U'A');
+    ghost.props.visible = false;
+    p.layers.add(std::move(ghost));
+    Layer ink = makeLayer(LayerKind::Cells, 20, 10, "ink");
+    for (int i = 0; i < 3; ++i) {
+        ink.cells.at(2 + i, 2).ch = char32_t(U'x' + i);
+        ink.cells.at(2 + i, 2).transparent = false;
+        ink.cells.at(2 + i, 2).fg = Color::indexed(12);
+    }
+    p.layers.add(std::move(ink));
+    return p;
+}
+
+} // namespace
+
+TEST_CASE("a clone step copies the active layer's cells only, under hidden layers and over them (#418)",
+          "[replay][clone][layers]") {
+    const project::Project start = inked();
+    const auto out = onPattern(R"({"name": "use", "action": "setActiveLayer", "layer": "ink"},
+        {"name": "s", "action": "clone", "source": [3, 2], "size": 3, "points": [[12, 5], [13, 5]]})",
+                               start);
+    REQUIRE(out.captures.size() == 2);
+    const project::Project& p = out.captures[1].project;
+    CHECK(layerNamed(p, "Background").cells == patternCells());
+    CHECK(layerNamed(p, "ghost").cells == layerNamed(start, "ghost").cells);
+    CloneSource clone;
+    clone.setSource(3, 2);
+    const Canvas& inkBefore = layerNamed(start, "ink").cells;
+    const Canvas want = cloned(inkBefore, clone, {{12, 5, 1.0}, {13, 5, 1.0}}, 3,
+                               Tip::Square, layerStrokeOptions(layerNamed(start, "ink")));
+    CHECK(layerNamed(p, "ink").cells == want);
+    // the ink's letters, and its transparent cells beside them: neither the
+    // hidden layer's nor the background's
+    CHECK(want.at(12, 5).ch == U'y');
+    CHECK(want.at(12, 6) == inkBefore.at(3, 3));
+    CHECK_FALSE(layerNamed(p, "ink").cells == inkBefore);
+
+    // on the background, under the hidden layer, it copies the background
+    const auto under = onPattern(R"({"name": "use", "action": "setActiveLayer", "layer": "Background"},
+        {"name": "s", "action": "clone", "source": [3, 2], "points": [[12, 5]]})",
+                                 start);
+    CHECK(layerNamed(under.captures[1].project, "Background").cells.at(12, 5) == patternCells().at(3, 2));
+    CHECK(layerNamed(under.captures[1].project, "ink").cells == inkBefore);
+}
+
+TEST_CASE("a clone stroke refuses a hidden or locked active layer, as the editor's tools do, and keeps the alpha lock "
+          "(#418)",
+          "[replay][clone][layers]") {
+    CHECK(refusedOnPattern(R"({"name": "use", "action": "setActiveLayer", "layer": "ghost"},
+                              {"name": "s", "action": "clone", "source": [3, 2], "points": [[12, 5]]})",
+                           inked()) == "step 2 (s): the active layer \"ghost\" is hidden");
+    CHECK(refusedOnPattern(R"({"name": "use", "action": "setActiveLayer", "layer": "ink"},
+                              {"name": "lock", "action": "layerProperties", "locked": true},
+                              {"name": "s", "action": "clone", "source": [3, 2], "points": [[12, 5]]})",
+                           inked()) == "step 3 (s): the active layer \"ink\" is locked");
+    // a source alone is no edit: a hidden layer may take one
+    CHECK_NOTHROW(onPattern(R"({"name": "use", "action": "setActiveLayer", "layer": "ghost"},
+                               {"name": "s", "action": "clone", "source": [3, 2]})",
+                            inked()));
+
+    // alpha locked, the ink's transparent cells stay transparent; unlocked they take the copy
+    for (const bool locked : {true, false}) {
+        INFO("alpha locked " << locked);
+        const auto out = onPattern(std::string(R"({"name": "use", "action": "setActiveLayer", "layer": "ink"},
+            {"name": "lock", "action": "layerProperties", "alphaLocked": )") + (locked ? "true" : "false") + R"(},
+            {"name": "s", "action": "clone", "source": [3, 2], "size": 3, "points": [[12, 5]]})",
+                                   inked());
+        const Canvas inkBefore = layerNamed(inked(), "ink").cells;
+        const Canvas& after = layerNamed(out.captures.back().project, "ink").cells;
+        INFO(cellDiff(after, inkBefore));
+        CHECK((after == inkBefore) == locked);
+    }
+}
+
+TEST_CASE("a clone source or point off the canvas stops the replay, named (#418)", "[replay][clone]") {
+    CHECK(onBlank(R"({"name": "cl", "action": "clone", "source": [20, 3]})") ==
+          "step 1 (cl): source cell (20, 3) is off the 20 x 10 canvas");
+    CHECK(onBlank(R"({"name": "cl", "action": "clone", "source": [-1, 4]})") ==
+          "step 1 (cl): source cell (-1, 4) is off the 20 x 10 canvas");
+    CHECK(onBlank(R"({"name": "cl", "action": "clone", "source": [0, 10], "points": [[1, 1]]})") ==
+          "step 1 (cl): source cell (0, 10) is off the 20 x 10 canvas");
+    CHECK(onBlank(R"({"name": "cl", "action": "clone", "source": [0, 0], "points": [[1, 1], [20, 1]]})") ==
+          "step 1 (cl): cell (20, 1) is off the 20 x 10 canvas");
+    // a canvas cut to leave the source off it: the clone copies nothing from there, as the editor's
+    const auto out = onPattern(R"({"name": "pick", "action": "clone", "source": [15, 8]},
+        {"name": "cut", "action": "canvasSize", "size": [10, 5]},
+        {"name": "s", "action": "clone", "size": 3, "points": [[2, 2]]})");
+    REQUIRE(out.captures.size() == 3);
+    CHECK(cellsOf(out.captures[2]) == cellsOf(out.captures[1]));
+}
+
+TEST_CASE("a clone step's golden: a piece's cells cloned aligned, then not, under mirror symmetry, write the saved "
+          "bytes (#418)",
+          "[replay][clone]") {
+    const steps::Script s = steps::parse(bwcli::readFile((kReplay / "clone.json").string()));
+    const bwcli::replay::Outcome out = bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples));
+    REQUIRE(out.captures.size() == 4);
+    for (const auto& c : out.captures) {
+        INFO(c.stem);
+        const fs::path golden = kReplay / "clone" / (c.stem + ".ans");
+        REQUIRE(fs::exists(golden));
+        CHECK(ansBytes(c.project) == bwcli::readFile(golden.string()));
+    }
+    // the source alone changes nothing, and every stroke changes the piece
+    CHECK(ansBytes(out.captures[0].project) == bwcli::readFile((kReplay / ".." / "brushes" / "sphere-steel.ans").string()));
+    for (std::size_t i = 1; i < out.captures.size(); ++i)
+        CHECK_FALSE(ansBytes(out.captures[i].project) == ansBytes(out.captures[i - 1].project));
+}
+
 // ---- Sample merged (#419) ---------------------------------------------------
 //
 // data/replay/layered.bwp (made by layered-start.json) is 20 x 4, bottom
@@ -1485,4 +1801,44 @@ TEST_CASE("the Sample merged steps file writes the bytes saved for it (#419)", "
         CHECK(ansBytes(c.project) == bwcli::readFile(golden.string()));
     }
     CHECK(written == saved);
+}
+
+TEST_CASE("a clone step copies the active layer's own cells, whatever sampleMerged an earlier fill left on (#418, #419)",
+          "[replay][clone][sample-merged]") {
+    // On the clear "paint" layer, the source (5, 0) is clear, though the
+    // canvas shows the red bar of "ground" below it there: a merged read
+    // would stamp red. The clone has no Sample merged, so it stamps the
+    // clear cell, with or without one left on by a fill step before it.
+    std::vector<std::string> bytes;
+    for (const char* before : {"", R"({"name": "merged", "action": "fill", "sampleMerged": true}, )"}) {
+        INFO("before: " << before);
+        const auto out = layered(std::string(before) + R"({"name": "to-paint", "action": "setActiveLayer", "layer": "paint"},
+            {"name": "stamp", "action": "clone", "source": [5, 0], "size": 3, "points": [[1, 1], [2, 1]]})");
+        const project::Project& p = out.captures.back().project;
+        REQUIRE(out.captures.back().stem.find("stamp") != std::string::npos);
+        for (int y = 0; y < 4; ++y)
+            for (int x = 0; x < 20; ++x)
+                CHECK(layerNamed(p, "paint").cells.at(x, y).transparent);
+        CHECK(columnsOf(layerNamed(p, "ground"), 0, Red) == std::vector<int>{5});
+        bytes.push_back(ansBytes(p));
+    }
+    CHECK(bytes[0] == bytes[1]);
+    // the clone step leaves Sample merged as it found it: a fill after it
+    // still floods the canvas's black region in columns 0-4, not the whole
+    // clear "paint" layer
+    {
+        const auto out = layered(R"({"name": "merged", "action": "fill", "sampleMerged": true},
+            {"name": "to-paint", "action": "setActiveLayer", "layer": "paint"},
+            {"name": "stamp", "action": "clone", "source": [5, 0], "points": [[1, 1]]},
+            {"name": "flood", "action": "fill", "fg": 14, "at": [2, 2]})");
+        const Layer& paint = layerNamed(out.captures.back().project, "paint");
+        for (int y = 0; y < 4; ++y) {
+            INFO("row " << y);
+            CHECK(columnsOf(paint, y, Yellow) == span(0, 4));
+        }
+    }
+    // and on "ground" the same stroke stamps its red bar
+    const auto out = layered(R"({"name": "merged", "action": "fill", "sampleMerged": true},
+        {"name": "stamp", "action": "clone", "source": [5, 0], "points": [[1, 1], [1, 2]]})");
+    CHECK(columnsOf(layerNamed(out.captures.back().project, "ground"), 1, Red) == std::vector<int>{1, 5});
 }

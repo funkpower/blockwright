@@ -6,6 +6,7 @@
 // test_app.cpp.
 
 #include "canvas_view.h"
+#include "draw_tools.h"
 #include "irc_meter.h"
 #include "lint_dock.h"
 #include "main_window.h"
@@ -16,6 +17,7 @@
 #include "tool.h"
 #include "tool_options.h"
 
+#include "blockwright/brushes/clone.h"
 #include "blockwright/canvas_size.h"
 #include "blockwright/composite.h"
 #include "blockwright/irc_render.h"
@@ -1203,6 +1205,96 @@ TEST_CASE("a start canvas too large to display at its 9 px cells is refused at t
     CHECK(screenshot::take(eight, s, big).empty());
 }
 
+TEST_CASE("a clone step plays in the window: the Clone Stamp, its source, Aligned and the pointer at the Ctrl+click (#418)",
+          "[screenshot][clone]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720], "steps": [
+        {"name": "paint", "action": "glyph", "glyph": "#", "fg": 14, "bg": 1, "points": [[1, 1], [2, 1], [3, 2]]},
+        {"name": "pick", "action": "clone", "source": [2, 1], "aligned": false,
+         "screenshot": {"of": "canvasView", "when": "both", "pointer": true}},
+        {"name": "stamp", "action": "clone", "size": 3, "points": [[10, 4], [12, 5]],
+         "screenshot": {"of": "canvasView", "when": "both", "pointer": true}},
+        {"name": "again", "action": "clone", "source": [1, 1], "aligned": true, "points": [[16, 3]],
+         "screenshot": {"of": "canvasView", "when": "both", "pointer": true}}]})");
+    struct Shown {
+        QString tool;
+        CloneSource clone;
+        std::optional<QPoint> mark;
+        bool box = false;
+        Canvas canvas;
+        QString status;
+    };
+    MainWindow w;
+    std::map<std::string, Shown> shown;
+    const std::vector<screenshot::Shot> shots = screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        auto* clone = qobject_cast<CloneTool*>(w.tools()->active());
+        REQUIRE(clone);
+        shown[sh.stem] = {w.tools()->active()->id(), clone->source(), clone->mark(),
+                          w.toolOptions()->cloneAlignedBox()->isChecked(), w.document()->canvas(),
+                          w.findChild<QLabel*>(QStringLiteral("toolStatusLabel"))->text()};
+    });
+    REQUIRE(shots.size() == 6);
+
+    // what the CLI's replay holds after each step: the window shows the same
+    std::map<std::string, CloneSource> replayed;
+    std::map<std::string, Canvas> canvas;
+    bwcli::replay::run(s, startOf(s), [&](const bwcli::replay::Moment& m) {
+        const std::string at = m.step.name + (m.before ? "-before" : "-after");
+        replayed[at] = m.settings.clone;
+        canvas[at] = composite(m.project.layers, {m.project.ice, Cell{}});
+    });
+    for (const char* step : {"pick", "stamp", "again"})
+        for (const char* when : {"-before", "-after"}) {
+            const std::string at = std::string(step) + when;
+            const std::string stem = std::string(step == std::string("pick") ? "02-" : step == std::string("stamp") ? "03-" : "04-") + at;
+            INFO(stem);
+            REQUIRE(shown.count(stem));
+            const Shown& got = shown[stem];
+            CHECK(got.tool == QStringLiteral("clone"));
+            CHECK(got.clone.source == replayed[at].source);
+            CHECK(got.clone.anchor == replayed[at].anchor);
+            CHECK(got.clone.aligned == replayed[at].aligned);
+            CHECK(got.box == replayed[at].aligned);
+            CHECK(got.canvas == canvas[at]);
+        }
+    // the source is shown before the step that sets it; Aligned is the step's
+    CHECK(shown["02-pick-after"].clone.source == std::pair{2, 1});
+    CHECK(shown["02-pick-after"].mark == QPoint(2, 1));
+    CHECK_FALSE(shown["02-pick-after"].box);
+    CHECK(shown["03-stamp-after"].clone.anchor == std::pair{10, 4});
+    CHECK(shown["04-again-before"].clone.source == std::pair{2, 1});
+    CHECK(shown["04-again-after"].clone.source == std::pair{1, 1});
+    CHECK(shown["04-again-after"].box);
+    // and the status bar says so, as after a Ctrl+click
+    CHECK(shown["02-pick-before"].status == QStringLiteral("Ctrl+click to set the source"));
+    CHECK(shown["02-pick-after"].status == QStringLiteral("Source 2, 1"));
+    CHECK(shown["04-again-before"].status == QStringLiteral("Source 2, 1, aligned"));
+    CHECK(shown["04-again-after"].status == QStringLiteral("Source 1, 1, aligned"));
+    // the stamp copied the painted cells
+    CHECK(shown["03-stamp-after"].canvas.at(10, 4).ch == U'#');
+    CHECK(shown["04-again-after"].canvas.at(16, 3).ch == U'#');
+
+    // the pointer: at the source before a step that sets one, and after it
+    // too when it has no stroke; a stroke's start before and its end after
+    const int zoom = w.canvasView()->zoom();
+    const QSizeF cell(8 * zoom, 16 * zoom);
+    const auto centre = [&](int x, int y) {
+        return QPointF(x * cell.width() + cell.width() / 2.0, y * cell.height() + cell.height() / 2.0);
+    };
+    CHECK(*shotNamed(shots, "02-pick-before").pointer == centre(2, 1));
+    CHECK(*shotNamed(shots, "02-pick-after").pointer == centre(2, 1));
+    CHECK(*shotNamed(shots, "03-stamp-before").pointer == centre(10, 4));
+    CHECK(*shotNamed(shots, "03-stamp-after").pointer == centre(12, 5));
+    CHECK(*shotNamed(shots, "04-again-before").pointer == centre(1, 1));
+    CHECK(*shotNamed(shots, "04-again-after").pointer == centre(16, 3));
+}
+
+TEST_CASE("a clone step's source off the window's canvas fails at the step, as the CLI's replay does (#418)",
+          "[screenshot][clone]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720], "steps": [
+        {"name": "pick", "action": "clone", "source": [20, 3]}]})");
+    CHECK(failureOf(s) == "step 1 (pick): source cell (20, 3) is off the 20 x 8 canvas");
+}
+
 TEST_CASE("a screenshot shows the Sample merged a fill or eyedropper step sets, held for the steps after (#419)",
           "[screenshot]") {
     const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720],
@@ -1240,4 +1332,39 @@ TEST_CASE("a screenshot shows the Sample merged a fill or eyedropper step sets, 
     CHECK(seen["01-off"].picture.size() == seen["02-on-after"].picture.size());
     CHECK(seen["01-off"].picture != seen["02-on-after"].picture);
     CHECK(seen["01-off"].picture == seen["04-again"].picture);
+}
+
+TEST_CASE("a clone step's window keeps the Sample merged a fill step left on, with the box hidden (#418, #419)",
+          "[screenshot][clone][sample-merged]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720],
+      "steps": [
+        {"name": "merged", "action": "fill", "sampleMerged": true, "screenshot": {"of": "toolOptions"}},
+        {"name": "stamp", "action": "clone", "source": [2, 1], "points": [[10, 4]],
+         "screenshot": {"of": "toolOptions", "when": "both"}},
+        {"name": "pick", "action": "eyedropper", "at": [3, 3], "screenshot": {"of": "toolOptions"}}
+      ]})");
+    MainWindow w;
+    struct Seen {
+        QString tool;
+        bool view = false, checked = false, visible = false;
+    };
+    std::map<std::string, Seen> seen;
+    screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& shot) {
+        QCheckBox* box = w.toolOptions()->sampleMergedBox();
+        seen[shot.stem] = {w.tools()->active()->id(), w.canvasView()->sampleMerged(), box->isChecked(),
+                           box->isVisibleTo(w.toolOptions())};
+    });
+    REQUIRE(seen.size() == 4);
+    for (const auto& [stem, x] : seen) {
+        INFO(stem);
+        CHECK(x.view);  // on from the first step to the last
+        CHECK(x.checked == x.view);
+    }
+    CHECK(seen["02-stamp-before"].tool == "clone");
+    CHECK(seen["02-stamp-after"].tool == "clone");
+    // the Clone Stamp's Tool Options don't show it; fill's and the eyedropper's do
+    CHECK(seen["01-merged"].visible);
+    CHECK_FALSE(seen["02-stamp-before"].visible);
+    CHECK_FALSE(seen["02-stamp-after"].visible);
+    CHECK(seen["03-pick"].visible);
 }

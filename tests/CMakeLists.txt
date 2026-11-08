@@ -590,6 +590,7 @@ add_executable(blockwright-app-tests
   test_app_brush.cpp
   test_app_layers.cpp
   test_app_canvas_size.cpp
+  test_app_clone_replay.cpp
   test_app_layer_style.cpp
   test_app_layer_move.cpp
   test_app_cli_shade.cpp

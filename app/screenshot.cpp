@@ -210,6 +210,9 @@ void showSettings(MainWindow& w, const bwcli::replay::ToolSettings& s) {
         t->setSeed(s.spray.seed);
     }
     w.selectTool()->setPasteMode(s.pasteMode);
+    // after the document: a new one forgets the clone source
+    if (auto* t = toolNamed<CloneTool>(w, "clone"))
+        t->restore(s.clone);
 }
 
 static_assert(steps::kMinZoom == CanvasView::kMinZoom && steps::kMaxZoom == CanvasView::kMaxZoom,

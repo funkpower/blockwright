@@ -45,6 +45,8 @@
 // pixels each way, from the same window laid out at the same size.
 // "pointer": true draws an arrow mouse pointer with its tip at the step's
 // pointer position (pointerAt): only a step the pointer makes may ask.
+// A clone step's "source" is a click of the pointer's (Ctrl+click), before
+// its stroke.
 //
 // Format > Canvas Size... is a step too (#420), "action": "canvasSize":
 //
@@ -74,6 +76,19 @@
 // changes it. It changes no cell, so it is no document edit. Only the
 // window has a view: `blockwright-cli replay` refuses a file with a view
 // step (exit status 1), and only `blockwright --screenshot` replays it.
+//
+// The Clone Stamp is a step too (#418), "action": "clone":
+//
+//   {"name": ..., "action": "clone", "source": [x, y], "points": [...],
+//    "button": "left" | "right", "aligned": bool}
+//
+// "source" is the cell Ctrl+click sets (CloneTool::setSource): it is set
+// before the step's stroke, and holds for later clone steps, with the
+// distance the first stroke after it sets, as the editor keeps both. A
+// clone step with a source and no points only sets the source. A stroke
+// needs a source, on its own step or an earlier clone step. "aligned" is
+// Tool Options' Aligned, on by default; only a clone step takes it, and it
+// holds for later steps. Either button copies the same.
 //
 // Every key is checked: an unknown key, a key the action doesn't take, a
 // value of the wrong kind or out of range is refused, and the error names
@@ -143,6 +158,9 @@ struct Options {
     std::optional<TextureOptions> texture;
     std::optional<SprayOptions> spray;
     std::optional<PasteMode> pasteMode;   // paste and moveSelection; default normal
+    // The clone stamp's Aligned (CloneSource::aligned); default on. Only a
+    // clone step sets it, as only that tool shows it.
+    std::optional<bool> aligned;
     // Sample merged: fill floods by, and the eyedropper picks from, the
     // composite instead of the active layer; default off. Only a fill or
     // eyedropper step sets it, as only those tools show it.
@@ -202,6 +220,8 @@ struct Step {
     // canvasSize: the new size in cells and where the old canvas sits in it
     int canvasWidth = 0, canvasHeight = 0;
     Anchor anchor = Anchor::TopLeft;
+    // clone: the source cell Ctrl+click sets before the stroke (#418)
+    std::optional<Point> source;
 };
 
 // The window's size a steps file may set, in pixels.
@@ -223,7 +243,9 @@ bool pixelAction(std::string_view action);
 // own (a cell, or a half-block pixel for a pixelAction), the last one after
 // the step (a stroke's or drag's end, the click) and the first before it
 // (where the press starts); select's rect is dragged from its top-left
-// corner to its bottom-right one. Empty for a step the pointer doesn't make
+// corner to its bottom-right one, and a clone step's "source" is its first
+// press (the Ctrl+click), so before the step the pointer is there, and after
+// it too when the step has no points. Empty for a step the pointer doesn't make
 // (a menu or dock action, canvasSize, a move "by", a tool step with no
 // points, a view step), which can't ask for "pointer".
 std::optional<Point> pointerAt(const Step& step, bool before);

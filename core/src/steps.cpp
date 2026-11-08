@@ -37,6 +37,9 @@ const std::vector<ActionKeys>& actionKeys() {
         {"rimLight", {"points", "button"}},
         {"texture", {"points", "button"}},
         {"spray", {"points", "button"}},
+        // the clone stamp: its source (Ctrl+click) and Tool Options' Aligned,
+        // which is its alone (#418)
+        {"clone", {"points", "button", "source", "aligned"}},
         // the half-block tools: pixels
         {"halfBlock", {"points", "button"}},
         {"line", {"from", "to", "button"}},
@@ -339,6 +342,8 @@ void readOptions(const std::string& where, const QJsonObject& o, Options& opt) {
             so.seed = intOf(where, "spray seed", s["seed"], 0, kMaxSpraySeed);
         opt.spray = so;
     }
+    if (o.contains("aligned"))
+        opt.aligned = boolOf(where, "aligned", o["aligned"]);
 }
 
 // 1-64 of a-z 0-9 - _, starting with a letter or digit: a file name on any
@@ -495,6 +500,8 @@ Step readStep(const QJsonValue& v, int number) {
                       .normalized(QString::NormalizationForm_C)
                       .toStdU32String();
     }
+    if (o.contains("source"))
+        st.source = pointOf(where, "source", o["source"], false);
     if (o.contains("by")) {
         const Point p = pointOf(where, "by", o["by"], false);
         st.dx = p.x;
@@ -566,7 +573,7 @@ Step readStep(const QJsonValue& v, int number) {
     }
     if (st.screenshot && st.screenshot->pointer && !pointerAt(st, false))
         fail(where, "\"screenshot pointer\" needs a step the pointer makes, with \"points\", \"from\" and \"to\", "
-                    "\"at\" or select's \"rect\"; this " + st.action + " step has none");
+                    "\"at\", select's \"rect\" or a clone step's \"source\"; this " + st.action + " step has none");
     return st;
 }
 
@@ -591,6 +598,9 @@ std::optional<Point> pointerAt(const Step& step, bool before) {
     if (step.rect)
         return before ? Point{step.rect->x, step.rect->y}
                       : Point{step.rect->x + step.rect->width - 1, step.rect->y + step.rect->height - 1};
+    // a clone step's Ctrl+click on its source comes before its stroke
+    if (step.source && (before || step.points.empty()))
+        return step.source;
     if (step.points.empty())
         return std::nullopt;
     return before ? step.points.front() : step.points.back();
@@ -633,8 +643,19 @@ Script parse(std::string_view json) {
     if (!o["steps"].isArray() || o["steps"].toArray().isEmpty())
         throw StepsError("\"steps\" must be an array of at least one step");
     const QJsonArray steps = o["steps"].toArray();
-    for (qsizetype i = 0; i < steps.size(); ++i)
+    // whether a clone step has set a source yet: no step forgets it (only
+    // opening a file or New does, CloneTool::forgetSource)
+    bool cloneSource = false;
+    for (qsizetype i = 0; i < steps.size(); ++i) {
         s.steps.push_back(readStep(steps[i], int(i) + 1));
+        const Step& st = s.steps.back();
+        if (st.action != "clone")
+            continue;
+        cloneSource = cloneSource || st.source;
+        if (!st.points.empty() && !cloneSource)
+            throw StepsError(stepLabel(st) + ": clone needs a source to copy from: \"source\": [x, y], the cell "
+                                             "Ctrl+click sets, on this step or an earlier clone step");
+    }
     return s;
 }
 

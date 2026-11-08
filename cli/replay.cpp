@@ -2,6 +2,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/brush.h"
+#include "blockwright/brushes/clone.h"
 #include "blockwright/brushes/despeckle.h"
 #include "blockwright/brushes/detail.h"
 #include "blockwright/brushes/drawing.h"
@@ -96,6 +97,8 @@ void take(ToolSettings& s, const steps::Options& o) {
         s.spray = *o.spray;
     if (o.pasteMode)
         s.pasteMode = *o.pasteMode;
+    if (o.aligned)
+        s.clone.aligned = *o.aligned;
     if (o.sampleMerged)
         s.sampleMerged = *o.sampleMerged;
 }
@@ -475,6 +478,38 @@ void moveLayer(State& s, const Step& st) {
     l.props.reference->y = place((long long)l.props.reference->y + st.dy);
 }
 
+// The Clone Stamp (CloneTool): the source set first, as a Ctrl+click on it
+// (a cell off the canvas is refused: the editor's click there sets
+// nothing), then the stroke from the first point, through the core brush
+// CloneSource::beginStroke makes and the same stroke as every brush. A
+// stroke that lands sets the distance aligned strokes keep, as the tool's
+// release does (CloneTool::finish), even one that changes nothing.
+void clone(State& s, const Step& st, Outcome& out) {
+    if (st.source) {
+        const Point p = *st.source;
+        if (p.x < 0 || p.y < 0 || p.x >= s.width() || p.y >= s.height())
+            fail(st, "source cell " + at(p) + " is off the " + std::to_string(s.width()) + " x " +
+                         std::to_string(s.height()) + " canvas");
+        s.clone.setSource(p.x, p.y);
+    }
+    if (st.points.empty())
+        return;
+    onCanvas(s, st, false);
+    editable(s, st);
+    CloneSource next = s.clone;
+    const std::optional<CloneBrush> brush = next.beginStroke(st.points[0].x, st.points[0].y);
+    if (!brush)
+        fail(st, "clone has no source to copy from: give \"source\" on this step or an earlier clone step");
+    std::vector<Dab> dabs;
+    for (const Point& p : st.points) {
+        const Dab d{p.x, p.y, p.pressure};
+        if (dabs.empty() || takesDab(dabs.back(), d, s.brush.pressure))
+            dabs.push_back(d);
+    }
+    land(s, st, paintStroke(canvasOf(s), *brush, s.brush, dabs, optionsOf(s)), true, out);
+    s.clone.anchor = next.anchor;
+}
+
 // Format > Canvas Size... as the dialog applies it (Document::resizeCanvas):
 // a size canvasSizeProblem refuses stops the replay, the canvas's own size
 // changes nothing, and any other is every layer through resizeCanvas, with
@@ -666,6 +701,8 @@ void step(State& s, const Step& st, Outcome& out) {
             l.props.locked = *st.locked;
         if (st.alphaLocked)
             l.props.alphaLocked = *st.alphaLocked;
+    } else if (a == "clone") {
+        clone(s, st, out);
     } else if (a == "canvasSize") {
         canvasSize(s, st, out);
     } else if (a == "view") {

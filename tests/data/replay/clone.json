@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "start": {"file": "../brushes/sphere-steel.ans"},
+  "steps": [
+    {"name": "source", "action": "clone", "source": [24, 10]},
+    {"name": "stamp", "action": "clone", "size": 5, "tip": "round",
+     "points": [[52, 4], [56, 6], [60, 8], [62, 12]]},
+    {"name": "aligned", "action": "clone", "points": [[56, 14], [60, 18], [64, 22]]},
+    {"name": "unaligned", "action": "clone", "aligned": false, "source": [30, 16], "size": 3, "tip": "square",
+     "symmetry": "mirrorY", "points": [[6, 4], [10, 4], [14, 6]], "button": "right"}
+  ]
+}

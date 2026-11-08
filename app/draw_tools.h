@@ -541,6 +541,10 @@ public:
     void forgetSource();
     bool aligned() const { return clone_.aligned; }
     void setAligned(bool aligned);
+    // Puts back the source, the distance and Aligned as `state` holds them,
+    // the source as it is (on the canvas or not): the window's replay
+    // (#418) shows a steps file's clone stamp this way.
+    void restore(const CloneSource& state);
     // The cell the stroke copies to its last dab (aligned or not), or with
     // no stroke the source; empty without a source.
     std::optional<QPoint> mark() const;

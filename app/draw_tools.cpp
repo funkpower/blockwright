@@ -839,6 +839,15 @@ void CloneTool::setAligned(bool aligned) {
     emit changed();
 }
 
+void CloneTool::restore(const CloneSource& state) {
+    setAligned(state.aligned);
+    if (clone_.source == state.source && clone_.anchor == state.anchor)
+        return;
+    clone_.source = state.source;
+    clone_.anchor = state.anchor;
+    emit changed();
+}
+
 std::optional<QPoint> CloneTool::mark() const {
     if (dragging() && stamp_) {
         // The cell the stroke copies to the last dab, aligned or not.

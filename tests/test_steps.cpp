@@ -13,6 +13,7 @@
 
 using namespace bw;
 using Catch::Matchers::ContainsSubstring;
+using Catch::Matchers::Equals;
 
 namespace {
 
@@ -503,6 +504,107 @@ TEST_CASE("what a steps file refuses names the step or the start", "[steps]") {
     }
 }
 
+TEST_CASE("a clone step reads its source, stroke, button and Aligned (#418)", "[steps][clone]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "pick", "action": "clone", "source": [3, 4]},
+        {"name": "stamp", "action": "clone", "points": [[10, 2], [12, 3, 0.5]], "button": "right", "aligned": false},
+        {"name": "again", "action": "clone", "source": [0, 0], "points": [[5, 5]], "size": 3},
+        {"name": "more", "action": "clone", "points": [[6, 6]]})"));
+    REQUIRE(s.steps.size() == 4);
+    CHECK(s.steps[0].action == "clone");
+    CHECK(s.steps[0].source == steps::Point{3, 4});
+    CHECK(s.steps[0].points.empty());
+    CHECK_FALSE(s.steps[0].options.aligned);
+    CHECK_FALSE(s.steps[1].source);
+    CHECK(s.steps[1].points == std::vector<steps::Point>{{10, 2}, {12, 3, 0.5}});
+    CHECK(s.steps[1].button == steps::Button::Right);
+    CHECK(s.steps[1].options.aligned == false);
+    CHECK(s.steps[2].source == steps::Point{0, 0});
+    CHECK(s.steps[2].options.size == 3);
+    // a later stroke uses the source an earlier clone step set
+    CHECK_FALSE(s.steps[3].source);
+    CHECK(std::find(steps::actions().begin(), steps::actions().end(), "clone") != steps::actions().end());
+    CHECK_FALSE(steps::pixelAction("clone"));
+}
+
+TEST_CASE("a clone step's pointer is at its source before the step, and after it when it has no stroke (#418)",
+          "[steps][clone][screenshot]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "pick", "action": "clone", "source": [3, 4], "screenshot": {"pointer": true, "when": "both"}},
+        {"name": "both", "action": "clone", "source": [1, 2], "points": [[10, 2], [12, 3]],
+         "screenshot": {"pointer": true, "when": "both"}},
+        {"name": "stroke", "action": "clone", "points": [[7, 1], [8, 9]], "screenshot": {"pointer": true}},
+        {"name": "options", "action": "clone", "aligned": false})"));
+    CHECK(steps::pointerAt(s.steps[0], true) == steps::Point{3, 4});
+    CHECK(steps::pointerAt(s.steps[0], false) == steps::Point{3, 4});
+    CHECK(steps::pointerAt(s.steps[1], true) == steps::Point{1, 2});
+    CHECK(steps::pointerAt(s.steps[1], false) == steps::Point{12, 3});
+    CHECK(steps::pointerAt(s.steps[2], true) == steps::Point{7, 1});
+    CHECK(steps::pointerAt(s.steps[2], false) == steps::Point{8, 9});
+    // a step that only sets Aligned has no pointer, and can't ask for one
+    CHECK_FALSE(steps::pointerAt(s.steps[3], true));
+    CHECK_THAT(refusal(script(R"({"name": "o", "action": "clone", "aligned": true, "screenshot": {"pointer": true}})")),
+               Equals("step 1 (o): \"screenshot pointer\" needs a step the pointer makes, with \"points\", \"from\" "
+                      "and \"to\", \"at\", select's \"rect\" or a clone step's \"source\"; this clone step has none"));
+}
+
+TEST_CASE("a clone stroke with no source on it or an earlier clone step is refused, naming the step (#418)",
+          "[steps][clone]") {
+    const std::string needs = "clone needs a source to copy from";
+    CHECK_THAT(refusal(script(R"({"name": "stamp", "action": "clone", "points": [[1, 1]]})")),
+               ContainsSubstring("step 1 (stamp): " + needs));
+    // a source on a later step is too late
+    CHECK_THAT(refusal(script(R"({"name": "stamp", "action": "clone", "points": [[1, 1]]},
+                                 {"name": "pick", "action": "clone", "source": [2, 2]})")),
+               ContainsSubstring("step 1 (stamp): " + needs));
+    // only a clone step sets one: another step's points don't
+    CHECK_THAT(refusal(script(R"({"name": "p", "action": "glyph", "points": [[2, 2]]},
+                                 {"name": "stamp", "action": "clone", "aligned": false, "points": [[1, 1]]})")),
+               ContainsSubstring("step 2 (stamp): " + needs));
+    // a step with no stroke needs none: it sets options, as choosing the tool does
+    CHECK_NOTHROW(steps::parse(script(R"({"name": "opts", "action": "clone", "aligned": false})")));
+    // and one earlier serves every later stroke
+    CHECK_NOTHROW(steps::parse(script(R"({"name": "pick", "action": "clone", "source": [2, 2]},
+                                         {"name": "p", "action": "glyph", "points": [[2, 2]]},
+                                         {"name": "a", "action": "clone", "points": [[1, 1]]},
+                                         {"name": "b", "action": "clone", "points": [[3, 1]]})")));
+}
+
+TEST_CASE("a clone step's bad value is refused, naming the step (#418)", "[steps][clone]") {
+    const std::pair<const char*, const char*> cases[] = {
+        {R"("source": 3)", "\"source\""},
+        {R"("source": [3])", "\"source\""},
+        {R"("source": [3, 4, 1])", "\"source\""},
+        {R"("source": [3, 4, 0.5])", "\"source\""},
+        {R"("source": [1.5, 4])", "\"source"},
+        {R"("source": ["1", 4])", "\"source"},
+        {R"("source": null)", "\"source\""},
+        {R"("source": [1, 1], "aligned": 1)", "\"aligned\" must be true or false"},
+        {R"("source": [1, 1], "aligned": "true")", "\"aligned\" must be true or false"},
+        {R"("source": [1, 1], "aligned": null)", "\"aligned\" must be true or false"},
+        {R"("source": [1, 1], "at": [1, 1])", "clone takes no \"at\""},
+        {R"("source": [1, 1], "from": [1, 1])", "clone takes no \"from\""},
+        {R"("source": [1, 1], "sampleMerged": true)", "clone takes no \"sampleMerged\""},
+        {R"("source": [1, 1], "offset": [1, 1])", "clone takes no \"offset\""},
+        {R"("source": [1, 1], "Aligned": true)", "clone takes no \"Aligned\""},
+        {R"("source": [1, 1], "points": [[1, 1]], "button": "middle")", "\"button\""},
+    };
+    for (const auto& [fields, says] : cases) {
+        INFO(fields);
+        const std::string why = refusal(
+            script(std::string(R"({"name": "first", "action": "selectAll"}, {"name": "cl", "action": "clone", )") + fields + "}"));
+        CHECK_THAT(why, ContainsSubstring(std::string("step 2 (cl): ") + says));
+    }
+    // and the clone's keys on another action are refused
+    for (const char* action : {"glyph", "smudge", "fill", "halfBlock", "selectAll", "view", "canvasSize"}) {
+        INFO(action);
+        CHECK_THAT(refusal(script(std::string(R"({"name": "z", "action": ")") + action + R"(", "source": [1, 1]})")),
+                   ContainsSubstring(std::string("step 1 (z): ") + action + " takes no \"source\""));
+        CHECK_THAT(refusal(script(std::string(R"({"name": "z", "action": ")") + action + R"(", "aligned": true})")),
+                   ContainsSubstring(std::string("step 1 (z): ") + action + " takes no \"aligned\""));
+    }
+}
+
 TEST_CASE("fill and the eyedropper read sampleMerged, unset without it (#419)", "[steps][sample-merged]") {
     const steps::Script s = steps::parse(script(R"({"name": "on", "action": "fill", "sampleMerged": true, "at": [1, 1]},
         {"name": "off", "action": "eyedropper", "sampleMerged": false, "at": [1, 1]},
@@ -535,8 +637,8 @@ TEST_CASE("sampleMerged of the wrong kind, or on a step that doesn't take it, is
     }
     // only the two tools that show Sample merged in Tool Options take it,
     // the other half-block tools and the selection's paste included
-    for (const char* action : {"halfBlock", "line", "rectangle", "ellipse", "shade", "glyph", "gradient", "keyboard",
-                               "paste", "selectAll", "newCellsLayer", "setActiveLayer", "layerProperties", "view",
+    for (const char* action : {"halfBlock", "line", "rectangle", "ellipse", "shade", "glyph", "clone", "gradient",
+                               "keyboard", "paste", "selectAll", "newCellsLayer", "setActiveLayer", "layerProperties", "view",
                                "canvasSize"}) {
         INFO(action);
         const std::string why = refusal(script(std::string(R"({"name": "first", "action": "selectAll"},

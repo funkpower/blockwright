@@ -895,6 +895,12 @@ mouse button (default left).
   half-block     halfBlock: "points" (pixels); line, rectangle, ellipse:
                  "from", "to" (pixels); fill, eyedropper: "at" (a pixel)
                  and "sampleMerged" (below)
+  clone          the Clone Stamp: "source": [x, y] (a cell, the one
+                 Ctrl+click sets, set before the stroke and held for later
+                 clone steps), "points" (cells, as a stroke's), "aligned"
+                 (below). A stroke needs a source, on its own step or an
+                 earlier clone step; a step with a source and no points
+                 only sets it. Either button copies the same
   gradient       "from", "to" (cells)
   keyboard       "at" (a cell), "text" (NFC-composed, as typing is; a
                  newline starts the next row at the "at" column). What
@@ -945,12 +951,14 @@ pointer). A crop in cells needs "of" to hold the canvas; one in pixels is in
 the pixels each way, from the window laid out at the same size. "pointer":
 true draws a mouse pointer at the step's last point ("to", "at", the last of
 "points", a select "rect"'s bottom-right cell), or at its first in a picture
-before the step; a step with none, or a point the picture doesn't show, is
-refused.
+before the step. A clone step's "source" is clicked before its stroke: the
+pointer is there before the step, and after it too when the step has no
+"points". A step with none, or a point the picture doesn't show, is refused.
 
 A tool step without points only sets Tool Options. Any step but a view or
 canvasSize step may set Tool Options, which hold for the steps after it (but
-for "sampleMerged", which only fill and eyedropper take):
+for "aligned", which only clone takes, and "sampleMerged", which only fill
+and eyedropper take):
 
   "fg", "bg" 0-15 (7 on 0)   "size" 1-256 (1)   "tip" square|round
   "strength" 0-1 (1)         "light" N|NE|E|SE|S|SW|W|NW (NW)
@@ -967,6 +975,10 @@ for "sampleMerged", which only fill and eyedropper take):
               "from": rung, "to": rung}
   "texture" {"kind": scales|foliage|hoard|brick|noise, "density", "seed"}
   "spray" {"kind": stars|haze|smoke, "density", "seed"}
+  "aligned" bool (on): the clone stamp's Aligned, which only a clone step
+             takes. On, the first stroke after a "source" sets the
+             distance every later stroke copies at; off, every stroke
+             copies from the source again
   "sampleMerged" bool (off): Sample merged. Off, fill floods the active
              layer's pixels and the eyedropper picks from it (nothing
              from a transparent cell or pixel); on, both read every
