@@ -796,6 +796,21 @@ TEST_CASE("a text step refuses a C1 control as it refuses C0 and DEL, and types 
     CHECK(s.steps[1].text == U"\u00a1");
 }
 
+TEST_CASE("the glyph option refuses a C1 control as it refuses C0 and DEL, and takes U+00A0 on (#449)", "[steps]") {
+    for (const char* code : {"0085", "009B", "009F", "0000", "0007", "001B", "007F"}) {
+        INFO(code);
+        CHECK(refusal(script(std::string(R"({"name": "g", "action": "glyph", "glyph": "\u)") + code +
+                             R"(", "points": [[1, 1]]})")) == "step 1 (g): \"glyph\" must be one printable character");
+    }
+    // the first character past C1, no-break space, an ordinary block and a space
+    const steps::Script s = steps::parse(script(R"({"name": "nb", "action": "glyph", "glyph": "\u00a0"},
+        {"name": "fb", "action": "glyph", "glyph": "\u2588"}, {"name": "sp", "action": "glyph", "glyph": " "})"));
+    REQUIRE(s.steps.size() == 3);
+    CHECK(s.steps[0].options.glyph == U'\u00a0');
+    CHECK(s.steps[1].options.glyph == U'\u2588');
+    CHECK(s.steps[2].options.glyph == U' ');
+}
+
 TEST_CASE("a text step's bad value is refused, naming the step (#421)", "[steps][text]") {
     const std::pair<std::string, std::string> cases[] = {
         {R"("at": [1, 1])", "text needs \"text\" to type at its \"at\" cell"},

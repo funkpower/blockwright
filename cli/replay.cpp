@@ -216,8 +216,8 @@ void pixelsHold(State& s, const Step& st) {
         const std::vector<char32_t> unheld = pixelsUnheldGlyphs(s.glyph, s.symmetry, s.width(), s.height());
         if (unheld.empty())
             return;
-        // a glyph that shows nothing on its own (a C1 or format control, a
-        // mark) is named by its code point, as a conversion warning names it
+        // a glyph that shows nothing on its own (a format control, a mark)
+        // is named by its code point, as a conversion warning names it
         const auto text = [](char32_t ch) {
             if (codePointWidth(ch) < 1)
                 return codePoints(std::u32string_view(&ch, 1));

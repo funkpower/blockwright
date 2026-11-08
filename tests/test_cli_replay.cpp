@@ -629,9 +629,10 @@ TEST_CASE("a glyph step a pixels layer can't hold names the glyph, or what radia
     CHECK(glyph("▌", "") == layer + ", not ▌");
     CHECK(glyph("░", R"({"mode": "radial", "folds": 4})") == layer + ", not ░");
     // one that shows nothing on its own is named by its code point
-    CHECK(glyph(R"(\u0085)", "") == layer + ", not U+0085");
     CHECK(glyph(R"(\u0301)", "") == layer + ", not U+0301");
     CHECK(glyph(R"(\u200b)", "") == layer + ", not U+200B");
+    // a C1 control is no glyph at all: the step is refused before the layer (#449)
+    CHECK_THROWS_WITH(glyph(R"(\u0085)", ""), "step 2 (draw): \"glyph\" must be one printable character");
     // flips and a half turn keep █ ▀ ▄ and blanks, so they paint, as without symmetry
     CHECK(glyph("▀", "") == "(replayed)");
     CHECK(glyph("▀", R"("mirrorXY")") == "(replayed)");

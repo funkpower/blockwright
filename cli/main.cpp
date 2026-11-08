@@ -982,7 +982,8 @@ eyedropper take, and "textOptions", which only text takes):
              on the canvas)
   "form" {"shape": dome|cylinder|plane, "rim": bool, "specular": bool}
   "hardness" 0-1 (soft)      "outline" ramp|selection    "keepLint" bool
-  "glyph" one character      "filled" bool (rectangle, ellipse)
+  "glyph" one printable character (no C0, DEL or C1 control)
+  "filled" bool (rectangle, ellipse)
   "pencil" 4|8 (halfBlock)   "pasteMode" normal|transparent|under
   "gradient" {"shape": linear|radial, "banding": cells|bayer,
               "from": rung, "to": rung}

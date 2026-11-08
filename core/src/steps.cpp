@@ -237,7 +237,8 @@ Symmetry symmetryOf(const std::string& where, const QJsonValue& v) {
 
 char32_t glyphOf(const std::string& where, const QJsonValue& v) {
     const std::u32string g = QString::fromStdString(stringOf(where, "glyph", v)).toStdU32String();
-    if (g.size() != 1 || g[0] < 0x20 || g[0] == 0x7f)
+    // C0, DEL and C1 are refused as a text step refuses them (typedInText)
+    if (g.size() != 1 || !typedInText(g[0]))
         fail(where, "\"glyph\" must be one printable character");
     return g[0];
 }
