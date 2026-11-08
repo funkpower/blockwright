@@ -610,6 +610,39 @@ TEST_CASE("a full block paints a pixels layer, as the glyph tool does", "[replay
     CHECK(halfBlocks(flat(out.captures.back().project).at(1, 1)) == HalfPair{10, 10});
 }
 
+TEST_CASE("a glyph step a pixels layer can't hold names the glyph, or what radial symmetry turns it into (#436)",
+          "[replay]") {
+    const auto glyph = [](const std::string& ch, const std::string& symmetry) {
+        return onBlank(R"({"name": "dots", "action": "newPixelLayer", "rename": "px"},
+                          {"name": "draw", "action": "glyph", "glyph": ")" +
+                       ch + "\"" + (symmetry.empty() ? "" : R"(, "symmetry": )" + symmetry) +
+                       R"(, "points": [[3, 3]]})");
+    };
+    const std::string layer = R"(step 2 (draw): the active layer "px" is a pixels layer, which holds only █ ▀ ▄ and blanks)";
+    // a quarter turn puts ▀ on its side: ▐ one way round, ▌ the other
+    CHECK(glyph("▀", R"({"mode": "radial", "folds": 4})") ==
+          layer + ", and radial symmetry turns ▀ on its side, into ▐ and ▌");
+    CHECK(glyph("▄", R"({"mode": "radial", "folds": 8})") ==
+          layer + ", and radial symmetry turns ▄ on its side, into ▌ and ▐");
+    // a glyph the layer can't hold is named whatever the symmetry
+    CHECK(glyph("*", "") == layer + ", not *");
+    CHECK(glyph("▌", "") == layer + ", not ▌");
+    CHECK(glyph("░", R"({"mode": "radial", "folds": 4})") == layer + ", not ░");
+    // one that shows nothing on its own is named by its code point
+    CHECK(glyph(R"(\u0085)", "") == layer + ", not U+0085");
+    CHECK(glyph(R"(\u0301)", "") == layer + ", not U+0301");
+    CHECK(glyph(R"(\u200b)", "") == layer + ", not U+200B");
+    // flips and a half turn keep █ ▀ ▄ and blanks, so they paint, as without symmetry
+    CHECK(glyph("▀", "") == "(replayed)");
+    CHECK(glyph("▀", R"("mirrorXY")") == "(replayed)");
+    CHECK(glyph("▀", R"({"mode": "radial", "folds": 2})") == "(replayed)");
+    CHECK(glyph("█", R"({"mode": "radial", "folds": 4})") == "(replayed)");
+    // the right button erases to a blank, which every layer holds
+    CHECK(onBlank(R"({"name": "dots", "action": "newPixelLayer"},
+                     {"name": "rub", "action": "glyph", "glyph": "*", "button": "right",
+                      "symmetry": {"mode": "radial", "folds": 4}, "points": [[3, 3]]})") == "(replayed)");
+}
+
 TEST_CASE("a sample start makes the variant asked for", "[replay]") {
     const auto day = replayed(R"({"version": 1, "start": {"sample": "01-layers-showcase", "variant": "Day"},
                                   "steps": [{"name": "all", "action": "selectAll"}]})");
@@ -798,12 +831,12 @@ TEST_CASE("a step that can't be applied stops the replay, named", "[replay]") {
         {"a glyph a pixels layer can't hold",
          R"({"name": "dots", "action": "newPixelLayer"},
             {"name": "draw", "action": "glyph", "glyph": "*", "points": [[1, 1]]})",
-         "step 2 (draw)", "pixels"},
+         "step 2 (draw)", "pixels layer, which holds only \u2588 \u2580 \u2584 and blanks, not *"},
         {"a block turned on its side on a pixels layer",
          R"({"name": "dots", "action": "newPixelLayer"},
             {"name": "draw", "action": "glyph", "glyph": "\u2580", "symmetry": {"mode": "radial", "folds": 4},
              "points": [[1, 1]]})",
-         "step 2 (draw)", "pixels"},
+         "step 2 (draw)", "radial symmetry turns \u2580 on its side, into \u2590 and \u258c"},
         {"a shade on a pixels layer",
          R"({"name": "dots", "action": "newPixelLayer"}, {"name": "draw", "action": "smudge", "points": [[1, 1]]})",
          "step 2 (draw)", "shades"},

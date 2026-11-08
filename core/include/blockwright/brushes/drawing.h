@@ -32,6 +32,18 @@ private:
 // (rotateGlyph), so a radial image a quarter round writes ▀ as ▐.
 char32_t dabGlyph(char32_t ch, const Dab& d);
 
+// Whether a Pixels layer holds `ch`: only █ ▀ ▄ and the blanks, the glyphs
+// halfBlocks reads as two pixels.
+bool pixelsHoldGlyph(char32_t ch);
+
+// The glyphs a Pixels layer can't hold that the glyph brush writes for `ch`
+// under `symmetry` on a width × height canvas (dabGlyph of each of
+// symmetryDabs's images), each once in image order: `ch` itself alone when
+// the layer can't hold it, else the turned glyphs a radial quarter turn
+// writes (▀ is ▐ and ▌), as a flip keeps █ ▀ ▄ and blanks. Empty when the
+// layer holds every image.
+std::vector<char32_t> pixelsUnheldGlyphs(char32_t ch, const Symmetry& symmetry, int width, int height);
+
 // Glyph brush: writes one cell (a glyph in the pen's colours; a blank cell
 // erases), its glyph as each image writes it (dabGlyph).
 class GlyphBrush : public Brush {

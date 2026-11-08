@@ -146,6 +146,31 @@ TEST_CASE("a radial quarter turn turns the glyph as selection rotation does", "[
     }
 }
 
+TEST_CASE("a pixels layer can't hold a half block a radial quarter turn puts on its side (#436)",
+          "[symmetry][brush][layers]") {
+    using V = std::vector<char32_t>;
+    for (const char32_t ch : {U'█', U'▀', U'▄', U' ', U'\0', U' '})
+        CHECK(pixelsHoldGlyph(ch));
+    for (const char32_t ch : {U'▌', U'▐', U'░', U'*'})
+        CHECK_FALSE(pixelsHoldGlyph(ch));
+    const Symmetry none{}, mirror{SymmetryMode::MirrorXY}, half{SymmetryMode::Radial, 2},
+        quarter{SymmetryMode::Radial, 4}, eighth{SymmetryMode::Radial, 8};
+    // flips and a half turn keep █ ▀ ▄ and blanks
+    for (const Symmetry& s : {none, mirror, half})
+        for (const char32_t ch : {U'█', U'▀', U'▄', U' '})
+            CHECK(pixelsUnheldGlyphs(ch, s, 21, 11).empty());
+    // a quarter turn each way puts a half block on its side, once each
+    CHECK(pixelsUnheldGlyphs(U'▀', quarter, 21, 11) == V{U'▐', U'▌'});
+    CHECK(pixelsUnheldGlyphs(U'▄', eighth, 21, 11) == V{U'▌', U'▐'});
+    CHECK(pixelsUnheldGlyphs(U'█', quarter, 21, 11).empty());
+    // about a centre of its own too
+    CHECK(pixelsUnheldGlyphs(U'▀', {SymmetryMode::Radial, 4, Point{0, 0}}, 21, 11) == V{U'▐', U'▌'});
+    // a glyph the layer can't hold is that glyph alone, whatever its images
+    CHECK(pixelsUnheldGlyphs(U'▌', none, 21, 11) == V{U'▌'});
+    CHECK(pixelsUnheldGlyphs(U'▌', quarter, 21, 11) == V{U'▌'});
+    CHECK(pixelsUnheldGlyphs(U'*', mirror, 21, 11) == V{U'*'});
+}
+
 TEST_CASE("radial images keep their ends in 64 bits when joined", "[symmetry][brush]") {
     // Codex round 1 #5: four folds about cell (0, 0) of a 10x10 canvas; the
     // quarter turn of (-200, INT_MIN) is (2^32, -100), beyond int. Saturated

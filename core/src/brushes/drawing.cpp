@@ -1,5 +1,6 @@
 #include "blockwright/brushes/drawing.h"
 
+#include "blockwright/halfblock.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
 
@@ -51,6 +52,24 @@ char32_t dabGlyph(char32_t ch, const Dab& d) {
     for (int i = 0; i < d.turns; ++i)
         ch = rotateGlyph(ch, true);
     return ch;
+}
+
+bool pixelsHoldGlyph(char32_t ch) {
+    Cell c;
+    c.ch = ch;
+    return halfBlocks(c).has_value();
+}
+
+std::vector<char32_t> pixelsUnheldGlyphs(char32_t ch, const Symmetry& symmetry, int width, int height) {
+    if (!pixelsHoldGlyph(ch))
+        return {ch};
+    std::vector<char32_t> out;
+    for (const Dab& d : symmetryDabs(symmetry, Dab{width / 2, height / 2}, width, height)) {
+        const char32_t g = dabGlyph(ch, d);
+        if (!pixelsHoldGlyph(g) && std::find(out.begin(), out.end(), g) == out.end())
+            out.push_back(g);
+    }
+    return out;
 }
 
 std::optional<Cell> GlyphBrush::paintCell(const Stroke& stroke, int, int, double) const {

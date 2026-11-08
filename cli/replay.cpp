@@ -15,6 +15,7 @@
 #include "blockwright/brushes/texture.h"
 #include "blockwright/canvas_size.h"
 #include "blockwright/composite.h"
+#include "blockwright/cp437.h"
 #include "blockwright/edit.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
@@ -184,18 +185,27 @@ void editable(State& s, const Step& step) {
         fail(step, name + " is a " + kindName(l.props.kind) + " layer, which no tool edits");
 }
 
+// "U+2605", or "U+0071 U+0302" for a cluster.
+std::string codePoints(std::u32string_view cluster) {
+    std::string s;
+    for (const char32_t cp : cluster) {
+        char hex[16];
+        std::snprintf(hex, sizeof hex, "%sU+%04X", s.empty() ? "" : " ", unsigned(cp));
+        s += hex;
+    }
+    return s;
+}
+
 // A Pixels layer holds half blocks and blanks: the tools that paint shades,
 // and the glyph brush or the stars spray with a glyph it can't hold, refuse
-// one before they paint (DragTool::refusesLayer).
+// one before they paint (DragTool::refusesLayer). The glyph brush's refusal
+// names the glyph, or what radial symmetry turns it into
+// (GlyphTool::unheldGlyphs).
 void pixelsHold(State& s, const Step& st) {
     if (s.layer().props.kind != LayerKind::Pixels)
         return;
     const std::string& a = st.action;
-    const auto held = [](char32_t ch) {
-        Cell c;
-        c.ch = ch;
-        return halfBlocks(c).has_value();
-    };
+    const std::string layer = "the active layer \"" + s.layer().props.name + "\" is a pixels layer, which holds ";
     std::string what;
     if (a == "spray")
         what = s.spray.kind == SprayKind::Stars ? "stars" : "shades";
@@ -203,13 +213,29 @@ void pixelsHold(State& s, const Step& st) {
              a == "rimLight" || a == "texture")
         what = "shades";
     else if (a == "glyph" && st.button == Button::Left) {
-        const int w = s.width(), h = s.height();
-        for (const Dab& d : symmetryDabs(s.symmetry, Dab{w / 2, h / 2}, w, h))
-            if (!held(dabGlyph(s.glyph, d)))
-                what = "glyph but half blocks";
+        const std::vector<char32_t> unheld = pixelsUnheldGlyphs(s.glyph, s.symmetry, s.width(), s.height());
+        if (unheld.empty())
+            return;
+        // a glyph that shows nothing on its own (a C1 or format control, a
+        // mark) is named by its code point, as a conversion warning names it
+        const auto text = [](char32_t ch) {
+            if (codePointWidth(ch) < 1)
+                return codePoints(std::u32string_view(&ch, 1));
+            std::string out;
+            appendUtf8(out, ch);
+            return out;
+        };
+        const std::string only = layer + "only " + text(kFullBlock) + " " + text(kUpperHalf) + " " +
+                                 text(kLowerHalf) + " and blanks";
+        if (unheld.front() == s.glyph)
+            fail(st, only + ", not " + text(s.glyph));
+        std::string turned;
+        for (std::size_t i = 0; i < unheld.size(); ++i)
+            turned += (i == 0 ? "" : i + 1 == unheld.size() ? " and " : ", ") + text(unheld[i]);
+        fail(st, only + ", and radial symmetry turns " + text(s.glyph) + " on its side, into " + turned);
     }
     if (!what.empty())
-        fail(st, "the active layer \"" + s.layer().props.name + "\" is a pixels layer, which holds no " + what);
+        fail(st, layer + "no " + what);
 }
 
 // A tool's canvas edit made to the active layer (Document::edit), mirrored
@@ -313,17 +339,6 @@ void eyedropper(State& s, const Step& step, Outcome& out) {
     (bg ? s.pen.bg : s.pen.fg) = *c;
     if (!bg && s.p.target == Target::Irc)
         s.pen.attrs = cell.attrs & attr::Formatting;
-}
-
-// "U+2605", or "U+0071 U+0302" for a cluster.
-std::string codePoints(std::u32string_view cluster) {
-    std::string s;
-    for (const char32_t cp : cluster) {
-        char hex[16];
-        std::snprintf(hex, sizeof hex, "%sU+%04X", s.empty() ? "" : " ", unsigned(cp));
-        s += hex;
-    }
-    return s;
 }
 
 // Typed as keyboard mode types it (CanvasView::typeText), each line as one

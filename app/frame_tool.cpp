@@ -187,14 +187,7 @@ QString FrameTool::unheldGlyphs(Qt::MouseButton button) const {
     // has one, its fill
     const FrameStyle& s = style();
     const Canvas& src = s.source;
-    const auto held = [](char32_t ch) {
-        Cell c;
-        c.ch = ch;
-        return halfBlocks(c).has_value();
-    };
     const Canvas& c = canvas();
-    const std::vector<Dab> images =
-        symmetryDabs(view()->symmetry(), Dab{c.width() / 2, c.height() / 2}, c.width(), c.height());
     for (int y = 0; y < src.height(); ++y)
         for (int x = 0; x < src.width(); ++x) {
             const Cell& cell = src.at(x, y);
@@ -204,11 +197,12 @@ QString FrameTool::unheldGlyphs(Qt::MouseButton button) const {
             if (cell.transparent || !cp || (middle && !s.fill))
                 continue;
             const char32_t g = *cp;
-            if (!held(g))
+            const std::vector<char32_t> unheld = pixelsUnheldGlyphs(g, view()->symmetry(), c.width(), c.height());
+            if (unheld.empty())
+                continue;
+            if (unheld.front() == g)
                 return QString::fromUcs4(&g, 1);
-            for (const Dab& d : images)
-                if (!held(dabGlyph(g, d)))
-                    return tr("%1 turned on its side, which radial symmetry writes").arg(QString::fromUcs4(&g, 1));
+            return tr("%1 turned on its side, which radial symmetry writes").arg(QString::fromUcs4(&g, 1));
         }
     return {};
 }

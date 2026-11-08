@@ -243,6 +243,23 @@ TEST_CASE("on a Pixels layer each frame style draws as one undo step or says why
     }
 }
 
+TEST_CASE("under radial symmetry on a Pixels layer the frame names the half block it turns on its side (#436)") {
+    MainWindow w;
+    w.findChild<QAction*>(QStringLiteral("newPixelLayer"))->trigger();
+    const QString no = QStringLiteral("The frame can't paint a Pixels layer: it holds no ");
+    const QString turned = QStringLiteral(" turned on its side, which radial symmetry writes");
+    w.canvasView()->setSymmetry({SymmetryMode::Radial, 4, std::nullopt});
+    CHECK(useFrame(w, "bevel")->status() == no + QStringLiteral("▀") + turned);
+    CHECK(useFrame(w, "half-block")->status() == no + QStringLiteral("▄") + turned);
+    CHECK(useFrame(w, "button")->status() == no + QStringLiteral("▀") + turned);
+    // a full block stays one however it turns
+    CHECK(useFrame(w, "heavy")->status().isEmpty());
+    // a half turn keeps ▀ and ▄ half blocks, so only the ▌ edge is refused
+    w.canvasView()->setSymmetry({SymmetryMode::Radial, 2, std::nullopt});
+    CHECK(useFrame(w, "bevel")->status().isEmpty());
+    CHECK(useFrame(w, "half-block")->status() == no + QStringLiteral("▌"));
+}
+
 TEST_CASE("a frame dropped on a scene keeps the background where its style says") {
     for (const bool pen : {false, true}) {
         INFO("pen colours " << pen);

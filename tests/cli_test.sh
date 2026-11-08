@@ -1060,6 +1060,13 @@ printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "ac
 expect "replay: a step off the canvas, named" 1 'step 2 \(far\): ' -- "$cli" replay "$rp/bad.json" -o "$rp/bad"
 if [[ ! -e $rp/bad ]]; then ok "replay: a failed replay writes nothing"; else bad "replay wrote files for a failed replay"; fi
 expect "replay: -o is required" 2 "replay needs -o" -- "$cli" replay "$rp/bad.json"
+# a half block radial symmetry turns on its side is refused on a pixels layer,
+# named (#436); without the symmetry it paints
+printf '{"version": 1, "start": {"blank": [20, 10]}, "steps": [{"name": "px", "action": "newPixelLayer", "rename": "px"}, {"name": "draw", "action": "glyph", "glyph": "▀", "symmetry": {"mode": "radial", "folds": 4}, "points": [[3, 3]]}]}' > "$rp/radial-px.json"
+expect "replay: radial symmetry turning a half block on a pixels layer, named" 1 "^blockwright-cli: $rp/radial-px\.json: step 2 \(draw\): the active layer \"px\" is a pixels layer, which holds only █ ▀ ▄ and blanks, and radial symmetry turns ▀ on its side, into ▐ and ▌$" -- "$cli" replay "$rp/radial-px.json" -o "$rp/radial-px"
+if [[ ! -e $rp/radial-px ]]; then ok "replay: a refused radial glyph step writes nothing"; else bad "replay wrote files for a refused radial glyph step"; fi
+printf '{"version": 1, "start": {"blank": [20, 10]}, "steps": [{"name": "px", "action": "newPixelLayer", "rename": "px"}, {"name": "draw", "action": "glyph", "glyph": "▀", "points": [[3, 3]]}]}' > "$rp/plain-px.json"
+expect "replay: the same half block without symmetry paints a pixels layer" 0 '^$' -- "$cli" replay "$rp/plain-px.json" -o "$rp/plain-px"
 # a view step (#398) is the window's: replay has no window, so it refuses the
 # file, exit 1 as for a bad step, before the start is read, writing nothing
 printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}, {"name": "zoomed", "action": "view", "zoom": 4, "ircFit": true}]}' > "$rp/view.json"

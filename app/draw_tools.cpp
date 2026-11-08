@@ -342,21 +342,16 @@ QString GlyphTool::status() const {
 QString GlyphTool::unheldGlyphs(Qt::MouseButton button) const {
     if (button == Qt::RightButton || !view())
         return {};  // it erases, to a blank every layer holds
-    const auto held = [](char32_t ch) {
-        Cell c;
-        c.ch = ch;
-        return halfBlocks(c).has_value();
-    };
-    const char32_t g = glyph_;
-    if (!held(g))
-        return QString::fromUcs4(&g, 1);
     // the images mirror mode writes: flips keep █ ▀ ▄ and blanks, a quarter
     // turn puts a half block on its side
+    const char32_t g = glyph_;
     const Canvas& c = canvas();
-    for (const Dab& d : symmetryDabs(view()->symmetry(), Dab{c.width() / 2, c.height() / 2}, c.width(), c.height()))
-        if (!held(dabGlyph(g, d)))
-            return tr("%1 turned on its side, which radial symmetry writes").arg(QString::fromUcs4(&g, 1));
-    return {};
+    const std::vector<char32_t> unheld = pixelsUnheldGlyphs(g, view()->symmetry(), c.width(), c.height());
+    if (unheld.empty())
+        return {};
+    if (unheld.front() == g)
+        return QString::fromUcs4(&g, 1);
+    return tr("%1 turned on its side, which radial symmetry writes").arg(QString::fromUcs4(&g, 1));
 }
 
 std::unique_ptr<Brush> GlyphTool::makeBrush(Qt::MouseButton button) const {
