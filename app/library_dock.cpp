@@ -22,6 +22,7 @@
 #include <QPushButton>
 #include <QSet>
 #include <QSpinBox>
+#include <QStyledItemDelegate>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -72,10 +73,31 @@ std::filesystem::path stampKeyPath(const QByteArray& key) {
 #endif
 }
 
+namespace {
+
+// The grid's delegate: an item's size is the grid's cell. QListView with
+// uniform item sizes gives every item the size hint of its last item, so a
+// short thumbnail or a one-line name there would clip the others; the cell
+// is what StampGrid::fitGridToItems measures them all to need.
+class CellDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        const auto* view = qobject_cast<const QListView*>(option.widget);
+        if (view && view->gridSize().isValid())
+            return view->gridSize();
+        return QStyledItemDelegate::sizeHint(option, index);
+    }
+};
+
+} // namespace
+
 StampGrid::StampGrid(QWidget* parent) : QListWidget(parent) {
     setViewMode(QListView::IconMode);
     setIconSize(kIconBox);
-    setGridSize(kIconBox + QSize(8, 24));
+    setItemDelegate(new CellDelegate(this));
+    fitGridToItems();
     setResizeMode(QListView::Adjust);
     setMovement(QListView::Static);
     setWordWrap(true);
@@ -84,6 +106,31 @@ StampGrid::StampGrid(QWidget* parent) : QListWidget(parent) {
     setDragEnabled(true);
     setDragDropMode(QAbstractItemView::DragOnly);
     setDefaultDropAction(Qt::CopyAction);
+}
+
+void StampGrid::fitGridToItems() {
+    QStyleOptionViewItem opt;
+    initViewItemOption(&opt);
+    const QStyledItemDelegate natural;  // the items as the style lays them out
+    // The largest item with names wrapped at `width`.
+    const auto largest = [&](int width) {
+        opt.rect = QRect(0, 0, width, kIconBox.height());
+        QSize most(0, 0);
+        for (int i = 0; i < count(); ++i)
+            most = most.expandedTo(natural.sizeHint(opt, model()->index(i, 0)));
+        return most;
+    };
+    // Names wrap at the icon box's width and a gap, or wider for a word too
+    // wide to wrap; the height is measured at the width they are painted at.
+    // An empty grid keeps the icon box and a line.
+    const int width = std::max(kIconBox.width() + 8, largest(kIconBox.width() + 8).width());
+    setGridSize(QSize(width, count() > 0 ? largest(width).height() : kIconBox.height() + fontMetrics().lineSpacing()));
+}
+
+void StampGrid::changeEvent(QEvent* e) {
+    QListWidget::changeEvent(e);
+    if (e->type() == QEvent::FontChange || e->type() == QEvent::StyleChange)
+        fitGridToItems();
 }
 
 QStringList StampGrid::mimeTypes() const {
@@ -421,6 +468,7 @@ void LibraryDock::refill() {
                                   tags.isEmpty() ? tr("none") : tags.join(QStringLiteral(", ")),
                                   iceNeed, e.bundled ? tr("Bundled") : tr("User"), qpath(t.path)));
     }
+    grid_->fitGridToItems();
 }
 
 StampDropFilter::StampDropFilter(CanvasView* view) : QObject(view), view_(view) {

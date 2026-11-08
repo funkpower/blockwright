@@ -85,13 +85,22 @@ QImage stampIcon(const Canvas& cv, int glyphWidth, QSize box, std::int64_t bandP
 QImage frameStyleIcon(const FrameStyle& style, int width, int height, QSize box);
 
 // The thumbnail grid: an icon-mode list whose drags carry the stamp's or
-// text style's key.
+// text style's key. Every item is laid out in a whole grid cell, and
+// fitGridToItems sizes the cell to its items.
 class StampGrid : public QListWidget {
     Q_OBJECT
 public:
     explicit StampGrid(QWidget* parent = nullptr);
 
+    // Sizes the grid's cell to hold every item whole: the icon box's width
+    // and a gap (or more, for a word of a name that is wider), and the height
+    // of the tallest thumbnail and wrapped name, as the item delegate lays
+    // them out in the grid's font and style. Called after the items change;
+    // a font or style change calls it too.
+    void fitGridToItems();
+
 protected:
+    void changeEvent(QEvent* e) override;
     QStringList mimeTypes() const override;
     QMimeData* mimeData(const QList<QListWidgetItem*>& items) const override;
 };

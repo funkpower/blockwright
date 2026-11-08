@@ -45,12 +45,15 @@
 #include <QPointingDevice>
 #include <QPushButton>
 #include <QStatusBar>
+#include <QStyleOptionViewItem>
+#include <QStyledItemDelegate>
 #include <QTabletEvent>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUndoStack>
 
+#include <algorithm>
 #include <filesystem>
 #include <cstring>
 #include <memory>
@@ -191,6 +194,79 @@ TEST_CASE("the Library dock shows the stamps as 1x thumbnails with categories an
     CHECK(f.dock->shownNames() == QStringList{QStringLiteral("Small star")});
     f.dock->searchEdit()->setText(QStringLiteral("nothing"));
     CHECK(f.dock->shownNames().isEmpty());
+}
+
+// Every item of the grid fits its cell whole: its thumbnail and every line
+// of its wrapped name, as the style lays them out (#430), and the cell is no
+// bigger than its largest item. The option is the one QListView paints an
+// icon-mode item with.
+void checkNamesFit(StampGrid* grid) {
+    QStyleOptionViewItem opt;
+    opt.initFrom(grid);
+    opt.widget = grid;
+    opt.font = grid->font();
+    opt.decorationSize = grid->iconSize();
+    opt.decorationPosition = QStyleOptionViewItem::Top;
+    opt.decorationAlignment = Qt::AlignCenter;
+    opt.displayAlignment = Qt::AlignCenter;
+    opt.textElideMode = grid->textElideMode();
+    opt.features = grid->wordWrap() ? QStyleOptionViewItem::WrapText : QStyleOptionViewItem::None;
+    opt.rect = QRect(QPoint(), grid->gridSize());
+    const QSize cell = grid->gridSize();
+    const QStyledItemDelegate natural;  // the item as the style lays it out
+    QSize most(0, 0);
+    REQUIRE(grid->count() > 0);
+    for (int i = 0; i < grid->count(); ++i) {
+        const QModelIndex index = grid->model()->index(i, 0);
+        const QSize need = natural.sizeHint(opt, index);
+        const QRect shown = grid->visualRect(index);
+        INFO(grid->item(i)->text().toStdString() << ": needs " << need.width() << " x " << need.height()
+                                                 << ", shown in " << shown.width() << " x " << shown.height()
+                                                 << ", cell " << cell.width() << " x " << cell.height());
+        CHECK(need.height() <= shown.height());
+        CHECK(need.width() <= shown.width());
+        CHECK(shown.height() <= cell.height());
+        CHECK(shown.width() <= cell.width());
+        most = most.expandedTo(need);
+    }
+    // No bigger than that: as tall as the tallest item, and wider than the
+    // icon box and a gap only for a word too wide to wrap.
+    CHECK(cell.height() == most.height());
+    CHECK(cell.width() == std::max(grid->iconSize().width() + 8, most.width()));
+}
+
+TEST_CASE("every name in the Library dock shows whole under its thumbnail, however tall, at any font size") {
+    QTemporaryDir user;
+    REQUIRE(user.isValid());
+    MainWindow w;
+    LibraryDock* dock = w.libraryWidget();
+    dock->setDirectories(BW_BUNDLED_LIBRARY, fspath(user.path()));
+    w.resize(2000, 2400);
+    w.show();
+    QApplication::processEvents();
+    StampGrid* grid = dock->grid();
+    // Barn's thumbnail fills the box's height; Bevelled block frame's name
+    // wraps to two lines under a thumbnail as tall.
+    REQUIRE(item(dock, QStringLiteral("Barn"))->icon().actualSize(grid->iconSize()).height() == grid->iconSize().height());
+    REQUIRE(item(dock, QStringLiteral("Bevelled block frame")));
+    checkNamesFit(grid);
+
+    QFont big = dock->font();
+    big.setPointSizeF(big.pointSizeF() * 2);
+    dock->setFont(big);
+    QApplication::processEvents();
+    checkNamesFit(grid);
+
+    // A search shows fewer stamps; they still fit, and a cell of only short
+    // thumbnails is only as tall as they are.
+    dock->searchEdit()->setText(QStringLiteral("frame"));
+    QApplication::processEvents();
+    checkNamesFit(grid);
+    dock->searchEdit()->setText(QStringLiteral("water"));
+    QApplication::processEvents();
+    REQUIRE(grid->count() > 0);
+    REQUIRE(grid->gridSize().height() < grid->iconSize().height() + grid->fontMetrics().lineSpacing());
+    checkNamesFit(grid);
 }
 
 TEST_CASE("the user library is GenericDataLocation/Blockwright/library unless overridden") {
