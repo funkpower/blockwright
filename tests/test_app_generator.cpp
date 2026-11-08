@@ -46,6 +46,7 @@
 #include <QTemporaryDir>
 #include <QThreadPool>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QUndoStack>
 
 #include <memory>
@@ -887,4 +888,251 @@ TEST_CASE("a generator layer's form fits the right column at its minimum width",
         CHECK(form->width() >= form->minimumSizeHint().width());
     }
     appSettings()->clear();
+}
+
+namespace {
+
+// writeBars, with the generator layer moved right by two, chars-only and
+// alpha-locked, so a bake can be seen to keep its place and properties.
+LayerId writeMovedBars(const QString& path) {
+    project::Project p = project::fromAnsi(parseAnsi("x"));
+    p.sauce.reset();
+    p.layers = LayerStack(12, 2);
+    Layer ground = makeLayer(LayerKind::Cells, 12, 2, "ground");
+    for (int x = 0; x < 12; ++x) {
+        ground.cells.at(x, 0) = Cell{};
+        ground.cells.at(x, 0).bg = Color::indexed(1);
+    }
+    p.layers.add(std::move(ground));
+    const LayerId id = generator::add(p, barsFiles(), "bars");
+    Layer* l = p.layers.find(id);
+    l->props.x = 2;
+    l->props.mode = LayerMode::CharsOnly;
+    l->props.alphaLocked = true;
+    project::writeZip(p, fpath(path));
+    return id;
+}
+
+QAction* act(MainWindow& w, const QString& name) {
+    auto* a = w.findChild<QAction*>(name);
+    REQUIRE(a);
+    return a;
+}
+
+QString kindShown(MainWindow& w, LayerId id) {
+    QTreeWidget* tree = w.layersWidget()->tree();
+    for (int i = 0; i < tree->topLevelItemCount(); ++i)
+        if (LayersDock::layerOf(tree->topLevelItem(i)) == id)
+            return tree->topLevelItem(i)->text(LayersDock::KindColumn);
+    return {};
+}
+
+} // namespace
+
+TEST_CASE("Bake Layer bakes a generator layer into a cells layer of its output; undo gives the generator back") {
+    QTemporaryDir tmp;
+    const QString path = tmp.filePath(QStringLiteral("bars.bwp"));
+    const LayerId id = writeMovedBars(path);
+    MainWindow w;
+    QString error;
+    REQUIRE(w.openFile(path, &error));
+    w.generatorRunner()->setDebounce(0);
+    Document& d = *w.document();
+    REQUIRE(d.setActiveLayer(id));
+    GeneratorForm* form = w.layersWidget()->generatorForm();
+    Truster trust(QMessageBox::Yes);
+
+    // a parameter changed and run first, so the generator has params.json
+    REQUIRE(d.setGeneratorParam(id, "count", 5.0));
+    REQUIRE(waitFor([&] { return w.generatorRunner()->started() == 1 && idle(w); }));
+    REQUIRE(row(d, id) == "#####");
+    const std::string dir = generator::directory(id);
+    const std::optional<std::string> spec = d.keptFile(dir + "generator.json");
+    const std::string paramsBefore = params(d, id);
+    REQUIRE(spec);
+    REQUIRE(paramsBefore != "(none)");
+    const Layer before = *d.layers().find(id);
+    const Canvas shown = d.canvas();
+    const int steps = d.undoStack()->count();
+
+    QAction* bake = act(w, QStringLiteral("bakeLayer"));
+    CHECK(Document::canBake(&before));
+    REQUIRE(bake->isEnabled());
+    CHECK(kindShown(w, id) == QStringLiteral("Generator"));
+    CHECK(form->isVisibleTo(&w));
+    bake->trigger();
+    QApplication::processEvents();
+
+    // one step; a cells layer of the same cells and properties, the
+    // composite as it was
+    CHECK(d.undoStack()->count() == steps + 1);
+    CHECK(d.undoStack()->undoText() == QStringLiteral("Bake Generator"));
+    const Layer& baked = *d.layers().find(id);
+    LayerProperties want = before.props;
+    want.kind = LayerKind::Cells;
+    CHECK(baked.props == want);
+    CHECK(baked.props.name == "bars");
+    CHECK(baked.props.x == 2);
+    CHECK(baked.props.mode == LayerMode::CharsOnly);
+    CHECK(baked.props.visible);
+    CHECK(baked.cells == before.cells);
+    CHECK(d.canvas() == shown);
+    CHECK(d.canvas().at(2, 0).ch == U'#');
+    CHECK(d.canvas().at(2, 0).bg == Color::indexed(1));
+    // the dock shows a cells layer, the form goes, nothing more to bake or run
+    CHECK(kindShown(w, id) == QStringLiteral("Cells"));
+    CHECK_FALSE(form->isVisibleTo(&w));
+    CHECK_FALSE(bake->isEnabled());
+    CHECK_FALSE(d.bakeLayer(id));
+    CHECK_FALSE(d.requestGeneratorRun(id));
+    CHECK_FALSE(d.setGeneratorParam(id, "count", 2.0));
+    CHECK(d.editable());
+    // the generator's files stay kept, for undo
+    CHECK(d.keptFile(dir + "generator.json") == spec);
+    CHECK(params(d, id) == paramsBefore);
+
+    // undo gives back the generator with its params, form and cells
+    d.undoStack()->undo();
+    QApplication::processEvents();
+    CHECK(*d.layers().find(id) == before);
+    CHECK(d.canvas() == shown);
+    CHECK(params(d, id) == paramsBefore);
+    CHECK(kindShown(w, id) == QStringLiteral("Generator"));
+    REQUIRE(form->isVisibleTo(&w));
+    CHECK(countSpin(form)->value() == 5);
+    CHECK(bake->isEnabled());
+    CHECK_FALSE(d.editable());
+    d.undoStack()->redo();
+    QApplication::processEvents();
+    CHECK(d.layers().find(id)->props == want);
+    CHECK(d.layers().find(id)->cells == before.cells);
+    CHECK(w.generatorRunner()->started() == 1);
+}
+
+TEST_CASE("a baked generator layer saves and reopens as a cells layer; its kept files stay unused") {
+    QTemporaryDir tmp;
+    const QString path = tmp.filePath(QStringLiteral("bars.bwp"));
+    const LayerId id = writeMovedBars(path);
+    Canvas cells, shown;
+    std::optional<std::string> spec;
+    {
+        MainWindow w;
+        QString error;
+        REQUIRE(w.openFile(path, &error));
+        Document& d = *w.document();
+        REQUIRE(d.setActiveLayer(id));
+        spec = d.keptFile(generator::directory(id) + "generator.json");
+        REQUIRE(d.bakeLayer(id));
+        cells = d.layers().find(id)->cells;
+        shown = d.canvas();
+        REQUIRE(w.save());
+        CHECK_FALSE(w.isWindowModified());
+    }
+
+    // the file: a cells layer of the same cells, the generator's files kept
+    // byte for byte and run by nothing
+    const project::Project saved = project::read(fpath(path));
+    const Layer* l = saved.layers.find(id);
+    REQUIRE(l);
+    CHECK(l->props.kind == LayerKind::Cells);
+    CHECK(l->props.x == 2);
+    CHECK(l->props.mode == LayerMode::CharsOnly);
+    CHECK(l->cells == cells);
+    CHECK(saved.files.at(generator::directory(id) + "generator.json") == *spec);
+    CHECK(generator::generatorLayers(saved.layers).empty());
+    CHECK_THROWS_AS(generator::run(saved, id), generator::GeneratorError);
+    // the directory form reads back the same
+    const fs::path dir = fpath(tmp.filePath(QStringLiteral("bars-dir")));
+    project::writeDirectory(saved, dir);
+    const project::Project fromDir = project::read(dir);
+    CHECK(fromDir.layers.find(id)->props == l->props);
+    CHECK(fromDir.layers.find(id)->cells == cells);
+    CHECK(fromDir.files == saved.files);
+
+    // reopened: the same composite, a cells layer the tools paint, no form
+    MainWindow again;
+    QString error;
+    REQUIRE(again.openFile(path, &error));
+    Document& d = *again.document();
+    REQUIRE(d.setActiveLayer(id));
+    CHECK(d.layers().find(id)->props.kind == LayerKind::Cells);
+    CHECK(d.layers().find(id)->cells == cells);
+    CHECK(d.canvas() == shown);
+    CHECK(kindShown(again, id) == QStringLiteral("Cells"));
+    CHECK_FALSE(again.layersWidget()->generatorForm()->isVisibleTo(&again));
+    CHECK_FALSE(act(again, QStringLiteral("bakeLayer"))->isEnabled());
+    CHECK(d.editable());
+    CHECK(again.generatorRunner()->started() == 0);
+    // saved again unchanged, it writes the same project
+    const QString path2 = tmp.filePath(QStringLiteral("again.bwp"));
+    REQUIRE(again.saveFile(path2, &error));
+    const project::Project resaved = project::read(fpath(path2));
+    CHECK(resaved.layers.find(id)->props == l->props);
+    CHECK(resaved.layers.find(id)->cells == cells);
+    CHECK(resaved.files == saved.files);
+}
+
+TEST_CASE("a generator baked while its run waits or runs keeps the cells it baked, and no run fails") {
+    const int sleep = GENERATE(0, 1);
+    CAPTURE(sleep);
+    BarsWindow o(sleep);
+    Document& d = *o.w.document();
+    GeneratorRunner* runner = o.w.generatorRunner();
+    Truster trust(QMessageBox::Yes);
+    const Canvas before = d.layers().find(o.id)->cells;
+    const std::string paramsBefore = params(d, o.id);
+    int failed = 0;
+    QObject::connect(runner, &GeneratorRunner::runFinished, [&](LayerId, bool, const QString& error) {
+        failed += !error.isEmpty();
+    });
+    if (sleep == 0)
+        runner->setDebounce(GeneratorRunner::kDebounceMs);  // baked before the run starts
+    REQUIRE(d.setGeneratorParam(o.id, "count", 6.0));
+    const std::string paramsAfter = params(d, o.id);
+    if (sleep > 0)
+        REQUIRE(waitFor([&] { return runner->started() == 1; }));  // baked while it runs
+    else
+        REQUIRE(runner->started() == 0);
+    REQUIRE(d.bakeLayer(o.id));
+    REQUIRE(waitFor([&] { return idle(o.w); }));
+    QApplication::processEvents();
+    CHECK(runner->started() == (sleep > 0 ? 1 : 0));
+    CHECK(failed == 0);
+    CHECK_FALSE(o.w.statusBar()->currentMessage().contains(QStringLiteral("failed")));
+    CHECK(d.layers().find(o.id)->props.kind == LayerKind::Cells);
+    CHECK(d.layers().find(o.id)->cells == before);
+    CHECK(d.undoStack()->undoText() == QStringLiteral("Bake Generator"));
+
+    // undone, the generator has the params the step set and the cells it
+    // baked (the step's run was overtaken), until it runs again
+    d.undoStack()->undo();
+    CHECK(d.layers().find(o.id)->props.kind == LayerKind::Generator);
+    CHECK(d.layers().find(o.id)->cells == before);
+    CHECK(params(d, o.id) == paramsAfter);
+    d.undoStack()->undo();
+    CHECK(params(d, o.id) == paramsBefore);
+    CHECK(d.layers().find(o.id)->cells == before);
+}
+
+TEST_CASE("a run queued behind another isn't lost when its layer goes and comes back before it starts") {
+    const int how = GENERATE(0, 1);  // 0: Delete Layer and undo, 1: Bake Layer and undo
+    CAPTURE(how);
+    BarsWindow o(1);
+    Document& d = *o.w.document();
+    GeneratorRunner* runner = o.w.generatorRunner();
+    Truster trust(QMessageBox::Yes);
+    REQUIRE(d.setGeneratorParam(o.id, "count", 4.0));
+    REQUIRE(waitFor([&] { return runner->started() == 1; }));  // count 4 runs, 1 s
+    REQUIRE(d.setGeneratorParam(o.id, "count", 6.0));           // queued behind it
+    const bool gone = how == 0 ? d.removeLayer(o.id) : d.bakeLayer(o.id);
+    REQUIRE(gone);
+    waitFor([] { return false; }, 100);  // the pause (0 ms) ends while the layer is gone or baked
+    REQUIRE(runner->started() == 1);     // the first run is still going
+    d.undoStack()->undo();               // the generator is back, count 6
+    REQUIRE(d.layers().find(o.id));
+    REQUIRE(d.layers().find(o.id)->props.kind == LayerKind::Generator);
+    REQUIRE(count(d, o.id) == 6);
+    REQUIRE(waitFor([&] { return idle(o.w); }));
+    CHECK(runner->started() == 2);
+    CHECK(row(d, o.id) == "######");
 }

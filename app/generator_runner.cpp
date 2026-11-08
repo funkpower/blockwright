@@ -53,7 +53,18 @@ void GeneratorRunner::request(LayerId id, quint64 serial) {
 bool GeneratorRunner::busy() const { return running_ || !pending_.empty(); }
 
 void GeneratorRunner::dispatch() {
-    if (running_ || pending_.empty())
+    if (running_)
+        return;
+    // a layer deleted or baked when its run's turn comes has nothing to run
+    // (judged now, not while another run is in flight: an undo may yet
+    // bring the generator back)
+    const auto stale = [this](LayerId id) {
+        const Layer* l = doc_->layers().find(id);
+        return !l || l->props.kind != LayerKind::Generator;
+    };
+    while (!pending_.empty() && stale(pending_.begin()->first))
+        pending_.erase(pending_.begin());
+    if (pending_.empty())
         return;
     const auto [id, serial] = *pending_.begin();
     pending_.erase(pending_.begin());

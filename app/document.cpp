@@ -1005,6 +1005,8 @@ bool Document::canBake(const Layer* l) {
         return false;
     if (l->props.kind == LayerKind::Text)
         return bool(l->props.text);
+    if (l->props.kind == LayerKind::Generator)
+        return true;
     return (l->props.kind == LayerKind::Cells || l->props.kind == LayerKind::Pixels) && l->props.style;
 }
 
@@ -1013,9 +1015,11 @@ bool Document::bakeLayer(LayerId id) {
     const Layer* l = stack_.find(id);
     if (!canBake(l))
         return false;
-    const bool text = l->props.kind == LayerKind::Text;
+    const QString name = l->props.kind == LayerKind::Text        ? tr("Bake Text")
+                         : l->props.kind == LayerKind::Generator ? tr("Bake Generator")
+                                                                 : tr("Bake Layer Style");
     emit layersAboutToChange();
-    undo_.push(new LayerPropsCommand(this, bakeEdit(*l, doc_.ice), text ? tr("Bake Text") : tr("Bake Layer Style")));
+    undo_.push(new LayerPropsCommand(this, bakeEdit(*l, doc_.ice), name));
     return true;
 }
 

@@ -28,9 +28,10 @@ visibility, lock, alpha lock and place on the canvas. There are five kinds:
 
 A layer can carry a style (Layer > Layer Style: plate, glow, shadow, outline,
 fill, shade and bevel). Layer > Bake Layer turns a live text layer, with or
-without a style, or a Cells or Pixels layer with a style, into a cells layer of
-what it shows; a Cells or Pixels layer with no style can't be baked, and
-generator and reference layers can't be baked at all. The project format
+without a style, a generator layer (its last output), or a Cells or Pixels
+layer with a style, into a cells layer of what it shows; a Cells or Pixels
+layer with no style can't be baked, and reference layers can't be baked at
+all. The project format
 also keeps a layer's blend mode (normal, chars-only or colours-only); the app
 composites it but has no control to set it.
 

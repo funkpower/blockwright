@@ -319,9 +319,11 @@ public:
                        const FontStore* held = nullptr);
     // Bakes the layer into a cells layer of the cells it shows (bakeEdit,
     // the document's iCE setting), one undo step: "Bake Text" for a live
-    // text layer, "Bake Layer Style" for a cells or pixels layer with a
-    // style (its styled cells; a style with every effect off only goes).
-    // Undo gives back the layer as it was. False for any other layer.
+    // text layer, "Bake Generator" for a generator layer (the cells its
+    // last run left; its scripts/<id>/ files stay kept, so undo has them),
+    // "Bake Layer Style" for a cells or pixels layer with a style (its
+    // styled cells; a style with every effect off only goes). Undo gives
+    // back the layer as it was. False for any other layer.
     bool bakeLayer(LayerId id);
     // Whether bakeLayer bakes the layer.
     static bool canBake(const Layer* layer);

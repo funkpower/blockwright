@@ -135,8 +135,8 @@ void MainWindow::createDocks() {
     connect(layers_, &LayersDock::styleRequested, this, &MainWindow::editLayerStyle);
     QAction* bake = layerMenu_->addAction(tr("&Bake Layer"), this, [this] { doc_.bakeLayer(doc_.activeLayer()); });
     bake->setObjectName(QStringLiteral("bakeLayer"));
-    bake->setToolTip(tr("Make the layer a cells layer of what it shows: a text layer's text, or a layer's style, "
-                        "can't be edited after"));
+    bake->setToolTip(tr("Make the layer a cells layer of what it shows: a text layer's text, a generator's "
+                        "output, or a layer's style, can't be edited after"));
     const auto canBake = [this, bake, style] {
         const Layer* l = doc_.active();
         bake->setEnabled(Document::canBake(l));
