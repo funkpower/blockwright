@@ -1,6 +1,8 @@
 #include "blockwright/steps.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/big_text.h"
+#include "blockwright/face.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -51,6 +53,9 @@ const std::vector<ActionKeys>& actionKeys() {
         // cells again
         {"gradient", {"from", "to", "button"}},
         {"keyboard", {"at", "text"}},
+        // the Text tool: its click, what is typed and its Tool Options,
+        // which are its alone (#421)
+        {"text", {"at", "text", "textOptions"}},
         {"move", {"by"}},
         // the selection
         {"select", {"rect"}},
@@ -236,6 +241,58 @@ char32_t glyphOf(const std::string& where, const QJsonValue& v) {
     return g[0];
 }
 
+// The Text tool's Tool Options (TextOptions, #421).
+Options::Text textOptionsOf(const std::string& where, const QJsonValue& v) {
+    const QJsonObject o = objectOf(where, "textOptions", v,
+                                   {"face", "case", "letterSpacing", "lineSpacing", "align", "wrap", "colour",
+                                    "bigStyle", "bigColours"});
+    Options::Text t;
+    if (o.contains("face")) {
+        const std::string name = stringOf(where, "textOptions face", o["face"]);
+        std::string names;
+        for (const Face* f : bundledFaces())
+            names += (names.empty() ? "" : ", ") + std::string(f->name());
+        if (!bundledFace(name))
+            fail(where, "\"textOptions face\" takes a bundled face (" + names + "), not \"" + name + "\"");
+        t.face = name;
+    }
+    if (o.contains("case"))
+        t.textCase = choiceOf<TextCase>(where, "textOptions case", o["case"],
+                                        {{textCaseName(TextCase::AsTyped), TextCase::AsTyped},
+                                         {textCaseName(TextCase::Capitals), TextCase::Capitals}});
+    if (o.contains("letterSpacing"))
+        t.letterSpacing = intOf(where, "textOptions letterSpacing", o["letterSpacing"], 0, TextSource::kMaxSpacing);
+    if (o.contains("lineSpacing"))
+        t.lineSpacing = intOf(where, "textOptions lineSpacing", o["lineSpacing"], 0, TextSource::kMaxSpacing);
+    if (o.contains("align"))
+        t.align = choiceOf<TextAlign>(where, "textOptions align", o["align"],
+                                      {{textAlignName(TextAlign::Left), TextAlign::Left},
+                                       {textAlignName(TextAlign::Centre), TextAlign::Centre},
+                                       {textAlignName(TextAlign::Right), TextAlign::Right}});
+    if (o.contains("wrap"))
+        t.wrapWidth = intOf(where, "textOptions wrap", o["wrap"], 0, TextSource::kMaxWrapWidth);
+    if (o.contains("colour"))
+        t.colour = colourOf(where, "textOptions colour", o["colour"]);
+    if (o.contains("bigStyle")) {
+        std::vector<std::pair<std::string_view, BigTextStyle>> styles;
+        for (int i = 0; !bigTextStyleName(BigTextStyle(i)).empty(); ++i)
+            styles.emplace_back(bigTextStyleName(BigTextStyle(i)), BigTextStyle(i));
+        t.bigStyle = choiceOf<BigTextStyle>(where, "textOptions bigStyle", o["bigStyle"], styles);
+    }
+    if (o.contains("bigColours")) {
+        const QJsonValue& c = o["bigColours"];
+        if (!c.isArray() || c.toArray().isEmpty() || c.toArray().size() > qsizetype(TextSource::kMaxBigColours))
+            fail(where, "\"textOptions bigColours\" must be an array of 1 to " +
+                            std::to_string(TextSource::kMaxBigColours) + " mIRC colours 0 to 15" +
+                            (c.isArray() ? "" : std::string(", not ") + kindOf(c)));
+        std::vector<std::uint8_t> colours;
+        for (const QJsonValue& n : c.toArray())
+            colours.push_back(colourOf(where, "textOptions bigColours", n));
+        t.bigColours = std::move(colours);
+    }
+    return t;
+}
+
 void readOptions(const std::string& where, const QJsonObject& o, Options& opt) {
     if (o.contains("fg"))
         opt.fg = colourOf(where, "fg", o["fg"]);
@@ -344,6 +401,8 @@ void readOptions(const std::string& where, const QJsonObject& o, Options& opt) {
     }
     if (o.contains("aligned"))
         opt.aligned = boolOf(where, "aligned", o["aligned"]);
+    if (o.contains("textOptions"))
+        opt.text = textOptionsOf(where, o["textOptions"]);
 }
 
 // 1-64 of a-z 0-9 - _, starting with a letter or digit: a file name on any
@@ -491,7 +550,24 @@ Step readStep(const QJsonValue& v, int number) {
         st.points.push_back(pointOf(where, "at", o["at"], false));
     else if (st.action == "paste")
         fail(where, "paste needs \"at\": the cell the block's top-left corner lands on");
-    if (o.contains("text")) {
+    if (st.action == "text" && o.contains("at") != o.contains("text"))
+        fail(where, o.contains("at") ? "text needs \"text\" to type at its \"at\" cell: a click with nothing typed "
+                                       "makes no text layer"
+                                     : "\"text\" needs an \"at\" cell to start from");
+    if (st.action == "text" && o.contains("text")) {
+        // as typed: the Text tool takes the characters as they come, Enter
+        // as a new line, and types no other control character
+        st.text = QString::fromStdString(stringOf(where, "text", o["text"])).toStdU32String();
+        if (st.text.empty() || st.text.size() > TextSource::kMaxLength)
+            fail(where, "\"text\" must be 1 to " + std::to_string(TextSource::kMaxLength) + " characters");
+        for (const char32_t ch : st.text)
+            if ((ch < 0x20 && ch != U'\n') || ch == 0x7f) {
+                char hex[16];
+                std::snprintf(hex, sizeof hex, "U+%04X", unsigned(ch));
+                fail(where, std::string("\"text\" holds a control character the Text tool doesn't type (") + hex +
+                                "); only \"\\n\", Enter, starts a new line");
+            }
+    } else if (o.contains("text")) {
         if (!o.contains("at"))
             fail(where, "\"text\" needs an \"at\" cell to start from");
         // NFC first, as keyboard mode types (CanvasView::typeText): "e" and
@@ -587,6 +663,48 @@ const std::vector<std::string_view>& actions() {
         return v;
     }();
     return names;
+}
+
+std::optional<std::string> applyTextOptions(TextSource& source, const Options::Text& t) {
+    TextSource s = source;
+    if (t.bigStyle)
+        s.bigStyle = *t.bigStyle;
+    const bool big = s.bigStyle != BigTextStyle::None;
+    if (big && t.face && *t.face != FaceRef{}.name)
+        return "\"textOptions face\" \"" + *t.face + "\" can't be picked under a big style, which draws in the " +
+               FaceRef{}.name + " face (Tool Options' face picker is off)";
+    if (big && t.colour)
+        return std::string("\"textOptions colour\" can't be set under a big style, which \"bigColours\" colours "
+                           "(Tool Options' colour is off)");
+    if (!big && t.bigColours)
+        return std::string("\"textOptions bigColours\" needs a big style (Tool Options' colours are off without one)");
+    if (t.face)
+        s.face = FaceRef{FaceRef::Kind::Pixel, *t.face, {}, 0};
+    // picking a style puts its own colours in the field (TextOptions)
+    if (s.bigStyle != source.bigStyle)
+        s.bigColours = bigTextDefaultColours(s.bigStyle);
+    if (t.bigColours)
+        s.bigColours = *t.bigColours;
+    if (big) {
+        s.face = FaceRef{};
+        if (s.bigColours.empty())
+            s.bigColours = bigTextDefaultColours(s.bigStyle);
+    } else
+        s.bigColours.clear();
+    if (t.textCase)
+        s.textCase = *t.textCase;
+    if (t.letterSpacing)
+        s.letterSpacing = *t.letterSpacing;
+    if (t.lineSpacing)
+        s.lineSpacing = *t.lineSpacing;
+    if (t.align)
+        s.align = *t.align;
+    if (t.wrapWidth)
+        s.wrapWidth = *t.wrapWidth;
+    if (t.colour)
+        s.colour = *t.colour;
+    source = std::move(s);
+    return std::nullopt;
 }
 
 bool pixelAction(std::string_view action) {

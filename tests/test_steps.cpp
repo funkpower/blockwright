@@ -1,6 +1,8 @@
 // The steps file parser (blockwright/steps.h, issue #208): what it reads, and
 // that what it refuses names the step, or the start, it is in.
 
+#include "blockwright/big_text.h"
+#include "blockwright/face.h"
 #include "blockwright/steps.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -645,4 +647,185 @@ TEST_CASE("sampleMerged of the wrong kind, or on a step that doesn't take it, is
             {"name": "other", "action": ")") + action + R"(", "sampleMerged": true})"));
         CHECK_THAT(why, ContainsSubstring(std::string("step 2 (other): ") + action + " takes no \"sampleMerged\""));
     }
+}
+
+TEST_CASE("a text step reads its cell, its text as typed and its Tool Options (#421)", "[steps][text]") {
+    const steps::Script s = steps::parse(script(R"({"name": "say", "action": "text", "at": [2, 3], "text": "é\nB",
+            "textOptions": {"face": "vga", "case": "capitals", "letterSpacing": 2, "lineSpacing": 1, "align": "centre",
+                            "wrap": 12, "colour": 12, "bigStyle": "3d", "bigColours": [4, 5]}},
+        {"name": "set", "action": "text", "textOptions": {"colour": 3}},
+        {"name": "plain", "action": "text", "at": [0, 0], "text": "x"})"));
+    REQUIRE(s.steps.size() == 3);
+    const steps::Step& say = s.steps[0];
+    REQUIRE(say.points.size() == 1);
+    CHECK(say.points[0].x == 2);
+    CHECK(say.points[0].y == 3);
+    // not NFC-composed: the Text tool takes the characters as they come
+    CHECK(say.text == U"é\nB");
+    REQUIRE(say.options.text);
+    const steps::Options::Text& t = *say.options.text;
+    CHECK(t.face == "vga");
+    CHECK(t.textCase == TextCase::Capitals);
+    CHECK(t.letterSpacing == 2);
+    CHECK(t.lineSpacing == 1);
+    CHECK(t.align == TextAlign::Centre);
+    CHECK(t.wrapWidth == 12);
+    CHECK(t.colour == 12);
+    CHECK(t.bigStyle == BigTextStyle::ThreeD);
+    CHECK(t.bigColours == std::vector<std::uint8_t>{4, 5});
+    // a step with options alone, and one with none
+    CHECK(s.steps[1].points.empty());
+    REQUIRE(s.steps[1].options.text);
+    CHECK(s.steps[1].options.text->colour == 3);
+    CHECK_FALSE(s.steps[1].options.text->face);
+    CHECK_FALSE(s.steps[2].options.text);
+
+    // applyTextOptions sets the keys given and keeps the rest
+    TextSource src;
+    src.text = U"keep";
+    src.letterSpacing = 5;
+    CHECK_FALSE(steps::applyTextOptions(src, *s.steps[1].options.text));
+    CHECK(src.colour == 3);
+    CHECK(src.letterSpacing == 5);
+    CHECK(src.text == U"keep");
+    steps::Options::Text plain = t;
+    plain.bigStyle = BigTextStyle::None;
+    plain.bigColours.reset();
+    CHECK_FALSE(steps::applyTextOptions(src, plain));
+    CHECK(src.face.kind == FaceRef::Kind::Pixel);
+    CHECK(src.face.name == "vga");
+    CHECK(src.letterSpacing == 2);
+    CHECK(src.colour == 12);
+    CHECK(src.text == U"keep");
+}
+
+TEST_CASE("applyTextOptions sets a big style as Tool Options does (#421)", "[steps][text]") {
+    const auto big = [](BigTextStyle style) {
+        steps::Options::Text t;
+        t.bigStyle = style;
+        return t;
+    };
+    // a style picked puts its own colours in and draws in the block face
+    TextSource src;
+    src.face = FaceRef{FaceRef::Kind::Pixel, "vga", {}, 0};
+    CHECK_FALSE(steps::applyTextOptions(src, big(BigTextStyle::Shadow)));
+    CHECK(src.bigStyle == BigTextStyle::Shadow);
+    CHECK(src.bigColours == bigTextDefaultColours(BigTextStyle::Shadow));
+    CHECK(src.face == FaceRef{});
+    // another style picked resets them; colours given win
+    src.bigColours = {9, 1};
+    CHECK_FALSE(steps::applyTextOptions(src, big(BigTextStyle::ThreeD)));
+    CHECK(src.bigColours == bigTextDefaultColours(BigTextStyle::ThreeD));
+    steps::Options::Text both = big(BigTextStyle::Shadow);
+    both.bigColours = std::vector<std::uint8_t>{11, 4};
+    CHECK_FALSE(steps::applyTextOptions(src, both));
+    CHECK(src.bigColours == std::vector<std::uint8_t>{11, 4});
+    // the same style again, or colours alone, keep the rest
+    CHECK_FALSE(steps::applyTextOptions(src, big(BigTextStyle::Shadow)));
+    CHECK(src.bigColours == std::vector<std::uint8_t>{11, 4});
+    // none clears them
+    CHECK_FALSE(steps::applyTextOptions(src, big(BigTextStyle::None)));
+    CHECK(src.bigStyle == BigTextStyle::None);
+    CHECK(src.bigColours.empty());
+    CHECK(src.face == FaceRef{});
+
+    // what the dock turns off is refused, and nothing is set
+    const TextSource before = src;
+    steps::Options::Text vga = big(BigTextStyle::Shadow);
+    vga.face = "vga";
+    CHECK_THAT(steps::applyTextOptions(src, vga).value_or(""),
+               ContainsSubstring("\"textOptions face\" \"vga\" can't be picked under a big style"));
+    steps::Options::Text block = big(BigTextStyle::Shadow);
+    block.face = "block";
+    CHECK_FALSE(steps::applyTextOptions(src, block));
+    src = before;
+    steps::Options::Text colour = big(BigTextStyle::Shadow);
+    colour.colour = 4;
+    CHECK_THAT(steps::applyTextOptions(src, colour).value_or(""),
+               ContainsSubstring("\"textOptions colour\" can't be set under a big style"));
+    steps::Options::Text colours;
+    colours.bigColours = std::vector<std::uint8_t>{4};
+    CHECK_THAT(steps::applyTextOptions(src, colours).value_or(""),
+               ContainsSubstring("\"textOptions bigColours\" needs a big style"));
+    CHECK(src == before);
+}
+
+TEST_CASE("every bundled face, case, alignment and big style is a text option (#421)", "[steps][text]") {
+    for (const Face* f : bundledFaces()) {
+        INFO(f->name());
+        const steps::Script s = steps::parse(script(std::string(R"({"name": "f", "action": "text", "textOptions": {"face": ")") +
+                                                   std::string(f->name()) + R"("}})"));
+        CHECK(s.steps[0].options.text->face == std::string(f->name()));
+    }
+    for (int i = 0; !bigTextStyleName(BigTextStyle(i)).empty(); ++i) {
+        const std::string name(bigTextStyleName(BigTextStyle(i)));
+        INFO(name);
+        const steps::Script s =
+            steps::parse(script(R"({"name": "b", "action": "text", "textOptions": {"bigStyle": ")" + name + R"("}})"));
+        CHECK(s.steps[0].options.text->bigStyle == BigTextStyle(i));
+    }
+    for (const char* a : {"left", "centre", "right"})
+        CHECK(refusal(script(std::string(R"({"name": "a", "action": "text", "textOptions": {"align": ")") + a + R"("}})")) ==
+              "(accepted)");
+    CHECK(refusal(script(R"({"name": "c", "action": "text", "textOptions": {"case": "as-typed"}})")) == "(accepted)");
+    // the limits themselves
+    CHECK(refusal(script(R"({"name": "l", "action": "text", "textOptions": {"letterSpacing": 64, "lineSpacing": 0,
+        "wrap": 65535, "colour": 15, "bigColours": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}})")) == "(accepted)");
+    CHECK(refusal(script(R"({"name": "e", "action": "text", "textOptions": {}})")) == "(accepted)");
+    CHECK(refusal(script(std::string(R"({"name": "long", "action": "text", "at": [0, 0], "text": ")") +
+                         std::string(TextSource::kMaxLength, 'a') + "\"}")) == "(accepted)");
+}
+
+TEST_CASE("a text step's bad value is refused, naming the step (#421)", "[steps][text]") {
+    const std::pair<std::string, std::string> cases[] = {
+        {R"("at": [1, 1])", "text needs \"text\" to type at its \"at\" cell"},
+        {R"("text": "hi")", "\"text\" needs an \"at\" cell to start from"},
+        {R"("at": [1, 1], "text": "")", "\"text\" must be 1 to 4096 characters"},
+        {R"("at": [1, 1], "text": ")" + std::string(TextSource::kMaxLength + 1, 'a') + "\"",
+         "\"text\" must be 1 to 4096 characters"},
+        {R"("at": [1, 1], "text": "a\tb")", "control character the Text tool doesn't type (U+0009)"},
+        {R"("at": [1, 1], "text": "a\rb")", "(U+000D)"},
+        {R"("at": [1, 1], "text": "a\u007fb")", "(U+007F)"},
+        {R"("at": [1, 1], "text": "a\u001bb")", "(U+001B)"},
+        {R"("at": [1, 1], "text": 3)", "\"text\""},
+        {R"("at": [1.5, 1], "text": "a")", "\"at x\""},
+        {R"("textOptions": 3)", "\"textOptions\""},
+        {R"("textOptions": {"size": 2})", "\"size\""},
+        {R"("textOptions": {"Face": "vga"})", "\"Face\""},
+        {R"("textOptions": {"face": "comic"})", "\"textOptions face\" takes a bundled face (block, vga, mini), not \"comic\""},
+        {R"("textOptions": {"face": 1})", "\"textOptions face\""},
+        {R"("textOptions": {"case": "lower"})", "\"textOptions case\""},
+        {R"("textOptions": {"align": "center"})", "\"textOptions align\""},
+        {R"("textOptions": {"letterSpacing": -1})", "\"textOptions letterSpacing\""},
+        {R"("textOptions": {"letterSpacing": 65})", "\"textOptions letterSpacing\""},
+        {R"("textOptions": {"lineSpacing": 1.5})", "\"textOptions lineSpacing\""},
+        {R"("textOptions": {"wrap": 65536})", "\"textOptions wrap\""},
+        {R"("textOptions": {"wrap": -1})", "\"textOptions wrap\""},
+        {R"("textOptions": {"colour": 16})", "\"textOptions colour\""},
+        {R"("textOptions": {"bigStyle": "glow"})", "\"textOptions bigStyle\""},
+        {R"("textOptions": {"bigColours": 4})", "\"textOptions bigColours\" must be an array of 1 to 16"},
+        {R"("textOptions": {"bigColours": []})", "\"textOptions bigColours\" must be an array of 1 to 16"},
+        {R"("textOptions": {"bigColours": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,0]})",
+         "\"textOptions bigColours\" must be an array of 1 to 16"},
+        {R"("textOptions": {"bigColours": [16]})", "\"textOptions bigColours\""},
+        {R"("at": [1, 1], "text": "a", "from": [1, 1])", "text takes no \"from\""},
+        {R"("at": [1, 1], "text": "a", "sampleMerged": true)", "text takes no \"sampleMerged\""},
+    };
+    for (const auto& [fields, says] : cases) {
+        INFO(fields);
+        const std::string why = refusal(
+            script(R"({"name": "first", "action": "selectAll"}, {"name": "tx", "action": "text", )" + fields + "}"));
+        CHECK_THAT(why, ContainsSubstring("step 2 (tx): "));
+        CHECK_THAT(why, ContainsSubstring(says));
+    }
+    // textOptions on another action is refused
+    for (const char* action : {"keyboard", "glyph", "fill", "clone", "selectAll", "view", "canvasSize"}) {
+        INFO(action);
+        CHECK_THAT(refusal(script(std::string(R"({"name": "z", "action": ")") + action +
+                                  R"(", "textOptions": {"colour": 1}})")),
+                   ContainsSubstring(std::string("step 1 (z): ") + action + " takes no \"textOptions\""));
+    }
+    // keyboard keeps its own reading: NFC, with any control character in it
+    const steps::Script k = steps::parse(script(R"({"name": "k", "action": "keyboard", "at": [0, 0], "text": "é"})"));
+    CHECK(k.steps[0].text == U"é");
 }

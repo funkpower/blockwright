@@ -42,11 +42,13 @@ class TextOptions : public QWidget {
     QComboBox* colourBox() const { return colour_; }
     QComboBox* bigStyleBox() const { return bigStyle_; }
     QLineEdit* bigColoursBox() const { return bigColours_; }
+    // Shows the settings the controls show again: the active text layer's,
+    // or the tool's defaults (--screenshot calls it after setting them).
+    void sync();
 
   private:
     // The source the controls show.
     TextSource shown() const;
-    void sync();
     // Lists the faces the document can set text in, when the fonts folder,
     // the project's fonts or the face new text starts in, kept by the tool
     // (TextTool::keptFonts), changed; the kept one only when neither of the

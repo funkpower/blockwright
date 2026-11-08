@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "start": {"blank": [48, 22]},
+  "steps": [
+    {"name": "title", "action": "text", "at": [1, 1], "text": "BW",
+     "textOptions": {"face": "block", "bigStyle": "shadow", "bigColours": [11, 4]}},
+    {"name": "restyle", "action": "text", "textOptions": {"letterSpacing": 2, "bigColours": [8, 5]}},
+    {"name": "caption", "action": "text", "at": [1, 8], "text": "ansi\nart",
+     "textOptions": {"face": "vga", "case": "capitals", "bigStyle": "none", "align": "centre", "colour": 10}},
+    {"name": "small", "action": "text", "at": [24, 1], "text": "mini", "textOptions": {"face": "mini", "colour": 13}}
+  ]
+}

@@ -329,6 +329,14 @@ Layer makeTextLayer(TextSource source, std::string name, int x, int y, const Fon
     return l;
 }
 
+const Layer* textLayerAt(const LayerStack& stack, int x, int y) {
+    const std::vector<Layer>& layers = stack.layers();
+    for (auto it = layers.rbegin(); it != layers.rend(); ++it)
+        if (it->props.text && it->props.visible && !it->props.locked && it->bounds().contains(x, y))
+            return &*it;
+    return nullptr;
+}
+
 namespace {
 
 // Gives the layer `props` (its id kept), drawing its cells from their source

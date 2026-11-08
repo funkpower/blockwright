@@ -22,6 +22,7 @@
 #include "blockwright/selection.h"
 #include "blockwright/shapes.h"
 #include "blockwright/target.h"
+#include "blockwright/text.h"
 #include "blockwright/width.h"
 #include "blockwright/xbin.h"
 #include "loss.h"
@@ -101,6 +102,7 @@ void take(ToolSettings& s, const steps::Options& o) {
         s.clone.aligned = *o.aligned;
     if (o.sampleMerged)
         s.sampleMerged = *o.sampleMerged;
+    // "textOptions" is the text step's, which sets it (text())
 }
 
 namespace {
@@ -436,9 +438,10 @@ Layer* layerNamed(State& s, const Step& step, const std::string& name) {
     return found;
 }
 
-std::string freeLayerName(State& s) {
+// The first "<word> N" no layer is named (Document::freeLayerName).
+std::string freeLayerName(State& s, const std::string& word = "Layer") {
     for (int n = 1;; ++n) {
-        const std::string name = "Layer " + std::to_string(n);
+        const std::string name = word + " " + std::to_string(n);
         const auto& ls = s.stack().layers();
         if (std::none_of(ls.begin(), ls.end(), [&](const Layer& l) { return l.props.name == name; }))
             return name;
@@ -508,6 +511,68 @@ void clone(State& s, const Step& st, Outcome& out) {
     }
     land(s, st, paintStroke(canvasOf(s), *brush, s.brush, dabs, optionsOf(s)), true, out);
     s.clone.anchor = next.anchor;
+}
+
+// The Text tool (TextTool). Tool Options are set as the dock sets them
+// (TextOptions::apply, steps::applyTextOptions) on the settings it shows:
+// the active layer's when it is a live text layer and no text cursor waits,
+// else what a new layer starts with. As the dock applies only when a control
+// changes, settings that change what it shows become what a new layer starts
+// with, and a step with none, or with the ones shown, changes nothing. With "at", its click there comes first, off every text layer it
+// would edit (a click on one edits it, which the step doesn't do), so the
+// step's Tool Options set only what a new layer starts with; then the text
+// is typed: a new live text layer of it in those settings, "Text N", just
+// above the active layer and made active (Document::addTextLayer,
+// makeTextLayer). With no "at", the active layer takes them too when it is
+// a live text layer that isn't locked, one change of its source
+// (TextTool::setSettings, textEdit).
+void text(State& s, const Step& st, Outcome& out) {
+    const FontSources fonts{&s.p.fonts, nullptr};
+    const auto set = [&](TextSource& source) {
+        if (st.options.text)
+            if (const auto problem = steps::applyTextOptions(source, *st.options.text))
+                fail(st, *problem);
+    };
+    if (st.points.empty()) {
+        // the dock applies only when a control changes: no settings, or
+        // the ones it shows, leave the defaults and the layer alone
+        if (!st.options.text)
+            return;
+        Layer& l = s.layer();
+        const bool shown = bool(l.props.text);
+        const TextSource base = shown ? *l.props.text : s.text;
+        // as the controls show it: a big style's own colours where it has
+        // none, none without a style
+        TextSource dock = base;
+        steps::applyTextOptions(dock, {});
+        TextSource next = base;
+        set(next);
+        if (next == dock) {
+            out.notes.push_back(steps::stepLabel(st) + ": changes nothing");
+            return;
+        }
+        s.text = next;
+        s.text.text.clear();
+        if (!shown || l.props.locked)
+            return;
+        if (const auto problem = textSourceProblem(next, fonts))
+            fail(st, "the active layer \"" + l.props.name + "\" can't be set so: " + *problem);
+        applyEdit(s.stack(), textEdit(l, std::move(next), 0, s.p.ice), false, fonts);
+        return;
+    }
+    onCanvas(s, st, false);
+    const Point p = st.points[0];
+    if (const Layer* hit = textLayerAt(s.stack(), p.x, p.y))
+        fail(st, "cell " + at(p) + " is on the text layer \"" + hit->props.name +
+                     "\", which a Text tool click there edits; a text step makes a new text layer, so click off "
+                     "every visible, unlocked text layer");
+    set(s.text);
+    TextSource source = s.text;
+    source.text = st.text;
+    if (const auto problem = textSourceProblem(source, fonts))
+        fail(st, "the text can't be set: " + *problem);
+    Layer layer = makeTextLayer(std::move(source), freeLayerName(s, "Text"), p.x, p.y, fonts);
+    s.active = s.stack().add(std::move(layer), s.index() + 1);
 }
 
 // Format > Canvas Size... as the dialog applies it (Document::resizeCanvas):
@@ -705,6 +770,8 @@ void step(State& s, const Step& st, Outcome& out) {
         clone(s, st, out);
     } else if (a == "canvasSize") {
         canvasSize(s, st, out);
+    } else if (a == "text") {
+        text(s, st, out);
     } else if (a == "view") {
         // the window's, not the document's: no cell changes
         const steps::View& v = st.view;

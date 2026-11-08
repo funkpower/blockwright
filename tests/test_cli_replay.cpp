@@ -26,7 +26,11 @@
 #include "blockwright/sauce.h"
 #include "blockwright/steps.h"
 #include "blockwright/target.h"
+#include "blockwright/big_text.h"
+#include "blockwright/text.h"
 #include "blockwright/xbin.h"
+
+#include <QString>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -130,7 +134,7 @@ TEST_CASE("the tour writes the bytes saved for it, every step a capture", "[repl
     CHECK(written == saved);
     CHECK(out.captures.size() == s.steps.size() + 3);  // three before-after steps
     CHECK(out.captures.front().stem == "01-type");
-    CHECK(out.captures.back().stem == "44-canvas-size");
+    CHECK(out.captures.back().stem == "45-text");
 }
 
 TEST_CASE("a capture's SAUCE date is the day given when its start has no record, else the start's own",
@@ -1841,4 +1845,270 @@ TEST_CASE("a clone step copies the active layer's own cells, whatever sampleMerg
     const auto out = layered(R"({"name": "merged", "action": "fill", "sampleMerged": true},
         {"name": "stamp", "action": "clone", "source": [5, 0], "points": [[1, 1], [1, 2]]})");
     CHECK(columnsOf(layerNamed(out.captures.back().project, "ground"), 1, Red) == std::vector<int>{1, 5});
+}
+
+namespace {
+
+// The text layer makeTextLayer makes of the Text tool's defaults with
+// `options` and `text`, at (x, y), named `name`, from no font file.
+Layer textLayer(const std::string& text, int x, int y, const std::string& name,
+                const steps::Options::Text& options = {}) {
+    TextSource s;
+    REQUIRE_FALSE(steps::applyTextOptions(s, options));
+    s.text = QString::fromStdString(text).toStdU32String();
+    return makeTextLayer(std::move(s), name, x, y, FontSources{});
+}
+
+void checkSameText(const Layer& got, const Layer& want) {
+    CHECK(got.props.name == want.props.name);
+    REQUIRE(got.props.text);
+    CHECK(*got.props.text == *want.props.text);
+    CHECK(got.bounds() == want.bounds());
+    CHECK(got.cells == want.cells);
+}
+
+} // namespace
+
+TEST_CASE("a text step makes a text layer as the Text tool's first keystroke does (#421)", "[replay][text]") {
+    const auto out = blank(R"({"name": "say", "action": "text", "at": [2, 1], "text": "Hi\nyo"})");
+    const project::Project& p = out.captures.back().project;
+    CHECK(layerNames(p) == std::vector<std::string>{"Background", "Text 1"});
+    checkSameText(layerNamed(p, "Text 1"), textLayer("Hi\nyo", 2, 1, "Text 1"));
+    CHECK(layerNamed(p, "Text 1").props.text->face.name == "block");
+    CHECK(out.notes.empty());
+    // the text shows on the canvas
+    CHECK(flat(p) != flat(blank(R"({"name": "a", "action": "selectAll"})").captures.back().project));
+}
+
+TEST_CASE("text layers are named Text N, go above the active layer and become active (#421)", "[replay][text]") {
+    const auto out = blank(R"({"name": "ink", "action": "newCellsLayer", "rename": "ink"},
+        {"name": "low", "action": "setActiveLayer", "layer": "Background"},
+        {"name": "one", "action": "text", "at": [0, 0], "text": "a"},
+        {"name": "two", "action": "text", "at": [0, 8], "text": "b"},
+        {"name": "top", "action": "newCellsLayer"})");
+    const project::Project& p = out.captures.back().project;
+    // each above the active layer, the one made before it
+    CHECK(layerNames(p) == std::vector<std::string>{"Background", "Text 1", "Text 2", "Layer 1", "ink"});
+    // a free name: Text 1 renamed away, the next is Text 1 again
+    const auto again = blank(R"({"name": "one", "action": "text", "at": [0, 0], "text": "a"},
+        {"name": "re", "action": "layerProperties", "rename": "title"},
+        {"name": "two", "action": "text", "at": [0, 8], "text": "b"},
+        {"name": "three", "action": "text", "at": [10, 8], "text": "c"})");
+    CHECK(layerNames(again.captures.back().project) == std::vector<std::string>{"Background", "title", "Text 1", "Text 2"});
+}
+
+TEST_CASE("a text step's Tool Options set its layer and hold for later text steps (#421)", "[replay][text]") {
+    const auto out = blank(R"({"name": "one", "action": "text", "at": [1, 1], "text": "AB",
+            "textOptions": {"face": "vga", "colour": 12, "letterSpacing": 1}},
+        {"name": "two", "action": "text", "at": [1, 9], "text": "cd", "textOptions": {"case": "capitals"}})");
+    const project::Project& p = out.captures.back().project;
+    steps::Options::Text one;
+    one.face = "vga";
+    one.colour = 12;
+    one.letterSpacing = 1;
+    checkSameText(layerNamed(p, "Text 1"), textLayer("AB", 1, 1, "Text 1", one));
+    steps::Options::Text two = one;
+    two.textCase = TextCase::Capitals;
+    checkSameText(layerNamed(p, "Text 2"), textLayer("cd", 1, 9, "Text 2", two));
+    // the case is the layer's setting: the text is kept as typed
+    CHECK(layerNamed(p, "Text 2").props.text->text == U"cd");
+}
+
+TEST_CASE("a text step with Tool Options alone restyles the active text layer, as Tool Options does (#421)",
+          "[replay][text]") {
+    const auto out = blank(R"({"name": "one", "action": "text", "at": [1, 1], "text": "AB"},
+        {"name": "red", "action": "text", "textOptions": {"colour": 4, "face": "mini"}})");
+    REQUIRE(out.captures.size() == 2);
+    const project::Project& p = out.captures.back().project;
+    steps::Options::Text red;
+    red.colour = 4;
+    red.face = "mini";
+    checkSameText(layerNamed(p, "Text 1"), textLayer("AB", 1, 1, "Text 1", red));
+    CHECK(out.notes.empty());
+    // and the next layer starts from the restyled layer's settings
+    const auto next = blank(R"({"name": "one", "action": "text", "at": [1, 1], "text": "AB",
+            "textOptions": {"align": "right"}},
+        {"name": "red", "action": "text", "textOptions": {"colour": 4}},
+        {"name": "two", "action": "text", "at": [1, 7], "text": "c"})");
+    steps::Options::Text both;
+    both.align = TextAlign::Right;
+    both.colour = 4;
+    checkSameText(layerNamed(next.captures.back().project, "Text 2"), textLayer("c", 1, 7, "Text 2", both));
+}
+
+TEST_CASE("Tool Options alone on a locked text layer set the defaults from it, as the dock shows it (#421)",
+          "[replay][text]") {
+    // the dock shows the active text layer's settings, locked or not, and
+    // sets the defaults from them; only an unlocked layer takes the change
+    const auto locked = blank(R"({"name": "one", "action": "text", "at": [1, 1], "text": "AB",
+            "textOptions": {"letterSpacing": 2}},
+        {"name": "lock", "action": "layerProperties", "locked": true},
+        {"name": "red", "action": "text", "textOptions": {"colour": 4}},
+        {"name": "two", "action": "text", "at": [1, 7], "text": "c"})");
+    const project::Project& p = locked.captures.back().project;
+    steps::Options::Text spaced;
+    spaced.letterSpacing = 2;
+    checkSameText(layerNamed(p, "Text 1"), textLayer("AB", 1, 1, "Text 1", spaced));
+    steps::Options::Text both = spaced;
+    both.colour = 4;
+    checkSameText(layerNamed(p, "Text 2"), textLayer("c", 1, 7, "Text 2", both));
+
+    // a cells layer active: the defaults are what the dock shows
+    const auto cells = blank(R"({"name": "red", "action": "text", "textOptions": {"colour": 4}},
+        {"name": "two", "action": "text", "at": [1, 7], "text": "c"})");
+    steps::Options::Text red;
+    red.colour = 4;
+    checkSameText(layerNamed(cells.captures.back().project, "Text 1"), textLayer("c", 1, 7, "Text 1", red));
+}
+
+TEST_CASE("a big style picked in a text step resets its colours and face as Tool Options does (#421)",
+          "[replay][text]") {
+    // from a vga face: the face goes to block and the style's colours come in
+    const auto out = blank(R"({"name": "vga", "action": "text", "textOptions": {"face": "vga"}},
+        {"name": "big", "action": "text", "at": [1, 1], "text": "a", "textOptions": {"bigColours": [9, 1], "bigStyle": "shadow"}},
+        {"name": "3d", "action": "text", "textOptions": {"bigStyle": "3d"}},
+        {"name": "none", "action": "text", "at": [14, 1], "text": "b", "textOptions": {"bigStyle": "none"}})");
+    const project::Project& p = out.captures.back().project;
+    steps::Options::Text threeD;
+    threeD.bigStyle = BigTextStyle::ThreeD;
+    checkSameText(layerNamed(p, "Text 1"), textLayer("a", 1, 1, "Text 1", threeD));
+    const Layer& t1 = layerNamed(p, "Text 1");
+    CHECK(t1.props.text->bigColours == bigTextDefaultColours(BigTextStyle::ThreeD));
+    CHECK(t1.props.text->face == FaceRef{});
+    // none clears the colours; the face stays block
+    const Layer& t2 = layerNamed(p, "Text 2");
+    CHECK(t2.props.text->bigStyle == BigTextStyle::None);
+    CHECK(t2.props.text->bigColours.empty());
+    CHECK(t2.props.text->face == FaceRef{});
+}
+
+TEST_CASE("Tool Options alone that change nothing on the active text layer say so (#421)", "[replay][text]") {
+    const auto out = blank(R"({"name": "one", "action": "text", "at": [1, 1], "text": "AB", "textOptions": {"colour": 4}},
+        {"name": "same", "action": "text", "textOptions": {"colour": 4}})");
+    REQUIRE(out.notes.size() == 1);
+    CHECK_THAT(out.notes[0], ContainsSubstring("step 2 (same)"));
+    CHECK_THAT(out.notes[0], ContainsSubstring("changes nothing"));
+}
+TEST_CASE("a text step with no Tool Options, or the ones the dock shows, keeps the defaults (#421)", "[replay][text]") {
+    // the defaults were last set to vga; "A" (mini) made active doesn't change them
+    for (const char* step : {R"({"name": "none", "action": "text"})",
+                             R"({"name": "empty", "action": "text", "textOptions": {}})",
+                             R"({"name": "same", "action": "text", "textOptions": {"face": "mini"}})"}) {
+        INFO(step);
+        const auto out = blank(std::string(R"({"name": "a", "action": "text", "at": [0, 0], "text": "A", "textOptions": {"face": "mini"}},
+            {"name": "b", "action": "text", "at": [5, 0], "text": "B", "textOptions": {"face": "vga"}},
+            {"name": "use", "action": "setActiveLayer", "layer": "Text 1"},
+            )") + step + R"(,
+            {"name": "c", "action": "text", "at": [14, 0], "text": "C"})");
+        steps::Options::Text vga;
+        vga.face = "vga";
+        checkSameText(layerNamed(out.captures.back().project, "Text 3"), textLayer("C", 14, 0, "Text 3", vga));
+    }
+    // on a locked one or a cells layer too
+    const auto locked = blank(R"({"name": "a", "action": "text", "at": [0, 0], "text": "A", "textOptions": {"face": "mini"}},
+        {"name": "b", "action": "text", "at": [5, 0], "text": "B", "textOptions": {"face": "vga"}},
+        {"name": "use", "action": "setActiveLayer", "layer": "Text 1"},
+        {"name": "lock", "action": "layerProperties", "locked": true},
+        {"name": "same", "action": "text", "textOptions": {"face": "mini"}},
+        {"name": "c", "action": "text", "at": [14, 0], "text": "C"})");
+    CHECK(layerNamed(locked.captures.back().project, "Text 3").props.text->face.name == "vga");
+    REQUIRE(locked.notes.size() == 1);
+    CHECK_THAT(locked.notes[0], ContainsSubstring("step 5 (same): changes nothing"));
+    const auto cells = blank(R"({"name": "same", "action": "text", "textOptions": {"face": "block"}})");
+    REQUIRE(cells.notes.size() == 1);
+    CHECK_THAT(cells.notes[0], ContainsSubstring("step 1 (same): changes nothing"));
+}
+TEST_CASE("Tool Options the dock already shows change nothing on a text layer a project file left untidy (#421)",
+          "[replay][text]") {
+    // a project may hold a big style with no colours of its own (drawn in the
+    // style's) or colours with no style; the dock shows them filled in and dropped
+    for (const bool big : {true, false}) {
+        INFO("big " << big);
+        project::Project p;
+        p.layers = LayerStack(40, 20);
+        p.layers.add(makeLayer(LayerKind::Cells, 40, 20, "Background"));
+        TextSource source;
+        source.text = U"A";
+        source.bigStyle = big ? BigTextStyle::Shadow : BigTextStyle::None;
+        source.bigColours = big ? std::vector<std::uint8_t>{} : std::vector<std::uint8_t>{4};
+        p.layers.add(makeTextLayer(source, "Big", 1, 1, FontSources{}));
+        const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [1, 1]}, "steps": [
+            {"name": "use", "action": "setActiveLayer", "layer": "Big"},
+            {"name": "empty", "action": "text", "textOptions": {}},
+            {"name": "left", "action": "text", "textOptions": {"align": "left"}},
+            {"name": "c", "action": "text", "at": [30, 15], "text": "C"}]})");
+        const auto out = bwcli::replay::run(s, p);
+        REQUIRE(out.notes.size() == 2);
+        CHECK_THAT(out.notes[0], ContainsSubstring("step 2 (empty): changes nothing"));
+        CHECK_THAT(out.notes[1], ContainsSubstring("step 3 (left): changes nothing"));
+        const project::Project& end = out.captures.back().project;
+        CHECK(*layerNamed(end, "Big").props.text == source);
+        checkSameText(layerNamed(end, "Text 1"), textLayer("C", 30, 15, "Text 1"));
+    }
+}
+
+
+
+TEST_CASE("a text step's click on a text layer the tool would edit is refused (#421)", "[replay][text]") {
+    CHECK_THAT(onBlank(R"({"name": "one", "action": "text", "at": [1, 1], "text": "AB"},
+                          {"name": "two", "action": "text", "at": [2, 2], "text": "c"})"),
+               ContainsSubstring("step 2 (two): cell (2, 2) is on the text layer \"Text 1\""));
+    // a hidden or locked text layer isn't edited by a click there: the step makes a new layer over it
+    for (const char* prop : {R"("visible": false)", R"("locked": true)"}) {
+        INFO(prop);
+        const auto out = blank(std::string(R"({"name": "one", "action": "text", "at": [1, 1], "text": "AB"},
+            {"name": "p", "action": "layerProperties", )") + prop + R"(},
+            {"name": "two", "action": "text", "at": [2, 2], "text": "c"})");
+        checkSameText(layerNamed(out.captures.back().project, "Text 2"), textLayer("c", 2, 2, "Text 2"));
+    }
+    // nor a cell outside the layer's box
+    const Layer one = textLayer("AB", 1, 1, "Text 1");
+    const int right = one.bounds().x + one.bounds().width;
+    const auto beside = blank(R"({"name": "one", "action": "text", "at": [1, 1], "text": "AB"},
+        {"name": "two", "action": "text", "at": [)" + std::to_string(right) + R"(, 1], "text": "c"})");
+    CHECK(layerNames(beside.captures.back().project).size() == 3);
+}
+
+TEST_CASE("a text step's cell off the canvas is refused (#421)", "[replay][text]") {
+    CHECK_THAT(onBlank(R"({"name": "off", "action": "text", "at": [20, 0], "text": "a"})"),
+               ContainsSubstring("step 1 (off)"));
+    CHECK_THAT(onBlank(R"({"name": "off", "action": "text", "at": [0, 10], "text": "a"})"),
+               ContainsSubstring("step 1 (off)"));
+}
+
+TEST_CASE("the text set writes the bytes saved for it (#421)", "[replay][text]") {
+    const steps::Script s = steps::parse(bwcli::readFile((kReplay / "text.json").string()));
+    const bwcli::replay::Outcome out = bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples));
+    CHECK(out.notes.empty());
+    std::set<std::string> saved;
+    for (const auto& e : fs::directory_iterator(kReplay / "text"))
+        saved.insert(e.path().filename().string());
+    std::set<std::string> written;
+    for (const auto& c : out.captures) {
+        INFO(c.stem);
+        // a blank start: no SAUCE record of its own, so the day is pinned
+        CHECK_FALSE(c.project.sauce);
+        written.insert(c.stem + ".ans");
+        const fs::path golden = kReplay / "text" / (c.stem + ".ans");
+        REQUIRE(fs::exists(golden));
+        CHECK(ansBytes(c.project) == bwcli::readFile(golden.string()));
+    }
+    CHECK(written == saved);
+    CHECK(out.captures.size() == s.steps.size());
+}
+
+TEST_CASE("Tool Options a big style turns off are refused naming the step, as the dock can't set them (#421)",
+          "[replay][text]") {
+    CHECK_THAT(onBlank(R"({"name": "big", "action": "text", "at": [1, 1], "text": "a",
+                          "textOptions": {"face": "vga", "bigStyle": "shadow"}})"),
+               ContainsSubstring("step 1 (big): \"textOptions face\" \"vga\" can't be picked under a big style"));
+    CHECK_THAT(onBlank(R"({"name": "one", "action": "text", "at": [1, 1], "text": "a"},
+                          {"name": "big", "action": "text", "textOptions": {"face": "vga", "bigStyle": "shadow"}})"),
+               ContainsSubstring("step 2 (big): \"textOptions face\" \"vga\" can't be picked"));
+    CHECK_THAT(onBlank(R"({"name": "big", "action": "text", "textOptions": {"bigStyle": "shadow"}},
+                          {"name": "red", "action": "text", "at": [1, 1], "text": "a", "textOptions": {"colour": 4}})"),
+               ContainsSubstring("step 2 (red): \"textOptions colour\" can't be set under a big style"));
+    CHECK_THAT(onBlank(R"({"name": "cols", "action": "text", "at": [1, 1], "text": "a",
+                          "textOptions": {"bigColours": [4]}})"),
+               ContainsSubstring("step 1 (cols): \"textOptions bigColours\" needs a big style"));
 }

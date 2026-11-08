@@ -10,6 +10,8 @@
 #include "irc_meter.h"
 #include "lint_dock.h"
 #include "main_window.h"
+#include "text_options.h"
+#include "text_tool.h"
 #include "palette_widget.h"
 #include "replay.h"
 #include "read_file.h"
@@ -36,6 +38,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFont>
+#include <QLineEdit>
 #include <QFontDatabase>
 #include <QFontInfo>
 #include <QRawFont>
@@ -1368,3 +1371,86 @@ TEST_CASE("a clone step's window keeps the Sample merged a fill step left on, wi
     CHECK_FALSE(seen["02-stamp-after"].visible);
     CHECK(seen["03-pick"].visible);
 }
+
+TEST_CASE("a text step plays in the window: the Text tool, its settings, the layers and the pointer (#421)",
+          "[screenshot][text]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [40, 12]}, "window": [1024, 720], "steps": [
+        {"name": "title", "action": "text", "at": [1, 1], "text": "Hi", "textOptions": {"face": "mini", "colour": 12},
+         "screenshot": {"of": "canvasView", "when": "both", "pointer": true}},
+        {"name": "red", "action": "text", "textOptions": {"colour": 4}, "screenshot": {"of": "canvasView"}},
+        {"name": "low", "action": "text", "at": [2, 8], "text": "yo", "textOptions": {"align": "right"},
+         "screenshot": {"of": "canvasView", "pointer": true}}]})");
+    struct Shown {
+        QString tool;
+        TextSource defaults;
+        LayerStack layers;
+    };
+    MainWindow w;
+    std::map<std::string, Shown> shown;
+    const std::vector<screenshot::Shot> shots = screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        auto* text = qobject_cast<TextTool*>(w.tools()->find(QStringLiteral("text")));
+        REQUIRE(text);
+        shown[sh.stem] = {w.tools()->active()->id(), text->defaults(), w.document()->layers()};
+    });
+    REQUIRE(shots.size() == 4);
+    std::map<std::string, TextSource> replayed;
+    std::map<std::string, LayerStack> layers;
+    bwcli::replay::run(s, startOf(s), [&](const bwcli::replay::Moment& m) {
+        const std::string at = m.step.name + (m.before ? "-before" : "-after");
+        replayed[at] = m.settings.text;
+        layers[at] = m.project.layers;
+    });
+    // a step shot only after it is named without "-after"
+    for (const auto& [at, key] : {std::pair<std::string, std::string>{"01-title-before", "title-before"},
+                                  {"01-title-after", "title-after"}, {"02-red", "red-after"}, {"03-low", "low-after"}}) {
+        INFO(at);
+        REQUIRE(shown.count(at));
+        CHECK(shown[at].tool == QStringLiteral("text"));
+        CHECK(shown[at].defaults == replayed[key]);
+        CHECK(shown[at].layers == layers[key]);
+    }
+    CHECK(shown["01-title-after"].defaults.colour == 12);
+    CHECK(shown["02-red"].defaults.colour == 4);
+    CHECK(shown["03-low"].defaults.align == TextAlign::Right);
+    const int zoom = w.canvasView()->zoom();
+    const QSizeF cell(8 * zoom, 16 * zoom);
+    const auto centre = [&](int x, int y) {
+        return QPointF(x * cell.width() + cell.width() / 2.0, y * cell.height() + cell.height() / 2.0);
+    };
+    CHECK(*shotNamed(shots, "01-title-before").pointer == centre(1, 1));
+    CHECK(*shotNamed(shots, "01-title-after").pointer == centre(1, 1));
+    CHECK(*shotNamed(shots, "03-low").pointer == centre(2, 8));
+}
+TEST_CASE("a text step's Tool Options show in the dock's controls in --screenshot (#421)", "[screenshot][text]") {
+    // a cells layer active: the dock shows the defaults the step set
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [40, 12]}, "window": [1024, 720], "steps": [
+        {"name": "set", "action": "text", "textOptions": {"colour": 4, "align": "right", "letterSpacing": 3},
+         "screenshot": {"of": "window"}},
+        {"name": "big", "action": "text", "textOptions": {"bigStyle": "shadow", "bigColours": [11, 4]},
+         "screenshot": {"of": "window"}}]})");
+    MainWindow w;
+    struct Controls {
+        int colour, align, letterSpacing, bigStyle;
+        QString bigColours;
+        bool colourOn;
+    };
+    std::map<std::string, Controls> seen;
+    screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        TextOptions* o = w.toolOptions()->textOptions();
+        REQUIRE(o);
+        seen[sh.stem] = {o->colourBox()->currentData().toInt(), o->alignBox()->currentData().toInt(),
+                         o->letterSpacingBox()->value(), o->bigStyleBox()->currentData().toInt(),
+                         o->bigColoursBox()->text(), o->colourBox()->isEnabled()};
+    });
+    REQUIRE(seen.count("01-set"));
+    CHECK(seen["01-set"].colour == 4);
+    CHECK(seen["01-set"].align == int(TextAlign::Right));
+    CHECK(seen["01-set"].letterSpacing == 3);
+    CHECK(seen["01-set"].bigStyle == int(BigTextStyle::None));
+    CHECK(seen["01-set"].colourOn);
+    REQUIRE(seen.count("02-big"));
+    CHECK(seen["02-big"].bigStyle == int(BigTextStyle::Shadow));
+    CHECK_FALSE(seen["02-big"].bigColours.isEmpty());
+    CHECK_FALSE(seen["02-big"].colourOn);
+}
+

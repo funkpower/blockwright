@@ -399,13 +399,8 @@ void TextTool::commandAboutToPush() {
 
 LayerId TextTool::textLayerAt(QPoint cell) const {
     const Document* d = doc();
-    if (!d)
-        return 0;
-    const std::vector<Layer>& layers = d->layers().layers();
-    for (auto it = layers.rbegin(); it != layers.rend(); ++it)
-        if (editableText(&*it) && it->bounds().contains(cell.x(), cell.y()))
-            return it->props.id;
-    return 0;
+    const Layer* l = d ? bw::textLayerAt(d->layers(), cell.x(), cell.y()) : nullptr;
+    return l ? l->props.id : 0;
 }
 
 bool TextTool::mousePress(const ToolEvent& e) {

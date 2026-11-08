@@ -120,6 +120,12 @@ std::optional<std::string> layerStyleProblem(const LayerProperties& props, const
 Layer makeTextLayer(TextSource source, std::string name = {}, int x = 0, int y = 0,
                     const FontSources& fonts = {});
 
+// The live text layer a Text tool click on canvas cell (x, y) edits: the
+// topmost visible, unlocked one whose box holds the cell, or null. A click
+// anywhere else waits for the first character typed to make a new text
+// layer there (TextTool, a steps file's text step).
+const Layer* textLayerAt(const LayerStack& stack, int x, int y);
+
 // Gives the layer `props` (its id kept) and, when they hold a text source
 // other than the layer's, or a style other than its with a source, redraws
 // its cells from them (a style with iCE colours `ice`), the layer taking the

@@ -90,6 +90,33 @@
 // Tool Options' Aligned, on by default; only a clone step takes it, and it
 // holds for later steps. Either button copies the same.
 //
+// The Text tool is a step too (#421), "action": "text":
+//
+//   {"name": ..., "action": "text", "at": [x, y], "text": "...",
+//    "textOptions": {"face": "block" | "vga" | "mini",
+//                    "case": "as-typed" | "capitals",
+//                    "letterSpacing": 0-64, "lineSpacing": 0-64,
+//                    "align": "left" | "centre" | "right",
+//                    "wrap": 0-65535, "colour": 0-15,
+//                    "bigStyle": "none" | "shadow" | "3d" | "outline"
+//                                | "block" | "rainbow",
+//                    "bigColours": [0-15, ...]}}
+//
+// "at" is the Text tool's click, a canvas cell off every text layer it
+// would edit (textLayerAt), and "text" what is typed there, "\n" for
+// Enter: a new live text layer, "Text N", just above the active layer and
+// made active, its letters' top-left cell at "at" (makeTextLayer), as the
+// tool makes it from the first character typed. "at" and "text" go
+// together; "text" is 1 to TextSource::kMaxLength characters, none of them
+// a control character but "\n". "textOptions" is the tool's Tool Options,
+// each key optional (a bundled face's name, the rest as the dock shows
+// them); only a text step takes it, and what it sets holds for later text
+// steps, as Tool Options keep what a new text layer starts with. The step's
+// click comes first, so its options set the new layer's; a text step with
+// no "at" only sets them, and when the active layer is a live text layer
+// that isn't locked it sets them on that layer too, as Tool Options with
+// the Text tool chosen do (TextTool::setSettings).
+//
 // Every key is checked: an unknown key, a key the action doesn't take, a
 // value of the wrong kind or out of range is refused, and the error names
 // the step by number and name. Where a point, rectangle or radial symmetry
@@ -106,6 +133,7 @@
 #include "blockwright/halfblock.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
+#include "blockwright/text_source.h"
 
 #include <cstdint>
 #include <optional>
@@ -165,7 +193,31 @@ struct Options {
     // composite instead of the active layer; default off. Only a fill or
     // eyedropper step sets it, as only those tools show it.
     std::optional<bool> sampleMerged;
+    // The Text tool's (#421): what a new text layer starts with. Only a
+    // text step sets them.
+    struct Text {
+        std::optional<std::string> face;  // a bundled face's name
+        std::optional<TextCase> textCase;
+        std::optional<int> letterSpacing, lineSpacing;  // 0-kMaxSpacing
+        std::optional<TextAlign> align;
+        std::optional<int> wrapWidth;  // 0-kMaxWrapWidth, 0 for none
+        std::optional<std::uint8_t> colour;  // 0-15
+        std::optional<BigTextStyle> bigStyle;
+        std::optional<std::vector<std::uint8_t>> bigColours;  // mIRC 0-15, at most kMaxBigColours
+        bool operator==(const Text&) const = default;
+    };
+    std::optional<Text> text;
 };
+
+// `source`'s settings after Tool Options take those `text` sets, its text
+// kept, as TextOptions::apply sets them: a big style that changes resets
+// the big colours to the style's own (bigTextDefaultColours), no big style
+// clears them, and under a big style the face is block and the colours are
+// set, the style's own when none are. Returns why Tool Options can't be set
+// so, leaving `source` as it was: a face other than block or a colour under
+// a big style (Tool Options turns the face picker and the colour off then),
+// or big colours without one (their field is off).
+std::optional<std::string> applyTextOptions(TextSource& source, const Options::Text& text);
 
 // A point of a stroke: a cell for the brushes, a half-block pixel (x, and a
 // pixel row, two to a cell row) for the half-block tools.

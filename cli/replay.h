@@ -9,6 +9,7 @@
 #include "blockwright/edit.h"
 #include "blockwright/project.h"
 #include "blockwright/steps.h"
+#include "blockwright/text_source.h"
 
 #include <filesystem>
 #include <functional>
@@ -91,6 +92,9 @@ struct ToolSettings {
     // steps.
     bw::CloneSource clone;
     bool sampleMerged = false;  // fill and the eyedropper (CanvasView::sampleMerged)
+    // The Text tool's (#421): the settings a new text layer starts with
+    // (TextTool::defaults), its text empty.
+    bw::TextSource text;
 };
 
 // `settings` with the options a step sets taken into it.

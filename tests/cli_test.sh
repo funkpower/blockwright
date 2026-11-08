@@ -1023,6 +1023,10 @@ if diff -r "$data/replay/tour" "$rp/tour" > /dev/null; then ok "replay: the tour
 expect "replay: Sample merged with SOURCE_DATE_EPOCH" 0 '^$' -- env SOURCE_DATE_EPOCH=1794009600 TZ=Etc/GMT+12 \
   "$cli" replay "$data/replay/sample-merged.json" -o "$rp/sm-saved"
 if diff -r "$data/replay/sample-merged" "$rp/sm-saved" > /dev/null; then ok "replay: SOURCE_DATE_EPOCH on the saved day writes Sample merged's saved bytes"; else bad "replay: Sample merged on SOURCE_DATE_EPOCH's saved day differs from data/replay/sample-merged"; fi
+# the Text tool's steps (#421), from a blank start, saved on the same day
+expect "replay: the text steps with SOURCE_DATE_EPOCH" 0 '^$' -- env SOURCE_DATE_EPOCH=1794009600 TZ=Etc/GMT-14 \
+  "$cli" replay "$data/replay/text.json" -o "$rp/text-saved"
+if diff -r "$data/replay/text" "$rp/text-saved" > /dev/null; then ok "replay: the text steps write their saved bytes"; else bad "replay: the text steps differ from data/replay/text"; fi
 # a blank start has no SAUCE record either
 printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "a", "action": "glyph", "points": [[1, 1]]}, {"name": "b", "action": "glyph", "points": [[2, 1]]}]}' > "$rp/dated.json"
 expect "replay: SOURCE_DATE_EPOCH east of UTC" 0 '^$' -- env SOURCE_DATE_EPOCH=1700000000 TZ=Etc/GMT-14 \

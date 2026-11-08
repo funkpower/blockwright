@@ -902,6 +902,18 @@ mouse button (default left).
                  earlier clone step; a step with a source and no points
                  only sets it. Either button copies the same
   gradient       "from", "to" (cells)
+  text           the Text tool: "at" (a cell), "text" (as typed, not
+                 NFC-composed, 1-4096 characters; "\n" is Enter, any
+                 other control character is refused): a click at "at",
+                 off every visible, unlocked text layer (a click on one
+                 would edit it and is refused), then the text typed
+                 there, making a new live text layer "Text N" above the
+                 active layer and making it active. Its settings are the
+                 Text tool's, set by "textOptions" (below). A step with
+                 "textOptions" and no "at" sets them as Tool Options
+                 does: on the active text layer's settings, which become
+                 the defaults, and on the layer unless it is locked;
+                 settings it already shows change nothing
   keyboard       "at" (a cell), "text" (NFC-composed, as typing is; a
                  newline starts the next row at the "at" column). What
                  may be typed follows the start's target and .ans
@@ -957,8 +969,8 @@ pointer is there before the step, and after it too when the step has no
 
 A tool step without points only sets Tool Options. Any step but a view or
 canvasSize step may set Tool Options, which hold for the steps after it (but
-for "aligned", which only clone takes, and "sampleMerged", which only fill
-and eyedropper take):
+for "aligned", which only clone takes, "sampleMerged", which only fill and
+eyedropper take, and "textOptions", which only text takes):
 
   "fg", "bg" 0-15 (7 on 0)   "size" 1-256 (1)   "tip" square|round
   "strength" 0-1 (1)         "light" N|NE|E|SE|S|SW|W|NW (NW)
@@ -984,6 +996,16 @@ and eyedropper take):
              from a transparent cell or pixel); on, both read every
              visible layer as the canvas shows it, and fill paints the
              region it found there into the active layer
+  "textOptions" {"face": block|vga|mini (a bundled face), "case":
+             as-typed|capitals, "letterSpacing", "lineSpacing" 0-64,
+             "align": left|centre|right, "wrap" 0-65535 (0 for none),
+             "colour" 0-15, "bigStyle": none|shadow|3d|outline|block|
+             rainbow, "bigColours" [1 to 16 of 0-15]}: the Text tool's
+             settings, which only a text step takes; each key optional,
+             the rest kept. As in Tool Options, a big style picked puts
+             its own colours in and draws in the block face, so under one
+             "face" other than block and "colour" are refused, and
+             "bigColours" needs one
 
 The editor opens on the bottom layer, with nothing selected. A step that
 can't be applied (an unknown action or key, a value out of range, a point

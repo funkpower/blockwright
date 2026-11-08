@@ -6,6 +6,9 @@
 #include "main_window.h"
 #include "select_tool.h"
 #include "settings.h"
+#include "text_options.h"
+#include "text_tool.h"
+#include "tool_options.h"
 #include "tool.h"
 
 #include "blockwright/canvas_renderer.h"
@@ -213,6 +216,12 @@ void showSettings(MainWindow& w, const bwcli::replay::ToolSettings& s) {
     // after the document: a new one forgets the clone source
     if (auto* t = toolNamed<CloneTool>(w, "clone"))
         t->restore(s.clone);
+    // the Text tool's defaults only: the text layers are in the document
+    if (auto* t = toolNamed<TextTool>(w, "text")) {
+        t->setSettings(s.text, QString(), nullptr);
+        if (TextOptions* o = w.toolOptions()->textOptions())
+            o->sync();
+    }
 }
 
 static_assert(steps::kMinZoom == CanvasView::kMinZoom && steps::kMaxZoom == CanvasView::kMaxZoom,
