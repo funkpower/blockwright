@@ -1015,6 +1015,37 @@ expect "replay: pressure none" 0 '^$' -- "$cli" replay "$rp/pnone.json" -o "$rp/
 if ! cmp -s "$rp/psize/01-s.ans" "$rp/pnone/01-s.ans"; then ok "replay: pressure to size changes the stroke"; else bad "replay: pressure to size painted what none does"; fi
 expect "replay: the tour" 0 '^$' -- "$cli" replay "$data/replay/tour.json" -o "$rp/tour"
 if diff -r "$data/replay/tour" "$rp/tour" > /dev/null; then ok "replay: the tour's saved bytes"; else bad "replay: the tour differs from data/replay/tour"; fi
+# SOURCE_DATE_EPOCH stands in for today in the SAUCE record a capture gets
+# when its start has none, as import-scene takes it: the Sample merged start
+# (data/replay/layered.bwp) has none, and its captures were saved on
+# 2026-11-07, 1794009600; 1700000000 is 2023-11-14 22:13:20 UTC, already the
+# 15th at UTC+14, still the 14th at UTC-12
+expect "replay: Sample merged with SOURCE_DATE_EPOCH" 0 '^$' -- env SOURCE_DATE_EPOCH=1794009600 TZ=Etc/GMT+12 \
+  "$cli" replay "$data/replay/sample-merged.json" -o "$rp/sm-saved"
+if diff -r "$data/replay/sample-merged" "$rp/sm-saved" > /dev/null; then ok "replay: SOURCE_DATE_EPOCH on the saved day writes Sample merged's saved bytes"; else bad "replay: Sample merged on SOURCE_DATE_EPOCH's saved day differs from data/replay/sample-merged"; fi
+# a blank start has no SAUCE record either
+printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "a", "action": "glyph", "points": [[1, 1]]}, {"name": "b", "action": "glyph", "points": [[2, 1]]}]}' > "$rp/dated.json"
+expect "replay: SOURCE_DATE_EPOCH east of UTC" 0 '^$' -- env SOURCE_DATE_EPOCH=1700000000 TZ=Etc/GMT-14 \
+  "$cli" replay --project "$rp/dated.json" -o "$rp/epoch-east"
+expect "replay: SOURCE_DATE_EPOCH west of UTC" 0 '^$' -- env SOURCE_DATE_EPOCH=1700000000 TZ=Etc/GMT+12 \
+  "$cli" replay --project "$rp/dated.json" -o "$rp/epoch-west"
+expect "replay: SOURCE_DATE_EPOCH dates a capture in UTC" 0 '^date: +20231114$' -- "$cli" info "$rp/epoch-east/01-a.ans"
+if diff -r "$rp/epoch-east" "$rp/epoch-west" > /dev/null; then ok "replay: SOURCE_DATE_EPOCH writes the same files in any time zone"; else bad "replay: SOURCE_DATE_EPOCH's captures differ with the time zone"; fi
+expect "replay: SOURCE_DATE_EPOCH makes no record in a project" 0 '^sauce: +none$' -- "$cli" info "$rp/epoch-east/01-a.bwp"
+expect "replay: SOURCE_DATE_EPOCH 0" 0 '^$' -- env SOURCE_DATE_EPOCH=0 "$cli" replay "$rp/dated.json" -o "$rp/epoch0"
+expect "replay: SOURCE_DATE_EPOCH 0 is 1970-01-01" 0 '^date: +19700101$' -- "$cli" info "$rp/epoch0/02-b.ans"
+# a start's own record keeps its date, whatever SOURCE_DATE_EPOCH says
+expect "replay: the tour with SOURCE_DATE_EPOCH" 0 '^$' -- env SOURCE_DATE_EPOCH=0 "$cli" replay "$data/replay/tour.json" -o "$rp/tour-epoch"
+if diff -r "$data/replay/tour" "$rp/tour-epoch" > /dev/null; then ok "replay: SOURCE_DATE_EPOCH leaves the tour's own SAUCE date"; else bad "replay: SOURCE_DATE_EPOCH changed the tour's captures"; fi
+today=$(date +%Y%m%d)
+expect "replay: an empty SOURCE_DATE_EPOCH is unset" 0 '^$' -- env SOURCE_DATE_EPOCH= "$cli" replay "$rp/dated.json" -o "$rp/epoch-empty"
+expect "replay: an empty SOURCE_DATE_EPOCH leaves today" 0 "^date: +($today|$(date +%Y%m%d))$" -- "$cli" info "$rp/epoch-empty/01-a.ans"
+for v in junk -1 1e9 ' 1' 253402300800; do
+  expect "replay: SOURCE_DATE_EPOCH '$v' is refused" 2 "SOURCE_DATE_EPOCH is seconds since 1970-01-01 UTC as digits, up to the end of 9999, not '$v'" -- \
+    env SOURCE_DATE_EPOCH="$v" "$cli" replay "$rp/dated.json" -o "$rp/epoch-bad"
+done
+if [[ ! -e $rp/epoch-bad ]]; then ok "replay: a refused SOURCE_DATE_EPOCH writes nothing"; else bad "replay wrote files for a refused SOURCE_DATE_EPOCH"; fi
+expect "replay --help says SOURCE_DATE_EPOCH dates a start without SAUCE" 0 '^when its start has none: today.s, or SOURCE_DATE_EPOCH.s day in UTC when$' -- "$cli" replay --help
 # a canvasSize step (#420): the project replay --project writes is the new size
 printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "action": "glyph", "points": [[7, 3]]}, {"name": "grow", "action": "canvasSize", "size": [12, 6], "anchor": "centre"}]}' > "$rp/cs.json"
 expect "replay: a canvasSize step" 0 '^$' -- "$cli" replay --project "$rp/cs.json" -o "$rp/cs"

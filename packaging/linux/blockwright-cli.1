@@ -149,6 +149,9 @@ name and renamed into place once all are written, so a write that fails
 leaves no new file; files already in
 .I dir
 are left unless the run writes one of the same name.
+A capture whose start has no SAUCE record gets one dated today, or the day of
+.B SOURCE_DATE_EPOCH
+when it is set (see ENVIRONMENT).
 .B "blockwright-cli replay \-\-help"
 gives the steps file's format.
 .SH OPTIONS
@@ -168,7 +171,10 @@ Seconds since 1970-01-01 00:00:00 UTC. When it is set and not empty,
 .B import-scene
 dates the project's SAUCE record with that day in UTC instead of today, unless
 .B \-\-date
-is given. A value that isn't digits, or is past the end of 9999, is a usage
+is given, and
+.B replay
+dates the SAUCE record it gives a capture whose start has none with that day
+instead of today. A value that isn't digits, or is past the end of 9999, is a usage
 error.
 .SH EXIT STATUS
 .TP

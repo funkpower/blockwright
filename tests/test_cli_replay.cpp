@@ -22,6 +22,7 @@
 #include "blockwright/layer.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
+#include "blockwright/sauce.h"
 #include "blockwright/steps.h"
 #include "blockwright/target.h"
 #include "blockwright/xbin.h"
@@ -73,9 +74,21 @@ std::string onBlank(const std::string& steps) {
     return failure(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [)" + steps + "]}");
 }
 
-std::string ansBytes(const project::Project& p) {
-    return writeArt(project::toAnsi(p), ArtFormat::Ansi, TextEncoding::Cp437).bytes;
+// The day a saved capture carries when its start has no SAUCE record
+// (data/replay/sample-merged), as blockwright-cli replay writes it with
+// SOURCE_DATE_EPOCH on that day; a start with a record keeps its own date.
+// Without a fixed day the bytes would change with the day the test runs.
+// Remake the set with that day, never with today's:
+//   SOURCE_DATE_EPOCH=1794009600 blockwright-cli replay \
+//     tests/data/replay/sample-merged.json -o tests/data/replay/sample-merged
+// and save any new set whose start has no record with the same value.
+constexpr const char* kSavedDay = "20261107";
+
+std::string bytesOn(const project::Project& p, const std::string& day) {
+    return writeArt(bwcli::replay::document(p, day), ArtFormat::Ansi, TextEncoding::Cp437).bytes;
 }
+
+std::string ansBytes(const project::Project& p) { return bytesOn(p, kSavedDay); }
 
 Canvas flat(const project::Project& p) { return project::toAnsi(p).canvas; }
 
@@ -117,6 +130,49 @@ TEST_CASE("the tour writes the bytes saved for it, every step a capture", "[repl
     CHECK(out.captures.size() == s.steps.size() + 3);  // three before-after steps
     CHECK(out.captures.front().stem == "01-type");
     CHECK(out.captures.back().stem == "44-canvas-size");
+}
+
+TEST_CASE("a capture's SAUCE date is the day given when its start has no record, else the start's own",
+          "[replay][sauce]") {
+    // sample-merged starts from a project with no SAUCE record, the tour from a piece with one
+    for (const std::string name : {"sample-merged", "tour"}) {
+        INFO(name);
+        const steps::Script s = steps::parse(bwcli::readFile((kReplay / (name + ".json")).string()));
+        const bwcli::replay::Outcome out = bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples));
+        REQUIRE_FALSE(out.captures.empty());
+        CHECK(out.captures.front().project.sauce.has_value() == (name == "tour"));
+        for (const auto& c : out.captures) {
+            INFO(c.stem);
+            const AnsiDocument a = bwcli::replay::document(c.project, "20261107");
+            const AnsiDocument b = bwcli::replay::document(c.project, "19991231");
+            REQUIRE(a.sauce);
+            REQUIRE(b.sauce);
+            if (c.project.sauce) {
+                CHECK(a.sauce->date == c.project.sauce->date);
+                CHECK(bytesOn(c.project, "20261107") == bytesOn(c.project, "19991231"));
+            } else {
+                CHECK(a.sauce->date == "20261107");
+                CHECK(b.sauce->date == "19991231");
+            }
+            // the day changes nothing else: the canvas and the rest of the record
+            Sauce rest = *b.sauce;
+            rest.date = a.sauce->date;
+            CHECK(encodeSauce(rest, 0) == encodeSauce(*a.sauce, 0));
+            CHECK(a.canvas == b.canvas);
+            // the same day twice is the same bytes
+            CHECK(bytesOn(c.project, "19991231") == bytesOn(c.project, "19991231"));
+        }
+    }
+    // with no day given, a record made for a start without one carries today's local date, as Sauce::fresh
+    // dates a new piece; a day that turns over between the two reads is taken by the second
+    const project::Project blank = replayed(R"({"version": 1, "start": {"blank": [4, 2]},
+                                               "steps": [{"name": "a", "action": "selectAll"}]})")
+                                       .captures.front()
+                                       .project;
+    REQUIRE_FALSE(blank.sauce);
+    const std::string first = Sauce::fresh(4, 2).date;
+    const std::string dated = bwcli::replay::document(blank).sauce->date;
+    CHECK((dated == first || dated == Sauce::fresh(4, 2).date));
 }
 
 TEST_CASE("a replay writes the same bytes every run", "[replay]") {

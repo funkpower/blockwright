@@ -766,6 +766,13 @@ project::Project start(const steps::Script& script, const fs::path& dir, const f
     return p;
 }
 
+AnsiDocument document(const project::Project& project, const std::optional<std::string>& today) {
+    AnsiDocument doc = project::toAnsi(project);
+    if (!project.sauce && today && doc.sauce)
+        doc.sauce->date = *today;
+    return doc;
+}
+
 project::Project startSaying(const steps::Script& script, const fs::path& dir, const fs::path& samplesDir,
                              std::ostream& err, const std::string& program, const std::string& stepsPath) {
     std::vector<std::string> notes;

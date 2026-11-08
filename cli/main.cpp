@@ -858,7 +858,9 @@ existing file is written through a symlink and keeps its permissions, and
 one that isn't writable is refused. Files already in <dir> are left as they
 are unless this run writes one of the same name: replay a shorter script
 into an empty directory to have only its captures. The same file writes the
-same bytes every run.
+same bytes every run, but for the date of the SAUCE record a capture gets
+when its start has none: today's, or SOURCE_DATE_EPOCH's day in UTC when
+that is set (seconds since 1970-01-01 UTC, as import-scene takes it).
 
 Options:
   -o, --output <dir>   where the files go (required)
@@ -983,7 +985,23 @@ struct ReplayArgs {
     bool project = false;
     std::optional<bw::RenderOptions> render;
     bool allowLossy = false;
+    // the date of the SAUCE record a capture with none gets (SOURCE_DATE_EPOCH)
+    std::optional<std::string> today;
 };
+
+// SOURCE_DATE_EPOCH's day in UTC (bw::sauceDateFromEpoch), which import-scene
+// and replay take for today: nothing when it is unset or empty, and a usage
+// error when it is something else.
+std::optional<std::string> sourceDateEpochDay() {
+    const QByteArray epoch = qgetenv("SOURCE_DATE_EPOCH");
+    if (epoch.isEmpty())
+        return {};
+    std::optional<std::string> day = bw::sauceDateFromEpoch(epoch.toStdString());
+    if (!day)
+        throw Usage{"SOURCE_DATE_EPOCH is seconds since 1970-01-01 UTC as digits, up to the end of "
+                    "9999, not '" + epoch.toStdString() + "'"};
+    return day;
+}
 
 // replay <steps.json> -o <dir>: every capture made in memory first, then
 // written, so a step that fails writes nothing and a write that fails
@@ -1027,7 +1045,7 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
     std::vector<std::pair<std::string, std::string>> files;  // path, bytes
     for (const bwcli::replay::Capture& c : outcome.captures) {
         const std::string base = (dir / c.stem).string();
-        const bw::AnsiDocument doc = bw::project::toAnsi(c.project);
+        const bw::AnsiDocument doc = bwcli::replay::document(c.project, a.today);
         const bw::AnsiOutput res = bw::writeArt(doc, bw::ArtFormat::Ansi, gOutputEncoding);
         warnLoss(base + ".ans", res);
         if (res.lossy() && !a.allowLossy)
@@ -1703,11 +1721,8 @@ int main(int argc, char** argv) {
                 if (!bw::isSauceDate(date))
                     throw Usage{"--date takes a day as CCYYMMDD, such as 20261103, not '" + date + "'"};
                 fix.stamp.date = date;
-            } else if (const QByteArray epoch = qgetenv("SOURCE_DATE_EPOCH"); !epoch.isEmpty()) {
-                fix.stamp.date = bw::sauceDateFromEpoch(epoch.toStdString());
-                if (!fix.stamp.date)
-                    throw Usage{"SOURCE_DATE_EPOCH is seconds since 1970-01-01 UTC as digits, up to the end of "
-                                "9999, not '" + epoch.toStdString() + "'"};
+            } else {
+                fix.stamp.date = sourceDateEpochDay();
             }
             // SOURCE_DATE_EPOCH only stands in for today: it makes no record
             fix.stamp.record = fix.stamp.author || parser.isSet(dateOpt);
@@ -1726,6 +1741,9 @@ int main(int argc, char** argv) {
             a.outDir = parser.value(outputOpt).toStdString();
             a.project = parser.isSet(projectOpt);
             a.allowLossy = parser.isSet(lossyOpt);
+            // checked before the steps file is read, as import-scene checks it
+            // before the scene runs
+            a.today = sourceDateEpochDay();
             if (parser.isSet(renderOpt)) {
                 bw::RenderOptions opts;
                 opts.scale = intValue(parser.value(scaleOpt), "scale", 1, bw::kMaxScale);

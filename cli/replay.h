@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <functional>
 #include <iosfwd>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,14 @@ bw::project::Project start(const bw::steps::Script& script, const std::filesyste
 bw::project::Project startSaying(const bw::steps::Script& script, const std::filesystem::path& dir,
                                  const std::filesystem::path& samplesDir, std::ostream& err,
                                  const std::string& program, const std::string& stepsPath);
+
+// A capture's canvas as replay writes it (project::toAnsi). A project with
+// no SAUCE record gets a fresh one, dated `today` (CCYYMMDD) when given and
+// else the local date Sauce::fresh gives, so a replay from such a start
+// writes the same bytes on any day only with `today` given: blockwright-cli
+// replay gives SOURCE_DATE_EPOCH's day. A record the project carries keeps
+// its own date.
+bw::AnsiDocument document(const bw::project::Project& project, const std::optional<std::string>& today = {});
 
 // The longest named ramp's top rung: where the gradient's "to" starts, so
 // a new gradient runs the whole of any ramp.
