@@ -3,6 +3,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/big_text.h"
 #include "blockwright/face.h"
+#include "blockwright/tdf.h"
 #include "blockwright/text.h"
 
 #include <QJsonArray>
@@ -249,13 +250,32 @@ Options::Text textOptionsOf(const std::string& where, const QJsonValue& v) {
                                    {"face", "case", "letterSpacing", "lineSpacing", "align", "wrap", "colour",
                                     "bigStyle", "bigColours"});
     Options::Text t;
-    if (o.contains("face")) {
+    if (o.contains("face") && o["face"].isObject()) {
+        // a TheDraw font (#422): the file is read by the load pass and the
+        // font found in it when the step is applied
+        const QJsonObject f = objectOf(where, "textOptions face", o["face"], {"tdf", "font", "index"});
+        Options::Text::Tdf tdf;
+        if (!f.contains("tdf"))
+            fail(where, "\"textOptions face\" needs \"tdf\", the .tdf file's path");
+        if (!f.contains("font"))
+            fail(where, "\"textOptions face\" needs \"font\", the font's name in the file");
+        tdf.path = stringOf(where, "textOptions face tdf", f["tdf"]);
+        if (const auto why = pathProblem(tdf.path))
+            fail(where, "\"textOptions face tdf\" " + *why);
+        tdf.font = stringOf(where, "textOptions face font", f["font"]);
+        if (tdf.font.empty())
+            fail(where, "\"textOptions face font\" is empty");
+        if (f.contains("index"))
+            tdf.index = intOf(where, "textOptions face index", f["index"], 0, int(kMaxTdfFonts) - 1);
+        t.tdf = std::move(tdf);
+    } else if (o.contains("face")) {
         const std::string name = stringOf(where, "textOptions face", o["face"]);
         std::string names;
         for (const Face* f : bundledFaces())
             names += (names.empty() ? "" : ", ") + std::string(f->name());
         if (!bundledFace(name))
-            fail(where, "\"textOptions face\" takes a bundled face (" + names + "), not \"" + name + "\"");
+            fail(where, "\"textOptions face\" takes a bundled face (" + names +
+                            ") or a TheDraw font ({\"tdf\": ..., \"font\": ...}), not \"" + name + "\"");
         t.face = name;
     }
     if (o.contains("case"))
@@ -528,6 +548,8 @@ Step readStep(const QJsonValue& v, int number) {
                                        {{"after", Capture::After}, {"before-after", Capture::BeforeAfter}});
     if (!takesNoOptions(st.action))
         readOptions(where, o, st.options);
+    if (st.options.text && st.options.text->tdf)
+        st.files.push_back({"textOptions face tdf", st.options.text->tdf->path, std::size_t(kMaxTdfBytes)});
     if (o.contains("screenshot"))
         st.screenshot = readScreenshot(where, o["screenshot"]);
     if (o.contains("button"))
@@ -668,7 +690,10 @@ const std::vector<std::string_view>& actions() {
     return names;
 }
 
-std::optional<std::string> applyTextOptions(TextSource& source, const Options::Text& t) {
+std::optional<std::string> applyTextOptions(TextSource& source, const Options::Text& t, const FaceRef* tdf) {
+    if (t.tdf && (!tdf || tdf->kind != FaceRef::Kind::Tdf))
+        return "\"textOptions face\" names the TheDraw font \"" + t.tdf->font + "\" in " + t.tdf->path +
+               ", which hasn't been read";
     TextSource s = source;
     if (t.bigStyle)
         s.bigStyle = *t.bigStyle;
@@ -676,6 +701,10 @@ std::optional<std::string> applyTextOptions(TextSource& source, const Options::T
     if (big && t.face && *t.face != FaceRef{}.name)
         return "\"textOptions face\" \"" + *t.face + "\" can't be picked under a big style, which draws in the " +
                FaceRef{}.name + " face (Tool Options' face picker is off)";
+    if (big && t.tdf)
+        return "\"textOptions face\" \"" + t.tdf->font + "\" (" + t.tdf->path +
+               ") can't be picked under a big style, which draws in the " + FaceRef{}.name +
+               " face (Tool Options' face picker is off)";
     if (big && t.colour)
         return std::string("\"textOptions colour\" can't be set under a big style, which \"bigColours\" colours "
                            "(Tool Options' colour is off)");
@@ -683,6 +712,8 @@ std::optional<std::string> applyTextOptions(TextSource& source, const Options::T
         return std::string("\"textOptions bigColours\" needs a big style (Tool Options' colours are off without one)");
     if (t.face)
         s.face = FaceRef{FaceRef::Kind::Pixel, *t.face, {}, 0};
+    else if (t.tdf)
+        s.face = *tdf;
     // picking a style puts its own colours in the field (TextOptions)
     if (s.bigStyle != source.bigStyle)
         s.bigColours = bigTextDefaultColours(s.bigStyle);

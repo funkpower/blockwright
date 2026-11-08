@@ -51,6 +51,8 @@
     {"name": "to-hidden", "action": "setActiveLayer", "layer": "hidden"},
     {"name": "delete", "action": "deleteLayer"},
     {"name": "canvas-size", "action": "canvasSize", "size": [80, 40], "anchor": "centre"},
-    {"name": "text", "action": "text", "at": [2, 34], "text": "tour", "textOptions": {"face": "mini", "colour": 12}}
+    {"name": "text", "action": "text", "at": [2, 34], "text": "tour", "textOptions": {"face": "mini", "colour": 12}},
+    {"name": "tdf-text", "action": "text", "at": [40, 26], "text": "BW",
+     "textOptions": {"face": {"tdf": "../tdf/bw-outline.tdf", "font": "BW Outline"}}}
   ]
 }

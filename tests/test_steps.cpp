@@ -4,6 +4,7 @@
 #include "blockwright/big_text.h"
 #include "blockwright/face.h"
 #include "blockwright/steps.h"
+#include "blockwright/tdf.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -744,6 +745,54 @@ TEST_CASE("a text step reads its cell, its text as typed and its Tool Options (#
     CHECK(src.text == U"keep");
 }
 
+TEST_CASE("a text step's face may be a TheDraw font, its file a path the step names (#422)", "[steps][text]") {
+    const steps::Script s = steps::parse(script(R"({"name": "title", "action": "text", "at": [1, 1], "text": "A",
+            "textOptions": {"face": {"tdf": "../fonts/outline.tdf", "font": "BW Outline"}, "colour": 3}},
+        {"name": "pick", "action": "text", "textOptions": {"face": {"tdf": "fonts/all.tdf", "font": "BW Block", "index": 1}}},
+        {"name": "back", "action": "text", "textOptions": {"face": "vga"}})"));
+    REQUIRE(s.steps.size() == 3);
+    REQUIRE(s.steps[0].options.text);
+    const steps::Options::Text& t = *s.steps[0].options.text;
+    CHECK_FALSE(t.face);
+    CHECK(t.tdf == steps::Options::Text::Tdf{"../fonts/outline.tdf", "BW Outline", std::nullopt});
+    CHECK(t.colour == 3);
+    CHECK(s.steps[1].options.text->tdf == steps::Options::Text::Tdf{"fonts/all.tdf", "BW Block", 1});
+    CHECK_FALSE(s.steps[2].options.text->tdf);
+    // the step names its file for the load pass, at most a .tdf's size
+    REQUIRE(s.steps[0].files.size() == 1);
+    CHECK(s.steps[0].files[0].key == "textOptions face tdf");
+    CHECK(s.steps[0].files[0].path == "../fonts/outline.tdf");
+    CHECK(s.steps[0].files[0].maxBytes == std::size_t(kMaxTdfBytes));
+    CHECK(s.steps[1].files.size() == 1);
+    CHECK(s.steps[2].files.empty());
+
+    // applied with the face the replay found in the file
+    const FaceRef found{FaceRef::Kind::Tdf, "BW Outline", std::string(64, 'a'), 0};
+    TextSource src;
+    src.letterSpacing = 2;
+    CHECK_FALSE(steps::applyTextOptions(src, t, &found));
+    CHECK(src.face == found);
+    CHECK(src.colour == 3);
+    CHECK(src.letterSpacing == 2);
+    // without it, nothing is set and the problem says why
+    TextSource none;
+    CHECK(steps::applyTextOptions(none, t).value_or("") ==
+          "\"textOptions face\" names the TheDraw font \"BW Outline\" in ../fonts/outline.tdf, which hasn't been read");
+    const FaceRef pixel{};
+    CHECK(steps::applyTextOptions(none, t, &pixel));
+    CHECK(none == TextSource{});
+    // under a big style it is refused, as the dock's face picker is off
+    steps::Options::Text big = t;
+    big.colour.reset();
+    big.bigStyle = BigTextStyle::Shadow;
+    TextSource styled;
+    const TextSource before = styled;
+    CHECK(steps::applyTextOptions(styled, big, &found).value_or("") ==
+          "\"textOptions face\" \"BW Outline\" (../fonts/outline.tdf) can't be picked under a big style, which draws in "
+          "the block face (Tool Options' face picker is off)");
+    CHECK(styled == before);
+}
+
 TEST_CASE("applyTextOptions sets a big style as Tool Options does (#421)", "[steps][text]") {
     const auto big = [](BigTextStyle style) {
         steps::Options::Text t;
@@ -872,7 +921,24 @@ TEST_CASE("a text step's bad value is refused, naming the step (#421)", "[steps]
         {R"("textOptions": 3)", "\"textOptions\""},
         {R"("textOptions": {"size": 2})", "\"size\""},
         {R"("textOptions": {"Face": "vga"})", "\"Face\""},
-        {R"("textOptions": {"face": "comic"})", "\"textOptions face\" takes a bundled face (block, vga, mini), not \"comic\""},
+        {R"("textOptions": {"face": "comic"})",
+         "\"textOptions face\" takes a bundled face (block, vga, mini) or a TheDraw font ({\"tdf\": ..., \"font\": ...}), "
+         "not \"comic\""},
+        {R"("textOptions": {"face": {"font": "BW Block"}})", "\"textOptions face\" needs \"tdf\", the .tdf file's path"},
+        {R"("textOptions": {"face": {"tdf": "a.tdf"}})", "\"textOptions face\" needs \"font\", the font's name in the file"},
+        {R"("textOptions": {"face": {"tdf": "a.tdf", "font": "X", "size": 2}})", "\"size\""},
+        {R"("textOptions": {"face": {"tdf": "a.tdf", "font": ""}})", "\"textOptions face font\" is empty"},
+        {R"("textOptions": {"face": {"tdf": "a.tdf", "font": 3}})", "\"textOptions face font\""},
+        {R"("textOptions": {"face": {"tdf": 3, "font": "X"}})", "\"textOptions face tdf\""},
+        {R"("textOptions": {"face": {"tdf": "a.tdf", "font": "X", "index": -1}})", "\"textOptions face index\""},
+        {R"("textOptions": {"face": {"tdf": "a.tdf", "font": "X", "index": 256}})", "\"textOptions face index\""},
+        {R"("textOptions": {"face": {"tdf": "a.tdf", "font": "X", "index": 1.5}})", "\"textOptions face index\""},
+        {R"("textOptions": {"face": {"tdf": "", "font": "X"}})", "\"textOptions face tdf\" is empty"},
+        {R"("textOptions": {"face": {"tdf": "/fonts/a.tdf", "font": "X"}})",
+         "\"textOptions face tdf\" \"/fonts/a.tdf\" is absolute; a steps file names its files relative to its own directory"},
+        {R"("textOptions": {"face": {"tdf": "C:/fonts/a.tdf", "font": "X"}})", "\"C:/fonts/a.tdf\" is absolute"},
+        {R"("textOptions": {"face": {"tdf": "fonts\\a.tdf", "font": "X"}})", "has a \\ in it"},
+        {R"("textOptions": {"face": []})", "\"textOptions face\""},
         {R"("textOptions": {"face": 1})", "\"textOptions face\""},
         {R"("textOptions": {"case": "lower"})", "\"textOptions case\""},
         {R"("textOptions": {"align": "center"})", "\"textOptions align\""},

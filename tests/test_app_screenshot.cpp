@@ -7,6 +7,7 @@
 
 #include "canvas_view.h"
 #include "draw_tools.h"
+#include "face_picker.h"
 #include "irc_meter.h"
 #include "lint_dock.h"
 #include "main_window.h"
@@ -22,6 +23,7 @@
 #include "blockwright/brushes/clone.h"
 #include "blockwright/canvas_size.h"
 #include "blockwright/composite.h"
+#include "blockwright/font_store.h"
 #include "blockwright/irc_render.h"
 #include "blockwright/ramp.h"
 #include "blockwright/render.h"
@@ -1454,3 +1456,42 @@ TEST_CASE("a text step's Tool Options show in the dock's controls in --screensho
     CHECK_FALSE(seen["02-big"].colourOn);
 }
 
+
+TEST_CASE("a text step's TheDraw face shows in the window: the Text tool keeps it, the dock lists and picks it (#422)",
+          "[screenshot][text][tdf]") {
+    // a cells layer active: the face is what new text starts in, its file
+    // kept by the Text tool, not copied into the project
+    steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [40, 24]}, "window": [1024, 720], "steps": [
+        {"name": "face", "action": "text", "textOptions": {"face": {"tdf": "../tdf/bw-all.tdf", "font": "BW Block"}},
+         "screenshot": {"of": "window"}},
+        {"name": "title", "action": "text", "at": [1, 1], "text": "Hi", "screenshot": {"of": "window"}}]})");
+    bwcli::replay::load(s, kTutorial.parent_path());
+    MainWindow w;
+    struct Seen {
+        FaceRef defaults, picked;
+        bool kept = false, inProject = false;
+        QStringList listed;
+    };
+    std::map<std::string, Seen> seen;
+    screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        auto* text = qobject_cast<TextTool*>(w.tools()->find(QStringLiteral("text")));
+        REQUIRE(text);
+        FacePicker* picker = w.toolOptions()->textOptions()->facePicker();
+        REQUIRE(picker);
+        seen[sh.stem] = {text->defaults().face, picker->current(), !text->keptFonts().empty(),
+                         !w.document()->project().fonts.empty(), picker->listed()};
+    });
+    const FaceRef block{FaceRef::Kind::Tdf, "BW Block", sha256Hex(bwcli::readFile(
+                                                            (fs::path(BW_TEST_DATA) / "tdf" / "bw-all.tdf").string())),
+                        1};
+    REQUIRE(seen.count("01-face"));
+    CHECK(seen["01-face"].defaults == block);
+    CHECK(seen["01-face"].picked == block);
+    CHECK(seen["01-face"].kept);
+    CHECK_FALSE(seen["01-face"].inProject);
+    CHECK(seen["01-face"].listed.contains(QStringLiteral("BW Block (kept for new text)")));
+    // the text set in it: the project holds the file
+    REQUIRE(seen.count("02-title"));
+    CHECK(seen["02-title"].defaults == block);
+    CHECK(seen["02-title"].inProject);
+}

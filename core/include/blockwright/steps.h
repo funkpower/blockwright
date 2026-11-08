@@ -94,7 +94,9 @@
 // The Text tool is a step too (#421), "action": "text":
 //
 //   {"name": ..., "action": "text", "at": [x, y], "text": "...",
-//    "textOptions": {"face": "block" | "vga" | "mini",
+//    "textOptions": {"face": "block" | "vga" | "mini"
+//                            | {"tdf": "fonts/x.tdf", "font": "NAME",
+//                               "index": 0-255},
 //                    "case": "as-typed" | "capitals",
 //                    "letterSpacing": 0-64, "lineSpacing": 0-64,
 //                    "align": "left" | "centre" | "right",
@@ -111,13 +113,18 @@
 // together; "text" is 1 to TextSource::kMaxLength characters, none of them
 // a control character (C0, DEL or C1, typedInText in text.h) but "\n".
 // "textOptions" is the tool's Tool Options, each key optional (a bundled
-// face's name, the rest as the dock shows them); only a text step takes it,
+// face's name or a TheDraw font, the rest as the dock shows them); only a
+// text step takes it,
 // and what it sets holds for later text steps, as Tool Options keep what a
 // new text layer starts with. The step's click comes first, so its options
 // set the new layer's; a text step with no "at" only sets them, and when
 // the active layer is a live text layer that isn't locked it sets them on
 // that layer too, as Tool Options with the Text tool chosen do
-// (TextTool::setSettings).
+// (TextTool::setSettings). A TheDraw face (#422) names a .tdf file
+// relative to the steps file, as "start"'s "file" is (pathProblem), and the
+// font's name in it: the only font of that name, or the one at "index",
+// which must have it. The step lists the file (Step::files), so the load
+// pass reads it; the replay finds the font when the step is applied.
 //
 // Every key is checked: an unknown key, a key the action doesn't take, a
 // value of the wrong kind or out of range is refused, and the error names
@@ -221,6 +228,17 @@ struct Options {
     // text step sets them.
     struct Text {
         std::optional<std::string> face;  // a bundled face's name
+        // Or a TheDraw font (#422): `font`, the font's name, in the .tdf file
+        // at `path` (relative to the steps file; Step::files names it), at
+        // `index` (0 to kMaxTdfFonts - 1) when given, else the only font of
+        // that name in the file. Set instead of `face`.
+        struct Tdf {
+            std::string path;
+            std::string font;
+            std::optional<int> index;
+            bool operator==(const Tdf&) const = default;
+        };
+        std::optional<Tdf> tdf;
         std::optional<TextCase> textCase;
         std::optional<int> letterSpacing, lineSpacing;  // 0-kMaxSpacing
         std::optional<TextAlign> align;
@@ -241,7 +259,11 @@ struct Options {
 // so, leaving `source` as it was: a face other than block or a colour under
 // a big style (Tool Options turns the face picker and the colour off then),
 // or big colours without one (their field is off).
-std::optional<std::string> applyTextOptions(TextSource& source, const Options::Text& text);
+// `tdf` is the face text.tdf names, as the replay found it in the file
+// (kind Tdf: the file's sha256, the font's index and name); with text.tdf
+// set and no `tdf`, nothing is changed and the problem is said.
+std::optional<std::string> applyTextOptions(TextSource& source, const Options::Text& text,
+                                            const FaceRef* tdf = nullptr);
 
 // A point of a stroke: a cell for the brushes, a half-block pixel (x, and a
 // pixel row, two to a cell row) for the half-block tools.
@@ -298,9 +320,9 @@ struct Step {
     Anchor anchor = Anchor::TopLeft;
     // clone: the source cell Ctrl+click sets before the stroke (#418)
     std::optional<Point> source;
-    // The files the step reads (#422), in the order it names them. No
-    // action names one yet: TheDraw faces, style files and reference
-    // pictures will.
+    // The files the step reads (#422), in the order it names them: a text
+    // step's TheDraw face (key "textOptions face tdf"). Style files and
+    // reference pictures will come.
     std::vector<FileRef> files;
 };
 

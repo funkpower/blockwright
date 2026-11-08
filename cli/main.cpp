@@ -882,12 +882,12 @@ A steps file is JSON:
    "ice": true,                              a blank start's iCE colours (default on)
    "steps": [{"name": "base-ramp", "action": "gradient", ...}, ...]}
 
-A path in a steps file, "file" here, is relative to the steps file's
-directory, with / between directories, and .. may leave that directory. An
-absolute path (/..., C:...) and one with a \ in it are refused, so a steps
-file and the files beside it replay the same anywhere. A missing or
-unreadable file stops the replay before any step is applied, naming the
-step (or "start") and the path.
+A path in a steps file ("file" here, a text step's "tdf") is relative to
+the steps file's directory, with / between directories, and .. may leave
+that directory. An absolute path (/..., C:...) and one with a \ in it are
+refused, so a steps file and the files beside it replay the same anywhere.
+A missing or unreadable file stops the replay before any step is applied,
+naming the step (or "start") and the path.
 
 Each step has a "name" (1-64 of a-z 0-9 - _, starting with a letter or
 digit) and an "action", the editor's name for it. Points are [x, y]: cells,
@@ -1005,8 +1005,12 @@ eyedropper take, and "textOptions", which only text takes):
              from a transparent cell or pixel); on, both read every
              visible layer as the canvas shows it, and fill paints the
              region it found there into the active layer
-  "textOptions" {"face": block|vga|mini (a bundled face), "case":
-             as-typed|capitals, "letterSpacing", "lineSpacing" 0-64,
+  "textOptions" {"face": block|vga|mini (a bundled face) or
+             {"tdf": "fonts/x.tdf", "font": NAME, "index": 0-255} (a
+             TheDraw font: the .tdf file, the font's name in it, and its
+             place in the file, needed only when two fonts share the
+             name), "case": as-typed|capitals, "letterSpacing",
+             "lineSpacing" 0-64,
              "align": left|centre|right, "wrap" 0-65535 (0 for none),
              "colour" 0-15, "bigStyle": none|shadow|3d|outline|block|
              rainbow, "bigColours" [1 to 16 of 0-15]}: the Text tool's
@@ -1014,7 +1018,16 @@ eyedropper take, and "textOptions", which only text takes):
              the rest kept. As in Tool Options, a big style picked puts
              its own colours in and draws in the block face, so under one
              "face" other than block and "colour" are refused, and
-             "bigColours" needs one
+             "bigColours" needs one. A TheDraw font's file is copied
+             into the project (fonts/<sha256>.tdf) when a layer is set in
+             it, so a --project capture draws without the steps file's
+             fonts. A file that isn't a TheDraw font stops the replay,
+             naming the step; a name it doesn't hold (or that two of its
+             fonts share, with no "index") and an index past its fonts or
+             naming another font stop it naming the step and listing the
+             fonts the file holds; and a step that would leave the text
+             layers using over 16 font files, more than a project holds,
+             stops it naming the step
 
 The editor opens on the bottom layer, with nothing selected. A step that
 can't be applied (an unknown action or key, a value out of range, a point

@@ -51,6 +51,13 @@ public:
     // text cursor waits for a new layer (spot()), gives it them as one undo
     // step named `undoText`.
     void setSettings(const TextSource& s, const QString& undoText, Document* doc);
+    // Keeps `file` as a face picked from it would be, so new text finds the
+    // defaults' face in it: the window's replay (#422) hands the tool
+    // the TheDraw file a steps file names, which no folder or document may
+    // hold. A file the defaults' face doesn't use goes as any kept file
+    // does. A file not kept before emits keptChanged, so the face picker
+    // lists its faces.
+    void keepFont(FontFilePtr file);
 
     // The layer being edited (0 for none) and the text cursor in it, an
     // index into its text.

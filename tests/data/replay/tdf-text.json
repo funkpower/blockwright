@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "start": {"blank": [64, 24]},
+  "steps": [
+    {"name": "title", "action": "text", "at": [1, 1], "text": "Funk",
+     "textOptions": {"face": {"tdf": "../tdf/bw-outline.tdf", "font": "BW Outline"}}},
+    {"name": "block", "action": "text", "textOptions": {"face": {"tdf": "../tdf/bw-all.tdf", "font": "BW Block", "index": 1}}},
+    {"name": "caption", "action": "text", "at": [1, 16], "text": "art",
+     "textOptions": {"face": {"tdf": "../tdf/bw-colour.tdf", "font": "BW Colour"}, "letterSpacing": 1}}
+  ]
+}

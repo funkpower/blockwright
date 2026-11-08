@@ -232,6 +232,13 @@ void TextTool::setSpot(std::optional<QPoint> spot) {
         emit spotChanged();
 }
 
+void TextTool::keepFont(FontFilePtr file) {
+    if (!file || kept_.file(file->sha256))
+        return;
+    kept_.add(std::move(file));
+    emit keptChanged();
+}
+
 void TextTool::setSettings(const TextSource& s, const QString& undoText, Document* doc) {
     // the face's file is kept, from the document or the files already
     // kept; the others go once the face picker is out of the signal that

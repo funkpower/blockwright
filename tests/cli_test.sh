@@ -1035,6 +1035,38 @@ if diff -r "$data/replay/sample-merged" "$rp/sm-saved" > /dev/null; then ok "rep
 expect "replay: the text steps with SOURCE_DATE_EPOCH" 0 '^$' -- env SOURCE_DATE_EPOCH=1794009600 TZ=Etc/GMT-14 \
   "$cli" replay "$data/replay/text.json" -o "$rp/text-saved"
 if diff -r "$data/replay/text" "$rp/text-saved" > /dev/null; then ok "replay: the text steps write their saved bytes"; else bad "replay: the text steps differ from data/replay/text"; fi
+# text steps in TheDraw fonts the steps file names (#422), from the repo's
+# test fonts in data/tdf
+expect "replay: TheDraw text steps with SOURCE_DATE_EPOCH" 0 '^$' -- env SOURCE_DATE_EPOCH=1794009600 TZ=Etc/GMT-14 \
+  "$cli" replay "$data/replay/tdf-text.json" -o "$rp/tdf-saved"
+if diff -r "$data/replay/tdf-text" "$rp/tdf-saved" > /dev/null; then ok "replay: the TheDraw text steps write their saved bytes"; else bad "replay: the TheDraw text steps differ from data/replay/tdf-text"; fi
+# --project: each project carries a copy of the fonts its layers are set in,
+# fonts/<sha256>.tdf (the outline font the title was restyled out of is not
+# kept), and draws alone what the capture draws
+expect "replay --project: TheDraw text steps" 0 '^$' -- env SOURCE_DATE_EPOCH=1794009600 TZ=Etc/GMT-14 \
+  "$cli" replay --project "$data/replay/tdf-text.json" -o "$rp/tdf-project"
+mkdir -p "$rp/tdf-unzip"
+expect "replay --project: the TheDraw project unpacks" 0 '' -- "$cli" unpack "$rp/tdf-project/03-caption.bwp" "$rp/tdf-unzip/caption"
+tdf_all=$(sha256sum < "$data/tdf/bw-all.tdf" 2>/dev/null || sha256 -q < "$data/tdf/bw-all.tdf")
+tdf_all=${tdf_all%% *}
+tdf_colour=$(sha256sum < "$data/tdf/bw-colour.tdf" 2>/dev/null || sha256 -q < "$data/tdf/bw-colour.tdf")
+tdf_colour=${tdf_colour%% *}
+tdf_have=$(cd "$rp/tdf-unzip/caption/fonts" && ls | sort | tr '\n' ' ')
+tdf_want=$(printf '%s.tdf\n' "$tdf_all" "$tdf_colour" | sort | tr '\n' ' ')
+if [ "$tdf_have" = "$tdf_want" ]; then ok "replay --project: the fonts the layers are set in are copied, by their sha256"; else bad "replay --project: fonts/ holds '$tdf_have', not '$tdf_want'"; fi
+if cmp -s "$rp/tdf-unzip/caption/fonts/$tdf_colour.tdf" "$data/tdf/bw-colour.tdf"; then ok "replay --project: a font copy is the file's bytes"; else bad "replay --project: the font copy differs from data/tdf/bw-colour.tdf"; fi
+mkdir -p "$rp/tdf-alone"
+cp "$rp/tdf-project/03-caption.bwp" "$rp/tdf-alone/caption.bwp"
+expect "replay --project: the TheDraw project renders alone" 0 '' -- "$cli" render "$rp/tdf-alone/caption.bwp" "$rp/tdf-alone/project.png"
+expect "replay --project: the TheDraw capture renders" 0 '' -- "$cli" render "$data/replay/tdf-text/03-caption.ans" "$rp/tdf-alone/capture.png"
+if cmp -s "$rp/tdf-alone/project.png" "$rp/tdf-alone/capture.png"; then ok "replay --project: the project draws what the capture draws"; else bad "replay --project: the project's render differs from the capture's"; fi
+# a font the file doesn't hold stops the replay, naming the step, and writes nothing
+mkdir -p "$rp/tdf-steps"
+cp "$data/tdf/bw-all.tdf" "$rp/tdf-steps/all.tdf"
+printf '{"version": 1, "start": {"blank": [20, 12]}, "steps": [{"name": "t", "action": "text", "at": [1, 1], "text": "A", "textOptions": {"face": {"tdf": "all.tdf", "font": "BW Comic"}}}]}' > "$rp/tdf-steps/comic.json"
+expect "replay: a TheDraw font the file doesn't hold" 1 '^blockwright-cli: .*/comic\.json: step 1 \(t\): font "BW Comic" is not in all\.tdf; it holds 0 "BW Outline", 1 "BW Block", 2 "BW Colour"$' -- \
+  "$cli" replay --project "$rp/tdf-steps/comic.json" -o "$rp/tdf-comic"
+if [ ! -e "$rp/tdf-comic" ]; then ok "replay: a TheDraw font refused writes nothing"; else bad "replay: a refused TheDraw font left $rp/tdf-comic"; fi
 # a blank start has no SAUCE record either
 printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "a", "action": "glyph", "points": [[1, 1]]}, {"name": "b", "action": "glyph", "points": [[2, 1]]}]}' > "$rp/dated.json"
 expect "replay: SOURCE_DATE_EPOCH east of UTC" 0 '^$' -- env SOURCE_DATE_EPOCH=1700000000 TZ=Etc/GMT-14 \
@@ -1103,7 +1135,11 @@ if [[ ! -e $rp/paths/missing ]]; then ok "replay: a missing start writes nothing
 mkfifo "$rp/paths/fifo.ans"
 printf '{"version": 1, "start": {"file": "fifo.ans"}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}]}' > "$rp/paths/fifo.json"
 expect "replay: a FIFO start is not a regular file" 1 "^blockwright-cli: $rp/paths/fifo\\.json: start: $rp/paths/fifo\\.ans: not a regular file\$" -- "$cli" replay "$rp/paths/fifo.json" -o "$rp/paths/fifo"
-expect "replay --help says paths are relative and absolute ones refused (#422)" 0 '^absolute path \(/\.\.\., C:\.\.\.\) and one with a \\ in it are refused, so a steps$' -- "$cli" replay --help
+expect "replay --help says paths are relative and absolute ones refused (#422)" 0 '^that directory\. An absolute path \(/\.\.\., C:\.\.\.\) and one with a \\ in it are$' -- "$cli" replay --help
+long=$("$cli" replay --help | awk '/^A path in a steps file/ { p = 1 } p && /^$/ { exit } p && length > 79')
+if [[ -z $long ]]; then ok "replay --help's paths paragraph fits 79 columns"; else bad "replay --help's paths paragraph runs past 79 columns: $long"; fi
+long=$("$cli" replay --help | awk '/^  "textOptions"/ { p = 1 } p && /^$/ { exit } p && length > 79')
+if [[ -z $long ]]; then ok "replay --help's textOptions entry fits 79 columns"; else bad "replay --help's textOptions entry runs past 79 columns: $long"; fi
 expect "replay --help documents the view step (#398)" 0 '^  view +the window.s view, for blockwright --screenshot only:$' -- "$cli" replay --help
 expect "replay --help documents the window's size (#295)" 0 '^here: a top-level "window": \[w, h\], the window.s size in pixels' -- "$cli" replay --help
 expect "replay --help documents a step's screenshot and its scale (#295)" 0 '^ +"when": "before" \| "after" \| "both", "scale": 1 \| 2,$' -- "$cli" replay --help

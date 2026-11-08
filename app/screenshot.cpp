@@ -219,6 +219,10 @@ void showSettings(MainWindow& w, const bwcli::replay::ToolSettings& s) {
     // the Text tool's defaults only: the text layers are in the document
     if (auto* t = toolNamed<TextTool>(w, "text")) {
         t->setSettings(s.text, QString(), nullptr);
+        // a TheDraw face the steps named comes from its file, which the
+        // face picker then lists (#422)
+        if (s.text.face.kind == FaceRef::Kind::Tdf)
+            t->keepFont(s.fonts.file(s.text.face.file));
         if (TextOptions* o = w.toolOptions()->textOptions())
             o->sync();
     }

@@ -64,8 +64,11 @@ namespace {
 const fs::path kReplay = fs::path(BW_TEST_DATA) / "replay";
 const fs::path kSamples = BW_SAMPLES_SOURCE;
 
+// The script run as blockwright-cli replay runs it: the load pass reads the
+// files its steps name, from `dir`, first.
 bwcli::replay::Outcome replayed(const std::string& json, const fs::path& dir = kReplay) {
-    const steps::Script s = steps::parse(json);
+    steps::Script s = steps::parse(json);
+    bwcli::replay::load(s, dir);
     return bwcli::replay::run(s, bwcli::replay::start(s, dir, kSamples));
 }
 
@@ -75,9 +78,9 @@ bwcli::replay::Outcome blank(const std::string& steps) {
 }
 
 // Why the replay stopped, or "(replayed)".
-std::string failure(const std::string& json) {
+std::string failure(const std::string& json, const fs::path& dir = kReplay) {
     try {
-        replayed(json);
+        replayed(json, dir);
     } catch (const bwcli::Failure& f) {
         return f.message;
     }
@@ -124,7 +127,8 @@ std::vector<std::string> layerNames(const project::Project& p) {
 } // namespace
 
 TEST_CASE("the tour writes the bytes saved for it, every step a capture", "[replay]") {
-    const steps::Script s = steps::parse(bwcli::readFile((kReplay / "tour.json").string()));
+    steps::Script s = steps::parse(bwcli::readFile((kReplay / "tour.json").string()));
+    bwcli::replay::load(s, kReplay);
     const bwcli::replay::Outcome out = bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples));
     // every step in the tour changes the canvas
     CHECK(out.notes.empty());
@@ -143,7 +147,7 @@ TEST_CASE("the tour writes the bytes saved for it, every step a capture", "[repl
     CHECK(written == saved);
     CHECK(out.captures.size() == s.steps.size() + 3);  // three before-after steps
     CHECK(out.captures.front().stem == "01-type");
-    CHECK(out.captures.back().stem == "45-text");
+    CHECK(out.captures.back().stem == "46-tdf-text");
 }
 
 TEST_CASE("a capture's SAUCE date is the day given when its start has no record, else the start's own",
@@ -151,7 +155,8 @@ TEST_CASE("a capture's SAUCE date is the day given when its start has no record,
     // sample-merged starts from a project with no SAUCE record, the tour from a piece with one
     for (const std::string name : {"sample-merged", "tour"}) {
         INFO(name);
-        const steps::Script s = steps::parse(bwcli::readFile((kReplay / (name + ".json")).string()));
+        steps::Script s = steps::parse(bwcli::readFile((kReplay / (name + ".json")).string()));
+        bwcli::replay::load(s, kReplay);
         const bwcli::replay::Outcome out = bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples));
         REQUIRE_FALSE(out.captures.empty());
         CHECK(out.captures.front().project.sauce.has_value() == (name == "tour"));
@@ -967,8 +972,8 @@ TEST_CASE("the load pass reads every file a step names before the replay runs (#
     write(dir / "fonts/a.tdf", "font");
     write(root / "shared/b.png", "picture");
 
-    // no action names a file yet, so a step's files are set in code, as the
-    // parser will set them for "tdf", "style" and "file"
+    // a step's files are set in code here, as the parser sets them for a
+    // text step's "tdf" and will for "style" and "file"
     const auto script = [](std::vector<steps::FileRef> first, std::vector<steps::FileRef> second = {}) {
         steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [4, 2]}, "steps": [
             {"name": "title", "action": "selectAll"}, {"name": "trace", "action": "selectAll"}]})");
@@ -2317,4 +2322,230 @@ TEST_CASE("Tool Options a big style turns off are refused naming the step, as th
     CHECK_THAT(onBlank(R"({"name": "cols", "action": "text", "at": [1, 1], "text": "a",
                           "textOptions": {"bigColours": [4]}})"),
                ContainsSubstring("step 1 (cols): \"textOptions bigColours\" needs a big style"));
+}
+
+namespace {
+
+std::string tdfBytes(const std::string& name) { return bwcli::readFile((fs::path(BW_TEST_DATA) / "tdf" / name).string()); }
+
+// A text step on a blank 40x24 start (from kReplay, so ../tdf/ is the test fonts).
+std::string tdfScript(const std::string& steps) {
+    return R"({"version": 1, "start": {"blank": [40, 24]}, "steps": [)" + steps + "]}";
+}
+
+} // namespace
+
+TEST_CASE("a text step sets its text in a TheDraw font the steps file names, copied into the project (#422)",
+          "[replay][text][tdf]") {
+    const auto out = replayed(tdfScript(R"({"name": "title", "action": "text", "at": [1, 1], "text": "Hi",
+        "textOptions": {"face": {"tdf": "../tdf/bw-outline.tdf", "font": "BW Outline"}}})"));
+    REQUIRE(out.captures.size() == 1);
+    const project::Project& p = out.captures[0].project;
+    const std::string sha = sha256Hex(tdfBytes("bw-outline.tdf"));
+    const FaceRef& face = layerNamed(p, "Text 1").props.text->face;
+    CHECK(face == FaceRef{FaceRef::Kind::Tdf, "BW Outline", sha, 0});
+    // the project holds the file by its hash, and draws the face from it alone
+    REQUIRE(p.fonts.files().size() == 1);
+    CHECK(p.fonts.files().begin()->first == sha);
+    CHECK(p.fonts.face(face) != nullptr);
+    // drawn in the font: not the bundled block face's cells
+    const auto block = replayed(tdfScript(R"({"name": "title", "action": "text", "at": [1, 1], "text": "Hi"})"));
+    CHECK(layerNamed(p, "Text 1").cells != layerNamed(block.captures[0].project, "Text 1").cells);
+    CHECK(layerNamed(p, "Text 1").bounds().height != layerNamed(block.captures[0].project, "Text 1").bounds().height);
+}
+
+TEST_CASE("a TheDraw face is found by its name, or by name and index, in a file of several (#422)",
+          "[replay][text][tdf]") {
+    const std::string sha = sha256Hex(tdfBytes("bw-all.tdf"));
+    const auto faceOf = [](const std::string& tdf) {
+        const auto out = replayed(tdfScript(R"({"name": "t", "action": "text", "at": [1, 1], "text": "A",
+            "textOptions": {"face": )" + tdf + "}}"));
+        return layerNamed(out.captures[0].project, "Text 1").props.text->face;
+    };
+    CHECK(faceOf(R"({"tdf": "../tdf/bw-all.tdf", "font": "BW Block"})") ==
+          FaceRef{FaceRef::Kind::Tdf, "BW Block", sha, 1});
+    CHECK(faceOf(R"({"tdf": "../tdf/bw-all.tdf", "font": "BW Colour", "index": 2})") ==
+          FaceRef{FaceRef::Kind::Tdf, "BW Colour", sha, 2});
+    CHECK(faceOf(R"({"tdf": "../tdf/bw-all.tdf", "font": "BW Outline", "index": 0})") ==
+          FaceRef{FaceRef::Kind::Tdf, "BW Outline", sha, 0});
+}
+
+TEST_CASE("a TheDraw face the file can't give stops the replay, naming the step and the fonts it holds (#422)",
+          "[replay][text][tdf]") {
+    const auto step = [](const std::string& tdf) {
+        return tdfScript(R"({"name": "draw", "action": "selectAll"}, {"name": "title", "action": "text", "at": [1, 1],
+            "text": "A", "textOptions": {"face": )" + tdf + "}}");
+    };
+    const std::string all = "it holds 0 \"BW Outline\", 1 \"BW Block\", 2 \"BW Colour\"";
+    SECTION("a name the file doesn't hold") {
+        CHECK(failure(step(R"({"tdf": "../tdf/bw-all.tdf", "font": "BW Comic"})")) ==
+              "step 2 (title): font \"BW Comic\" is not in ../tdf/bw-all.tdf; " + all);
+        // names are matched exactly
+        CHECK(failure(step(R"({"tdf": "../tdf/bw-outline.tdf", "font": "bw outline"})")) ==
+              "step 2 (title): font \"bw outline\" is not in ../tdf/bw-outline.tdf; it holds 0 \"BW Outline\"");
+    }
+    SECTION("an index past its fonts, or naming another font") {
+        CHECK(failure(step(R"({"tdf": "../tdf/bw-all.tdf", "font": "BW Block", "index": 3})")) ==
+              "step 2 (title): ../tdf/bw-all.tdf has no font at index 3; " + all);
+        CHECK(failure(step(R"({"tdf": "../tdf/bw-all.tdf", "font": "BW Block", "index": 2})")) ==
+              "step 2 (title): the font at index 2 in ../tdf/bw-all.tdf is \"BW Colour\", not \"BW Block\"; " + all);
+    }
+    SECTION("a name two of its fonts share, with no index") {
+        QTemporaryDir tmp;
+        REQUIRE(tmp.isValid());
+        const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+        std::string twin = tdfBytes("bw-all.tdf");
+        twin.replace(twin.find("BW Outline"), 10, std::string("BW Block\0\0", 10));
+        std::ofstream(dir / "twin.tdf", std::ios::binary) << twin;
+        CHECK(failure(step(R"({"tdf": "twin.tdf", "font": "BW Block"})"), dir) ==
+              "step 2 (title): 2 fonts in twin.tdf are named \"BW Block\"; give \"index\" to pick one: it holds "
+              "0 \"BW Block\", 1 \"BW Block\", 2 \"BW Colour\"");
+        // an index picks one
+        const auto out = replayed(step(R"({"tdf": "twin.tdf", "font": "BW Block", "index": 1})"), dir);
+        CHECK(layerNamed(out.captures.back().project, "Text 1").props.text->face.index == 1);
+    }
+    SECTION("a missing file, or one that isn't a TheDraw font") {
+        QTemporaryDir tmp;
+        REQUIRE(tmp.isValid());
+        const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+        CHECK(failure(step(R"({"tdf": "fonts/gone.tdf", "font": "X"})"), dir) ==
+              "step 2 (title): " + (dir / "fonts/gone.tdf").string() + ": no such file");
+        std::ofstream(dir / "junk.tdf", std::ios::binary) << "not a font at all";
+        CHECK_THAT(failure(step(R"({"tdf": "junk.tdf", "font": "X"})"), dir),
+                   ContainsSubstring("step 2 (title): junk.tdf: not a TheDraw font file: "));
+        std::ofstream(dir / "empty.tdf", std::ios::binary) << "";
+        CHECK_THAT(failure(step(R"({"tdf": "empty.tdf", "font": "X"})"), dir),
+                   ContainsSubstring("step 2 (title): empty.tdf: not a TheDraw font file: "));
+        // cut short: the header and part of the first font
+        std::ofstream(dir / "cut.tdf", std::ios::binary) << tdfBytes("bw-outline.tdf").substr(0, 200);
+        CHECK_THAT(failure(step(R"({"tdf": "cut.tdf", "font": "BW Outline"})"), dir),
+                   ContainsSubstring("step 2 (title): cut.tdf: not a TheDraw font file: "));
+    }
+    SECTION("a file the load pass didn't read") {
+        // run without the load pass, as a caller that skips it would
+        const auto unread = [](const std::string& json) {
+            const steps::Script s = steps::parse(json);
+            try {
+                bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples));
+            } catch (const bwcli::Failure& f) {
+                return f.message;
+            }
+            return std::string("(replayed)");
+        };
+        CHECK(unread(step(R"({"tdf": "../tdf/bw-all.tdf", "font": "BW Block"})")) ==
+              "step 2 (title): ../tdf/bw-all.tdf: not read; the load pass reads a step's files before the replay runs");
+    }
+}
+
+TEST_CASE("a text step that would leave the text layers using over 16 TheDraw font files is refused (#422)",
+          "[replay][text][tdf]") {
+    // 17 files, each bw-block.tdf with its font renamed, so each has its own sha256
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    const std::string block = tdfBytes("bw-block.tdf");
+    REQUIRE(block.find("BW Block") != std::string::npos);
+    const auto num = [](int i) { return std::string(1, char('0' + i / 10)) + char('0' + i % 10); };
+    for (int i = 0; i < 17; ++i) {
+        std::string font = block;
+        font.replace(font.find("BW Block"), 8, "BW Blk" + num(i));
+        std::ofstream(dir / ("f" + num(i) + ".tdf"), std::ios::binary) << font;
+    }
+    const auto face = [&](int i) {
+        return R"({"face": {"tdf": "f)" + num(i) + R"(.tdf", "font": "BW Blk)" + num(i) + R"("}})";
+    };
+    std::string steps;
+    for (int i = 0; i < 16; ++i)
+        steps += std::string(i ? ", " : "") + R"({"name": "t)" + num(i) + R"(", "action": "text", "at": [)" +
+                 std::to_string(1 + 12 * i) + R"(, 1], "text": "A", "textOptions": )" + face(i) + "}";
+    const auto script = [&](const std::string& more) {
+        return R"({"version": 1, "start": {"blank": [220, 24]}, "steps": [)" + steps + more + "]}";
+    };
+    SECTION("16 files are a project's limit") {
+        const auto out = replayed(script(""), dir);
+        CHECK(out.captures.back().project.fonts.files().size() == 16);
+        CHECK_NOTHROW(project::zipBytes(out.captures.back().project));
+    }
+    SECTION("a 17th new layer in a 17th file") {
+        CHECK(failure(script(R"(, {"name": "t16", "action": "text", "at": [205, 1], "text": "A", "textOptions": )" +
+                             face(16) + "}"),
+                      dir) == "step 17 (t16): the text layers would use over 16 TheDraw font files, more than a "
+                              "project holds");
+    }
+    SECTION("the active layer restyled out of its file into a 17th, with no at") {
+        const auto out = replayed(
+            script(R"(, {"name": "re", "action": "text", "textOptions": )" + face(16) + "}"), dir);
+        CHECK(layerNamed(out.captures.back().project, "Text 16").props.text->face.name == "BW Blk16");
+        CHECK_NOTHROW(project::zipBytes(out.captures.back().project));
+    }
+}
+
+TEST_CASE("a TheDraw face holds for later text steps, and Tool Options alone set it on the active text layer (#422)",
+          "[replay][text][tdf]") {
+    const std::string sha = sha256Hex(tdfBytes("bw-all.tdf"));
+    SECTION("a later text step takes the face, and the file is copied once") {
+        const auto out = replayed(tdfScript(R"({"name": "one", "action": "text", "at": [1, 1], "text": "A",
+                "textOptions": {"face": {"tdf": "../tdf/bw-all.tdf", "font": "BW Block"}}},
+            {"name": "two", "action": "text", "at": [1, 12], "text": "B"})"));
+        const project::Project& p = out.captures.back().project;
+        CHECK(layerNamed(p, "Text 2").props.text->face == FaceRef{FaceRef::Kind::Tdf, "BW Block", sha, 1});
+        CHECK(p.fonts.files().size() == 1);
+    }
+    SECTION("no \"at\": the active text layer takes the face, and the project its file") {
+        const auto out = replayed(tdfScript(R"({"name": "one", "action": "text", "at": [1, 1], "text": "A"},
+            {"name": "face", "action": "text", "textOptions": {"face": {"tdf": "../tdf/bw-all.tdf", "font": "BW Colour"}}})"));
+        REQUIRE(out.captures.size() == 2);
+        CHECK(out.captures[0].project.fonts.empty());
+        const project::Project& p = out.captures[1].project;
+        CHECK(layerNamed(p, "Text 1").props.text->face == FaceRef{FaceRef::Kind::Tdf, "BW Colour", sha, 2});
+        CHECK(p.fonts.files().size() == 1);
+        CHECK(p.fonts.file(sha) != nullptr);
+    }
+    SECTION("no \"at\" on a locked text layer, or a cells layer: only new text takes it, and nothing is copied") {
+        const auto out = replayed(tdfScript(R"({"name": "one", "action": "text", "at": [1, 1], "text": "A"},
+            {"name": "lock", "action": "layerProperties", "locked": true},
+            {"name": "face", "action": "text", "textOptions": {"face": {"tdf": "../tdf/bw-all.tdf", "font": "BW Colour"}}},
+            {"name": "two", "action": "text", "at": [20, 12], "text": "B"})"));
+        REQUIRE(out.captures.size() == 4);
+        const project::Project& faced = out.captures[2].project;
+        CHECK(layerNamed(faced, "Text 1").props.text->face.kind == FaceRef::Kind::Pixel);
+        CHECK(faced.fonts.empty());
+        const project::Project& p = out.captures[3].project;
+        CHECK(layerNamed(p, "Text 2").props.text->face == FaceRef{FaceRef::Kind::Tdf, "BW Colour", sha, 2});
+        CHECK(p.fonts.files().size() == 1);
+    }
+    SECTION("a big style refuses a TheDraw face, as the dock does") {
+        CHECK_THAT(failure(tdfScript(R"({"name": "big", "action": "text", "at": [1, 1], "text": "A",
+                "textOptions": {"bigStyle": "shadow", "face": {"tdf": "../tdf/bw-all.tdf", "font": "BW Block"}}})")),
+                   ContainsSubstring("step 1 (big): "));
+    }
+}
+
+TEST_CASE("a project a TheDraw text step wrote reads back and draws without the steps file's fonts (#422)",
+          "[replay][text][tdf]") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    fs::create_directories(dir / "steps/fonts");
+    std::ofstream(dir / "steps/fonts/outline.tdf", std::ios::binary) << tdfBytes("bw-outline.tdf");
+    const auto out = replayed(tdfScript(R"({"name": "title", "action": "text", "at": [1, 1], "text": "Hi",
+        "textOptions": {"face": {"tdf": "fonts/outline.tdf", "font": "BW Outline"}}})"),
+                            dir / "steps");
+    const project::Project& p = out.captures[0].project;
+    project::writeZip(p, dir / "01-title.bwp");
+    // the steps file and its fonts are gone; the project carries its copy
+    fs::remove_all(dir / "steps");
+    const project::Project back = project::read(dir / "01-title.bwp");
+    CHECK(back.fonts == p.fonts);
+    CHECK(back.layers == p.layers);
+    CHECK(bytesOn(back, kSavedDay) == bytesOn(p, kSavedDay));
+    // a start that already holds the same bytes: the step's face names its copy
+    std::ofstream(dir / "again.tdf", std::ios::binary) << tdfBytes("bw-outline.tdf");
+    const auto again = replayed(R"({"version": 1, "start": {"file": "01-title.bwp"}, "steps": [
+        {"name": "more", "action": "text", "at": [1, 14], "text": "Yo",
+         "textOptions": {"face": {"tdf": "again.tdf", "font": "BW Outline"}}}]})",
+                              dir);
+    const project::Project& more = again.captures[0].project;
+    CHECK(more.fonts == p.fonts);
+    CHECK(layerNamed(more, "Text 2").props.text->face == layerNamed(p, "Text 1").props.text->face);
 }

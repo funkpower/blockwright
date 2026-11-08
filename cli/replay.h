@@ -7,6 +7,7 @@
 
 #include "blockwright/brushes/clone.h"
 #include "blockwright/edit.h"
+#include "blockwright/font_store.h"
 #include "blockwright/project.h"
 #include "blockwright/steps.h"
 #include "blockwright/text_source.h"
@@ -112,6 +113,11 @@ struct ToolSettings {
     // The Text tool's (#421): the settings a new text layer starts with
     // (TextTool::defaults), its text empty.
     bw::TextSource text;
+    // The TheDraw font files text steps have named (#422), by hash: the
+    // Text tool keeps the file of the face new text starts in
+    // (TextTool::keptFonts), so a font set before any layer uses it can
+    // still make one.
+    bw::FontStore fonts;
 };
 
 // `settings` with the options a step sets taken into it.

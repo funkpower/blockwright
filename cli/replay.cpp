@@ -24,6 +24,7 @@
 #include "blockwright/selection.h"
 #include "blockwright/shapes.h"
 #include "blockwright/target.h"
+#include "blockwright/tdf.h"
 #include "blockwright/text.h"
 #include "blockwright/width.h"
 #include "blockwright/xbin.h"
@@ -34,10 +35,12 @@
 #include <cerrno>
 #include <cstring>
 #include <exception>
+#include <map>
 #include <memory>
 #include <new>
 #include <optional>
 #include <ostream>
+#include <set>
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <fcntl.h>
@@ -124,6 +127,9 @@ namespace {
 // What the editor holds between steps: its document, and Tool Options.
 struct State : ToolSettings {
     project::Project p;
+    // the bytes of the files the steps read, by their paths as written (the
+    // load pass's Script::files)
+    const std::map<std::string, std::string>* files = nullptr;
     LayerId active = 0;
     Selection selection;
     std::optional<CellBlock> clipboard;
@@ -541,6 +547,83 @@ void clone(State& s, const Step& st, Outcome& out) {
     s.clone.anchor = next.anchor;
 }
 
+// The face a text step's TheDraw face names (#422): the font in the file
+// the load pass read, by its name, at its index when the step gives one.
+// The project's copy of the same bytes, or the file an earlier step named,
+// is the one used. The file is kept for later steps (ToolSettings::fonts),
+// as the Text tool keeps the file of the face new text starts in. Refused
+// naming the step: a file that isn't a TheDraw font file (readTdf's
+// reason), a name the file doesn't hold, a name two of its fonts share with
+// no index given, and an index past its fonts or naming another font, each
+// listing the fonts it holds.
+FaceRef tdfFace(State& s, const Step& st, const steps::Options::Text::Tdf& t) {
+    const auto read = s.files ? s.files->find(t.path) : std::map<std::string, std::string>::const_iterator{};
+    if (!s.files || read == s.files->end())
+        fail(st, t.path + ": not read; the load pass reads a step's files before the replay runs");
+    const std::string sha = sha256Hex(read->second);
+    FontFilePtr file = FontSources{&s.p.fonts, nullptr, &s.fonts}.file(sha);
+    if (!file) {
+        try {
+            file = loadFontFile(read->second);
+        } catch (const TdfError& e) {
+            fail(st, t.path + ": not a TheDraw font file: " + e.what());
+        }
+    }
+    const std::vector<std::string>& names = file->names;
+    const auto quoted = [](const std::string& n) { return "\"" + n + "\""; };
+    std::string holds;
+    for (std::size_t i = 0; i < names.size(); ++i)
+        holds += (i ? ", " : "") + std::to_string(i) + " " + quoted(names[i]);
+    holds = "it holds " + holds;
+    int index = 0;
+    if (t.index) {
+        if (std::size_t(*t.index) >= names.size())
+            fail(st, t.path + " has no font at index " + std::to_string(*t.index) + "; " + holds);
+        if (names[std::size_t(*t.index)] != t.font)
+            fail(st, "the font at index " + std::to_string(*t.index) + " in " + t.path + " is " +
+                         quoted(names[std::size_t(*t.index)]) + ", not " + quoted(t.font) + "; " + holds);
+        index = *t.index;
+    } else {
+        std::vector<int> found;
+        for (std::size_t i = 0; i < names.size(); ++i)
+            if (names[i] == t.font)
+                found.push_back(int(i));
+        if (found.empty())
+            fail(st, "font " + quoted(t.font) + " is not in " + t.path + "; " + holds);
+        if (found.size() > 1)
+            fail(st, std::to_string(found.size()) + " fonts in " + t.path + " are named " + quoted(t.font) +
+                         "; give \"index\" to pick one: " + holds);
+        index = found[0];
+    }
+    s.fonts.add(file);
+    return FaceRef{FaceRef::Kind::Tdf, t.font, file->sha256, index};
+}
+
+// A TheDraw face a layer has taken: its file copied into the project
+// (Document::keepFont), so the project draws it without the steps file's
+// fonts, as the editor copies a fonts-folder font.
+void keepFont(State& s, const FaceRef& face) {
+    if (face.kind == FaceRef::Kind::Tdf)
+        if (FontFilePtr file = FontSources{&s.p.fonts, nullptr, &s.fonts}.file(face.file))
+            s.p.fonts.add(std::move(file));
+}
+
+// A text step that would leave the text layers using over kMaxFontFiles
+// font files fails: a project can't hold them (project::zipBytes refuses
+// it), whatever the replay writes. `replaced` is the layer the step
+// restyles, its old face no longer in use.
+void checkFontCount(State& s, const Step& st, const FaceRef& face, const Layer* replaced) {
+    if (face.kind != FaceRef::Kind::Tdf)
+        return;
+    std::set<std::string> used{face.file};
+    for (const Layer& l : s.stack().layers())
+        if (&l != replaced && l.props.text && l.props.text->face.kind == FaceRef::Kind::Tdf)
+            used.insert(l.props.text->face.file);
+    if (used.size() > bw::project::kMaxFontFiles)
+        fail(st, "the text layers would use over " + std::to_string(bw::project::kMaxFontFiles) +
+                     " TheDraw font files, more than a project holds");
+}
+
 // The Text tool (TextTool). Tool Options are set as the dock sets them
 // (TextOptions::apply, steps::applyTextOptions) on the settings it shows:
 // the active layer's when it is a live text layer and no text cursor waits,
@@ -555,10 +638,13 @@ void clone(State& s, const Step& st, Outcome& out) {
 // a live text layer that isn't locked, one change of its source
 // (TextTool::setSettings, textEdit).
 void text(State& s, const Step& st, Outcome& out) {
-    const FontSources fonts{&s.p.fonts, nullptr};
+    const FontSources fonts{&s.p.fonts, nullptr, &s.fonts};
+    std::optional<FaceRef> tdf;
+    if (st.options.text && st.options.text->tdf)
+        tdf = tdfFace(s, st, *st.options.text->tdf);
     const auto set = [&](TextSource& source) {
         if (st.options.text)
-            if (const auto problem = steps::applyTextOptions(source, *st.options.text))
+            if (const auto problem = steps::applyTextOptions(source, *st.options.text, tdf ? &*tdf : nullptr))
                 fail(st, *problem);
     };
     if (st.points.empty()) {
@@ -585,7 +671,10 @@ void text(State& s, const Step& st, Outcome& out) {
             return;
         if (const auto problem = textSourceProblem(next, fonts))
             fail(st, "the active layer \"" + l.props.name + "\" can't be set so: " + *problem);
+        const FaceRef face = next.face;
+        checkFontCount(s, st, face, &l);
         applyEdit(s.stack(), textEdit(l, std::move(next), 0, s.p.ice), false, fonts);
+        keepFont(s, face);
         return;
     }
     onCanvas(s, st, false);
@@ -599,8 +688,11 @@ void text(State& s, const Step& st, Outcome& out) {
     source.text = st.text;
     if (const auto problem = textSourceProblem(source, fonts))
         fail(st, "the text can't be set: " + *problem);
+    const FaceRef face = source.face;
+    checkFontCount(s, st, face, nullptr);
     Layer layer = makeTextLayer(std::move(source), freeLayerName(s, "Text"), p.x, p.y, fonts);
     s.active = s.stack().add(std::move(layer), s.index() + 1);
+    keepFont(s, face);
 }
 
 // Format > Canvas Size... as the dialog applies it (Document::resizeCanvas):
@@ -1021,6 +1113,7 @@ project::Project startSaying(const steps::Script& script, const fs::path& dir, c
 Outcome run(const steps::Script& script, project::Project project, const Observer& observe) {
     State s;
     s.p = std::move(project);
+    s.files = &script.files;
     if (s.stack().empty())
         throw Failure{"start: it has no layers"};
     // the editor opens on the bottom layer
