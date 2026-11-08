@@ -1005,6 +1005,53 @@ private:
     int fd_;
 };
 
+// `path` opened to read, through a link but without waiting on a FIFO or
+// taking a terminal; -1, with errno set, if it can't be.
+int openUnblocked(const fs::path& path) {
+    int fd;
+    do
+        fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+    while (fd < 0 && errno == EINTR);
+    return fd;
+}
+
+// What a file `fstat` doesn't call regular is, for an error.
+const char* notFileKind(mode_t mode) {
+    return S_ISDIR(mode)                    ? "a directory"
+           : S_ISFIFO(mode)                 ? "a FIFO"
+           : S_ISSOCK(mode)                 ? "a socket"
+           : S_ISCHR(mode) || S_ISBLK(mode) ? "a device"
+                                            : "not a regular file";
+}
+
+// The project zip at `path`, opened once and checked by its handle: refused
+// unless fstat says it is a regular file, then made blocking, so what is
+// read through it is the file that was checked, and a FIFO or device put at
+// the path after any earlier check is refused rather than waited on.
+Descriptor openZipFile(const fs::path& path) {
+    Descriptor fd(openUnblocked(path));
+    if (fd.get() < 0) {
+        const int e = errno;
+        if (e == ENOENT || e == ENOTDIR)
+            fail(path.string() + " doesn't exist");
+        // a socket can't be opened at all; say what it is (the read is
+        // refused either way)
+        struct stat st {};
+        if (::stat(path.c_str(), &st) == 0 && !S_ISREG(st.st_mode))
+            fail(path.string() + " is " + notFileKind(st.st_mode) + ", not a project zip");
+        fail("can't read " + path.string() + ": " + std::strerror(e));
+    }
+    struct stat st {};
+    if (::fstat(fd.get(), &st) != 0)
+        fail("can't read " + path.string() + ": " + std::strerror(errno));
+    if (!S_ISREG(st.st_mode))
+        fail(path.string() + " is " + notFileKind(st.st_mode) + ", not a project zip");
+    const int flags = ::fcntl(fd.get(), F_GETFL);
+    if (flags < 0 || ::fcntl(fd.get(), F_SETFL, flags & ~O_NONBLOCK) < 0)
+        fail("can't read " + path.string() + ": " + std::strerror(errno));
+    return fd;
+}
+
 // Reads the `size` bytes of `p`, opened as `fd` without following a link or
 // waiting on a FIFO, if it is a plain file of that size.
 std::string readOpened(Descriptor fd, const fs::path& p, std::size_t size) {
@@ -1226,13 +1273,44 @@ std::string zipErrorText(int code) {
 
 Entries readZip(const fs::path& path) {
     int err = 0;
+#if BW_PROJECT_POSIX
+    // libzip reads the descriptor that was checked, itself rather than a
+    // copy (zip_fdopen's dup would drop close-on-exec, and a generator
+    // started meanwhile would keep the file open). The stream owns the
+    // descriptor once it opens, the source the stream once it is made, and
+    // the archive the source once it opens.
+    if (testing::directoryStep)
+        testing::directoryStep("zip", path);
+    Descriptor fd = openZipFile(path);
+    if (testing::directoryStep)
+        testing::directoryStep("zip opened", path);
+    std::FILE* stream = ::fdopen(fd.get(), "rb");
+    if (!stream)
+        fail("can't read " + path.string() + ": " + std::strerror(errno));
+    fd.release();
+    zip_t* z = nullptr;
+    {
+        zip_error_t error;
+        zip_error_init(&error);
+        if (zip_source_t* src = zip_source_filep_create(stream, 0, -1, &error); !src) {
+            std::fclose(stream);
+        } else if (z = zip_open_from_source(src, ZIP_RDONLY | ZIP_CHECKCONS, &error); !z) {
+            zip_source_free(src);
+        }
+        err = zip_error_code_zip(&error);
+        zip_error_fini(&error);
+    }
+#else
     zip_t* z = zip_open(zipName(path).c_str(), ZIP_RDONLY | ZIP_CHECKCONS, &err);
+#endif
     if (!z)
         fail(path.string() + " is not a project zip: " + zipErrorText(err));
     struct Closer {
         zip_t* z;
         ~Closer() { zip_discard(z); }
     } closer{z};
+    if (testing::directoryStep)
+        testing::directoryStep("zip reading", path);
     Entries out;
     std::uint64_t total = 0;
     std::size_t fonts = 0;
@@ -2488,20 +2566,43 @@ bool isProject(const fs::path& path) {
     std::error_code ec;
     if (fs::is_directory(path, ec))
         return fs::is_regular_file(path / "manifest.json", ec);
+    char sig[4] = {};
+#if BW_PROJECT_POSIX
+    // The first bytes of the file the handle is checked to be: a FIFO or
+    // device put at the path is no project, and is never waited on.
+    if (testing::directoryStep)
+        testing::directoryStep("sniff", path);
+    const Descriptor fd(openUnblocked(path));
+    struct stat st {};
+    if (fd.get() < 0 || ::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode))
+        return false;
+    std::size_t got = 0;
+    while (got < sizeof sig) {
+        const ssize_t n = ::read(fd.get(), sig + got, sizeof sig - got);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            break;
+        got += std::size_t(n);
+    }
+    return got == sizeof sig && std::memcmp(sig, "PK\x03\x04", 4) == 0;
+#else
     if (!fs::is_regular_file(path, ec))
         return false;
     std::ifstream in(path, std::ios::binary);
-    char sig[4] = {};
     in.read(sig, 4);
     return in.gcount() == 4 && std::memcmp(sig, "PK\x03\x04", 4) == 0;
+#endif
 }
 
 Project read(const fs::path& path, ReadNotes* notes) {
     std::error_code ec;
     if (fs::is_directory(path, ec))
         return decode(readDirectory(path), notes);
+#if !BW_PROJECT_POSIX
     if (!fs::exists(path, ec))
         fail(path.string() + " doesn't exist");
+#endif
     return decode(readZip(path), notes);
 }
 

@@ -24,9 +24,17 @@
 #include <zstd.h>
 
 #if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
+
+#include <chrono>
+#include <future>
+#include <memory>
+#include <thread>
 #endif
 #if defined(__linux__)
 #include <poll.h>
@@ -40,6 +48,7 @@
 #include <climits>
 #include <cstdlib>
 #include <csignal>
+#include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -901,6 +910,209 @@ std::string readRefusal(const fs::path& path) {
 }
 
 } // namespace
+
+#if defined(__unix__) || defined(__APPLE__)
+namespace {
+
+// What `f` returns, run on a thread of its own. If it is still running after
+// a minute, whatever waits on the FIFO `fifo` is given a writer, so the
+// thread ends (it is given a while to, before the test's locals it may use
+// go), and the test fails rather than hangs.
+std::string within(const fs::path& fifo, std::function<std::string()> f) {
+    auto result = std::make_shared<std::promise<std::string>>();
+    std::future<std::string> done = result->get_future();
+    std::thread([f = std::move(f), result] {
+        try {
+            result->set_value(f());
+        } catch (const std::exception& e) {
+            result->set_value(std::string("threw: ") + e.what());
+        }
+    }).detach();
+    if (done.wait_for(std::chrono::seconds(60)) != std::future_status::ready) {
+        const int fd = ::open(fifo.c_str(), O_WRONLY | O_NONBLOCK);
+        if (fd >= 0)
+            ::close(fd);
+        done.wait_for(std::chrono::seconds(10));
+        FAIL("blocked on " << fifo.string());
+    }
+    return done.get();
+}
+
+// Why project::read refuses `path`, or "(read)".
+std::string refusalOf(const fs::path& path) {
+    try {
+        project::read(path);
+    } catch (const ProjectError& e) {
+        return e.what();
+    }
+    return "(read)";
+}
+
+std::string sniff(const fs::path& path) { return project::isProject(path) ? "a project" : "not a project"; }
+
+} // namespace
+#endif
+
+TEST_CASE("a FIFO, device or directory at a project's path is refused without blocking", "[project][io]") {
+#if defined(__unix__) || defined(__APPLE__)
+    const fs::path dir = scratch("not-a-file");
+    const fs::path fifo = dir / "pipe.bwp";
+    REQUIRE(::mkfifo(fifo.c_str(), 0600) == 0);
+    CHECK(within(fifo, [&] { return sniff(fifo); }) == "not a project");
+    CHECK(within(fifo, [&] { return refusalOf(fifo); }) == fifo.string() + " is a FIFO, not a project zip");
+
+    const fs::path device = "/dev/null";
+    CHECK_FALSE(project::isProject(device));
+    CHECK(refusalOf(device) == "/dev/null is a device, not a project zip");
+
+    // a directory is read as a project directory, as before
+    const fs::path empty = dir / "empty.bwp";
+    fs::create_directory(empty);
+    CHECK_FALSE(project::isProject(empty));
+    CHECK(refusalOf(empty).find("manifest.json") != std::string::npos);
+
+    const fs::path missing = dir / "missing.bwp";
+    CHECK_FALSE(project::isProject(missing));
+    CHECK(refusalOf(missing) == missing.string() + " doesn't exist");
+
+    // a socket can't be opened at all, and is refused for what it is
+    const fs::path socket = dir / "sock.bwp";
+    sockaddr_un address{};
+    if (socket.native().size() < sizeof address.sun_path) {
+        address.sun_family = AF_UNIX;
+        std::memcpy(address.sun_path, socket.c_str(), socket.native().size());
+        const int s = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        REQUIRE(s >= 0);
+        const int bound = ::bind(s, reinterpret_cast<const sockaddr*>(&address), sizeof address);
+        ::close(s);
+        REQUIRE(bound == 0);
+        CHECK_FALSE(project::isProject(socket));
+        CHECK(refusalOf(socket) == socket.string() + " is a socket, not a project zip");
+    } else {
+        WARN("the scratch path is too long for a socket's address; not tried");
+    }
+
+    // an ordinary project, and a link to one, still open
+    const Project p = everything();
+    const fs::path zip = dir / "piece.bwp";
+    project::writeZip(p, zip);
+    fs::create_symlink(zip.filename(), dir / "link.bwp");
+    for (const fs::path& at : {zip, dir / "link.bwp"}) {
+        INFO(at.string());
+        CHECK(project::isProject(at));
+        CHECK(project::read(at) == p);
+    }
+    // a path under a file doesn't exist, as before
+    CHECK(refusalOf(zip / "x.bwp") == (zip / "x.bwp").string() + " doesn't exist");
+    // a file that isn't a zip is still refused as one
+    writeBytes(dir / "text.bwp", "not a zip");
+    CHECK_FALSE(project::isProject(dir / "text.bwp"));
+    CHECK(refusalOf(dir / "text.bwp").find(" is not a project zip: ") != std::string::npos);
+#else
+    SKIP("no FIFOs or devices at a path here");
+#endif
+}
+
+TEST_CASE("a FIFO or directory swapped in for a project after its checks is refused, and one swapped in after the "
+          "open is not what is read",
+          "[project][io]") {
+#if defined(__unix__) || defined(__APPLE__)
+    const fs::path dir = scratch("swapped");
+    const fs::path zip = dir / "piece.bwp";
+    const Project p = everything();
+    std::string swapAt;  // the step to swap at, cleared when it has
+    std::string swapped; // what the swap put there, or why it couldn't
+    std::function<void()> swap;
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step == swapAt && at == zip) {
+            swapAt.clear();
+            swap();
+        }
+    };
+    const auto fifoOver = [&] {
+        const fs::path pipe = dir / "pipe";
+        std::error_code ec;
+        if (::mkfifo(pipe.c_str(), 0600) != 0)
+            swapped = std::string("mkfifo: ") + std::strerror(errno);
+        else if (fs::rename(pipe, zip, ec); ec)
+            swapped = "rename: " + ec.message();
+        else
+            swapped = "a FIFO";
+    };
+    const auto directoryOver = [&] {
+        std::error_code ec;
+        fs::remove(zip, ec);
+        swapped = !ec && fs::create_directory(zip, ec) ? "a directory" : "mkdir: " + ec.message();
+    };
+    const auto fresh = [&](std::string step, std::function<void()> how) {
+        fs::remove_all(zip);
+        project::writeZip(p, zip);
+        swapAt = std::move(step);
+        swapped.clear();
+        swap = std::move(how);
+    };
+
+    // isProject has passed its check for a directory
+    fresh("sniff", fifoOver);
+    CHECK(within(zip, [&] { return sniff(zip); }) == "not a project");
+    CHECK(swapped == "a FIFO");
+
+    // read has passed its check for a directory
+    fresh("zip", fifoOver);
+    CHECK(within(zip, [&] { return refusalOf(zip); }) == zip.string() + " is a FIFO, not a project zip");
+    CHECK(swapped == "a FIFO");
+    fresh("zip", directoryOver);
+    CHECK(within(zip, [&] { return refusalOf(zip); }) == zip.string() + " is a directory, not a project zip");
+    CHECK(swapped == "a directory");
+
+    // after the open the path no longer matters: the file checked is read
+    fresh("zip opened", fifoOver);
+    CHECK(within(zip, [&] { return std::string(project::read(zip) == p ? "the project" : "another project"); }) ==
+          "the project");
+    CHECK(swapped == "a FIFO");
+    CHECK(fs::is_fifo(zip));
+#else
+    SKIP("no FIFOs here");
+#endif
+}
+
+TEST_CASE("the descriptor a project zip is read through is closed on exec", "[project][io]") {
+#if defined(__unix__) || defined(__APPLE__)
+    // A generator started while a project is read must not inherit it: every
+    // descriptor open on the zip as its entries are read is close-on-exec.
+    const fs::path zip = scratch("cloexec") / "piece.bwp";
+    const Project p = everything();
+    project::writeZip(p, zip);
+    struct stat file {};
+    REQUIRE(::stat(zip.c_str(), &file) == 0);
+    int open = 0;
+    int inherited = 0;
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step != "zip reading" || at != zip)
+            return;
+        const long most = std::min(::sysconf(_SC_OPEN_MAX), 65536L);
+        for (int fd = 0; fd < most; ++fd) {
+            struct stat st {};
+            const int flags = ::fcntl(fd, F_GETFD);
+            if (flags < 0 || ::fstat(fd, &st) != 0 || st.st_dev != file.st_dev || st.st_ino != file.st_ino)
+                continue;
+            ++open;
+            inherited += !(flags & FD_CLOEXEC);
+        }
+    };
+    CHECK(project::read(zip) == p);
+    CHECK(open >= 1);
+    CHECK(inherited == 0);
+#else
+    SKIP("no close-on-exec here");
+#endif
+}
 
 TEST_CASE("a font copy over 4 MiB is refused by its declared size, before it is read", "[project][io][fonts]") {
     // Codex round 1 (#168): a deflated 256 MiB entry at a font copy's path

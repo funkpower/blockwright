@@ -312,7 +312,10 @@ bool samePath(std::string_view a, std::string_view b);
 
 // Whether `path` is a project: a directory with a manifest.json, or a file
 // that starts as a zip does (read says whether the zip is a project, so a
-// damaged one is reported as such rather than read as something else).
+// damaged one is reported as such rather than read as something else). On
+// POSIX systems the first bytes are read through a handle opened without
+// waiting on a FIFO and checked by fstat, so a FIFO, device or socket at the
+// path (which can't be opened) is not a project and is never waited on.
 bool isProject(const std::filesystem::path& path);
 
 // Reads a project from a zip file or a directory. Hidden entries in either
@@ -321,7 +324,11 @@ bool isProject(const std::filesystem::path& path);
 // at. Anything else that isn't a safe path (safeEntryPath), an entry
 // repeated or over the limits is refused, as is any symbolic link or other
 // entry that isn't a file or directory (in a zip, by its UNIX mode, hidden
-// or not), and everything decode refuses.
+// or not), and everything decode refuses. On POSIX systems a zip is opened
+// once, without waiting on a FIFO, refused unless it is a regular file (a
+// FIFO, device, socket or directory put at the path after the check for a
+// directory: fstat says so, or for a socket the open fails), and read by
+// libzip through that same descriptor, which stays close-on-exec.
 Project read(const std::filesystem::path& path, ReadNotes* notes = nullptr);
 
 // Both writers encode the project first, so one decode would refuse is
@@ -418,6 +425,14 @@ namespace testing {
 // - "scan", every platform: a directory save has written the manifest and
 //   is about to look in the directory `at` for files the project no longer
 //   holds.
+// - "sniff", POSIX systems: isProject has found `at` not to be a directory
+//   and is about to open it to read its first bytes.
+// - "zip", POSIX systems: a read has found `at` not to be a directory and is
+//   about to open it as a zip.
+// - "zip opened", POSIX systems: that read has opened `at`, found it a
+//   regular file by its handle, and is about to give the handle to libzip.
+// - "zip reading", every platform: a read has opened the archive `at` and
+//   is about to read its entries.
 inline std::function<void(std::string_view step, const std::filesystem::path& at)> directoryStep;
 // Called before some system calls a directory save makes, POSIX systems
 // only, with the call and the path it acts on. Tests only. A result other

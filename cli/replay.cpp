@@ -900,8 +900,8 @@ project::Project readStartFile(const fs::path& path, std::vector<std::string>* n
     try {
         if (fs::is_directory(path, ec) && project::isProject(path))
             return readProject();
-        // a file is sniffed and read through checked handles, so nothing
-        // opens it by path but a zip project's reader (#448)
+        // a file is sniffed and read through checked handles, a zip
+        // project's reader included (#448)
         if (zipMagic(path))
             return readProject();
         const std::string data = readChecked(path, project::kMaxEntryBytes);
