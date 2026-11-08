@@ -73,9 +73,10 @@ case "$cmd" in
     call POST /issues --data <<<"$data" | jq -r .number ;;
   issue-list) call GET '/issues?state=open&type=issues&limit=50' | jq -r '.[] | "\(.number)\t\(.title)"' ;;
   issue-get)
+    # the comments reach jq as a file, never as an argument
     issue=$(call GET "/issues/$1")
     comments=$(call GET "/issues/$1/comments")
-    jq --argjson c "$comments" '. + {comments: $c}' <<<"$issue" ;;
+    jq --slurpfile c <(printf '%s' "$comments") '. + {comments: $c[0]}' <<<"$issue" ;;
   issue-close) call PATCH "/issues/$1" --data <<<'{"state":"closed"}' >/dev/null && echo "closed #$1" ;;
   *) sed -n '2,16p' "$0"; exit 2 ;;
 esac

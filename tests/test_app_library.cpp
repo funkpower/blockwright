@@ -1157,6 +1157,157 @@ TEST_CASE("Save to Library on a float lifted off a pixel layer writes its pixels
     CHECK(halfBlocks(b, false) == HalfPair{Red, Black});
 }
 
+// #434: with nothing floating, Save to Library takes what the visible layers
+// show under the selection (a stamp is what you see), while Copy takes the
+// active layer's cells (it edits the layer being worked on). With a float
+// both take the float, which was lifted off the active layer.
+namespace {
+
+Cell letter(char ch, PaletteIndex fg) {
+    Cell c;
+    c.ch = char32_t(ch);
+    c.fg = Color::indexed(fg);
+    c.bg = Color::indexed(Black);
+    return c;
+}
+
+// A bottom cells layer with "ABCD" across (0, 0)-(3, 0), and a cells layer
+// above it, active, with X at (1, 0) and Y at (3, 0) and clear cells at (0, 0)
+// and (2, 0). The selection is (0, 0, 4, 1), over both. Returns the bottom
+// layer's id.
+LayerId twoLayers(Fixture& f) {
+    Document* doc = f.w.document();
+    const LayerId bottom = doc->activeLayer();
+    REQUIRE(doc->edit(CellEdit{{{0, 0, Cell{}, letter('A', Green)},
+                                {1, 0, Cell{}, letter('B', Green)},
+                                {2, 0, Cell{}, letter('C', Green)},
+                                {3, 0, Cell{}, letter('D', Green)}}}));
+    doc->addLayer(LayerKind::Cells);
+    REQUIRE(doc->activeLayer() != bottom);
+    REQUIRE(doc->edit(CellEdit{{{1, 0, transparentCell(), letter('X', LightRed)},
+                                {3, 0, transparentCell(), letter('Y', LightRed)}}}));
+    REQUIRE(doc->canvas().at(0, 0) == letter('A', Green));
+    REQUIRE(doc->canvas().at(1, 0) == letter('X', LightRed));
+    f.w.tools()->setActive(f.w.selectTool());
+    f.w.selectTool()->select({0, 0, 4, 1});
+    return bottom;
+}
+
+// The glyphs of a saved stamp's first row.
+std::string savedRow(Fixture& f, const QString& name) {
+    QString error;
+    const QString path = f.w.saveSelectionToLibrary(name, QStringLiteral("test"), {}, &error);
+    INFO(error.toStdString());
+    REQUIRE(!path.isEmpty());
+    const library::Stamp read = library::readStamp(fspath(path));
+    std::string row;
+    for (int x = 0; x < read.art.canvas.width(); ++x)
+        row += char(read.art.canvas.at(x, 0).ch.codePoint().value());
+    return row;
+}
+
+} // namespace
+
+TEST_CASE("Save to Library takes the visible layers' composite; a hidden layer is left out (#434)") {
+    Fixture f;
+    const LayerId bottom = twoLayers(f);
+    Document* doc = f.w.document();
+    REQUIRE_FALSE(f.w.selectTool()->floating());
+
+    // the bottom layer shows through the top layer's clear cells
+    CHECK(savedRow(f, QStringLiteral("Both")) == "AXCY");
+
+    // hidden, the bottom layer is left out: the clear cells save as blanks
+    REQUIRE(doc->setLayerVisible(bottom, false));
+    REQUIRE_FALSE(f.w.selectTool()->floating());
+    CHECK(savedRow(f, QStringLiteral("Top Only")) == " X Y");
+
+    // a hidden active layer is left out too: what shows is the bottom layer
+    REQUIRE(doc->setLayerVisible(bottom, true));
+    REQUIRE(doc->setLayerVisible(doc->activeLayer(), false));
+    CHECK(savedRow(f, QStringLiteral("Bottom Only")) == "ABCD");
+}
+
+TEST_CASE("Copy takes the active layer's cells only, whatever the other layers show (#434)") {
+    Fixture f;
+    const LayerId bottom = twoLayers(f);
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+
+    const auto checkTop = [&] {
+        const CellBlock& c = s->clipboard();
+        REQUIRE(c.width == 4);
+        REQUIRE(c.height == 1);
+        CHECK(c.at(0, 0) == transparentCell());
+        CHECK(c.at(1, 0) == letter('X', LightRed));
+        CHECK(c.at(2, 0) == transparentCell());
+        CHECK(c.at(3, 0) == letter('Y', LightRed));
+    };
+    s->copy();
+    checkTop();
+
+    // the bottom layer hidden changes nothing
+    REQUIRE(doc->setLayerVisible(bottom, false));
+    s->copy();
+    checkTop();
+
+    // with the bottom layer active, Copy takes its cells, not what shows
+    REQUIRE(doc->setLayerVisible(bottom, true));
+    REQUIRE(doc->setActiveLayer(bottom));
+    s->select({0, 0, 4, 1});
+    s->copy();
+    const CellBlock& c = s->clipboard();
+    REQUIRE(c.width == 4);
+    CHECK(c.at(0, 0) == letter('A', Green));
+    CHECK(c.at(1, 0) == letter('B', Green));
+    CHECK(c.at(2, 0) == letter('C', Green));
+    CHECK(c.at(3, 0) == letter('D', Green));
+}
+
+TEST_CASE("with a float, Save to Library and Copy both take the float, whatever lies under it (#434)") {
+    Fixture f;
+    const LayerId bottom = twoLayers(f);
+    Document* doc = f.w.document();
+    const LayerId top = doc->activeLayer();
+    SelectTool* s = f.w.selectTool();
+
+    SECTION("a float lifted off the active layer") {
+        // lifted and moved one cell right, off the cells it came from: the
+        // active layer under the selection is now X, clear, Y, clear and the
+        // composite X C Y and a blank, neither of them the float
+        s->moveBy(1, 0);
+        REQUIRE(s->floating());
+        REQUIRE(f.w.canvasView()->selection().bounds() == CellRect{1, 0, 4, 1});
+        CHECK(savedRow(f, QStringLiteral("Float")) == " X Y");
+        REQUIRE(s->floating());  // saving doesn't stamp it
+        s->copy();
+        const CellBlock& c = s->clipboard();
+        REQUIRE(c.width == 4);
+        CHECK(c.at(0, 0) == transparentCell());
+        CHECK(c.at(1, 0) == letter('X', LightRed));
+        CHECK(c.at(2, 0) == transparentCell());
+        CHECK(c.at(3, 0) == letter('Y', LightRed));
+    }
+
+    SECTION("a paste of another layer's cells") {
+        REQUIRE(doc->setActiveLayer(bottom));
+        s->select({0, 0, 4, 1});
+        s->copy();
+        REQUIRE(doc->setActiveLayer(top));
+        f.w.canvasView()->setCellCursor({0, 0});
+        s->paste();
+        REQUIRE(s->floating());
+        // the bottom layer's cells, though the top layer is active
+        CHECK(savedRow(f, QStringLiteral("Pasted")) == "ABCD");
+        REQUIRE(s->floating());
+        s->copy();
+        const CellBlock& c = s->clipboard();
+        REQUIRE(c.width == 4);
+        CHECK(c.at(1, 0) == letter('B', Green));
+        CHECK(c.at(3, 0) == letter('D', Green));
+    }
+}
+
 // Resizable stamps (#345 slice 2): a stamp with slice insets floats with
 // handles, and a drag on one re-cuts it to the size it reaches.
 namespace {
