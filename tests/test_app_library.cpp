@@ -2597,3 +2597,169 @@ TEST_CASE("the undo of a covered layer's move drops a lift, as the cells under i
     REQUIRE(doc->layerCanvas().at(5, 3).ch.codePoint().value() == U'x');
     CHECK_FALSE(s->floating());
 }
+
+TEST_CASE("the undo or redo of a hide keeps a float, and its landing is checked (#433)", "[library][layers]") {
+    // PLAN §4 Selections: the undo or redo of a layer step that leaves the
+    // active layer and its cells as they were (a hide among them) keeps a
+    // floating selection, even where the composite changes.
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const LayerId below = doc->activeLayer();
+    write(f.w, 5, 3, QStringLiteral("x"));
+    const LayerId above = doc->addLayer(LayerKind::Cells);
+    REQUIRE(above);
+    write(f.w, 20, 10, QStringLiteral("###"));  // content of its own, away from the float
+    REQUIRE(doc->setActiveLayer(below));
+    int changes = 0;
+    QObject::connect(doc, &Document::cellsChanged, doc, [&] { ++changes; });
+    f.w.statusBar()->clearMessage();
+
+    SECTION("another layer hidden, undone and redone") {
+        REQUIRE(doc->setLayerVisible(above, false));
+        f.w.tools()->setActive(s);
+        s->select({5, 3, 1, 1});
+        press(v, Qt::Key_Right);  // lift, one cell right
+        REQUIRE(s->floating());
+        changes = 0;
+        doc->undoStack()->undo();  // shown again: the composite changes
+        REQUIRE(doc->layers().find(above)->props.visible);
+        REQUIRE(changes > 0);
+        CHECK(s->floating());
+        doc->undoStack()->redo();  // hidden again
+        REQUIRE_FALSE(doc->layers().find(above)->props.visible);
+        CHECK(s->floating());
+        CHECK(f.w.statusBar()->currentMessage().isEmpty());
+        press(v, Qt::Key_Return, QStringLiteral("\r"));
+        CHECK_FALSE(s->floating());
+        CHECK(doc->layerCanvas().at(6, 3).ch.codePoint().value() == U'x');
+        CHECK(doc->layerCanvas().at(5, 3).ch.codePoint().value() != U'x');
+    }
+    SECTION("a paste over a layer hidden, then the hide undone") {
+        REQUIRE(doc->setLayerVisible(above, false));
+        f.w.tools()->setActive(s);
+        s->select({5, 3, 1, 1});
+        act(f.w, "copy")->trigger();
+        v->setCellCursor({30, 12});
+        act(f.w, "paste")->trigger();
+        REQUIRE(s->floating());
+        changes = 0;
+        doc->undoStack()->undo();
+        REQUIRE(doc->layers().find(above)->props.visible);
+        REQUIRE(changes > 0);
+        CHECK(s->floating());
+        CHECK(f.w.statusBar()->currentMessage().isEmpty());
+        press(v, Qt::Key_Return, QStringLiteral("\r"));
+        CHECK_FALSE(s->floating());
+        CHECK(doc->layerCanvas().at(30, 12).ch.codePoint().value() == U'x');
+    }
+    SECTION("the active layer hidden by the undo: the float stays, and its landing is refused") {
+        REQUIRE(doc->setLayerVisible(below, false));
+        REQUIRE(doc->setLayerVisible(below, true));
+        f.w.tools()->setActive(s);
+        s->select({5, 3, 1, 1});
+        press(v, Qt::Key_Right);
+        REQUIRE(s->floating());
+        changes = 0;
+        doc->undoStack()->undo();  // the active layer is hidden again, its x gone from the composite
+        REQUIRE_FALSE(doc->active()->props.visible);
+        REQUIRE(changes > 0);
+        CHECK(s->floating());
+        const Canvas layer = doc->layerCanvas();
+        const int steps = doc->undoStack()->count();
+        press(v, Qt::Key_Return, QStringLiteral("\r"));
+        CHECK(s->floating());
+        CHECK(f.w.statusBar()->currentMessage().contains(QStringLiteral("the layer is hidden")));
+        CHECK(doc->layerCanvas() == layer);
+        CHECK(doc->undoStack()->count() == steps);
+        doc->undoStack()->redo();  // shown: it lands now
+        REQUIRE(doc->active()->props.visible);
+        CHECK(s->floating());
+        press(v, Qt::Key_Return, QStringLiteral("\r"));
+        CHECK_FALSE(s->floating());
+        CHECK(doc->layerCanvas().at(6, 3).ch.codePoint().value() == U'x');
+    }
+}
+
+TEST_CASE("the undo or redo of another layer's move, add or delete keeps a float (#433)", "[library][layers]") {
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const LayerId below = doc->activeLayer();
+    write(f.w, 5, 3, QStringLiteral("x"));
+    const LayerId above = doc->addLayer(LayerKind::Cells);
+    REQUIRE(above);
+    write(f.w, 20, 10, QStringLiteral("###"));
+    SECTION("moved one cell right") {
+        LayerProperties p = doc->active()->props;
+        p.x += 1;
+        REQUIRE(doc->setLayerProperties(above, p, QStringLiteral("Move Layer")));
+    }
+    SECTION("lowered under the active layer") {
+        REQUIRE(doc->moveLayer(above, 0));
+    }
+    SECTION("deleted while another is active") {
+        REQUIRE(doc->setActiveLayer(below));
+        REQUIRE(doc->removeLayer(above));
+    }
+    REQUIRE(doc->setActiveLayer(below));
+    int changes = 0;
+    QObject::connect(doc, &Document::cellsChanged, doc, [&] { ++changes; });
+    f.w.statusBar()->clearMessage();
+    f.w.tools()->setActive(s);
+    s->select({5, 3, 1, 1});
+    press(v, Qt::Key_Right);
+    REQUIRE(s->floating());
+    doc->undoStack()->undo();
+    REQUIRE(changes > 0);
+    REQUIRE(doc->activeLayer() == below);
+    CHECK(s->floating());
+    doc->undoStack()->redo();
+    REQUIRE(doc->activeLayer() == below);
+    CHECK(s->floating());
+    CHECK(f.w.statusBar()->currentMessage().isEmpty());
+    press(v, Qt::Key_Return, QStringLiteral("\r"));
+    CHECK_FALSE(s->floating());
+    CHECK(doc->layerCanvas().at(6, 3).ch.codePoint().value() == U'x');
+}
+
+TEST_CASE("an iCE switch that restyles no layer keeps a float, as does its undo (#433)", "[library][layers]") {
+    // PLAN §4 Selections: only an iCE switch that restyles a layer drops a
+    // float that can't land; a plain one keeps it, though a Pixels layer
+    // makes the composite change with it.
+    Fixture f;
+    Document* doc = f.w.document();
+    SelectTool* s = f.w.selectTool();
+    CanvasView* v = f.w.canvasView();
+    const LayerId below = doc->activeLayer();
+    write(f.w, 5, 3, QStringLiteral("x"));
+    REQUIRE(doc->addLayer(LayerKind::Pixels));
+    CellEdit e;
+    e.changes.push_back(
+        {20, 10, doc->layerCanvas().at(20, 10), pixelLayerCell(LayerPixels{std::uint8_t(15), std::uint8_t(12)})});
+    REQUIRE(doc->edit(e));
+    REQUIRE(doc->setActiveLayer(below));
+    f.w.tools()->setActive(s);
+    s->select({5, 3, 1, 1});
+    press(v, Qt::Key_Right);
+    REQUIRE(s->floating());
+    int changes = 0;
+    QObject::connect(doc, &Document::cellsChanged, doc, [&] { ++changes; });
+    f.w.statusBar()->clearMessage();
+    const bool ice = doc->format().ice;
+    act(f.w, "iceColours")->trigger();
+    REQUIRE(doc->format().ice != ice);
+    REQUIRE(changes > 0);
+    CHECK(s->floating());
+    CHECK(f.w.statusBar()->currentMessage().isEmpty());
+    changes = 0;
+    doc->undoStack()->undo();
+    REQUIRE(doc->format().ice == ice);
+    REQUIRE(changes > 0);
+    CHECK(s->floating());
+    press(v, Qt::Key_Return, QStringLiteral("\r"));
+    CHECK_FALSE(s->floating());
+    CHECK(doc->layerCanvas().at(6, 3).ch.codePoint().value() == U'x');
+}

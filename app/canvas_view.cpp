@@ -228,12 +228,18 @@ CanvasView::CanvasView(Document* doc, CanvasRenderer* renderer, QWidget* parent)
     // Undo, redo or any edit the view didn't push changes the cells under
     // the tool; a new canvas drops the selection too. So does a change of
     // the active layer's own cells or place that leaves the composite as it
-    // was (activeCellsReplaced).
+    // was (activeCellsReplaced). A layer step or an iCE switch that leaves
+    // the active layer's cells and place as they were (a hide, another
+    // layer's move, their undo or redo) leaves the cells under the tool as
+    // they were (cellsKept): a float stays, its landing checked.
     const auto underTool = [this] {
         if (!ownEdit_)
             cancelTool();
     };
-    connect(doc_, &Document::cellsChanged, this, underTool);
+    connect(doc_, &Document::cellsChanged, this, [this, underTool] {
+        if (!doc_->cellsKept())
+            underTool();
+    });
     connect(doc_, &Document::activeCellsReplaced, this, underTool);
     // The sets offered follow the typing policy, which follows the target
     // and the encoding.

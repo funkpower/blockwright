@@ -563,8 +563,11 @@ void Document::applyFormat(const DocumentFormat& format) {
     });
     const QRegion cells = ice && pixels ? recomposite(stack_.canvasRect()) : QRegion();
     emit formatChanged();
-    if (!cells.isEmpty())
+    if (!cells.isEmpty()) {
+        // a layer the switch restyles is its own putProperties
+        const QScopedValueRollback<bool> kept(cellsKept_, true);
         emit cellsChanged(cells);
+    }
 }
 
 bool Document::resizeCanvas(int width, int height, Anchor anchor, const Selection& selection, Cursor cursor,
@@ -1415,8 +1418,12 @@ LayerId Document::insertLayer(Layer layer, std::size_t index) {
     const LayerId id = stack_.add(std::move(layer), index);
     const QRegion cells = recomposite(bounds);
     emit layersChanged();
-    if (!cells.isEmpty())
+    if (!cells.isEmpty()) {
+        // the active layer is as it was, until the command makes another
+        // active (activeLayerChanged)
+        const QScopedValueRollback<bool> kept(cellsKept_, true);
         emit cellsChanged(cells);
+    }
     return id;
 }
 
@@ -1424,8 +1431,10 @@ Layer Document::takeLayer(LayerId id) {
     Layer layer = *stack_.remove(id);
     const QRegion cells = recomposite(layer.bounds());
     emit layersChanged();
-    if (!cells.isEmpty())
+    if (!cells.isEmpty()) {
+        const QScopedValueRollback<bool> kept(cellsKept_, id != active_);
         emit cellsChanged(cells);
+    }
     return layer;
 }
 
@@ -1433,8 +1442,11 @@ void Document::placeLayer(LayerId id, std::size_t index) {
     stack_.move(id, index);
     const QRegion cells = recomposite(stack_.find(id)->bounds());
     emit layersChanged();
-    if (!cells.isEmpty())
+    if (!cells.isEmpty()) {
+        // no layer's cells or place change, only what covers what
+        const QScopedValueRollback<bool> kept(cellsKept_, true);
         emit cellsChanged(cells);
+    }
 }
 
 void Document::scanFontsFolder(const QString& folder) {
@@ -1477,9 +1489,9 @@ void Document::putProperties(const LayerPropsEdit& edit, bool revert) {
         return;
     const LayerProperties was = layer->props;
     const CellRect before = layer->bounds();
-    // the active layer's cells, to tell a tool whether they changed under it
-    // where the composite didn't (activeCellsReplaced)
-    const std::optional<Canvas> cellsWere = id == active_ ? std::optional<Canvas>(layer->cells) : std::nullopt;
+    // the layer's cells, to tell a tool whether the active layer's changed
+    // under it (cellsKept; activeCellsReplaced where the composite didn't)
+    const Canvas cellsWere = layer->cells;
     // a step changing a live text layer's source replaces its cells
     const bool redrawn = applyEdit(*layer, edit, revert, fontSources());
     const LayerProperties& now = layer->props;
@@ -1489,10 +1501,12 @@ void Document::putProperties(const LayerPropsEdit& edit, bool revert) {
     const QRegion cells = shows ? recomposite(unite(before, layer->bounds(), stack_.canvasRect())) : QRegion();
     if (id == active_ && (before != layer->bounds() || redrawn))
         refreshLayerCanvas();
+    const bool held = before == layer->bounds() && (!redrawn || cellsWere == layer->cells);
     emit layersChanged();
-    if (!cells.isEmpty())
+    if (!cells.isEmpty()) {
+        const QScopedValueRollback<bool> kept(cellsKept_, id != active_ || held);
         emit cellsChanged(cells);
-    else if (cellsWere && (before != layer->bounds() || (redrawn && !(*cellsWere == layer->cells))))
+    } else if (id == active_ && !held)
         emit activeCellsReplaced();
 }
 

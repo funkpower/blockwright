@@ -256,6 +256,12 @@ public:
     // The layer the tools edit; 0 only while the stack is being replaced.
     LayerId activeLayer() const { return active_; }
     const Layer* active() const { return stack_.find(active_); }
+    // True while cellsChanged is emitted for a layer step or an iCE switch
+    // that leaves the active layer, its cells and its place as they were (a
+    // hide or a show, a mode or a style, another layer's text, move, add or
+    // delete, or the undo or redo of one). A tool's cells are still there to
+    // land on (PLAN §4 Selections).
+    bool cellsKept() const { return cellsKept_; }
     // Makes the layer active (not an undo step). Emits layersAboutToChange
     // first, so a floating selection lands on the layer it was lifted from,
     // then activeLayerAboutToChange and activeLayerChanged. False if the
@@ -599,6 +605,8 @@ private:
     // redo, a clear), and its count when each layer's last Run was asked
     // for (requestGeneratorRun).
     std::uint64_t undoMoves_ = 0;
+    // cellsKept()
+    bool cellsKept_ = false;
     std::map<LayerId, std::uint64_t> runAsked_;
 };
 
