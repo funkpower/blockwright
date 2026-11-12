@@ -6,8 +6,7 @@
 # its ANSI document hides 17-21, and leaves the profile empty;
 # with a file named it is a usage error. Its standard keys are a generic
 # Linux desktop's under the Qt it runs on (the second line of its --version),
-# and the desktop's
-# platform, theme and style don't change a byte of it.
+# and the desktop's platform, theme and style don't change a byte of it.
 set -uo pipefail
 tmp=$1; py=$2; shift 2
 fails=0
