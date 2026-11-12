@@ -147,6 +147,26 @@ TEST_CASE("File > New starts on the target Preferences chose", "[app][target]") 
     CHECK(w.paletteWidget()->target() == Target::Ansi);
 }
 
+TEST_CASE("the default target is kept in the settings only when it isn't ANSI", "[app][target]") {
+    DefaultTarget restore;
+    const QString key = QLatin1String(kDefaultTargetKey);
+    appSettings()->remove(key);
+    // OK in Preferences on the default writes no entry
+    setDefaultTargetSetting(Target::Ansi);
+    CHECK_FALSE(appSettings()->contains(key));
+    CHECK(defaultTargetSetting() == Target::Ansi);
+    setDefaultTargetSetting(Target::Irc);
+    CHECK(appSettings()->value(key).toString() == QStringLiteral("irc"));
+    CHECK(defaultTargetSetting() == Target::Irc);
+    // set back to ANSI, the entry goes
+    setDefaultTargetSetting(Target::Ansi);
+    CHECK_FALSE(appSettings()->contains(key));
+    CHECK(defaultTargetSetting() == Target::Ansi);
+    // an entry an older build wrote still reads
+    appSettings()->setValue(key, QStringLiteral("ansi"));
+    CHECK(defaultTargetSetting() == Target::Ansi);
+}
+
 TEST_CASE("an opened .ans is an ANSI document whatever new ones are", "[app][target]") {
     DefaultTarget restore;
     setDefaultTargetSetting(Target::Irc);

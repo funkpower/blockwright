@@ -29,7 +29,8 @@ inline constexpr char kFontsFolderKey[] = "fonts/folder";
 inline constexpr char kDefaultTargetKey[] = "document/defaultTarget";
 
 // The target File > New and a new canvas take: the setting ("ansi" or
-// "irc"), ANSI when it is unset or names no target.
+// "irc"), ANSI when it is unset or names no target. Setting ANSI removes
+// the entry, so OK in Preferences on the default writes nothing.
 Target defaultTargetSetting();
 void setDefaultTargetSetting(Target target);
 

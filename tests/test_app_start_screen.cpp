@@ -13,6 +13,7 @@
 #include "document.h"
 #include "file_open.h"
 #include "main_window.h"
+#include "preferences.h"
 #include "recent_files.h"
 #include "scratch_settings.h"
 #include "settings.h"
@@ -505,6 +506,43 @@ TEST_CASE("at launch File > Open's dialog is the start screen's", "[start-screen
     CHECK(closed(s));
     CHECK(w.isVisible());
     CHECK(w.document()->path() == tux);
+}
+
+TEST_CASE("Esc on the start screen leaves a canvas on the default target", "[start-screen][target]") {
+    struct RestoreTarget {
+        Target was = defaultTargetSetting();
+        ~RestoreTarget() { setDefaultTargetSetting(was); }
+    } restore;
+    setStartScreenAtStartup(true);
+    const Target target = GENERATE(Target::Irc, Target::Ansi);
+    setDefaultTargetSetting(target);
+    const TextEncoding encoding = target == Target::Irc ? TextEncoding::Utf8 : TextEncoding::Cp437;
+    MainWindow w;
+    SECTION("at launch") {
+        QPointer<StartScreen> s = startUp(&w, QString());
+        REQUIRE(s);
+        REQUIRE(bwtest::showExposed(s));
+        bwtest::systemKey(s, Qt::Key_Escape);
+        QApplication::processEvents();
+        CHECK(closed(s));
+        CHECK(w.isVisible());
+    }
+    SECTION("from File > Start Screen...") {
+        w.show();
+        w.findChild<QAction*>(QStringLiteral("startScreen"))->trigger();
+        QPointer<StartScreen> s = startScreenOf(w);
+        REQUIRE(s);
+        REQUIRE(bwtest::showExposed(s));
+        bwtest::systemKey(s, Qt::Key_Escape);
+        QApplication::processEvents();
+        CHECK(closed(s));
+    }
+    CHECK(w.document()->target() == target);
+    CHECK(w.document()->textEncoding() == encoding);
+    CHECK(w.document()->canvas().width() == kStartNewWidth);
+    CHECK(w.document()->canvas().height() == kStartNewHeight);
+    CHECK(w.document()->path().isEmpty());
+    CHECK_FALSE(w.document()->isModified());
 }
 
 TEST_CASE("Show at startup is kept in the settings and respected", "[start-screen]") {

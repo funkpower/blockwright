@@ -1,7 +1,9 @@
 #include "start_screen.h"
 
+#include "document.h"
 #include "main_window.h"
 #include "message_box.h"
+#include "preferences.h"
 #include "recent_files.h"
 #include "settings.h"
 
@@ -429,12 +431,13 @@ void StartScreen::openSample(const QString& path) { window_->openSample(path); }
 void StartScreen::done(int result) {
     if (closing_)
         return;
-    // Esc or closing it: a new default canvas, as a start without the
-    // screen. Only a screen still over its own blank document gets here
-    // rejected: anything opened while it was up has closed it already.
+    // Esc or closing it: a new default canvas on the default target, as a
+    // start without the screen. Only a screen still over its own blank
+    // document gets here rejected: anything opened while it was up has
+    // closed it already.
     closing_ = true;
     if (result == QDialog::Rejected)
-        window_->document()->clear();
+        window_->document()->clear(Canvas::kDefaultWidth, Canvas::kDefaultHeight, true, defaultTargetSetting());
     // At launch the window shows now, before the screen goes, so the app
     // never has no window open and quits.
     if (launch_)

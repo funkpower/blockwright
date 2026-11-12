@@ -58,7 +58,11 @@ Target defaultTargetSetting() {
 }
 
 void setDefaultTargetSetting(Target target) {
-    appSettings()->setValue(QLatin1String(kDefaultTargetKey), QString::fromLatin1(targetName(target).data()));
+    // ANSI, the default, is kept as no entry, as a shortcut left at its keys.
+    if (target == Target::Ansi)
+        appSettings()->remove(QLatin1String(kDefaultTargetKey));
+    else
+        appSettings()->setValue(QLatin1String(kDefaultTargetKey), QString::fromLatin1(targetName(target).data()));
 }
 
 std::shared_ptr<const FontCatalogue> loadFontsFolder(const QString& folder) {
