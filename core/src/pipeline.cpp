@@ -732,10 +732,13 @@ bool validRemoteDir(std::string_view dir) {
 namespace {
 
 // The end of the remote command: the reload, written to the running
-// WeeChat's fifo under a timeout, and kReloaded or kNoFifo.
+// WeeChat's fifo under a timeout, and kReloaded or kNoFifo. The timeout
+// kills: the cleanup before it ignores TERM, and a timeout that doesn't
+// handle TERM itself (uutils', Ubuntu 26.04's) hands that on to the write,
+// which a stale fifo would then hold for good.
 std::string reloadCommand() {
     return "f=\"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/weechat/weechat_fifo_$(pgrep -x weechat | head -n 1)\"; "
-           "if [ -p \"$f\" ] && timeout 5 sh -c 'echo \"core.weechat */ascii reload\" > \"$1\"' sh \"$f\"; "
+           "if [ -p \"$f\" ] && timeout -s KILL 5 sh -c 'echo \"core.weechat */ascii reload\" > \"$1\"' sh \"$f\"; "
            "then echo " +
            std::string(kReloaded) + "; else echo " + std::string(kNoFifo) + "; fi";
 }

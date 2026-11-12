@@ -71,7 +71,8 @@ QList<QKeySequence> standardKeys(QAction* a, QKeySequence::StandardKey key) {
     a->setProperty(kStandardKeyProperty, int(key));
     if (!linuxStandardKeys)
         return QKeySequence::keyBindings(key);
-    // Qt's X11 table for the keys the window uses; a test holds it to Qt's.
+    // Qt's X11 table for the keys the window uses, as of Qt 6.10 (which added
+    // the Undo and Redo keys); a test holds it to Qt's.
     const auto keys = [](std::initializer_list<const char*> names) {
         QList<QKeySequence> out;
         for (const char* n : names)

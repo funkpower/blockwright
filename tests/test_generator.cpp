@@ -16,6 +16,8 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <QDir>
+#include <QLibraryInfo>
+#include <QVersionNumber>
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
@@ -592,7 +594,12 @@ TEST_CASE("a generator that fails, hangs or floods leaves the project as it was"
             bool had;
             ~Restore() { had ? qputenv("TMPDIR", old) : qunsetenv("TMPDIR"); }
         } restore{oldTmp, hadTmp};
-        REQUIRE(QDir::tempPath() != QFileInfo(QDir::tempPath()).canonicalFilePath());
+        // Qt before 6.9.2 resolves TMPDIR's links in QDir::tempPath(), so
+        // the program never sees the link there
+        if (QLibraryInfo::version() < QVersionNumber(6, 9, 2))
+            REQUIRE(QDir::tempPath() == QFileInfo(QDir::tempPath()).canonicalFilePath());
+        else
+            REQUIRE(QDir::tempPath() != QFileInfo(QDir::tempPath()).canonicalFilePath());
         INFO("TMPDIR through a link");
         namesNoTempDir();
     }

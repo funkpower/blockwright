@@ -195,6 +195,15 @@ struct FakeSsh {
         REQUIRE(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0);
 #endif
     }
+    // A timeout that, like uutils' (Ubuntu 26.04), leaves the signals its
+    // caller ignores ignored in the command it runs.
+    void plainTimeout() const {
+        const QString t = dir.filePath(QStringLiteral("bin/timeout"));
+        writeFile(t, "#!/bin/sh\ns=TERM\n[ \"$1\" = -s ] && { s=$2; shift 2; }\nn=$1\nshift\n\"$@\" &\np=$!\n"
+                     "( sleep \"$n\"; kill -s \"$s\" \"$p\" ) > /dev/null 2>&1 &\nw=$!\nwait \"$p\"\nst=$?\n"
+                     "kill -s KILL \"$w\" 2> /dev/null\n[ $st -gt 128 ] && exit 124\nexit $st\n");
+        chmod(QFile::encodeName(t).constData(), 0755);
+    }
 };
 
 // Moves the piece's first row one cell right and leaves it floating, not yet
@@ -444,6 +453,10 @@ TEST_CASE("Send to WeeChat says when no WeeChat takes the reload") {
     f.p->setSshProgram(ssh.script);
     SECTION("no fifo") {}
     SECTION("a stale fifo, which would block without the timeout") { ssh.makeFifo(); }
+    SECTION("a stale fifo and a timeout that passes an ignored TERM on") {
+        ssh.makeFifo();
+        ssh.plainTimeout();
+    }
     const auto r =
         f.p->sendToWeechat(QStringLiteral("irc-host"), QStringLiteral("~/wip"), QStringLiteral("neon-skull"), 1);
     INFO(r.message.toStdString());

@@ -495,7 +495,7 @@ TEST_CASE("Send to WeeChat's ssh arguments never prompt and carry one command", 
     CHECK(cmd.find("-eq 1234 ]") != std::string::npos);
     CHECK(cmd.find("-eq 1234 ]") < cmd.find("mv -f \"$a\""));
     CHECK(cmd.find("pgrep -x weechat") != std::string::npos);
-    CHECK(cmd.find("timeout 5") != std::string::npos);
+    CHECK(cmd.find("timeout -s KILL 5") != std::string::npos);
     CHECK(cmd.find("core.weechat */ascii reload") != std::string::npos);
 
     CHECK_THROWS_AS(sshArguments({"-x", "~/w"}, "a", 1, 1), PipelineError);

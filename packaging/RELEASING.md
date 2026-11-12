@@ -90,7 +90,7 @@ No repository carries these yet: build each from the uploaded tarball, as in
 [§ Fedora](README.md#fedora), in a clean container or chroot of each release,
 with `lintian` and `rpmlint` clean. The `.deb` of one release is for that
 release only, so name the distribution in each file uploaded to the release
-(`blockwright_<version>-1_ubuntu26.04_amd64.deb`, `blockwright-<version>-1.fc44.x86_64.rpm`).
+(`blockwright_<version>-1_ubuntu26.04_amd64.deb`, `blockwright-<version>-1.fc45.x86_64.rpm`).
 
 ## 5. AppImage
 

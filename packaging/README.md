@@ -130,7 +130,7 @@ matched.
 ### Fedora
 
 `packaging/rpm/blockwright.spec` builds the release tarball against the newest
-Fedora (Fedora 44: Qt 6.11, Catch2 3.13):
+Fedora (Fedora 45: Qt 6.11, Catch2 3.16):
 
 ```sh
 rpmdev-setuptree

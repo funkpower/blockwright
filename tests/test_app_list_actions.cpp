@@ -19,10 +19,12 @@
 #include <QAction>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLibraryInfo>
 #include <QMenu>
 #include <QMenuBar>
 #include <QSet>
 #include <QTreeWidget>
+#include <QVersionNumber>
 #include <qpa/qplatformtheme.h>
 #include <private/qguiapplication_p.h>
 
@@ -257,6 +259,11 @@ TEST_CASE("the action dump's standard keys are the ones Qt gives a generic Linux
                 desktop.insert(a->objectName(), a->shortcuts());
     }
     REQUIRE(desktop.size() >= 7);
+    // the dump's table is Qt 6.10's, which added the Undo and Redo keys
+    if (QLibraryInfo::version() < QVersionNumber(6, 10)) {
+        desktop[QStringLiteral("undo")] << QKeySequence(Qt::Key_Undo);
+        desktop[QStringLiteral("redo")] << QKeySequence(Qt::Key_Redo);
+    }
     LinuxStandardKeys linuxKeys;
     MainWindow w;
     for (auto it = desktop.cbegin(); it != desktop.cend(); ++it) {

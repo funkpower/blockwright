@@ -8,7 +8,10 @@
 # runnable, debian/source/format 3.0 (quilt), and a %changelog entry in the
 # spec for its Version-Release, and %license holds every notice. blockwright-cli.1 describes every command
 # blockwright-cli --help lists. The AppImage's THIRD-PARTY.txt links Qt's source
-# under download.qt.io/archive/qt/, which keeps every release.
+# under download.qt.io/archive/qt/, which keeps every release. Each AUR
+# package's .SRCINFO says what its PKGBUILD says: every field, by
+# `makepkg --printsrcinfo` where makepkg runs (not as root), and otherwise the
+# fields the PKGBUILD sets, read by bash.
 set -uo pipefail
 src=$1
 fails=0
@@ -115,5 +118,48 @@ elif grep -qF "$qt_link" "$third"; then
 else
   bad "THIRD-PARTY.txt has no link to Qt's source ($qt_link)"
 fi
+
+# .SRCINFO is what the AUR shows and what AUR helpers resolve dependencies
+# from, so a field the PKGBUILD changed without it goes out wrong
+srcinfo_tmp=$(mktemp -d)
+trap 'rm -rf "$srcinfo_tmp"' EXIT
+makepkg_runs=
+tab=$'\t' # BSD sed has no \t
+command -v makepkg >/dev/null && [[ $(id -u) != 0 ]] && makepkg_runs=1
+for aur in "$src"/packaging/aur/*/; do
+  aur=${aur%/}
+  name=aur/${aur##*/}
+  if [[ ! -f $aur/PKGBUILD || ! -f $aur/.SRCINFO ]]; then
+    bad "$name has no PKGBUILD or no .SRCINFO"
+    continue
+  fi
+  # the PKGBUILD's fields as .SRCINFO writes them: "<key> = <value>" per element
+  fields=$(cd "$srcinfo_tmp" && bash -c '
+    set +u
+    source "$1" || exit 1
+    for key in pkgdesc pkgver pkgrel url arch license checkdepends makedepends depends optdepends provides conflicts source sha256sums; do
+      declare -n v=$key
+      for e in "${v[@]}"; do printf "%s = %s\n" "$key" "$e"; done
+      unset -n v
+    done' bash "$aur/PKGBUILD") || { bad "$name/PKGBUILD doesn't source"; continue; }
+  have=$(sed -n "s/^$tab//p" "$aur/.SRCINFO" | grep -E '^(pkgdesc|pkgver|pkgrel|url|arch|license|checkdepends|makedepends|depends|optdepends|provides|conflicts|source|sha256sums) = ' | sort)
+  if [[ $(sort <<<"$fields") == "$have" ]]; then
+    ok "$name/.SRCINFO has its PKGBUILD's fields"
+  else
+    bad "$name/.SRCINFO and PKGBUILD differ (- .SRCINFO, + PKGBUILD; makepkg --printsrcinfo > .SRCINFO):
+$(diff <(echo "$have") <(sort <<<"$fields") | grep '^[<>]' | sed 's/^</-/; s/^>/+/')"
+  fi
+  if [[ -n $makepkg_runs ]]; then
+    rm -rf "$srcinfo_tmp/p" && mkdir "$srcinfo_tmp/p" && cp "$aur/PKGBUILD" "$srcinfo_tmp/p/"
+    if ! printed=$(cd "$srcinfo_tmp/p" && makepkg --printsrcinfo 2>&1); then
+      bad "$name: makepkg --printsrcinfo failed: $printed"
+    elif [[ $printed == "$(cat "$aur/.SRCINFO")" ]]; then
+      ok "$name/.SRCINFO is makepkg --printsrcinfo's"
+    else
+      bad "$name/.SRCINFO isn't makepkg --printsrcinfo's:
+$(diff <(cat "$aur/.SRCINFO") <(echo "$printed"))"
+    fi
+  fi
+done
 
 exit $((fails > 0))
