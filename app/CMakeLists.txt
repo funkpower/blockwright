@@ -53,6 +53,8 @@ add_library(blockwright_app STATIC
   main_window_samples.cpp
   manual_dialog.cpp
   manual_dialog.h
+  message_box.cpp
+  message_box.h
   palette_widget.cpp
   palette_widget.h
   plural.h

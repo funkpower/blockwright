@@ -20,6 +20,11 @@ if [[ $st -eq 0 && $first =~ ^blockwright\ 0\.1\.0\ \([0-9a-f]{7,}(-dirty)?\)$|^
 else
   bad "--version (exit $st): $out"
 fi
+if [[ $(sed -n 2p <<<"$out") =~ ^Qt\ 6\.[0-9]+\.[0-9]+$ ]]; then
+  ok "--version names the Qt it runs on: $(sed -n 2p <<<"$out")"
+else
+  bad "--version's second line is not the Qt version: $out"
+fi
 if grep -q 'IBM VGA 8x16 and IBM PC BIOS 8x8 fonts, (c) 2016-2020 VileR,' <<<"$out" && grep -q 'CC BY-SA 4.0, https://int10h.org/oldschool-pc-fonts/' <<<"$out" && grep -qF "notices in $notices_dir" <<<"$out"; then
   ok "--version credits the font"
 else

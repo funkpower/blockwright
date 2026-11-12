@@ -2,6 +2,7 @@
 // screen's Samples open one as an untitled copy.
 
 #include "main_window.h"
+#include "message_box.h"
 
 #include "blockwright/composite.h"
 #include "blockwright/library.h"
@@ -63,8 +64,8 @@ void MainWindow::openSample(const QString& path) {
         return;
     QString error;
     if (!openSampleFile(path, &error))
-        QMessageBox::warning(promptParent(), tr("Open Sample"),
-                             tr("Could not open the sample %1:\n%2").arg(QFileInfo(path).fileName(), error));
+        bw::warning(promptParent(), tr("Open Sample"),
+                    tr("Could not open the sample %1:\n%2").arg(QFileInfo(path).fileName(), error));
 }
 
 void MainWindow::fillSamplesMenu() {

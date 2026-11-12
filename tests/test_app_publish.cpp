@@ -11,6 +11,7 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "main_window.h"
+#include "message_box.h"
 #include "publish.h"
 #include "select_tool.h"
 
@@ -224,7 +225,7 @@ void answer(QWidget* context, QMessageBox::StandardButton button, QString* text,
         auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
         REQUIRE(box);
         *ran = true;
-        *text = box->text();
+        *text = boxText(box);
         box->button(button)->click();
     });
 }
@@ -629,7 +630,7 @@ TEST_CASE("Send to WeeChat through its dialogs remembers the host and the round"
             auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
             REQUIRE(box);
             confirmed = true;
-            question = box->text();
+            question = boxText(box);
             answer(&f.w, QMessageBox::Ok, &info, &told);  // no fifo
             box->button(QMessageBox::Yes)->click();
         });
@@ -1367,5 +1368,10 @@ int main(int argc, char** argv) {
     qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(scratch.filePath(QStringLiteral("user"))));
     bwtest::useScratchSettings(scratch);
     QApplication app(argc, argv);
+    // BW_TEST_HEADING_BOXES=1 makes every box a macOS one, its title the
+    // heading and its message the informative text, so a run on any platform
+    // catches a test that reads a box's text() for its message.
+    if (qEnvironmentVariableIntValue("BW_TEST_HEADING_BOXES"))
+        bw::useHeadingBoxes(true);
     return Catch::Session().run(argc, argv);
 }

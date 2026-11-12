@@ -1,6 +1,7 @@
 #include "start_screen.h"
 
 #include "main_window.h"
+#include "message_box.h"
 #include "recent_files.h"
 #include "settings.h"
 
@@ -414,7 +415,7 @@ void StartScreen::refreshRecent() {
 void StartScreen::newCanvas() {
     QString error;
     if (!window_->newCanvas(QSize(width_->value(), height_->value()), ice_->isChecked(), &error))
-        QMessageBox::warning(this, tr("New"), tr("Could not make the canvas:\n%1").arg(error));
+        bw::warning(this, tr("New"), tr("Could not make the canvas:\n%1").arg(error));
 }
 
 void StartScreen::openFile() { window_->open(); }

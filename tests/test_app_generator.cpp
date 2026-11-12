@@ -11,6 +11,7 @@
 #include "generator_runner.h"
 #include "layers_dock.h"
 #include "main_window.h"
+#include "message_box.h"
 #include "scratch_settings.h"
 #include "select_tool.h"
 #include "settings.h"
@@ -830,7 +831,9 @@ TEST_CASE("File > Open Scene while a generator runs refuses before it asks or ru
         if (auto* box = qobject_cast<QMessageBox*>(modal)) {
             if (box->objectName() == QStringLiteral("trustGenerators"))
                 return;  // the Truster's
-            shown << box->windowTitle() + QStringLiteral(": ") + box->text();
+            shown << boxTitle(box) + QStringLiteral(": ") + boxText(box);
+            // on a Mac, which shows a box no title, its title is its text
+            CHECK((box->text() == boxTitle(box)) == headingBoxes());
             box->reject();
         } else if (auto* dialog = qobject_cast<QDialog*>(modal)) {
             shown << dialog->windowTitle();

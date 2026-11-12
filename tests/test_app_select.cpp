@@ -4,6 +4,7 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "main_window.h"
+#include "message_box.h"
 #include "reference_scale.h"
 #include "select_tool.h"
 #include "tool.h"
@@ -1106,7 +1107,7 @@ TEST_CASE("a paste on a clean canvas is an unsaved change") {
     QObject::connect(&answer, &QTimer::timeout, [&] {
         if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
             answer.stop();
-            asked = box->text();
+            asked = boxText(box);
             box->button(QMessageBox::Cancel)->click();
         }
     });

@@ -10,6 +10,7 @@
 #include "main_window.h"
 
 #include "generator_runner.h"
+#include "message_box.h"
 
 #include "blockwright/generator.h"
 #include "blockwright/scene_import.h"
@@ -114,7 +115,7 @@ void MainWindow::openScene() {
     // openSceneFile would refuse it anyway (generator::killRunning knows
     // one generator run's group).
     if (runner_->busy()) {
-        QMessageBox::warning(this, tr("Open Scene"), tr("A generator is running; open the scene when it ends."));
+        bw::warning(this, tr("Open Scene"), tr("A generator is running; open the scene when it ends."));
         return;
     }
     if (!maybeSave())
@@ -133,8 +134,8 @@ void MainWindow::openScene() {
     try {
         pythonCommand = scene::findPython();
     } catch (const std::exception& e) {
-        QMessageBox::warning(this, tr("Open Scene"),
-                             tr("Could not open %1:\n%2").arg(path, QString::fromStdString(e.what())));
+        bw::warning(this, tr("Open Scene"),
+                    tr("Could not open %1:\n%2").arg(path, QString::fromStdString(e.what())));
         return;
     }
     const QString python = QString::fromStdString(scene::pythonText(pythonCommand)) + QLatin1Char(' ') +
@@ -147,7 +148,7 @@ void MainWindow::openScene() {
         return;
     QString error;
     if (!openSceneFile(path, &error, pythonCommand))
-        QMessageBox::warning(this, tr("Open Scene"), tr("Could not open %1:\n%2").arg(path, error));
+        bw::warning(this, tr("Open Scene"), tr("Could not open %1:\n%2").arg(path, error));
 }
 
 bool MainWindow::openSceneFile(const QString& path, QString* error, const std::vector<std::string>& python) {

@@ -4,6 +4,7 @@
 // test_app.cpp, which points the libraries at empty scratch directories.
 
 #include "fs_quirks.h"
+#include "message_box.h"
 #include "system_input.h"
 #include "util.h"
 
@@ -915,7 +916,7 @@ TEST_CASE("closing with a float that can't land asks first, though nothing else 
     QString text;
     QTimer::singleShot(0, &f.w, [&] {
         if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
-            text = box->text();
+            text = boxText(box);
             box->button(QMessageBox::Cancel)->click();
         }
     });
@@ -939,7 +940,7 @@ TEST_CASE("closing a changed document with a float that can't land names both (#
     QString text;
     QTimer::singleShot(0, &f.w, [&] {
         if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
-            text = box->text();
+            text = boxText(box);
             box->button(QMessageBox::Cancel)->click();
         }
     });

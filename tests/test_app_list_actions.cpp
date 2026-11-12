@@ -230,14 +230,20 @@ TEST_CASE("the action dump has a generic Linux desktop's standard keys and not t
             out.append(QLatin1String(s));
         return out;
     };
-    // What the app gets on Linux with no theme, or with GNOME's (Qt 6.12, xcb)
+    // What the app gets on Linux with no theme, or with GNOME's (xcb); Qt
+    // 6.10 added the Undo and Redo keys
     CHECK(keys("newFile") == strings({"Ctrl+N"}));
     CHECK(keys("open") == strings({"Ctrl+O"}));
     CHECK(keys("save") == strings({"Ctrl+S"}));
     CHECK(keys("saveAs") == strings({"Ctrl+Shift+S"}));
     CHECK(keys("quit") == strings({"Ctrl+Q"}));
-    CHECK(keys("undo") == strings({"Ctrl+Z", "F14", "Undo"}));
-    CHECK(keys("redo") == strings({"Ctrl+Shift+Z", "Redo"}));
+    if (QLibraryInfo::version() >= QVersionNumber(6, 10)) {
+        CHECK(keys("undo") == strings({"Ctrl+Z", "F14", "Undo"}));
+        CHECK(keys("redo") == strings({"Ctrl+Shift+Z", "Redo"}));
+    } else {
+        CHECK(keys("undo") == strings({"Ctrl+Z", "F14"}));
+        CHECK(keys("redo") == strings({"Ctrl+Shift+Z"}));
+    }
     // Keys the window sets itself are its own on every platform.
     CHECK(keys("selectAll") == strings({"Ctrl+A"}));
     CHECK(byId(list, QStringLiteral("quit")).value(QStringLiteral("inSheet")).toBool());
@@ -259,11 +265,6 @@ TEST_CASE("the action dump's standard keys are the ones Qt gives a generic Linux
                 desktop.insert(a->objectName(), a->shortcuts());
     }
     REQUIRE(desktop.size() >= 7);
-    // the dump's table is Qt 6.10's, which added the Undo and Redo keys
-    if (QLibraryInfo::version() < QVersionNumber(6, 10)) {
-        desktop[QStringLiteral("undo")] << QKeySequence(Qt::Key_Undo);
-        desktop[QStringLiteral("redo")] << QKeySequence(Qt::Key_Redo);
-    }
     LinuxStandardKeys linuxKeys;
     MainWindow w;
     for (auto it = desktop.cbegin(); it != desktop.cend(); ++it) {

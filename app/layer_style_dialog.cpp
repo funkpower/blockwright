@@ -3,6 +3,7 @@
 #include "document.h"
 #include "library_dock.h"
 #include "lint_dock.h"
+#include "message_box.h"
 
 #include "blockwright/ansi.h"
 #include "blockwright/composite.h"
@@ -686,7 +687,7 @@ void LayerStyleDialog::askPreset() {
         return;
     QString error;
     if (savePreset(dialog.name(), dialog.category(), dialog.tags(), &error).isEmpty())
-        QMessageBox::warning(this, tr("Save as Preset"), tr("Could not save the preset:\n%1").arg(error));
+        bw::warning(this, tr("Save as Preset"), tr("Could not save the preset:\n%1").arg(error));
 }
 
 } // namespace bw

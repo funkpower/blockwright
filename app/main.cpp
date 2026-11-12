@@ -69,8 +69,10 @@ int main(int argc, char** argv) {
             dashdash = true;
         } else if (!std::strcmp(a, "--version") || !std::strcmp(a, "-v")) {
             messagesToConsole();
-            // The version stays the first line, for the scripts that read it
-            std::cout << "blockwright " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n\n"
+            // The version stays the first line, for the scripts that read it;
+            // the second is the Qt it runs on, which its standard keys follow.
+            std::cout << "blockwright " << BLOCKWRIGHT_VERSION << " (" << BLOCKWRIGHT_GIT_COMMIT << ")\n"
+                      << "Qt " << qVersion() << "\n\n"
                       << bw::kLogoText << "\n"
                       << bw::kFontCredit << bw::kUnifontCredit << bw::kIconCredit << bw::kUiFontCredit;
             return 0;
@@ -80,7 +82,7 @@ int main(int argc, char** argv) {
                          "       blockwright --screenshot <steps.json> -o <dir>\n\n"
                          "ANSI and IRC art editor.\n\n"
                          "  -h, --help      show this help\n"
-                         "  -v, --version   show the version and the font and icon credits\n"
+                         "  -v, --version   show the version, the Qt it runs on and the credits\n"
                          "  --list-actions  print every menu and dock action as JSON (id, menu, text,\n"
                          "                  default shortcuts, tips, tool and help ids) and exit\n"
                          "  --screenshot <steps.json> -o <dir>\n"

@@ -11,6 +11,7 @@
 #include <QHeaderView>
 #include <QKeySequenceEdit>
 #include <QLabel>
+#include <QLibraryInfo>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPushButton>
@@ -18,6 +19,7 @@
 #include <QSet>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QVersionNumber>
 
 namespace bw {
 
@@ -71,22 +73,28 @@ QList<QKeySequence> standardKeys(QAction* a, QKeySequence::StandardKey key) {
     a->setProperty(kStandardKeyProperty, int(key));
     if (!linuxStandardKeys)
         return QKeySequence::keyBindings(key);
-    // Qt's X11 table for the keys the window uses, as of Qt 6.10 (which added
-    // the Undo and Redo keys); a test holds it to Qt's.
-    const auto keys = [](std::initializer_list<const char*> names) {
+    // Qt's X11 table for the keys the window uses; a test holds it to Qt's.
+    // Kept here rather than read from Qt: the scheme's table is reachable only
+    // through QPlatformTheme, private API the app doesn't link. Qt 6.10 added
+    // the dedicated keys (New, Open, Save, Undo, Redo, Exit), so they are
+    // there only when the Qt the app runs on has them (Debian 13 has 6.8).
+    const bool mediaKeys = QLibraryInfo::version() >= QVersionNumber(6, 10);
+    const auto keys = [mediaKeys](std::initializer_list<const char*> names, const char* media = nullptr) {
         QList<QKeySequence> out;
         for (const char* n : names)
             out << QKeySequence::fromString(QLatin1String(n), QKeySequence::PortableText);
+        if (media && mediaKeys)
+            out << QKeySequence::fromString(QLatin1String(media), QKeySequence::PortableText);
         return out;
     };
     switch (key) {
-    case QKeySequence::New: return keys({"Ctrl+N", "New"});
-    case QKeySequence::Open: return keys({"Ctrl+O", "Open"});
-    case QKeySequence::Save: return keys({"Ctrl+S", "Save"});
-    case QKeySequence::SaveAs: return keys({"Ctrl+Shift+S", "Shift+Save"});
-    case QKeySequence::Quit: return keys({"Ctrl+Q", "Exit"});
-    case QKeySequence::Undo: return keys({"Ctrl+Z", "F14", "Undo"});
-    case QKeySequence::Redo: return keys({"Ctrl+Shift+Z", "Redo"});
+    case QKeySequence::New: return keys({"Ctrl+N"}, "New");
+    case QKeySequence::Open: return keys({"Ctrl+O"}, "Open");
+    case QKeySequence::Save: return keys({"Ctrl+S"}, "Save");
+    case QKeySequence::SaveAs: return keys({"Ctrl+Shift+S"}, "Shift+Save");
+    case QKeySequence::Quit: return keys({"Ctrl+Q"}, "Exit");
+    case QKeySequence::Undo: return keys({"Ctrl+Z", "F14"}, "Undo");
+    case QKeySequence::Redo: return keys({"Ctrl+Shift+Z"}, "Redo");
     default:
         Q_ASSERT_X(false, "standardKeys", "a standard key the Linux table lacks");
         return QKeySequence::keyBindings(key);

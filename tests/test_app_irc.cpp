@@ -7,6 +7,7 @@
 #include "document.h"
 #include "irc_meter.h"
 #include "main_window.h"
+#include "message_box.h"
 #include "select_tool.h"
 #include "tool.h"
 
@@ -177,7 +178,7 @@ void answer(QWidget* context, QMessageBox::StandardButton button, bool* asked, Q
             return;
         *asked = true;
         if (text)
-            *text = box->text();
+            *text = boxText(box);
         box->button(button)->click();
     });
 }

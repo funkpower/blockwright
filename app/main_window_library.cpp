@@ -10,6 +10,7 @@
 #include "frame_tool.h"
 #include "layer_style_dialog.h"
 #include "library_dock.h"
+#include "message_box.h"
 #include "sauce_dialog.h"
 #include "select_tool.h"
 #include "text_tool.h"
@@ -330,20 +331,20 @@ void MainWindow::saveToLibrary() {
     QString error;
     const QString path = libraryPathFor(dialog.name(), &replace, &error);
     if (path.isEmpty()) {
-        QMessageBox::warning(this, tr("Save to Library"), tr("Could not save the stamp:\n%1").arg(error));
+        bw::warning(this, tr("Save to Library"), tr("Could not save the stamp:\n%1").arg(error));
         return;
     }
     if (replace) {
-        if (QMessageBox::warning(this, tr("Save to Library"),
-                                 tr("A stamp named \"%1\" is already in the library (%2).\n"
-                                    "Do you want to replace it?")
-                                     .arg(dialog.name(), path),
-                                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        if (bw::warning(this, tr("Save to Library"),
+                        tr("A stamp named \"%1\" is already in the library (%2).\n"
+                           "Do you want to replace it?")
+                            .arg(dialog.name(), path),
+                        QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
             return;
     }
     const QString written = saveSelectionToLibrary(dialog.name(), dialog.category(), dialog.tags(), &error, replace, dialog.slice());
     if (written.isEmpty())
-        QMessageBox::warning(this, tr("Save to Library"), tr("Could not save the stamp:\n%1").arg(error));
+        bw::warning(this, tr("Save to Library"), tr("Could not save the stamp:\n%1").arg(error));
     else
         statusBar()->showMessage(tr("Saved %1 to the library").arg(written), 3000);
 }
@@ -412,7 +413,7 @@ void MainWindow::saveFrameStyle() {
     const QString written = saveSelectionAsFrameStyle(dialog.name(), dialog.left(), dialog.right(), dialog.top(),
                                                       dialog.bottom(), dialog.fill(), dialog.keepBackground(), &error);
     if (written.isEmpty())
-        QMessageBox::warning(this, tr("Save as Frame Style"), tr("Could not save the frame style:\n%1").arg(error));
+        bw::warning(this, tr("Save as Frame Style"), tr("Could not save the frame style:\n%1").arg(error));
     else
         statusBar()->showMessage(tr("Saved %1 to the library; the Frame tool lists it").arg(written), 3000);
 }

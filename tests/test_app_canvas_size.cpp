@@ -14,9 +14,11 @@
 #include "document.h"
 #include "irc_meter.h"
 #include "main_window.h"
+#include "message_box.h"
 #include "replay.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAbstractButton>
 #include <QBuffer>
@@ -30,6 +32,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSpinBox>
@@ -308,12 +311,17 @@ TEST_CASE("a canvas too large to display at 9 px is refused and the old one stay
 }
 
 TEST_CASE("the dialog's refusal is told in a message box") {
+    // titled as a Mac shows it (its title its text) and as other systems do
+    const bool headings = GENERATE(false, true);
+    const bool platform = headingBoxes();
+    useHeadingBoxes(headings);
+    const auto restore = qScopeGuard([&] { useHeadingBoxes(platform); });
     MainWindow w;
     QString error;
     REQUIRE(w.newCanvas(QSize(80, 25), true, &error));
     action(w, "ninePx")->trigger();
     bool told = false;
-    QString text;
+    QString title, text, shownText;
     // the message box opens once the dialog closes
     QTimer::singleShot(0, &w, [&] {
         auto* d = qobject_cast<CanvasSizeDialog*>(QApplication::activeModalWidget());
@@ -323,7 +331,9 @@ TEST_CASE("the dialog's refusal is told in a message box") {
         QTimer::singleShot(0, &w, [&] {
             if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
                 told = true;
-                text = box->text();
+                title = boxTitle(box);
+                text = boxText(box);
+                shownText = box->text();
                 box->button(QMessageBox::Ok)->click();
             }
         });
@@ -331,7 +341,9 @@ TEST_CASE("the dialog's refusal is told in a message box") {
     });
     action(w, "canvasSize")->trigger();
     CHECK(told);
+    CHECK(title == QStringLiteral("Canvas Size"));
     CHECK(text == QStringLiteral("The canvas can't be made that size: the canvas is too large to display."));
+    CHECK(shownText == (headings ? title : text));
     CHECK(w.document()->canvas().width() == 80);
 }
 

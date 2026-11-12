@@ -4,6 +4,7 @@
 #include "canvas_view.h"
 #include "irc_meter.h"
 #include "manual_dialog.h"
+#include "message_box.h"
 #include "select_tool.h"
 #include "palette_widget.h"
 #include "plural.h"
@@ -992,9 +993,9 @@ void MainWindow::openInteractive(const QString& path, std::optional<TextEncoding
         return;
     // On the heap: at launch its parent is the start screen, which a file
     // the system hands the app while the box is up closes and deletes.
-    QPointer<QMessageBox> box = new QMessageBox(QMessageBox::Warning, tr("Open"),
-                                                tr("Could not open %1:\n%2").arg(path, error), QMessageBox::Ok,
+    QPointer<QMessageBox> box = new QMessageBox(QMessageBox::Warning, QString(), QString(), QMessageBox::Ok,
                                                 promptParent());
+    setBoxText(box, tr("Open"), tr("Could not open %1:\n%2").arg(path, error));
     box->exec();
     delete box;
 }
@@ -1021,8 +1022,8 @@ bool MainWindow::saveAsFile() {
     // written is one the dialog never checked.
     const SavePath p = resolveSavePath(dialog.selectedFiles().constFirst(), dialog.defaultSuffix());
     if (p.confirmOverwrite &&
-        QMessageBox::warning(this, tr("Save As"), tr("%1 already exists.\nDo you want to replace it?").arg(p.path),
-                             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        bw::warning(this, tr("Save As"), tr("%1 already exists.\nDo you want to replace it?").arg(p.path),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return false;
     return saveInteractive(p.path, fileFormFor(p.path), saveFilterEncoding(dialog.selectedNameFilter()));
 }
@@ -1034,7 +1035,7 @@ bool MainWindow::saveInteractive(const QString& path, FileForm form, std::option
     }
     const AnsiOutput out = saveLoss(path, form, encoding);
     if (out.lossy()) {
-        const auto answer = QMessageBox::warning(
+        const auto answer = bw::warning(
             this, tr("Save"),
             saveWarning(out, form != FileForm::Ansi, artFormatFor(QFile::encodeName(path).toStdString())),
             QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);
@@ -1043,7 +1044,7 @@ bool MainWindow::saveInteractive(const QString& path, FileForm form, std::option
     }
     QString error;
     if (!(form == FileForm::Ansi ? doc_.save(path, out, &error) : doc_.saveProject(path, form, &error))) {
-        QMessageBox::warning(this, tr("Save"), tr("Could not save %1:\n%2").arg(path, error));
+        bw::warning(this, tr("Save"), tr("Could not save %1:\n%2").arg(path, error));
         return false;
     }
     if (form == FileForm::Ansi && doc_.path() != path)

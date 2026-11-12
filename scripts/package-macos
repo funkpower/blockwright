@@ -76,6 +76,9 @@ app=$stage/Blockwright.app
 
 echo "== Qt into the bundle"
 "$qt/bin/macdeployqt" "$app" -executable="$app/Contents/MacOS/blockwright-cli" -always-overwrite
+# --list-actions and --screenshot run the window on the offscreen platform,
+# with no display; macdeployqt deploys only the cocoa one.
+cp "$qt/plugins/platforms/libqoffscreen.dylib" "$app/Contents/PlugIns/platforms/"
 # Qt's build is universal; an app for one architecture carries only that
 # architecture's slice of it.
 if [[ $archs != *";"* ]]; then

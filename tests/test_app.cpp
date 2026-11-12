@@ -12,6 +12,7 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "main_window.h"
+#include "message_box.h"
 #include "palette_widget.h"
 #include "scratch_settings.h"
 
@@ -1852,6 +1853,11 @@ int main(int argc, char** argv) {
     }
 #endif
     QApplication app(argc, argv);
+    // BW_TEST_HEADING_BOXES=1 makes every box a macOS one, its title the
+    // heading and its message the informative text, so a run on any platform
+    // catches a test that reads a box's text() for its message.
+    if (qEnvironmentVariableIntValue("BW_TEST_HEADING_BOXES"))
+        bw::useHeadingBoxes(true);
 #ifdef Q_OS_MACOS
     if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
         QApplication::setFont(QFont(QStringLiteral(".AppleSystemUIFont"), 13));

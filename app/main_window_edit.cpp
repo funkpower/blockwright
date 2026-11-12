@@ -11,6 +11,7 @@
 #include "draw_tools.h"
 #include "frame_tool.h"
 #include "help_text.h"
+#include "message_box.h"
 #include "whats_this.h"
 #include "reference_scale.h"
 #include "select_tool.h"
@@ -177,7 +178,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
                                                           tr("Images (*.png *.jpg *.jpeg);;All files (*)"));
         QString error;
         if (!path.isEmpty() && !loadReferenceImage(path, &error))
-            QMessageBox::warning(this, tr("Open Reference Image"), tr("Could not open %1:\n%2").arg(path, error));
+            bw::warning(this, tr("Open Reference Image"), tr("Could not open %1:\n%2").arg(path, error));
     });
     file->insertSeparator(quitSeparator);
     file->insertAction(quitSeparator, openReference);

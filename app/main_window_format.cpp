@@ -7,6 +7,7 @@
 
 #include "canvas_size_dialog.h"
 #include "canvas_view.h"
+#include "message_box.h"
 #include "palette_widget.h"
 #include "library_dock.h"
 #include "preferences.h"
@@ -166,7 +167,7 @@ void MainWindow::canvasSize() {
         return;
     QString error;
     if (!resizeCanvas(dialog.canvasSize(), dialog.anchor(), &error))
-        QMessageBox::warning(this, tr("Canvas Size"), tr("The canvas can't be made that size: %1.").arg(error));
+        bw::warning(this, tr("Canvas Size"), tr("The canvas can't be made that size: %1.").arg(error));
 }
 
 bool MainWindow::resizeCanvas(QSize size, Anchor anchor, QString* error) {

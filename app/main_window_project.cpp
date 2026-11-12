@@ -5,6 +5,7 @@
 #include "main_window.h"
 
 #include "canvas_view.h"
+#include "message_box.h"
 
 #include <QAction>
 #include <QDir>
@@ -115,9 +116,9 @@ bool MainWindow::saveAsDirectory() {
     // writeDirectory refuses a directory holding anything but a project; one
     // that holds another project is replaced, so ask first.
     if (path != doc_.path() && project::isProject(QFile::encodeName(path).toStdString()) &&
-        QMessageBox::warning(this, tr("Save As"),
-                             tr("%1 already holds a project.\nDo you want to replace it?").arg(path),
-                             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        bw::warning(this, tr("Save As"),
+                    tr("%1 already holds a project.\nDo you want to replace it?").arg(path),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return false;
     return saveInteractive(path, FileForm::ProjectDirectory);
 }
@@ -151,13 +152,13 @@ void MainWindow::takeSnapshot() {
     project::Snapshot s;
     AnsiOutput out;
     if (!error.isEmpty() || doc_.form() == FileForm::Ansi || !doc_.nextSnapshot(&s, &out, &error)) {
-        QMessageBox::warning(this, tr("Take Snapshot"), tr("Could not take a snapshot:\n%1").arg(error));
+        bw::warning(this, tr("Take Snapshot"), tr("Could not take a snapshot:\n%1").arg(error));
         return;
     }
     if (out.lossy() &&
-        QMessageBox::warning(this, tr("Take Snapshot"),
-                             tr("Snapshot r%1, as .ans:\n%2.\n\nTake it anyway?").arg(s.round).arg(lossDescription(out, true)),
-                             QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
+        bw::warning(this, tr("Take Snapshot"),
+                    tr("Snapshot r%1, as .ans:\n%2.\n\nTake it anyway?").arg(s.round).arg(lossDescription(out, true)),
+                    QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
         return;
     const int round = s.round;
     doc_.addSnapshot(std::move(s));

@@ -6,6 +6,7 @@
 
 #include "canvas_view.h"
 #include "irc_meter.h"
+#include "message_box.h"
 #include "plural.h"
 
 #include "blockwright/irc_view.h"
@@ -107,7 +108,7 @@ void MainWindow::exportIrc() {
         int longest = 0;
         for (const auto& o : over)
             longest = std::max(longest, int(o.bytes));
-        const auto answer = QMessageBox::warning(
+        const auto answer = bw::warning(
             this, tr("Export IRC Text"),
             plural(int(over.size()),
                    tr("%n line is over the %1-byte budget, at %2 bytes as WeeChat's ascii script sends it: the "
@@ -123,8 +124,8 @@ void MainWindow::exportIrc() {
     // what IRC text writes as '?', named as Save names a UTF-8 .ans's losses
     if (const QString lost = ircLossDescription(irc::unwritable(irc::sentCanvas(doc_.canvas(), doc_.ansi().ice, doc_.target())));
         !lost.isEmpty() &&
-        QMessageBox::warning(this, tr("Export IRC Text"), tr("Before exporting IRC text:\n%1.\n\nExport anyway?").arg(lost),
-                             QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Save)
+        bw::warning(this, tr("Export IRC Text"), tr("Before exporting IRC text:\n%1.\n\nExport anyway?").arg(lost),
+                    QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Save)
         return;
     QString start;
     if (!doc_.path().isEmpty()) {
@@ -137,7 +138,7 @@ void MainWindow::exportIrc() {
         return;
     QString error;
     if (!exportIrcText(path, &error, true)) {
-        QMessageBox::warning(this, tr("Export IRC Text"), tr("Could not write %1:\n%2").arg(path, error));
+        bw::warning(this, tr("Export IRC Text"), tr("Could not write %1:\n%2").arg(path, error));
         return;
     }
     statusBar()->showMessage(

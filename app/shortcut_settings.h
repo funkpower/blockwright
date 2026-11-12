@@ -34,9 +34,9 @@ inline constexpr char kStandardKeyProperty[] = "bwStandardKey";
 // The keys the platform theme gives standard key `key`, as
 // QKeySequence::keyBindings() has them; `a` is marked with the key
 // (kStandardKeyProperty). After useLinuxStandardKeys(), the keys a generic
-// Linux desktop's theme gives it (Qt's X11 and GNOME schemes) instead,
-// whatever the platform and its theme: --list-actions runs offscreen, and
-// that theme has the Windows keys.
+// Linux desktop's theme gives it (Qt's X11 and GNOME schemes) under the Qt
+// the app runs on instead, whatever the platform and its theme:
+// --list-actions runs offscreen, and that theme has the Windows keys.
 QList<QKeySequence> standardKeys(QAction* a, QKeySequence::StandardKey key);
 void useLinuxStandardKeys(bool on = true);
 

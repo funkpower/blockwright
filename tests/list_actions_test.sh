@@ -5,8 +5,9 @@
 # window (there is no display to show one on), lists all 21 glyph sets though
 # its ANSI document hides 17-21, and leaves the profile empty;
 # with a file named it is a usage error. Its standard keys are a generic
-# Linux desktop's, and the desktop's platform, theme and style don't change
-# a byte of it.
+# Linux desktop's under the Qt it runs on (the second line of its --version),
+# and the desktop's
+# platform, theme and style don't change a byte of it.
 set -uo pipefail
 tmp=$1; py=$2; shift 2
 fails=0
@@ -20,8 +21,10 @@ env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM= HOME="$profile/home" XDG_CONF
     "$@" --list-actions >"$tmp/out.json" 2>"$tmp/err.log"
 st=$?
 if [[ $st -eq 0 ]]; then ok "--list-actions exits 0"; else bad "--list-actions (exit $st): $(cat "$tmp/err.log")"; fi
-if summary=$("$py" -I - "$tmp/out.json" <<'PY'
-import json, sys
+qt=$(env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM= "$@" --version 2>/dev/null | sed -n '2s/^Qt \([0-9][0-9.]*\)$/\1/p')
+if [[ -n $qt ]]; then ok "runs on Qt $qt"; else bad "--version names no Qt: $("$@" --version 2>&1 | head -n2)"; fi
+if summary=$(BW_QT_VERSION=$qt "$py" -I - "$tmp/out.json" <<'PY'
+import json, os, sys
 actions = json.load(open(sys.argv[1], encoding="utf-8"))
 assert isinstance(actions, list) and actions, "not a non-empty array"
 ids = [a["id"] for a in actions]
@@ -31,7 +34,10 @@ for a in actions:
     for k in ("menu", "path", "text", "shortcuts", "statusTip", "toolTip", "checkable", "checked", "inSheet"):
         assert k in a, f"{a['id']} has no {k}"
 keys = {a["id"]: a["shortcuts"] for a in actions}
-want = {"quit": ["Ctrl+Q"], "undo": ["Ctrl+Z", "F14", "Undo"], "redo": ["Ctrl+Shift+Z", "Redo"],
+# Qt 6.10 added the Undo and Redo keys to the generic desktop's table.
+qt = tuple(int(n) for n in os.environ["BW_QT_VERSION"].split(".")[:2])
+media = qt >= (6, 10)
+want = {"quit": ["Ctrl+Q"], "undo": ["Ctrl+Z", "F14"] + ["Undo"] * media, "redo": ["Ctrl+Shift+Z"] + ["Redo"] * media,
         "saveAs": ["Ctrl+Shift+S"], "selectAll": ["Ctrl+A"]}
 for id, k in want.items():
     assert keys[id] == k, f"{id} has {keys[id]}, not {k}"

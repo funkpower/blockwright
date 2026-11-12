@@ -3,6 +3,7 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "main_window.h"
+#include "message_box.h"
 #include "settings.h"
 
 #include <QAction>
@@ -252,7 +253,7 @@ void Publisher::publishInteractive() {
     QString error;
     const std::optional<pipeline::PublishPlan> plan = planPublish(libraryDir, name, tagText, &error, true);
     if (!plan) {
-        QMessageBox::warning(window_, tr("Publish to Library"), tr("Could not publish:\n%1").arg(error));
+        bw::warning(window_, tr("Publish to Library"), tr("Could not publish:\n%1").arg(error));
         return;
     }
     appSettings()->setValue(kLibraryKey, libraryDir);
@@ -269,11 +270,11 @@ void Publisher::publishInteractive() {
         question += QStringLiteral("\n\n") + pipelineWarning(out, PipelineAction::Publish, ircText().has_value());
     else
         question += tr("\n\nPublish?");
-    if (QMessageBox::question(window_, tr("Publish to Library"), question, QMessageBox::Yes | QMessageBox::No,
-                              QMessageBox::No) != QMessageBox::Yes)
+    if (bw::question(window_, tr("Publish to Library"), question, QMessageBox::Yes | QMessageBox::No,
+                     QMessageBox::No) != QMessageBox::Yes)
         return;
     if (!publish(*plan, &error)) {
-        QMessageBox::warning(window_, tr("Publish to Library"), tr("Could not publish:\n%1").arg(error));
+        bw::warning(window_, tr("Publish to Library"), tr("Could not publish:\n%1").arg(error));
         return;
     }
     window_->statusBar()->showMessage(tr("Published %1").arg(QString::fromStdString(plan->key)), 5000);
@@ -318,7 +319,7 @@ void Publisher::sendInteractive() {
 
     // Stamped before the loss check below, so the warning covers it.
     if (const QString why = window_->canvasView()->finishTool(); !why.isEmpty()) {
-        QMessageBox::warning(window_, tr("Send to WeeChat"), tr("the floating selection can't land: %1").arg(why));
+        bw::warning(window_, tr("Send to WeeChat"), tr("the floating selection can't land: %1").arg(why));
         return;
     }
     QString target = QStringLiteral("%1:%2/%3")
@@ -330,18 +331,18 @@ void Publisher::sendInteractive() {
     const AnsiOutput out = payload();
     if (out.lossy())
         question += QStringLiteral("\n\n") + pipelineWarning(out, PipelineAction::Send, text);
-    if (QMessageBox::question(window_, tr("Send to WeeChat"), question, QMessageBox::Yes | QMessageBox::No,
-                              QMessageBox::No) != QMessageBox::Yes)
+    if (bw::question(window_, tr("Send to WeeChat"), question, QMessageBox::Yes | QMessageBox::No,
+                     QMessageBox::No) != QMessageBox::Yes)
         return;
     s->setValue(kHostKey, hostName);
     s->setValue(kWipKey, wipDir);
     const SendResult r = sendToWeechat(hostName, wipDir, name, roundNo, true);
     if (!r.ok) {
-        QMessageBox::warning(window_, tr("Send to WeeChat"), r.message);
+        bw::warning(window_, tr("Send to WeeChat"), r.message);
         return;
     }
     if (!r.reloaded) {
-        QMessageBox::information(window_, tr("Send to WeeChat"), tr("Copied to %1.\n\n%2").arg(target, r.message));
+        bw::information(window_, tr("Send to WeeChat"), tr("Copied to %1.\n\n%2").arg(target, r.message));
         return;
     }
     window_->statusBar()->showMessage(

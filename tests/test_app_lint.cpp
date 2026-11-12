@@ -1037,6 +1037,11 @@ TEST_CASE("the IRC View's scroll bar's Top is a scroll by hand (#394)") {
 // #394, round 2: a pan gesture on the picture moves the bars by its delta
 // (QAbstractScrollArea) without a slider action; it is a scroll by hand.
 TEST_CASE("a pan gesture on the IRC View is a scroll by hand (#394)") {
+#ifdef Q_OS_MACOS
+    // A Mac's scroll areas grab no pan gesture: a trackpad scrolls by wheel
+    // events, as the wheel test above does.
+    SKIP("Qt's scroll areas take no pan gesture on macOS");
+#endif
     ScrolledDock s;
     QPanGesture pan;
     pan.setLastOffset(QPointF(0, 0));

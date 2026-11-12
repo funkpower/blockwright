@@ -592,6 +592,7 @@ add_executable(blockwright-app-tests
   test_app_brush.cpp
   test_app_layers.cpp
   test_app_canvas_size.cpp
+  test_app_message_box.cpp
   test_app_clone_replay.cpp
   test_app_text_replay.cpp
   test_app_layer_style.cpp
@@ -781,6 +782,15 @@ endif()
 catch_discover_tests(blockwright-publish-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
+# Both binaries once more with macOS's message boxes, the title as the heading
+# and the message as the informative text, so a test that reads a box's
+# message from text() fails here and not first on a Mac.
+if(NOT APPLE)
+  foreach(t blockwright-app-tests blockwright-publish-tests)
+    add_test(NAME ${t}_heading_boxes
+      COMMAND ${BW_APP_TEST_ENV} BW_TEST_HEADING_BOXES=1 ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:${t}>)
+  endforeach()
+endif()
 
 # On an X server of their own, with input through XTest: skipped where Xvfb or
 # the xcb libraries aren't installed. They can't run offscreen, so the
