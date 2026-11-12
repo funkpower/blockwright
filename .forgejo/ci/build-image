@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Builds the CI image on the runner's host, under the tag the workflow names:
-#   blockwright-ci:arch-<rev>  (arch.Dockerfile)
-# Bump rev with any change to the Dockerfile, change the tag in ci.yml to match
-# in the same PR, and run this on the runner's host before merging.
+# Builds the CI images on the runner's host, under the tags the workflow names:
+#   blockwright-ci:arch-<rev>    (arch.Dockerfile, job "linux")
+#   blockwright-ci:qt-min-<rev>  (qt-min.Dockerfile, job "linux-qt-min")
+# Bump an image's rev with any change to its Dockerfile, change the tag in
+# ci.yml to match in the same PR, and run this on the runner's host before
+# merging.
 set -euo pipefail
-rev=2
+arch_rev=2
+qt_min_rev=1
 here=$(cd "$(dirname "$0")" && pwd)
-docker build -t "blockwright-ci:arch-$rev" -f "$here/arch.Dockerfile" "$here"
+docker build -t "blockwright-ci:arch-$arch_rev" -f "$here/arch.Dockerfile" "$here"
+docker build -t "blockwright-ci:qt-min-$qt_min_rev" -f "$here/qt-min.Dockerfile" "$here"

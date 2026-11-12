@@ -1,5 +1,6 @@
 # CI: build and run the whole test suite on Linux, in the blockwright-ci image
-# (.forgejo/ci/arch.Dockerfile), and on FreeBSD, on the project's own
+# (.forgejo/ci/arch.Dockerfile), again on Linux against the oldest Qt the build
+# accepts (.forgejo/ci/qt-min.Dockerfile), and on FreeBSD, on the project's own
 # self-hosted runners. The FreeBSD runner is a virtual machine that runs jobs
 # directly on its host, with no container; it has the packages the port
 # depends on (packaging/freebsd) installed, and handles one job at a time.
@@ -99,6 +100,73 @@ jobs:
       # The install_notices tests each configure and build Blockwright again
       # at -j8. Run beside each other and the rest of the suite, they need more
       # than the job's 12 GB, so they run after it, one at a time.
+      - name: Test
+        run: |
+          : "${HOME:?}"
+          ctest --test-dir "$HOME/build" -j8 --output-on-failure --timeout 300 --no-tests=error -E '^install_notices'
+
+      - name: Test (nested builds)
+        run: |
+          : "${HOME:?}"
+          ctest --test-dir "$HOME/build" -j1 --output-on-failure --timeout 300 --no-tests=error -R '^install_notices'
+
+  # The same build and suite against the oldest Qt minor version that
+  # CMakeLists.txt accepts, Qt's own build of its last patch release from the
+  # job's image (.forgejo/ci/qt-min.Dockerfile, which says why not 6.7.0), so
+  # code or a test that needs a newer Qt fails here before a release.
+  linux-qt-min:
+    name: linux (Arch, minimum Qt 6.7)
+    runs-on: bw-linux
+    container:
+      # Built on the runner's host by .forgejo/ci/build-image; never pulled.
+      image: blockwright-ci:qt-min-1
+    timeout-minutes: 30
+    env:
+      LANG: C.UTF-8
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out
+        env:
+          TOKEN: ${{ forgejo.token }}
+          URL: ${{ forgejo.server_url }}/${{ forgejo.repository }}.git
+          SHA: ${{ forgejo.sha }}
+        run: |
+          set -eu
+          : "${HOME:?}"
+          cd "$HOME"
+          git init -q src
+          cd src
+          git remote add origin "$URL"
+          # The token goes in through the environment, not the command line.
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
+            GIT_CONFIG_VALUE_0="Authorization: token $TOKEN" \
+            git fetch -q --depth=1 origin "$SHA"
+          git checkout -q --detach FETCH_HEAD
+          git log -1 --format='%h %s'
+
+      # The image's Qt must still be of the minor version CMakeLists.txt asks
+      # for: a raised minimum needs a new image, not a silent pass on the old
+      # one.
+      - name: Configure
+        run: |
+          set -eu
+          : "${HOME:?}"
+          min=$(sed -n 's/^find_package(Qt6 \([0-9.]*\) .*/\1/p' "$HOME/src/CMakeLists.txt")
+          case "$QT_VERSION" in
+            "$min" | "$min".*) ;;
+            *) echo "image has Qt $QT_VERSION, CMakeLists.txt asks for $min: rebuild the image" >&2; exit 1 ;;
+          esac
+          cmake -S "$HOME/src" -B "$HOME/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          grep -x "Qt6Core_DIR:PATH=/opt/qt/$QT_VERSION/.*" "$HOME/build/CMakeCache.txt"
+
+      - name: Build
+        run: |
+          set -eu
+          : "${HOME:?}"
+          cmake --build "$HOME/build" -j8
+          # The GUI's second line names the Qt it runs on.
+          "$HOME/build/app/blockwright" --version | grep -x "Qt $QT_VERSION"
+
       - name: Test
         run: |
           : "${HOME:?}"
