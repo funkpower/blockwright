@@ -94,10 +94,21 @@ void prepareToRunGenerators() {
 #endif
 }
 
-std::vector<bw::LayerId> generatorsToRun(const bw::LayerStack& stack, const std::vector<bw::LayerId>& wanted) {
+std::vector<bw::LayerId> generatorsToRun(const bw::LayerStack& stack, const std::vector<bw::LayerId>& wanted,
+                                         std::vector<bw::LayerId>* hidden) {
     const std::vector<bw::LayerId> all = bw::generator::generatorLayers(stack);
-    if (wanted.empty())
-        return all;
+    if (wanted.empty()) {
+        // a hidden layer shows nothing, and its program runs with the
+        // user's rights: it runs only when named (PLAN §7 Trust, #440)
+        std::vector<bw::LayerId> shown;
+        for (const bw::LayerId id : all) {
+            if (stack.find(id)->props.visible)
+                shown.push_back(id);
+            else if (hidden)
+                hidden->push_back(id);
+        }
+        return shown;
+    }
     std::vector<bw::LayerId> ids;
     for (const bw::LayerId id : wanted) {
         const bw::Layer* l = stack.find(id);

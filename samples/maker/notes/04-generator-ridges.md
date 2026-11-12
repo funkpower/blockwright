@@ -36,4 +36,4 @@ Snapshots: r1 is the first run of the ridges, two smooth ones; r2 the parameters
 - Set Highest row under 18: the peaks climb into the rows where the sky is still a gradient. They stay darker than the glow, but near the top of the sky they stand lighter than the dusk around them.
 - Hide ridges and show ridges (baked): the picture is the same, but the baked layer is plain cells you can paint on, and it no longer has a form.
 - The stars layer is chars-only, so each star takes the sky's colours under it. The app has no control for a layer's mode: to see the stars in their own white on black, save a copy with File > Save As Project Directory, change `"mode"` from `"chars-only"` to `"normal"` in the copy's `layers/2.json`, and open the copy.
-- From a terminal, `blockwright-cli run-generators` runs every generator layer of a saved copy again and keeps the cells they make.
+- From a terminal, `blockwright-cli run-generators` runs every visible generator layer of a saved copy again and keeps the cells they make. Layer 4, ridges (seed 12), is hidden, so it is listed as hidden and not run; `--layer 4` runs it, and `--layer` runs only the layers it names.

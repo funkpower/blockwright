@@ -139,6 +139,48 @@ expect "--name belongs to add-generator" 2 '^blockwright-cli: --name is an add-g
 expect "add-generator usage" 2 'add-generator takes a project and a generator directory' -- "$cli" add-generator "$tmp/p.bwp"
 expect "run-generators usage" 2 'run-generators takes one project' -- "$cli" run-generators "$tmp/p.bwp" "$gen"
 
+# a hidden generator layer runs only when --layer names it (#440)
+"$cli" unpack "$tmp/p.bwp" "$tmp/hid" >/dev/null || bad "unpack hid"
+sed -e 's/"visible": true/"visible": false/' "$tmp/hid/layers/3.json" > "$tmp/hid-3.json"
+mv "$tmp/hid-3.json" "$tmp/hid/layers/3.json"
+grep -q '"visible": false' "$tmp/hid/layers/3.json" || bad "layer 3 not hidden"
+printf '{"word": "HID"}\n' > "$tmp/hid/scripts/2/params.json"
+printf '{"word": "HID"}\n' > "$tmp/hid/scripts/3/params.json"
+cp "$tmp/hid/layers/3.cells" "$tmp/hid-3-before.cells"
+cp "$tmp/hid/layers/2.cells" "$tmp/hid-2-before.cells"
+out=$("$cli" run-generators "$tmp/hid" 2>/dev/null); st=$?
+if [[ $st -eq 0 ]]; then ok "run-generators with a hidden layer succeeds"; else bad "run-generators with a hidden layer: exit $st"; fi
+if grep -q '^layer 3 (stars): hidden, not run$' <<<"$out"; then ok "it says the hidden layer was skipped"; else bad "no skip line: $out"; fi
+if grep -q '^layer 2 (sky): 30x1$' <<<"$out"; then ok "the visible layer still runs"; else bad "the visible layer didn't run: $out"; fi
+if grep -q '^1 generator run$' <<<"$out"; then ok "only the visible layer is counted"; else bad "wrong count: $out"; fi
+same "the hidden layer keeps its cells" "$tmp/hid/layers/3.cells" "$tmp/hid-3-before.cells"
+if cmp -s "$tmp/hid/layers/2.cells" "$tmp/hid-2-before.cells"; then bad "the visible layer kept its old cells"; else ok "the visible layer has new cells"; fi
+# a hidden layer whose program fails doesn't stop the others
+printf 'exit 4\n' > "$tmp/hid/scripts/3/gen.sh"
+expect "a failing hidden layer isn't run" 0 '^1 generator run$' -- "$cli" run-generators "$tmp/hid"
+printf 'w=$(sed -n '\''s/.*"word":"\\([A-Z]*\\)".*/\\1/p'\'')\n. lib/colours.sh\nprintf "$BLUE  $RED%%s" "$w"\n' > "$tmp/hid/scripts/3/gen.sh"
+out=$("$cli" run-generators --layer 3 "$tmp/hid" 2>&1); st=$?
+if [[ $st -eq 0 ]] && grep -q '^layer 3 (stars): 30x1$' <<<"$out" && grep -q '^1 generator run$' <<<"$out"; then
+  ok "--layer runs a hidden layer"; else bad "--layer of a hidden layer: exit $st: $out"; fi
+if grep -q 'hidden, not run' <<<"$out"; then bad "--layer reported a skip: $out"; else ok "--layer skips nothing"; fi
+if cmp -s "$tmp/hid/layers/3.cells" "$tmp/hid-3-before.cells"; then bad "the named hidden layer kept its old cells"; else ok "the named hidden layer has new cells"; fi
+expect "--layer runs hidden and visible together" 0 '^2 generators run$' -- "$cli" run-generators --layer 3 --layer 2 "$tmp/hid"
+grep -q '"visible": false' "$tmp/hid/layers/3.json" && ok "running it leaves it hidden" || bad "running it showed the layer"
+
+# a project whose generators are all hidden runs none and is left alone
+"$cli" unpack "$tmp/p.bwp" "$tmp/allhid" >/dev/null || bad "unpack allhid"
+for id in 2 3; do
+  sed -e 's/"visible": true/"visible": false/' "$tmp/allhid/layers/$id.json" > "$tmp/allhid-$id.json"
+  mv "$tmp/allhid-$id.json" "$tmp/allhid/layers/$id.json"
+done
+cp -r "$tmp/allhid" "$tmp/allhid-before"
+out=$("$cli" run-generators "$tmp/allhid" 2>&1); st=$?
+if [[ $st -eq 0 ]]; then ok "all hidden: exit 0"; else bad "all hidden: exit $st: $out"; fi
+if grep -q '^layer 2 (sky): hidden, not run$' <<<"$out" && grep -q '^layer 3 (stars): hidden, not run$' <<<"$out"; then
+  ok "all hidden: a skip line for each"; else bad "all hidden: skip lines missing: $out"; fi
+if grep -q '^0 generators run$' <<<"$out"; then ok "all hidden: 0 generators run"; else bad "all hidden: wrong count: $out"; fi
+if diff -r "$tmp/allhid" "$tmp/allhid-before" >/dev/null; then ok "all hidden: the project is unchanged"; else bad "all hidden: the project changed"; fi
+
 # a project with no generators runs none and isn't rewritten
 "$cli" pack "$piece" "$tmp/plain.bwp" >/dev/null
 cp "$tmp/plain.bwp" "$tmp/plain-before.bwp"

@@ -114,7 +114,11 @@ Add a generator layer from a directory with a generator.json, run it once and
 save the project.
 .TP
 .BI run-generators " project"
-Run the project's generator layers again and save their output.
+Run the project's visible generator layers again and save their output.
+A hidden generator layer is not run, and is listed as
+.RI "layer " id " (" name "): hidden, not run;"
+.BI \-\-layer " id"
+runs only the layers it names, hidden ones included.
 .TP
 .BI import-scene " scene.py out"
 Open a Python scene as a new project with a generator layer for each of its

@@ -722,6 +722,28 @@ TEST_CASE("the CLI runs the generators asked for, bottom first, or every one", "
     CHECK(bwcli::generatorsToRun(LayerStack(4, 2), {}).empty());
 }
 
+TEST_CASE("the CLI runs a hidden generator layer only when it is named", "[generator][cli]") {
+    LayerStack s(4, 2);
+    const LayerId a = s.add(makeLayer(LayerKind::Generator, 4, 2, "a"));
+    const LayerId h = s.add(makeLayer(LayerKind::Generator, 4, 2, "hidden"));
+    const LayerId b = s.add(makeLayer(LayerKind::Generator, 4, 2, "b"));
+    const LayerId h2 = s.add(makeLayer(LayerKind::Generator, 4, 2, "hidden too"));
+    s.find(h)->props.visible = false;
+    s.find(h2)->props.visible = false;
+    std::vector<LayerId> hidden;
+    CHECK(bwcli::generatorsToRun(s, {}, &hidden) == std::vector<LayerId>{a, b});
+    CHECK(hidden == std::vector<LayerId>{h, h2});
+    CHECK(bwcli::generatorsToRun(s, {}) == std::vector<LayerId>{a, b});
+    hidden.clear();
+    CHECK(bwcli::generatorsToRun(s, {h2, h}, &hidden) == std::vector<LayerId>{h, h2});
+    CHECK(bwcli::generatorsToRun(s, {b, h}, &hidden) == std::vector<LayerId>{h, b});
+    CHECK(hidden.empty());
+    s.find(a)->props.visible = false;
+    s.find(b)->props.visible = false;
+    CHECK(bwcli::generatorsToRun(s, {}, &hidden).empty());
+    CHECK(hidden == std::vector<LayerId>{a, h, b, h2});
+}
+
 #ifndef _WIN32
 TEST_CASE("a run leaves nothing it started running whichever way it ends", "[generator][run][process]") {
     // Each script starts a background child that writes its marker a second

@@ -38,8 +38,11 @@ std::map<std::string, std::string> readGeneratorDir(const std::filesystem::path&
 void prepareToRunGenerators();
 
 // The ids `wanted` names, each a generator layer of the stack, or every
-// generator layer, bottom first, when it is empty. Throws Failure for an id
-// that isn't one.
-std::vector<bw::LayerId> generatorsToRun(const bw::LayerStack& stack, const std::vector<bw::LayerId>& wanted);
+// visible generator layer when it is empty, bottom first. A hidden layer
+// runs only when `wanted` names it (#440); with `wanted` empty the hidden
+// ones go in `hidden`, bottom first, when it is given. Throws Failure for an
+// id that isn't one.
+std::vector<bw::LayerId> generatorsToRun(const bw::LayerStack& stack, const std::vector<bw::LayerId>& wanted,
+                                         std::vector<bw::LayerId>* hidden = nullptr);
 
 } // namespace bwcli

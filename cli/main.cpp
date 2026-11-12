@@ -499,15 +499,19 @@ int addGenerator(const std::string& path, const std::string& dir, std::optional<
     return kOk;
 }
 
-// Runs the project's generator layers (those in `ids`, or every one), bottom
-// first, and saves the project in the form it was read with their new cells.
-// If any fails nothing is written.
+// Runs the project's generator layers (those in `ids`, or every visible
+// one), bottom first, and saves the project in the form it was read with
+// their new cells. A hidden layer runs only when `ids` names it; the ones
+// skipped are listed first. If any fails nothing is written.
 int runGenerators(const std::string& path, const std::vector<bw::LayerId>& ids,
                   const bw::generator::RunOptions& opts) {
     if (!bw::project::isProject(path))
         throw Failure{path + ": not a project"};
     bw::project::Project p = loadProject(path);
-    const std::vector<bw::LayerId> todo = bwcli::generatorsToRun(p.layers, ids);
+    std::vector<bw::LayerId> hidden;
+    const std::vector<bw::LayerId> todo = bwcli::generatorsToRun(p.layers, ids, &hidden);
+    for (const bw::LayerId id : hidden)
+        std::cout << "layer " << id << " (" << p.layers.find(id)->props.name << "): hidden, not run\n";
     bwcli::prepareToRunGenerators();
     for (const bw::LayerId id : todo) {
         try {
@@ -1323,9 +1327,10 @@ int main(int argc, char** argv) {
         "                       with a generator.json (and params.json, scripts),\n"
         "                       run it once and save the project\n"
         "  run-generators <project>\n"
-        "                       run the project's generator layers (or each\n"
-        "                       --layer) again and save their output; this runs\n"
-        "                       the programs their generator.json names\n"
+        "                       run the project's visible generator layers (or\n"
+        "                       each --layer, hidden or not) again and save their\n"
+        "                       output; this runs the programs their\n"
+        "                       generator.json names\n"
         "  import-scene <scene.py> <out>\n"
         "                       open a layered Python scene (one that answers\n"
         "                       --list-layers) as a new project with a generator\n"
@@ -1450,8 +1455,8 @@ int main(int argc, char** argv) {
     parser.addOption(nameOpt);
     const QCommandLineOption layerOpt(
         QStringLiteral("layer"),
-        QStringLiteral("run-generators: run this generator layer (an id, as info lists them); more than once for "
-                       "several (default: every one)"),
+        QStringLiteral("run-generators: run this generator layer (an id, as info lists them), even a hidden one; "
+                       "more than once for several (default: every visible one)"),
         QStringLiteral("id"));
     parser.addOption(layerOpt);
     const QCommandLineOption timeoutOpt(

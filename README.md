@@ -122,7 +122,7 @@ composite) without a display:
 | `pack <in> <out.bwp>`, `unpack <in> <dir>` | write an `.ans` or project as a project zip or directory |
 | `snapshot <project>` | save the composite as the project's next `snapshots/rN.ans` |
 | `add-generator <project> <dir>` | add a generator layer from a directory with a `generator.json` |
-| `run-generators <project>` | run the project's generator layers again and save their output |
+| `run-generators <project>` | run the project's visible generator layers (or each `--layer`, hidden or not) again and save their output |
 | `import-scene <scene.py> <out>` | make a project from a Python scene, a generator layer per scene layer |
 | `replay <steps.json> -o <dir>` | apply a steps file through the editor's tools and write the canvas after each step |
 
