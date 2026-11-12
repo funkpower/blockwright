@@ -4,6 +4,8 @@
 
 #include "message_box.h"
 
+#include "box_title.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
@@ -17,6 +19,7 @@
 #include <functional>
 
 using namespace bw;
+using bwtest::shownTitle;
 
 namespace {
 
@@ -36,17 +39,6 @@ struct BoxAnswer {
         timer.start();
     }
 };
-
-// The title a box shows: on macOS QMessageBox sets no window title, so a box
-// that doesn't make its title its heading has none there.
-QString shownTitle(bool headings, const QString& title) {
-#ifdef Q_OS_MACOS
-    return headings ? title : QString();
-#else
-    Q_UNUSED(headings);
-    return title;
-#endif
-}
 
 } // namespace
 

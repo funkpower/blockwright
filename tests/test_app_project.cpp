@@ -15,6 +15,7 @@
 #include "blockwright/text_style.h"
 
 #include "scratch_settings.h"
+#include "box_title.h"
 #include "util.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1109,8 +1110,8 @@ TEST_CASE("the unsaved-changes prompt shows its title, as the heading where boxe
     });
     w.newFile();
     REQUIRE(asked);
-    CHECK(title == QStringLiteral("Blockwright"));
-    CHECK(windowTitle == QStringLiteral("Blockwright"));
+    CHECK(title == bwtest::shownTitle(headings, QStringLiteral("Blockwright")));
+    CHECK(windowTitle == bwtest::shownWindowTitle(QStringLiteral("Blockwright")));
     CHECK(text == QStringLiteral("The canvas has unsaved changes."));
     CHECK(heading == (headings ? QStringLiteral("Blockwright") : text));
     // the buttons, the default and the answers as before

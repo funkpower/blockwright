@@ -20,6 +20,7 @@
 #include "blockwright/generator.h"
 #include "blockwright/project.h"
 
+#include "box_title.h"
 #include "util.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -277,8 +278,8 @@ TEST_CASE("the Run Generators prompt shows its title, as the heading where boxes
     form->runButton()->click();
     REQUIRE(waitFor([&] { return asked; }));
     timer.stop();
-    CHECK(title == QStringLiteral("Run Generators"));
-    CHECK(windowTitle == QStringLiteral("Run Generators"));
+    CHECK(title == bwtest::shownTitle(headings, QStringLiteral("Run Generators")));
+    CHECK(windowTitle == bwtest::shownWindowTitle(QStringLiteral("Run Generators")));
     CHECK(text == question);
     CHECK(heading == (headings ? QStringLiteral("Run Generators") : question));
     // the question comes before what runs, under the heading on a Mac
