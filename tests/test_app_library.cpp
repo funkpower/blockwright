@@ -412,6 +412,78 @@ TEST_CASE("a stamp saved from a selection appears in the dock and drops onto the
     CHECK_FALSE(drop(v, &text, {0, 0}));
 }
 
+// PLAN §13 Phase 2c's done-when: the next window finds the stamp where the
+// first saved it, as a restart does, and places it with its blank cell
+// transparent.
+TEST_CASE("a stamp saved to the Library survives closing the window and places with its blank cells transparent") {
+    // The user library both windows read at start, as a run's would be.
+    QTemporaryDir user;
+    REQUIRE(user.isValid());
+    const QByteArray env = qgetenv("BLOCKWRIGHT_USER_LIBRARY");
+    REQUIRE(!env.isEmpty());  // test_app.cpp's main points it at scratch
+    qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(user.path()));
+    struct Restore {
+        QByteArray env;
+        ~Restore() { qputenv("BLOCKWRIGHT_USER_LIBRARY", env); }
+    } restore{env};
+
+    {
+        MainWindow w;
+        w.show();
+        REQUIRE(w.libraryWidget()->userDir() == fspath(user.path()));
+        // A 3x1 part with a blank cell in the middle, saved by Selection >
+        // Save to Library.
+        write(w, 0, 0, QStringLiteral("x x"));
+        w.tools()->setActive(w.selectTool());
+        w.selectTool()->select({0, 0, 3, 1});
+        bool ran = false;
+        QTimer::singleShot(0, &w, [&] {
+            auto* d = qobject_cast<StampDialog*>(QApplication::activeModalWidget());
+            REQUIRE(d);
+            ran = true;
+            d->nameEdit()->setText(QStringLiteral("Two Dots"));
+            d->categoryBox()->setCurrentText(QStringLiteral("test"));
+            QPushButton* ok = d->buttons()->button(QDialogButtonBox::Ok);
+            REQUIRE(ok->isEnabled());
+            ok->click();
+        });
+        act(w, "saveToLibrary")->trigger();
+        REQUIRE(ran);
+        REQUIRE(w.libraryWidget()->shownNames().contains(QStringLiteral("Two Dots")));
+        w.document()->undoStack()->setClean();
+        REQUIRE(w.close());
+    }
+
+    MainWindow w;
+    LibraryDock* dock = w.libraryWidget();
+    CHECK(dock->userDir() == fspath(user.path()));
+    REQUIRE(dock->shownNames().contains(QStringLiteral("Two Dots")));
+    CHECK(dock->categories().contains(QStringLiteral("test")));
+    CanvasView* v = w.canvasView();
+    QUndoStack* undo = w.document()->undoStack();
+    CHECK(at(w, 0, 0) == QLatin1Char(' '));  // a new window, a blank canvas
+    write(w, 9, 5, QStringLiteral("ooooo"));
+    const int edits = undo->count();
+
+    v->setCellCursor({10, 5});
+    emit dock->grid()->itemActivated(item(dock, QStringLiteral("Two Dots")));
+    SelectTool* s = w.selectTool();
+    REQUIRE(s->floating());
+    CHECK(s->floatingBlock().width == 3);
+    CHECK(s->effectivePasteMode() == PasteMode::Transparent);
+    press(v, Qt::Key_Return);
+    CHECK_FALSE(s->floating());
+    CHECK(undo->count() == edits + 1);
+    CHECK(at(w, 9, 5) == QLatin1Char('o'));
+    CHECK(at(w, 10, 5) == QLatin1Char('x'));
+    CHECK(at(w, 11, 5) == QLatin1Char('o'));  // the blank cell left it
+    CHECK(at(w, 12, 5) == QLatin1Char('x'));
+    CHECK(at(w, 13, 5) == QLatin1Char('o'));
+    undo->undo();
+    CHECK(at(w, 10, 5) == QLatin1Char('o'));
+    CHECK(at(w, 12, 5) == QLatin1Char('o'));
+}
+
 TEST_CASE("placing a stamp first stamps what already floats, in its own paste mode") {
     Fixture f;
     write(f.w, 0, 0, QStringLiteral("a b"));
