@@ -37,6 +37,17 @@ struct BoxAnswer {
     }
 };
 
+// The title a box shows: on macOS QMessageBox sets no window title, so a box
+// that doesn't make its title its heading has none there.
+QString shownTitle(bool headings, const QString& title) {
+#ifdef Q_OS_MACOS
+    return headings ? title : QString();
+#else
+    Q_UNUSED(headings);
+    return title;
+#endif
+}
+
 } // namespace
 
 TEST_CASE("message boxes put their title in their text on macOS only", "[message-box]") {
@@ -72,7 +83,7 @@ TEST_CASE("a box's title is its heading where boxes have no title, and its windo
         });
         CHECK(warning(nullptr, title, text) == QMessageBox::Ok);
         REQUIRE(answer.seen);
-        CHECK(gotTitle == title);
+        CHECK(gotTitle == shownTitle(headings, title));
         CHECK(gotText == text);
         if (headings) {
             CHECK(shownText == title);
@@ -91,7 +102,7 @@ TEST_CASE("a box's title is its heading where boxes have no title, and its windo
             for (QAbstractButton* b : box->buttons())
                 buttons << box->standardButton(b);
             CHECK(box->icon() == QMessageBox::Question);
-            CHECK(boxTitle(box) == title);
+            CHECK(boxTitle(box) == shownTitle(headings, title));
             CHECK(boxText(box) == text);
             CHECK(defaultButton == box->button(QMessageBox::No));
             box->button(QMessageBox::Yes)->click();
@@ -117,7 +128,7 @@ TEST_CASE("a box's title is its heading where boxes have no title, and its windo
     SECTION("a box made by hand") {
         QMessageBox box(QMessageBox::Warning, QString(), QString(), QMessageBox::Ok);
         setBoxText(&box, title, text);
-        CHECK(boxTitle(&box) == title);
+        CHECK(boxTitle(&box) == shownTitle(headings, title));
         CHECK(boxText(&box) == text);
         CHECK(box.text() == (headings ? title : text));
         CHECK(box.informativeText() == (headings ? text : QString()));

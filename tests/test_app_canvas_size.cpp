@@ -341,7 +341,12 @@ TEST_CASE("the dialog's refusal is told in a message box") {
     });
     action(w, "canvasSize")->trigger();
     CHECK(told);
+#ifdef Q_OS_MACOS
+    // a Mac's QMessageBox sets no window title, so without headings there is none
+    CHECK(title == (headings ? QStringLiteral("Canvas Size") : QString()));
+#else
     CHECK(title == QStringLiteral("Canvas Size"));
+#endif
     CHECK(text == QStringLiteral("The canvas can't be made that size: the canvas is too large to display."));
     CHECK(shownText == (headings ? title : text));
     CHECK(w.document()->canvas().width() == 80);
