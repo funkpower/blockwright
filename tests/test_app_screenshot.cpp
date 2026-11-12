@@ -14,6 +14,7 @@
 #include "text_options.h"
 #include "text_tool.h"
 #include "palette_widget.h"
+#include "preferences.h"
 #include "replay.h"
 #include "read_file.h"
 #include "screenshot.h"
@@ -1494,4 +1495,65 @@ TEST_CASE("a text step's TheDraw face shows in the window: the Text tool keeps i
     REQUIRE(seen.count("02-title"));
     CHECK(seen["02-title"].defaults == block);
     CHECK(seen["02-title"].inProject);
+}
+
+TEST_CASE("a TheDraw text step's face shows in the status bar and no fonts folder is scanned in --screenshot (#459)",
+          "[screenshot][text][tdf]") {
+    // a TheDraw collection where the default fonts folder is looked for
+    QTemporaryDir home;
+    REQUIRE(home.isValid());
+    REQUIRE(QDir(home.path()).mkpath(QStringLiteral("tdfiglet/fonts")));
+    REQUIRE(QFile::copy(QString::fromStdString((fs::path(BW_TEST_DATA) / "tdf" / "bw-all.tdf").string()),
+                        home.filePath(QStringLiteral("tdfiglet/fonts/bw-all.tdf"))));
+    struct HomeBack {
+        QString was = testing::home;
+        ~HomeBack() { testing::home = was; }
+    } back;
+    testing::home = home.path();
+    {
+        // scratch settings alone would scan it
+        ScratchSettings plain;
+        REQUIRE(plain.valid());
+        REQUIRE(fontsFolderSetting() == home.filePath(QStringLiteral("tdfiglet/fonts")));
+    }
+    // the second step sets the face only: no layer is added or changed
+    steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [40, 24]}, "window": [1024, 720], "steps": [
+        {"name": "title", "action": "text", "at": [1, 1], "text": "Hi",
+         "textOptions": {"face": {"tdf": "../tdf/bw-outline.tdf", "font": "BW Outline"}}, "screenshot": {"of": "window"}},
+        {"name": "block", "action": "text",
+         "textOptions": {"face": {"tdf": "../tdf/bw-all.tdf", "font": "BW Block", "index": 1}},
+         "screenshot": {"of": "window"}}]})");
+    bwcli::replay::load(s, kTutorial.parent_path());
+    const screenshot::Scratch scratch;
+    REQUIRE(scratch.error().empty());
+    CHECK(fontsFolderSetting().isEmpty());
+    MainWindow w;
+    struct Seen {
+        QString status;
+        bool scanning = false, scanningShown = false, folder = false;
+        QStringList listed;
+    };
+    std::map<std::string, Seen> seen;
+    screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        auto* status = w.findChild<QLabel*>(QStringLiteral("toolStatusLabel"));
+        REQUIRE(status);
+        FacePicker* picker = w.toolOptions()->textOptions()->facePicker();
+        REQUIRE(picker);
+        auto* scanning = picker->findChild<QLabel*>(QStringLiteral("fontsScanning"));
+        REQUIRE(scanning);
+        seen[sh.stem] = {status->text(), w.document()->fontsScanning(), !scanning->isHidden(),
+                         w.document()->sharedFontsFolder() != nullptr, picker->listed()};
+    });
+    REQUIRE(seen.count("01-title"));
+    REQUIRE(seen.count("02-block"));
+    CHECK(seen["01-title"].status == QStringLiteral("Face: BW Outline"));
+    CHECK(seen["02-block"].status == QStringLiteral("Face: BW Block"));
+    for (const auto& [stem, at] : seen) {
+        INFO(stem);
+        CHECK_FALSE(at.scanning);
+        CHECK_FALSE(at.scanningShown);
+        CHECK_FALSE(at.folder);
+        for (const QString& entry : at.listed)
+            CHECK_FALSE(entry.endsWith(QStringLiteral("(bw-all.tdf)")));
+    }
 }

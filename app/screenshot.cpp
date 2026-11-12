@@ -4,6 +4,7 @@
 #include "draw_tools.h"
 #include "lint_dock.h"
 #include "main_window.h"
+#include "preferences.h"
 #include "select_tool.h"
 #include "settings.h"
 #include "text_options.h"
@@ -561,6 +562,37 @@ void write(const std::vector<Shot>& shots, const fs::path& dir, const std::funct
     bwcli::saveAll(files, beforeCommit);
 }
 
+Scratch::Scratch() {
+    // Default keys and layout whatever the user changed, and nothing the
+    // window writes kept.
+    if (!settings_.valid()) {
+        error_ = "no scratch settings file could be made";
+        return;
+    }
+    // No fonts folder, set as Clear sets it: unset, the default
+    // ~/tdfiglet/fonts would be scanned on a worker no picture waits for,
+    // and listed once it finished (#459).
+    setFontsFolderSetting(QString());
+    // The Library dock shows the bundled Library and an empty user one,
+    // never the user's own stamps.
+    if (!library_.isValid()) {
+        error_ = "no scratch Library folder could be made";
+        return;
+    }
+    hadLibrary_ = qEnvironmentVariableIsSet("BLOCKWRIGHT_USER_LIBRARY");
+    libraryBefore_ = qgetenv("BLOCKWRIGHT_USER_LIBRARY");
+    qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(library_.path()));
+}
+
+Scratch::~Scratch() {
+    if (!settings_.valid() || !library_.isValid())
+        return;
+    if (hadLibrary_)
+        qputenv("BLOCKWRIGHT_USER_LIBRARY", libraryBefore_);
+    else
+        qunsetenv("BLOCKWRIGHT_USER_LIBRARY");
+}
+
 int run(const QString& stepsPath, const QString& outDir) {
     const std::string path = QFile::encodeName(stepsPath).toStdString();
     try {
@@ -580,17 +612,9 @@ int run(const QString& stepsPath, const QString& outDir) {
         // every file a step reads, as blockwright-cli replay reads them (#422)
         bwcli::replay::load(script, stepsDir);
 
-        // Default keys and layout whatever the user changed, and nothing
-        // the window writes kept.
-        ScratchSettings scratch;
-        if (!scratch.valid())
-            throw Failure{"no scratch settings file could be made"};
-        // The Library dock shows the bundled Library and an empty user one,
-        // never the user's own stamps.
-        QTemporaryDir library;
-        if (!library.isValid())
-            throw Failure{"no scratch Library folder could be made"};
-        qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(library.path()));
+        const Scratch scratch;
+        if (!scratch.error().empty())
+            throw Failure{scratch.error()};
         std::vector<Shot> shots;
         {
             MainWindow w;

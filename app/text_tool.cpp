@@ -255,8 +255,12 @@ void TextTool::setSettings(const TextSource& s, const QString& undoText, Documen
         trimQueued_ = true;
         QMetaObject::invokeMethod(this, &TextTool::trimKept, Qt::QueuedConnection);
     }
-    if (!doc)
+    if (!doc) {
+        // the defaults alone (--screenshot puts a replay's on the tool): the
+        // status shows them (#459)
+        emit changed();
         return;
+    }
     const Layer* l = doc->active();
     if (!liveText(l) || l->props.locked || spot_) {
         // the status and the text cursor at spot() show the new defaults

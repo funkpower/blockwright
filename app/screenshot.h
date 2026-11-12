@@ -8,6 +8,7 @@
 
 #include "blockwright/project.h"
 #include "blockwright/steps.h"
+#include "settings.h"
 
 #include <QImage>
 #include <QPainterPath>
@@ -16,6 +17,7 @@
 #include <QRect>
 #include <QSize>
 #include <QString>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 
 #include <filesystem>
@@ -132,8 +134,31 @@ std::vector<Shot> take(MainWindow& window, const steps::Script& script, project:
 void write(const std::vector<Shot>& shots, const std::filesystem::path& dir,
            const std::function<void()>& beforeCommit = {});
 
+// What `blockwright --screenshot` makes its window under, so a run depends
+// only on the steps file, Qt and the fonts: scratch settings (default keys
+// and layout, nothing the window writes kept) with no fonts folder, so no
+// TheDraw collection on the machine is scanned or listed and the face picker
+// never shows "Scanning fonts..." (#459), and an empty user Library
+// (BLOCKWRIGHT_USER_LIBRARY). All of it is put back as it was when it goes.
+class Scratch {
+public:
+    Scratch();
+    ~Scratch();
+    Scratch(const Scratch&) = delete;
+    Scratch& operator=(const Scratch&) = delete;
+    // empty when it worked, else why not
+    const std::string& error() const { return error_; }
+
+private:
+    ScratchSettings settings_;
+    QTemporaryDir library_;
+    QByteArray libraryBefore_;
+    bool hadLibrary_ = false;
+    std::string error_;
+};
+
 // The command: the steps file at `stepsPath` replayed in a new window
-// under scratch settings, its shots written to `outDir`. The exit status;
+// under Scratch, its shots written to `outDir`. The exit status;
 // what failed is on stderr.
 int run(const QString& stepsPath, const QString& outDir);
 
