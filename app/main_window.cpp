@@ -488,6 +488,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         auto* a = new QAction(f.text, this);
         a->setObjectName(QString::fromLatin1(f.name));
         a->setCheckable(true);
+        a->setStatusTip(f.tip);
         a->setToolTip(f.tip);
         QFont font = a->font();
         font.setBold(f.bit == attr::Bold);
@@ -627,14 +628,18 @@ void MainWindow::createActions() {
     QMenu* file = menuBar()->addMenu(tr("&File"));
     QAction* a = file->addAction(tr("&New"), this, &MainWindow::newFile);
     a->setObjectName(QStringLiteral("newFile"));
+    a->setStatusTip(tr("Start a new blank canvas, asking to save unsaved edits first"));
     a->setShortcut(standardKeys(a, QKeySequence::New).value(0));
     a = file->addAction(tr("&Open..."), this, &MainWindow::open);
     a->setObjectName(QStringLiteral("open"));
+    a->setStatusTip(tr("Open a file, asking to save unsaved edits first"));
     a->setShortcut(standardKeys(a, QKeySequence::Open).value(0));
     a = file->addAction(tr("Open Project Di&rectory..."), this, &MainWindow::openDirectory);
     a->setObjectName(QStringLiteral("openDirectory"));
+    a->setStatusTip(tr("Open a project saved as a directory"));
     a = file->addAction(tr("Open S&cene..."), this, &MainWindow::openScene);
     a->setObjectName(QStringLiteral("openScene"));
+    a->setStatusTip(tr("Open a Python scene as a new project, a generator layer for each of its layers"));
     openRecentMenu_ = file->addMenu(tr("Open Rec&ent"));
     openRecentMenu_->setObjectName(QStringLiteral("openRecent"));
     connect(openRecentMenu_, &QMenu::aboutToShow, this, &MainWindow::fillRecentMenu);
@@ -647,26 +652,35 @@ void MainWindow::createActions() {
         const QString text = !enc                          ? tr("&Auto (as its bytes say)")
                              : *enc == TextEncoding::Cp437 ? tr("&CP437")
                                                            : tr("&UTF-8");
+        const QString tip = !enc                          ? tr("Open the .ans again, read as its bytes say")
+                            : *enc == TextEncoding::Cp437 ? tr("Open the .ans again, read as CP437")
+                                                          : tr("Open the .ans again, read as UTF-8");
         a = reopenMenu_->addAction(text, this, [this, enc] { reopenWithEncoding(enc); });
         a->setObjectName(QLatin1String(name));
+        a->setStatusTip(tip);
     }
     a = file->addAction(tr("Star&t Screen..."), this, &MainWindow::showStartScreen);
     a->setObjectName(QStringLiteral("startScreen"));
+    a->setStatusTip(tr("Start over on a new canvas with the start screen over it, asking to save unsaved edits first"));
     a = file->addAction(tr("&Save"), this, &MainWindow::save);
     a->setObjectName(QStringLiteral("save"));
+    a->setStatusTip(tr("Save the document to its file, asking for a name if it has none"));
     a->setShortcut(standardKeys(a, QKeySequence::Save).value(0));
     a = file->addAction(tr("Save &As..."), this, &MainWindow::saveAs);
     a->setObjectName(QStringLiteral("saveAs"));
+    a->setStatusTip(tr("Save the document under another name"));
     a->setShortcut(standardKeys(a, QKeySequence::SaveAs).value(0));
     createProjectActions(file);
     file->addSeparator();
     a = file->addAction(tr("SA&UCE..."), this, &MainWindow::editSauce);
     a->setObjectName(QStringLiteral("sauce"));
+    a->setStatusTip(tr("Edit the SAUCE record: title, author, group, date and comments"));
     file->addSeparator();
     (new Publisher(this))->addActions(file);
     file->addSeparator();
     a = file->addAction(tr("&Quit"), this, &QWidget::close);
     a->setObjectName(QStringLiteral("quit"));
+    a->setStatusTip(tr("Close Blockwright, asking to save unsaved edits first"));
     // Qt 6.10's generic theme gives Quit only the bare Exit key, which keyboard
     // mode would take; Ctrl+Q there, as the other desktops have it.
     const QKeySequence quit = standardKeys(a, QKeySequence::Quit).value(0);
@@ -675,10 +689,12 @@ void MainWindow::createActions() {
     QMenu* edit = menuBar()->addMenu(tr("&Edit"));
     a = doc_.undoStack()->createUndoAction(this, tr("&Undo"));
     a->setObjectName(QStringLiteral("undo"));
+    a->setStatusTip(tr("Undo the last edit"));
     a->setShortcuts(standardKeys(a, QKeySequence::Undo));
     edit->addAction(a);
     a = doc_.undoStack()->createRedoAction(this, tr("&Redo"));
     a->setObjectName(QStringLiteral("redo"));
+    a->setStatusTip(tr("Redo the last edit undone"));
     a->setShortcuts(standardKeys(a, QKeySequence::Redo));
     // A snapshot redone into an .ans drops itself from the stack (#115), and
     // Qt before 6.9 drops it without updating this action. Connected after
@@ -692,42 +708,54 @@ void MainWindow::createActions() {
     // no shortcut: Ctrl+, (QKeySequence::Preferences) steps the glyph set
     a = edit->addAction(tr("&Preferences..."), this, &MainWindow::editPreferences);
     a->setObjectName(QStringLiteral("preferences"));
+    a->setStatusTip(tr("Set the fonts folder, the target new documents get, and the actions' keys"));
     a->setMenuRole(QAction::PreferencesRole);
 
     QMenu* view = menuBar()->addMenu(tr("&View"));
     a = view->addAction(tr("Zoom &In"), this, &MainWindow::zoomIn);
     a->setObjectName(QStringLiteral("zoomIn"));
+    a->setStatusTip(tr("Zoom in on the canvas"));
     a->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Equal), QKeySequence(Qt::CTRL | Qt::Key_Plus)});
     a = view->addAction(tr("Zoom &Out"), this, &MainWindow::zoomOut);
     a->setObjectName(QStringLiteral("zoomOut"));
+    a->setStatusTip(tr("Zoom out from the canvas"));
     a->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
     a = view->addAction(tr("&Actual Size"), this, &MainWindow::zoomReset);
     a->setObjectName(QStringLiteral("zoomReset"));
+    a->setStatusTip(tr("Show the canvas at its actual size"));
     a->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     createFormatActions(view);
     createTargetActions(menuBar()->addMenu(tr("F&ormat")));
     createIrcActions(file, view);
 
     // Colours and glyph sets: Moebius's keys.
-    const auto add = [this](QMenu* m, const QString& text, const char* name, QKeySequence key, auto slot) {
+    const auto add = [this](QMenu* m, const QString& text, const char* name, const QString& tip, QKeySequence key,
+                            auto slot) {
         QAction* act = m->addAction(text, this, slot);
         act->setObjectName(QString::fromLatin1(name));
+        act->setStatusTip(tip);
         act->setShortcut(key);
         return act;
     };
     QMenu* colours = menuBar()->addMenu(tr("&Colours"));
-    add(colours, tr("&Previous Foreground"), "previousForeground", QKeySequence(Qt::CTRL | Qt::Key_Up),
+    add(colours, tr("&Previous Foreground"), "previousForeground",
+        tr("Make the foreground the palette's previous colour"), QKeySequence(Qt::CTRL | Qt::Key_Up),
         [this] { stepColour(true, -1); });
-    add(colours, tr("&Next Foreground"), "nextForeground", QKeySequence(Qt::CTRL | Qt::Key_Down),
+    add(colours, tr("&Next Foreground"), "nextForeground", tr("Make the foreground the palette's next colour"),
+        QKeySequence(Qt::CTRL | Qt::Key_Down),
         [this] { stepColour(true, 1); });
-    add(colours, tr("P&revious Background"), "previousBackground", QKeySequence(Qt::CTRL | Qt::Key_Left),
+    add(colours, tr("P&revious Background"), "previousBackground",
+        tr("Make the background the palette's previous colour"), QKeySequence(Qt::CTRL | Qt::Key_Left),
         [this] { stepColour(false, -1); });
-    add(colours, tr("N&ext Background"), "nextBackground", QKeySequence(Qt::CTRL | Qt::Key_Right),
+    add(colours, tr("N&ext Background"), "nextBackground", tr("Make the background the palette's next colour"),
+        QKeySequence(Qt::CTRL | Qt::Key_Right),
         [this] { stepColour(false, 1); });
     colours->addSeparator();
-    add(colours, tr("&Default Colours"), "defaultColours", QKeySequence(Qt::CTRL | Qt::Key_D),
+    add(colours, tr("&Default Colours"), "defaultColours",
+        tr("Set the pen back to grey on black, with no formatting"), QKeySequence(Qt::CTRL | Qt::Key_D),
         [this] { view_->setPen(Pen{}); });
-    add(colours, tr("&Swap Colours"), "swapColours", QKeySequence(),
+    add(colours, tr("&Swap Colours"), "swapColours", tr("Swap the foreground and background colours"),
+        QKeySequence(),
         [this] {
             Pen p = view_->pen();  // the formatting stays (#360)
             std::swap(p.fg, p.bg);
@@ -735,11 +763,14 @@ void MainWindow::createActions() {
         });
 
     QMenu* glyphs = menuBar()->addMenu(tr("&Glyphs"));
-    add(glyphs, tr("&Previous Set"), "previousGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Comma),
+    add(glyphs, tr("&Previous Set"), "previousGlyphSet",
+        tr("Make the previous glyph set the one F1 to F10 type"), QKeySequence(Qt::CTRL | Qt::Key_Comma),
         [this] { view_->setGlyphSet(view_->glyphSet() - 1); });
-    add(glyphs, tr("&Next Set"), "nextGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Period),
+    add(glyphs, tr("&Next Set"), "nextGlyphSet",
+        tr("Make the next glyph set the one F1 to F10 type"), QKeySequence(Qt::CTRL | Qt::Key_Period),
         [this] { view_->setGlyphSet(view_->glyphSet() + 1); });
-    add(glyphs, tr("&Default Set"), "defaultGlyphSet", QKeySequence(Qt::CTRL | Qt::Key_Slash),
+    add(glyphs, tr("&Default Set"), "defaultGlyphSet",
+        tr("Make the default glyph set the one F1 to F10 type"), QKeySequence(Qt::CTRL | Qt::Key_Slash),
         [this] { view_->setGlyphSet(kDefaultGlyphSet); });
     glyphs->addSeparator();
     // Ctrl+Shift+F1-F10 pick sets 1-10; 11-16 (and the Unicode sets 17-21,
@@ -754,7 +785,8 @@ void MainWindow::createActions() {
             shown += QString::fromUcs4(&ch, 1);
         const QKeySequence key =
             i < kGlyphSetKeys ? QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key(Qt::Key_F1 + i)) : QKeySequence();
-        QAction* set = add(glyphs, tr("Set %1: %2").arg(i + 1).arg(shown), "", key,
+        QAction* set = add(glyphs, tr("Set %1: %2").arg(i + 1).arg(shown), "",
+                           tr("Make set %1 the glyphs F1 to F10 type").arg(i + 1), key,
                            [this, i] { view_->setGlyphSet(i); });
         set->setObjectName(QStringLiteral("glyphSet%1").arg(i + 1));
         // Hidden while the typing policy is CP437 (updateGlyphSet), but still
@@ -782,6 +814,7 @@ void MainWindow::createActions() {
     // No shortcut: F1, the standard help key, types a glyph in keyboard mode.
     a = help->addAction(tr("&Keyboard Shortcuts..."), this, [this] { showShortcuts(this); });
     a->setObjectName(QStringLiteral("keyboardShortcuts"));
+    a->setStatusTip(tr("List every action that has a key, with its keys"));
     a = help->addAction(tr("&Manual..."), this, [this] { showManual(*tools_, this); });
     a->setObjectName(QStringLiteral("manual"));
     a->setStatusTip(tr("What each tool, its options and each kind of layer do"));
@@ -789,8 +822,10 @@ void MainWindow::createActions() {
     help->addSeparator();
     a = help->addAction(tr("&About Blockwright"), this, [this] { showAbout(this); });
     a->setObjectName(QStringLiteral("about"));
+    a->setStatusTip(tr("Blockwright's version, commit, licence and credits"));
     a = help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
     a->setObjectName(QStringLiteral("aboutQt"));
+    a->setStatusTip(tr("The version of Qt Blockwright runs on, and its licence"));
 }
 
 void MainWindow::updateGlyphSet() {

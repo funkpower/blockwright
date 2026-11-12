@@ -30,12 +30,14 @@ void MainWindow::createFormatActions(QMenu* view) {
     iceAction_ = view->addAction(tr("i&CE Colours"));
     iceAction_->setObjectName(QStringLiteral("iceColours"));
     iceAction_->setCheckable(true);
-    iceAction_->setToolTip(tr("Bright backgrounds as 16 colours; off, they blink on the dark colour"));
+    iceAction_->setStatusTip(tr("Bright backgrounds as 16 colours; off, they blink on the dark colour"));
+    iceAction_->setToolTip(iceAction_->statusTip());
     connect(iceAction_, &QAction::triggered, this, &MainWindow::setIceColours);
     ninePxAction_ = view->addAction(tr("&9 px Letter Spacing"));
     ninePxAction_->setObjectName(QStringLiteral("ninePx"));
     ninePxAction_->setCheckable(true);
-    ninePxAction_->setToolTip(tr("9 px cells, line-drawing glyphs 0xC0-0xDF joined as on VGA; off, 8 px"));
+    ninePxAction_->setStatusTip(tr("9 px cells, line-drawing glyphs 0xC0-0xDF joined as on VGA; off, 8 px"));
+    ninePxAction_->setToolTip(ninePxAction_->statusTip());
     connect(ninePxAction_, &QAction::triggered, this, &MainWindow::setNinePx);
     syncFormatActions();
 }
@@ -56,6 +58,7 @@ void MainWindow::createTargetActions(QMenu* format) {
         QAction* a = target->addAction(text);
         a->setObjectName(QString::fromLatin1(name));
         a->setCheckable(true);
+        a->setStatusTip(tip);
         a->setToolTip(tip);
         group->addAction(a);
         connect(a, &QAction::triggered, this, [this, t] { doc_.setTarget(t); });

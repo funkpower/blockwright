@@ -113,6 +113,22 @@ TEST_CASE("the fonts folder setting keeps an explicitly cleared value", "[fonts]
     CHECK(appSettings()->contains(QLatin1String(kFontsFolderKey)));
 }
 
+// A form row of a layout gets a label with no buddy, which shows its '&'.
+TEST_CASE("Preferences' Fonts folder label has the folder field as its buddy", "[fonts][preferences]") {
+    PreferencesDialog d(QString{});
+    QLabel* folder = nullptr;
+    for (QLabel* l : d.findChildren<QLabel*>()) {
+        if (l->text() == QStringLiteral("&Fonts folder:"))
+            folder = l;
+        QString text = l->text();
+        text.remove(QStringLiteral("&&"));
+        INFO(l->text().toStdString());
+        CHECK((!text.contains(QLatin1Char('&')) || l->buddy()));
+    }
+    REQUIRE(folder);
+    CHECK(qobject_cast<QLineEdit*>(folder->buddy()));
+}
+
 TEST_CASE("Preferences lists the fonts folder's fonts and the files it couldn't read", "[fonts][preferences]") {
     QTemporaryDir tmp;
     const QString dir = fontsFolder(tmp);

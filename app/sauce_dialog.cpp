@@ -114,7 +114,9 @@ SauceDialog::SauceDialog(const Sauce& sauce, QWidget* parent) : QDialog(parent),
     form->addRow(tr("Ti&tle (35):"), title_);
     form->addRow(tr("&Author (20):"), author_);
     form->addRow(tr("&Group (20):"), group_);
-    form->addRow(tr("&Date:"), dateRow);
+    auto* dateLabel = new QLabel(tr("&Date:"), this);  // a layout's row gets no buddy
+    dateLabel->setBuddy(date_);
+    form->addRow(dateLabel, dateRow);
     form->addRow(tr("&Comments (64 per line):"), comments_);
 
     problem_ = new QLabel(this);

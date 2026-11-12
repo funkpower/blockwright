@@ -127,6 +127,22 @@ TEST_CASE("the action dump is JSON with a unique stable id for each action", "[l
     CHECK(actionListJson(&other) == actionListJson(&w));
 }
 
+// The docs' Shortcuts page says what each action does from its status tip,
+// so every action the dump lists has one, and one that says more than its
+// name.
+TEST_CASE("every action the dump lists has a status tip", "[list-actions]") {
+    MainWindow w;
+    const QJsonArray list = dumped(w);
+    REQUIRE(list.size() > 50);
+    for (const QJsonValue& v : list) {
+        const QJsonObject o = v.toObject();
+        INFO(o.value(QStringLiteral("id")).toString().toStdString());
+        const QString tip = o.value(QStringLiteral("statusTip")).toString();
+        CHECK_FALSE(tip.trimmed().isEmpty());
+        CHECK(tip != o.value(QStringLiteral("text")).toString());
+    }
+}
+
 TEST_CASE("the action dump lists exactly the Keyboard Shortcuts sheet's actions as its keyed ones", "[list-actions]") {
     MainWindow w;
     const QJsonArray list = dumped(w);

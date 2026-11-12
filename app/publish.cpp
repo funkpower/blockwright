@@ -67,8 +67,10 @@ Publisher::Publisher(MainWindow* window) : QObject(window), window_(window) {
 void Publisher::addActions(QMenu* file) {
     QAction* a = file->addAction(tr("Publish to &Library..."), this, &Publisher::publishInteractive);
     a->setObjectName(QStringLiteral("publishToLibrary"));
+    a->setStatusTip(tr("Write the document into the art library folder as a named piece with tags"));
     a = file->addAction(tr("Send to &WeeChat..."), this, &Publisher::sendInteractive);
     a->setObjectName(QStringLiteral("sendToWeechat"));
+    a->setStatusTip(tr("Copy the document over SSH to a host's wip folder for WeeChat, as the piece's next round"));
 }
 
 QString Publisher::defaultSlug() const {

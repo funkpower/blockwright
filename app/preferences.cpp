@@ -97,7 +97,11 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
     auto* fonts = new QWidget(this);
     fonts->setObjectName(QStringLiteral("fontsPage"));
     auto* form = new QFormLayout;
-    form->addRow(tr("&Fonts folder:"), row);
+    // A label of its own with the line edit as its buddy, so the & is Alt+F
+    // and not shown: addRow(QString, QLayout*) makes one with no buddy.
+    auto* folderLabel = new QLabel(tr("&Fonts folder:"), fonts);
+    folderLabel->setBuddy(folder_);
+    form->addRow(folderLabel, row);
     auto* page = new QVBoxLayout(fonts);
     page->addLayout(form);
     page->addWidget(default_);

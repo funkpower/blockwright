@@ -27,6 +27,7 @@ void MainWindow::createProjectActions(QMenu* file) {
     otherFormAction_ = a;
     a = file->addAction(tr("Take Sna&pshot"), this, &MainWindow::takeSnapshot);
     a->setObjectName(QStringLiteral("snapshot"));
+    a->setStatusTip(tr("Add the canvas as the project's next round, an .ans kept in the project"));
     snapshotAction_ = a;
     connect(&doc_, &Document::pathChanged, this, &MainWindow::syncProjectActions);
     syncProjectActions();
@@ -35,6 +36,9 @@ void MainWindow::createProjectActions(QMenu* file) {
 void MainWindow::syncProjectActions() {
     const bool dir = doc_.form() == FileForm::ProjectDirectory;
     otherFormAction_->setText(dir ? tr("Save As &File...") : tr("Save As Project &Directory..."));
+    otherFormAction_->setStatusTip(
+        dir ? tr("Save the project under another name as a file: a .bwp, or a flat .ans, .xb or .bin")
+            : tr("Save the document under another name as a project directory"));
     snapshotAction_->setEnabled(doc_.form() != FileForm::Ansi);
 }
 

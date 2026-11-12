@@ -95,6 +95,7 @@ void MainWindow::createReferenceActions() {
             doc_.setLayerProperties(l->props.id, std::move(props), tr("Reference Opacity"));
         });
         a->setObjectName(QStringLiteral("referenceOpacity%1").arg(percent));
+        a->setStatusTip(tr("Show the active reference layer's picture at %1% opacity").arg(percent));
         a->setCheckable(true);
         group->addAction(a);
     }
@@ -146,9 +147,11 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     view_->setTool(tools_->active());
     connect(tools_, &ToolRegistry::activeChanged, view_, &CanvasView::setTool);
 
-    const auto add = [this](QMenu* m, const QString& text, const char* name, const QKeySequence& key, auto slot) {
+    const auto add = [this](QMenu* m, const QString& text, const char* name, const QString& tip,
+                            const QKeySequence& key, auto slot) {
         QAction* act = m->addAction(text, this, slot);
         act->setObjectName(QString::fromLatin1(name));
+        act->setStatusTip(tip);
         act->setShortcut(key);
         return act;
     };
@@ -173,6 +176,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         quitSeparator = fileActions.at(fileActions.size() - 2);
     auto* openReference = new QAction(tr("Open &Reference Image..."), this);
     openReference->setObjectName(QStringLiteral("openReferenceImage"));
+    openReference->setStatusTip(tr("Add a picture as a reference layer to draw over"));
     connect(openReference, &QAction::triggered, this, [this] {
         const QString path = QFileDialog::getOpenFileName(this, tr("Open Reference Image"), QString(),
                                                           tr("Images (*.png *.jpg *.jpeg);;All files (*)"));
@@ -187,14 +191,16 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     // keyboard mode it still clears the cell under the cursor.
     edit->addSeparator();
     QList<QAction*> needSelection;
-    needSelection << add(edit, tr("Cu&t"), "cut", QKeySequence(Qt::CTRL | Qt::Key_X), [selecting] { selecting()->cut(); })
-                  << add(edit, tr("&Copy"), "copy", QKeySequence(Qt::CTRL | Qt::Key_C),
+    needSelection << add(edit, tr("Cu&t"), "cut", tr("Copy the selection and clear its cells"),
+                         QKeySequence(Qt::CTRL | Qt::Key_X), [selecting] { selecting()->cut(); })
+                  << add(edit, tr("&Copy"), "copy", tr("Copy the selection"), QKeySequence(Qt::CTRL | Qt::Key_C),
                          [selecting] { selecting()->copy(); });
-    QAction* paste = add(edit, tr("&Paste"), "paste", QKeySequence(Qt::CTRL | Qt::Key_V),
-                         [selecting] { selecting()->paste(); });
+    QAction* paste = add(edit, tr("&Paste"), "paste", tr("Float what was copied at the cell cursor"),
+                         QKeySequence(Qt::CTRL | Qt::Key_V), [selecting] { selecting()->paste(); });
     // Del is no key of the action's but the tool's, so the menu names it
     // after any key Preferences > Shortcuts gives the action.
-    QAction* del = add(edit, tr("&Delete"), "deleteSelection", QKeySequence(), [selecting] { selecting()->clear(); });
+    QAction* del = add(edit, tr("&Delete"), "deleteSelection", tr("Clear the selected cells"), QKeySequence(),
+                       [selecting] { selecting()->clear(); });
     const auto delText = [del] {
         QStringList keys;
         for (const QKeySequence& k : del->shortcuts())
@@ -206,7 +212,9 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     connect(del, &QAction::changed, del, delText);
     needSelection << del;
     edit->addSeparator();
-    QAction* mirror = check(add(edit, tr("&Mirror Mode"), "mirrorMode", QKeySequence(Qt::CTRL | Qt::Key_M), [] {}),
+    QAction* mirror = check(add(edit, tr("&Mirror Mode"), "mirrorMode",
+                                tr("Repeat what the drawing tools paint as Edit > Symmetry says"),
+                                QKeySequence(Qt::CTRL | Qt::Key_M), [] {}),
                             nullptr, view_->mirror());
     connect(mirror, &QAction::toggled, view_, &CanvasView::setMirror);
     connect(view_, &CanvasView::mirrorChanged, mirror, &QAction::setChecked);
@@ -217,14 +225,23 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     auto* symmetryGroup = new QActionGroup(this);
     struct SymmetryEntry {
         const char* name;
-        QString text;
+        QString text, tip;
         SymmetryMode mode;
     };
-    for (const SymmetryEntry& m : {SymmetryEntry{"symmetryMirrorX", tr("Mirror &X"), SymmetryMode::MirrorX},
-                                   SymmetryEntry{"symmetryMirrorY", tr("Mirror &Y"), SymmetryMode::MirrorY},
-                                   SymmetryEntry{"symmetryMirrorXY", tr("Mirror X &and Y"), SymmetryMode::MirrorXY},
-                                   SymmetryEntry{"symmetryRadial", tr("&Radial"), SymmetryMode::Radial}}) {
-        QAction* a = check(add(symmetry, m.text, m.name, QKeySequence(),
+    for (const SymmetryEntry& m :
+         {SymmetryEntry{"symmetryMirrorX", tr("Mirror &X"),
+                        tr("Mirror mode repeats a stroke flipped left to right about the canvas centre"),
+                        SymmetryMode::MirrorX},
+          SymmetryEntry{"symmetryMirrorY", tr("Mirror &Y"),
+                        tr("Mirror mode repeats a stroke flipped top to bottom about the canvas centre"),
+                        SymmetryMode::MirrorY},
+          SymmetryEntry{"symmetryMirrorXY", tr("Mirror X &and Y"),
+                        tr("Mirror mode repeats a stroke flipped both ways about the canvas centre, four in all"),
+                        SymmetryMode::MirrorXY},
+          SymmetryEntry{"symmetryRadial", tr("&Radial"),
+                        tr("Mirror mode repeats a stroke turned about a centre, as many times as Tool Options says"),
+                        SymmetryMode::Radial}}) {
+        QAction* a = check(add(symmetry, m.text, m.name, m.tip, QKeySequence(),
                                [this, mode = m.mode] {
                                    Symmetry s = view_->symmetryChoice();
                                    s.mode = mode;
@@ -246,7 +263,11 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     for (const Guide& g : {Guide{"guideNone", {}}, Guide{"guide80x25", {80, 25}}, Guide{"guide80x40", {80, 40}},
                            Guide{"guide80x50", {80, 50}}}) {
         const QString text = g.size.isEmpty() ? tr("&None") : tr("%1x%2").arg(g.size.width()).arg(g.size.height());
-        check(add(guides, text, g.name, QKeySequence(), [this, s = g.size] { view_->setGuide(s); }), guideGroup,
+        const QString tip = g.size.isEmpty() ? tr("Show no screen-size guides")
+                                             : tr("Show a guide after column %1 and after every %2 rows")
+                                                   .arg(g.size.width())
+                                                   .arg(g.size.height());
+        check(add(guides, text, g.name, tip, QKeySequence(), [this, s = g.size] { view_->setGuide(s); }), guideGroup,
               g.size == view_->guide());
     }
     connect(view_, &CanvasView::referenceFailed, this, [this] {
@@ -285,7 +306,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     QHash<Tool*, QAction*> toolActions;
     for (Tool* t : tools_->tools()) {
         const QKeySequence key = toolKeys.value(t->id());
-        QAction* a = add(toolsMenu, t->name(), "", key, [this, t] { tools_->setActive(t); });
+        QAction* a = add(toolsMenu, t->name(), "", QString(), key, [this, t] { tools_->setActive(t); });
         a->setObjectName(t->id() + QStringLiteral("Tool"));
         a->setProperty(kToolIdProperty, t->id());  // for --list-actions (action_list.h)
         a->setIcon(toolIcon(t->id()));
@@ -318,6 +339,7 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
     // Rectangles and ellipses: outlines, or filled.
     toolsMenu->addSeparator();
     QAction* filled = check(add(toolsMenu, tr("Filled Sha&pes"), "filledShapes",
+                                tr("Draw rectangles and ellipses filled; off, as outlines"),
                                 QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F), [] {}),
                             nullptr, false);
     connect(filled, &QAction::toggled, this, [fillable](bool on) {
@@ -330,10 +352,10 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         s.size += by;
         view_->setBrushSettings(s);
     };
-    add(toolsMenu, tr("&Smaller Brush"), "brushSmaller", QKeySequence(Qt::CTRL | Qt::Key_BracketLeft),
-        [stepSize] { stepSize(-1); });
-    add(toolsMenu, tr("&Larger Brush"), "brushLarger", QKeySequence(Qt::CTRL | Qt::Key_BracketRight),
-        [stepSize] { stepSize(1); });
+    add(toolsMenu, tr("&Smaller Brush"), "brushSmaller", tr("Make the brush a cell smaller"),
+        QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), [stepSize] { stepSize(-1); });
+    add(toolsMenu, tr("&Larger Brush"), "brushLarger", tr("Make the brush a cell larger"),
+        QKeySequence(Qt::CTRL | Qt::Key_BracketRight), [stepSize] { stepSize(1); });
     // The active tool's settings (the glyph brush's glyph) in the status bar.
     auto* toolStatus = new QLabel;
     toolStatus->setObjectName(QStringLiteral("toolStatusLabel"));
@@ -353,10 +375,10 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
 
     // Selection.
     QMenu* sel = menuBar()->addMenu(tr("&Selection"));
-    add(sel, tr("Select &All"), "selectAll", QKeySequence(Qt::CTRL | Qt::Key_A), [selecting] {
-        selecting()->selectAll();
-    });
-    needSelection << add(sel, tr("&Deselect"), "deselect", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A),
+    add(sel, tr("Select &All"), "selectAll", tr("Select the whole canvas"), QKeySequence(Qt::CTRL | Qt::Key_A),
+        [selecting] { selecting()->selectAll(); });
+    needSelection << add(sel, tr("&Deselect"), "deselect", tr("Select nothing, landing a floating selection"),
+                         QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A),
                          [this] {
                              if (selectTool_->view())
                                  selectTool_->deselect();
@@ -365,29 +387,35 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
                          });
     sel->addSeparator();
     needSelection
-        << add(sel, tr("Flip &Horizontally"), "flipHorizontal", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_H),
+        << add(sel, tr("Flip &Horizontally"), "flipHorizontal", tr("Flip the selection left to right"),
+               QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_H),
                [selecting] { selecting()->transform(Transform::FlipHorizontal); })
-        << add(sel, tr("Flip &Vertically"), "flipVertical", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V),
+        << add(sel, tr("Flip &Vertically"), "flipVertical", tr("Flip the selection top to bottom"),
+               QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V),
                [selecting] { selecting()->transform(Transform::FlipVertical); })
-        << add(sel, tr("Rotate &Clockwise"), "rotateClockwise", QKeySequence(Qt::CTRL | Qt::Key_R),
+        << add(sel, tr("Rotate &Clockwise"), "rotateClockwise", tr("Turn the selection a quarter turn clockwise"),
+               QKeySequence(Qt::CTRL | Qt::Key_R),
                [selecting] { selecting()->transform(Transform::RotateClockwise); })
         << add(sel, tr("Rotate C&ounterclockwise"), "rotateCounterClockwise",
-               QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R),
+               tr("Turn the selection a quarter turn counterclockwise"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R),
                [selecting] { selecting()->transform(Transform::RotateCounterClockwise); });
     sel->addSeparator();
     QMenu* modes = sel->addMenu(tr("&Paste Mode"));
     auto* modeGroup = new QActionGroup(this);
     struct Mode {
         const char* name;
-        QString text;
+        QString text, tip;
         PasteMode mode;
     };
-    for (const Mode& m : {Mode{"pasteNormal", tr("&Normal"), PasteMode::Normal},
-                          Mode{"pasteTransparent", tr("&Transparent (blank cells don't paste)"),
-                               PasteMode::Transparent},
-                          Mode{"pasteUnder", tr("&Under (only into blank cells)"), PasteMode::Under}}) {
+    for (const Mode& m :
+         {Mode{"pasteNormal", tr("&Normal"), tr("Paste every cell, blank ones too"), PasteMode::Normal},
+          Mode{"pasteTransparent", tr("&Transparent (blank cells don't paste)"),
+               tr("Paste all but the blank cells, so what is under them shows"), PasteMode::Transparent},
+          Mode{"pasteUnder", tr("&Under (only into blank cells)"),
+               tr("Paste only into blank cells, leaving drawn ones as they are"), PasteMode::Under}}) {
         QAction* a = check(
-            add(modes, m.text, m.name, QKeySequence(), [this, mode = m.mode] { selectTool_->setPasteMode(mode); }),
+            add(modes, m.text, m.name, m.tip, QKeySequence(),
+                [this, mode = m.mode] { selectTool_->setPasteMode(mode); }),
             modeGroup, m.mode == selectTool_->pasteMode());
         // A Library stamp floats in a mode of its own; the menu shows it.
         connect(selectTool_, &Tool::changed, a, [this, a, mode = m.mode] {
@@ -396,8 +424,12 @@ void MainWindow::createEditingActions(QMenu* file, QMenu* edit, QMenu* view) {
         });
     }
     sel->addSeparator();
-    needSelection << add(sel, tr("Save to &Library..."), "saveToLibrary", QKeySequence(), [this] { saveToLibrary(); });
-    needSelection << add(sel, tr("Save as &Frame Style..."), "saveFrameStyle", QKeySequence(), [this] { saveFrameStyle(); });
+    needSelection << add(sel, tr("Save to &Library..."), "saveToLibrary",
+                         tr("Keep the selection in the Library as a stamp, with a name, category and tags"),
+                         QKeySequence(), [this] { saveToLibrary(); });
+    needSelection << add(sel, tr("Save as &Frame Style..."), "saveFrameStyle",
+                         tr("Keep the selection as a frame style for the Frame tool, with a name and insets"),
+                         QKeySequence(), [this] { saveFrameStyle(); });
 
     const auto updateSelection = [this, needSelection, paste] {
         const bool any = selectTool_->floating() || !view_->selection().empty();

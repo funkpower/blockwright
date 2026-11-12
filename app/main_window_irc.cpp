@@ -36,7 +36,8 @@ std::vector<std::string> texts(const std::vector<irc::Line>& lines) {
 void MainWindow::createIrcActions(QMenu* file, QMenu* view) {
     QAction* a = new QAction(tr("Export &IRC Text..."), this);
     a->setObjectName(QStringLiteral("exportIrc"));
-    a->setToolTip(tr("The canvas as IRC lines, one message each, as the row meter measures them"));
+    a->setStatusTip(tr("Write the canvas as IRC lines, one message each, as the row meter measures them"));
+    a->setToolTip(a->statusTip());
     connect(a, &QAction::triggered, this, &MainWindow::exportIrc);
     // Above File > Publish to Library. Publish writes its own lines: plain,
     // without fit or pad, against the tighter of the document's budget and
@@ -45,25 +46,31 @@ void MainWindow::createIrcActions(QMenu* file, QMenu* view) {
 
     QMenu* m = view->addMenu(tr("I&RC"));
     m->setObjectName(QStringLiteral("ircMenu"));
-    const auto toggle = [&](const QString& text, const char* name, bool on, auto slot) {
+    const auto toggle = [&](const QString& text, const char* name, const QString& tip, bool on, auto slot) {
         QAction* t = m->addAction(text);
         t->setObjectName(QString::fromLatin1(name));
+        t->setStatusTip(tip);
+        t->setToolTip(tip);
         t->setCheckable(true);
         t->setChecked(on);
         connect(t, &QAction::toggled, ircMeter_, slot);
         return t;
     };
-    toggle(tr("Row &Meter"), "ircMeterShown", true, &IrcMeter::setShown)
-        ->setToolTip(tr("Every row's size in bytes as an IRC line, beside the canvas"));
+    toggle(tr("Row &Meter"), "ircMeterShown", tr("Every row's size in bytes as an IRC line, beside the canvas"), true,
+           &IrcMeter::setShown);
     a = m->addAction(tr("&Budget..."), this, &MainWindow::editIrcBudget);
     a->setObjectName(QStringLiteral("ircBudget"));
+    a->setStatusTip(tr("Set the bytes an IRC line may take, which the row meter and Export IRC Text hold lines to"));
     m->addSeparator();
-    toggle(tr("&Fit Lines to the Budget"), "ircFit", ircMeter_->fit(), &IrcMeter::setFit)
-        ->setToolTip(tr("Merge the least visible colours in a line over the budget until it fits"));
-    toggle(tr("&Pad Lines"), "ircPad", ircMeter_->pad(), &IrcMeter::setPad)
-        ->setToolTip(tr("Keep blank rows and trailing black, so clients that trim spaces keep the shape"));
-    toggle(tr("&Swap Shades"), "ircSwapShades", ircMeter_->swapShades(), &IrcMeter::setSwapShades)
-        ->setToolTip(tr("Draw ░ as ▓ with the colours swapped, and ▓ as ░, where it saves bytes"));
+    toggle(tr("&Fit Lines to the Budget"), "ircFit",
+           tr("Merge the least visible colours in a line over the budget until it fits"), ircMeter_->fit(),
+           &IrcMeter::setFit);
+    toggle(tr("&Pad Lines"), "ircPad",
+           tr("Keep blank rows and trailing black, so clients that trim spaces keep the shape"), ircMeter_->pad(),
+           &IrcMeter::setPad);
+    toggle(tr("&Swap Shades"), "ircSwapShades",
+           tr("Draw ░ as ▓ with the colours swapped, and ▓ as ░, where it saves bytes"), ircMeter_->swapShades(),
+           &IrcMeter::setSwapShades);
 }
 
 void MainWindow::editIrcBudget() {

@@ -131,12 +131,14 @@ void MainWindow::createDocks() {
     layerMenu_->addSeparator();
     QAction* style = layerMenu_->addAction(tr("Layer &Style…"), this, [this] { editLayerStyle(doc_.activeLayer()); });
     style->setObjectName(QStringLiteral("layerStyle"));
-    style->setToolTip(tr("Edit the active layer's style: plate, glow, shadow, outline, fill, shade and bevel"));
+    style->setStatusTip(tr("Edit the active layer's style: plate, glow, shadow, outline, fill, shade and bevel"));
+    style->setToolTip(style->statusTip());
     connect(layers_, &LayersDock::styleRequested, this, &MainWindow::editLayerStyle);
     QAction* bake = layerMenu_->addAction(tr("&Bake Layer"), this, [this] { doc_.bakeLayer(doc_.activeLayer()); });
     bake->setObjectName(QStringLiteral("bakeLayer"));
-    bake->setToolTip(tr("Make the layer a cells layer of what it shows: a text layer's text, a generator's "
-                        "output, or a layer's style, can't be edited after"));
+    bake->setStatusTip(tr("Make the layer a cells layer of what it shows: a text layer's text, a generator's "
+                          "output, or a layer's style, can't be edited after"));
+    bake->setToolTip(bake->statusTip());
     const auto canBake = [this, bake, style] {
         const Layer* l = doc_.active();
         bake->setEnabled(Document::canBake(l));
@@ -190,13 +192,15 @@ void MainWindow::createDocks() {
     for (QDockWidget* d : docks()) {
         QAction* a = d->toggleViewAction();
         a->setObjectName(QStringLiteral("show_") + d->objectName());
-        a->setToolTip(tr("Show or hide the %1 dock").arg(d->windowTitle()));
+        a->setStatusTip(tr("Show or hide the %1 dock").arg(d->windowTitle()));
+        a->setToolTip(a->statusTip());
         windowMenu_->addAction(a);
     }
     windowMenu_->addSeparator();
     QAction* resetLayoutAction = windowMenu_->addAction(tr("&Reset Layout"), this, &MainWindow::resetLayout);
     resetLayoutAction->setObjectName(QStringLiteral("resetLayout"));
-    resetLayoutAction->setToolTip(tr("Put every dock back where it starts"));
+    resetLayoutAction->setStatusTip(tr("Put every dock back where it starts"));
+    resetLayoutAction->setToolTip(resetLayoutAction->statusTip());
 
     for (QDockWidget* d : docks())
         d->installEventFilter(this);

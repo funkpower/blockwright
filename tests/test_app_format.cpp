@@ -133,6 +133,22 @@ void runSauceDialog(MainWindow& w, const std::function<void(SauceDialog*)>& fill
 
 } // namespace
 
+// A form row of a layout gets a label with no buddy, which shows its '&'.
+TEST_CASE("the SAUCE dialog's labels with a mnemonic have a buddy") {
+    SauceDialog d(Sauce::fresh(80, 25));
+    QLabel* date = nullptr;
+    for (QLabel* l : d.findChildren<QLabel*>()) {
+        if (l->text() == QStringLiteral("&Date:"))
+            date = l;
+        QString text = l->text();
+        text.remove(QStringLiteral("&&"));
+        INFO(l->text().toStdString());
+        CHECK((!text.contains(QLatin1Char('&')) || l->buddy()));
+    }
+    REQUIRE(date);
+    CHECK(date->buddy() == d.findChild<QLineEdit*>(QStringLiteral("sauceDate")));
+}
+
 TEST_CASE("the SAUCE dialog holds fields to their SAUCE limits and CP437") {
     Sauce s = Sauce::fresh(80, 25);
     s.title = "Title";

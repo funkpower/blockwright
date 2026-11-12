@@ -82,6 +82,7 @@ LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(d
         auto* a = new QAction(text, this);
         a->setObjectName(QString::fromLatin1(name));
         a->setToolTip(tip);
+        a->setStatusTip(tip);  // New Cells and New Pixels get one line of theirs below
         connect(a, &QAction::triggered, this, slot);
         return a;
     };
