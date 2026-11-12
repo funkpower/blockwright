@@ -5,6 +5,7 @@
 
 #include "document.h"
 #include "main_window.h"
+#include "message_box.h"
 #include "scratch_settings.h"
 
 #include "blockwright/generator.h"
@@ -82,7 +83,7 @@ struct SceneAnswers {
                 QMetaObject::invokeMethod(dialog, "accept");
             } else if (auto* box = qobject_cast<QMessageBox*>(modal);
                        box && box->objectName() == QStringLiteral("trustGenerators")) {
-                question = box->text();
+                question = boxText(box);
                 informative = box->informativeText();
                 box->button(button)->click();
             }

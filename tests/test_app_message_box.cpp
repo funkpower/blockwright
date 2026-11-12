@@ -133,6 +133,16 @@ TEST_CASE("a box's title is its heading where boxes have no title, and its windo
         CHECK(box.text() == (headings ? title : text));
         CHECK(box.informativeText() == (headings ? text : QString()));
     }
+
+    SECTION("a box made by hand with informative text") {
+        const QString informative = QStringLiteral("This one runs: python3 bars.py");
+        QMessageBox box(QMessageBox::Warning, QString(), QString(), QMessageBox::Yes | QMessageBox::No);
+        setBoxText(&box, title, text, informative);
+        CHECK(boxTitle(&box) == shownTitle(headings, title));
+        CHECK(boxText(&box) == text);
+        CHECK(box.text() == (headings ? title : text));
+        CHECK(box.informativeText() == (headings ? text + QStringLiteral("\n\n") + informative : informative));
+    }
 }
 
 TEST_CASE("a box the helper didn't make reads as Qt shows it", "[message-box]") {

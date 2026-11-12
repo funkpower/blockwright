@@ -18,6 +18,7 @@
 #include "util.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAbstractButton>
 #include <QAction>
@@ -28,7 +29,10 @@
 #include <QFileInfo>
 #include <QFileOpenEvent>
 #include <QKeyEvent>
+#include <QList>
 #include <QMessageBox>
+#include <QPushButton>
+#include <QScopeGuard>
 #include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -1068,4 +1072,55 @@ TEST_CASE("Save As offers .bwp, and adds the suffix of the filter chosen") {
     QFileDialog projU8;
     configureSaveDialog(projU8, tmp.filePath(QStringLiteral("piece.bwp")), true, TextEncoding::Utf8);
     CHECK(projU8.selectedNameFilter().contains(QStringLiteral("*.bwp")));
+}
+
+// On macOS a box's window title isn't shown, so there the prompt's title is
+// its heading (app/message_box.h).
+TEST_CASE("the unsaved-changes prompt shows its title, as the heading where boxes have no title",
+          "[message-box]") {
+    const bool headings = GENERATE(false, true);
+    const bool platform = headingBoxes();
+    useHeadingBoxes(headings);
+    const auto restore = qScopeGuard([&] { useHeadingBoxes(platform); });
+    MainWindow w;
+    Document& d = *w.document();
+    drawAt(w, 0, 0, U'#');
+    REQUIRE(d.isModified());
+    const QMessageBox::StandardButton button = GENERATE(QMessageBox::Cancel, QMessageBox::Discard);
+
+    bool asked = false;
+    QString heading, title, text, windowTitle;
+    QList<QMessageBox::StandardButton> buttons;
+    QMessageBox::StandardButton defaultButton = QMessageBox::NoButton;
+    QTimer::singleShot(0, &w, [&] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!box)
+            return;
+        asked = true;
+        heading = box->text();
+        windowTitle = box->windowTitle();
+        title = boxTitle(box);
+        text = boxText(box);
+        for (QAbstractButton* b : box->buttons())
+            buttons << box->standardButton(b);
+        defaultButton = box->standardButton(box->defaultButton());
+        CHECK(box->icon() == QMessageBox::Warning);
+        box->button(button)->click();
+    });
+    w.newFile();
+    REQUIRE(asked);
+    CHECK(title == QStringLiteral("Blockwright"));
+    CHECK(windowTitle == QStringLiteral("Blockwright"));
+    CHECK(text == QStringLiteral("The canvas has unsaved changes."));
+    CHECK(heading == (headings ? QStringLiteral("Blockwright") : text));
+    // the buttons, the default and the answers as before
+    CHECK(buttons.size() == 3);
+    CHECK(buttons.contains(QMessageBox::Save));
+    CHECK(buttons.contains(QMessageBox::Discard));
+    CHECK(buttons.contains(QMessageBox::Cancel));
+    CHECK(defaultButton == QMessageBox::Save);
+    if (button == QMessageBox::Cancel)
+        CHECK(d.isModified());
+    else
+        CHECK_FALSE(d.isModified());
 }

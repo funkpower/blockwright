@@ -15,6 +15,8 @@ bool headings = false;
 
 // Set on a box whose text is its title.
 constexpr char kHeadingProperty[] = "bwHeading";
+// The text a heading box was given, which its informative text begins with.
+constexpr char kTextProperty[] = "bwText";
 
 QMessageBox::StandardButton show(QMessageBox::Icon icon, QWidget* parent, const QString& title, const QString& text,
                                  QMessageBox::StandardButtons buttons, QMessageBox::StandardButton defaultButton) {
@@ -52,14 +54,16 @@ QMessageBox::StandardButton show(QMessageBox::Icon icon, QWidget* parent, const 
 bool headingBoxes() { return headings; }
 void useHeadingBoxes(bool on) { headings = on; }
 
-void setBoxText(QMessageBox* box, const QString& title, const QString& text) {
+void setBoxText(QMessageBox* box, const QString& title, const QString& text, const QString& informative) {
     box->setWindowTitle(title);
     box->setProperty(kHeadingProperty, headings);
+    box->setProperty(kTextProperty, text);
     if (headings) {
         box->setText(title);
-        box->setInformativeText(text);
+        box->setInformativeText(informative.isEmpty() ? text : text + QStringLiteral("\n\n") + informative);
     } else {
         box->setText(text);
+        box->setInformativeText(informative);
     }
 }
 
@@ -68,7 +72,7 @@ QString boxTitle(const QMessageBox* box) {
 }
 
 QString boxText(const QMessageBox* box) {
-    return box->property(kHeadingProperty).toBool() ? box->informativeText() : box->text();
+    return box->property(kHeadingProperty).toBool() ? box->property(kTextProperty).toString() : box->text();
 }
 
 QMessageBox::StandardButton warning(QWidget* parent, const QString& title, const QString& text,

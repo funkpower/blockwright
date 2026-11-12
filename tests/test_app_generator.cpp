@@ -31,6 +31,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
@@ -39,8 +40,10 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSlider>
@@ -234,6 +237,62 @@ TEST_CASE("opening, saving and exporting a project with generators runs none and
     CHECK(o.w.generatorRunner()->started() == 0);
     CHECK(d.layers().find(o.id)->cells == cells);
     CHECK(project::read(fpath(o.path)).layers.find(o.id)->cells == cells);
+}
+
+// On macOS a box's window title isn't shown, so there the trust prompt's
+// title is its heading, and its question and what runs follow (app/message_box.h).
+TEST_CASE("the Run Generators prompt shows its title, as the heading where boxes have no title",
+          "[message-box]") {
+    const bool headings = GENERATE(false, true);
+    const bool platform = headingBoxes();
+    useHeadingBoxes(headings);
+    const auto restore = qScopeGuard([&] { useHeadingBoxes(platform); });
+    BarsWindow o;
+    GeneratorForm* form = o.w.layersWidget()->generatorForm();
+    const QString question = QStringLiteral("Run the generators in %1?").arg(QDir::toNativeSeparators(o.path));
+
+    bool asked = false;
+    QString heading, informative, title, text, windowTitle;
+    QList<QMessageBox::StandardButton> buttons;
+    QMessageBox::StandardButton defaultButton = QMessageBox::NoButton;
+    QTimer timer;
+    timer.setInterval(10);
+    QObject::connect(&timer, &QTimer::timeout, [&] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!box || box->objectName() != QStringLiteral("trustGenerators") || asked)
+            return;
+        asked = true;
+        heading = box->text();
+        informative = box->informativeText();
+        windowTitle = box->windowTitle();
+        title = boxTitle(box);
+        text = boxText(box);
+        for (QAbstractButton* b : box->buttons())
+            buttons << box->standardButton(b);
+        defaultButton = box->standardButton(box->defaultButton());
+        CHECK(box->icon() == QMessageBox::Warning);
+        box->button(QMessageBox::No)->click();
+    });
+    timer.start();
+    form->runButton()->click();
+    REQUIRE(waitFor([&] { return asked; }));
+    timer.stop();
+    CHECK(title == QStringLiteral("Run Generators"));
+    CHECK(windowTitle == QStringLiteral("Run Generators"));
+    CHECK(text == question);
+    CHECK(heading == (headings ? QStringLiteral("Run Generators") : question));
+    // the question comes before what runs, under the heading on a Mac
+    CHECK(informative.startsWith(headings ? question + QStringLiteral("\n\nA generator is a program")
+                                          : QStringLiteral("A generator is a program")));
+    CHECK(informative.contains(QStringLiteral("\n\nThis one runs: ")));
+    // the buttons, the default and the answer as before
+    CHECK(buttons.size() == 2);
+    CHECK(buttons.contains(QMessageBox::Yes));
+    CHECK(buttons.contains(QMessageBox::No));
+    CHECK(defaultButton == QMessageBox::No);
+    QApplication::processEvents();
+    CHECK_FALSE(o.w.generatorsTrusted());
+    CHECK(o.w.generatorRunner()->started() == 0);
 }
 
 TEST_CASE("declining the trust prompt runs nothing and keeps the cells; accepting runs") {

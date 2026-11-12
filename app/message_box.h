@@ -17,7 +17,10 @@ bool headingBoxes();
 void useHeadingBoxes(bool on);
 
 // Gives `box` the title and text so the title is shown on every platform.
-void setBoxText(QMessageBox* box, const QString& title, const QString& text);
+// `informative`, when given, is the box's informative text; where the title
+// is the heading it follows the text there, after a blank line.
+void setBoxText(QMessageBox* box, const QString& title, const QString& text,
+                const QString& informative = QString());
 // The title and text a box was given, whichever way it shows them.
 QString boxTitle(const QMessageBox* box);
 QString boxText(const QMessageBox* box);

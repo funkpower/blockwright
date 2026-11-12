@@ -1143,9 +1143,8 @@ bool MainWindow::maybeSave() {
                        "and IRC budget.")
                         .arg(QFileInfo(doc_.path()).fileName());
     }
-    const auto answer = QMessageBox::warning(this, tr("Blockwright"), text,
-                                             QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-                                             QMessageBox::Save);
+    const auto answer = bw::warning(this, tr("Blockwright"), text,
+                                    QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
     // A save that leaves the document modified didn't keep all of it.
     if (answer == QMessageBox::Save)
         return save() && !doc_.isModified();

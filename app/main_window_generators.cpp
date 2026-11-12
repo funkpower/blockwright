@@ -103,9 +103,9 @@ bool MainWindow::trustGenerators(LayerId id) {
 }
 
 bool MainWindow::askToRun(const QString& question, const QString& why, const QString& command) {
-    QMessageBox box(QMessageBox::Warning, tr("Run Generators"), question, QMessageBox::Yes | QMessageBox::No, this);
+    QMessageBox box(QMessageBox::Warning, QString(), QString(), QMessageBox::Yes | QMessageBox::No, this);
     box.setObjectName(QStringLiteral("trustGenerators"));
-    box.setInformativeText(tr("%1\n\nThis one runs: %2").arg(why, command));
+    setBoxText(&box, tr("Run Generators"), question, tr("%1\n\nThis one runs: %2").arg(why, command));
     box.setDefaultButton(QMessageBox::No);
     return box.exec() == QMessageBox::Yes;
 }
