@@ -2,6 +2,7 @@
 #include "font_scanner.h"
 
 #include "blockwright/halfblock.h"
+#include "blockwright/regular_file.h"
 #include "blockwright/render.h"
 #include "blockwright/style_draw.h"
 #include "blockwright/text.h"
@@ -340,27 +341,41 @@ bool Document::load(const QString& path, QString* error) {
     return true;
 }
 
+QString Document::readError(const QString& path, const RegularFileError& e) {
+    switch (e.reason) {
+    case RegularFileError::Reason::NotRegular:
+        if (e.kind == "a directory")
+            return tr("%1 is a directory").arg(path);
+        if (e.kind == "not a regular file")
+            return tr("%1 is not a regular file").arg(path);
+        return tr("%1 is %2, not a regular file").arg(path, QString::fromStdString(e.kind));
+    case RegularFileError::Reason::TooLarge:
+        return tr("%1 is over %2 MiB").arg(path).arg(project::kMaxEntryBytes >> 20);
+    case RegularFileError::Reason::Missing:
+    case RegularFileError::Reason::Unreadable:
+        break;
+    }
+    // what QFile said before: the system's words, the caller adds the path
+    return QString::fromLocal8Bit(e.systemMessage());
+}
+
 bool Document::read(const QString& path, AnsiDocument* out, QString* error, std::optional<TextEncoding> encoding) {
-    if (QFileInfo(path).isDir()) {
-        *error = tr("%1 is a directory").arg(path);
+    // Through the opened handle (readRegular), not QFile, whose open of a
+    // FIFO blocks until a writer comes: a FIFO, device or socket at the path
+    // is refused at once. At most what a project's art entry may hold.
+    std::string data;
+    try {
+        data = readRegular(fspath(path), project::kMaxEntryBytes);
+    } catch (const RegularFileError& e) {
+        *error = Document::readError(path, e);
         return false;
     }
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) {
-        *error = f.errorString();
-        return false;
-    }
-    const QByteArray data = f.readAll();
-    if (f.error() != QFileDevice::NoError) {
-        *error = f.errorString();
-        return false;
-    }
-    if (data.isEmpty()) {
+    if (data.empty()) {
         *error = tr("the file is empty");
         return false;
     }
     try {
-        const std::string_view bytes(data.constData(), size_t(data.size()));
+        const std::string_view bytes(data);
         ParseOptions options;
         options.encoding = encoding;
         *out = parseArt(bytes, artFormatOf(QFile::encodeName(path).toStdString(), bytes), options);

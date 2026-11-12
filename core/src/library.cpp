@@ -6,6 +6,7 @@
 #include "blockwright/links.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
+#include "blockwright/regular_file.h"
 #include "blockwright/text.h"
 
 #include "style_json.h"
@@ -61,66 +62,18 @@ namespace fs = std::filesystem;
 namespace bw::library {
 
 std::string readRegularFile(const fs::path& p, std::size_t limit) {
-    const auto tooLarge = [limit] { return LibraryError("is larger than " + std::to_string(limit) + " bytes"); };
-#if BW_LIBRARY_POSIX
-    // The handle is checked, not the path: open without blocking (a FIFO
-    // with no writer would block), refuse anything fstat doesn't call a
-    // regular file, then read it blocking.
-    int fd;
-    do
-        fd = ::open(p.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-    while (fd < 0 && errno == EINTR);
-    if (fd < 0)
-        throw LibraryError(errno == ENOENT ? "can't be read" : std::string("can't be read: ") + std::strerror(errno));
-    struct Closer {
-        int fd;
-        ~Closer() { ::close(fd); }
-    } closer{fd};
-    struct stat st {};
-    if (::fstat(fd, &st) != 0)
-        throw LibraryError(std::string("can't be read: ") + std::strerror(errno));
-    if (!S_ISREG(st.st_mode))
-        throw LibraryError("is not a regular file");
-    if (std::uintmax_t(st.st_size) > limit)
-        throw tooLarge();
-    const int flags = ::fcntl(fd, F_GETFL);
-    if (flags < 0 || ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0)
-        throw LibraryError(std::string("can't be read: ") + std::strerror(errno));
-    std::string out;
-    char buf[65536];
-    for (;;) {
-        const ssize_t n = ::read(fd, buf, sizeof buf);
-        if (n < 0 && errno == EINTR)
-            continue;
-        if (n < 0)
-            throw LibraryError(std::string("read failed: ") + std::strerror(errno));
-        if (n == 0)
-            break;
-        if (std::size_t(n) > limit - out.size())  // it grew since fstat
-            throw tooLarge();
-        out.append(buf, std::size_t(n));
+    try {
+        return bw::readRegular(p, limit);
+    } catch (const RegularFileError& e) {
+        switch (e.reason) {
+        case RegularFileError::Reason::Missing:
+            throw LibraryError("can't be read");
+        case RegularFileError::Reason::NotRegular:
+            throw LibraryError("is not a regular file");
+        default:
+            throw LibraryError(e.what());
+        }
     }
-    return out;
-#else
-    // No FIFOs to block on; the path checks the callers make suffice.
-    std::ifstream in(p, std::ios::binary);
-    if (!in)
-        throw LibraryError("can't be read");
-    std::error_code ec;
-    const std::uintmax_t size = fs::file_size(p, ec);
-    if (!ec && size > limit)
-        throw tooLarge();
-    std::string out;
-    char buf[65536];
-    while (in.read(buf, sizeof buf) || in.gcount() > 0) {
-        if (std::size_t(in.gcount()) > limit - out.size())
-            throw tooLarge();
-        out.append(buf, std::size_t(in.gcount()));
-    }
-    if (in.bad())
-        throw LibraryError("read failed");
-    return out;
-#endif
 }
 
 namespace {

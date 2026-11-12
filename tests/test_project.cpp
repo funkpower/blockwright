@@ -9,6 +9,7 @@
 #include "blockwright/lint.h"
 #include "blockwright/ramp.h"
 #include "blockwright/shapes.h"
+#include "fifo_guard.h"
 #include "fs_quirks.h"
 #include "util.h"
 
@@ -914,29 +915,7 @@ std::string readRefusal(const fs::path& path) {
 #if defined(__unix__) || defined(__APPLE__)
 namespace {
 
-// What `f` returns, run on a thread of its own. If it is still running after
-// a minute, whatever waits on the FIFO `fifo` is given a writer, so the
-// thread ends (it is given a while to, before the test's locals it may use
-// go), and the test fails rather than hangs.
-std::string within(const fs::path& fifo, std::function<std::string()> f) {
-    auto result = std::make_shared<std::promise<std::string>>();
-    std::future<std::string> done = result->get_future();
-    std::thread([f = std::move(f), result] {
-        try {
-            result->set_value(f());
-        } catch (const std::exception& e) {
-            result->set_value(std::string("threw: ") + e.what());
-        }
-    }).detach();
-    if (done.wait_for(std::chrono::seconds(60)) != std::future_status::ready) {
-        const int fd = ::open(fifo.c_str(), O_WRONLY | O_NONBLOCK);
-        if (fd >= 0)
-            ::close(fd);
-        done.wait_for(std::chrono::seconds(10));
-        FAIL("blocked on " << fifo.string());
-    }
-    return done.get();
-}
+using bwtest::within;
 
 // Why project::read refuses `path`, or "(read)".
 std::string refusalOf(const fs::path& path) {

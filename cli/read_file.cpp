@@ -1,32 +1,25 @@
 #include "read_file.h"
 
-#include <cerrno>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
+#include "blockwright/regular_file.h"
 
 namespace bwcli {
 
 std::string readFile(const std::string& path, std::size_t maxSize) {
-    std::error_code ec;
-    if (std::filesystem::is_directory(path, ec))
-        throw Failure{path + ": is a directory"};
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
-        throw Failure{path + ": " + std::strerror(errno)};
-    // Not `ss << in.rdbuf()`: that swallows a failed allocation and returns
-    // the part read so far.
-    std::string data;
-    char buf[1 << 16];
-    while (in.read(buf, sizeof buf) || in.gcount() > 0) {
-        const auto n = static_cast<std::size_t>(in.gcount());
-        if (n > maxSize - data.size())
+    using Reason = bw::RegularFileError::Reason;
+    try {
+        return bw::readRegular(path, maxSize);
+    } catch (const bw::RegularFileError& e) {
+        switch (e.reason) {
+        case Reason::NotRegular:
+            throw Failure{path + ": " + e.what()};
+        case Reason::TooLarge:
             throw Failure{path + ": input too large"};
-        data.append(buf, n);
+        case Reason::Missing:
+        case Reason::Unreadable:
+            break;
+        }
+        throw Failure{path + ": " + e.systemMessage()};
     }
-    if (in.bad())
-        throw Failure{path + ": read failed"};
-    return data;
 }
 
 } // namespace bwcli

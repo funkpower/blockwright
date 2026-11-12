@@ -3,6 +3,9 @@
 
 #include "main_window.h"
 
+#include "blockwright/regular_file.h"
+
+
 #include "action_list.h"
 #include "canvas_view.h"
 #include "draw_tools.h"
@@ -32,16 +35,19 @@
 namespace bw {
 
 bool MainWindow::loadReferenceImage(const QString& path, QString* error) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        *error = file.errorString();
+    // Through the opened handle (readRegular), not QFile, whose open of a
+    // FIFO blocks until a writer comes: a FIFO, device or socket at the path
+    // is refused at once.
+    QByteArray bytes;
+    try {
+        bytes = QByteArray::fromStdString(
+            readRegular(std::filesystem::path(QFile::encodeName(path).toStdString()), project::kMaxEntryBytes));
+    } catch (const RegularFileError& e) {
+        *error = e.reason == RegularFileError::Reason::TooLarge
+                     ? tr("The picture is over %1 MiB.").arg(project::kMaxEntryBytes >> 20)
+                     : Document::readError(path, e);
         return false;
     }
-    if (quint64(file.size()) > project::kMaxEntryBytes) {
-        *error = tr("The picture is over %1 MiB.").arg(project::kMaxEntryBytes >> 20);
-        return false;
-    }
-    QByteArray bytes = file.readAll();
     // Enforce the decode ceiling and retain at most the view's pixel budget.
     QSize original;
     const QImage image = readReferencePicture(bytes, CanvasView::kMaxReferencePixels, &original, error);

@@ -20,6 +20,7 @@
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
 #include "blockwright/library.h"
+#include "blockwright/regular_file.h"
 #include "blockwright/samples.h"
 #include "blockwright/selection.h"
 #include "blockwright/shapes.h"
@@ -41,16 +42,6 @@
 #include <optional>
 #include <ostream>
 #include <set>
-
-#if defined(__unix__) || defined(__APPLE__)
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#define BW_REPLAY_POSIX 1
-#else
-#include <fstream>
-#define BW_REPLAY_POSIX 0
-#endif
 
 namespace bwcli::replay {
 
@@ -943,37 +934,15 @@ std::string readChecked(const fs::path& p, std::size_t limit) {
     }
 }
 
-// Whether the regular file at `p` starts with a zip's magic, read through a
-// handle opened without blocking and checked with fstat, so a FIFO swapped
-// in can't block it; anything else (gone, not regular, unreadable) is false
-// and left for readChecked to name.
+// Whether the regular file at `p` starts with a zip's magic, read through
+// readRegularHead, so a FIFO swapped in can't block it; anything else (gone,
+// not regular, unreadable) is false and left for readChecked to name.
 bool zipMagic(const fs::path& p) {
-    char sig[4] = {};
-#if BW_REPLAY_POSIX
-    int fd;
-    do
-        fd = ::open(p.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-    while (fd < 0 && errno == EINTR);
-    if (fd < 0)
+    try {
+        return readRegularHead(p, 4) == std::string_view("PK\x03\x04", 4);
+    } catch (const RegularFileError&) {
         return false;
-    struct stat st {};
-    std::size_t got = 0;
-    if (::fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
-        while (got < sizeof sig) {
-            const ssize_t n = ::read(fd, sig + got, sizeof sig - got);
-            if (n < 0 && errno == EINTR)
-                continue;
-            if (n <= 0)
-                break;
-            got += std::size_t(n);
-        }
-    ::close(fd);
-    return got == sizeof sig && std::memcmp(sig, "PK\x03\x04", 4) == 0;
-#else
-    std::ifstream in(p, std::ios::binary);
-    in.read(sig, sizeof sig);
-    return in.gcount() == 4 && std::memcmp(sig, "PK\x03\x04", 4) == 0;
-#endif
+    }
 }
 
 project::Project readStartFile(const fs::path& path, std::vector<std::string>* notes) {

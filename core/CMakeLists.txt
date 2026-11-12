@@ -46,6 +46,7 @@ add_library(blockwright_core STATIC
   src/pc_fonts.cpp
   src/pipeline.cpp
   src/project.cpp
+  src/regular_file.cpp
   src/ramp.cpp
   src/samples.cpp
   src/sauce.cpp

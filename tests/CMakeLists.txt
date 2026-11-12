@@ -54,6 +54,7 @@ add_executable(blockwright-tests
   test_brush.cpp
   test_clone_brush.cpp
   test_cli_read.cpp
+  test_regular_file.cpp
   test_cli_replay.cpp
   test_cli_shade.cpp
   test_composite.cpp
@@ -586,6 +587,7 @@ set(BW_APP_TEST_RUNNER ${BW_APP_TEST_ENV} ${CMAKE_CROSSCOMPILING_EMULATOR})
 
 add_executable(blockwright-app-tests
   test_app_wide.cpp
+  test_app_fifo.cpp
   test_app.cpp
   test_app_brush.cpp
   test_app_layers.cpp

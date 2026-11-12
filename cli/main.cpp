@@ -137,11 +137,16 @@ std::optional<bw::TextEncoding> gEncoding;
 // in (snapshot's default is the project's own).
 bw::TextEncoding gOutputEncoding = bw::TextEncoding::Cp437;
 
+// The most bytes a flat file (.ans, XBIN, BIN, ADF, IDF, PCB, .asc, .txt)
+// may hold: what a project's art entry may (project::kMaxEntryBytes), so a
+// piece that packs into a project opens flat too.
+constexpr std::size_t kMaxFlatBytes = bw::project::kMaxEntryBytes;
+
 // An .ans, XBIN or BIN, or a project as its flattened composite.
 bw::AnsiDocument load(const std::string& path) {
     if (bw::project::isProject(path))
         return bw::project::toAnsi(loadProject(path));
-    const std::string data = readFile(path);
+    const std::string data = readFile(path, kMaxFlatBytes);
     if (data.empty())
         throw Failure{path + ": empty file"};
     bw::AnsiDocument doc;
@@ -239,7 +244,7 @@ int info(const std::string& path) {
     if (bw::project::isProject(path))
         return projectInfo(path);
     const bw::AnsiDocument doc = load(path);
-    const std::string data = readFile(path);
+    const std::string data = readFile(path, kMaxFlatBytes);
     const bw::ArtFormat format = bw::artFormatOf(path, data);
     // in binary text 0x1A is a glyph or a colour: the content is the bytes the cells take
     const std::string_view content = bw::splitArtSauce(data, format).content;

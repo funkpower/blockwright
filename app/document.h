@@ -42,6 +42,8 @@
 
 namespace bw {
 
+class RegularFileError;
+
 // What the SAUCE dialog and the iCE and letter-spacing toggles change: the
 // SAUCE record (none until something sets one; writeAnsi then writes a
 // fresh one) and whether the canvas uses iCE colours.
@@ -101,6 +103,12 @@ public:
     // with none as its bytes say (detectEncoding); an XBIN or BIN ignores it.
     static bool read(const QString& path, AnsiDocument* out, QString* error,
                      std::optional<TextEncoding> encoding = {});
+    // What to tell the user when readRegular refused `path`: "<path> is a
+    // directory", "<path> is a FIFO, not a regular file", "<path> is over N
+    // MiB", or for a missing or unreadable file the system's words alone
+    // ("Permission denied"), as QFile gave them, for the caller to put after
+    // the path.
+    static QString readError(const QString& path, const RegularFileError& e);
     // Replaces the document with `doc`, read from `path`, unmodified and
     // with an empty undo stack: one layer, "Background", holding its cells
     // (LayerStack::fromCanvas), and active. Its marked cells (from read) are

@@ -60,8 +60,10 @@ inline constexpr std::size_t kMaxTdfFonts = 256, kMaxTdfCells = std::size_t{1} <
 // tallest, before the glyph is made); a glyph that can't be read is left out and
 // listed in its font's `rejected`.
 std::vector<TdfFont> readTdf(std::string_view file);
-// The bytes of the file at `path`. Throws TdfError when it can't be read or
-// is over kMaxTdfBytes.
+// The bytes of the regular file at `path`, read through its opened handle
+// (readRegular), so a FIFO or device there is refused at once. Throws
+// TdfError when it isn't a regular file, can't be read or is over
+// kMaxTdfBytes.
 std::string readTdfBytes(const std::filesystem::path& path);
 // readTdf on the file at `path` (readTdfBytes), throwing as both do.
 std::vector<TdfFont> readTdfFile(const std::filesystem::path& path);

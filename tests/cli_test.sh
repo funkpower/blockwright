@@ -97,6 +97,15 @@ expect "missing file" 1 'nope\.ans: No such file' -- "$cli" info "$tmp/nope.ans"
 expect "empty file" 1 'empty\.ans: empty file' -- "$cli" info "$tmp/empty.ans"
 expect "nothing drawn" 1 'nothing\.ans: no ANSI content' -- "$cli" convert "$tmp/nothing.ans" "$tmp/x.ans"
 expect "directory" 1 'dir\.ans: is a directory' -- "$cli" info "$tmp/dir.ans"
+# #453: a FIFO at a flat file's or a steps file's path is refused at once,
+# never waited on (timeout turns a regression into a failure, not a hang)
+if [[ -z ${BW_CLI_WINDOWS:-} ]]; then
+  mkfifo "$tmp/fifo.ans" "$tmp/fifo-steps.json"
+  expect "info: a FIFO is refused" 1 'fifo\.ans: is a FIFO, not a regular file' -- timeout 60 "$cli" info "$tmp/fifo.ans"
+  expect "convert: a FIFO is refused" 1 'fifo\.ans: is a FIFO, not a regular file' -- timeout 60 "$cli" convert "$tmp/fifo.ans" "$tmp/fifo-out.ans"
+  expect "replay: a FIFO steps file is refused" 1 'fifo-steps\.json: is a FIFO, not a regular file' -- timeout 60 "$cli" replay "$tmp/fifo-steps.json" -o "$tmp/fifo-replay"
+  expect "info: a device is refused" 1 '/dev/null: is a device, not a regular file' -- timeout 60 "$cli" info /dev/null
+fi
 expect "unwritable output" 1 'no/such/dir/out\.ans' -- "$cli" convert "$piece" "$tmp/no/such/dir/out.ans"
 # A write that fails partway (the file size limit stops it) leaves no partial
 # output: no new file, an existing one untouched, and no temporary file.
@@ -714,14 +723,20 @@ if [[ -z $(ls -A "$foreign") ]]; then ok "a refused -o writes nothing"; else bad
 expect "export bad input" 1 'nope\.ans: No such file' -- "$cli" export --irc "$tmp/nope.ans" "$tmp/x.txt"
 expect "export unwritable output" 1 'no/such/dir/out\.txt' -- "$cli" export --irc "$piece" "$tmp/no/such/dir/out.txt"
 
-# Out of memory is a one-line error and exit 1, not std::terminate: a 4 GiB
-# sparse input read under a 512 MiB address-space limit. Skipped for a
-# Windows build (ulimit -v would limit wine, not a Windows program's memory)
-# and on macOS, whose kernel refuses RLIMIT_AS, RLIMIT_DATA and RLIMIT_RSS.
-if [[ -z ${BW_CLI_WINDOWS:-} ]] && bash -c 'ulimit -v 524288' 2>/dev/null; then
-  truncate -s 4G "$tmp/huge.ans"
-  expect "out of memory" 1 '^blockwright-cli: out of memory$' -- bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans"
-  out=$(bash -c 'ulimit -v 524288 && exec "$@"' _ "$cli" info "$tmp/huge.ans" 2>&1)
+# A flat file over project::kMaxEntryBytes (256 MiB) is refused by its size
+# before a byte is read (#453): a 4 GiB sparse input.
+truncate -s 4G "$tmp/huge.ans"
+expect "a 4 GiB input is refused by its size" 1 'huge\.ans: input too large$' -- timeout 60 "$cli" info "$tmp/huge.ans"
+rm -f "$tmp/huge.ans"
+# Out of memory is a one-line error and exit 1, not std::terminate: a 255 MiB
+# sparse input, under the size limit, read under a 256 MiB address-space
+# limit, so its buffer can't fit. Skipped for a Windows build (ulimit -v
+# would limit wine, not a Windows program's memory) and on macOS, whose
+# kernel refuses RLIMIT_AS, RLIMIT_DATA and RLIMIT_RSS.
+if [[ -z ${BW_CLI_WINDOWS:-} ]] && bash -c 'ulimit -v 262144' 2>/dev/null; then
+  truncate -s 255M "$tmp/huge.ans"
+  expect "out of memory" 1 '^blockwright-cli: out of memory$' -- bash -c 'ulimit -v 262144 && exec "$@"' _ "$cli" info "$tmp/huge.ans"
+  out=$(bash -c 'ulimit -v 262144 && exec "$@"' _ "$cli" info "$tmp/huge.ans" 2>&1)
   if [[ $(wc -l <<<"$out") -eq 1 ]]; then ok "out of memory prints one line"; else bad "out of memory printed: $out"; fi
   rm -f "$tmp/huge.ans"
 else

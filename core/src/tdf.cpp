@@ -2,9 +2,9 @@
 
 #include "blockwright/cp437.h"
 #include "blockwright/layer.h"
+#include "blockwright/regular_file.h"
 
 #include <algorithm>
-#include <fstream>
 #include <iterator>
 #include <system_error>
 #include <utility>
@@ -270,31 +270,22 @@ std::vector<TdfFont> readTdf(std::string_view file) {
 }
 
 std::string readTdfBytes(const std::filesystem::path& path) {
-    std::error_code ec;
-    const std::uintmax_t size = std::filesystem::file_size(path, ec);
-    if (ec)
-        throw TdfError("can't read " + path.string() + ": " + ec.message());
-    if (size > kMaxTdfBytes)
-        throw TdfError(path.string() + " is over " + std::to_string(kMaxTdfBytes >> 20) + " MiB");
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
-        throw TdfError("can't read " + path.string());
-    // Read at most one byte over the limit, whatever the file grew to: one
-    // byte past the size first, and the rest up to the limit only if that
-    // byte is there. The bytes are kept (a FontFile holds them for as long as
-    // the folder is open), so what's returned holds no more than the file:
-    // a buffer of the limit for every file kept 4 MiB for each.
-    std::string bytes(static_cast<std::size_t>(size) + 1, '\0');
-    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    std::size_t got = static_cast<std::size_t>(in.gcount());
-    if (got == bytes.size()) {
-        bytes.resize(static_cast<std::size_t>(kMaxTdfBytes) + 1);
-        in.read(bytes.data() + got, static_cast<std::streamsize>(bytes.size() - got));
-        got += static_cast<std::size_t>(in.gcount());
+    const std::string over = path.string() + " is over " + std::to_string(kMaxTdfBytes >> 20) + " MiB";
+    std::string bytes;
+    try {
+        // through the opened handle, so a FIFO or device at the path is
+        // refused, never waited on; at most kMaxTdfBytes, checked by fstat
+        // before a byte is read and again as it is read
+        bytes = readRegular(path, static_cast<std::size_t>(kMaxTdfBytes));
+    } catch (const RegularFileError& e) {
+        if (e.reason == RegularFileError::Reason::TooLarge)
+            throw TdfError(over);
+        if (e.reason == RegularFileError::Reason::NotRegular)
+            throw TdfError(path.string() + " " + e.what());
+        throw TdfError("can't read " + path.string() + ": " + e.systemMessage());
     }
-    bytes.resize(got);
-    if (bytes.size() > kMaxTdfBytes)
-        throw TdfError(path.string() + " is over " + std::to_string(kMaxTdfBytes >> 20) + " MiB");
+    // The bytes are kept (a FontFile holds them for as long as the folder is
+    // open), so what's returned holds no more than the file.
     bytes.shrink_to_fit();
     return bytes;
 }
