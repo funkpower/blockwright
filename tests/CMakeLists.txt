@@ -939,6 +939,14 @@ if(BLOCKWRIGHT_MACOS_BUNDLE)
   set_property(TEST gui_version install_notices APPEND PROPERTY ENVIRONMENT "BW_NOTICES_DIR=${BW_NOTICES_DIR}")
 endif()
 
+# scripts/package-macos refuses a Qt built for a newer macOS than the target
+if(APPLE)
+  add_test(NAME macos_package_qt
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/macos_package_qt_test.sh ${PROJECT_SOURCE_DIR}
+            ${CMAKE_CURRENT_BINARY_DIR}/macos-package-qt-check)
+  set_tests_properties(macos_package_qt PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 if(WIN32)
   # the UTF-8 code page and long paths, as the shipped programs have
   foreach(t blockwright-tests blockwright-render-tests blockwright-app-tests blockwright-publish-tests

@@ -102,8 +102,12 @@ writes the `.sha256`. Upload `blockwright-<version>-x86_64.AppImage` and its
 
 ## 6. macOS (dmg and Homebrew cask)
 
-On a Mac at the tag: build the dmg, upload it with its `.sha256`, and publish
-the cask, as in [README.md § Homebrew](README.md#homebrew).
+On a Mac at the tag, with Qt 6.8.3 (an LTS release that runs on macOS 12, the
+oldest the app supports; Qt 6.10 and later need macOS 13): build the dmg,
+upload it with its `.sha256`, and publish the cask, as in
+[README.md § Homebrew](README.md#homebrew). `scripts/package-macos` refuses a
+Qt built for a newer macOS than the deployment target before it builds
+anything.
 
 ## 7. Windows (MSI)
 

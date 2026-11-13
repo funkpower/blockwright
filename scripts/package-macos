@@ -13,7 +13,14 @@
 #
 # Environment: CMAKE_OSX_ARCHITECTURES (default this Mac's; "arm64;x86_64"
 # makes a universal app, with a universal Qt), MACOSX_DEPLOYMENT_TARGET
-# (default the project's, 12.0), JOBS (default 8).
+# (default the project's, CMAKE_OSX_DEPLOYMENT_TARGET in CMakeLists.txt),
+# JOBS (default 8).
+#
+# The deployment target is the oldest macOS the app claims: its
+# LSMinimumSystemVersion, the cask's depends_on macos and what every binary in
+# the bundle is built for. A Qt built for a newer macOS (Qt 6.10 and later
+# need macOS 13) is refused before anything is built; build with the Qt
+# packaging/RELEASING.md names, or raise the target.
 #
 # The app carries the notices for the Qt, libzip and zstd it bundles in
 # Contents/Resources/doc (packaging/macos/third-party). Qt's SBOMs come from
@@ -28,6 +35,27 @@ set -euo pipefail
 die() { echo "package-macos: $*" >&2; exit 1; }
 [[ $(uname -s) == Darwin ]] || die "run this on a Mac"
 root=$(cd "$(dirname "$0")/.." && pwd)
+
+# minos <Mach-O> <arch>: the oldest macOS that slice is built for, from
+# LC_BUILD_VERSION (or LC_VERSION_MIN_MACOSX in an older binary); empty if it
+# has neither. awk reads to the end: exiting early could kill otool with
+# SIGPIPE, and pipefail would end the script with no message.
+minos() {
+  otool -arch "$2" -l "$1" 2>/dev/null | awk '
+    / cmd LC_BUILD_VERSION$/ { b = 1; next }
+    / cmd LC_VERSION_MIN_MACOSX$/ { m = 1; next }
+    / cmd / { b = m = 0 }
+    b && $1 == "minos" && v == "" { v = $2 }
+    m && $1 == "version" && v == "" { v = $2 }
+    END { if (v != "") print v }'
+}
+# newer <a> <b>: true if macOS version a is newer than b (12.0 = 12 = 12.0.0)
+newer() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, "."); nb = split(b, y, ".")
+    for (i = 1; i <= 3; i++) { if (x[i] + 0 != y[i] + 0) exit !(x[i] + 0 > y[i] + 0) }
+    exit 1 }'
+}
 
 qt=${BW_QT_PREFIX:-}
 deps=${BW_MACOS_DEPS:-}
@@ -46,16 +74,40 @@ done
 [[ -n $qt ]] || die "say where Qt is: --qt DIR or BW_QT_PREFIX"
 [[ -x $qt/bin/macdeployqt && -d $qt/lib/cmake/Qt6 ]] || die "$qt has no bin/macdeployqt and lib/cmake/Qt6"
 qt=$(cd "$qt" && pwd)
+archs=${CMAKE_OSX_ARCHITECTURES:-$(uname -m)}
+project_target=$(sed -n 's/^[[:space:]]*set([[:space:]]*CMAKE_OSX_DEPLOYMENT_TARGET[[:space:]]\{1,\}"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}[[:space:])].*/\1/p' "$root/CMakeLists.txt")
+[[ -n $project_target ]] || die "no CMAKE_OSX_DEPLOYMENT_TARGET in $root/CMakeLists.txt"
+target=${MACOSX_DEPLOYMENT_TARGET:-$project_target}
+[[ $target =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || die "MACOSX_DEPLOYMENT_TARGET $target is not a macOS version"
+
+# A Qt built for a newer macOS than the target links with only a warning and
+# makes an app that claims a macOS it can't start on: refuse it now, before
+# the long build.
+for tool in otool lipo; do
+  command -v "$tool" >/dev/null || die "$tool is not on PATH"
+done
+qtcore=$qt/lib/QtCore.framework/QtCore
+[[ -f $qtcore ]] || die "$qt has no lib/QtCore.framework/QtCore"
+for arch in ${archs//;/ }; do
+  lipo "$qtcore" -verify_arch "$arch" 2>/dev/null || die "$qtcore has no $arch slice"
+  qt_minos=$(minos "$qtcore" "$arch")
+  [[ -n $qt_minos ]] || die "$qtcore ($arch) says no minimum macOS"
+  if newer "$qt_minos" "$target"; then
+    die "the Qt in $qt needs macOS $qt_minos (QtCore's minos, $arch), but the app's deployment target is macOS $target.
+The app would claim macOS $target and not start there. Build with the Qt that
+packaging/RELEASING.md names (Qt 6.8.3, which runs on macOS 12), or raise the
+target (MACOSX_DEPLOYMENT_TARGET=$qt_minos, or CMAKE_OSX_DEPLOYMENT_TARGET in
+CMakeLists.txt to change what every build supports)."
+  fi
+done
+for tool in cmake ninja python3 codesign hdiutil install_name_tool; do
+  command -v "$tool" >/dev/null || die "$tool is not on PATH"
+done
 mkdir -p "$work" "$out"
 work=$(cd "$work" && pwd)
 out=$(cd "$out" && pwd)
 deps=${deps:-$work/deps}
 jobs=${JOBS:-8}
-archs=${CMAKE_OSX_ARCHITECTURES:-$(uname -m)}
-target=${MACOSX_DEPLOYMENT_TARGET:-12.0}
-for tool in cmake ninja python3 codesign hdiutil otool install_name_tool; do
-  command -v "$tool" >/dev/null || die "$tool is not on PATH"
-done
 
 echo "== libzip and zstd ($archs, macOS $target)"
 CMAKE_OSX_ARCHITECTURES=$archs MACOSX_DEPLOYMENT_TARGET=$target JOBS=$jobs "$root/scripts/macos-deps" "$deps"
@@ -73,6 +125,8 @@ rm -rf "$stage"
 cmake --install "$build" >/dev/null
 app=$stage/Blockwright.app
 [[ -x $app/Contents/MacOS/Blockwright && -x $app/Contents/MacOS/blockwright-cli ]] || die "the install left no $app"
+plist_min=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist" 2>/dev/null) || true
+[[ $plist_min == "$target" ]] || die "the app's LSMinimumSystemVersion is ${plist_min:-missing}, not the target $target"
 
 echo "== Qt into the bundle"
 "$qt/bin/macdeployqt" "$app" -executable="$app/Contents/MacOS/blockwright-cli" -always-overwrite
@@ -103,6 +157,17 @@ leaks=$(find "$app" -type f -perm -u+x -o -type f -name '*.dylib' | while read -
   otool -l "$f" | awk '/cmd LC_RPATH/ { r = 1 } r && /^ *path / { print $2; r = 0 }' | grep -E "^/" | sed "s|^|$f: rpath |" || true
 done)
 [[ -z $leaks ]] || die "the bundle loads libraries from outside it:"$'\n'"$leaks"
+# Nothing in it may need a newer macOS than LSMinimumSystemVersion says: not a
+# Qt plugin, libzip or zstd, or the programs.
+too_new=$(find "$app" -type f -perm -u+x -o -type f -name '*.dylib' | while read -r f; do
+  file -b "$f" | grep -q Mach-O || continue
+  for arch in ${archs//;/ }; do
+    m=$(minos "$f" "$arch")
+    if [[ -z $m ]]; then echo "$f ($arch): no minimum macOS"
+    elif newer "$m" "$target"; then echo "$f ($arch): macOS $m"; fi
+  done
+done)
+[[ -z $too_new ]] || die "the bundle has code for a newer macOS than $target:"$'\n'"$too_new"
 
 echo "== notices"
 # Qt's notice with its version, frameworks, plugins and source link, the LGPL,

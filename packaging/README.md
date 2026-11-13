@@ -314,12 +314,21 @@ scripts/package-macos --qt ~/.cache/dw/toolchains/Qt/6.8.3/macos \
   --deps ~/.cache/dw/toolchains/bw-deps
 ```
 
+The oldest macOS the app supports is one value, `CMAKE_OSX_DEPLOYMENT_TARGET`
+in `CMakeLists.txt` (12.0; `MACOSX_DEPLOYMENT_TARGET` overrides it for one
+build). It is what the app, the CLI, libzip and zstd are built for, the app's
+`LSMinimumSystemVersion` and the cask's `depends_on macos`. Before building
+anything the script reads the minimum macOS QtCore is built for (its
+`LC_BUILD_VERSION` `minos`) and refuses a Qt that needs a newer one than the
+target, naming both: Qt 6.10 and later need macOS 13, so build with 6.8.3.
+
 It builds a Release bundle, runs `macdeployqt` (the CLI too), keeps only the
 app's architecture of Qt's universal libraries, removes every absolute
 search path from the app and the CLI, and fails if anything in the bundle
 loads a library from outside it but the system's (`/usr/lib`, `/System`) or
-still has an absolute search path, adds the notices for what it bundled (below),
-signs it ad hoc, inside out, and makes
+still has an absolute search path, or if anything in it is built for a newer
+macOS than the target or its `LSMinimumSystemVersion` isn't the target, adds
+the notices for what it bundled (below), signs it ad hoc, inside out, and makes
 `dist/Blockwright-<version>.dmg` with dmgbuild (in a venv in the work
 directory): the app beside an Applications link over a background that says
 to drag it. Beside the dmg go its `.sha256` and `blockwright.rb`, the
