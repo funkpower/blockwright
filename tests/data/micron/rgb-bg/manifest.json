@@ -1,0 +1,17 @@
+{
+    "format": "blockwright",
+    "height": 1,
+    "ice": false,
+    "ircBudget": {
+        "bytes": 407,
+        "profile": "efnet-weechat"
+    },
+    "layers": [
+        1
+    ],
+    "nextLayerId": 2,
+    "palette": "cga",
+    "sauce": null,
+    "version": "1.3",
+    "width": 1
+}

@@ -17,6 +17,8 @@ std::vector<std::string> unwritableWarnings(const bw::AnsiOutput& res);
 // The same for IRC text (bw::irc::unwritable): UTF-8, so worded as the
 // UTF-8 .ans warnings are.
 std::vector<std::string> ircUnwritableWarnings(const std::vector<bw::Unwritable>& lost);
+// The same for a Micron page (micron::unwritable).
+std::vector<std::string> micronUnwritableWarnings(const std::vector<bw::Unwritable>& lost);
 
 // What a UTF-8 .ans read dropped (bw::ReadLoss): "3 combining code points
 // past 16 dropped at 4,0", "12 clusters read as their base: too many

@@ -41,6 +41,7 @@ add_library(blockwright_core STATIC
   src/lint.cpp
   src/lint_fallback.cpp
   src/lint_rules.cpp
+  src/micron.cpp
   src/mirc.cpp
   src/palette.cpp
   src/pc_fonts.cpp

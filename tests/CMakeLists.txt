@@ -89,6 +89,7 @@ add_executable(blockwright-tests
   test_lint.cpp
   test_lint_rules.cpp
   test_irc_view.cpp
+  test_micron.cpp
   test_mirc.cpp
   test_mirc_sent.cpp
   test_outline.cpp
@@ -228,6 +229,15 @@ add_test(NAME irc_oracle
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/irc_oracle_test.sh
           ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/irc-oracle-tmp)
 set_tests_properties(irc_oracle PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+add_test(NAME micron_cli
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/micron_cli_test.sh
+          ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/micron-cli-tmp)
+set_tests_properties(micron_cli PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+# NomadNet's own parser reads the golden Micron pages; skipped without nomadnet
+set(BW_NOMADNET_PYTHON python3 CACHE STRING "Python that can import nomadnet, for the micron_nomadnet test")
+add_test(NAME micron_nomadnet
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/micron_nomadnet_test.sh ${BW_NOMADNET_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(micron_nomadnet PROPERTIES SKIP_RETURN_CODE 77)
 
 # wine-run starts the wine session so its services hold no test's output (#259)
 if(CMAKE_CROSSCOMPILING_EMULATOR STREQUAL "${PROJECT_BINARY_DIR}/wine-run")
@@ -604,6 +614,7 @@ add_executable(blockwright-app-tests
   test_app_format.cpp
   test_app_irc.cpp
   test_app_irc_target.cpp
+  test_app_micron.cpp
   test_app_library.cpp
   test_app_library_styles.cpp
   test_app_style_apply.cpp

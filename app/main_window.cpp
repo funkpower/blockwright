@@ -170,6 +170,25 @@ QString ircLossDescription(const std::vector<Unwritable>& lost) {
     return utf8LossParts(lost, QObject::tr("IRC text")).join(QStringLiteral(";\n"));
 }
 
+QString micronLossDescription(const std::vector<Unwritable>& lost) {
+    QStringList parts = utf8LossParts(lost, QObject::tr("a Micron page"));
+    const auto add = [&](bool lead, const QString& one, const QString& many) {
+        std::vector<Unwritable> cells;
+        std::copy_if(lost.begin(), lost.end(), std::back_inserter(cells),
+                     [&](const Unwritable& u) { return u.loss == Loss::NoCode && u.lead == lead; });
+        if (!cells.empty())
+            parts << plural(int(cells.size()), one, many).arg(namedGlyphs(cells));
+    };
+    add(false, QObject::tr("%n cell holds a code point NomadNet drops from a page and will be written as '?': %1"),
+        QObject::tr("%n cells hold code points NomadNet drops from a page and will be written as '?': %1"));
+    add(true,
+        QObject::tr("%n cell holds a code point NomadNet drops from a page before a continuation, and will be "
+                    "written as '?' and a space: %1"),
+        QObject::tr("%n cells hold code points NomadNet drops from a page before a continuation, and will be "
+                    "written as '?' and a space: %1"));
+    return parts.join(QStringLiteral(";\n"));
+}
+
 QString readLossDescription(const ReadLoss& loss) {
     QStringList parts;
     if (loss.marksDropped) {

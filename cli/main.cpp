@@ -7,6 +7,7 @@
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli export --irc [--budget N] [--fit] [--pad] [--swap-shades]
 //                          [--allow-over-budget] <in.ans|project> <out.txt>
+//   blockwright-cli export --micron [--centre] [--cache S] <in.ans|project> <out.mu>
 //   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N] [--box x0,y0,x1,y1]
 //                         [--mask <mask.ans>] [--ice] [--allow-lossy] <in.ans> <out.ans>
 //   blockwright-cli shade --form dome|cylinder|plane [--glint] | --despeckle | --rim
@@ -37,7 +38,7 @@
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
 // .bwp zip or a project directory, as its flattened composite. convert and
 // shade write the format <out>'s name gives (.xb, .bin, else .ans). convert,
-// shade, export --irc and render refuse a .bwp <out>: pack writes a project.
+// shade, export and render refuse a .bwp <out>: pack writes a project.
 //
 // Exit status: 0 ok, 1 bad input, an I/O failure or a lossy convert, shade,
 // pack or unpack without --allow-lossy (nothing is written), or a library check that found
@@ -58,6 +59,7 @@
 #include "blockwright/irc.h"
 #include "blockwright/irc_render.h"
 #include "blockwright/irc_view.h"
+#include "blockwright/micron.h"
 #include "blockwright/library.h"
 #include "blockwright/lint.h"
 #include "blockwright/logo_text.h"
@@ -170,6 +172,18 @@ bw::AnsiDocument sentDocument(const bw::project::Project& p) {
         o.ice = p.ice;
         doc.canvas = bw::irc::sentCanvas(bw::flatten(p.layers, o), p.ice, p.target);
     }
+    return doc;
+}
+
+// A project as Micron writes it, under either target: its composite as the
+// editor shows it, cells not yet folded by iCE, since micron::encode folds an
+// indexed one and keeps an RGB one as it is, as the app's Export Micron does
+// (toAnsi would fold an RGB background to the nearest of the 16 first).
+bw::AnsiDocument micronDocument(const bw::project::Project& p) {
+    bw::AnsiDocument doc = bw::project::toAnsi(p);
+    bw::CompositeOptions o;
+    o.ice = p.ice;
+    doc.canvas = bw::flatten(p.layers, o);
     return doc;
 }
 
@@ -654,6 +668,31 @@ int exportIrc(const std::string& in, const std::string& out, const IrcArgs& args
         }
     }
     save(out, bw::irc::joinLines(lines));
+    return kOk;
+}
+
+// Writes the piece as a Micron page (micron.h): what export --irc reads, the
+// cells as the editor shows them (a project's composite as micronDocument
+// has it, an RGB cell as it is under either target), in the piece's own
+// palette (an XBIN's) and iCE setting. A flat file is opened as the editor
+// opens it (openAsEditor): iCE colours off with a bright background anyway
+// turn on, so that background is written bright, as the app's Export Micron
+// writes it. The cells Micron writes as '?' are warned of; they don't stop it.
+int exportMicron(const std::string& in, const std::string& out, const bw::micron::Options& opts) {
+    refuseSameFile(in, out);
+    bw::AnsiDocument doc;
+    if (bw::project::isProject(in)) {
+        doc = micronDocument(loadProject(in));
+    } else {
+        doc = load(in);
+        bw::openAsEditor(doc);
+    }
+    for (const std::string& w : bwcli::micronUnwritableWarnings(bw::micron::unwritable(doc.canvas)))
+        std::cerr << "blockwright-cli: warning: " << in << ": " << w << "\n";
+    save(out, bw::micron::encode(doc, opts));
+    std::cout << doc.canvas.height() << (doc.canvas.height() == 1 ? " line, " : " lines, ") << doc.canvas.width()
+              << " columns" << (opts.centre ? ", centred" : "") << (bw::customPalette(doc) ? ", own palette" : "")
+              << "\n";
     return kOk;
 }
 
@@ -1279,6 +1318,11 @@ int main(int argc, char** argv) {
         "                       write IRC text (mIRC colour codes) and report each\n"
         "                       line's size in bytes; a project's own budget is\n"
         "                       the default; a .bwp <out> is refused\n"
+        "  export --micron <in> <out>\n"
+        "                       write a Micron page (.mu) for NomadNet: the piece\n"
+        "                       in its own colours, left-aligned or --centre,\n"
+        "                       with a #!c= cache header if --cache S is given;\n"
+        "                       a .bwp <out> is refused\n"
         "  shade --ramp R <in> <out>\n"
         "                       lighten (or --darken) every cell in the box one\n"
         "                       rung along the ramp's shading ladder, then check\n"
@@ -1401,6 +1445,18 @@ int main(int argc, char** argv) {
         QStringLiteral("export --irc, render --irc: let the encoder draw a shade as its opposite with the colours "
                        "reversed"));
     parser.addOption(swapShadesOpt);
+    const QCommandLineOption micronOpt(QStringLiteral("micron"),
+                                       QStringLiteral("export: a Micron page (.mu) for NomadNet"));
+    parser.addOption(micronOpt);
+    const QCommandLineOption centreOpt(QStringLiteral("centre"),
+                                       QStringLiteral("export --micron: centre the piece on the page"));
+    parser.addOption(centreOpt);
+    const QCommandLineOption cacheOpt(
+        QStringLiteral("cache"),
+        QStringLiteral("export --micron: write the page header #!c=S, the seconds a peer may cache the page "
+                       "(0: never)"),
+        QStringLiteral("S"));
+    parser.addOption(cacheOpt);
     const QCommandLineOption overOpt(QStringLiteral("allow-over-budget"),
                                      QStringLiteral("export --irc: write even if a line is over the budget"));
     parser.addOption(overOpt);
@@ -1540,6 +1596,7 @@ int main(int argc, char** argv) {
                   << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out>\n"
                   << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
                   << "       | export --irc [--budget N] [--fit] [--pad] [--swap-shades] [--allow-over-budget] <in> <out>\n"
+                  << "       | export --micron [--centre] [--cache S] <in> <out.mu>\n"
                   << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--mask <mask>] [--ice] [--allow-lossy] <in> <out>\n"
                   << "       | shade --form dome|cylinder|plane [--glint] | --despeckle | --rim --ramp R [--light N|NE|...|NW]\n"
                   << "         --box x0,y0,x1,y1 and/or --mask <mask> [--ice] [--allow-lossy] <in> <out>\n"
@@ -1568,6 +1625,7 @@ int main(int argc, char** argv) {
         {&lossyOpt, {"convert", "shade", "pack", "unpack", "snapshot", "replay"}},
         {&scaleOpt, {"render", "replay"}}, {&fontWidthOpt, {"render", "replay"}},
         {&ircOpt, {"export", "render"}},   {&budgetOpt, {"export", "render"}}, {&overOpt, {"export"}},
+        {&micronOpt, {"export"}},          {&centreOpt, {"export"}}, {&cacheOpt, {"export"}},
         {&fitOpt, {"export", "render"}},   {&padOpt, {"export", "render"}}, {&swapShadesOpt, {"export", "render"}},
         {&rampOpt, {"shade", "lint"}},     {&darkenOpt, {"shade"}},  {&stepsOpt, {"shade"}},
         {&boxOpt, {"shade", "lint"}},      {&iceOpt, {"shade"}},     {&jsonOpt, {"lint"}},
@@ -1651,10 +1709,24 @@ int main(int argc, char** argv) {
             return render(args[1].toStdString(), args[2].toStdString(), opts, irc);
         }
         if (cmd == QLatin1String("export")) {
-            if (!parser.isSet(ircOpt))
-                return usage("export needs a format: --irc");
+            if (parser.isSet(ircOpt) == parser.isSet(micronOpt))
+                return usage("export needs one format: --irc or --micron");
             if (args.size() != 3)
                 return usage("export takes an input and an output file");
+            if (parser.isSet(micronOpt)) {
+                for (const QCommandLineOption* o : {&budgetOpt, &fitOpt, &padOpt, &swapShadesOpt, &overOpt})
+                    if (parser.isSet(*o))
+                        return usage((optionName(*o) + " is an export --irc option").c_str());
+                refuseProjectOutput("export --micron", "a Micron page", args[2]);
+                bw::micron::Options mo;
+                mo.centre = parser.isSet(centreOpt);
+                if (parser.isSet(cacheOpt))
+                    mo.cacheSeconds = unsigned(intValue(parser.value(cacheOpt), "cache", 0, 31536000));
+                return exportMicron(args[1].toStdString(), args[2].toStdString(), mo);
+            }
+            for (const QCommandLineOption* o : {&centreOpt, &cacheOpt})
+                if (parser.isSet(*o))
+                    return usage((optionName(*o) + " is an export --micron option").c_str());
             refuseProjectOutput("export --irc", "IRC text", args[2]);
             return exportIrc(args[1].toStdString(), args[2].toStdString(), ircArgs(), parser.isSet(overOpt));
         }

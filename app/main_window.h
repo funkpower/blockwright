@@ -15,6 +15,7 @@
 
 #include "document.h"
 
+#include "blockwright/micron.h"
 #include "blockwright/samples.h"
 #include "blockwright/stamp_slice.h"
 
@@ -106,6 +107,9 @@ QString readLossDescription(const ReadLoss& loss);
 // The same for IRC text's losses (irc::unwritable), worded as a UTF-8
 // .ans's with "IRC text" for "a UTF-8 .ans"; empty when nothing is lost.
 QString ircLossDescription(const std::vector<Unwritable>& lost);
+// The same for a Micron page's (micron::unwritable), and the code points
+// NomadNet drops; empty when nothing is lost.
+QString micronLossDescription(const std::vector<Unwritable>& lost);
 
 // The status-bar message for typed or committed `text` whose glyphs
 // isTypeable refuses: for each glyph CP437 has but .ans can't hold, its byte
@@ -306,6 +310,10 @@ public:
     // selection stamped first, as Save does. Refused, with `error`, if a
     // line is over the budget, unless `allowOverBudget`.
     bool exportIrcText(const QString& path, QString* error, bool allowOverBudget = false);
+    // Writes the canvas as a Micron page (micron::encodeCanvas, in the
+    // document's palette and iCE setting) to `path`, a floating selection
+    // stamped first, as Save does.
+    bool exportMicronText(const QString& path, QString* error, const micron::Options& opts = {});
     // Takes a snapshot of a project (Document::nextSnapshot) and adds it as
     // an undo step, without asking anything: its round, or 0 and `error` for
     // a flat file, no round left, or a lossy snapshot (glyphs written as
@@ -377,6 +385,9 @@ public slots:
     // budget, and View > IRC > Budget....
     void exportIrc();
     void editIrcBudget();
+    // File > Export Micron...: asks whether to centre the piece and write a
+    // cache header, then where to write the .mu.
+    void exportMicron();
 
     // QMainWindow's, as the user's own sizes: a horizontal resize of a side
     // dock ends the default widths, and a vertical one the default heights

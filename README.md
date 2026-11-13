@@ -74,6 +74,7 @@ own. Selection > Save to Library and Save as Frame Style add to it.
 | XBIN (`.xb`) | yes | yes |
 | BIN (`.bin`) | yes | yes |
 | IRC text (`.txt`, mIRC codes) | — | File > Export IRC Text, `export --irc` |
+| Micron page (`.mu`, NomadNet) | — | File > Export Micron, `export --micron` |
 | PNG | yes, as a reference image | `blockwright-cli render` |
 | JPEG, BMP, GIF, ICO, PBM/PGM/PPM, XBM, XPM; WebP and TIFF with Qt's image formats plugin | yes, as a reference image | — |
 | TheDraw fonts (`.tdf`) | yes, for text layers | — |
@@ -116,6 +117,7 @@ composite) without a display:
 | `convert <in> <out>` | write `.ans`, XBIN or BIN, by `<out>`'s name |
 | `render <in> <out.png>` | draw with the IBM VGA font; `--irc` draws the IRC view instead |
 | `export --irc <in> <out.txt>` | write IRC text and report each line's bytes; over budget writes nothing unless `--allow-over-budget` |
+| `export --micron <in> <out.mu>` | write a NomadNet Micron page in the piece's own colours; `--centre`, `--cache S` |
 | `shade` | one pass of the ramp shade, form, despeckle or rim-light brush over a box or mask |
 | `lint <in>` | shading-ladder, pixel-noise and craft checks, as text or `--json` |
 | `library list [dir]`, `library check <dir>` | list or check stamps and text styles |

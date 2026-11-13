@@ -96,6 +96,20 @@ std::vector<std::string> ircUnwritableWarnings(const std::vector<Unwritable>& lo
     return w.out;
 }
 
+std::vector<std::string> micronUnwritableWarnings(const std::vector<Unwritable>& lost) {
+    Warnings w{lost, {}};
+    utf8Warnings(w, "a Micron page");
+    w.add([](const Unwritable& u) { return u.loss == Loss::NoCode && !u.lead; },
+          " cell holds a code point NomadNet drops from a page and is written as '?'",
+          " cells hold code points NomadNet drops from a page and are written as '?'");
+    w.add([](const Unwritable& u) { return u.loss == Loss::NoCode && u.lead; },
+          " cell holds a code point NomadNet drops from a page before a continuation and is written as '?' and a "
+          "space",
+          " cells hold code points NomadNet drops from a page before a continuation and are written as '?' and a "
+          "space");
+    return w.out;
+}
+
 std::vector<std::string> readWarnings(const bw::ReadLoss& loss) {
     std::vector<std::string> out;
     if (const int n = loss.marksDropped) {

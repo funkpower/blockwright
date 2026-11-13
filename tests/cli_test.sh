@@ -427,7 +427,7 @@ if [[ $(grep -c $'\xe2\x96\x88$' "$tmp/edge.txt") -eq 2 ]]; then ok "--pad ends 
 for i in $(seq 0 39); do printf '\033[34;41m\xb2\033[31;44m\xb0'; done > "$tmp/shade.ans"
 expect "shades over the budget" 3 '^1 line, longest 560 bytes' -- "$cli" export --irc "$tmp/shade.ans" "$tmp/shade.txt"
 expect "--swap-shades" 0 '^1 line, longest 244 bytes, 246 sent, budget 407: 0 over$' -- "$cli" export --irc --swap-shades "$tmp/shade.ans" "$tmp/shade.txt"
-expect "export needs --irc" 2 'export needs a format: --irc' -- "$cli" export "$piece" "$tmp/x.txt"
+expect "export needs a format" 2 'export needs one format: --irc or --micron' -- "$cli" export "$piece" "$tmp/x.txt"
 expect "export arity" 2 'export takes' -- "$cli" export --irc "$piece"
 expect "--budget must be a number" 2 '--budget takes 1 to 512 bytes' -- "$cli" export --irc --budget lots "$piece" "$tmp/x.txt"
 expect "--budget must be positive" 2 '--budget takes 1 to 512 bytes' -- "$cli" export --irc --budget 0 "$piece" "$tmp/x.txt"

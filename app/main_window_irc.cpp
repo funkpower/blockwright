@@ -10,8 +10,15 @@
 #include "plural.h"
 
 #include "blockwright/irc_view.h"
+#include "blockwright/micron.h"
 
 #include <QAction>
+#include <QCheckBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QSpinBox>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMenu>
@@ -42,6 +49,12 @@ void MainWindow::createIrcActions(QMenu* file, QMenu* view) {
     // Above File > Publish to Library. Publish writes its own lines: plain,
     // without fit or pad, against the tighter of the document's budget and
     // the EFnet / WeeChat one (PLAN §8, §9; #393).
+    file->insertAction(findChild<QAction*>(QStringLiteral("publishToLibrary")), a);
+    a = new QAction(tr("Export &Micron..."), this);
+    a->setObjectName(QStringLiteral("exportMicron"));
+    a->setStatusTip(tr("Write the canvas as a Micron page (.mu) for NomadNet"));
+    a->setToolTip(a->statusTip());
+    connect(a, &QAction::triggered, this, &MainWindow::exportMicron);
     file->insertAction(findChild<QAction*>(QStringLiteral("publishToLibrary")), a);
 
     QMenu* m = view->addMenu(tr("I&RC"));
@@ -101,6 +114,79 @@ bool MainWindow::exportIrcText(const QString& path, QString* error, bool allowOv
         return false;
     }
     return true;
+}
+
+bool MainWindow::exportMicronText(const QString& path, QString* error, const micron::Options& opts) {
+    if (const QString why = view_->finishTool(); !why.isEmpty()) {
+        *error = tr("the floating selection can't land: %1").arg(why);
+        return false;
+    }
+    const AnsiDocument& a = doc_.ansi();
+    const std::string bytes = micron::encodeCanvas(doc_.canvas(), a.palette.value_or(kPalette), a.ice, opts);
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly) || f.write(bytes.data(), qint64(bytes.size())) != qint64(bytes.size()) ||
+        !f.commit()) {
+        *error = f.errorString();
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::exportMicron() {
+    if (const QString why = view_->finishTool(); !why.isEmpty()) {
+        statusBar()->showMessage(tr("Not exported: the floating selection can't land: %1").arg(why), 5000);
+        return;
+    }
+    if (const QString lost = micronLossDescription(micron::unwritable(doc_.canvas()));
+        !lost.isEmpty() &&
+        bw::warning(this, tr("Export Micron"), tr("Before exporting a Micron page:\n%1.\n\nExport anyway?").arg(lost),
+                    QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Save)
+        return;
+    QDialog options(this);
+    options.setObjectName(QStringLiteral("micronOptions"));
+    options.setWindowTitle(tr("Export Micron"));
+    auto* centre = new QCheckBox(tr("&Centre the piece on the page"), &options);
+    centre->setObjectName(QStringLiteral("micronCentre"));
+    auto* cache = new QCheckBox(tr("Write a page &cache header, seconds:"), &options);
+    cache->setObjectName(QStringLiteral("micronCache"));
+    auto* seconds = new QSpinBox(&options);
+    seconds->setObjectName(QStringLiteral("micronCacheSeconds"));
+    seconds->setRange(0, 31536000);
+    seconds->setValue(0);
+    seconds->setEnabled(false);
+    seconds->setToolTip(tr("How long a peer may keep the page; 0: never cache it"));
+    connect(cache, &QCheckBox::toggled, seconds, &QWidget::setEnabled);
+    auto* row = new QHBoxLayout;
+    row->addWidget(cache);
+    row->addWidget(seconds);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &options);
+    connect(buttons, &QDialogButtonBox::accepted, &options, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &options, &QDialog::reject);
+    auto* layout = new QVBoxLayout(&options);
+    layout->addWidget(centre);
+    layout->addLayout(row);
+    layout->addWidget(buttons);
+    if (options.exec() != QDialog::Accepted)
+        return;
+    micron::Options opts;
+    opts.centre = centre->isChecked();
+    if (cache->isChecked())
+        opts.cacheSeconds = unsigned(seconds->value());
+    QString start;
+    if (!doc_.path().isEmpty()) {
+        const QFileInfo fi(doc_.path());
+        start = fi.absoluteDir().filePath(fi.completeBaseName() + QStringLiteral(".mu"));
+    }
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export Micron"), start,
+                                                      tr("Micron pages (*.mu);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    QString error;
+    if (!exportMicronText(path, &error, opts)) {
+        bw::warning(this, tr("Export Micron"), tr("Could not write %1:\n%2").arg(path, error));
+        return;
+    }
+    statusBar()->showMessage(tr("Exported a Micron page to %1").arg(path), 3000);
 }
 
 void MainWindow::exportIrc() {
