@@ -6,15 +6,15 @@
 # its reach, so that test has to run through xcb_test.sh itself, and review,
 # not this guard, holds it to that.
 #
-# cmake -DLINKED=a,b -DGUARDED=a,b -DPROFILED=a,b -DXCB=c -DFILE_c=<path>
+# cmake -DLINKED=a,b -DGUARDED=a,b -DPROFILED=a,b -DXCB=c -DFILES=<file>
 #       -DXCB_ENV=bash|xcb_test.sh|<dir> -DCTEST=<ctest> -DTEST_DIR=<dir> -DCONFIG=<config>
 #       -P app_guard_check.cmake:
 # every test binary built on the app (LINKED) is one whose profile is checked:
 # app_tests_leave_profile_alone runs it (GUARDED), or xcb_test.sh does; and one
 # ctest runs under a scratch profile (PROFILED), or xcb_test.sh's.
-# The XCB binaries, built at FILE_<bin>, have no scratch profile emulator. One
-# of them counts as both when a test runs it through XCB_ENV and no other test
-# names it. The commands are ctest's own for the tests in TEST_DIR
+# The XCB binaries, built at FILE_<bin> (<file> sets it), have no scratch
+# profile emulator. One of them counts as both when a test runs it through
+# XCB_ENV and no other test names it. The commands are ctest's own for the tests in TEST_DIR
 # (--show-only=json-v1), as it will run them: a test that names the binary by
 # $<TARGET_FILE>, or a CMP0158 that drops its emulator, shows there. The guard
 # doesn't parse shell, so it fails closed: any argument that names the binary's
@@ -69,6 +69,7 @@ function(_names_file arg name out)
 endfunction()
 
 if(XCB AND XCB_ENV)
+  include("${FILES}")
   string(REPLACE "|" ";" XCB_ENV "${XCB_ENV}")
   list(LENGTH XCB_ENV wrap_len)
   # ctest gives the full path of a command it found on PATH (bash), so the
@@ -85,6 +86,9 @@ if(XCB AND XCB_ENV)
     message(FATAL_ERROR "ctest could not list the tests in ${TEST_DIR} (exit ${st}): ${err}")
   endif()
   foreach(bin IN LISTS XCB)
+    if(NOT FILE_${bin})
+      message(FATAL_ERROR "${FILES} doesn't say where ${bin} is built")
+    endif()
     get_filename_component(name_${bin} "${FILE_${bin}}" NAME)
     set(wrapped_${bin} 0)
     set(bare_${bin} 0)

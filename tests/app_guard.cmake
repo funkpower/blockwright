@@ -9,9 +9,13 @@
 # from the target: CMake can drop an emulator from a test's command (under
 # CMP0158, or for a $<TARGET_FILE> command), so app_guard_check.cmake is given
 # where each other binary is built and looks for it in every test's command
-# (see there). It looks at the targets once the
-# directory has been read to the end, so one declared after the call is seen,
-# against BW_APP_TEST_BINARIES as it stands at the call.
+# (see there). Those paths reach it in a file written at generate time, one per
+# configuration, and not as $<TARGET_FILE> in its command: from CMake 4.5 every
+# target a test command names in a generator expression is a build dependency
+# of the test, and ctest won't run a test whose dependency isn't built (Not
+# Run), so in an unbuilt tree the guard wouldn't run to fail it. It looks at
+# the targets once the directory has been read to the end, so one declared
+# after the call is seen, against BW_APP_TEST_BINARIES as it stands at the call.
 function(bw_add_app_guard_test)
   cmake_language(EVAL CODE "cmake_language(DEFER CALL _bw_add_app_guard_test [[${BW_APP_TEST_BINARIES}]])")
 endfunction()
@@ -31,7 +35,7 @@ function(_bw_add_app_guard_test guarded)
         list(APPEND bw_app_profiled ${t})
       else()
         list(APPEND bw_app_xcb ${t})
-        list(APPEND bw_app_xcb_files -DFILE_${t}=$<TARGET_FILE:${t}>)
+        string(APPEND bw_app_xcb_files "set(FILE_${t} [==[$<TARGET_FILE:${t}>]==])\n")
       endif()
     endif()
   endforeach()
@@ -40,9 +44,11 @@ function(_bw_add_app_guard_test guarded)
   string(JOIN , bw_app_profiled_arg ${bw_app_profiled})
   string(JOIN , bw_app_xcb_arg ${bw_app_xcb})
   string(JOIN | bw_app_xcb_env_arg ${BW_APP_XCB_TEST_ENV})
+  set(bw_app_xcb_files_file ${CMAKE_CURRENT_BINARY_DIR}/app_guard_files-$<CONFIG>.cmake)
+  file(GENERATE OUTPUT ${bw_app_xcb_files_file} CONTENT "${bw_app_xcb_files}")
   add_test(NAME app_tests_all_guarded
     COMMAND ${CMAKE_COMMAND} -DLINKED=${bw_app_linked_arg} -DGUARDED=${bw_app_guarded_arg}
-            -DPROFILED=${bw_app_profiled_arg} -DXCB=${bw_app_xcb_arg} ${bw_app_xcb_files}
+            -DPROFILED=${bw_app_profiled_arg} -DXCB=${bw_app_xcb_arg} -DFILES=${bw_app_xcb_files_file}
             -DXCB_ENV=${bw_app_xcb_env_arg} -DCTEST=${CMAKE_CTEST_COMMAND} -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}
             -DCONFIG=$<CONFIG> -P ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/app_guard_check.cmake)
 endfunction()

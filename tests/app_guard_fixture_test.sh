@@ -24,7 +24,9 @@
 #   _xcb, -xcb, xcbA, xcba, xcb2, xcb., xcb_, xcb-) pass, and
 #   so do tests that name xcb behind the wrapper. Before the tree is built it
 #   fails one whose executable isn't there, since ctest lists no command for
-#   that test.
+#   that test. The guard's own test names no target in a generator
+#   expression, or CMake 4.5 would make that target a build dependency and
+#   ctest would report the guard Not Run instead of running it.
 # The fixture is configured for one named configuration and the nested ctest
 # runs that one, so under a multi-config generator (where a test without -C is
 # NOT_AVAILABLE) the guard still runs. A multi-config generator ignores
