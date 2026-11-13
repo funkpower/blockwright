@@ -863,6 +863,8 @@ list(TRANSFORM bw_app_test_files REPLACE "^(.+)$" "$<TARGET_FILE:\\1>")
 add_test(NAME app_tests_leave_profile_alone
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_profile_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-profile-check
           ${bw_app_test_files})
+# It runs three whole app test binaries in sequence.
+set_tests_properties(app_tests_leave_profile_alone PROPERTIES TIMEOUT 3000)
 # It leaves fontconfig's cache out and still finds anything else written.
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/app-profile-fake/fontconfig.sh
   "mkdir -p \"$XDG_CACHE_HOME/fontconfig\" && touch \"$XDG_CACHE_HOME/fontconfig/x-le64.cache-9\"\n")
