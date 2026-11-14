@@ -2,6 +2,8 @@
 // variants a sample's notes describe, the list of samples in a folder, and
 // the bundled samples themselves, held to the bar the Library's stamps are.
 
+#include "blockwright/brush.h"
+#include "blockwright/brushes/form.h"
 #include "blockwright/composite.h"
 #include "blockwright/generator.h"
 #include "blockwright/halfblock.h"
@@ -866,6 +868,342 @@ TEST_CASE("the battlestation sample keeps its layers, its light on a colours-onl
     CHECK(project::read(out / "dir") == p);
     project::writeZip(p, out / "battlestation.bwp");
     CHECK(project::read(out / "battlestation.bwp") == p);
+}
+
+// FNV-1a over a canvas's cells, row by row, every field == compares, the
+// transparent cells' glyph and colours included: on a pixel layer a
+// transparent ▀ or ▄ is a painted half.
+std::uint64_t fingerprint(const Canvas& c) {
+    std::uint64_t h = 14695981039346656037ull;
+    const auto mix = [&](std::uint64_t v) {
+        for (int i = 0; i < 8; ++i) {
+            h ^= (v >> (8 * i)) & 0xff;
+            h *= 1099511628211ull;
+        }
+    };
+    const auto colour = [&](const Color& k) {
+        mix(std::uint64_t(k.kind));
+        mix(k.isIndexed() ? k.index : (std::uint64_t(k.rgb.r) << 16 | std::uint64_t(k.rgb.g) << 8 | k.rgb.b));
+    };
+    for (int y = 0; y < c.height(); ++y)
+        for (int x = 0; x < c.width(); ++x) {
+            const Cell& cell = c.at(x, y);
+            mix(cell.transparent);
+            mix(cell.ch.codePoint().value_or(0));
+            colour(cell.fg);
+            colour(cell.bg);
+            mix(cell.attrs);
+        }
+    return h;
+}
+
+// `flat` after one pass of the Form brush that dabs every cell row by row,
+// left to right, at size 1, which in the app is the brain on IRC sample's
+// one drag along each row and back along it, then down a row: Select All,
+// the shape, the ramp and the strength, the light from the north-west, Glint
+// on and Form rim light off.
+Canvas formPass(const Layer& flat, const char* rampName, FormShape shape, double strength, bool ice) {
+    StrokeOptions o = layerStrokeOptions(flat);
+    o.selection = std::make_shared<const Mask>(flat.cells.width(), flat.cells.height(), true);
+    o.ice = ice;
+    BrushSettings s;
+    s.lightDirection = Compass::NW;
+    s.strength = strength;
+    Canvas out = flat.cells;
+    const std::optional<Ramp> r = findRamp(rampName);
+    REQUIRE(r);
+    paintRegion(out, FormShadeBrush(*r, FormOptions{shape, false, true}), s, o).apply(out);
+    return out;
+}
+
+// The eighth sample: the yolk and the pan are Form brush output, with the
+// # and the highlight over them.
+TEST_CASE("the brain on IRC sample keeps the Form brush's yolk and pan, with the # and the highlight over them") {
+    const fs::path dir = kSamples / "08-brain-on-irc";
+    const project::Project p = project::read(dir);
+    CHECK(p.ice);
+    CHECK(p.layers.width() == 80);
+    CHECK(p.layers.height() == 32);
+    REQUIRE(p.sauce);
+    CHECK(p.sauce->title == "This Is Your Brain on IRC");
+    const std::vector<std::string> order{"background", "margins",   "caption",     "tagline",   "signature",
+                                         "pan (flat)", "pan",       "egg white",   "yolk (flat)", "yolk",
+                                         "#",          "highlight", "sizzle",      "smoke"};
+    REQUIRE(names(p.layers) == order);
+
+    // the #, the highlight and the sizzle are pixels, the rest cells, all
+    // over the whole canvas in normal mode; the background alone is locked,
+    // the pan and the yolk alone alpha-locked, both copies of each, and the
+    // margins and the flat copies hidden
+    const std::set<std::string> pixels{"#", "highlight", "sizzle"};
+    const std::set<std::string> alpha{"pan", "pan (flat)", "yolk", "yolk (flat)"};
+    const std::set<std::string> hidden{"margins", "pan (flat)", "yolk (flat)"};
+    for (const Layer& l : p.layers.layers()) {
+        INFO(l.props.name);
+        CHECK(l.props.kind == (pixels.count(l.props.name) ? LayerKind::Pixels : LayerKind::Cells));
+        CHECK(l.props.mode == LayerMode::Normal);
+        CHECK(l.props.x == 0);
+        CHECK(l.props.y == 0);
+        CHECK(l.cells.width() == 80);
+        CHECK(l.cells.height() == 32);
+        CHECK(l.props.locked == (l.props.name == "background"));
+        CHECK(l.props.alphaLocked == (alpha.count(l.props.name) == 1));
+        CHECK(l.props.visible == (hidden.count(l.props.name) == 0));
+    }
+
+    // each layer, cell for cell, by a fingerprint taken when the picture
+    // was settled: a cell changed anywhere, covered or not, changes it
+    const std::map<std::string, std::uint64_t> prints{
+        {"background", 0x3af6ca07566ec325},
+        {"margins", 0xd4e700f939140c80},
+        {"caption", 0x627cebcdea88e842},
+        {"tagline", 0x1d4ae6871258e448},
+        {"signature", 0x4e38d7d6c6187f22},
+        {"pan (flat)", 0xb863861980eadf34},
+        {"pan", 0x20e4237bc56f7773},
+        {"egg white", 0xbe73f7f411ee2aba},
+        {"yolk (flat)", 0xbcd26ad189827ff9},
+        {"yolk", 0xd5f3c32e58ff9b72},
+        {"#", 0xb9f9e07c9f7adcb5},
+        {"highlight", 0xe3211fcd9a57b925},
+        {"sizzle", 0x63b59dc700456abf},
+        {"smoke", 0x1a6365d30de3646a},
+    };
+    for (const Layer& l : p.layers.layers()) {
+        INFO(l.props.name);
+        CHECK(fingerprint(l.cells) == prints.at(l.props.name));
+    }
+
+    // the layers the maker takes from maker/brain-on-irc/ as they are, and
+    // the outlines it fills: the flat pan is dark grey and the flat yolk
+    // yellow, solid blocks in exactly the outline's cells
+    const project::Project maker = project::read(kSamples / "maker" / "brain-on-irc");
+    for (const char* name : {"background", "caption", "tagline", "signature", "egg white", "smoke"}) {
+        INFO(name);
+        CHECK(named(p.layers, name).cells == named(maker.layers, name).cells);
+    }
+    for (const auto& [flat, outline, colour] :
+         {std::tuple{"pan (flat)", "pan", DarkGrey}, std::tuple{"yolk (flat)", "yolk", Yellow}}) {
+        INFO(flat);
+        int cells = 0;
+        for (int y = 0; y < 32; ++y)
+            for (int x = 0; x < 80; ++x) {
+                const Cell& c = named(p.layers, flat).cells.at(x, y);
+                CHECK(c.transparent == named(maker.layers, outline).cells.at(x, y).transparent);
+                if (c.transparent)
+                    continue;
+                ++cells;
+                CHECK(c.ch == Glyph(U'█'));
+                CHECK(int(c.fg.paletteIndex()) == colour);
+                CHECK(int(c.bg.paletteIndex()) == Black);
+            }
+        CHECK(cells > 0);
+    }
+
+    // the pan and the yolk are one pass of the Form brush over the flat
+    // copies, row by row as the notes' one drag goes, but for one cell each,
+    // set to the shade of a neighbour
+    const Canvas panPass = formPass(named(p.layers, "pan (flat)"), "steel", FormShape::Cylinder, 1.0, p.ice);
+    const Canvas yolkPass = formPass(named(p.layers, "yolk (flat)"), "skin", FormShape::Dome, 0.65, p.ice);
+    const auto passed = [&](const char* layer, const Canvas& pass, int tx, int ty) {
+        for (int y = 0; y < 32; ++y)
+            for (int x = 0; x < 80; ++x)
+                if (x != tx || y != ty) {
+                    INFO(layer << " at " << x << "," << y);
+                    CHECK(named(p.layers, layer).cells.at(x, y) == pass.at(x, y));
+                }
+        CHECK(named(p.layers, layer).cells.at(tx, ty) != pass.at(tx, ty));
+    };
+    passed("pan", panPass, 11, 22);
+    passed("yolk", yolkPass, 24, 22);
+    CHECK(named(p.layers, "pan").cells.at(11, 22) == named(p.layers, "pan").cells.at(10, 22));
+    CHECK(named(p.layers, "yolk").cells.at(24, 22) == named(p.layers, "yolk").cells.at(24, 21));
+
+    // cells pinned on each layer, the covered ones included
+    const auto is = [&](const char* layer, int x, int y, char32_t ch, int fg, int bg) {
+        INFO(layer << " at " << x << "," << y);
+        const Cell& c = named(p.layers, layer).cells.at(x, y);
+        CHECK_FALSE(c.transparent);
+        CHECK(c.ch == Glyph(ch));
+        CHECK(int(c.fg.paletteIndex()) == fg);
+        CHECK(int(c.bg.paletteIndex()) == bg);
+    };
+    const auto clear = [&](const char* layer, int x, int y) {
+        INFO(layer << " at " << x << "," << y);
+        CHECK(named(p.layers, layer).cells.at(x, y).transparent);
+    };
+    const auto pixel = [&](const char* layer, int x, int py, int colour) {
+        INFO(layer << " at " << x << ", pixel row " << py);
+        const LayerPixels h = layerPixels(named(p.layers, layer).cells.at(x, py / 2));
+        CHECK((py % 2 ? h.bottom : h.top) == std::optional<std::uint8_t>(colour));
+    };
+    is("background", 40, 16, U' ', Grey, Black);
+    is("caption", 4, 0, U'█', White, Black);
+    is("caption", 64, 4, U'█', Yellow, Black);
+    is("caption", 64, 7, U'▀', Brown, Black);
+    is("tagline", 28, 30, U'A', White, Black);
+    is("tagline", 43, 30, U'/', Yellow, Black);
+    is("signature", 70, 31, U'f', DarkGrey, Black);
+    is("signature", 78, 31, U'r', DarkGrey, Black);
+    clear("signature", 79, 31);
+    // the pan: white along most of the upper edge of each band, black along
+    // most of the lower, a few edge cells left the flat dark grey, the hole
+    // in the handle, nothing under the egg
+    is("pan", 30, 11, U'█', White, Black);
+    is("pan", 30, 14, U' ', Black, Black);
+    is("pan", 30, 26, U'█', White, Black);
+    is("pan", 30, 29, U' ', Black, Black);
+    is("pan", 70, 18, U'█', White, Black);
+    is("pan", 72, 21, U' ', Black, Black);
+    is("pan", 37, 14, U'█', DarkGrey, Black);
+    is("pan", 70, 21, U'█', DarkGrey, Black);
+    is("pan", 60, 17, U'█', DarkGrey, Black);
+    clear("pan", 74, 20);
+    clear("pan", 75, 20);
+    clear("pan", 30, 20);
+    // the notes give the number of cells along the upper and lower edges that
+    // keep the flat dark grey: dark grey with no pan above or below
+    {
+        const Canvas& pan = named(p.layers, "pan").cells;
+        const auto open = [&](int x, int y) { return y < 0 || y >= pan.height() || pan.at(x, y).transparent; };
+        int kept = 0;
+        for (int y = 0; y < pan.height(); ++y)
+            for (int x = 0; x < pan.width(); ++x) {
+                const Cell& c = pan.at(x, y);
+                if (!c.transparent && c.ch == Glyph(U'█') && int(c.fg.paletteIndex()) == DarkGrey &&
+                    (open(x, y - 1) || open(x, y + 1)))
+                    ++kept;
+            }
+        const std::vector<std::string> words{"No",      "One",      "Two",       "Three",    "Four",     "Five",
+                                             "Six",     "Seven",    "Eight",     "Nine",     "Ten",      "Eleven",
+                                             "Twelve",  "Thirteen", "Fourteen",  "Fifteen",  "Sixteen",  "Seventeen",
+                                             "Eighteen", "Nineteen", "Twenty"};
+        std::smatch m;
+        REQUIRE(std::regex_search(p.notes, m,
+                                  std::regex("([A-Z][a-z]+) cells along the upper and lower edges keep the flat dark grey")));
+        const auto said = std::find(words.begin(), words.end(), m[1].str());
+        INFO("the notes say " << m[1].str());
+        REQUIRE(said != words.end());
+        CHECK(said - words.begin() == kept);
+        CHECK(kept == 11);
+    }
+    is("egg white", 30, 18, U'█', White, Black);  // under the yolk
+    is("egg white", 40, 19, U'█', White, Black);
+    is("egg white", 45, 21, U'█', White, Black);
+    is("egg white", 20, 24, U'▀', Brown, Black);
+    // the yolk: no white on it, yellow over most of it, brown over red down
+    // its right side
+    is("yolk", 29, 18, U'█', Yellow, Black);
+    is("yolk", 39, 20, U'▒', Brown, Red);
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 80; ++x) {
+            const Cell& c = named(p.layers, "yolk").cells.at(x, y);
+            INFO("yolk at " << x << "," << y);
+            CHECK((c.transparent || (c.fg.paletteIndex() != White && c.bg.paletteIndex() != White)));
+        }
+    pixel("#", 31, 36, Brown);
+    pixel("#", 35, 40, Brown);
+    pixel("highlight", 27, 36, White);
+    pixel("highlight", 38, 36, White);
+    // the highlight covers no pixel of the #
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 80; ++x) {
+            const LayerPixels hash = layerPixels(named(p.layers, "#").cells.at(x, y));
+            const LayerPixels light = layerPixels(named(p.layers, "highlight").cells.at(x, y));
+            INFO("# and highlight at " << x << "," << y);
+            CHECK_FALSE((hash.top && light.top));
+            CHECK_FALSE((hash.bottom && light.bottom));
+        }
+    pixel("sizzle", 14, 38, Yellow);
+    pixel("sizzle", 56, 43, Yellow);  // a step in the arc, joined
+    // the smoke: grey at the heart of each wisp, dark grey about it
+    is("smoke", 11, 10, U'░', Grey, Black);
+    is("smoke", 37, 9, U'░', Grey, Black);
+    is("smoke", 54, 12, U'░', Grey, Black);
+    is("smoke", 39, 8, U'░', DarkGrey, Black);
+    is("smoke", 60, 8, U'░', DarkGrey, Black);
+
+    // the hidden margin: one black block in the top left corner
+    const Layer& margins = named(p.layers, "margins");
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 80; ++x) {
+            const Cell& c = margins.cells.at(x, y);
+            if (x == 0 && y == 0) {
+                CHECK(c.ch == U'█');
+                CHECK(c.fg.paletteIndex() == Black);
+                CHECK(c.bg.paletteIndex() == Black);
+            } else {
+                CHECK(c.transparent);
+            }
+        }
+
+    // the lettering shares no cell with any shown layer over it, so it can
+    // sit under the pan
+    for (const char* lettering : {"caption", "tagline", "signature"}) {
+        int cells = 0;
+        const std::size_t at = *p.layers.indexOf(named(p.layers, lettering).props.id);
+        for (std::size_t i = at + 1; i < p.layers.size(); ++i) {
+            const Layer& l = p.layers[i];
+            if (l.props.name == "caption" || l.props.name == "tagline" || l.props.name == "signature")
+                continue;
+            for (int y = 0; y < 32; ++y)
+                for (int x = 0; x < 80; ++x)
+                    if (!named(p.layers, lettering).cells.at(x, y).transparent) {
+                        INFO(lettering << " under " << l.props.name << " at " << x << "," << y);
+                        CHECK(l.cells.at(x, y).transparent);
+                        ++cells;
+                    }
+        }
+        CHECK(cells > 0);
+    }
+
+    // the longest IRC line, row 21: its length as exported and as sent
+    const AnsiDocument doc = project::toAnsi(p);
+    const std::vector<std::string> lines = irc::encodeCanvas(doc.canvas);
+    REQUIRE(lines.size() == 32);
+    std::size_t longest = 0;
+    for (std::size_t i = 0; i < lines.size(); ++i)
+        if (irc::txtSentBytes(lines[i], p.ircBudget.bytes) > irc::txtSentBytes(lines[longest], p.ircBudget.bytes))
+            longest = i;
+    CHECK(longest == 20);
+    CHECK(lines[20].size() == 273);
+    CHECK(irc::txtSentBytes(lines[20], p.ircBudget.bytes) == 301);
+    CHECK(p.ircBudget.bytes == 407);
+
+    // the variants, each by the order and visibility it leaves
+    checkVariants(p, {{"Raw egg", stackState(order, {"margins", "pan", "yolk", "#", "highlight", "sizzle", "smoke"})},
+                      {"No caption", stackState(order, {"caption", "tagline", "pan (flat)", "yolk (flat)"})}});
+
+    // the snapshots: the flat pan and yolk, which is the Raw egg variant;
+    // the Form brush's own pan and yolk, before the two touches; finished
+    const auto at = [&](project::Project& q, const char* name) -> Layer& {
+        return q.layers[*q.layers.indexOf(named(q.layers, name).props.id)];
+    };
+    project::Project raw = hiding(p, {"pan", "yolk", "#", "highlight", "sizzle", "smoke"});
+    at(raw, "pan (flat)").props.visible = true;
+    at(raw, "yolk (flat)").props.visible = true;
+    project::Project brushed = hiding(p, {"#", "highlight", "sizzle", "smoke"});
+    at(brushed, "pan").cells = panPass;
+    at(brushed, "yolk").cells = yolkPass;
+    // each as an .ans written and read back, as a snapshot is: a space
+    // keeps no colour of its own there
+    const auto asSaved = [](const project::Project& q) {
+        return parseAnsi(writeAnsi(project::toAnsi(q), q.ansEncoding).bytes).canvas;
+    };
+    checkSnapshots(p, {asSaved(raw), asSaved(brushed), asSaved(p)});
+    const std::map<int, std::uint64_t> snapshotPrints{
+        {1, 0x2ebd646080936a11}, {2, 0x1bd504253cdde05e}, {3, 0x1fa645739969f970}};
+    for (const project::Snapshot& s : p.snapshots) {
+        INFO("r" << s.round);
+        CHECK(fingerprint(parseAnsi(s.ans).canvas) == snapshotPrints.at(s.round));
+    }
+
+    // it saves back as it reads, as a directory and as a zip
+    const fs::path out = scratch("brain-on-irc-round-trip");
+    project::writeDirectory(p, out / "dir");
+    CHECK(project::read(out / "dir") == p);
+    project::writeZip(p, out / "brain.bwp");
+    CHECK(project::read(out / "brain.bwp") == p);
 }
 
 TEST_CASE("the still life sample keeps each object, its shadows and its rim light on layers of their own") {

@@ -555,6 +555,157 @@ project::Project battlestation(const fs::path& makerDir) {
     return p;
 }
 
+// ---- this is your brain on IRC ----------------------------------------------
+
+// One egg in a pan. The lettering, the pan's outline, the egg white, the
+// yolk's outline, the sizzle and the smoke are in maker/brain-on-irc/; the
+// pan and the yolk are filled flat and shaded with the Form brush as the
+// app paints with it, and the # and the highlight are pixels over the yolk.
+constexpr int kBrainW = 80, kBrainH = 32;
+
+// Hidden: a black block in the first row's first cell, which the IRC export
+// keeps, for the variant without the caption: without it the rows above
+// the smoke are blank and IRC trims them.
+Layer brainMargins() {
+    Layer l = makeLayer(LayerKind::Cells, kBrainW, kBrainH, "margins");
+    l.cells.at(0, 0) = blackBlock();
+    l.props.visible = false;
+    return l;
+}
+
+// `outline`'s opaque cells as one flat colour, alpha-locked.
+Layer flatShape(Layer outline, std::uint8_t colour) {
+    for (int y = 0; y < outline.cells.height(); ++y)
+        for (int x = 0; x < outline.cells.width(); ++x)
+            if (!outline.cells.at(x, y).transparent)
+                outline.cells.at(x, y) = cell(U'█', colour, Black);
+    outline.props.alphaLocked = true;
+    return outline;
+}
+
+// A copy of `flat` named `name`, with one pass of the Form brush that dabs
+// every cell row by row, left to right, at size 1: Select All, the given
+// shape, ramp and strength, the light from the north-west, Glint on and
+// Form rim light off. In the app that is the notes' one drag along each row
+// and back along it, then down a row.
+Layer formBrushed(const Layer& flat, const char* name, const char* rampName, FormShape shape, int strengthPercent,
+                  bool ice) {
+    Layer l = flat;
+    l.props.name = name;
+    StrokeOptions o = layerStrokeOptions(l);
+    o.selection = std::make_shared<const Mask>(l.cells.width(), l.cells.height(), true);
+    o.ice = ice;
+    BrushSettings s;
+    s.lightDirection = Compass::NW;
+    s.strength = strengthPercent / 100.0;
+    paintRegion(l.cells, FormShadeBrush(ramp(rampName), FormOptions{shape, false, true}), s, o).apply(l.cells);
+    return l;
+}
+
+// Half-block pixels at (x, pixel row), in one colour, on a pixel layer.
+Layer brainPixels(const char* name, std::uint8_t colour, std::initializer_list<std::pair<int, int>> pixels) {
+    Layer l = makeLayer(LayerKind::Pixels, kBrainW, kBrainH, name);
+    for (const auto& [x, py] : pixels)
+        l.cells.at(x, py / 2) = setLayerPixel(l.cells.at(x, py / 2), py % 2 == 1, colour);
+    return l;
+}
+
+// The yellow and white halves of a cell layer, on a pixel layer of the
+// same name: the rest shows whatever is under it.
+Layer brainPixelsOf(const Layer& cells) {
+    Layer l = makeLayer(LayerKind::Pixels, kBrainW, kBrainH, cells.props.name);
+    for (int y = 0; y < kBrainH; ++y)
+        for (int x = 0; x < kBrainW; ++x) {
+            const Cell& c = cells.cells.at(x, y);
+            const auto halves = c.transparent ? std::nullopt : halfBlocks(c);
+            if (!halves)
+                continue;
+            for (const bool bottom : {false, true}) {
+                const std::uint8_t colour = bottom ? halves->bottom : halves->top;
+                if (colour == Yellow || colour == White)
+                    l.cells.at(x, y) = setLayerPixel(l.cells.at(x, y), bottom, colour);
+            }
+        }
+    return l;
+}
+
+// The # pressed into the yolk: two bars across and two strokes down,
+// leaning right.
+Layer brainHash() {
+    return brainPixels("#", Brown,
+                       {{31, 36}, {31, 37}, {34, 36}, {34, 37},                                            // row 18
+                        {29, 38}, {30, 38}, {31, 38}, {32, 38}, {33, 38}, {34, 38}, {35, 38}, {30, 39}, {34, 39},  // 19
+                        {29, 40}, {30, 40}, {31, 40}, {32, 40}, {33, 40}, {34, 40}, {35, 40}, {30, 41}, {33, 41}});
+}
+
+// The light on the yolk from the upper left: a crescent along the top left,
+// two pixels at the lower left and one at the upper right, none of them on
+// the #.
+Layer brainHighlight() {
+    return brainPixels("highlight", White,
+                       {{26, 37}, {27, 36}, {27, 37}, {28, 36}, {28, 37}, {29, 36}, {30, 36}, {38, 36},
+                        {26, 38}, {27, 38}, {25, 40}, {26, 40}});
+}
+
+project::Project brainOnIrc(const fs::path& makerDir) {
+    project::Project piece = project::read(makerDir / "brain-on-irc");
+    const auto take = [&](const char* name) {
+        Layer l = layerNamed(piece.layers, name);
+        l.props.id = 0;
+        return l;
+    };
+    project::Project p;
+    p.layers = LayerStack(kBrainW, kBrainH);
+    p.ice = piece.ice;
+    p.ircBudget = piece.ircBudget;
+    p.sauce = sauceFor("This Is Your Brain on IRC");
+
+    // the first snapshot: the lettering, the pan, the egg white and the
+    // yolk, the pan and the yolk flat and alpha-locked
+    Layer background = take("background");
+    background.props.locked = true;
+    p.layers.add(std::move(background));
+    p.layers.add(brainMargins());
+    for (const char* name : {"caption", "tagline", "signature"})
+        p.layers.add(take(name));
+    Layer pan = flatShape(take("pan"), DarkGrey);
+    pan.props.name = "pan (flat)";
+    p.layers.add(pan);
+    p.layers.add(take("egg white"));
+    Layer yolk = flatShape(take("yolk"), Yellow);
+    yolk.props.name = "yolk (flat)";
+    p.layers.add(yolk);
+    project::takeSnapshot(p);
+
+    // the second: the Form brush over a copy of each, a cylinder of steel
+    // and a dome of skin, the flat ones hidden under them
+    layerNamed(p.layers, "pan (flat)").props.visible = false;
+    layerNamed(p.layers, "yolk (flat)").props.visible = false;
+    const auto above = [&](const char* name) { return *p.layers.indexOf(layerNamed(p.layers, name).props.id) + 1; };
+    p.layers.add(formBrushed(pan, "pan", "steel", FormShape::Cylinder, 100, p.ice), above("pan (flat)"));
+    p.layers.add(formBrushed(yolk, "yolk", "skin", FormShape::Dome, 65, p.ice), above("yolk (flat)"));
+    project::takeSnapshot(p);
+
+    // the third: the #, the highlight, the heat and two touches
+    p.layers.add(brainHash());
+    p.layers.add(brainHighlight());
+    // the sizzle's arcs step diagonally a pixel at a time, which the lint
+    // counts as noise once the caption is gone; three pixels join three of
+    // the steps
+    Layer sizzle = brainPixelsOf(take("sizzle"));
+    for (const auto& [x, py] : {std::pair{13, 38}, std::pair{13, 44}, std::pair{56, 43}})
+        sizzle.cells.at(x, py / 2) = setLayerPixel(sizzle.cells.at(x, py / 2), py % 2 == 1, Yellow);
+    p.layers.add(std::move(sizzle));
+    p.layers.add(take("smoke"));
+    // two cells the lint calls specks beside the sizzle and the egg white,
+    // each set to the shade of a neighbour
+    layerNamed(p.layers, "pan").cells.at(11, 22) = layerNamed(p.layers, "pan").cells.at(10, 22);
+    layerNamed(p.layers, "yolk").cells.at(24, 22) = layerNamed(p.layers, "yolk").cells.at(24, 21);
+    p.notes = readFile(makerDir / "notes" / "08-brain-on-irc.md");
+    project::takeSnapshot(p);
+    return p;
+}
+
 // ---- the still life ---------------------------------------------------------
 
 constexpr int kLifeW = 80, kLifeH = 30;
@@ -1560,6 +1711,7 @@ int main(int argc, char** argv) {
         project::writeDirectory(character(BW_MAKER_DIR), out / "05-character", raw);
         project::writeDirectory(brandLogo(BW_MAKER_DIR), out / "06-blockwright-logo", raw);
         project::writeDirectory(battlestation(BW_MAKER_DIR), out / "07-battlestation", raw);
+        project::writeDirectory(brainOnIrc(BW_MAKER_DIR), out / "08-brain-on-irc", raw);
     } catch (const std::exception& e) {
         std::cerr << "bw-make-samples: " << e.what() << "\n";
         return 1;

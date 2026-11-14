@@ -89,7 +89,7 @@ Edit > Preferences.
 
 ## Samples
 
-Seven sample projects install with the app and open from the start screen or
+Eight sample projects install with the app and open from the start screen or
 Help > Samples:
 
 - `01-layers-showcase`, Harbour at night: every layer kind, both blend modes,
@@ -109,6 +109,10 @@ Help > Samples:
 - `07-battlestation`, Battlestation: a night desk lit by its monitor, with the
   light the screen throws on a colours-only layer, so it goes out without a
   glyph moving, and the screen's panes under an alpha lock.
+- `08-brain-on-irc`, This Is Your Brain on IRC: one egg in a pan, the yolk
+  a dome and the pan a cylinder from one pass of the Form brush over flat
+  copies kept hidden underneath, and the # and the highlight on layers of
+  their own, out of the brush's way.
 
 ## Command line
 

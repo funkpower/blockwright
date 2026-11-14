@@ -51,6 +51,7 @@ const QString kRidges = QStringLiteral("04-generator-ridges");
 const QString kCharacter = QStringLiteral("05-character");
 const QString kBrandLogo = QStringLiteral("06-blockwright-logo");
 const QString kBattlestation = QStringLiteral("07-battlestation");
+const QString kBrain = QStringLiteral("08-brain-on-irc");
 
 QString qpath(const fs::path& p) { return QFile::decodeName(QByteArray::fromStdString(p.string())); }
 
@@ -138,7 +139,7 @@ TEST_CASE("Help > Samples lists the bundled samples by title, a broken one disab
     SECTION("the source samples") {
         SamplesAt env(qpath(kSource));
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 7);
+        REQUIRE(actions.size() == 8);
         CHECK(actions[0]->text() == QStringLiteral("Harbour at night"));
         CHECK(actions[0]->isEnabled());
         CHECK(actions[0]->toolTip().startsWith(QStringLiteral("A city on the water")));
@@ -167,6 +168,10 @@ TEST_CASE("Help > Samples lists the bundled samples by title, a broken one disab
         CHECK(actions[6]->isEnabled());
         CHECK(actions[6]->toolTip().startsWith(QStringLiteral("A night desk seen from behind the chair")));
         CHECK(actions[6]->property("path").toString() == qpath(kSource / kBattlestation.toStdString()));
+        CHECK(actions[7]->text() == QStringLiteral("This Is Your Brain on IRC"));
+        CHECK(actions[7]->isEnabled());
+        CHECK(actions[7]->toolTip().startsWith(QStringLiteral("One egg frying in a pan, seen from above")));
+        CHECK(actions[7]->property("path").toString() == qpath(kSource / kBrain.toStdString()));
     }
     SECTION("in file-name order, a broken one disabled with its problem") {
         SamplesAt env(scratchSamples(tmp, {QStringLiteral("02-b"), QStringLiteral("01-a")}, true));
@@ -236,7 +241,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     }
     SECTION("from Help > Samples") {
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 7);
+        REQUIRE(actions.size() == 8);
         actions[0]->trigger();
         CHECK(w.document()->layers().size() == saved.layers.size());
         CHECK(w.document()->path().isEmpty());
@@ -245,7 +250,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     SECTION("DDOS KING, its layers, its lock and its hidden variant layers intact") {
         const project::Project king = project::read(kSource / kKing.toStdString());
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 7);
+        REQUIRE(actions.size() == 8);
         actions[1]->trigger();
         const Document& doc = *w.document();
         CHECK(doc.path().isEmpty());
@@ -257,7 +262,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     SECTION("the still life, its locks intact") {
         const project::Project life = project::read(kSource / kStillLife.toStdString());
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 7);
+        REQUIRE(actions.size() == 8);
         actions[2]->trigger();
         const Document& doc = *w.document();
         CHECK(doc.path().isEmpty());
@@ -269,7 +274,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     SECTION("the generator piece, its generators and their files intact, not run") {
         const project::Project ridges = project::read(kSource / kRidges.toStdString());
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 7);
+        REQUIRE(actions.size() == 8);
         actions[3]->trigger();
         const Document& doc = *w.document();
         CHECK(doc.path().isEmpty());
@@ -281,7 +286,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     SECTION("the character, its figure's layers in place and the merged copy hidden") {
         const project::Project traveller = project::read(kSource / kCharacter.toStdString());
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 7);
+        REQUIRE(actions.size() == 8);
         actions[4]->trigger();
         const Document& doc = *w.document();
         CHECK(doc.path().isEmpty());
@@ -292,7 +297,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     SECTION("the logo, its mark and wordmark layers in place and the letters alpha-locked") {
         const project::Project brand = project::read(kSource / kBrandLogo.toStdString());
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 7);
+        REQUIRE(actions.size() == 8);
         actions[5]->trigger();
         const Document& doc = *w.document();
         CHECK(doc.path().isEmpty());
@@ -303,7 +308,7 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
     SECTION("the battlestation, its lock, its colours-only glow and its alpha-locked screen intact") {
         const project::Project station = project::read(kSource / kBattlestation.toStdString());
         const QList<QAction*> actions = sampleActions(w);
-        REQUIRE(actions.size() == 7);
+        REQUIRE(actions.size() == 8);
         actions[6]->trigger();
         const Document& doc = *w.document();
         CHECK(doc.path().isEmpty());
@@ -311,6 +316,18 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
         CHECK(doc.ansi().canvas == composite(station.layers, {station.ice, Cell{}}));
         REQUIRE(doc.layers().size() == station.layers.size());
         CHECK(doc.layers() == station.layers);
+    }
+    SECTION("the egg, its locked background, its alpha-locked pan and yolk and its hidden margins intact") {
+        const project::Project brain = project::read(kSource / kBrain.toStdString());
+        const QList<QAction*> actions = sampleActions(w);
+        REQUIRE(actions.size() == 8);
+        actions[7]->trigger();
+        const Document& doc = *w.document();
+        CHECK(doc.path().isEmpty());
+        CHECK_FALSE(doc.isModified());
+        CHECK(doc.ansi().canvas == composite(brain.layers, {brain.ice, Cell{}}));
+        REQUIRE(doc.layers().size() == brain.layers.size());
+        CHECK(doc.layers() == brain.layers);
     }
     SECTION("a save goes where it is asked to, the whole sample, and the sample is left as it was") {
         // a copy of the sample, so a write to it would show
@@ -404,13 +421,15 @@ TEST_CASE("the start screen lists the samples and opens one", "[samples][start-s
         s->open();
         QPointer<StartScreen> guard(s);
         const QList<QPushButton*> entries = s->findChildren<QPushButton*>(QStringLiteral("startSampleEntry"));
-        REQUIRE(entries.size() == 7);
+        REQUIRE(entries.size() == 8);
         CHECK(entries[1]->text() == QStringLiteral("DDOS KING"));
         CHECK(entries[2]->text() == QStringLiteral("Still life"));
         CHECK(entries[3]->text() == QStringLiteral("Ridges at dusk"));
         CHECK(entries[4]->text() == QStringLiteral("Traveller"));
         CHECK(entries[5]->text() == QStringLiteral("Blockwright logo"));
         CHECK(entries[6]->text() == QStringLiteral("Battlestation"));
+        CHECK(entries[7]->text() == QStringLiteral("This Is Your Brain on IRC"));
+        CHECK(entries[7]->toolTip().startsWith(QStringLiteral("One egg frying in a pan, seen from above")));
         CHECK(entries[1]->toolTip().startsWith(QStringLiteral("A king on a throne of server racks")));
         QPushButton* entry = entries[0];
         entry->click();
