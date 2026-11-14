@@ -119,6 +119,6 @@ On the dev machine at the tag: `scripts/package-windows`, as in
 
 - Install each package from where users get it and run `blockwright --version`
   and `blockwright-cli --version`: `yay -S blockwright` on Arch, the dmg and
-  `brew install --cask blockwright` on a Mac, the MSI on Windows, the AppImage
-  (`--version` and `--cli --version`) on a current Linux.
+  `brew install --cask funkpower/tap/blockwright` on a Mac, the MSI on
+  Windows, the AppImage (`--version` and `--cli --version`) on a current Linux.
 - Note the release in the issue tracker if an issue was waiting on it.

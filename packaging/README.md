@@ -395,8 +395,17 @@ anonymously; if either needs a login, `brew tap` or the download fails with a
    `funkpower/homebrew-tap`, and push it.
 4. Check it on a Mac: `brew tap funkpower/tap
    https://git.pumpin.online/funkpower/homebrew-tap.git`, then
-   `brew install --cask blockwright`, `brew audit --cask --strict
-   funkpower/tap/blockwright` and `brew uninstall --cask --zap blockwright`.
+   `brew install --cask funkpower/tap/blockwright`, `brew audit --cask
+   --strict funkpower/tap/blockwright` and `brew uninstall --cask --zap
+   blockwright`.
 
 The cask installs the app and links `blockwright-cli` onto the PATH; its
 caveat gives the `xattr` command that lets both run.
+
+Install by the cask's full name, `funkpower/tap/blockwright`, here and in
+RELEASING.md § 8. Homebrew 7 refuses to load a cask from a tap it does not
+trust: `brew install --cask blockwright` and `brew audit` stop with
+"Refusing to load cask funkpower/tap/blockwright from untrusted tap". Naming
+the cask in full trusts it (`brew trust --cask funkpower/tap/blockwright`
+does the same), and the short name works after that. Uninstalling removes
+the trust again.
