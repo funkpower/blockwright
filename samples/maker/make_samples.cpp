@@ -442,6 +442,119 @@ project::Project ddosKing(const fs::path& makerDir) {
     return p;
 }
 
+// ---- the battlestation ------------------------------------------------------
+
+// A finished piece. Its layers are in maker/battlestation/; the maker takes
+// them as they are, except that the blue the screen throws on the wall, the
+// desk and the rack's near side moves off them onto a layer of its own.
+constexpr int kStationW = 80, kStationH = 40;
+
+// The layer with the screen's light taken off it: on each cell `darkAt`
+// gives a colour for, its blues and light cyan turned that colour, the one
+// the surface is without the light. The glyphs stay, so the glow over them
+// puts back the cells they were.
+Layer unlitLayer(Layer l, const std::function<std::optional<std::uint8_t>(int, int)>& darkAt) {
+    for (int y = 0; y < l.cells.height(); ++y)
+        for (int x = 0; x < l.cells.width(); ++x)
+            if (Cell& c = l.cells.at(x, y); !c.transparent)
+                if (const auto dark = darkAt(x, y)) {
+                    bool changed = false;
+                    for (Color* col : {&c.fg, &c.bg})
+                        if (const auto i = col->paletteIndex(); i == Blue || i == LightBlue || i == LightCyan) {
+                            *col = ix(*dark);
+                            changed = true;
+                        }
+                    // a space left on black takes the grey a .ans gives it,
+                    // so a snapshot reads back the cell it was written from
+                    if (changed && c.ch == U' ' && c.bg.paletteIndex() == Black)
+                        c.fg = ix(Grey);
+                }
+    return l;
+}
+
+// The wall and the desk are black without the light.
+std::optional<std::uint8_t> black(int, int) { return Black; }
+
+// The rack's side and top edge toward the screen: its own dark grey, black
+// below row 29, where the light was already fading into it.
+std::optional<std::uint8_t> rackNearSide(int x, int y) {
+    if ((y == 11 && x >= 63 && x <= 71) || (y >= 12 && x >= 63 && x <= 65))
+        return y < 30 ? DarkGrey : Black;
+    return std::nullopt;
+}
+
+// Colours only: the colours of every cell the screen lights, as the layers
+// under it have them lit, so with it shown the piece reads as the layers
+// do. `lit` is those layers with the light on, `dark` with it off.
+Layer glow(const LayerStack& lit, const LayerStack& dark, bool ice) {
+    const Canvas on = composite(lit, {ice, Cell{}}), off = composite(dark, {ice, Cell{}});
+    Layer l = makeLayer(LayerKind::Cells, kStationW, kStationH, "glow");
+    l.props.mode = LayerMode::ColoursOnly;
+    for (int y = 0; y < kStationH; ++y)
+        for (int x = 0; x < kStationW; ++x)
+            if (on.at(x, y) != off.at(x, y)) {
+                Cell c = on.at(x, y);
+                c.dithered = false;
+                l.cells.at(x, y) = c;
+            }
+    return l;
+}
+
+// Hidden: a black block in the last row's first cell, which the IRC export
+// keeps, for the variant that shows the screen alone: without it the rows
+// under the monitor are blank and IRC trims them.
+Layer stationMargins() {
+    Layer l = makeLayer(LayerKind::Cells, kStationW, kStationH, "margins");
+    l.cells.at(0, kStationH - 1) = blackBlock();
+    l.props.visible = false;
+    return l;
+}
+
+project::Project battlestation(const fs::path& makerDir) {
+    project::Project piece = project::read(makerDir / "battlestation");
+    const auto take = [&](const char* name) {
+        Layer l = layerNamed(piece.layers, name);
+        l.props.id = 0;
+        return l;
+    };
+    project::Project p;
+    p.layers = LayerStack(kStationW, kStationH);
+    p.ice = piece.ice;
+    p.ircBudget = piece.ircBudget;
+    p.sauce = sauceFor("Battlestation");
+
+    // the first snapshot: the room in the dark and the screen, its panes
+    // held to their own cells
+    Layer wall = unlitLayer(take("wall glow"), black);
+    wall.props.name = "wall";
+    wall.props.locked = true;
+    p.layers.add(std::move(wall));
+    p.layers.add(stationMargins());
+    p.layers.add(unlitLayer(take("desk"), black));
+    p.layers.add(take("monitor frame"));
+    Layer screen = take("screen");
+    screen.props.alphaLocked = true;
+    p.layers.add(std::move(screen));
+    project::takeSnapshot(p);
+
+    // the second: what stands on the desk and beside it
+    for (const char* name : {"keyboard", "mug and mouse"})
+        p.layers.add(take(name));
+    p.layers.add(unlitLayer(take("rack"), rackNearSide));
+    project::takeSnapshot(p);
+
+    // the third: the light the screen throws, and the chair in front of it
+    LayerStack lit(kStationW, kStationH);
+    for (const char* name : {"wall glow", "desk", "monitor frame", "screen", "keyboard", "mug and mouse", "rack"})
+        lit.add(take(name));
+    p.layers.add(glow(lit, p.layers, p.ice));
+    for (const char* name : {"chair", "signature"})
+        p.layers.add(take(name));
+    p.notes = readFile(makerDir / "notes" / "07-battlestation.md");
+    project::takeSnapshot(p);
+    return p;
+}
+
 // ---- the still life ---------------------------------------------------------
 
 constexpr int kLifeW = 80, kLifeH = 30;
@@ -1446,6 +1559,7 @@ int main(int argc, char** argv) {
         project::writeDirectory(generatorPiece(BW_MAKER_DIR), out / "04-generator-ridges", raw);
         project::writeDirectory(character(BW_MAKER_DIR), out / "05-character", raw);
         project::writeDirectory(brandLogo(BW_MAKER_DIR), out / "06-blockwright-logo", raw);
+        project::writeDirectory(battlestation(BW_MAKER_DIR), out / "07-battlestation", raw);
     } catch (const std::exception& e) {
         std::cerr << "bw-make-samples: " << e.what() << "\n";
         return 1;

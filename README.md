@@ -89,7 +89,7 @@ Edit > Preferences.
 
 ## Samples
 
-Six sample projects install with the app and open from the start screen or
+Seven sample projects install with the app and open from the start screen or
 Help > Samples:
 
 - `01-layers-showcase`, Harbour at night: every layer kind, both blend modes,
@@ -106,6 +106,9 @@ Help > Samples:
 - `06-blockwright-logo`, Blockwright logo: the program's logo as the layers a
   block-letter logo is made of: the mark's blocks, pixel lettering, a drop under
   it and shade cells over it.
+- `07-battlestation`, Battlestation: a night desk lit by its monitor, with the
+  light the screen throws on a colours-only layer, so it goes out without a
+  glyph moving, and the screen's panes under an alpha lock.
 
 ## Command line
 

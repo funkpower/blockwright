@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -684,6 +685,187 @@ TEST_CASE("the DDOS KING sample keeps its layers, a locked backdrop, hidden vari
     CHECK(project::read(out / "dir") == p);
     project::writeZip(p, out / "king.bwp");
     CHECK(project::read(out / "king.bwp") == p);
+}
+
+// The seventh sample, a finished piece whose light is a colours-only layer
+// (PLAN §12).
+TEST_CASE("the battlestation sample keeps its layers, its light on a colours-only layer and an alpha-locked screen") {
+    const fs::path dir = kSamples / "07-battlestation";
+    const project::Project p = project::read(dir);
+    CHECK(p.ice);
+    CHECK(p.layers.width() == 80);
+    CHECK(p.layers.height() == 40);
+    const std::vector<std::string> order{"wall",  "margins",       "desk", "monitor frame", "screen",   "keyboard",
+                                         "mug and mouse", "rack", "glow", "chair", "signature"};
+    REQUIRE(names(p.layers) == order);
+
+    // every layer is cells over the whole canvas; the wall alone is locked,
+    // the screen alone alpha-locked, the glow alone colours only, and only
+    // the margins hidden
+    for (const Layer& l : p.layers.layers()) {
+        INFO(l.props.name);
+        CHECK(l.props.kind == LayerKind::Cells);
+        CHECK(l.props.mode == (l.props.name == "glow" ? LayerMode::ColoursOnly : LayerMode::Normal));
+        CHECK(l.props.x == 0);
+        CHECK(l.props.y == 0);
+        CHECK(l.cells.width() == 80);
+        CHECK(l.cells.height() == 40);
+        CHECK(l.props.locked == (l.props.name == "wall"));
+        CHECK(l.props.alphaLocked == (l.props.name == "screen"));
+        CHECK(l.props.visible == (l.props.name != "margins"));
+    }
+
+    // six of the layers in maker/battlestation/ are here cell for cell; the
+    // other three are here with the screen's light taken off them, glyph
+    // for glyph
+    const project::Project maker = project::read(kSamples / "maker" / "battlestation");
+    REQUIRE(maker.layers.size() == 9);
+    for (const char* name : {"monitor frame", "screen", "keyboard", "mug and mouse", "chair", "signature"}) {
+        INFO(name);
+        CHECK(named(p.layers, name).cells == named(maker.layers, name).cells);
+    }
+    // the other three are the maker's with the screen's light taken off:
+    // on the wall and the desk every blue and light cyan is black, and on
+    // the rack's side and top edge toward the screen (row 11 from x63 to
+    // x71, and x63 to x65 below it) it is the rack's dark grey down to row
+    // 29 and black from row 30; a space left on black has the grey a .ans
+    // gives it; every other cell is the maker's as it is
+    const auto isLight = [](const Color& c) {
+        const std::uint8_t i = c.paletteIndex();
+        return i == Blue || i == LightBlue || i == LightCyan;
+    };
+    const auto darkOnWallAndDesk = [](int, int) -> std::optional<std::uint8_t> { return Black; };
+    const auto darkOnRack = [](int x, int y) -> std::optional<std::uint8_t> {
+        if ((y == 11 && x >= 63 && x <= 71) || (y >= 12 && x >= 63 && x <= 65))
+            return y < 30 ? DarkGrey : Black;
+        return std::nullopt;
+    };
+    struct Unlit {
+        const char *here, *there;
+        std::function<std::optional<std::uint8_t>(int, int)> darkAt;
+        int changed;
+    };
+    const Unlit unlit[] = {{"wall", "wall glow", darkOnWallAndDesk, 455},
+                           {"desk", "desk", darkOnWallAndDesk, 549},
+                           {"rack", "rack", darkOnRack, 92}};
+    for (const Unlit& u : unlit) {
+        const Canvas& dark = named(p.layers, u.here).cells;
+        const Canvas& lit = named(maker.layers, u.there).cells;
+        int changed = 0;
+        for (int y = 0; y < 40; ++y)
+            for (int x = 0; x < 80; ++x) {
+                INFO(u.here << " at " << x << "," << y);
+                Cell want = lit.at(x, y);
+                if (const auto d = u.darkAt(x, y); d && !want.transparent) {
+                    bool took = false;
+                    for (Color* c : {&want.fg, &want.bg})
+                        if (isLight(*c)) {
+                            *c = Color::indexed(*d);
+                            took = true;
+                        }
+                    if (took && want.ch == Glyph(U' ') && want.bg.paletteIndex() == Black)
+                        want.fg = Color::indexed(Grey);
+                }
+                CHECK(dark.at(x, y) == want);
+                changed += dark.at(x, y) != lit.at(x, y);
+            }
+        INFO(u.here);
+        CHECK(changed == u.changed);
+    }
+    CHECK(named(p.layers, "rack").cells.at(65, 20).bg.paletteIndex() == DarkGrey);
+    CHECK(named(p.layers, "rack").cells.at(65, 35).bg.paletteIndex() == Black);
+    CHECK(named(maker.layers, "rack").cells.at(65, 35).bg.paletteIndex() == Blue);
+
+    // shown together they are the piece, cell for cell
+    const Canvas whole = composite(p.layers, {p.ice, Cell{}});
+    CHECK(whole == composite(maker.layers, {maker.ice, Cell{}}));
+
+    // the glow moves no glyph: with it hidden every cell has the glyph it
+    // has with it shown; and under the chair and the signature it has a cell
+    // exactly where it changes what shows
+    const auto without = [&](std::set<std::string> hide) {
+        LayerStack st = p.layers;
+        for (std::size_t i = 0; i < st.size(); ++i)
+            if (hide.count(st[i].props.name))
+                st[i].props.visible = false;
+        return composite(st, {p.ice, Cell{}});
+    };
+    // the room it lights, with the chair and the signature out of the way,
+    // is the maker's room with those two hidden, so what the chair covers
+    // is pinned as well as what shows
+    const auto makerWithout = [&](std::set<std::string> hide) {
+        LayerStack st = maker.layers;
+        for (std::size_t i = 0; i < st.size(); ++i)
+            if (hide.count(st[i].props.name))
+                st[i].props.visible = false;
+        return composite(st, {maker.ice, Cell{}});
+    };
+    const Canvas dark = without({"glow"});
+    const Canvas litRoom = without({"chair", "signature"});
+    const Canvas makerRoom = makerWithout({"chair", "signature"});
+    const Canvas darkRoom = without({"glow", "chair", "signature"});
+    const Canvas& glow = named(p.layers, "glow").cells;
+    int lit = 0;
+    for (int y = 0; y < 40; ++y)
+        for (int x = 0; x < 80; ++x) {
+            INFO("cell " << x << "," << y);
+            CHECK(dark.at(x, y).ch == whole.at(x, y).ch);
+            CHECK(litRoom.at(x, y) == makerRoom.at(x, y));
+            const bool lights = darkRoom.at(x, y) != makerRoom.at(x, y);
+            CHECK(lights == !glow.at(x, y).transparent);
+            if (lights) {
+                CHECK(glow.at(x, y).fg == makerRoom.at(x, y).fg);
+                CHECK(glow.at(x, y).bg == makerRoom.at(x, y).bg);
+            }
+            lit += !glow.at(x, y).transparent;
+        }
+    CHECK(lit == 746);
+    // the cells it lights are on the wall, the desk and the rack's near
+    // side: under the chair and the signature, over the rest
+    CHECK_FALSE(glow.at(30, 2).transparent);   // the wall's top ring
+    CHECK_FALSE(glow.at(5, 21).transparent);   // the desk top
+    CHECK_FALSE(glow.at(64, 25).transparent);  // the rack's side
+    CHECK(glow.at(30, 10).transparent);        // the screen, which is its own light
+    CHECK(glow.at(70, 25).transparent);        // the rack's front
+
+    // the hidden margin: one black block in the bottom left corner
+    const Layer& margins = named(p.layers, "margins");
+    for (int y = 0; y < 40; ++y)
+        for (int x = 0; x < 80; ++x) {
+            const Cell& c = margins.cells.at(x, y);
+            if (x == 0 && y == 39) {
+                CHECK(c.ch == U'█');
+                CHECK(c.fg.paletteIndex() == Black);
+                CHECK(c.bg.paletteIndex() == Black);
+            } else {
+                CHECK(c.transparent);
+            }
+        }
+
+    // the variants, each by the order and visibility it leaves
+    checkVariants(p, {{"No glow", stackState(order, {"margins", "glow"})},
+                      {"Lights off", stackState(order, {"margins", "glow", "screen"})},
+                      {"Screen only", stackState(order, {"desk", "keyboard", "mug and mouse", "rack", "glow",
+                                                         "chair", "signature"})}});
+
+    // the snapshots: the dark room with the monitor on, the desk's
+    // hardware, finished
+    const auto upTo = [&](const std::string& last) {
+        LayerStack st(80, 40);
+        for (const Layer& l : p.layers.layers()) {
+            st.add(l);
+            if (l.props.name == last)
+                break;
+        }
+        return std::optional<Canvas>(composite(st, {p.ice, Cell{}}));
+    };
+    checkSnapshots(p, {upTo("screen"), upTo("rack"), upTo("signature")});
+    // it saves back as it reads, as a directory and as a zip
+    const fs::path out = scratch("battlestation-round-trip");
+    project::writeDirectory(p, out / "dir");
+    CHECK(project::read(out / "dir") == p);
+    project::writeZip(p, out / "battlestation.bwp");
+    CHECK(project::read(out / "battlestation.bwp") == p);
 }
 
 TEST_CASE("the still life sample keeps each object, its shadows and its rim light on layers of their own") {
