@@ -1,5 +1,5 @@
 Name:           blockwright
-Version:        0.1.0
+Version:        0.1.1
 Release:        1%{?dist}
 Summary:        Editor for ANSI and IRC block art
 
@@ -94,5 +94,10 @@ export QT_QPA_PLATFORM=offscreen
 %{_mandir}/man1/blockwright-cli.1*
 
 %changelog
+* Sat Nov 14 2026 funkpower - 0.1.1-1
+- Export to Micron for NomadNet pages, in the app and blockwright-cli
+- New samples 07, 08 and 09, and a new sample 02
+- Test fixtures run under CMake 4.5
+
 * Sat Oct 31 2026 funkpower - 0.1.0-1
 - First Fedora package

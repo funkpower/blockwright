@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.24)
 if(NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
   set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0 CACHE STRING "Oldest macOS the build runs on")
 endif()
-project(blockwright VERSION 0.1.0 LANGUAGES CXX)
+project(blockwright VERSION 0.1.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -2,12 +2,14 @@
 # blockwright --version, --help and usage errors, with no display: gui_version_test.sh <blockwright>
 # BW_NOTICES_DIR names where --version says the notices are (default share/doc/blockwright/);
 # BW_LOGO is branding/logo.txt, which --version prints under the version line.
+# BW_VERSION is project(VERSION), the version --version names.
 # BW_UNIFONT_CREDIT is the Unifont credit's first line a BLOCKWRIGHT_SYSTEM_UNIFONT
 # build prints (default the bundled 18.0.01's).
 set -uo pipefail
 bin=$1
 notices_dir=${BW_NOTICES_DIR:-share/doc/blockwright/}
 unifont_credit=${BW_UNIFONT_CREDIT:-'Includes GNU Unifont 18.0.01, (c) 1998-2026 Roman Czyborra, Paul Hardy et al.,'}
+version=${BW_VERSION:?BW_VERSION is project(VERSION)}
 fails=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fails=$((fails + 1)); }
@@ -15,7 +17,8 @@ bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 # No display at all: --version must not need one.
 out=$(env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM= "$bin" --version 2>&1); st=$?
 first=$(head -n1 <<<"$out")
-if [[ $st -eq 0 && $first =~ ^blockwright\ 0\.1\.0\ \([0-9a-f]{7,}(-dirty)?\)$|^blockwright\ 0\.1\.0\ \(unknown\)$ ]]; then
+v=${version//./\\.}
+if [[ $st -eq 0 && $first =~ ^blockwright\ $v\ \([0-9a-f]{7,}(-dirty)?\)$|^blockwright\ $v\ \(unknown\)$ ]]; then
   ok "--version: $first"
 else
   bad "--version (exit $st): $out"

@@ -1,3 +1,12 @@
+blockwright (0.1.1-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Export to Micron for NomadNet pages, in the app and blockwright-cli.
+  * New samples 07, 08 and 09, and a new sample 02.
+  * Test fixtures run under CMake 4.5.
+
+ -- funkpower <funkpower@pumpin.online>  Sat, 14 Nov 2026 12:00:00 -0500
+
 blockwright (0.1.0-1) unstable; urgency=medium
 
   * First Debian package.

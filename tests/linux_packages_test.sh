@@ -3,9 +3,9 @@
 #   linux_packages_test.sh <source dir>
 #
 # The newest packaging/debian/changelog entry's upstream version, the spec's
-# Version: and the manual pages' .TH lines are project(VERSION) in
-# CMakeLists.txt, and the files the packages need are there: debian/rules
-# runnable, debian/source/format 3.0 (quilt), and a %changelog entry in the
+# Version:, the manual pages' .TH lines and the metainfo's newest <release>
+# are project(VERSION) in CMakeLists.txt, and the files the packages need are
+# there: debian/rules runnable, debian/source/format 3.0 (quilt), and a %changelog entry in the
 # spec for its Version-Release, and %license holds every notice. blockwright-cli.1 describes every command
 # blockwright-cli --help lists. The AppImage's THIRD-PARTY.txt links Qt's source
 # under download.qt.io/archive/qt/, which keeps every release. Each AUR
@@ -82,6 +82,15 @@ for pair in OFL-1.1.txt:OFL COPYING:GPL; do
 done
 [[ -z $missing ]] && ok "blockwright.spec: %license holds LICENSE, NOTICE and the bundled licences" ||
   bad "blockwright.spec's %license lacks:$missing"
+
+# <release version="0.1.1" date="2026-11-14">, newest first
+metainfo=$src/packaging/linux/online.pumpin.funkpower.blockwright.metainfo.xml
+newest=$(sed -n 's/.*<release version="\([^"]*\)".*/\1/p' "$metainfo" | head -n 1)
+if [[ $newest == "$version" ]]; then
+  ok "metainfo: newest release $version"
+else
+  bad "the metainfo's newest <release> is '$newest', the tree is $version"
+fi
 
 for page in blockwright blockwright-cli; do
   th=$(grep -m 1 '^\.TH ' "$src/packaging/linux/$page.1")

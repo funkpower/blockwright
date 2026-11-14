@@ -934,6 +934,7 @@ endif()
 add_test(NAME gui_version
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/gui_version_test.sh ${BW_GUI_COMMAND})
 set_property(TEST gui_version APPEND PROPERTY ENVIRONMENT "BW_LOGO=${PROJECT_SOURCE_DIR}/branding/logo.txt")
+set_property(TEST gui_version APPEND PROPERTY ENVIRONMENT "BW_VERSION=${PROJECT_VERSION}")
 if(BLOCKWRIGHT_SYSTEM_UNIFONT)
   set_property(TEST gui_version APPEND PROPERTY ENVIRONMENT
     "BW_UNIFONT_CREDIT=Includes ${BW_UNIFONT_RELEASE} Roman Czyborra, Paul Hardy et al.,")
