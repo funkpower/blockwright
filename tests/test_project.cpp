@@ -662,8 +662,15 @@ TEST_CASE("a project keeps its target, and one without the key is ANSI", "[proje
     // the target is a preference, not art: the flat .ans is the same
     CHECK(project::toAnsi(back).canvas == project::toAnsi(everything()).canvas);
 
+    p.target = Target::Micron;
+    e = project::encode(p);
+    CHECK(object(e.at("manifest.json")).value("target").toString() == QStringLiteral("micron"));
+    CHECK(project::decode(e).target == Target::Micron);
+    CHECK(project::toAnsi(project::decode(e)).canvas == project::toAnsi(everything()).canvas);
+    m = object(e.at("manifest.json"));
+
     // "ansi", or a value this build doesn't know, is ANSI
-    for (const char* other : {"ansi", "IRC", "mirc", ""}) {
+    for (const char* other : {"ansi", "IRC", "Micron", "mirc", "mu", ""}) {
         INFO(other);
         m["target"] = other;
         e["manifest.json"] = json(m);

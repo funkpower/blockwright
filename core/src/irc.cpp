@@ -341,7 +341,7 @@ std::vector<Unwritable> unwritable(const Canvas& canvas) {
 }
 
 Cell sentCell(const Cell& c, bool ice, Target target) {
-    if (c.transparent || (target == Target::Irc && !c.bg.isIndexed()))
+    if (c.transparent || (richTarget(target) && !c.bg.isIndexed()))
         return c;
     return iceCell(c, ice);
 }

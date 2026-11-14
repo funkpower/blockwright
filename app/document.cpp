@@ -650,7 +650,7 @@ void Document::clear(int width, int height, bool ice, Target target) {
     doc_ = AnsiDocument{};
     doc_.canvas = Canvas(width, height);
     doc_.ice = ice;
-    if (target == Target::Irc)
+    if (richTarget(target))
         doc_.encoding = TextEncoding::Utf8;
     resetLayers(LayerStack::fromCanvas(doc_.canvas));
     extras_ = {};

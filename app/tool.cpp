@@ -90,24 +90,25 @@ void EditPreview::paint(QPainter& p, const CanvasView& view, const QRect& expose
     const QRect cells = QRect(view.cellAt(exposed.topLeft()), view.cellAt(exposed.bottomRight())) & cells_;
     if (cells.isEmpty())
         return;
-    // As the renderer draws the canvas: iCE applied, at 1x, scaled up as
-    // it is drawn.
+    // As the renderer draws the canvas: iCE applied, an RGB background kept
+    // where the renderer keeps it (Micron), at 1x, scaled up as it is drawn.
     const Canvas& cv = view.document()->canvas();
     const CanvasRenderer* r = view.renderer();
-    const bool ice = r->iceColours();
+    const bool ice = r->iceColours(), keepRgb = r->rgbBackgroundsKept();
+    auto shown = [&](const Cell& c) { return keepRgb && !c.bg.isIndexed() ? c : iceCell(c, ice); };
     // A column more each side, so a pair across the edge draws as both its
     // halves do (PLAN §16 Compositing); only `cells` is drawn.
     const QRect wide = cells.adjusted(-1, 0, 1, 0) & QRect(0, 0, cv.width(), cv.height());
     Canvas part(wide.width(), wide.height());
     for (int y = wide.top(); y <= wide.bottom(); ++y) {
         for (int x = wide.left(); x <= wide.right(); ++x)
-            part.at(x - wide.left(), y - wide.top()) = iceCell(cv.at(x, y), ice);
+            part.at(x - wide.left(), y - wide.top()) = shown(cv.at(x, y));
         auto c = std::lower_bound(changes_.begin(), changes_.end(), std::pair{y, wide.left()},
                                   [](const CellChange& a, std::pair<int, int> b) {
                                       return a.y != b.first ? a.y < b.first : a.x < b.second;
                                   });
         for (; c != changes_.end() && c->y == y && c->x <= wide.right(); ++c)
-            part.at(c->x - wide.left(), y - wide.top()) = iceCell(c->after, ice);
+            part.at(c->x - wide.left(), y - wide.top()) = shown(c->after);
     }
     QImage image;
     try {

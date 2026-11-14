@@ -196,11 +196,11 @@ private:
     QPainter& p_;
 };
 
-// The pen typing writes with: its formatting under the IRC target on a
+// The pen typing writes with: its formatting under the IRC or Micron target on a
 // cells layer, as the glyph brush writes it (GlyphTool::makeBrush), and
 // none under ANSI or on a Pixels layer (#350 slice 3b).
 Pen typingPen(const Document& doc, Pen pen) {
-    if (doc.target() != Target::Irc || (doc.active() && doc.active()->props.kind == LayerKind::Pixels))
+    if (!richTarget(doc.target()) || (doc.active() && doc.active()->props.kind == LayerKind::Pixels))
         pen.attrs = 0;
     return pen;
 }

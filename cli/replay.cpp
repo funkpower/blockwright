@@ -297,7 +297,7 @@ std::unique_ptr<Brush> brushFor(State& s, const Step& step) {
         c.fg = s.pen.fg;
         c.bg = s.pen.bg;
         // the pen's formatting (an IRC eyedropper pick's), as GlyphTool::makeBrush
-        if (s.p.target == Target::Irc && s.layer().props.kind != LayerKind::Pixels)
+        if (richTarget(s.p.target) && s.layer().props.kind != LayerKind::Pixels)
             c.attrs = s.pen.attrs;
         return std::make_unique<GlyphBrush>(c);
     }
@@ -347,7 +347,7 @@ void eyedropper(State& s, const Step& step, Outcome& out) {
         return;
     }
     (bg ? s.pen.bg : s.pen.fg) = *c;
-    if (!bg && s.p.target == Target::Irc)
+    if (!bg && richTarget(s.p.target))
         s.pen.attrs = cell.attrs & attr::Formatting;
 }
 
@@ -362,7 +362,7 @@ void keyboard(State& s, const Step& step, Outcome& out) {
     const TypingOptions opts{typingPolicy(s.p.target, s.p.ansEncoding)};
     const auto refuse = [&](std::u32string_view cluster) {
         fail(step, "the text holds a character keyboard mode can't type (" + codePoints(cluster) +
-                       "; target: " + (s.p.target == Target::Irc ? "IRC" : "ANSI") + ", " +
+                       "; target: " + (s.p.target == Target::Irc ? "IRC" : s.p.target == Target::Micron ? "Micron" : "ANSI") + ", " +
                        (s.p.ansEncoding == TextEncoding::Utf8 ? "UTF-8" : "CP437") + ")");
     };
     const auto isMark = [](char32_t cp) { return codePointWidth(cp) == 0 && cp >= 0x20 && cp != 0x7f; };

@@ -56,6 +56,8 @@ IrcMeter::IrcMeter(Document* doc, CanvasView* view, GutterScrollArea* scroll)
     connect(doc_, &Document::formatChanged, this, &IrcMeter::resetRows);
     connect(doc_, &Document::ircBudgetChanged, this, &IrcMeter::resetRows);
     connect(doc_, &Document::targetChanged, this, &IrcMeter::resetRows);
+    connect(doc_, &Document::targetChanged, this, &IrcMeter::applyShown);
+    connect(doc_, &Document::reset, this, &IrcMeter::applyShown);
     connect(view_, &CanvasView::toolChanged, this, &IrcMeter::toolChanged);
     toolChanged();
     // The rows follow the canvas as it scrolls, zooms and moves.
@@ -100,6 +102,12 @@ irc::EncodeOptions IrcMeter::options() const {
 }
 
 void IrcMeter::setShown(bool on) {
+    shownAsked_ = on;
+    applyShown();
+}
+
+void IrcMeter::applyShown() {
+    const bool on = shownAsked_ && doc_->target() != Target::Micron;
     scroll_->setGutter(on ? this : nullptr, sizeHint().width());
     setVisible(on);
 }

@@ -90,6 +90,7 @@ add_executable(blockwright-tests
   test_lint_rules.cpp
   test_irc_view.cpp
   test_micron.cpp
+  test_micron_target.cpp
   test_mirc.cpp
   test_mirc_sent.cpp
   test_outline.cpp
@@ -615,6 +616,7 @@ add_executable(blockwright-app-tests
   test_app_irc.cpp
   test_app_irc_target.cpp
   test_app_micron.cpp
+  test_app_micron_target.cpp
   test_app_library.cpp
   test_app_library_styles.cpp
   test_app_style_apply.cpp

@@ -284,11 +284,19 @@ QString lossDescription(const AnsiOutput& out, bool countWide) {
     return parts.join(QStringLiteral(";\n"));
 }
 
+QString targetDisplayName(Target target) {
+    switch (target) {
+    case Target::Irc: return QObject::tr("IRC");
+    case Target::Micron: return QObject::tr("Micron");
+    default: return QObject::tr("ANSI");
+    }
+}
+
 QString rejectedGlyphsMessage(const QString& text, Target target, TextEncoding encoding) {
     // the target and encoding the typing policy follows (#350 slice 2)
     const QString encodingName = encoding == TextEncoding::Utf8 ? QStringLiteral("UTF-8") : QStringLiteral("CP437");
     const QString context = QObject::tr("(target: %1, %2)")
-                                .arg(target == Target::Irc ? QObject::tr("IRC") : QObject::tr("ANSI"), encodingName);
+                                .arg(targetDisplayName(target), encodingName);
     QStringList parts;
     if (typingPolicy(target, encoding) == TypingPolicy::Unicode) {
         // a UTF-8 .ans and IRC text hold every glyph but the controls;
@@ -304,7 +312,9 @@ QString rejectedGlyphsMessage(const QString& text, Target target, TextEncoding e
         }
         if (!controls.isEmpty())
             return QObject::tr("%1 can't be held in %2; not typed %3")
-                .arg(controls, target == Target::Irc ? QObject::tr("IRC text") : QObject::tr("a UTF-8 .ans"), context);
+                .arg(controls, target == Target::Irc      ? QObject::tr("IRC text")
+                       : target == Target::Micron ? QObject::tr("a Micron page")
+                                                  : QObject::tr("a UTF-8 .ans"), context);
         const QList<uint> cps = text.toUcs4();
         for (const char32_t ch : cps)
             named += (named.isEmpty() ? QString() : QStringLiteral(" ")) + QString::fromStdString(quotedGlyph(ch));
@@ -534,7 +544,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     statusBar()->addPermanentWidget(glyphSetLabel_);
     targetLabel_ = new QLabel;
     targetLabel_->setObjectName(QStringLiteral("targetLabel"));
-    targetLabel_->setToolTip(tr("The document's target: ANSI's 16 colours or IRC's 99 (Format > Target)"));
+    targetLabel_->setToolTip(tr("The document's target: ANSI's 16 colours, IRC's 99, or a Micron page's 99 and any twelve-bit colour (Format > Target)"));
     statusBar()->addPermanentWidget(targetLabel_);
     encodingLabel_ = new QLabel;
     encodingLabel_->setObjectName(QStringLiteral("encodingLabel"));
@@ -584,6 +594,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(view_, &CanvasView::zoomChanged, this, &MainWindow::updateStatus);
     connect(palette_, &PaletteWidget::foregroundPicked, view_, &CanvasView::setForeground);
     connect(palette_, &PaletteWidget::backgroundPicked, view_, &CanvasView::setBackground);
+    connect(palette_, &PaletteWidget::colourDialogRequested, this, &MainWindow::pickMicronColour);
     connect(view_, &CanvasView::penChanged, palette_, &PaletteWidget::setPen);
     connect(view_, &CanvasView::penChanged, this, [this](const Pen& pen) {
         for (QAction* a : formatActions_) {
@@ -780,6 +791,15 @@ void MainWindow::createActions() {
             std::swap(p.fg, p.bg);
             view_->setPen(p);
         });
+    colours->addSeparator();
+    // Micron only (PLAN §17): updateTarget enables them
+    pickForegroundAction_ = add(colours, tr("Pick &Foreground Colour..."), "pickForegroundColour",
+                                tr("Pick any of the 4096 colours a Micron code writes for the foreground"),
+                                QKeySequence(), [this] { pickMicronColour(true); });
+    pickBackgroundAction_ = add(colours, tr("Pick &Background Colour..."), "pickBackgroundColour",
+                                tr("Pick any of the 4096 colours a Micron code writes for the background"),
+                                QKeySequence(), [this] { pickMicronColour(false); });
+    updateTarget();
 
     QMenu* glyphs = menuBar()->addMenu(tr("&Glyphs"));
     add(glyphs, tr("&Previous Set"), "previousGlyphSet",

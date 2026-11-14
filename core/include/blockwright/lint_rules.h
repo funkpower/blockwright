@@ -73,7 +73,9 @@ struct RuleOptions {
     std::optional<Box> box;
     // Flat areas of fewer cells than this aren't reported.
     int minFlatCells = 48;
-    // The document's target: under IRC, NoCp437 is off and AnsLoss runs.
+    // The document's target: under IRC and Micron, NoCp437 is off and
+    // AnsLoss runs; under Micron the rules about what IRC drops and
+    // WastedFormat are off too.
     Target target = Target::Ansi;
 };
 
@@ -108,6 +110,8 @@ struct RuleOptions {
 //   the client's background instead.
 // - BlankEdgeRows: blank rows above or below the art, which the export trims
 //   (a margin needs a black-on-black █).
+//   TrailingBlack and BlankEdgeRows are off under Micron: a page keeps
+//   those cells (PLAN §17).
 // - NoCp437: a glyph an .ans saves as '?': one with no CP437 code, or one
 //   whose CP437 byte .ans reads as a control code (ansControlByte: ○ ◙ ♪ → ←),
 //   which XBIN and BIN keep. A cluster is named by its code points.
@@ -123,13 +127,14 @@ struct RuleOptions {
 //   two-column glyph with no continuation right of it (a lone wide cell).
 // - BidiControl: a cell holding U+061C, U+200E-200F, U+202A-202E or
 //   U+2066-2069, alone or in a cluster.
-// - AnsLoss: IRC target only, where the art is fine for IRC and an .ans is
+// - AnsLoss: IRC and Micron targets only, where the art is fine for them and an .ans is
 //   the lossy save. One finding per kind of loss, at the first cell it
 //   covers, counting the cells: glyphs a CP437 .ans saves as '?' (the cells
 //   NoCp437 would report), 24-bit colours saved as the nearest of the 16
 //   (quantisedColourCount) and cells with bold, italic or underline, which
 //   an .ans leaves out (formattedCellCount).
-// - WastedFormat: under either target, a cell whose formatting draws nothing
+// - WastedFormat: under ANSI and IRC (not Micron, which has no byte
+//   budget), a cell whose formatting draws nothing
 //   and still costs its toggles in IRC text: an attribute without which the
 //   cell draws the same pixels (formatRows) at 8 and 9 px, such as bold on
 //   a blank, ▀ or █, or underline on █. Italic shears a block off its
@@ -172,7 +177,7 @@ struct LintReport {
 // first. A shade of two colours that one of the ramps has as neighbours is
 // no fault, whichever ramps don't: the lint can't know which ramp the artist
 // shaded on. With craftPairs, neither is a shade of a craftPair. Under the
-// IRC target a ladder finding at an RGB cell says it was judged by the
+// IRC or Micron target a ladder finding at an RGB cell says it was judged by the
 // nearest of the 16. Throws LintError for a bad ramp (rampProblem).
 LintReport lintCanvas(const Canvas& canvas, const LintOptions& options = {});
 

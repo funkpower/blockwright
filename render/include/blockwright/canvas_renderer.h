@@ -37,6 +37,12 @@ public:
     // A change marks every cell dirty.
     virtual void setIceColours(bool on) = 0;
     virtual bool iceColours() const = 0;
+    // Whether a cell with an RGB background keeps it with iCE colours off,
+    // as a Micron page writes it (PLAN §17), rather than folding it to the
+    // dark colour of the palette entry nearest it. Off by default. A change
+    // marks every cell dirty.
+    virtual void setRgbBackgroundsKept(bool on) = 0;
+    virtual bool rgbBackgroundsKept() const = 0;
 
     // One cell in pixels at 1x (glyph width by font height).
     virtual QSize cellSize() const = 0;
@@ -92,7 +98,8 @@ private:
 };
 
 // The QPainter renderer: a 1x RGB32 cache filled from a GlyphAtlas. It draws
-// each cell as renderCanvas draws iceCell(cell, iceColours()).
+// each cell as renderCanvas draws iceCell(cell, iceColours()), or the cell
+// as it is when it has an RGB background and rgbBackgroundsKept().
 class AtlasRenderer final : public CanvasRenderer {
 public:
     explicit AtlasRenderer(const BitmapFont& font = vgaFont());
@@ -100,6 +107,8 @@ public:
     void setCanvas(const Canvas* canvas, int glyphWidth) override;
     void setIceColours(bool on) override;
     bool iceColours() const override { return ice_; }
+    void setRgbBackgroundsKept(bool on) override;
+    bool rgbBackgroundsKept() const override { return keepRgb_; }
     QSize cellSize() const override;
     QSize imageSize() const override { return cache_.size(); }
     void markDirty(const QRegion& cells) override;
@@ -117,6 +126,7 @@ private:
     QImage cache_;
     QRegion dirty_;
     bool ice_ = true;
+    bool keepRgb_ = false;
 };
 
 } // namespace bw

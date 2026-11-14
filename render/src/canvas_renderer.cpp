@@ -114,6 +114,14 @@ void AtlasRenderer::setIceColours(bool on) {
         dirty_ = QRegion(0, 0, canvas_->width(), canvas_->height());
 }
 
+void AtlasRenderer::setRgbBackgroundsKept(bool on) {
+    if (keepRgb_ == on)
+        return;
+    keepRgb_ = on;
+    if (canvas_)
+        dirty_ = QRegion(0, 0, canvas_->width(), canvas_->height());
+}
+
 QSize AtlasRenderer::cellSize() const { return atlas_ ? atlas_->cellSize() : QSize(); }
 
 void AtlasRenderer::markDirty(const QRegion& cells) {
@@ -129,7 +137,8 @@ QRegion AtlasRenderer::flush() {
     for (const QRect& r : dirty_) {
         for (int cy = r.top(); cy <= r.bottom(); ++cy) {
             for (int cx = r.left(); cx <= r.right(); ++cx) {
-                const Cell cell = iceCell(canvas_->at(cx, cy), ice_);
+                const Cell& raw = canvas_->at(cx, cy);
+                const Cell cell = keepRgb_ && !raw.bg.isIndexed() ? raw : iceCell(raw, ice_);
                 const QRect target(QPoint(cx * cs.width(), cy * cs.height()), cs);
                 p.fillRect(target, QColor(toQRgb(resolveColor(cell.bg))));
                 const CellImage ci = cellImage(*canvas_, cx, cy, font_->height);

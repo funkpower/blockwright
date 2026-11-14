@@ -59,9 +59,18 @@ over it. The budget is a preset (`efnet-weechat`, 407 bytes), a custom count
 from 1 to 512, or worked out from a nick mask and channel (View > IRC >
 Budget). View > IRC can fit long lines by merging the least visible colours,
 pad lines so a client keeps the frame, and swap shades; the IRC View dock
-shows the piece as a client would after its lines are cut. The Lint dock
-lists shading-ladder, pixel-noise and craft-rule findings and follows each
-edit; activating one moves the cell cursor to its cell.
+shows the piece as a client would after its lines are cut.
+
+**Micron target.** Format > Target > Micron (NomadNet) is for drawing pages
+NomadNet shows. It has IRC's 99 colours, and a click on the pen's foreground
+or background swatch (or Colours > Pick Foreground Colour...) offers any of
+the 4096 colours a three-digit Micron code writes. A page has no byte limit,
+so the row meter is put away and lint drops the rules about what IRC trims.
+The canvas shows the cells as NomadNet draws them, and File > Export Micron
+writes their colours as they are.
+
+The Lint dock lists shading-ladder, pixel-noise and craft-rule findings and
+follows each edit; activating one moves the cell cursor to its cell.
 
 **Library.** A dock of stamps, text styles and frame styles, bundled and your
 own. Selection > Save to Library and Save as Frame Style add to it.

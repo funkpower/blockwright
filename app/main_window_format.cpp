@@ -8,6 +8,7 @@
 #include "canvas_size_dialog.h"
 #include "canvas_view.h"
 #include "message_box.h"
+#include "micron_colour_dialog.h"
 #include "palette_widget.h"
 #include "library_dock.h"
 #include "preferences.h"
@@ -68,21 +69,32 @@ void MainWindow::createTargetActions(QMenu* format) {
                             tr("The 16 colours and the glyphs an .ans holds"));
     ircTargetAction_ = add(tr("&IRC"), "targetIrc", Target::Irc,
                            tr("mIRC's 99 colours; saving as .ans, XBIN or BIN reports what it can't hold"));
+    micronTargetAction_ = add(tr("&Micron (NomadNet)"), "targetMicron", Target::Micron,
+                              tr("A NomadNet page: mIRC's 99 colours and any of the 4096 a Micron code writes"));
     updateTarget();
 }
 
 void MainWindow::updateTarget() {
     const Target t = doc_.target();
     if (targetLabel_)
-        targetLabel_->setText(t == Target::Irc ? tr("IRC") : tr("ANSI"));
+        targetLabel_->setText(targetDisplayName(t));
     if (ansiTargetAction_) {
         ansiTargetAction_->setChecked(t == Target::Ansi);
         ircTargetAction_->setChecked(t == Target::Irc);
+        micronTargetAction_->setChecked(t == Target::Micron);
+    }
+    if (pickForegroundAction_) {
+        pickForegroundAction_->setEnabled(t == Target::Micron);
+        pickBackgroundAction_->setEnabled(t == Target::Micron);
     }
     if (palette_)
         palette_->setTarget(t);
     if (formatBar_)
-        formatBar_->setVisible(t == Target::Irc);
+        formatBar_->setVisible(richTarget(t));
+    // the canvas draws a cell as the page shows it (PLAN §17)
+    renderer_.setRgbBackgroundsKept(t == Target::Micron);
+    if (view_)
+        view_->update();
 }
 
 std::uint8_t MainWindow::formatBit(const QAction* a) const {
@@ -97,11 +109,29 @@ void MainWindow::stepColour(bool foreground, int step) {
     const Target t = doc_.target();
     const int n = swatchCount(t);
     const Color& c = foreground ? view_->pen().fg : view_->pen().bg;
-    const int next = ((swatchOf(c, t) % n) + step + n) % n;
+    const int at = swatchOf(c, t);
+    // a picked colour no swatch shows steps to the first or the last
+    const int next = at < 0 ? (step > 0 ? 0 : n - 1) : ((at % n) + step + n) % n;
     if (foreground)
         view_->setForeground(next);
     else
         view_->setBackground(next);
+}
+
+void MainWindow::pickMicronColour(bool foreground) {
+    if (doc_.target() != Target::Micron)
+        return;
+    Pen pen = view_->pen();
+    Color& c = foreground ? pen.fg : pen.bg;
+    // an indexed pen as the page writes it: in the document's palette
+    const Rgb was = c.isIndexed() ? doc_.ansi().palette.value_or(kPalette)[c.index & 15] : c.rgb;
+    MicronColourDialog dialog(was, foreground ? tr("Foreground Colour") : tr("Background Colour"), this);
+    const auto opened = dialog.digits();
+    // OK with the digits it opened on keeps the pen as it was, indexed or not
+    if (dialog.exec() != QDialog::Accepted || dialog.digits() == opened)
+        return;
+    c = Color::fromRgb(dialog.colour());
+    view_->setPen(pen);
 }
 
 void MainWindow::syncFormatActions() {

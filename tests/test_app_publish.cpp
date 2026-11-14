@@ -974,6 +974,24 @@ TEST_CASE("Publish to Library writes an IRC-target document's .txt from its canv
     CHECK(txt != irc::joinLines(pipeline::ircLines(out.bytes)));  // not the .ans read back
 }
 
+TEST_CASE("Publish to Library writes a Micron-target CP437 document's .txt from its canvas", "[utf8]") {
+    // as under IRC: the .ans loses the ★ and the RGB colour, the .txt keeps
+    // them, as export --irc of a Micron project sends them (PLAN §17)
+    Fixture f;
+    ircStar(f);
+    REQUIRE(f.w.document()->setTarget(Target::Micron));
+    REQUIRE(f.w.document()->textEncoding() == TextEncoding::Cp437);
+    const std::string txt = canvasText(*f.w.document());
+    REQUIRE(txt.find("\x03" "77") != std::string::npos);
+    REQUIRE(f.p->ircText());
+    CHECK(irc::joinLines(*f.p->ircText()) == txt);
+    QString error;
+    const auto plan = f.p->planPublish(f.library(), QStringLiteral("star"), {}, &error, true);
+    INFO(error.toStdString());
+    REQUIRE(plan);
+    CHECK(plan->txt == txt);
+}
+
 TEST_CASE("Publish to Library keeps an ANSI-target CP437 document's .txt as the .ans read back", "[utf8]") {
     Fixture f;
     CHECK_FALSE(f.p->ircText());

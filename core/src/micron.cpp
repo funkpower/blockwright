@@ -101,10 +101,19 @@ void appendColour(std::string& s, char which, Rgb c) {
 
 } // namespace
 
-std::string colourCode(Rgb c) {
+Rgb twelveBit(int r, int g, int b) {
+    const auto channel = [](int v) { return std::uint8_t(std::clamp(v, 0, 15) * 17); };
+    return {channel(r), channel(g), channel(b)};
+}
+
+bool isTwelveBit(Rgb c) {
     const auto doubled = [](std::uint8_t v) { return (v >> 4) == (v & 15); };
+    return doubled(c.r) && doubled(c.g) && doubled(c.b);
+}
+
+std::string colourCode(Rgb c) {
     std::string s;
-    if (doubled(c.r) && doubled(c.g) && doubled(c.b)) {
+    if (isTwelveBit(c)) {
         for (const std::uint8_t v : {c.r, c.g, c.b})
             s += kHex[v & 15];
         return s;

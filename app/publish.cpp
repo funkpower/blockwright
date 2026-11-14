@@ -137,7 +137,7 @@ AnsiOutput Publisher::payload() const {
 
 std::optional<std::vector<std::string>> Publisher::ircText() const {
     const Document* doc = window_->document();
-    if (doc->target() != Target::Irc && doc->textEncoding() != TextEncoding::Utf8)
+    if (!richTarget(doc->target()) && doc->textEncoding() != TextEncoding::Utf8)
         return std::nullopt;
     return irc::exportCanvas(irc::sentCanvas(doc->canvas(), doc->ansi().ice, doc->target()));
 }

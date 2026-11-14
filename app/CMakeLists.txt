@@ -55,6 +55,8 @@ add_library(blockwright_app STATIC
   manual_dialog.h
   message_box.cpp
   message_box.h
+  micron_colour_dialog.cpp
+  micron_colour_dialog.h
   palette_widget.cpp
   palette_widget.h
   plural.h

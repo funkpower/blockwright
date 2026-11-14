@@ -29,6 +29,12 @@ struct Options {
 // is, else "T" and six digits ("T1f2e3d"), the parser's truecolour form.
 std::string colourCode(Rgb c);
 
+// The twelve-bit colour with hex digits `r`, `g` and `b` (each clamped to
+// 0-15), each a channel's nibble doubled: what `Frgb writes (PLAN §17).
+Rgb twelveBit(int r, int g, int b);
+// Whether `c` is a twelve-bit colour, which colourCode writes in three digits.
+bool isTwelveBit(Rgb c);
+
 // Whether NomadNet drops code point `cp` from a page before it draws it:
 // what the browser's strip_modifiers and the parser's STRIP_CONTROL_RE take
 // out (marks, format characters, zero-width joiners, variation selectors,

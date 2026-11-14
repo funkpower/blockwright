@@ -98,7 +98,7 @@ int PaletteWidget::indexAt(QPoint p) const {
 
 QSize PaletteWidget::sizeHint() const {
     const int w = std::max(swatchRect(15).right(), swatchRect(swatchCount(target_) - 1).right()) + 1 + kGap;
-    const int last = target_ == Target::Irc ? swatchRect(swatchCount(target_) - 1).bottom() : penRect().bottom();
+    const int last = richTarget(target_) ? swatchRect(swatchCount(target_) - 1).bottom() : penRect().bottom();
     return QSize(w, last + 1 + kGap);
 }
 
@@ -180,9 +180,11 @@ bool PaletteWidget::event(QEvent* e) {
         else if (resetRect().contains(at))
             tip = key(tr("Default colours"), reset_);
         else if (foregroundRect().contains(at))
-            tip = tr("The foreground colour");
+            tip = target_ == Target::Micron ? tr("The foreground colour %1: click to pick another").arg(toQColor(pen_.fg).name())
+                                            : tr("The foreground colour");
         else if (backgroundRect().contains(at))
-            tip = tr("The background colour");
+            tip = target_ == Target::Micron ? tr("The background colour %1: click to pick another").arg(toQColor(pen_.bg).name())
+                                            : tr("The background colour");
         else if (const int i = indexAt(at); i >= 16)
             tip = tr("mIRC %1 (%2)").arg(i).arg(toQColor(swatchColor(i)).name());
         else
@@ -201,6 +203,13 @@ void PaletteWidget::mousePressEvent(QMouseEvent* e) {
     }
     if (e->button() == Qt::LeftButton && resetRect().contains(at)) {
         emit resetRequested();
+        return;
+    }
+    // the background swatch is under the foreground's corner, so the
+    // foreground is asked first, as it is drawn on top
+    if (e->button() == Qt::LeftButton && target_ == Target::Micron &&
+        (foregroundRect().contains(at) || backgroundRect().contains(at))) {
+        emit colourDialogRequested(foregroundRect().contains(at));
         return;
     }
     const int i = indexAt(at);

@@ -239,6 +239,28 @@ TEST_CASE("a glyph in its own background colour is a merge", "[lint][rules]") {
     CHECK(rules(c, Kind::Merge, off).size() == 2);
 }
 
+TEST_CASE("with iCE off an RGB background IRC and Micron send unfolded is no merge", "[lint][rules]") {
+    // dark red on #ff4040: folded, the background would be dark red too, but
+    // both targets send it as it is, so the glyph shows
+    Canvas c(1, 1);
+    c.at(0, 0) = Cell{U'X', Color::indexed(Red), Color::fromRgb({0xff, 0x40, 0x40}), 0, false};
+    for (const Target t : {Target::Micron, Target::Irc}) {
+        INFO(int(t));
+        lint::RuleOptions o;
+        o.target = t;
+        o.ice = false;
+        CHECK(rules(irc::sentCanvas(c, false, t), Kind::Merge, o).empty());
+    }
+    // what an IRC client is sent: mIRC 5 (the PC dark red) on mIRC 64, the
+    // nearest of the 99 to #ff4040
+    CHECK(irc::exportCanvas(irc::sentCanvas(c, false, Target::Irc)).at(0).find("\x03" "5,64") != std::string::npos);
+    // an .ans writes it as the nearest of the 16 (light red), which blinks
+    // on dark red with iCE off
+    lint::RuleOptions ansi;
+    ansi.ice = false;
+    CHECK(rules(irc::sentCanvas(c, false, Target::Ansi), Kind::Merge, ansi).size() == 1);
+}
+
 TEST_CASE("a 1 px line joined only at its corners is a dotted diagonal", "[lint][rules]") {
     auto found = rules(pixels({
                            "........",

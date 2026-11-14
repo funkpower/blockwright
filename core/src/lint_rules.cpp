@@ -45,10 +45,11 @@ bool textGlyph(Glyph g) {
 }
 
 // The background a cell shows: with iCE off a bright one blinks on its dark
-// colour.
-std::uint8_t shownBg(const Cell& c, bool ice) {
+// colour, except an RGB one where `keepRgb` (IRC and Micron send it as it
+// is, irc::sentCell).
+std::uint8_t shownBg(const Cell& c, bool ice, bool keepRgb) {
     const std::uint8_t bg = c.bg.paletteIndex();
-    return ice ? bg : bg & 7;
+    return ice || (keepRgb && !c.bg.isIndexed()) ? bg : bg & 7;
 }
 
 // The half-block pixels of the canvas as they show, two rows per cell row;
@@ -87,7 +88,7 @@ private:
 using Look = std::tuple<Glyph, int, int>;
 const Look kNoLook{U'￿', -2, -2};
 
-Look lookOf(const Canvas& canvas, int x, int y, bool ice) {
+Look lookOf(const Canvas& canvas, int x, int y, bool ice, bool keepRgb) {
     if (!canvas.contains(x, y))
         return kNoLook;
     const Cell& c = canvas.at(x, y);
@@ -95,7 +96,7 @@ Look lookOf(const Canvas& canvas, int x, int y, bool ice) {
         return Look{U' ', Black, -1};
     if (const auto p = halfBlocks(c, ice))
         return p->top == p->bottom ? Look{U' ', p->top, -1} : Look{kUpperHalf, p->top, p->bottom};
-    return Look{c.ch, c.fg.paletteIndex(), shownBg(c, ice)};
+    return Look{c.ch, c.fg.paletteIndex(), shownBg(c, ice, keepRgb)};
 }
 
 // Whether `c` is a lighter rung than `d` on a named ramp that has both: a
@@ -128,10 +129,10 @@ void lonePixels(const Pixels& p, std::vector<Finding>& out) {
         }
 }
 
-void gaps(const Canvas& canvas, bool ice, std::vector<Finding>& out) {
+void gaps(const Canvas& canvas, bool ice, bool keepRgb, std::vector<Finding>& out) {
     // along: the line's direction; across: the other
     auto check = [&](int x, int y, int ax, int ay) {
-        auto look = [&](int i, int j) { return lookOf(canvas, x + i * ax + j * ay, y + i * ay + j * ax, ice); };
+        auto look = [&](int i, int j) { return lookOf(canvas, x + i * ax + j * ay, y + i * ay + j * ax, ice, keepRgb); };
         const Look l = look(-1, 0), g = look(0, 0);
         if (l == kNoLook || g == l || look(-2, 0) != l || look(1, 0) != l || look(2, 0) != l)
             return false;
@@ -165,14 +166,14 @@ void gaps(const Canvas& canvas, bool ice, std::vector<Finding>& out) {
         }
 }
 
-void merges(const Canvas& canvas, bool ice, std::vector<Finding>& out) {
+void merges(const Canvas& canvas, bool ice, bool keepRgb, std::vector<Finding>& out) {
     for (int y = 0; y < canvas.height(); ++y)
         for (int x = 0; x < canvas.width(); ++x) {
             const Cell& c = canvas.at(x, y);
             if (c.transparent || !textGlyph(c.ch))
                 continue;
             const int fg = c.fg.paletteIndex();
-            if (fg == shownBg(c, ice))
+            if (fg == shownBg(c, ice, keepRgb))
                 out.push_back(make(Kind::Merge, x, y, x, y,
                                    "the glyph is in its own background colour " + std::to_string(fg) +
                                        ": it can't be seen"));
@@ -252,7 +253,7 @@ std::optional<Box> clip(const Canvas& canvas, Box b) {
     return b;
 }
 
-void flats(const Canvas& canvas, bool ice, const Box& box, int minCells, std::vector<Finding>& out) {
+void flats(const Canvas& canvas, bool ice, bool keepRgb, const Box& box, int minCells, std::vector<Finding>& out) {
     const int w = box.x1 - box.x0 + 1, h = box.y1 - box.y0 + 1;
     if (w < 4 || h < 2)
         return;
@@ -260,7 +261,7 @@ void flats(const Canvas& canvas, bool ice, const Box& box, int minCells, std::ve
     std::vector<Look> looks(std::size_t(w) * std::size_t(h));
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
-            looks[k(x, y)] = lookOf(canvas, box.x0 + x, box.y0 + y, ice);
+            looks[k(x, y)] = lookOf(canvas, box.x0 + x, box.y0 + y, ice, keepRgb);
     // run: the cells of one look from here to the right, up to a window's 4
     std::vector<int> run(looks.size(), 1);
     for (int y = 0; y < h; ++y)
@@ -507,15 +508,17 @@ void unicodeRules(const Canvas& canvas, std::vector<Finding>& out) {
     }
 }
 
-// What an .ans save drops from an IRC-target canvas, one finding per kind.
-void ansLoss(const Canvas& canvas, std::vector<Finding>& out) {
+// What an .ans save drops from an IRC- or Micron-target canvas, one finding
+// per kind.
+void ansLoss(const Canvas& canvas, Target target, std::vector<Finding>& out) {
+    const std::string fine = target == Target::Micron ? " (fine for Micron)" : " (fine for IRC)";
     std::vector<Finding> glyphs;
     noCp437(canvas, glyphs);
     if (!glyphs.empty()) {
         const std::size_t n = glyphs.size();
         out.push_back(make(Kind::AnsLoss, glyphs.front().x, glyphs.front().y, glyphs.front().x, glyphs.front().y,
                            std::to_string(n) + (n == 1 ? " cell holds a glyph" : " cells hold glyphs") +
-                               " a CP437 .ans saves as '?' (fine for IRC)"));
+                               " a CP437 .ans saves as '?'" + fine));
     }
     // the first cell `count` counts
     const auto first = [&](int (*count)(const Canvas&)) {
@@ -532,13 +535,13 @@ void ansLoss(const Canvas& canvas, std::vector<Finding>& out) {
         const auto [x, y] = first(quantisedColourCount);
         out.push_back(make(Kind::AnsLoss, x, y, x, y,
                            std::to_string(n) + (n == 1 ? " cell is in a colour" : " cells are in colours") +
-                               " an .ans can't hold, saved as the nearest of the 16 (fine for IRC)"));
+                               " an .ans can't hold, saved as the nearest of the 16" + fine));
     }
     if (const int n = formattedCellCount(canvas)) {
         const auto [x, y] = first(formattedCellCount);
         out.push_back(make(Kind::AnsLoss, x, y, x, y,
                            std::to_string(n) + (n == 1 ? " cell has" : " cells have") +
-                               " bold, italic or underline, which an .ans leaves out (fine for IRC)"));
+                               " bold, italic or underline, which an .ans leaves out" + fine));
     }
 }
 
@@ -689,19 +692,25 @@ std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options
         return out;
     const Pixels p(canvas, options.ice);
     lonePixels(p, out);
-    gaps(canvas, options.ice, out);
-    merges(canvas, options.ice, out);
+    // an RGB background IRC and Micron send unfolded (PLAN §8, §17)
+    const bool keepRgb = richTarget(options.target);
+    gaps(canvas, options.ice, keepRgb, out);
+    merges(canvas, options.ice, keepRgb, out);
     dottedDiagonals(p, out);
     if (options.box)
         if (const auto b = clip(canvas, *options.box))
-            flats(canvas, options.ice, *b, std::max(1, options.minFlatCells), out);
-    ircDrops(canvas, out);
-    if (options.target == Target::Irc)
-        ansLoss(canvas, out);
+            flats(canvas, options.ice, keepRgb, *b, std::max(1, options.minFlatCells), out);
+    // a Micron page keeps trailing blanks and blank rows, and has no byte
+    // budget for formatting codes to waste (PLAN §17)
+    if (options.target != Target::Micron)
+        ircDrops(canvas, out);
+    if (richTarget(options.target))
+        ansLoss(canvas, options.target, out);
     else
         noCp437(canvas, out);
     unicodeRules(canvas, out);
-    wastedFormat(canvas, out);
+    if (options.target != Target::Micron)
+        wastedFormat(canvas, out);
     std::stable_sort(out.begin(), out.end(), readingOrder);
     return out;
 }
@@ -738,9 +747,9 @@ LintReport lintCanvas(const Canvas& canvas, const LintOptions& options) {
             if (lf.kind == LadderFinding::Kind::OneGlyph)
                 f.x2 = w - 1, f.y2 = h - 1;  // about the whole canvas
             f.message = shade ? shadeMessage(lf.x, lf.y, canvas.at(lf.x, lf.y)) : lf.message;
-            // under IRC an RGB cell is one of mIRC's 99, read as the nearest of
-            // the 16 (#350); only a colour the glyph shows was judged
-            if (options.target == Target::Irc && lf.kind != LadderFinding::Kind::OneGlyph &&
+            // under IRC or Micron an RGB cell is read as the nearest of the
+            // 16 (#350); only a colour the glyph shows was judged
+            if (richTarget(options.target) && lf.kind != LadderFinding::Kind::OneGlyph &&
                 (showsQuantisedColour(canvas.at(f.x, f.y)) || showsQuantisedColour(canvas.at(f.x2, f.y2))))
                 f.message += " (an RGB cell, judged by the nearest of the 16)";
             if (places.insert({f.kind, f.x, f.y, f.x2, f.y2}).second)

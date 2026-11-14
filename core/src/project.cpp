@@ -2407,9 +2407,10 @@ Entries encode(const Project& project, CellsFrame cellsFrame) {
     // was before the key.
     if (project.ansEncoding == TextEncoding::Utf8)
         manifest.insert("ansEncoding", "utf-8");
-    // Likewise only for IRC, so an ANSI project's manifest is what it was.
-    if (project.target == Target::Irc)
-        manifest.insert("target", "irc");
+    // Likewise only for IRC or Micron, so an ANSI project's manifest is
+    // what it was.
+    if (project.target != Target::Ansi)
+        manifest.insert("target", QString::fromLatin1(targetName(project.target).data()));
     out["manifest.json"] = toJson(manifest);
     checkJsonSize("manifest.json", out["manifest.json"].size());
     if (!project.notes.empty())
@@ -2463,10 +2464,16 @@ Project decode(const Entries& entries, ReadNotes* notes) {
     // one's) is CP437, as a project with no key is, not a refusal (PLAN §6).
     if (m.has("ansEncoding") && m.string("ansEncoding") == "utf-8")
         p.ansEncoding = TextEncoding::Utf8;
-    // The same for the target (#350): "irc", else ANSI ("ansi", or a later
-    // build's value); a value that isn't a string is refused.
-    if (m.has("target") && m.string("target") == "irc")
-        p.target = Target::Irc;
+    // The same for the target (#350): "irc" or "micron" (PLAN §17), else
+    // ANSI ("ansi", or a later build's value); a value that isn't a string is
+    // refused.
+    if (m.has("target")) {
+        const std::string t = m.string("target");
+        if (t == "irc")
+            p.target = Target::Irc;
+        else if (t == "micron")
+            p.target = Target::Micron;
+    }
     if (const QJsonValue s = m.value("sauce"); !s.isNull()) {
         if (!s.isObject())
             fail("manifest.json: \"sauce\" is not an object or null");

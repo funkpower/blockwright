@@ -90,7 +90,7 @@ std::vector<Unwritable> unwritable(const Canvas& canvas);
 // with iCE colours `ice` (iceCell). With iCE off a bright background goes as
 // blink on its dark colour, which IRC shows as the dark colour. A
 // transparent cell is left as it is; the encoder draws it blank. Under the
-// IRC target a cell with an RGB background (an mIRC colour past 15, or the
+// IRC or Micron target a cell with an RGB background (an mIRC colour past 15, or the
 // eyedropper's) is left as it is too: iCE is the .ans's, and folding it
 // would send mIRC 80 as CGA green (#350); an indexed cell folds as under
 // ANSI, so it sends the same bytes. The row meter, File > Export IRC Text,

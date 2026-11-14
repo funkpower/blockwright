@@ -75,7 +75,11 @@ public:
     irc::EncodeOptions options() const;
 
     // Shows the meter in its gutter, or hides it and gives the room back.
+    // Under the Micron target it stays hidden, whatever is asked, since a
+    // page has no byte budget (PLAN §17), and shows again as asked when the
+    // target changes back.
     void setShown(bool on);
+    bool shownAsked() const { return shownAsked_; }
 
     // Row y's line as the encoder writes it now (bytes), its size as the
     // ascii script sends it (sentBytes: it writes the line again, with
@@ -119,6 +123,8 @@ protected:
     void paintEvent(QPaintEvent* e) override;
 
 private:
+    void applyShown();
+    bool shownAsked_ = true;
     // A row's line and its size as the ascii script sends it.
     struct Measured {
         irc::Line line;

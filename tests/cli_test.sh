@@ -615,7 +615,7 @@ if [[ -e $tmp/x.ans ]]; then bad "a refused shade mode wrote $tmp/x.ans"; else o
 
 # lint: the whole lint, one planted fault a piece (#106)
 expect "--help lists lint" 0 '^  lint <in> +the ladder check' -- "$cli" --help
-expect "usage lists lint" 2 'lint \[--ramp R\]\.\.\. \[--box x0,y0,x1,y1\] \[--target ansi\|irc\] \[--json\] <in>' -- "$cli" lint
+expect "usage lists lint" 2 'lint \[--ramp R\]\.\.\. \[--box x0,y0,x1,y1\] \[--target ansi\|irc\|micron\] \[--json\] <in>' -- "$cli" lint
 k='\033[0;40m '; K='\033[0;1;30;40m\xdb'; w='\033[0;37;40m\xdb'
 s1='\033[0;1;30;40m\xb0'; s2='\033[0;1;30;40m\xb1'; s3='\033[0;1;30;40m\xb2'; Wk='\033[0;1;37;40m\xb1'
 cells() { local o=; for c in "$@"; do o+=$c; done; printf "$o"; }
@@ -981,9 +981,16 @@ expect "info: unpack set ANSI" 0 '^target: +ansi$' -- "$cli" info "$tmp/rgb-ansi
 if grep -q '"target"' "$tmp/rgb-ansi/manifest.json"; then bad "an ANSI manifest names its target"; else ok "an ANSI manifest has no target key"; fi
 expect "unpack --target irc of an .ans" 0 '^$' -- "$cli" unpack --target irc "$piece" "$tmp/tux-irc"
 if grep -Eq '"target": *"irc"' "$tmp/tux-irc/manifest.json"; then ok "an IRC manifest says so"; else bad "an IRC manifest has no target"; fi
-expect "a bad --target is a usage error" 2 "--target takes ansi or irc, not 'mirc'" -- "$cli" pack --target mirc "$piece" "$tmp/x.bwp"
+expect "a bad --target is a usage error" 2 "--target takes ansi, irc or micron, not 'mirc'" -- "$cli" pack --target mirc "$piece" "$tmp/x.bwp"
 expect "--target needs a value" 2 '.' -- "$cli" lint "$piece" --target
 expect "convert takes no --target" 2 '.' -- "$cli" convert --target irc "$piece" "$tmp/x.ans"
+# Micron (PLAN §17): the same key, and lint without IRC's byte rules
+expect "pack --target micron" 0 '^$' -- "$cli" pack --target micron "$rgb" "$tmp/rgb-mu.bwp"
+expect "info reads micron back" 0 '^target: +micron$' -- "$cli" info "$tmp/rgb-mu.bwp"
+expect "unpack --target Micron" 0 '^$' -- "$cli" unpack --target Micron "$piece" "$tmp/tux-mu"
+if grep -Eq '"target": *"micron"' "$tmp/tux-mu/manifest.json"; then ok "a Micron manifest says so"; else bad "a Micron manifest has no target"; fi
+expect "lint --target micron: ans-loss" 0 '^0,0 ans-loss - note: 1 cell is in a colour an \.ans can.t hold, saved as the nearest of the 16 \(fine for Micron\)$' -- "$cli" lint --target micron "$rgb"
+expect "lint follows a Micron project" 0 'fine for Micron' -- "$cli" lint "$tmp/rgb-mu.bwp"
 expect "lint under ANSI: no ans-loss" 0 '^clean' -- "$cli" lint "$rgb"
 # ans-loss is a note: printed, but only mIRC colours lint clean and exit 0
 expect "lint --target irc: ans-loss" 0 '^0,0 ans-loss - note: 1 cell is in a colour an \.ans can.t hold, saved as the nearest of the 16 \(fine for IRC\)$' -- "$cli" lint --target irc "$rgb"

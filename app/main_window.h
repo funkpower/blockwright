@@ -123,6 +123,8 @@ QString micronLossDescription(const std::vector<Unwritable>& lost);
 // text" under IRC), and a cluster past 16 code points. Every message ends
 // with the `target` and `encoding` the policy follows (#350 slice 2): "★
 // has no CP437 code; not typed (target: ANSI, CP437)".
+// The target as the status bar and messages name it: ANSI, IRC or Micron.
+QString targetDisplayName(Target target);
 QString rejectedGlyphsMessage(const QString& text, Target target = Target::Ansi,
                               TextEncoding encoding = TextEncoding::Cp437);
 // The question Save asks before a lossy save (AnsiOutput::lossy) as .ans
@@ -427,6 +429,9 @@ private:
     // Ctrl+arrows: the pen's foreground or background one swatch on, over
     // the target's swatches (swatchCount), wrapping.
     void stepColour(bool foreground, int step);
+    // Under the Micron target, the Micron colour dialog for the pen's
+    // foreground or background (PLAN §17); the pen takes what it gives.
+    void pickMicronColour(bool foreground);
     // The renderer and the toggles follow the document's format.
     void formatChanged();
     void syncFormatActions();
@@ -580,6 +585,9 @@ private:
     QLabel* targetLabel_ = nullptr;
     QAction* ansiTargetAction_ = nullptr;
     QAction* ircTargetAction_ = nullptr;
+    QAction* micronTargetAction_ = nullptr;
+    QAction* pickForegroundAction_ = nullptr;
+    QAction* pickBackgroundAction_ = nullptr;
     QMenu* reopenMenu_ = nullptr;
     QList<QAction*> glyphSetActions_;
     QAction* iceAction_ = nullptr;

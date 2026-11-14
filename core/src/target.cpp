@@ -9,7 +9,13 @@
 
 namespace bw {
 
-std::string_view targetName(Target t) { return t == Target::Irc ? "irc" : "ansi"; }
+std::string_view targetName(Target t) {
+    switch (t) {
+    case Target::Irc: return "irc";
+    case Target::Micron: return "micron";
+    default: return "ansi";
+    }
+}
 
 std::optional<Target> parseTarget(std::string_view name) {
     std::string s(name);
@@ -18,11 +24,13 @@ std::optional<Target> parseTarget(std::string_view name) {
         return Target::Ansi;
     if (s == "irc")
         return Target::Irc;
+    if (s == "micron")
+        return Target::Micron;
     return std::nullopt;
 }
 
 TypingPolicy typingPolicy(Target target, TextEncoding encoding) {
-    return target == Target::Irc || encoding == TextEncoding::Utf8 ? TypingPolicy::Unicode : TypingPolicy::Cp437;
+    return richTarget(target) || encoding == TextEncoding::Utf8 ? TypingPolicy::Unicode : TypingPolicy::Cp437;
 }
 
 Color swatchColor(int i) {
@@ -36,11 +44,11 @@ Color swatchColor(int i) {
 int swatchOf(const Color& c, Target t) {
     if (c.isIndexed())
         return c.index;
-    if (t == Target::Irc)
-        for (int i = 16; i < swatchCount(Target::Irc); ++i)
+    if (richTarget(t))
+        for (int i = 16; i < swatchCount(t); ++i)
             if (swatchColor(i) == c)
                 return i;
-    return c.paletteIndex();
+    return t == Target::Micron ? -1 : c.paletteIndex();
 }
 
 } // namespace bw

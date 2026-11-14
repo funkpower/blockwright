@@ -216,6 +216,33 @@ TEST_CASE("iCE on draws bright backgrounds as 16 colours, iCE off as blink on th
     CHECK(r.dirtyCells().isEmpty());
 }
 
+TEST_CASE("kept RGB backgrounds draw as they are with iCE off, for a Micron page (PLAN §17)", "[micron]") {
+    Canvas cv(2, 1);
+    cv.at(0, 0) = Cell{U' ', Color::indexed(Yellow), Color::fromRgb({0xff, 0x40, 0x40}), 0, false};
+    cv.at(1, 0) = Cell{U' ', Color::indexed(Yellow), Color::indexed(LightRed), 0, false};
+    AtlasRenderer r;
+    r.setCanvas(&cv, 8);
+    r.setIceColours(false);
+    CHECK_FALSE(r.rgbBackgroundsKept());
+    const auto q = [](Rgb c) { return qRgb(c.r, c.g, c.b); };
+    QImage img = paintAll(r, 1);
+    CHECK(img.pixel(3, 8) == q(kPalette[Red]));  // folded, as an .ans shows it
+    CHECK(img.pixel(8 + 3, 8) == q(kPalette[Red]));
+
+    r.flush();
+    r.setRgbBackgroundsKept(true);
+    CHECK(r.rgbBackgroundsKept());
+    CHECK(r.dirtyCells() == QRegion(0, 0, 2, 1));
+    img = paintAll(r, 1);
+    CHECK(img.pixel(3, 8) == qRgb(0xff, 0x40, 0x40));
+    CHECK(img.pixel(8 + 3, 8) == q(kPalette[Red]));  // an indexed one still folds
+    CHECK(cv.at(0, 0).bg == Color::fromRgb({0xff, 0x40, 0x40}));
+
+    r.setRgbBackgroundsKept(false);
+    img = paintAll(r, 1);
+    CHECK(img.pixel(3, 8) == q(kPalette[Red]));
+}
+
 TEST_CASE("9 px cells repeat column 8 for 0xC0-0xDF and are background otherwise") {
     // #7: ─ (0xC4) joins up, A and ▓ (0xB2, outside the range) don't
     Canvas cv(3, 1);

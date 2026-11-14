@@ -116,8 +116,9 @@ PreferencesDialog::PreferencesDialog(const QString& folder, std::shared_ptr<cons
     target_->setObjectName(QStringLiteral("defaultTarget"));
     target_->addItem(tr("ANSI (.ans)"), int(Target::Ansi));
     target_->addItem(tr("IRC"), int(Target::Irc));
+    target_->addItem(tr("Micron (NomadNet)"), int(Target::Micron));
     target_->setCurrentIndex(target_->findData(int(defaultTargetSetting())));
-    target_->setToolTip(tr("What File > New and a new canvas offer: the 16 colours an .ans holds, or IRC's 99"));
+    target_->setToolTip(tr("What File > New and a new canvas offer: the 16 colours an .ans holds, IRC's 99, or a Micron page's"));
     auto* docForm = new QFormLayout(documents);
     docForm->addRow(tr("&Target for new documents:"), target_);
     pages_->addTab(documents, tr("Documents"));

@@ -5,7 +5,9 @@
 // default colours in the other. Under the IRC target, mIRC's colours 16-98
 // follow below in mIRC's layout, smaller: six rows of 12, then the 11
 // greys. A left click on a swatch picks the foreground, a right click the
-// background; a swatch is its index 0-98 (swatchColor).
+// background; a swatch is its index 0-98 (swatchColor). Under Micron (PLAN
+// §17) the same 99 show, and a left click on the pen's foreground or
+// background swatch asks for the Micron colour dialog.
 
 #include "blockwright/edit.h"
 #include "blockwright/target.h"
@@ -53,6 +55,8 @@ signals:
     void backgroundPicked(int index);
     void swapRequested();
     void resetRequested();
+    // Micron only: the pen's foreground (true) or background swatch clicked.
+    void colourDialogRequested(bool foreground);
 
 protected:
     bool event(QEvent* e) override;
