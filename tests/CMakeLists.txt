@@ -801,6 +801,11 @@ if(NOT APPLE)
     add_test(NAME ${t}_heading_boxes
       COMMAND ${BW_APP_TEST_ENV} BW_TEST_HEADING_BOXES=1 ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:${t}>)
   endforeach()
+  # The whole app suite in one process: 135 to 195 s in CI, a little more
+  # under Qt 6.7, and over 300 s under either on a loaded runner. 1500 is
+  # the ctest default, so no build that runs ctest without --timeout gives
+  # it less time than before.
+  set_tests_properties(blockwright-app-tests_heading_boxes PROPERTIES TIMEOUT 1500)
 endif()
 
 # On an X server of their own, with input through XTest: skipped where Xvfb or

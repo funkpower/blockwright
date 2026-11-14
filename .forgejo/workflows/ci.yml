@@ -120,7 +120,11 @@ jobs:
     container:
       # Built on the runner's host by .forgejo/ci/build-image; never pulled.
       image: blockwright-ci:qt-min-1
-    timeout-minutes: 30
+    # Green runs take 13 to 15 minutes; a slow runner has taken 26 without
+    # the nested builds, and once ran past 30. At 60 the longest ctest limit
+    # (app_tests_leave_profile_alone, 3000 s) ends first, so a stuck run
+    # still leaves the ctest summary in the log.
+    timeout-minutes: 60
     env:
       LANG: C.UTF-8
       QT_QPA_PLATFORM: offscreen
