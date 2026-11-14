@@ -18,6 +18,7 @@
 #include "blockwright/text_style.h"
 
 #include "../cli/lint.h"
+#include "util.h"
 
 #include <QByteArray>
 #include <QtGlobal>
@@ -26,6 +27,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <array>
 #ifndef _WIN32
 #include <csignal>
 #endif
@@ -1204,6 +1206,597 @@ TEST_CASE("the brain on IRC sample keeps the Form brush's yolk and pan, with the
     CHECK(project::read(out / "dir") == p);
     project::writeZip(p, out / "brain.bwp");
     CHECK(project::read(out / "brain.bwp") == p);
+}
+
+// The ninth sample, a finished piece a hundred columns wide, its layers as
+// they are in maker/wtc-0903/, with their locks and modes set (PLAN §12).
+TEST_CASE("the wtc-0903 sample keeps its layers, its sunlight apart from the towers and colours-only reflections") {
+    constexpr int W = 100, H = 48;
+    const fs::path dir = kSamples / "09-wtc-0903";
+    const project::Project p = project::read(dir);
+    CHECK(p.ice);
+    CHECK(p.layers.width() == W);
+    CHECK(p.layers.height() == H);
+    const std::vector<std::string> order{"sky",      "North Tower", "plume", "fire",  "South Tower", "sunlight",
+                                         "fireball", "plane",       "skyline", "water", "reflections", "tag"};
+    REQUIRE(names(p.layers) == order);
+
+    // every layer is cells over the whole canvas and shown; the sky alone is
+    // locked, the two towers alone alpha-locked, the reflections alone
+    // colours only
+    for (const Layer& l : p.layers.layers()) {
+        INFO(l.props.name);
+        CHECK(l.props.kind == LayerKind::Cells);
+        CHECK(l.props.mode == (l.props.name == "reflections" ? LayerMode::ColoursOnly : LayerMode::Normal));
+        CHECK(l.props.x == 0);
+        CHECK(l.props.y == 0);
+        CHECK(l.cells.width() == W);
+        CHECK(l.cells.height() == H);
+        CHECK(l.props.locked == (l.props.name == "sky"));
+        CHECK(l.props.alphaLocked == (l.props.name == "North Tower" || l.props.name == "South Tower"));
+        CHECK(l.props.visible);
+    }
+
+    // the layers in maker/wtc-0903/ are here cell for cell, and shown
+    // together they are the piece
+    const project::Project maker = project::read(kSamples / "maker" / "wtc-0903");
+    REQUIRE(names(maker.layers) == order);
+    for (const std::string& name : order) {
+        INFO(name);
+        CHECK(named(p.layers, name).cells == named(maker.layers, name).cells);
+    }
+    const Canvas whole = composite(p.layers, {p.ice, Cell{}});
+    CHECK(whole == composite(maker.layers, {maker.ice, Cell{}}));
+
+    const auto says = [&](const std::string& text) {
+        INFO("the notes say: " << text);
+        CHECK(p.notes.find(text) != std::string::npos);
+    };
+    const auto str = [](auto v) { return std::to_string(v); };
+    // "a, b and c", as the notes list layers
+    const auto listOf = [](const std::vector<std::string>& items) {
+        std::string out;
+        for (std::size_t i = 0; i < items.size(); ++i)
+            out += (i == 0 ? "" : i + 1 == items.size() ? " and " : ", ") + items[i];
+        return out;
+    };
+    const auto without = [&](const std::set<std::string>& hide) {
+        return composite(hiding(p, hide).layers, {p.ice, Cell{}});
+    };
+    const auto changedCells = [&](const Canvas& a, const Canvas& b) {
+        std::vector<std::pair<int, int>> out;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                if (a.at(x, y) != b.at(x, y))
+                    out.emplace_back(x, y);
+        return out;
+    };
+    const auto isEastFace = [](int x) { return (x >= 46 && x <= 55) || (x >= 64 && x <= 73); };
+
+    // the reflections hold cells on row 43 alone and move no glyph: hidden,
+    // every cell keeps its glyph and row 43 is the water's light blue
+    const Canvas& reflections = named(p.layers, "reflections").cells;
+    const Canvas noReflections = without({"reflections"});
+    int reflected = 0;
+    std::set<int> reflectionRows;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            INFO("cell " << x << "," << y);
+            if (!reflections.at(x, y).transparent) {
+                CHECK(y == 43);
+                reflectionRows.insert(y);
+                ++reflected;
+            }
+            CHECK(noReflections.at(x, y).ch == whole.at(x, y).ch);
+        }
+    CHECK(reflected > 0);
+    for (int x = 0; x < W; ++x) {
+        INFO("column " << x);
+        CHECK(noReflections.at(x, 43).ch == U'█');
+        CHECK(noReflections.at(x, 43).fg.paletteIndex() == LightBlue);
+    }
+
+    // every reflection is dark grey on black under a building of the
+    // skyline, and two columns of every five are left out
+    const Canvas& skyline = named(p.layers, "skyline").cells;
+    for (int x = 0; x < W; ++x) {
+        const Cell& r = reflections.at(x, 43);
+        if (r.transparent)
+            continue;
+        INFO("reflection " << x);
+        CHECK(r.ch == U'█');
+        CHECK(r.fg.paletteIndex() == DarkGrey);
+        CHECK(r.bg.paletteIndex() == Black);
+        CHECK(!skyline.at(x, 41).transparent);
+        CHECK(x % 5 >= 2);
+    }
+    CHECK(reflected == 20);
+    REQUIRE(reflectionRows.size() == 1);
+    const int reflectionRow = *reflectionRows.begin();
+    says("along row " + str(reflectionRow) + ", all in dark grey, with two columns of every five left out");
+    says("Select reflections and paint along row " + str(reflectionRow) + " in light cyan.");
+    says("in light cyan. The layer is colours only, so the water's full blocks stay and take the new colour. Undo the "
+         "paint before the next step.");
+
+    // the sunlight: hidden, 286 cells change, every one on an east face
+    const auto sunOff = changedCells(whole, without({"sunlight"}));
+    CHECK(sunOff.size() == 286);
+    for (const auto& [x, y] : sunOff) {
+        INFO("cell " << x << "," << y);
+        CHECK(isEastFace(x));
+    }
+    const Canvas& sunlight = named(p.layers, "sunlight").cells;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            if (!sunlight.at(x, y).transparent) {
+                INFO("cell " << x << "," << y);
+                CHECK(isEastFace(x));
+            }
+
+    // it lights only the cells the plume and the fire left showing: under
+    // each of its cells the nearest layer that has one is a tower
+    const std::size_t sunAt = *p.layers.indexOf(named(p.layers, "sunlight").props.id);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            if (sunlight.at(x, y).transparent)
+                continue;
+            std::string under;
+            for (std::size_t i = sunAt; i-- > 0;)
+                if (!p.layers[i].cells.at(x, y).transparent) {
+                    under = p.layers[i].props.name;
+                    break;
+                }
+            INFO("cell " << x << "," << y);
+            CHECK((under == "South Tower" || under == "North Tower"));
+        }
+
+    // the North Tower carries the 41 east-face cells the plume and the fire
+    // cover in the sun itself: with those, the fireball, the plane and the
+    // sunlight hidden, they are the white left on the North Tower, rows 11
+    // to 15
+    const Canvas bare = without({"plume", "fire", "fireball", "plane", "sunlight"});
+    std::vector<std::pair<int, int>> band;
+    for (int y = 0; y < H; ++y)
+        for (int x = 60; x <= 73; ++x) {
+            const Cell& c = bare.at(x, y);
+            if (c.fg.paletteIndex() == White || c.bg.paletteIndex() == White) {
+                INFO("cell " << x << "," << y);
+                CHECK((x >= 64 && y >= 11 && y <= 15));
+                band.emplace_back(x, y);
+            }
+        }
+    const int litBand = int(band.size());
+    CHECK(litBand == 41);
+    int bandTop = H, bandBottom = -1;
+    for (const auto& [x, y] : band) {
+        bandTop = std::min(bandTop, y);
+        bandBottom = std::max(bandBottom, y);
+    }
+    const std::string bandRows = "rows " + str(bandTop) + " to " + str(bandBottom);
+    says("The North Tower's east face is lit all the way down, " + bandRows + " included");
+    says("a lit band across " + bandRows + " of the North Tower");
+
+    // the plume behind the South Tower: raised above the sunlight, it
+    // crosses the tower's top, 79 cells in columns 42 to 62, rows 9 to 14
+    project::Project smoke = p;
+    REQUIRE_NOTHROW(applyVariant(smoke.layers, {"Smoke in front", {"raise plume above sunlight"}}));
+    const auto smokeCells = changedCells(whole, composite(smoke.layers, {p.ice, Cell{}}));
+    CHECK(smokeCells.size() == 79);
+    int left = W, top = H, right = -1, bottom = -1;
+    for (const auto& [x, y] : smokeCells) {
+        left = std::min(left, x);
+        top = std::min(top, y);
+        right = std::max(right, x);
+        bottom = std::max(bottom, y);
+    }
+    CHECK(left == 42);
+    CHECK(right == 62);
+    CHECK(top == 9);
+    CHECK(bottom == 14);
+
+    // a hundred columns and every row one IRC line: the longest, row 24,
+    // as exported and as sent, and 68 shade glyphs of three bytes each in it
+    const AnsiDocument doc = project::toAnsi(p);
+    const std::vector<std::string> lines = irc::encodeCanvas(doc.canvas);
+    REQUIRE(lines.size() == std::size_t(H));
+    std::size_t longest = 0;
+    for (std::size_t i = 0; i < lines.size(); ++i)
+        if (irc::txtSentBytes(lines[i], p.ircBudget.bytes) > irc::txtSentBytes(lines[longest], p.ircBudget.bytes))
+            longest = i;
+    CHECK(longest == 24);
+    CHECK(lines[24].size() == 344);
+    CHECK(irc::txtSentBytes(lines[24], p.ircBudget.bytes) == 347);
+    CHECK(p.ircBudget.bytes == 407);
+    int shades = 0;
+    for (std::size_t at = lines[24].find("░"); at != std::string::npos; at = lines[24].find("░", at + 1))
+        ++shades;
+    CHECK(shades == 68);
+
+    // the three dearest rows as sent, together, where the sky shades from
+    // light blue into light cyan
+    std::vector<std::size_t> byCost(lines.size());
+    for (std::size_t i = 0; i < byCost.size(); ++i)
+        byCost[i] = i;
+    std::stable_sort(byCost.begin(), byCost.end(), [&](std::size_t a, std::size_t b) {
+        return irc::txtSentBytes(lines[a], p.ircBudget.bytes) > irc::txtSentBytes(lines[b], p.ircBudget.bytes);
+    });
+    std::vector<std::size_t> dearest(byCost.begin(), byCost.begin() + 3);
+    std::sort(dearest.begin(), dearest.end());
+    CHECK(dearest == std::vector<std::size_t>{24, 25, 26});
+    std::vector<std::size_t> dearestSent;
+    for (std::size_t i : dearest)
+        dearestSent.push_back(irc::txtSentBytes(lines[i], p.ircBudget.bytes));
+    CHECK(dearestSent == std::vector<std::size_t>{347, 342, 342});
+    CHECK(irc::txtSentBytes(lines[byCost[3]], p.ircBudget.bytes) < dearestSent.back());
+    CHECK(dearest.back() - dearest.front() == 2);
+    says("The dearest rows are " + str(dearest.front()) + " to " + str(dearest.back()) +
+         ", where the sky shades from light blue into light cyan");
+
+    // the numbers the notes give are the piece's
+    const auto boundsOf = [&](const Canvas& c) {
+        std::array<int, 4> b{W, H, -1, -1};  // left, top, right, bottom
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                if (!c.at(x, y).transparent)
+                    b = {std::min(b[0], x), std::min(b[1], y), std::max(b[2], x), std::max(b[3], y)};
+        return b;
+    };
+    says(str(sunOff.size()) + " cells change, all of them on the two towers");
+    says("The North Tower layer carries those " + str(litBand) + " cells in the sun itself.");
+    says(str(smokeCells.size()) + " cells change, in columns " + str(left) + " to " + str(right) + " and rows " +
+         str(top) + " to " + str(bottom));
+    says("row " + str(longest) + " exports at " + str(lines[longest].size()) + " bytes, " +
+         str(irc::txtSentBytes(lines[longest], p.ircBudget.bytes)) + " as sent, against the project's budget of " +
+         str(p.ircBudget.bytes) + ", and " + str(3 * shades) + " of those bytes are its " + str(shades) +
+         " shade glyphs");
+
+    // the fire: black, red, brown and yellow, dark grey at the end of the
+    // gash and grey where a half block leaves the tower's face showing, in
+    // rows 13 to 15 across columns 60 to 73, and its rows as sent
+    const Canvas& fire = named(p.layers, "fire").cells;
+    const std::set<int> fireColours{Black, Red, Brown, Yellow, DarkGrey, Grey};
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            if (!fire.at(x, y).transparent) {
+                INFO("fire " << x << "," << y);
+                CHECK(fireColours.count(fire.at(x, y).fg.paletteIndex()));
+                CHECK(fireColours.count(fire.at(x, y).bg.paletteIndex()));
+            }
+    const auto fb = boundsOf(fire);
+    CHECK(fb == std::array<int, 4>{60, 13, 73, 15});
+    says("rows " + str(fb[1]) + " to " + str(fb[3]) + " across columns " + str(fb[0]) + " to " + str(fb[2]));
+    says("columns " + str(fb[0]) + " to " + str(fb[2]) + ", rows " + str(fb[1]) + " to " + str(fb[3]));
+    std::vector<std::size_t> fireRows;
+    for (int y = fb[1]; y <= fb[3]; ++y)
+        fireRows.push_back(irc::txtSentBytes(lines[std::size_t(y)], p.ircBudget.bytes));
+    CHECK(fireRows == std::vector<std::size_t>{206, 241, 280});
+    says("The fire's rows, " + str(fb[1]) + " to " + str(fb[3]) + ", come to " + str(fireRows[0]) + ", " +
+         str(fireRows[1]) + " and " + str(fireRows[2]) + " bytes as sent.");
+
+    // the fire covers the plume at one cell, and raising the plume covers it
+    const Canvas& plume = named(p.layers, "plume").cells;
+    std::vector<std::pair<int, int>> overlap;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            if (!plume.at(x, y).transparent && !fire.at(x, y).transparent)
+                overlap.emplace_back(x, y);
+    REQUIRE(overlap.size() == 1);
+    CHECK(overlap[0] == std::pair{62, 13});
+    CHECK(std::count(smokeCells.begin(), smokeCells.end(), overlap[0]) == 1);
+    const std::string overlapAt = "column " + str(overlap[0].first) + " on row " + str(overlap[0].second);
+    says("The fire covers it at one cell, " + overlapAt + ".");
+    says("covers the one cell where the fire sat over it, " + overlapAt + ".");
+
+    // the fireball: below the fire, rows 15 to 24, and further left, to
+    // column 46 on the South Tower's east face
+    const auto bb = boundsOf(named(p.layers, "fireball").cells);
+    CHECK(bb == std::array<int, 4>{46, 15, 72, 24});
+    CHECK(bb[3] > fb[3]);
+    CHECK(bb[0] < fb[0]);
+    CHECK(isEastFace(bb[0]));
+    CHECK(bb[0] <= 55);
+    says("the fireball a larger shape below it, rows " + str(bb[1]) + " to " + str(bb[3]) +
+         ", that reaches further left, to column " + str(bb[0]) + " on the South Tower's east face");
+
+    // the skyline from row 25 down, where 40 Wall Street's spire stands
+    // alone, dark grey, in column 79 down to row 27
+    const auto kb = boundsOf(skyline);
+    CHECK(kb[1] == 25);
+    int spireEnd = kb[1];
+    const auto spireOnly = [&](int y) {
+        for (int x = 0; x < W; ++x)
+            if (!skyline.at(x, y).transparent && x != 79)
+                return false;
+        return !skyline.at(79, y).transparent && skyline.at(79, y).fg.paletteIndex() == DarkGrey;
+    };
+    REQUIRE(spireOnly(kb[1]));
+    while (spireOnly(spireEnd + 1))
+        ++spireEnd;
+    CHECK(spireEnd == 27);
+    says("Downtown in front of the towers' feet, from row " + str(kb[1]) + " down:");
+    says("a dark grey spire at column 79, rows " + str(kb[1]) + " to " + str(spireEnd) + ", alone above the other roofs");
+
+    // the shore, the skyline's last row: black and dark grey only, the
+    // water from the row under it, where the reflections are
+    CHECK(kb[3] == 42);
+    for (int x = 0; x < W; ++x) {
+        INFO("shore " << x);
+        const Cell& c = skyline.at(x, kb[3]);
+        REQUIRE_FALSE(c.transparent);
+        CHECK((c.ch == U' ' || c.fg.paletteIndex() == DarkGrey));
+        CHECK(c.bg.paletteIndex() == Black);
+    }
+    says("the shore along row " + str(kb[3]) + ", a black drive with dark grey piers");
+    const auto wb = boundsOf(named(p.layers, "water").cells);
+    CHECK(wb[1] == kb[3] + 1);
+    CHECK(wb[1] == reflectionRow);
+    CHECK(wb[3] == H - 1);
+    says("The river from row " + str(wb[1]) + " down");
+
+    // the tag: one row, the last, in the right half
+    const auto tb = boundsOf(named(p.layers, "tag").cells);
+    CHECK(tb[1] == tb[3]);
+    CHECK(tb[3] == H - 1);
+    CHECK(tb[0] >= W / 2);
+    says("funkpower in grey in the lower right corner, row " + str(tb[1]) + ".");
+
+    // the plane's nose inside the South Tower: a hole of black spaces cut
+    // into the south face, column 44, rows 18 and 19
+    const Canvas& plane = named(p.layers, "plane").cells;
+    std::vector<std::pair<int, int>> hole;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            const Cell& c = plane.at(x, y);
+            if (!c.transparent && c.ch == U' ' && c.bg.paletteIndex() == Black) {
+                INFO("hole " << x << "," << y);
+                CHECK(!named(p.layers, "South Tower").cells.at(x, y).transparent);
+                CHECK((x >= 42 && x <= 45));
+                hole.emplace_back(x, y);
+            }
+        }
+    CHECK(hole == std::vector<std::pair<int, int>>{{44, 18}, {44, 19}});
+    REQUIRE(hole.size() == 2);
+    says("where a black hole is cut at column " + str(hole[0].first) + ", rows " + str(hole[0].second) + " and " +
+         str(hole[1].second) + ".");
+
+    // each tower from the first row its cells span the whole width, and
+    // the North Tower's mast above that
+    const auto fullFrom = [&](const Canvas& c, int x0, int x1) {
+        for (int y = 0; y < H; ++y) {
+            bool full = true;
+            for (int x = x0; x <= x1; ++x)
+                full = full && !c.at(x, y).transparent;
+            if (full)
+                return y;
+        }
+        return -1;
+    };
+    const Canvas& southCells = named(p.layers, "South Tower").cells;
+    const Canvas& northCells = named(p.layers, "North Tower").cells;
+    const auto sTower = boundsOf(southCells);
+    const auto nTower = boundsOf(northCells);
+    CHECK(sTower == std::array<int, 4>{42, 9, 55, 44});
+    CHECK(fullFrom(southCells, sTower[0], sTower[2]) == sTower[1]);
+    const int northFrom = fullFrom(northCells, 60, 73);
+    CHECK(northFrom == 10);
+    CHECK(nTower[1] == 2);
+    says("The South Tower in shade, columns " + str(sTower[0]) + " to " + str(sTower[2]) + " from row " +
+         str(sTower[1]) + " down");
+    says("The North Tower in shade, columns 60 to 73 from row " + str(northFrom) + " down");
+    says("the mast on its roof in grey up to row " + str(nTower[1]));
+
+    // the sky in bands: blue, light blue and light cyan, each row one
+    // colour all the way across or a row of shade between two of them
+    const Canvas& sky = named(p.layers, "sky").cells;
+    const auto solidRow = [&](int y) -> int {  // the row's colour, or -1 for shade
+        int colour = -1;
+        for (int x = 0; x < W; ++x) {
+            const Cell& c = sky.at(x, y);
+            int here = -1;
+            if (c.ch == U' ')
+                here = c.bg.paletteIndex();
+            else if (c.ch == U'█')
+                here = c.fg.paletteIndex();
+            if (here < 0 || (x > 0 && here != colour))
+                return -1;
+            colour = here;
+        }
+        return colour;
+    };
+    std::map<int, int> firstSolid;
+    std::vector<int> shadeRows;
+    for (int y = 0; y < H; ++y) {
+        const int c = solidRow(y);
+        if (c < 0)
+            shadeRows.push_back(y);
+        else if (!firstSolid.count(c))
+            firstSolid[c] = y;
+    }
+    REQUIRE(firstSolid.count(Blue));
+    REQUIRE(firstSolid.count(LightBlue));
+    REQUIRE(firstSolid.count(LightCyan));
+    CHECK(firstSolid.at(Blue) == 0);
+    CHECK(shadeRows == std::vector<int>{10, 11, 12, 24, 25, 26});
+    CHECK(firstSolid.at(LightBlue) == shadeRows[2] + 1);
+    CHECK(firstSolid.at(LightCyan) == shadeRows[5] + 1);
+    says("blue at the top, light blue from row " + str(firstSolid.at(LightBlue)) + ", light cyan from row " +
+         str(firstSolid.at(LightCyan)) + ", with three rows of shade at each change, rows " + str(shadeRows[0]) +
+         " to " + str(shadeRows[2]) + " and " + str(shadeRows[3]) + " to " + str(shadeRows[5]) + ".");
+    // the dearest rows are the second change
+    CHECK(int(dearest.front()) == shadeRows[3]);
+    CHECK(int(dearest.back()) == shadeRows[5]);
+
+    // Try this, step by step, each from where the one before left the piece
+    {
+        LayerStack st = p.layers;
+        const auto show = [&](std::initializer_list<const char*> layers, bool on) {
+            for (const char* n : layers)
+                st.find(named(st, n).props.id)->props.visible = on;
+        };
+        const auto now = [&] { return composite(st, {p.ice, Cell{}}); };
+        const auto showAll = [&](const std::vector<std::string>& layers, bool on) {
+            for (const std::string& n : layers)
+                st.find(named(st, n).props.id)->props.visible = on;
+        };
+        // 1: sunlight hidden
+        show({"sunlight"}, false);
+        CHECK(changedCells(whole, now()) == sunOff);
+        // 2: sunlight back, the plume, the fire, the fireball and the plane
+        // hidden, as Before 8:46 hides them; the North Tower's east face lit
+        // rows 11 to 15, the band by the tower's own cells
+        const std::vector<std::string> before846{"plume", "fire", "fireball", "plane"};
+        says("Show sunlight again and hide " + listOf(before846) + ", as the Before 8:46 variant does.");
+        show({"sunlight"}, true);
+        showAll(before846, false);
+        const Canvas lit = now();
+        CHECK(lit == without({"plume", "fire", "fireball", "plane"}));
+        for (int y = 11; y <= 15; ++y)
+            for (int x = 64; x <= 73; ++x) {
+                INFO("cell " << x << "," << y);
+                CHECK((lit.at(x, y).fg.paletteIndex() == White || lit.at(x, y).bg.paletteIndex() == White));
+            }
+        for (const auto& [x, y] : band) {
+            INFO("cell " << x << "," << y);
+            CHECK(sunlight.at(x, y).transparent);
+        }
+        // 3: sunlight hidden too, then everything shown again
+        show({"sunlight"}, false);
+        CHECK(now() == bare);
+        std::vector<std::string> hidden{"sunlight"};
+        hidden.insert(hidden.end(), before846.begin(), before846.end());
+        std::vector<std::string> stillHidden;
+        for (const Layer& l : st.layers())
+            if (!l.props.visible)
+                stillHidden.push_back(l.props.name);
+        CHECK(std::set<std::string>(hidden.begin(), hidden.end()) ==
+              std::set<std::string>(stillHidden.begin(), stillHidden.end()));
+        says("Show " + listOf(hidden) + " again before the next step.");
+        showAll(hidden, true);
+        CHECK(now() == whole);
+        // 4: the plume raised above the sunlight, then lowered back to just
+        // above the layer it sat on, one step at a time as the Layers dock
+        // moves it
+        REQUIRE_NOTHROW(applyVariant(st, {"step 4", {"raise plume above sunlight"}}));
+        CHECK(changedCells(whole, now()) == smokeCells);
+        const std::string plumeOn = *(std::find(order.begin(), order.end(), "plume") - 1);
+        says("Lower plume back to just above " + plumeOn + " before the next step.");
+        for (int i = 0; i < int(order.size()); ++i) {
+            const std::vector<std::string> at = names(st);
+            const auto it = std::find(at.begin(), at.end(), "plume");
+            if (it == at.begin() || *(it - 1) == plumeOn)
+                break;
+            REQUIRE_NOTHROW(applyVariant(st, {"step 4", {"lower plume below " + *(it - 1)}}));
+        }
+        CHECK(names(st) == order);
+        CHECK(now() == whole);
+        // 5: everything but the sky, the fire and the fireball hidden, then
+        // shown again
+        show({"North Tower", "plume", "South Tower", "sunlight", "plane", "skyline", "water", "reflections", "tag"},
+             false);
+        std::vector<std::string> fireShown;
+        for (const Layer& l : st.layers())
+            if (l.props.visible)
+                fireShown.push_back(l.props.name);
+        says("Hide every layer but " + listOf(fireShown) + ", as the Fire only variant does.");
+        LayerStack fireOnly = p.layers;
+        REQUIRE_NOTHROW(applyVariant(fireOnly, {"Fire only",
+                                                {"hide North Tower", "hide plume", "hide South Tower",
+                                                 "hide sunlight", "hide plane", "hide skyline", "hide water",
+                                                 "hide reflections", "hide tag"}}));
+        CHECK(now() == composite(fireOnly, {p.ice, Cell{}}));
+        show({"North Tower", "plume", "South Tower", "sunlight", "plane", "skyline", "water", "reflections", "tag"},
+             true);
+        for (const Layer& l : st.layers())
+            CHECK(l.props.visible);
+        CHECK(now() == whole);
+        says("can be recoloured or moved without repainting a tower. Show every layer again before the next step.");
+        // 6: the South Tower's cells are in columns 42 to 55, and the
+        // sunlight is over every one of them on the east face
+        const Canvas& south = named(st, "South Tower").cells;
+        const auto sb = boundsOf(south);
+        CHECK(sb[0] == 42);
+        CHECK(sb[2] == 55);
+        for (int y = 0; y < H; ++y)
+            for (int x = 46; x <= 55; ++x)
+                if (!south.at(x, y).transparent) {
+                    INFO("cell " << x << "," << y);
+                    CHECK(!sunlight.at(x, y).transparent);
+                }
+        says("keeps the paint on the tower's own cells, columns " + str(sb[0]) + " to " + str(sb[2]));
+        // paint on the east face shows only with the sunlight hidden
+        LayerStack painted = st;
+        Layer& paintedSouth = *painted.find(named(painted, "South Tower").props.id);
+        for (int x = 46; x <= 55; ++x)
+            paintedSouth.cells.at(x, 12) = Cell{U'█', Color::indexed(LightRed), Color::indexed(Black)};
+        CHECK(composite(painted, {p.ice, Cell{}}) == whole);
+        painted.find(named(painted, "sunlight").props.id)->props.visible = false;
+        LayerStack sunHidden = st;
+        sunHidden.find(named(sunHidden, "sunlight").props.id)->props.visible = false;
+        CHECK(composite(painted, {p.ice, Cell{}}) != composite(sunHidden, {p.ice, Cell{}}));
+        says("On the east face the paint goes under the sunlight and shows only with sunlight hidden. Undo the paint "
+             "before the next step.");
+    }
+
+    // the variants, each by the order and visibility it leaves
+    std::vector<std::string> smokeOrder = order;
+    smokeOrder.erase(std::find(smokeOrder.begin(), smokeOrder.end(), "plume"));
+    smokeOrder.insert(std::find(smokeOrder.begin(), smokeOrder.end(), "sunlight") + 1, "plume");
+    checkVariants(p, {{"Before 8:46", stackState(order, {"plume", "fire", "fireball", "plane"})},
+                      {"Sunlight off", stackState(order, {"sunlight"})},
+                      {"Fire only", stackState(order, {"North Tower", "plume", "South Tower", "sunlight", "plane",
+                                                       "skyline", "water", "reflections", "tag"})},
+                      {"Smoke in front", stackState(smokeOrder, {})}});
+
+    // the snapshots: the sky and the towers in shade with the plume and the
+    // fire; the sunlight, the fireball and the plane; finished
+    const auto upTo = [&](const std::string& last) {
+        LayerStack st(W, H);
+        for (const Layer& l : p.layers.layers()) {
+            st.add(l);
+            if (l.props.name == last)
+                break;
+        }
+        return std::optional<Canvas>(composite(st, {p.ice, Cell{}}));
+    };
+    checkSnapshots(p, {upTo("South Tower"), upTo("plane"), upTo("tag")});
+
+    // it saves back as it reads, as a directory and as a zip
+    const fs::path out = scratch("wtc-0903-saved");
+    project::writeDirectory(p, out / "dir");
+    CHECK(project::read(out / "dir") == p);
+    project::writeZip(p, out / "wtc-0903.bwp");
+    CHECK(project::read(out / "wtc-0903.bwp") == p);
+}
+
+// The finished pieces among the samples (PLAN §12): with the layers they
+// show, each is its piece's .ans cell for cell, the piece as it is in
+// tests/data/pieces/. A space is compared by its background alone, since
+// its foreground shows nowhere.
+TEST_CASE("the finished samples are their pieces' .ans cell for cell") {
+    const std::vector<std::pair<std::string, std::string>> pieces{
+        {"02-ddos-king", "ddos-king.ans"}, {"07-battlestation", "battlestation.ans"}, {"09-wtc-0903", "wtc-0903.ans"}};
+    for (const auto& [sample, file] : pieces) {
+        INFO(sample);
+        const project::Project p = project::read(kSamples / sample);
+        const Canvas shown = parseAnsi(writeAnsi(project::toAnsi(p), p.ansEncoding).bytes).canvas;
+        const AnsiDocument piece = parseAnsi(bwtest::readFile(bwtest::dataDir() / "pieces" / file));
+        REQUIRE(shown.width() == piece.canvas.width());
+        REQUIRE(shown.height() == piece.canvas.height());
+        const auto same = [](const Cell& a, const Cell& b) {
+            if (a.ch == U' ' && b.ch == U' ')
+                return a.bg == b.bg && a.attrs == b.attrs && a.transparent == b.transparent;
+            return a == b;
+        };
+        int differ = 0;
+        for (int y = 0; y < shown.height(); ++y)
+            for (int x = 0; x < shown.width(); ++x)
+                if (!same(shown.at(x, y), piece.canvas.at(x, y))) {
+                    if (differ < 5)
+                        UNSCOPED_INFO("cell " << x << "," << y << " differs");
+                    ++differ;
+                }
+        CHECK(differ == 0);
+    }
 }
 
 TEST_CASE("the still life sample keeps each object, its shadows and its rim light on layers of their own") {

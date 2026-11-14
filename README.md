@@ -89,7 +89,7 @@ Edit > Preferences.
 
 ## Samples
 
-Eight sample projects install with the app and open from the start screen or
+Nine sample projects install with the app and open from the start screen or
 Help > Samples:
 
 - `01-layers-showcase`, Harbour at night: every layer kind, both blend modes,
@@ -113,6 +113,9 @@ Help > Samples:
   a dome and the pan a cylinder from one pass of the Form brush over flat
   copies kept hidden underneath, and the # and the highlight on layers of
   their own, out of the brush's way.
+- `09-wtc-0903`, wtc-0903: Lower Manhattan at 9:03 on 11 September 2001, a
+  hundred columns wide, with the morning sun on a layer apart from the towers
+  it lights, colours-only reflections and the towers under alpha locks.
 
 ## Command line
 

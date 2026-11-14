@@ -1692,6 +1692,57 @@ project::Project brandLogo(const fs::path& makerDir) {
     return p;
 }
 
+// ---- wtc-0903 ---------------------------------------------------------------
+
+// A finished piece, a hundred columns wide. Its layers are in
+// maker/wtc-0903/; the maker takes them as they are and sets their locks and
+// modes.
+constexpr int kWtcW = 100, kWtcH = 48;
+
+project::Project wtc0903(const fs::path& makerDir) {
+    project::Project piece = project::read(makerDir / "wtc-0903");
+    const auto take = [&](const char* name) {
+        Layer l = layerNamed(piece.layers, name);
+        l.props.id = 0;
+        return l;
+    };
+    project::Project p;
+    p.layers = LayerStack(kWtcW, kWtcH);
+    p.ice = piece.ice;
+    p.ircBudget = piece.ircBudget;
+    p.sauce = sauceFor("wtc-0903");
+
+    // the first snapshot: the sky and both towers in shade, with the plume
+    // and the fire between them; the fire covers the plume at one cell,
+    // (62,13)
+    Layer sky = take("sky");
+    sky.props.locked = true;
+    p.layers.add(std::move(sky));
+    for (const char* name : {"North Tower", "plume", "fire", "South Tower"}) {
+        Layer l = take(name);
+        l.props.alphaLocked = l.props.name == "North Tower" || l.props.name == "South Tower";
+        p.layers.add(std::move(l));
+    }
+    project::takeSnapshot(p);
+
+    // the second: the morning sun on the east faces, the fireball and the
+    // plane
+    for (const char* name : {"sunlight", "fireball", "plane"})
+        p.layers.add(take(name));
+    project::takeSnapshot(p);
+
+    // the third: the skyline, the water, the reflections and the tag
+    p.layers.add(take("skyline"));
+    p.layers.add(take("water"));
+    Layer reflections = take("reflections");
+    reflections.props.mode = LayerMode::ColoursOnly;
+    p.layers.add(std::move(reflections));
+    p.layers.add(take("tag"));
+    p.notes = readFile(makerDir / "notes" / "09-wtc-0903.md");
+    project::takeSnapshot(p);
+    return p;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1712,6 +1763,7 @@ int main(int argc, char** argv) {
         project::writeDirectory(brandLogo(BW_MAKER_DIR), out / "06-blockwright-logo", raw);
         project::writeDirectory(battlestation(BW_MAKER_DIR), out / "07-battlestation", raw);
         project::writeDirectory(brainOnIrc(BW_MAKER_DIR), out / "08-brain-on-irc", raw);
+        project::writeDirectory(wtc0903(BW_MAKER_DIR), out / "09-wtc-0903", raw);
     } catch (const std::exception& e) {
         std::cerr << "bw-make-samples: " << e.what() << "\n";
         return 1;
