@@ -567,71 +567,123 @@ TEST_CASE("the bundled samples show every layer capability between them") {
     CHECK(upperWins);
 }
 
-// #207's second sample: a logo built on the text-style system (PLAN §15).
-TEST_CASE("the text-style logo sample holds big styled text, its saved stacks and a baked copy") {
-    const fs::path dir = kSamples / "02-text-style-logo";
+// The second sample, a finished piece in fourteen layers (PLAN §12).
+TEST_CASE("the DDOS KING sample keeps its layers, a locked backdrop, hidden variant layers and a snapshot a stage") {
+    const fs::path dir = kSamples / "02-ddos-king";
     const project::Project p = project::read(dir);
     CHECK(p.ice);
-    CHECK(names(p.layers) == std::vector<std::string>{"backdrop", "sparks", "EMBER (baked)", "EMBER (quenched)",
-                                                      "KILN (quenched)", "EMBER", "KILN", "tagline"});
-    CHECK(p.snapshots.size() == 2);
+    CHECK(p.layers.width() == 80);
+    CHECK(p.layers.height() == 64);
+    const std::vector<std::string> order{"backdrop", "margins", "throne",  "cables", "cable tips",
+                                         "king",     "sceptre", "head",    "lightning", "finials",
+                                         "packets",  "title",   "border",  "signature"};
+    REQUIRE(names(p.layers) == order);
 
-    // the saved stacks ship with it, as library text styles
-    const auto stack = [&](const std::string& file) {
-        const std::string path = "styles/" + file + ".style.json";
-        REQUIRE(p.files.count(path) == 1);
-        const library::TextStyleEntry entry = library::parseTextStyleEntry(p.files.at(path));
-        // in the form Save as Preset… writes, so one saved back is the same bytes
-        CHECK(library::textStyleEntryJson(entry) == p.files.at(path));
-        // marked as needing iCE exactly when its stack does (#310)
-        CHECK(styleNeedsIce(entry.style) == entry.iceRequired);
-        return entry.style;
-    };
-    const TextStyle molten = stack("molten"), quenched = stack("quenched"), tag = stack("kiln-tag");
-
-    // every text layer has its style; the words are big text
+    // every layer is cells over the whole canvas; the backdrop alone is
+    // locked, and only the two variant layers are hidden
     for (const Layer& l : p.layers.layers()) {
-        if (l.props.kind != LayerKind::Text)
-            continue;
         INFO(l.props.name);
-        REQUIRE(l.props.text.has_value());
-        REQUIRE(l.props.style.has_value());
-        CHECK_FALSE(l.props.style->effects.empty());
-        if (l.props.name != "tagline")
-            CHECK(l.props.text->bigStyle == BigTextStyle::Block);
+        CHECK(l.props.kind == LayerKind::Cells);
+        CHECK(l.props.mode == LayerMode::Normal);
+        CHECK(l.props.x == 0);
+        CHECK(l.props.y == 0);
+        CHECK(l.cells.width() == 80);
+        CHECK(l.cells.height() == 64);
+        CHECK(l.props.locked == (l.props.name == "backdrop"));
+        CHECK_FALSE(l.props.alphaLocked);
+        CHECK(l.props.visible == (l.props.name != "margins" && l.props.name != "cable tips"));
     }
-    // one stack on two layers, and a second on the hidden copies
-    CHECK(named(p.layers, "EMBER").props.style == molten);
-    CHECK(named(p.layers, "KILN").props.style == molten);
-    CHECK(named(p.layers, "EMBER (quenched)").props.style == quenched);
-    CHECK(named(p.layers, "KILN (quenched)").props.style == quenched);
-    CHECK(named(p.layers, "tagline").props.style == tag);
-    CHECK_FALSE(named(p.layers, "EMBER (quenched)").props.visible);
-    CHECK_FALSE(named(p.layers, "KILN (quenched)").props.visible);
-    // what the effects a logo uses come to between them
-    REQUIRE(molten.get<ShadowEffect>() != nullptr);
-    CHECK(molten.get<ShadowEffect>()->form == ShadowForm::Extrude);
-    CHECK(molten.get<FillEffect>() != nullptr);
-    CHECK(molten.get<ShadeEffect>() != nullptr);
-    CHECK(quenched.get<ShadeEffect>() != nullptr);
-    CHECK(tag.get<PlateEffect>() != nullptr);
 
-    // the baked copy is EMBER's bake, hidden, in the same place
-    const Layer& ember = named(p.layers, "EMBER");
-    const Layer& baked = named(p.layers, "EMBER (baked)");
-    const Layer b = bake(ember, p.ice);
-    CHECK(baked.props.kind == LayerKind::Cells);
-    CHECK_FALSE(baked.props.visible);
-    CHECK(baked.props.x == ember.props.x);
-    CHECK(baked.props.y == ember.props.y);
-    CHECK(baked.cells == b.cells);
+    // twelve of them are the layers in maker/ddos-king/, cell for cell
+    const project::Project maker = project::read(kSamples / "maker" / "ddos-king");
+    REQUIRE(maker.layers.size() == 12);
+    for (const Layer& b : maker.layers.layers()) {
+        INFO(b.props.name);
+        CHECK(named(p.layers, b.props.name).cells == b.cells);
+    }
+    CHECK(composite(p.layers, {p.ice, Cell{}}) == composite(maker.layers, {maker.ice, Cell{}}));
+
+    // the hidden variant layers: black blocks over the frame's rows and last
+    // column, and four half-block cable tips
+    const Layer& margins = named(p.layers, "margins");
+    for (int y = 0; y < 64; ++y)
+        for (int x = 0; x < 80; ++x) {
+            const Cell& c = margins.cells.at(x, y);
+            if (y < 2 || y >= 62 || x == 79) {
+                CHECK(c.ch == U'\u2588');
+                CHECK(c.fg.paletteIndex() == Black);
+                CHECK(c.bg.paletteIndex() == Black);
+            } else {
+                CHECK(c.transparent);
+            }
+        }
+    // each tip is the yellow of the cable run in the cell under it, whichever
+    // layer holds the run there (the sceptre's cable at 12,36, not the cables
+    // layer, which is clear there), as the No lightning variant shows it
+    std::set<std::pair<int, int>> tipsAt;
+    const Canvas& tipCells = named(p.layers, "cable tips").cells;
+    LayerStack noLightning = p.layers;
+    for (std::size_t i = 0; i < noLightning.size(); ++i) {
+        const std::string& n = noLightning[i].props.name;
+        noLightning[i].props.visible = n != "lightning" && n != "packets" && n != "margins";
+    }
+    const Canvas shown = composite(noLightning, {p.ice, Cell{}});
+    for (int y = 0; y < 64; ++y)
+        for (int x = 0; x < 80; ++x)
+            if (const Cell& c = tipCells.at(x, y); !c.transparent) {
+                INFO("cable tip at " << x << "," << y);
+                CHECK(c.ch == U'\u2584');
+                CHECK(c.fg.paletteIndex() == Yellow);
+                CHECK(c.bg.paletteIndex() == Blue);
+                const auto run = halfBlocks(shown.at(x, y + 1), p.ice);
+                REQUIRE(run);
+                CHECK(run->top == Yellow);
+                tipsAt.insert({x, y});
+            }
+    CHECK(tipsAt == std::set<std::pair<int, int>>{{12, 35}, {9, 41}, {7, 43}, {6, 44}});
+
+    // the finials hold the gold balls and nothing of the bolts: the two cells
+    // over the inner balls, where the bolts pass, are clear, so No lightning
+    // leaves no white dot above them
+    const Layer& finials = named(p.layers, "finials");
+    for (const auto& [x, y] : {std::pair{31, 10}, std::pair{50, 10}}) {
+        INFO("finials at " << x << "," << y);
+        CHECK(finials.cells.at(x, y).transparent);
+    }
+    // the right bolt's glow runs edge to edge down its low side: the top
+    // pixel at 62,18 is light cyan, not the blue showing through
+    const Cell& glow = named(p.layers, "lightning").cells.at(62, 18);
+    CHECK_FALSE(glow.transparent);
+    const auto glowPixels = halfBlocks(glow, p.ice);
+    REQUIRE(glowPixels);
+    CHECK(glowPixels->top == LightCyan);
+
+    // the variants, each by the order and visibility it leaves
+    std::set<std::string> allButTitle(order.begin(), order.end());
+    allButTitle.erase("title");
+    allButTitle.erase("margins");
+    checkVariants(p, {{"No lightning", stackState(order, {"margins", "lightning", "packets"})},
+                      {"No border", stackState(order, {"cable tips", "border"})},
+                      {"Title only", stackState(order, allButTitle)}});
+
+    // the snapshots: the throne and its cables, the figure, finished
+    const auto upTo = [&](const std::string& last) {
+        LayerStack st(80, 64);
+        for (const Layer& l : p.layers.layers()) {
+            st.add(l);
+            if (l.props.name == last)
+                break;
+        }
+        return std::optional<Canvas>(composite(st, {p.ice, Cell{}}));
+    };
+    checkSnapshots(p, {upTo("cable tips"), upTo("head"), upTo("signature")});
 
     // it saves back as it reads, as a directory and as a zip
-    const fs::path out = scratch("logo-round-trip");
+    const fs::path out = scratch("ddos-king-round-trip");
     project::writeDirectory(p, out / "dir");
     CHECK(project::read(out / "dir") == p);
-    project::writeZip(p, out / "logo.bwp");
-    CHECK(project::read(out / "logo.bwp") == p);
+    project::writeZip(p, out / "king.bwp");
+    CHECK(project::read(out / "king.bwp") == p);
 }
 
 TEST_CASE("the still life sample keeps each object, its shadows and its rim light on layers of their own") {

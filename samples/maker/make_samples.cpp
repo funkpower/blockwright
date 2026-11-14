@@ -365,110 +365,79 @@ project::Project showcase(const fs::path& makerDir) {
     return p;
 }
 
-// ---- the text-style logo ----------------------------------------------------
+// ---- DDOS KING --------------------------------------------------------------
 
-constexpr int kLogoW = 80, kLogoH = 27;
+// A finished piece. Its layers are in maker/ddos-king/ (PLAN §12); the maker
+// takes them as they are.
+constexpr int kKingW = 80, kKingH = 64;
 
-TextStyle styleFrom(const fs::path& file) { return library::readTextStyleEntry(file).style; }
-
-Layer styledText(const TextSource& src, const std::string& name, int x, int y, const TextStyle& style, bool ice) {
-    Layer l = makeTextLayer(src, name, x, y);
-    LayerProperties props = l.props;
-    props.style = style;
-    applyLayerProperties(l, props, {}, ice);
+// Hidden: black blocks over the frame's rows and its last column, which the
+// IRC export keeps, for the variants that hide the border.
+Layer kingMargins() {
+    Layer l = makeLayer(LayerKind::Cells, kKingW, kKingH, "margins");
+    for (int y = 0; y < kKingH; ++y)
+        for (int x = 0; x < kKingW; ++x)
+            if (y < 2 || y >= kKingH - 2 || x == kKingW - 1)
+                l.cells.at(x, y) = blackBlock();
+    l.props.visible = false;
     return l;
 }
 
-TextSource bigWord(const std::u32string& word) {
-    TextSource src;
-    src.text = word;
-    src.bigStyle = BigTextStyle::Block;
-    src.letterSpacing = 2;
-    src.colour = Yellow;
-    return src;
-}
-
-// The black the logo sits on, locked: black blocks, which the IRC export
-// keeps, so the empty rows over and under the lettering stay as margins.
-Layer backdrop() {
-    Layer l = makeLayer(LayerKind::Cells, kLogoW, kLogoH, "backdrop");
-    for (int y = 0; y < kLogoH; ++y)
-        for (int x = 0; x < kLogoW; ++x)
-            l.cells.at(x, y) = blackBlock();
-    l.props.locked = true;
-    return l;
-}
-
-// Embers drifting up off the lettering: CP437 dots in the fire colours, a
-// glyph each, never two side by side, in the two corners the words leave.
-Layer sparks() {
-    Layer l = makeLayer(LayerKind::Cells, kLogoW, kLogoH, "sparks");
-    struct Zone {
-        int x0, y0, x1, y1, n;
-    };
-    const Zone zones[] = {{58, 1, 77, 8, 6}, {3, 11, 32, 17, 7}};
-    Lcg r{7};
-    for (const Zone& z : zones)
-        for (int placed = 0, tries = 0; placed < z.n && tries < 500; ++tries) {
-            const int x = z.x0 + r.below(z.x1 - z.x0 + 1), y = z.y0 + r.below(z.y1 - z.y0 + 1);
-            bool clear = true;
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx)
-                    if (x + dx >= 0 && x + dx < kLogoW && y + dy >= 0 && y + dy < kLogoH &&
-                        !l.cells.at(x + dx, y + dy).transparent)
-                        clear = false;
-            if (!clear)
-                continue;
-            const int pick = r.below(3);
-            l.cells.at(x, y) = pick == 0 ? cell(U'*', Yellow, Black) : pick == 1 ? cell(U'+', LightRed, Black)
-                                                                                  : cell(U'·', Yellow, Black);
-            ++placed;
-        }
-    return l;
-}
-
-project::Project logo(const fs::path& makerDir) {
-    const fs::path dir = makerDir / "logo";
-    const bool ice = true;  // the fire ramp's yellow and white rungs are iCE backgrounds
-    project::Project p;
-    p.layers = LayerStack(kLogoW, kLogoH);
-    p.ice = ice;
-    p.sauce = sauceFor("Ember Kiln");
-
-    p.layers.add(backdrop());
-    p.layers.add(sparks());
-
-    // one saved stack on both words, a second stack on hidden copies of them
-    const TextStyle molten = styleFrom(dir / "molten.style.json");
-    const TextStyle quenched = styleFrom(dir / "quenched.style.json");
-    Layer ember = styledText(bigWord(U"EMBER"), "EMBER", 3, 1, molten, ice);
-    Layer baked = bake(ember, ice);
-    baked.props.id = 0;
-    baked.props.name = "EMBER (baked)";
-    baked.props.visible = false;
-    p.layers.add(std::move(baked));
-    for (const auto& [word, name, x, y] :
-         {std::tuple{U"EMBER", "EMBER (quenched)", 3, 1}, {U"KILN", "KILN (quenched)", 37, 10}}) {
-        Layer cold = styledText(bigWord(word), name, x, y, quenched, ice);
-        cold.props.visible = false;
-        p.layers.add(std::move(cold));
+// Hidden: half a cell more cable on top of four cable runs, for the variant
+// that hides the lightning. With it gone, the blue cell over each run's top
+// and the yellow cell of the run read to the lint as a ramp that skips rungs;
+// a half block of the cable's own colour over the blue breaks that. The
+// colour is the top half of the run's cell as the layers under the lightning
+// show it, whichever of them holds the cable there (the sceptre's at 12,36,
+// the cables' elsewhere).
+Layer cableTips(const LayerStack& layers, bool ice) {
+    std::size_t lightning = 0;
+    while (layers[lightning].props.name != "lightning")
+        if (++lightning == layers.size())
+            throw std::runtime_error("no layer lightning");
+    Layer l = makeLayer(LayerKind::Cells, kKingW, kKingH, "cable tips");
+    for (const auto& [x, y] : {std::pair{12, 35}, {9, 41}, {7, 43}, {6, 44}}) {
+        const auto run = halfBlocks(compositeCellBelow(layers, lightning, x, y + 1, {ice, Cell{}}), ice);
+        if (!run)
+            throw std::runtime_error("no cable under a cable tip");
+        l.cells.at(x, y) = cell(U'▄', run->top, Blue);
     }
-    p.layers.add(std::move(ember));
-    p.layers.add(styledText(bigWord(U"KILN"), "KILN", 37, 10, molten, ice));
+    l.props.visible = false;
+    return l;
+}
 
-    // the first round: the two words, no tagline
+project::Project ddosKing(const fs::path& makerDir) {
+    project::Project piece = project::read(makerDir / "ddos-king");
+    const auto take = [&](const char* name) {
+        Layer l = layerNamed(piece.layers, name);
+        l.props.id = 0;
+        return l;
+    };
+    project::Project p;
+    p.layers = LayerStack(kKingW, kKingH);
+    p.ice = piece.ice;  // the light cyan glow and the gold are backgrounds
+    p.ircBudget = piece.ircBudget;
+    p.sauce = sauceFor("DDOS KING");
+
+    // the first snapshot: the throne and its cables on the locked backdrop
+    Layer backdrop = take("backdrop");
+    backdrop.props.locked = true;
+    p.layers.add(std::move(backdrop));
+    p.layers.add(kingMargins());
+    p.layers.add(take("throne"));
+    p.layers.add(take("cables"));
+    p.layers.add(cableTips(piece.layers, piece.ice));
     project::takeSnapshot(p);
 
-    TextSource tag;
-    tag.text = U"ART AT WHITE HEAT";
-    tag.face.name = "mini";
-    tag.colour = Yellow;
-    p.layers.add(styledText(tag, "tagline", 5, 20, styleFrom(dir / "kiln-tag.style.json"), ice));
+    // the second: the figure
+    for (const char* name : {"king", "sceptre", "head"})
+        p.layers.add(take(name));
+    project::takeSnapshot(p);
 
-    // the stacks travel with the project, to copy into a library folder
-    for (const auto& [name, bytes] : dirFiles(dir))
-        p.files["styles/" + name] = bytes;
-    p.notes = readFile(makerDir / "notes" / "02-text-style-logo.md");
+    // the third: the lightning, the lettering and the frame
+    for (const char* name : {"lightning", "finials", "packets", "title", "border", "signature"})
+        p.layers.add(take(name));
+    p.notes = readFile(makerDir / "notes" / "02-ddos-king.md");
     project::takeSnapshot(p);
     return p;
 }
@@ -1472,7 +1441,7 @@ int main(int argc, char** argv) {
         const fs::path out = argv[1];
         constexpr auto raw = project::CellsFrame::Raw;
         project::writeDirectory(showcase(BW_MAKER_DIR), out / "01-layers-showcase", raw);
-        project::writeDirectory(logo(BW_MAKER_DIR), out / "02-text-style-logo", raw);
+        project::writeDirectory(ddosKing(BW_MAKER_DIR), out / "02-ddos-king", raw);
         project::writeDirectory(stillLife(BW_MAKER_DIR), out / "03-still-life", raw);
         project::writeDirectory(generatorPiece(BW_MAKER_DIR), out / "04-generator-ridges", raw);
         project::writeDirectory(character(BW_MAKER_DIR), out / "05-character", raw);

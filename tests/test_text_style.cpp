@@ -832,7 +832,7 @@ TEST_CASE("styleNeedsIce: a stack that can write a shade between two bright ramp
 // ink, where mapping its one colour by rank would put every cell on the top.
 TEST_CASE("Fill rows and columns on Block big text: a gradient by position and not one flat colour",
           "[style][mask]") {
-    TextSource s = word(U"EMBER", "block", White);
+    TextSource s = word(U"FORGE", "block", White);
     s.bigStyle = BigTextStyle::Block;
     const Canvas base = plain(s, bigTextFace());
     for (const char* name : {"fire", "steel", "sunset"})

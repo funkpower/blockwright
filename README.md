@@ -94,8 +94,9 @@ Help > Samples:
 
 - `01-layers-showcase`, Harbour at night: every layer kind, both blend modes,
   locks, a generator, a text layer and its baked copy, and a reference sketch.
-- `02-text-style-logo`, Ember Kiln: big block text with saved style stacks, one
-  stack shared by two words and a second to swap the logo from fire to ice.
+- `02-ddos-king`, DDOS KING: a crowned king in shades on a throne of server
+  racks under packet lightning, a finished piece in fourteen layers over a
+  locked backdrop, with variants and a snapshot a stage.
 - `03-still-life`: a cylinder, a box and a ball shaded inside their own shapes
   under alpha locks, with cast shadows and a rim light on layers of their own.
 - `04-generator-ridges`, Ridges at dusk: mountain ridges and stars from two

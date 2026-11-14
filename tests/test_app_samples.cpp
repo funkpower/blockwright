@@ -45,7 +45,7 @@ namespace {
 
 const fs::path kSource = BW_SAMPLES_SOURCE;
 const QString kShowcase = QStringLiteral("01-layers-showcase");
-const QString kLogo = QStringLiteral("02-text-style-logo");
+const QString kKing = QStringLiteral("02-ddos-king");
 const QString kStillLife = QStringLiteral("03-still-life");
 const QString kRidges = QStringLiteral("04-generator-ridges");
 const QString kCharacter = QStringLiteral("05-character");
@@ -142,10 +142,10 @@ TEST_CASE("Help > Samples lists the bundled samples by title, a broken one disab
         CHECK(actions[0]->isEnabled());
         CHECK(actions[0]->toolTip().startsWith(QStringLiteral("A city on the water")));
         CHECK(actions[0]->property("path").toString() == qpath(kSource / kShowcase.toStdString()));
-        CHECK(actions[1]->text() == QStringLiteral("Ember Kiln"));
+        CHECK(actions[1]->text() == QStringLiteral("DDOS KING"));
         CHECK(actions[1]->isEnabled());
-        CHECK(actions[1]->toolTip().startsWith(QStringLiteral("A two-word logo set in big block text")));
-        CHECK(actions[1]->property("path").toString() == qpath(kSource / kLogo.toStdString()));
+        CHECK(actions[1]->toolTip().startsWith(QStringLiteral("A king on a throne of server racks")));
+        CHECK(actions[1]->property("path").toString() == qpath(kSource / kKing.toStdString()));
         CHECK(actions[2]->text() == QStringLiteral("Still life"));
         CHECK(actions[2]->isEnabled());
         CHECK(actions[2]->toolTip().startsWith(QStringLiteral("A cylinder, a box and a ball on a table")));
@@ -237,17 +237,17 @@ TEST_CASE("a sample opens as an untitled, unmodified copy, off the recent list",
         CHECK(w.document()->path().isEmpty());
         CHECK(recentFiles().isEmpty());
     }
-    SECTION("the text-style logo, its live text layers and styles intact") {
-        const project::Project logo = project::read(kSource / kLogo.toStdString());
+    SECTION("DDOS KING, its layers, its lock and its hidden variant layers intact") {
+        const project::Project king = project::read(kSource / kKing.toStdString());
         const QList<QAction*> actions = sampleActions(w);
         REQUIRE(actions.size() == 6);
         actions[1]->trigger();
         const Document& doc = *w.document();
         CHECK(doc.path().isEmpty());
         CHECK_FALSE(doc.isModified());
-        CHECK(doc.ansi().canvas == composite(logo.layers, {logo.ice, Cell{}}));
-        REQUIRE(doc.layers().size() == logo.layers.size());
-        CHECK(doc.layers() == logo.layers);
+        CHECK(doc.ansi().canvas == composite(king.layers, {king.ice, Cell{}}));
+        REQUIRE(doc.layers().size() == king.layers.size());
+        CHECK(doc.layers() == king.layers);
     }
     SECTION("the still life, its locks intact") {
         const project::Project life = project::read(kSource / kStillLife.toStdString());
@@ -388,12 +388,12 @@ TEST_CASE("the start screen lists the samples and opens one", "[samples][start-s
         QPointer<StartScreen> guard(s);
         const QList<QPushButton*> entries = s->findChildren<QPushButton*>(QStringLiteral("startSampleEntry"));
         REQUIRE(entries.size() == 6);
-        CHECK(entries[1]->text() == QStringLiteral("Ember Kiln"));
+        CHECK(entries[1]->text() == QStringLiteral("DDOS KING"));
         CHECK(entries[2]->text() == QStringLiteral("Still life"));
         CHECK(entries[3]->text() == QStringLiteral("Ridges at dusk"));
         CHECK(entries[4]->text() == QStringLiteral("Traveller"));
         CHECK(entries[5]->text() == QStringLiteral("Blockwright logo"));
-        CHECK(entries[1]->toolTip().startsWith(QStringLiteral("A two-word logo set in big block text")));
+        CHECK(entries[1]->toolTip().startsWith(QStringLiteral("A king on a throne of server racks")));
         QPushButton* entry = entries[0];
         entry->click();
         QCoreApplication::processEvents();
