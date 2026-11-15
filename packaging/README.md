@@ -219,8 +219,11 @@ blockwright-cli render piece.ans piece.png
 ./blockwright-<version>-x86_64.AppImage --cli lint piece.ans
 ```
 
-Running an AppImage needs FUSE 2 (`libfuse2`); without it, set
-`APPIMAGE_EXTRACT_AND_RUN=1` or run it with `--appimage-extract-and-run`.
+Running the AppImage needs FUSE: a `fusermount3` or `fusermount` command on
+the `PATH`, from the `fuse3` package or the older FUSE 2 package. The
+AppImage's runtime is static and loads no `libfuse`, so `libfuse2` alone is
+not enough. Without one, set `APPIMAGE_EXTRACT_AND_RUN=1` or run it with
+`--appimage-extract-and-run`.
 Where AppImageLauncher is installed, its binfmt handler runs every AppImage
 under the AppImage's own path, so a `blockwright-cli` symlink starts the
 editor; use `--cli` there.

@@ -8,7 +8,159 @@ A native editor for ANSI and IRC block art, with layers, generator scripts and
 a live IRC byte budget, and a headless `blockwright-cli` built from the same
 core. C++20 and Qt 6, for Linux, macOS, Windows and FreeBSD.
 
-<p align="center"><img src="docs/harbour.png" width="480" alt="Harbour at night, the layers sample: a city skyline under a full moon over the water, with HARBOUR in yellow block letters"></p>
+<p align="center"><img src="docs/screenshot.png" width="900" alt="The Blockwright window with the Battlestation sample open: a night desk lit by its monitor on the canvas, with the IRC row meter's bars beside it; the Ramp Shade Brush's settings in the Tool Options dock on the left, with the Toolbox above it; the Preview, Palette, Layers, Library and Lint docks on the right; the Glyphs dock along the bottom"></p>
+
+## Install
+
+Every release's files are on the
+[latest release page](https://git.pumpin.online/funkpower/blockwright/releases/latest).
+In the file names below, `<version>` is the release's version, such as
+`0.1.1`, and each file but the `PKGBUILD` has a `.sha256` beside it. Every
+package installs the editor, `blockwright`, and the command-line tool,
+`blockwright-cli`. [Installing Blockwright](https://blockwright.pumpin.online/manual/01-install.html)
+in the manual has each system's steps in full, with checking the downloads
+and uninstalling.
+
+### Arch Linux
+
+The AUR package is coming but isn't up yet. Until it is, build the package
+from the release's `PKGBUILD`, as a user who isn't root:
+
+```sh
+mkdir blockwright && cd blockwright
+curl -LO https://git.pumpin.online/funkpower/blockwright/releases/download/v<version>/PKGBUILD
+makepkg -si
+```
+
+makepkg downloads the source tarball from the release, checks it against the
+checksum the `PKGBUILD` carries, builds it and runs the tests, and `-si`
+installs the dependencies and the package. It puts `blockwright` and
+`blockwright-cli` in `/usr/bin`.
+
+### Debian and Ubuntu
+
+A `.deb` is built for each of these releases and is for that release only:
+
+| Release | File |
+|---|---|
+| Debian 13 (trixie) | `blockwright_<version>-1_debian13_amd64.deb` |
+| Debian testing | `blockwright_<version>-1_debian-testing_amd64.deb` |
+| Ubuntu 26.04 | `blockwright_<version>-1_ubuntu26.04_amd64.deb` |
+| Ubuntu 26.10 | `blockwright_<version>-1_ubuntu26.10_amd64.deb` |
+
+```sh
+sudo apt install ./blockwright_<version>-1_<release>_amd64.deb
+```
+
+It puts `blockwright` and `blockwright-cli` in `/usr/bin`. Debian 12 and
+Ubuntu 24.04 ship a Qt older than 6.7, the minimum; use the AppImage there.
+
+### Fedora
+
+Built for Fedora 45:
+
+```sh
+sudo dnf install ./blockwright-<version>-1.fc45.x86_64.rpm
+```
+
+It puts `blockwright` and `blockwright-cli` in `/usr/bin`.
+
+### AppImage
+
+For x86-64 Linux with glibc 2.36 or later (Debian 12, Ubuntu 24.04 and
+newer). It carries its own Qt.
+
+```sh
+sha256sum -c blockwright-<version>-x86_64.AppImage.sha256
+chmod +x blockwright-<version>-x86_64.AppImage
+./blockwright-<version>-x86_64.AppImage
+```
+
+With `--cli` first it runs `blockwright-cli`, and so does a link to it under
+a name that starts with `blockwright-cli`:
+
+```sh
+./blockwright-<version>-x86_64.AppImage --cli lint piece.ans
+ln -s "$PWD/blockwright-<version>-x86_64.AppImage" ~/.local/bin/blockwright-cli
+```
+
+Where AppImageLauncher is installed the link starts the editor; use `--cli`
+there. Running the AppImage needs FUSE: a `fusermount3` or `fusermount`
+command on the `PATH`, from the `fuse3` package or the older FUSE 2 package.
+Without one, set `APPIMAGE_EXTRACT_AND_RUN=1` or run it with
+`--appimage-extract-and-run`.
+
+### macOS
+
+`Blockwright-<version>.dmg` is a universal app (Apple silicon and Intel) for
+macOS 12 or later. Open it and drag Blockwright to Applications.
+
+The app is signed ad hoc, not with a Developer ID, and is not notarized, so
+Gatekeeper blocks the first run of a downloaded copy: of the app, and of
+`blockwright-cli` inside it. Before using either, remove the quarantine flag
+from the whole bundle, which clears both:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Blockwright.app
+```
+
+The app alone can also be allowed from System Settings > Privacy & Security
+after its first launch is blocked; that leaves `blockwright-cli`
+quarantined, and over ssh a quarantined `blockwright-cli` waits on a prompt
+nothing can answer. The command-line tool is
+`/Applications/Blockwright.app/Contents/MacOS/blockwright-cli`.
+
+With Homebrew:
+
+```sh
+brew tap funkpower/tap https://git.pumpin.online/funkpower/homebrew-tap.git
+brew install --cask funkpower/tap/blockwright
+```
+
+Homebrew 7 refuses the short name, `blockwright`, from a tap it doesn't
+trust, so the cask is installed by its full name. It installs the app and
+links `blockwright-cli` onto the PATH. Its caveat gives the same `xattr`
+command, which both need before their first run.
+
+### FreeBSD
+
+`blockwright-<version>-freebsd-port.tar.gz` is the port, for FreeBSD 14. It
+builds against the packaged Qt 6 and needs the ports framework in
+`/usr/ports` (for example
+`git clone --depth 1 https://git.FreeBSD.org/ports.git /usr/ports`). Install
+the build dependencies from packages, then fetch the port, unpack it and
+build it as root:
+
+```sh
+pkg install cmake ninja qt6-base qt6-svg libzip zstd
+fetch https://git.pumpin.online/funkpower/blockwright/releases/download/v<version>/blockwright-<version>-freebsd-port.tar.gz
+tar xzf blockwright-<version>-freebsd-port.tar.gz
+cd blockwright
+make install clean
+```
+
+`make install` downloads the source tarball from the release and checks it
+against the port's `distinfo`. It puts `blockwright` and `blockwright-cli` in
+`/usr/local/bin`. The port is not in the ports tree and there is no binary
+package. `packaging/freebsd/` is the port's template, whose `distinfo` holds
+zeros; [packaging/README.md § FreeBSD](packaging/README.md#freebsd) describes
+how a release's port is written from it.
+
+### Windows
+
+`blockwright-<version>-x86_64.msi` is for 64-bit Windows 10 or later. It
+isn't signed, so SmartScreen stops it with "Windows protected your PC":
+click More info, then Run anyway. It installs for every user, so User
+Account Control asks for an administrator's approval. It installs into
+`C:\Program Files\Blockwright`, with `blockwright.exe` and
+`blockwright-cli.exe` in its `bin` folder, which isn't put on the `PATH`, and
+adds Blockwright to the Start menu. Uninstall it from Settings > Apps.
+[packaging/windows/README.md](packaging/windows/README.md) describes how the
+MSI is built.
+
+### From source
+
+See [Building](#building).
 
 ## What it does
 
@@ -156,13 +308,6 @@ format. Exit status: 0 ok, 1 bad input, a failure or a refused lossy write, 2 us
 JSON (id, menu, text, default shortcuts, tips, tool and help ids) without
 opening a window.
 
-## Platforms and packages
-
-Linux, macOS, Windows and FreeBSD. `packaging/README.md` covers the packages:
-a source tarball, Arch (AUR), Debian and Ubuntu, Fedora and an AppImage on
-Linux; a FreeBSD port; a macOS app, disk image and Homebrew cask; and a
-Windows MSI.
-
 ## Building
 
 Needs CMake 3.24 or later, Ninja, Qt 6.7 or later (Core, Gui, Widgets,
@@ -178,6 +323,9 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build
 The tests need no display. `PLAN.md` is the design: the layer model, the
 project and file formats, the IRC encoder and budgets, generators, the brushes
 and the decisions behind them.
+
+`packaging/README.md` covers building each package, and
+`packaging/RELEASING.md` the order a release is made in.
 
 ## Licence
 
