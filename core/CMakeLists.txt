@@ -45,7 +45,6 @@ add_library(blockwright_core STATIC
   src/mirc.cpp
   src/palette.cpp
   src/pc_fonts.cpp
-  src/pipeline.cpp
   src/project.cpp
   src/regular_file.cpp
   src/ramp.cpp
@@ -71,9 +70,8 @@ if(BUILD_TESTING)
   target_compile_definitions(blockwright_core PUBLIC BW_TEST_HOOKS)
 endif()
 # The Library (library.cpp) reads JSON sidecars and finds the app data
-# directory through QtCore, the pipeline (pipeline.cpp) lowercases tags with
-# QString, and projects (project.cpp) read and write their JSON with it, which
-# PLAN §4 allows in core. Projects are zip files (libzip) whose layer cells
+# directory through QtCore, and projects (project.cpp) read and write their
+# JSON with it, which PLAN §4 allows in core. Projects are zip files (libzip) whose layer cells
 # are zstd frames (found in the top-level CMakeLists).
 target_link_libraries(blockwright_core PRIVATE Qt6::Core libzip::zip ${BW_ZSTD})
 # Where the bundled library is installed, from the binaries' directory.

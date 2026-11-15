@@ -62,8 +62,6 @@ add_library(blockwright_app STATIC
   plural.h
   preferences.cpp
   preferences.h
-  publish.cpp
-  publish.h
   recent_files.cpp
   recent_files.h
   reference_scale.cpp

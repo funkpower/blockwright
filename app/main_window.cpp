@@ -10,7 +10,6 @@
 #include "plural.h"
 #include "preferences.h"
 #include "shortcut_settings.h"
-#include "publish.h"
 #include "recent_files.h"
 #include "shortcuts_dialog.h"
 #include "start_screen.h"
@@ -230,7 +229,7 @@ QString lossDescription(const AnsiOutput& out, bool countWide) {
                             QObject::tr("%n cells hold a glyph with no CP437 code and will be written as '?': %1"))
                          .arg(namedGlyphs(c));
         // a lead and a cluster written as its base, each named with what
-        // it is written as; Publish and Send count the leads instead
+        // it is written as; snapshots count the leads instead
         if (const std::vector<Unwritable> c = lost([&](const Unwritable& u) {
                 return u.loss == Loss::MarksDropped || (u.loss == Loss::Wide && !countWide);
             });
@@ -392,17 +391,6 @@ QString lossQuestion(const AnsiOutput& out, bool project, ArtFormat format) {
 
 QString saveWarning(const AnsiOutput& out, bool project, ArtFormat format) {
     return lossQuestion(out, project, format);
-}
-
-QString pipelineWarning(const AnsiOutput& out, PipelineAction action, bool canvasText) {
-    const QString text =
-        canvasText ? QStringLiteral("\n\n") +
-                         QObject::tr("That is the .ans only: the .txt is made from the canvas, and WeeChat's ascii "
-                                     "script plays the .txt.")
-                   : QString();
-    return action == PipelineAction::Publish
-               ? QObject::tr("Before publishing:\n%1.%2\n\nPublish anyway?").arg(lossDescription(out, true), text)
-               : QObject::tr("Before sending:\n%1.%2\n\nSend anyway?").arg(lossDescription(out, true), text);
 }
 
 SavePath resolveSavePath(const QString& chosen, const QString& suffix) {
@@ -706,8 +694,9 @@ void MainWindow::createActions() {
     a->setObjectName(QStringLiteral("sauce"));
     a->setStatusTip(tr("Edit the SAUCE record: title, author, group, date and comments"));
     file->addSeparator();
-    (new Publisher(this))->addActions(file);
-    file->addSeparator();
+    // above Quit: Export IRC Text and Export Micron go before it
+    // (createIrcActions), then Open Reference Image (createEditingActions)
+    file->addSeparator()->setObjectName(QStringLiteral("quitSeparator"));
     a = file->addAction(tr("&Quit"), this, &QWidget::close);
     a->setObjectName(QStringLiteral("quit"));
     a->setStatusTip(tr("Close Blockwright, asking to save unsaved edits first"));

@@ -95,8 +95,8 @@ std::optional<TextEncoding> openFilterEncoding(const QString& filter);
 // columns wide. The glyphs are named: up to three distinct ones, each with
 // its cell (column,row from 0) or its count and first cell, then "and N
 // more"; a control, format or combining character as U+XXXX, never raw.
-// With `countWide` (Publish, Send and snapshots), the leads are counted
-// rather than named: "12 wide glyphs written as ?".
+// With `countWide` (snapshots), the leads are counted rather than named:
+// "12 wide glyphs written as ?".
 QString lossDescription(const AnsiOutput& out, bool countWide = false);
 
 // What reading a UTF-8 .ans dropped (ReadLoss), as openFile shows it in the
@@ -135,15 +135,6 @@ QString rejectedGlyphsMessage(const QString& text, Target target = Target::Ansi,
 // A CP437 .ans whose '?' cells a UTF-8 one would keep says how many, and to
 // Save As "ANSI art, UTF-8 (*.ans)".
 QString saveWarning(const AnsiOutput& out, bool project = false, ArtFormat format = ArtFormat::Ansi);
-// The question Publish to Library and Send to WeeChat ask before a lossy
-// CP437 payload (PLAN §9): "Before publishing:" or "Before sending:", the
-// loss (lossDescription, counting wide glyphs), then "Publish anyway?" or "Send anyway?". There is
-// no hint to Save As UTF-8, since both always write CP437 whatever the
-// document is saved as.
-enum class PipelineAction { Publish, Send };
-// `canvasText`: the .txt beside the .ans is made from the canvas
-// (Publisher::ircText), so the losses are the .ans's alone, which it says.
-QString pipelineWarning(const AnsiOutput& out, PipelineAction action, bool canvasText = false);
 
 class SelectTool;
 class GlyphBar;

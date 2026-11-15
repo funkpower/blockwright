@@ -968,16 +968,12 @@ TEST_CASE("the loss warning names a wide glyph and a cluster's dropped marks") {
                          "1 cell holds a glyph whose CP437 byte .ans reads as a control code (TAB) and will be "
                          "written as '?' (XBIN and BIN keep it)"));
 
-    // Publish and Send count the wide glyphs rather than name them
+    // snapshots count the wide glyphs rather than name them
     out.unwritable = {{3, 0, wide, Loss::Wide}, {7, 0, wide, Loss::Wide}, {0, 1, *heart, Loss::MarksDropped, U'♥'}};
     CHECK(lossDescription(out, true) == QStringLiteral("1 cell holds a glyph CP437 can't hold whole: ♥ U+FE0F at 0,1 "
                                                        "written as ♥;\n2 wide glyphs written as ?"));
-    CHECK(pipelineWarning(out, PipelineAction::Publish) ==
-          QStringLiteral("Before publishing:\n1 cell holds a glyph CP437 can't hold whole: ♥ U+FE0F at 0,1 written "
-                         "as ♥;\n2 wide glyphs written as ?.\n\nPublish anyway?"));
     out.unwritable = {{3, 0, wide, Loss::Wide}};
-    CHECK(pipelineWarning(out, PipelineAction::Send) ==
-          QStringLiteral("Before sending:\n1 wide glyph written as ?.\n\nSend anyway?"));
+    CHECK(lossDescription(out, true) == QStringLiteral("1 wide glyph written as ?"));
 
     // a UTF-8 .ans writes a lead a terminal won't draw two wide as '?' and a space
     out.encoding = TextEncoding::Utf8;
@@ -1010,9 +1006,8 @@ TEST_CASE("the loss warning names a wide glyph and a cluster's dropped marks") {
     const QString both = saveWarning(writeAnsi(d, TextEncoding::Cp437));
     CHECK(both.contains(QStringLiteral("A at 0,0 written as ?; 中 at 3,0 written as ?.")));
     CHECK(both.contains(QStringLiteral("A UTF-8 .ans keeps the glyph of 1 of those cells")));
-    // Publish and Send write CP437 and count them
-    CHECK(pipelineWarning(writeAnsi(d, TextEncoding::Cp437), PipelineAction::Publish) ==
-          QStringLiteral("Before publishing:\n2 wide glyphs written as ?.\n\nPublish anyway?"));
+    // and counted rather than named
+    CHECK(lossDescription(writeAnsi(d, TextEncoding::Cp437), true) == QStringLiteral("2 wide glyphs written as ?"));
     // a lone wide cell a UTF-8 .ans writes as '?' too, so no hint to it
     AnsiDocument lone;
     lone.canvas = Canvas(4, 1);
@@ -1057,8 +1052,7 @@ TEST_CASE("opening a UTF-8 .ans says what the read dropped") {
 
 TEST_CASE("the loss warning names an invisible glyph by its code point, never as nothing") {
     // review of #332, N1: ❤️ in a UTF-8 document is U+2764 U+FE0F, one
-    // cluster cell; Publish and Send write CP437 and name the U+FE0F by its
-    // code point
+    // cluster cell; a CP437 .ans names the U+FE0F by its code point
     const AnsiDocument d = parseAnsi("\xe2\x9d\xa4\xef\xb8\x8f\r\n", {.encoding = TextEncoding::Utf8});
     const GlyphCodePoints cps = codePoints(d.canvas.at(0, 0).ch);
     REQUIRE(std::u32string(cps.begin(), cps.end()) == U"\u2764\uFE0F");

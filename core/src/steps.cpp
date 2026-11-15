@@ -428,7 +428,7 @@ void readOptions(const std::string& where, const QJsonObject& o, Options& opt) {
 }
 
 // 1-64 of a-z 0-9 - _, starting with a letter or digit: a file name on any
-// system, as Publish's piece names are.
+// system.
 bool goodName(const std::string& s) {
     if (s.empty() || s.size() > 64)
         return false;

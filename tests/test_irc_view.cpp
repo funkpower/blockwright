@@ -3,12 +3,15 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/halfblock.h"
+#include "blockwright/irc.h"
 #include "blockwright/irc_view.h"
 #include "blockwright/ramp.h"
 #include "util.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <set>
 #include <string>
 #include <tuple>
@@ -399,4 +402,207 @@ TEST_CASE("a row cut past the view's width is cut (#364)", "[irc][view]") {
     const View whole = ircView(c, 483);
     CHECK_FALSE(whole.rows[0].lost);
     CHECK(whole.cutRows() == 0);
+}
+
+TEST_CASE("A .txt line is held to the budget as WeeChat's ascii script sends it", "[irc][view][utf8]") {
+    // Each row is what the ascii script (1.32.2, 3f16708) does
+    // with the line as a .txt at 407 bytes. Derived by loading it with
+    // python3 -I and a stub weechat module, then running text_to_irc on the
+    // line and a '\n' and fit_lines on the result: the size of the line it
+    // sends when fit_lines cuts nothing, and when it cuts, the shorter of
+    // compact's line and encode_irc_min's, each with fit's reset after a
+    // trailing space. Not from txtSentBytes.
+    const std::string star = "\xE2\x98\x85", block = "\xE2\x96\x88";
+    const auto stars = [&](int n) {  // ★ in mIRC 4 and 5 by turns, on 1
+        std::string s = "\x03" "4,1" + star;
+        for (int i = 1; i < n; ++i)
+            s += (i % 2 ? "\x03" "5" : "\x03" "4") + star;
+        return s;
+    };
+    std::string solid = "\x03" "0,4 ";  // a space on 4 and a 4 █ on 5 by turns
+    for (int i = 1; i < 140; ++i)
+        solid += i % 2 ? "\x03" "4,5" + block : std::string("\x03" "0,4 ");
+    std::string pairs = "\x03" "3,2";
+    for (int i = 0; i < 200; ++i)
+        pairs += "ab";
+    struct Row {
+        const char* name;
+        std::string line;
+        std::size_t written, sent;
+        bool cut;
+    };
+    const std::vector<Row> rows{
+        {"the #364 repro: 80 stars", stars(80), 402, 483, true},
+        {"68 stars", stars(68), 342, 411, true},
+        {"67 stars", stars(67), 337, 405, false},
+        {"spaces and blocks, sent as encode_irc_min has them", solid, 840, 147, false},
+        {"a trailing space on a colour", pairs + " ", 405, 408, true},
+        {"a digit after a reset", "\x03" "4,1x\x03\x02\x02" "1" + std::string(398, 'y'), 407, 409, true},
+    };
+    for (const Row& r : rows) {
+        INFO(r.name);
+        REQUIRE(r.line.size() == r.written);
+        CHECK(txtSentBytes(r.line, kEfnetWeechatBudget) == r.sent);
+        const auto over = txtOverBudget({r.line}, kEfnetWeechatBudget);
+        CHECK(over.size() == (r.cut ? 1u : 0u));
+        if (r.cut && over.size() == 1) {
+            CHECK(over[0].line == 1);
+            CHECK(over[0].bytes == r.sent);
+            CHECK(over[0].where.empty());
+        }
+    }
+    // The repro and the last two fit as written, which is what the budget
+    // used to measure.
+    CHECK(overBudget({stars(80), pairs + " ", rows.back().line}, kEfnetWeechatBudget).empty());
+}
+
+TEST_CASE("A .txt line's formatting is costed as the ascii script sends it", "[irc][view][utf8]") {
+    // The re-check of #362: the script keeps bold, italic, underline,
+    // reverse, strikethrough and monospace, writing each again where it
+    // changes, and leaves a line with any of them to encode_irc, never
+    // encode_irc_min. Recorded as the rows of the test above, from the
+    // script (1.32.2, 3f16708). Not from txtSentBytes.
+    std::string solid = "\x03" "0,4 ";  // as the test above has it
+    for (int i = 1; i < 140; ++i)
+        solid += i % 2 ? "\x03" "4,5\xE2\x96\x88" : std::string("\x03" "0,4 ");
+    struct Row {
+        std::string name, line;
+        std::size_t written, sent;
+        bool cut;
+    };
+    std::vector<Row> rows;
+    for (const auto& [code, name] : std::vector<std::pair<std::string, std::string>>{
+             {"\x02", "bold"}, {"\x1d", "italic"}, {"\x1f", "underline"}, {"\x16", "reverse"},
+             {"\x1e", "strikethrough"}, {"\x11", "monospace"}}) {
+        rows.push_back({name + ", 400 x", code + "\x03" "4,1" + std::string(400, 'x'), 405, 407, false});
+        rows.push_back({name + ", 401 x", code + "\x03" "4,1" + std::string(401, 'x'), 406, 408, true});
+    }
+    rows.push_back({"bold on spaces and blocks: no shortest encoding", "\x02" + solid, 841, 1121, true});
+    rows.push_back({"bold cancelled: the shortest encoding again", "\x02\x02" + solid, 842, 147, false});
+    rows.push_back({"underlined trailing spaces are sent",
+                    "\x1f\x03" "4" + std::string(395, 'x') + "    ", 402, 404, false});
+    rows.push_back({"plain trailing spaces are not", "\x03" "4" + std::string(395, 'x') + "    ", 401, 398, false});
+    rows.push_back({"a reset ends bold", "\x02\x03" "4,1x\x0f" + std::string(401, 'y'), 408, 411, true});
+    rows.push_back({"a tab is spaces to the next stop", "\x03" "4,1" + std::string(396, 'x') + "\ty", 402, 407, false});
+    rows.push_back({"other controls are dropped", "\x03" "4,1" + std::string(401, 'x') + "\x01\x01", 407, 407, false});
+    rows.push_back({"a ^D colour is the nearest mIRC one",
+                    "\x04" "FF0000,000000" + std::string(401, 'x'), 415, 407, false});
+    rows.push_back({"a bare ^D resets the colours", "\x03" "4,1x\x04" + std::string(400, 'y'), 406, 408, true});
+    for (const Row& r : rows) {
+        INFO(r.name);
+        REQUIRE(r.line.size() == r.written);
+        CHECK(txtSentBytes(r.line, kEfnetWeechatBudget) == r.sent);
+        const auto over = txtOverBudget({r.line}, kEfnetWeechatBudget);
+        CHECK(over.size() == (r.cut ? 1u : 0u));
+        if (r.cut && over.size() == 1) {
+            CHECK(over[0].line == 1);
+            CHECK(over[0].bytes == r.sent);
+            CHECK(over[0].where.empty());
+        }
+    }
+}
+
+TEST_CASE("A .txt line is held to the budget whatever Unicode the ascii script's Python has", "[irc][view][utf8]") {
+    // The re-checks of #362: the script joins a code point to the
+    // character before it only if its Python's unicodedata makes it a mark
+    // (Mn or Me), and Blockwright's width table is Unicode 18.0. Each row was
+    // recorded from the script (1.32.2, 3f16708) with its
+    // unicodedata giving every category from the UnicodeData.txt of 14.0,
+    // 15.0, 15.1, 16.0, 17.0 and 18.0 in turn, and natively under Python
+    // 3.11, 3.12, 3.13 and 3.14 (14.0, 15.0, 15.1 and 16.0), which agreed: the
+    // size it sends whole, or the shorter of its two encodings when it cuts,
+    // under each. Not from txtSentBytes.
+    const std::string m14 = "\xE0\xA2\x98", m15 = "\xE0\xBB\x8E", m16 = "\xE0\xA2\x97", m17 = "\xE1\xAB\x8F",
+                      m18 = "\xD7\x88", block = "\xE2\x96\x88";
+    // U+1171E, Mn until Unicode 15.1 and Mc from 16.0: a mark only the older
+    // Pythons join
+    const std::string was = "\xF0\x91\x9C\x9E";
+    const auto repeat = [](const std::string& s, int n) {
+        std::string out;
+        for (int i = 0; i < n; ++i)
+            out += s;
+        return out;
+    };
+    // x in 4 with a mark in 5 after each: one cell in 4 where the script's
+    // Python has the mark, two cells and a colour code each where it hasn't
+    const auto marked = [&](const std::string& mark, int n) {
+        return "\x03" "4,1" + repeat("x\x03" "5" + mark + "\x03" "4", n);
+    };
+    struct Row {
+        const char* name;
+        std::string line;
+        std::size_t written;
+        std::array<std::size_t, 6> sent;  // under 14.0, 15.0, 15.1, 16.0, 17.0, 18.0
+        std::array<bool, 6> cut;
+    };
+    const std::vector<Row> rows{
+        {"blocks with a 17.0 mark, swapped for spaces only before 17.0",
+         "\x03" "4,4" + repeat(block + m17, 67), 406, {276, 276, 276, 276, 408, 408},
+         {false, false, false, false, true, true}},
+        {"a 17.0 mark in another colour, cut before 17.0", marked(m17, 41), 332,
+         {413, 413, 413, 413, 170, 170}, {true, true, true, true, false, false}},
+        {"a 16.0 mark in another colour", marked(m16, 41), 332, {413, 413, 413, 170, 170, 170},
+         {true, true, true, false, false, false}},
+        {"a 15.0 mark in another colour", marked(m15, 41), 332, {413, 170, 170, 170, 170, 170},
+         {true, false, false, false, false, false}},
+        {"a 14.0 mark, which every Python since 3.11 has", marked(m14, 41), 332, {170, 170, 170, 170, 170, 170},
+         {false, false, false, false, false, false}},
+        {"15.0 and 17.0 marks, sent whole under each",
+         marked(m15, 20) + "\x03" "4,4" + repeat(block + m17, 30), 348, {389, 272, 272, 272, 272, 272},
+         {false, false, false, false, false, false}},
+        {"16.0 and 18.0 marks in the base's colours", "\x03" "4,1" + repeat("x" + m16 + "y" + m18, 50), 354,
+         {356, 356, 356, 356, 356, 356}, {false, false, false, false, false, false}},
+        {"blocks with U+1171E, swapped for spaces only from 16.0",
+         "\x03" "4,4" + repeat(block + was, 57) + "xxx", 406, {408, 408, 408, 296, 296, 296},
+         {true, true, true, false, false, false}},
+        {"blocks with U+1171E, a pair fewer: whole under each", "\x03" "4,4" + repeat(block + was, 56) + "xxx", 399,
+         {401, 401, 401, 401, 401, 401}, {false, false, false, false, false, false}},
+        {"U+1171E in another colour, cut from 16.0", marked(was, 41), 373, {211, 211, 211, 454, 454, 454},
+         {false, false, false, true, true, true}},
+    };
+    for (const Row& r : rows) {
+        INFO(r.name);
+        REQUIRE(r.line.size() == r.written);
+        const std::size_t worst = *std::max_element(r.sent.begin(), r.sent.end());
+        const bool cut = std::find(r.cut.begin(), r.cut.end(), true) != r.cut.end();
+        CHECK(txtSentBytes(r.line, kEfnetWeechatBudget) == worst);
+        const auto over = txtOverBudget({r.line}, kEfnetWeechatBudget);
+        if (!cut) {
+            CHECK(over.empty());
+            continue;
+        }
+        // a line some Python of another Unicode cuts is over, and says which
+        CHECK(over.size() == 1);
+        if (over.size() != 1)
+            continue;
+        CHECK(over[0].line == 1);
+        CHECK(over[0].bytes == worst);
+        CHECK(over[0].where.starts_with("where the script's Python has Unicode "));
+    }
+    // The line over the budget says which Python cuts it, as the meter and
+    // the CLI show it.
+    const auto where = [](const std::string& line, std::size_t bytes) {
+        const auto over = txtOverBudget({"", line}, kEfnetWeechatBudget);
+        CHECK(over.size() == 1);
+        if (over.size() != 1)
+            return std::string("(not one line over)");
+        CHECK(over[0].line == 2);
+        CHECK(over[0].bytes == bytes);
+        return over[0].where;
+    };
+    CHECK(where(marked(m17, 41), 413) ==
+          "where the script's Python has Unicode 16.0 or older, which sends U+1ACF as a character of its own");
+    CHECK(where("\x03" "4,4" + repeat(block + m17, 67), 408) ==
+          "where the script's Python has Unicode 17.0 or later, which joins U+1ACF to the character before it");
+    CHECK(where("\x03" "4,4" + repeat(block + was, 57) + "xxx", 408) ==
+          "where the script's Python has Unicode 15.1 or older, which joins U+1171E to the character before it");
+    CHECK(where(marked(was, 41), 454) ==
+          "where the script's Python has Unicode 16.0 or later, which sends U+1171E as a character of its own");
+    // Each mark keeps its own versions: U+1171E joins until 15.1, U+0ECE from
+    // 15.0, so 15.0 and 15.1 join both and the 14.0 receiver alone sends
+    // U+0ECE apart.
+    CHECK(where(marked(m15, 41) + repeat(block + was, 2), 430) ==
+          "where the script's Python has Unicode 14.0 or older, which sends U+0ECE as a character of its own");
+    // A line over under every Unicode needs no word on it.
+    CHECK(where("\x03" "4,1" + repeat(block + m17, 140), 846).empty());
 }

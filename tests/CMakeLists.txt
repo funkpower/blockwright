@@ -95,7 +95,6 @@ add_executable(blockwright-tests
   test_mirc_sent.cpp
   test_outline.cpp
   test_outline_property.cpp
-  test_pipeline.cpp
   test_portable_random.cpp
   test_project.cpp
   test_reference_layers.cpp
@@ -779,30 +778,13 @@ add_test(NAME "start screen on a short screen"
   COMMAND ${BW_APP_TEST_ENV} QT_QPA_PLATFORM=offscreen:configfile=${config}
           ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:blockwright-app-tests> "[start-screen-short]")
 
-# File > Publish to Library and Send to WeeChat: its main points the settings
-# and the Library at scratch folders before the QApplication exists.
-add_executable(blockwright-publish-tests
-  test_app_publish.cpp
-  scratch_settings.h
-  util.h
-)
-target_link_libraries(blockwright-publish-tests PRIVATE blockwright_app Catch2::Catch2)
-target_compile_definitions(blockwright-publish-tests PRIVATE BW_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
-set_target_properties(blockwright-publish-tests PROPERTIES CROSSCOMPILING_EMULATOR "${BW_APP_TEST_RUNNER}")
-if(WIN32)
-  add_dependencies(blockwright-publish-tests bw-gen-helper)  # copied as the stand-in ssh
-endif()
-catch_discover_tests(blockwright-publish-tests
-  PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
-  DISCOVERY_MODE PRE_TEST)
-# Both binaries once more with macOS's message boxes, the title as the heading
+# The app tests once more with macOS's message boxes, the title as the heading
 # and the message as the informative text, so a test that reads a box's
 # message from text() fails here and not first on a Mac.
 if(NOT APPLE)
-  foreach(t blockwright-app-tests blockwright-publish-tests)
-    add_test(NAME ${t}_heading_boxes
-      COMMAND ${BW_APP_TEST_ENV} BW_TEST_HEADING_BOXES=1 ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:${t}>)
-  endforeach()
+  add_test(NAME blockwright-app-tests_heading_boxes
+    COMMAND ${BW_APP_TEST_ENV} BW_TEST_HEADING_BOXES=1 ${CMAKE_CROSSCOMPILING_EMULATOR}
+            $<TARGET_FILE:blockwright-app-tests>)
   # The whole app suite in one process: 135 to 195 s in CI, a little more
   # under Qt 6.7, and over 300 s under either on a loaded runner. 1500 is
   # the ctest default, so no build that runs ctest without --timeout gives
@@ -875,13 +857,13 @@ if(NOT CMAKE_CROSSCOMPILING)
 # empty: Blockwright's settings go to the factory's scratch INI file and Qt's
 # own (the QtProject store QFileDialog keeps its history in) to the scratch
 # directory as well.
-set(BW_APP_TEST_BINARIES blockwright-app-tests blockwright-publish-tests blockwright-app-scale-tests)
+set(BW_APP_TEST_BINARIES blockwright-app-tests blockwright-app-scale-tests)
 set(bw_app_test_files ${BW_APP_TEST_BINARIES})
 list(TRANSFORM bw_app_test_files REPLACE "^(.+)$" "$<TARGET_FILE:\\1>")
 add_test(NAME app_tests_leave_profile_alone
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/app_profile_test.sh ${CMAKE_CURRENT_BINARY_DIR}/app-profile-check
           ${bw_app_test_files})
-# It runs three whole app test binaries in sequence.
+# It runs two whole app test binaries in sequence.
 set_tests_properties(app_tests_leave_profile_alone PROPERTIES TIMEOUT 3000)
 # It leaves fontconfig's cache out and still finds anything else written.
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/app-profile-fake/fontconfig.sh
@@ -970,8 +952,8 @@ endif()
 
 if(WIN32)
   # the UTF-8 code page and long paths, as the shipped programs have
-  foreach(t blockwright-tests blockwright-render-tests blockwright-app-tests blockwright-publish-tests
-            blockwright-app-scale-tests bw-settings-guard bw-gen-helper)
+  foreach(t blockwright-tests blockwright-render-tests blockwright-app-tests blockwright-app-scale-tests
+            bw-settings-guard bw-gen-helper)
     bw_windows_resources(${t})
   endforeach()
 endif()

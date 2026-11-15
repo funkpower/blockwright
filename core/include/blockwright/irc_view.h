@@ -117,9 +117,8 @@ View ircView(const Canvas& canvas, std::size_t budget = kEfnetWeechatBudget, con
 // Unicode of the script's Python, as that version's own categories have it
 // (joinMask), so the line is sized under each Unicode joinUnicode lists, and
 // a later one, once for each way they cluster it, and this is the
-// largest. Publish to Library and Send to WeeChat hold a .txt to it (#336,
-// #350, #362), and so do the row meter, fit, the IRC view, Export IRC Text
-// and `export --irc` (#364).
+// largest. The row meter, fit, the IRC view, Export IRC Text and
+// `export --irc` hold a line to it (#364).
 std::size_t txtSentBytes(std::string_view line, std::size_t budget = kEfnetWeechatBudget);
 
 // A .txt line the ascii script cuts: its txtSentBytes, and, when only some

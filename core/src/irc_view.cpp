@@ -564,7 +564,9 @@ View ircView(const Canvas& canvas, std::size_t budget, const EncodeOptions& opts
         // writing them again (compact: encode_irc, two-digit colour codes),
         // so it fits that, not the line as written. Which code points it
         // joins depends on its Python's Unicode: the row shows the fewest
-        // cells any of them keeps, as Publish refuses a line any of them cuts.
+        // cells any of them keeps, as a line any of them cuts is over the
+        // budget: Export IRC Text asks before writing it, and `cli export
+        // --irc` refuses it without --allow-over-budget.
         for (const int r : Receivers(line).distinct()) {
             const std::vector<sender::SentCell> parsed = sender::parse(line, r);
             if (sender::sentSize(sender::encode(parsed)) <= budget)

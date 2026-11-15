@@ -46,16 +46,15 @@ void MainWindow::createIrcActions(QMenu* file, QMenu* view) {
     a->setStatusTip(tr("Write the canvas as IRC lines, one message each, as the row meter measures them"));
     a->setToolTip(a->statusTip());
     connect(a, &QAction::triggered, this, &MainWindow::exportIrc);
-    // Above File > Publish to Library. Publish writes its own lines: plain,
-    // without fit or pad, against the tighter of the document's budget and
-    // the EFnet / WeeChat one (PLAN §8, §9; #393).
-    file->insertAction(findChild<QAction*>(QStringLiteral("publishToLibrary")), a);
+    // Above the separator before File > Quit.
+    QAction* const quitSeparator = findChild<QAction*>(QStringLiteral("quitSeparator"));
+    file->insertAction(quitSeparator, a);
     a = new QAction(tr("Export &Micron..."), this);
     a->setObjectName(QStringLiteral("exportMicron"));
     a->setStatusTip(tr("Write the canvas as a Micron page (.mu) for NomadNet"));
     a->setToolTip(a->statusTip());
     connect(a, &QAction::triggered, this, &MainWindow::exportMicron);
-    file->insertAction(findChild<QAction*>(QStringLiteral("publishToLibrary")), a);
+    file->insertAction(quitSeparator, a);
 
     QMenu* m = view->addMenu(tr("I&RC"));
     m->setObjectName(QStringLiteral("ircMenu"));

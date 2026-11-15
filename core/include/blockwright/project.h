@@ -191,8 +191,8 @@ struct Project {
     // The text encoding of the project's flat .ans form (PLAN §8): what the
     // .ans it was made from was read as (fromAnsi), or what the app last
     // saved it in. The app's Save As .ans and snapshots (takeSnapshot) write
-    // it unless told otherwise; the CLI's convert and Publish don't follow it
-    // (their .ans is CP437 unless an option says). The manifest's
+    // it unless told otherwise; the CLI's convert doesn't follow it (its
+    // .ans is CP437 unless an option says). The manifest's
     // "ansEncoding", "utf-8" or "cp437", written only when UTF-8; a project
     // without it is CP437.
     TextEncoding ansEncoding = TextEncoding::Cp437;

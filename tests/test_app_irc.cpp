@@ -25,8 +25,9 @@
 #include <QFile>
 #include <QHelpEvent>
 #include <QImage>
-#include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QProcess>
 #include <QRegularExpression>
@@ -515,14 +516,6 @@ TEST_CASE("the IRC budget dialog takes a preset, a number or a mask and channel"
     // a custom budget opens as custom
     IrcBudgetDialog again(project::IrcBudget{"custom", 300});
     CHECK(again.budget() == project::IrcBudget{"custom", 300});
-
-    // #393: it says Publish and Send never go past the library's 407, and
-    // that an ANSI-target CP437 Send checks no budget (§14)
-    auto* note = d.findChild<QLabel*>(QStringLiteral("ircPublishNote"));
-    REQUIRE(note);
-    CHECK(note->text() == QStringLiteral("Publish to Library and Send to WeeChat hold lines to this budget or to "
-                                         "407 bytes, the ascii script's EFnet limit, whichever is less. A Send "
-                                         "with the ANSI target in CP437 sends no .txt and checks no budget."));
 
     // the range the CLI's --budget and a project take (#303)
     CHECK(d.bytesBox()->minimum() == int(irc::kMinBudget));
@@ -1441,5 +1434,30 @@ TEST_CASE("the IRC meter paints each row's bar in the canvas row's band, in a pa
             const QImage img = m->grab(part).toImage();
             CHECK(at(img, r.top() + part.height() / 2, r.top()) == want);
         }
+    }
+}
+
+TEST_CASE("File has the exports between SAUCE and Open Reference Image and no Publish or Send") {
+    MainWindow w;
+    QMenu* file = w.menuBar()->actions().constFirst()->menu();
+    REQUIRE(file);
+    const QList<QAction*> items = file->actions();
+    const qsizetype irc = items.indexOf(act(w, "exportIrc"));
+    REQUIRE(irc >= 2);
+    REQUIRE(irc + 6 == items.size());
+    CHECK(items.at(irc - 2) == act(w, "sauce"));
+    CHECK(items.at(irc - 1)->isSeparator());
+    CHECK(items.at(irc + 1) == act(w, "exportMicron"));
+    CHECK(items.at(irc + 2)->isSeparator());
+    CHECK(items.at(irc + 3) == act(w, "openReferenceImage"));
+    CHECK(items.at(irc + 4)->isSeparator());
+    CHECK(items.back() == act(w, "quit"));
+
+    // Publish to Library and Send to WeeChat were removed (PLAN §9)
+    CHECK_FALSE(w.findChild<QAction*>(QStringLiteral("publishToLibrary")));
+    CHECK_FALSE(w.findChild<QAction*>(QStringLiteral("sendToWeechat")));
+    for (const QAction* a : w.findChildren<QAction*>()) {
+        CHECK_FALSE(a->text().contains(QStringLiteral("Publish"), Qt::CaseInsensitive));
+        CHECK_FALSE(a->text().contains(QStringLiteral("WeeChat"), Qt::CaseInsensitive));
     }
 }
