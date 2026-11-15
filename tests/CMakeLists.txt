@@ -607,6 +607,7 @@ add_executable(blockwright-app-tests
   test_app_text_replay.cpp
   test_app_layer_style.cpp
   test_app_layer_move.cpp
+  test_app_item_checks.cpp
   test_app_cli_shade.cpp
   test_app_draw.cpp
   test_app_frame.cpp

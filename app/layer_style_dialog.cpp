@@ -1,6 +1,7 @@
 #include "layer_style_dialog.h"
 
 #include "document.h"
+#include "item_check_style.h"
 #include "library_dock.h"
 #include "lint_dock.h"
 #include "message_box.h"
@@ -205,6 +206,7 @@ LayerStyleDialog::LayerStyleDialog(Document* doc, LayerId id, QWidget* parent)
     });
 
     list_ = new QListWidget;
+    fixItemChecks(list_);
     list_->setObjectName(QStringLiteral("effectList"));
     list_->setToolTip(tr("The effects, in the order they draw; the box switches one on or off"));
     pages_ = new QStackedWidget;

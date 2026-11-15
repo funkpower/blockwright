@@ -3,6 +3,7 @@
 #include "document.h"
 #include "generator_form.h"
 #include "help_text.h"
+#include "item_check_style.h"
 #include "row_tree.h"
 
 #include <QAction>
@@ -68,6 +69,7 @@ LayersDock::LayersDock(Document* doc, QWidget* parent) : QWidget(parent), doc_(d
     tree_->setItemDelegateForColumn(StyleColumn, new NoEditor(tree_));
     tree_->setRootIsDecorated(false);
     tree_->setUniformRowHeights(true);
+    fixItemChecks(tree_);
     tree_->setSelectionMode(QAbstractItemView::SingleSelection);
     tree_->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     tree_->header()->setStretchLastSection(false);
