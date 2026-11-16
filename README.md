@@ -277,6 +277,10 @@ Help > Samples:
 - `09-wtc-0903`, wtc-0903: Lower Manhattan at 9:03 on 11 September 2001, a
   hundred columns wide, with the morning sun on a layer apart from the towers
   it lights, colours-only reflections and the towers under alpha locks.
+- `10-gas-mask-operator`, Gas-mask operator: a Micron page in twelve-bit
+  colour, a soldier in a gas mask glancing back from an early-nineties desk,
+  every cell a half block, so the monitor's light sits on a colours-only
+  layer over the figure's edge and the desk without moving a glyph.
 
 ## Command line
 
