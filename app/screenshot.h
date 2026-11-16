@@ -164,7 +164,8 @@ private:
     // what the folder `from` in --user-library holds into `to`, or error_
     void copyLibrary(const std::filesystem::path& from, const std::filesystem::path& to);
     // the link `src` as a link at `dst`, its target made absolute if it
-    // leads out of --user-library
+    // leads out of --user-library, and kept inside the copy if it climbs
+    // out of it and back in
     void copyLink(const std::filesystem::path& src, const std::filesystem::path& dst, std::error_code& e) const;
 
     ScratchSettings settings_;

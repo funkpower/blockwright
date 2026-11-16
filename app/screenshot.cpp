@@ -662,23 +662,55 @@ void Scratch::copyLibrary(const fs::path& from, const fs::path& to) {
 
 // A link is copied as a link. A relative one that leads out of the library
 // would lead somewhere else from the scratch copy, so it is given the
-// absolute path it names from the library, worked out on the path alone, so
-// a link to nothing still leads to nothing; one that stays inside keeps its
-// text, so it follows a save in the copy that replaces what it names (#506).
+// absolute path it names from the library: its own folder, resolved as the
+// kernel resolves it, with its text after, so a link to nothing still leads
+// to nothing. One that stays inside keeps its text, so it follows a save in
+// the copy that replaces what it names (#506). A text with a `..` is judged
+// by where the kernel's walk to its last `..` lands (a `..` after a link goes
+// up from where the link leads, and one after a missing name or a file goes
+// nowhere): inside, it is written from the link's folder to the file it
+// names, since the copy's folders have other names (#508); outside, or where
+// the kernel can't walk it, it is given the absolute path, which leads to the
+// same place, or nowhere, from the copy.
 void Scratch::copyLink(const fs::path& src, const fs::path& dst, std::error_code& e) const {
     fs::path target = fs::read_symlink(src, e);
     if (e)
         return;
     if (target.is_relative()) {
-        const fs::path root = fs::absolute(userLibrary_, e).lexically_normal();
+        // both real folders: the library (which may be given through a
+        // link) and the folder the walk found the link in
+        const fs::path root = fs::canonical(userLibrary_, e);
         if (e)
             return;
-        const fs::path named = fs::absolute(src.parent_path() / target, e).lexically_normal();
+        const fs::path dir = fs::canonical(src.parent_path(), e);
         if (e)
             return;
+        // the text split at its last `..`: the kernel's walk to there is
+        // canonical's (it follows links and fails where the kernel fails,
+        // on a missing name, a file or a loop); what follows only goes down
+        fs::path head, tail;
+        for (const fs::path& part : target) {
+            tail /= part;
+            if (part == "..") {
+                head /= tail;
+                tail.clear();
+            }
+        }
+        fs::path named = (dir / target).lexically_normal();
+        bool walks = true;
+        if (!head.empty()) {
+            std::error_code ce;
+            const fs::path base = fs::canonical(dir / head, ce);
+            if (ce)
+                walks = false;
+            else
+                named = (base / tail).lexically_normal();
+        }
         const fs::path rel = named.lexically_relative(root);
-        if (rel.empty() || *rel.begin() == "..")
-            target = named;
+        if (!walks || rel.empty() || *rel.begin() == "..")
+            target = dir / target;
+        else if (!head.empty())
+            target = named.lexically_relative(dir);
     }
     fs::create_symlink(target, dst, e);
 }

@@ -389,6 +389,150 @@ else
   bad "--screenshot with links changed them or what they name: $(diff "$tmp/links-before" "$tmp/links-after")"
 fi
 
+# a relative link judged by where the kernel takes it (#508): --user-library
+# given through a link to the folder holding a link out of it, and a link
+# that climbs out of the library and back in by its name, show their stamp
+# as a library holding the files themselves does
+mkdir -p "$links/real/shared" "$links/real/lib" "$links/via" "$links/re/lib/.hid"
+cp "$links/own/"* "$links/real/lib/"
+cp "$links/own/"* "$links/re/lib/"
+for f in "$links/shared/"*.ans "$links/shared/"*.json; do
+  [ -f "$f" ] || continue
+  ext=${f##*.}
+  cp "$f" "$links/real/shared/outside.$ext"
+  ln -s "../shared/outside.$ext" "$links/real/lib/rel.$ext"
+  cp "$f" "$links/re/lib/.hid/o-$ext.bin"
+  ln -s "../lib/.hid/o-$ext.bin" "$links/re/lib/re.$ext"
+done
+ln -s ../real/lib "$links/via/lib"
+cp -RL "$links/real/lib" "$links/via-copy"
+cp -RL "$links/re/lib" "$links/re-copy"
+out=$("$bin" --screenshot "$tmp/put-outside.json" -o "$tmp/links-via" --user-library "$links/via/lib" 2>&1); st=$?
+out2=$("$bin" --screenshot "$tmp/put-outside.json" -o "$tmp/links-via-copy" --user-library "$links/via-copy" 2>&1); st2=$?
+if [ "$st" -eq 0 ] && [ "$st2" -eq 0 ] && [ -f "$tmp/links-via/01-put.png" ] && cmp -s "$tmp/links-via/01-put.png" "$tmp/links-via-copy/01-put.png"; then
+  ok "--screenshot: a link out of a --user-library given through a link shows its stamp in the dock"
+else
+  bad "--screenshot with --user-library through a link (exit $st, $st2), the dock differs from the copied files': $out $out2"
+fi
+out=$("$bin" --screenshot "$tmp/put-outside.json" -o "$tmp/links-re" --user-library "$links/re/lib" 2>&1); st=$?
+out2=$("$bin" --screenshot "$tmp/put-outside.json" -o "$tmp/links-re-copy" --user-library "$links/re-copy" 2>&1); st2=$?
+if [ "$st" -eq 0 ] && [ "$st2" -eq 0 ] && [ -f "$tmp/links-re/01-put.png" ] && cmp -s "$tmp/links-re/01-put.png" "$tmp/links-re-copy/01-put.png"; then
+  ok "--screenshot: a link that leaves --user-library and comes back by name shows its stamp in the dock"
+else
+  bad "--screenshot with a link out of --user-library and back in (exit $st, $st2), the dock differs from the copied files': $out $out2"
+fi
+
+# a `..` straight after a link in a link's text goes up from where that link
+# leads (#508): `zs2 -> zk/deep` with `re -> ../lib/zs2/../o`, and
+# `zs/zu -> ..` with `re -> zs/zu/../lib/zk/o`, each name `zk/o` from the
+# library, so the dock shows the stamp as a library holding the files does
+# (the helper folders sort after the stamp's category, `out`)
+for c in B A; do
+  case $c in B) text='../lib/zs2/../o-EXT.bin' ;; A) text='zs/zu/../lib/zk/o-EXT.bin' ;; esac
+  for v in lib ref; do
+    d=$links/up$c/$v
+    mkdir -p "$d/zk/deep" "$d/zs"
+    ln -s zk/deep "$d/zs2"
+    ln -s .. "$d/zs/zu"
+    for f in "$links/shared/"*.ans "$links/shared/"*.json; do
+      [ -f "$f" ] || continue
+      ext=${f##*.}
+      cp "$f" "$d/zk/o-$ext.bin"
+      if [ "$v" = lib ]; then
+        ln -s "$(printf '%s' "$text" | sed "s/EXT/$ext/g")" "$d/re.$ext"
+      else
+        cp "$f" "$d/re.$ext"
+      fi
+    done
+  done
+  out=$("$bin" --screenshot "$tmp/put-outside.json" -o "$tmp/links-up$c" --user-library "$links/up$c/lib" 2>&1); st=$?
+  out2=$("$bin" --screenshot "$tmp/put-outside.json" -o "$tmp/links-up$c-copy" --user-library "$links/up$c/ref" 2>&1); st2=$?
+  if [ "$st" -eq 0 ] && [ "$st2" -eq 0 ] && [ -f "$tmp/links-up$c/01-put.png" ] && cmp -s "$tmp/links-up$c/01-put.png" "$tmp/links-up$c-copy/01-put.png"; then
+    ok "--screenshot: a link whose text goes up after a link ($text) shows its stamp in the dock"
+  else
+    bad "--screenshot with a link whose text goes up after a link ($text) (exit $st, $st2), the dock differs from the copied files': $out $out2"
+  fi
+done
+
+# a text with a `..` is judged by where the kernel's walk to its last `..`
+# lands (#508): a `..` after a missing name or a file goes nowhere, so the
+# link leads to nothing in the copy too (the dock is the one of the layout
+# without `re.*`), and a walk that goes up twice after a link lands where
+# the kernel lands (`lib/lib/zk` is not there, `lib/zk` is)
+cat > "$tmp/dock.json" <<'EOF2'
+{"version": 1, "start": {"blank": [20, 8]}, "steps": [
+ {"name": "k", "action": "keyboard", "at": [1, 1], "text": "x", "screenshot": {"of": "library"}}]}
+EOF2
+for c in NOEX2:none FILE:none T2a:none T2b:files; do
+  want=${c#*:}; c=${c%%:*}
+  case $c in
+    NOEX2) text='../lib/nothere/../zk/o-EXT.bin' ;;
+    FILE) text='../lib/zk/o-EXT.bin/../o-EXT.bin' ;;
+    T2a) text='../lib/zs2/../../lib/zk/o-EXT.bin' ;;
+    T2b) text='../lib/zs2/../../zk/o-EXT.bin' ;;
+  esac
+  for v in lib ref none; do
+    d=$links/walk$c/$v
+    mkdir -p "$d/zk/deep"
+    ln -s zk/deep "$d/zs2"
+    for f in "$links/shared/"*.ans "$links/shared/"*.json; do
+      [ -f "$f" ] || continue
+      ext=${f##*.}
+      cp "$f" "$d/zk/o-$ext.bin"
+      case $v in
+        lib) ln -s "$(printf '%s' "$text" | sed "s/EXT/$ext/g")" "$d/re.$ext" ;;
+        ref) cp "$f" "$d/re.$ext" ;;
+      esac
+    done
+    "$bin" --screenshot "$tmp/dock.json" -o "$tmp/links-walk$c-$v" --user-library "$links/walk$c/$v" >/dev/null 2>&1
+  done
+  p=$tmp/links-walk$c
+  got=other
+  if cmp -s "$p-lib/01-k.png" "$p-ref/01-k.png"; then got=files
+  elif cmp -s "$p-lib/01-k.png" "$p-none/01-k.png"; then got=none; fi
+  if [ ! -f "$p-ref/01-k.png" ] || cmp -s "$p-ref/01-k.png" "$p-none/01-k.png"; then
+    bad "--screenshot with a link through ($text): the dock doesn't tell the stamp from none"
+  elif [ "$got" = "$want" ]; then
+    ok "--screenshot: a link through ($text) shows in the dock as the kernel takes it ($want)"
+  else
+    bad "--screenshot with a link through ($text): the dock shows $got, the kernel takes it to $want"
+  fi
+done
+
+# a text with a `..` after a link that lands inside the library still
+# follows a save in the copy that replaces what it names (#506, #508):
+# `za -> zb` with `re -> za/../outside`, and a step that saves "Outside" in
+# a new category; the dock is the one of `re -> outside`, not the stale one
+# of `re.*` as files (`zz-new` sorts after `out`)
+cat > "$tmp/save-new.json" <<'EOF2'
+{"version": 1, "start": {"blank": [20, 8]}, "steps": [
+ {"name": "ink", "action": "keyboard", "at": [1, 1], "text": "nw"},
+ {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+ {"name": "s", "action": "saveToLibrary", "stamp": "Outside", "category": "zz-new", "screenshot": {"of": "library"}}]}
+EOF2
+for v in lib ref old; do
+  d=$links/saveup/$v
+  mkdir -p "$d/zb"
+  ln -s zb "$d/za"
+  for f in "$links/shared/"*.ans "$links/shared/"*.json; do
+    [ -f "$f" ] || continue
+    ext=${f##*.}
+    cp "$f" "$d/"
+    case $v in
+      lib) ln -s "za/../${f##*/}" "$d/re.$ext" ;;
+      ref) ln -s "${f##*/}" "$d/re.$ext" ;;
+      old) cp "$f" "$d/re.$ext" ;;
+    esac
+  done
+  "$bin" --screenshot "$tmp/save-new.json" -o "$tmp/links-saveup-$v" --user-library "$d" >/dev/null 2>&1
+done
+p=$tmp/links-saveup
+if [ -f "$p-lib/03-s.png" ] && cmp -s "$p-lib/03-s.png" "$p-ref/03-s.png" && ! cmp -s "$p-lib/03-s.png" "$p-old/03-s.png"; then
+  ok "--screenshot: a link through a link and back up (za/../outside) follows a save in the copy"
+else
+  bad "--screenshot with a link through a link and back up (za/../outside): the dock doesn't follow the save in the copy"
+fi
+
 # A steps file that can't be read is an error, not a crash.
 out=$("$bin" --screenshot "$tmp/missing.json" -o "$tmp/missing" 2>&1); st=$?
 if [ "$st" -eq 1 ]; then ok "a missing steps file exits 1"; else bad "a missing steps file (exit $st): $out"; fi
