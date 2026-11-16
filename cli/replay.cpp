@@ -45,6 +45,10 @@
 #include <ostream>
 #include <set>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace bwcli::replay {
 
 namespace fs = std::filesystem;
@@ -124,10 +128,16 @@ struct State : ToolSettings {
     // load pass's Script::files)
     const std::map<std::string, std::string>* files = nullptr;
     const std::map<std::string, std::string>* presets = nullptr;  // Script::presets
+    const std::map<std::string, fs::path>* overwrites = nullptr;  // Script::userOverwrites
     LayerId active = 0;
     Selection selection;
     std::optional<CellBlock> clipboard;
     steps::View view;  // what the view steps have set (#398)
+    // the Library (#431): the bundled stamps (Script::bundledStamps), the
+    // user library's as the steps so far left it, and what they saved
+    const std::vector<library::Stamp>* bundled = nullptr;
+    std::vector<library::Stamp> user;
+    std::vector<SavedStamp> saved;
 
     LayerStack& stack() { return p.layers; }
     int width() const { return p.layers.width(); }
@@ -451,6 +461,83 @@ void paste(State& s, const Step& step, Outcome& out) {
     const CellEdit e = stampBlock(canvasOf(s), *s.clipboard, p.x, p.y, s.pasteMode, nullptr, blankCell(s), pastePixels(s));
     if (land(s, step, e, false, out))
         s.selection = Selection(CellRect{p.x, p.y, s.clipboard->width, s.clipboard->height}).clipped(canvasOf(s));
+}
+
+// The stamp a placeStamp step names (#431): the only one of that name in
+// the library it says, or in either when it says none.
+const library::Stamp& stampNamed(const State& s, const Step& step) {
+    const std::string name = cp437ToUtf8(step.stamp);
+    const auto named = [&](const std::vector<library::Stamp>& from) {
+        std::vector<const library::Stamp*> found;
+        for (const library::Stamp& st : from)
+            if (st.name == step.stamp)
+                found.push_back(&st);
+        return found;
+    };
+    const std::vector<const library::Stamp*> bundled = named(*s.bundled), user = named(s.user);
+    using Library = Step::Library;
+    if (!step.library && !bundled.empty() && !user.empty())
+        fail(step, "the bundled and the user library both have a stamp named \"" + name +
+                       "\"; say which with \"library\": \"bundled\" or \"user\"");
+    const bool inUser = step.library ? *step.library == Library::User : bundled.empty();
+    const std::vector<const library::Stamp*>& found = inUser ? user : bundled;
+    if (found.empty())
+        fail(step, "no stamp named \"" + name + "\" in " +
+                       (step.library ? (inUser ? std::string("the user library") : std::string("the bundled library"))
+                                     : std::string("the bundled or the user library")));
+    if (found.size() > 1) {
+        std::string paths;
+        for (const library::Stamp* st : found)
+            paths += (paths.empty() ? "" : ", ") +
+                     (st->path.empty() ? std::string("the one an earlier step saved") : st->path.string());
+        fail(step, std::to_string(found.size()) + " stamps in the " + (inUser ? "user" : "bundled") +
+                       " library are named \"" + name + "\": " + paths);
+    }
+    return *found.front();
+}
+
+// A Library stamp placed as the dock places it (MainWindow::placeStamp):
+// floated in transparent paste mode, for this float only, and committed.
+void placeStamp(State& s, const Step& step, Outcome& out) {
+    const CellBlock block = stampNamed(s, step).block();
+    const Point p = step.points[0];
+    const CellEdit e =
+        stampBlock(canvasOf(s), block, p.x, p.y, PasteMode::Transparent, nullptr, blankCell(s), pastePixels(s));
+    if (land(s, step, e, false, out))
+        s.selection = Selection(CellRect{p.x, p.y, block.width, block.height}).clipped(canvasOf(s));
+}
+
+// Selection > Save to Library... (MainWindow::saveSelectionToLibrary): the
+// selection's cells as the canvas shows them, as a stamp in the user
+// library, replacing the one of its name the save writes over: one an
+// earlier step saved, or the one in the library's own folder
+// (Script::userOverwrites). One of its name in a subfolder is kept beside
+// it, as Save to Library keeps it, with a note.
+void saveToLibrary(State& s, const Step& step, Outcome& out) {
+    needSelection(s, step);
+    const CellBlock cells = copyBlock(compositeOf(s), s.selection);
+    library::StampFiles files;
+    library::Stamp stamp;
+    try {
+        files = library::encodeStamp(step.stamp, step.category, step.tags, cells, s.p.ice);
+        stamp = library::parseStamp(files);
+    } catch (const library::LibraryError& e) {
+        fail(step, e.what());
+    }
+    const auto over = s.overwrites->find(step.stamp);
+    const auto had = std::remove_if(s.user.begin(), s.user.end(), [&](const library::Stamp& st) {
+        return st.name == step.stamp && (st.path.empty() || (over != s.overwrites->end() && st.path == over->second));
+    });
+    const std::string name = cp437ToUtf8(step.stamp);
+    if (had != s.user.end())
+        out.notes.push_back(steps::stepLabel(step) + ": replaces the stamp \"" + name + "\" in the user library");
+    s.user.erase(had, s.user.end());
+    for (const library::Stamp& st : s.user)
+        if (st.name == step.stamp)
+            out.notes.push_back(steps::stepLabel(step) + ": the user library's stamp \"" + name + "\" in " +
+                                st.path.string() + " is kept beside it, as Save to Library keeps it");
+    s.user.push_back(std::move(stamp));
+    s.saved.push_back({steps::stepLabel(step), step.stamp, std::move(files)});
 }
 
 Layer* layerNamed(State& s, const Step& step, const std::string& name) {
@@ -1072,6 +1159,11 @@ void step(State& s, const Step& st, Outcome& out) {
     } else if (a == "paste") {
         onCanvas(s, st, false);
         paste(s, st, out);
+    } else if (a == "placeStamp") {
+        onCanvas(s, st, false);
+        placeStamp(s, st, out);
+    } else if (a == "saveToLibrary") {
+        saveToLibrary(s, st, out);
     } else if (a == "newCellsLayer" || a == "newPixelLayer") {
         const LayerKind kind = a == "newPixelLayer" ? LayerKind::Pixels : LayerKind::Cells;
         if (st.rename)
@@ -1137,6 +1229,8 @@ void step(State& s, const Step& st, Outcome& out) {
             s.view.ircPad = v.ircPad;
         if (v.ircSwapShades)
             s.view.ircSwapShades = v.ircSwapShades;
+        if (v.guides)
+            s.view.guides = v.guides;
     } else {
         fail(st, "replay can't apply " + a + " yet");
     }
@@ -1273,7 +1367,74 @@ project::Project start(const steps::Script& script, const fs::path& dir, const f
     return p;
 }
 
-void load(steps::Script& script, const fs::path& dir, const fs::path& libraryDir) {
+namespace {
+
+// --user-library refused before any step runs (#431): a path that isn't a
+// directory (a regular file is no empty library), and, when a step saves
+// to it (`written`), a directory, or the nearest one above it a save would
+// make it in, that can't be written.
+void checkUserLibrary(const fs::path& dir, bool written) {
+    fs::path at = dir;
+    std::error_code ec;
+    while (!fs::exists(fs::symlink_status(at, ec))) {
+        const fs::path up = at.parent_path();
+        if (up.empty() || up == at) {
+            at = up.empty() ? fs::path(".") : up;
+            break;
+        }
+        at = up;
+    }
+    const std::string where = "--user-library " + dir.string() + ": " + (at == dir ? std::string() : at.string() + ": ");
+    if (!fs::is_directory(fs::status(at, ec)))
+        throw Failure{where + "not a directory"};
+#ifndef _WIN32
+    if (written && ::access(at.c_str(), W_OK | X_OK) != 0) {
+        const int err = errno;
+        throw Failure{where + "can't be written: " + std::strerror(err)};
+    }
+#else
+    (void)written;
+#endif
+}
+
+} // namespace
+
+void load(steps::Script& script, const fs::path& dir, const fs::path& libraryDir, const fs::path& userLibraryDir) {
+    const bool saves = std::any_of(script.steps.begin(), script.steps.end(),
+                                   [](const Step& st) { return st.action == "saveToLibrary"; });
+    if (!userLibraryDir.empty())
+        checkUserLibrary(userLibraryDir, saves);
+    if (std::any_of(script.steps.begin(), script.steps.end(),
+                    [](const Step& st) { return st.action == "placeStamp" || st.action == "saveToLibrary"; })) {
+        // what the scan can't read is left out, as the Library dock leaves
+        // it out (it lists it as a problem)
+        const auto scanned = [](const fs::path& d, const std::string& which) {
+            try {
+                return library::scan(d).stamps;
+            } catch (const std::exception& e) {
+                throw Failure{which + " " + d.string() + ": " + e.what()};
+            }
+        };
+        if (!libraryDir.empty())
+            script.bundledStamps = scanned(libraryDir, "the bundled library");
+        if (!userLibraryDir.empty())
+            script.userStamps = scanned(userLibraryDir, "the user library");
+    }
+    // what each save writes over, as the library is before the replay: a
+    // save only ever adds a stamp of a new title, on a slot no stamp of
+    // another title sits on, so an earlier save in the replay can't change it
+    if (saves && !userLibraryDir.empty())
+        for (const Step& st : script.steps) {
+            if (st.action != "saveToLibrary" || script.userOverwrites.count(st.stamp))
+                continue;
+            try {
+                const library::StampTarget t = library::stampPathFor(userLibraryDir, st.stamp);
+                if (t.exists)
+                    script.userOverwrites[st.stamp] = t.path;
+            } catch (const std::exception& e) {
+                throw Failure{"the user library " + userLibraryDir.string() + ": " + e.what()};
+            }
+        }
     for (const Step& st : script.steps) {
         if (st.stylePreset && !script.presets.count(*st.stylePreset)) {
             const fs::path styles = libraryDir / "text-styles";
@@ -1316,6 +1477,23 @@ void load(steps::Script& script, const fs::path& dir, const fs::path& libraryDir
     }
 }
 
+void writeSaved(const SavedStamp& saved, const fs::path& dir) {
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec) && !fs::create_directories(dir, ec))
+        throw Failure{saved.step + ": " + dir.string() + ": " +
+                      (ec ? ec.message() : std::string("not a directory"))};
+    fs::path path = dir;
+    try {
+        path = library::stampPathFor(dir, saved.name).path;
+        library::writeStamp(path, saved.files);
+    } catch (const std::exception& e) {
+        // the library's errors name the file or folder already
+        const std::string why = e.what();
+        throw Failure{saved.step + ": " + (why.find(dir.string()) == std::string::npos ? path.string() + ": " : "") +
+                      why};
+    }
+}
+
 AnsiDocument document(const project::Project& project, const std::optional<std::string>& today) {
     AnsiDocument doc = project::toAnsi(project);
     if (!project.sauce && today && doc.sauce)
@@ -1345,6 +1523,9 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
     s.p = std::move(project);
     s.files = &script.files;
     s.presets = &script.presets;
+    s.overwrites = &script.userOverwrites;
+    s.bundled = &script.bundledStamps;
+    s.user = script.userStamps;
     if (s.stack().empty())
         throw Failure{"start: it has no layers"};
     // the editor opens on the bottom layer
@@ -1358,7 +1539,7 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
         if (observe) {
             ToolSettings set = s;
             take(set, st.options);
-            observe({st, true, s.p, s.active, s.selection, set, s.view});
+            observe({st, true, s.p, s.active, s.selection, set, s.view, s.saved});
         }
         try {
             step(s, st, out);
@@ -1372,9 +1553,10 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
             fail(st, e.what());
         }
         if (observe)
-            observe({st, false, s.p, s.active, s.selection, s, s.view});
+            observe({st, false, s.p, s.active, s.selection, s, s.view, s.saved});
         out.captures.push_back({st.capture == steps::Capture::BeforeAfter ? stem + "-after" : stem, s.p});
     }
+    out.saved = std::move(s.saved);
     return out;
 }
 

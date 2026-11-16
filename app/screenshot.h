@@ -8,6 +8,7 @@
 
 #include "blockwright/project.h"
 #include "blockwright/steps.h"
+#include "replay.h"
 #include "settings.h"
 
 #include <QImage>
@@ -120,9 +121,13 @@ QByteArray renamedFont(QByteArray font, std::string_view family);
 // shows the moment's document. Throws bwcli::Failure naming the step for a
 // step that can't be applied, a dock or widget the window doesn't have, or
 // a crop off it. `taken`, for tests, sees each picture as it is taken,
-// while the window still shows its moment.
+// while the window still shows its moment. A stamp a saveToLibrary step
+// saves is written into the Library dock's user library at its step, and
+// the dock rescanned, so a picture of the dock shows it; `saved`, when
+// given, gets every stamp saved (bwcli::replay::Outcome::saved).
 std::vector<Shot> take(MainWindow& window, const steps::Script& script, project::Project start,
-                       const std::function<void(const Shot&)>& taken = {});
+                       const std::function<void(const Shot&)>& taken = {},
+                       std::vector<bwcli::replay::SavedStamp>* saved = nullptr);
 
 // Writes each shot as <dir>/<stem>.png, all of them or none, as
 // `blockwright-cli replay` writes its captures (bwcli::saveAll): every PNG
@@ -140,27 +145,45 @@ void write(const std::vector<Shot>& shots, const std::filesystem::path& dir,
 // TheDraw collection on the machine is scanned or listed and the face picker
 // never shows "Scanning fonts..." (#459), and an empty user Library
 // (BLOCKWRIGHT_USER_LIBRARY). All of it is put back as it was when it goes.
+// With `userLibrary` (blockwright --screenshot --user-library, #431) the
+// scratch user Library starts as a copy of that directory, so the dock
+// shows its stamps; the steps' saves land in the copy, and run() writes
+// them into `userLibrary` only once every picture is written.
 class Scratch {
 public:
-    Scratch();
+    explicit Scratch(const std::filesystem::path& userLibrary = {});
     ~Scratch();
     Scratch(const Scratch&) = delete;
     Scratch& operator=(const Scratch&) = delete;
     // empty when it worked, else why not
     const std::string& error() const { return error_; }
+    // the user Library the window uses: the scratch one
+    std::filesystem::path userLibrary() const;
 
 private:
+    // what the folder `from` in --user-library holds into `to`, or error_
+    void copyLibrary(const std::filesystem::path& from, const std::filesystem::path& to);
+    // the link `src` as a link at `dst`, its target made absolute if it
+    // leads out of --user-library
+    void copyLink(const std::filesystem::path& src, const std::filesystem::path& dst, std::error_code& e) const;
+
     ScratchSettings settings_;
     QTemporaryDir library_;
+    std::filesystem::path userLibrary_;
     QByteArray libraryBefore_;
     bool hadLibrary_ = false;
     std::string error_;
 };
 
+// `message` with the scratch copy of --user-library, `scratch`, named as
+// `userLibrary`, the folder it is a copy of.
+std::string inUserLibrary(std::string message, const std::filesystem::path& scratch,
+                          const std::filesystem::path& userLibrary);
+
 // The command: the steps file at `stepsPath` replayed in a new window
 // under Scratch, its shots written to `outDir`. The exit status;
 // what failed is on stderr.
-int run(const QString& stepsPath, const QString& outDir);
+int run(const QString& stepsPath, const QString& outDir, const QString& userLibrary = {});
 
 } // namespace screenshot
 } // namespace bw

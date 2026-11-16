@@ -1138,10 +1138,47 @@ expect "replay: the same half block without symmetry paints a pixels layer" 0 '^
 # a view step (#398) is the window's: replay has no window, so it refuses the
 # file, exit 1 as for a bad step, before the start is read, writing nothing
 printf '{"version": 1, "start": {"blank": [8, 4]}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}, {"name": "zoomed", "action": "view", "zoom": 4, "ircFit": true}]}' > "$rp/view.json"
-expect "replay: a view step is refused, named" 1 "^blockwright-cli: $rp/view\.json: step 2 \(zoomed\): view sets the window's zoom, scroll and IRC options, and blockwright-cli replay has no window; replay this file with blockwright --screenshot$" -- "$cli" replay "$rp/view.json" -o "$rp/view"
+expect "replay: a view step is refused, named" 1 "^blockwright-cli: $rp/view\.json: step 2 \(zoomed\): view sets the window's zoom, scroll, guides and IRC options, and blockwright-cli replay has no window; replay this file with blockwright --screenshot$" -- "$cli" replay "$rp/view.json" -o "$rp/view"
 if [[ ! -e $rp/view ]]; then ok "replay: a refused view step writes nothing"; else bad "replay wrote files for a view step"; fi
 printf '{"version": 1, "start": {"file": "missing.ans"}, "steps": [{"name": "fit", "action": "view", "ircFit": true}]}' > "$rp/view-nostart.json"
 expect "replay: a view step is refused before the start is read" 1 'step 1 \(fit\): view sets the window' -- "$cli" replay "$rp/view-nostart.json" -o "$rp/view-nostart"
+# Library steps (#431): saveToLibrary keeps the selection as a stamp a later
+# placeStamp finds; --user-library writes it there (making the directory) once
+# every capture is written, and without it a note says it was kept for this
+# replay only
+expect "replay --help lists --user-library (#431)" 0 '^  --user-library <dir> the user library placeStamp steps find stamps in$' -- "$cli" replay --help
+expect "replay --help documents the library steps (#431)" 0 '^  library        placeStamp "stamp" \(a Library stamp.s name\), "at" \(a$' -- "$cli" replay --help
+expect "replay --help documents View > Guides (#431)" 0 '"guides": none\|80x25\|80x40\|80x50 \(View >$' -- "$cli" replay --help
+mkdir -p "$rp/lib"
+printf '{"version": 1, "start": {"blank": [20, 10]}, "steps": [{"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"}, {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]}, {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words", "tags": ["short"]}, {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [5, 5]}]}' > "$rp/lib/save.json"
+expect "replay: saveToLibrary and placeStamp with --user-library" 0 '^$' -- "$cli" replay "$rp/lib/save.json" -o "$rp/lib/save" --user-library "$rp/lib/user/new"
+saved=("$rp/lib/user/new"/*.ans)
+if [[ ${#saved[@]} -eq 1 && -f ${saved[0]} && -f ${saved[0]%.ans}.json ]]; then ok "replay: --user-library holds the saved stamp's .ans and .json"; else bad "replay: --user-library holds: ${saved[*]}"; fi
+if grep -q '"category": "words"' "${saved[0]%.ans}.json"; then ok "replay: the saved stamp's sidecar has its category"; else bad "replay: the saved stamp's sidecar: $(cat "${saved[0]%.ans}.json")"; fi
+if [[ -f $rp/lib/save/04-put.ans ]]; then ok "replay: the placeStamp step's capture is written"; else bad "replay: no capture for placeStamp"; fi
+if grep -q 'hi' "$rp/lib/save/04-put.ans"; then ok "replay: the placed stamp is in the capture"; else bad "replay: the placed stamp isn't in the capture"; fi
+expect "replay: a saved stamp without --user-library is kept for the replay, a note says" 0 "^blockwright-cli: note: $rp/lib/save\.json: step 3 \(save\): the stamp is kept for this replay only \(--user-library <dir> writes it\)\$" -- "$cli" replay "$rp/lib/save.json" -o "$rp/lib/nolib"
+if [[ -f $rp/lib/nolib/04-put.ans ]]; then ok "replay: without --user-library the captures are written"; else bad "replay: without --user-library no captures"; fi
+printf '{"version": 1, "start": {"blank": [20, 10]}, "steps": [{"name": "put", "action": "placeStamp", "stamp": "No Such Stamp", "at": [1, 1], "library": "user"}]}' > "$rp/lib/missing.json"
+expect "replay: a placeStamp of a stamp the library lacks is refused, named" 1 "^blockwright-cli: $rp/lib/missing\.json: step 1 \(put\): no stamp named \"No Such Stamp\" in the user library\$" -- "$cli" replay "$rp/lib/missing.json" -o "$rp/lib/missing" --user-library "$rp/lib/user/new"
+if [[ ! -e $rp/lib/missing ]]; then ok "replay: a refused placeStamp writes nothing"; else bad "replay wrote files for a refused placeStamp"; fi
+# a run that fails after a save writes nothing to --user-library, as
+# blockwright --screenshot doesn't (#431)
+printf '{"version": 1, "start": {"blank": [20, 10]}, "steps": [{"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"}, {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]}, {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words"}, {"name": "bad", "action": "placeStamp", "stamp": "Nope", "at": [1, 1]}]}' > "$rp/lib/fails.json"
+expect "replay: a run that fails after a save is refused at the step" 1 "step 4 \(bad\): no stamp named \"Nope\"" -- "$cli" replay "$rp/lib/fails.json" -o "$rp/lib/fails" --user-library "$rp/lib/user/fails"
+if [[ ! -e $rp/lib/user/fails && ! -e $rp/lib/fails ]]; then ok "replay: a failed run writes nothing to --user-library"; else bad "replay: a failed run wrote: $(ls "$rp/lib/user/fails" "$rp/lib/fails" 2>&1)"; fi
+# --user-library that is a regular file is refused before any step, once,
+# naming the flag; nothing is written (#431)
+printf 'x' > "$rp/lib/plain"
+expect "replay: a --user-library that is a file is refused before any step" 1 "^blockwright-cli: $rp/lib/save\.json: --user-library $rp/lib/plain: not a directory\$" -- "$cli" replay "$rp/lib/save.json" -o "$rp/lib/plain-out" --user-library "$rp/lib/plain"
+if [[ ! -e $rp/lib/plain-out ]]; then ok "replay: a --user-library that is a file writes no capture"; else bad "replay wrote captures with a file for --user-library"; fi
+if [[ $(id -u) -ne 0 ]]; then
+  mkdir -p "$rp/lib/ro"
+  chmod 555 "$rp/lib/ro"
+  expect "replay: a read-only --user-library is refused before any step" 1 "^blockwright-cli: $rp/lib/save\.json: --user-library $rp/lib/ro: can't be written: " -- "$cli" replay "$rp/lib/save.json" -o "$rp/lib/ro-out" --user-library "$rp/lib/ro"
+  chmod 755 "$rp/lib/ro"
+  if [[ ! -e $rp/lib/ro-out ]]; then ok "replay: a read-only --user-library writes no capture"; else bad "replay wrote captures with a read-only --user-library"; fi
+fi
 # paths in a steps file (#422): relative to its directory, .. allowed; an
 # absolute start is refused when the file is there, naming the start, and
 # nothing is written; a missing one names the start and the path it looked for

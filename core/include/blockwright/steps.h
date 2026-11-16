@@ -66,13 +66,16 @@
 // The window's view has a step of its own (#398), "action": "view":
 //
 //   {"name": ..., "action": "view", "zoom": 1-8, "scrollTo": [x, y],
-//    "ircFit": bool, "ircPad": bool, "ircSwapShades": bool}
+//    "ircFit": bool, "ircPad": bool, "ircSwapShades": bool,
+//    "guides": "none" | "80x25" | "80x40" | "80x50"}
 //
 // each key optional, at least one given; one left out keeps what the window
 // shows. "zoom" is View > Zoom In / Zoom Out's level, "scrollTo" a cell
 // scrolled to the top left of the canvas's viewport (as far as the scroll
 // bars go; it must be on the canvas), and the three booleans View > IRC's
-// Fit Lines to the Budget, Pad Lines and Swap Shades. It takes effect where
+// Fit Lines to the Budget, Pad Lines and Swap Shades. "guides" is View >
+// Guides (#431): the guide set drawn over the canvas, the guideNone,
+// guide80x25, guide80x40 and guide80x50 actions. It takes effect where
 // it stands, so later steps' screenshots show it until another view step
 // changes it. It changes no cell, so it is no document edit. Only the
 // window has a view: `blockwright-cli replay` refuses a file with a view
@@ -146,6 +149,28 @@
 // layer "Reference N", made active, the canvas's width in pixels with its
 // aspect kept. The load pass reads each step's file, and the presets.
 //
+// Two steps use the Library (#431):
+//
+//   {"name": ..., "action": "placeStamp", "stamp": "Oak tree", "at": [x, y],
+//    "library": "bundled" | "user"}
+//   {"name": ..., "action": "saveToLibrary", "stamp": "Oak tree",
+//    "category": "Nature", "tags": ["tree", ...]}
+//
+// placeStamp is a double-click or drag from the Library dock
+// (MainWindow::placeStamp): the stamp named "stamp" (its SAUCE title, in
+// UTF-8 here) floated with its top-left at "at" in transparent paste mode,
+// for that float only (Tool Options' Paste Mode is kept), and committed as
+// a paste step is; the Select tool is the active tool after it. The name
+// is looked up in the bundled library, the user library the replay is
+// given and the stamps earlier saveToLibrary steps saved; "library" says
+// which of the two libraries to look in when both hold the name. The load
+// pass reads the libraries (Script::bundledStamps, Script::userStamps).
+// saveToLibrary is Selection > Save to Library...: the selection's cells as
+// the canvas shows them, as a stamp named "stamp" in category "category"
+// with "tags" (none if left out), into the user library, replacing a stamp
+// of that name there as the dialog does when told to. The name and every
+// tag hold only characters CP437 has a glyph for.
+//
 // Every key is checked: an unknown key, a key the action doesn't take, a
 // value of the wrong kind or out of range is refused, and the error names
 // the step by number and name. Where a point, rectangle or radial symmetry
@@ -160,12 +185,14 @@
 #include "blockwright/brushes/texture.h"
 #include "blockwright/canvas_size.h"
 #include "blockwright/halfblock.h"
+#include "blockwright/library.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
 #include "blockwright/text_source.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -315,6 +342,8 @@ struct View {
     std::optional<int> zoom;
     std::optional<Point> scrollTo;  // a cell
     std::optional<bool> ircFit, ircPad, ircSwapShades;
+    // View > Guides (#431): "none", "80x25", "80x40" or "80x50"
+    std::optional<std::string> guides;
     bool operator==(const View&) const = default;
 };
 
@@ -348,6 +377,14 @@ struct Step {
     // file name before .style.json in the bundled library's text-styles/;
     // the load pass reads it into Script::presets. Unset for a style file.
     std::optional<std::string> stylePreset;
+    // placeStamp and saveToLibrary (#431): the stamp's name as its SAUCE
+    // title, in CP437 bytes; saveToLibrary's category and tags (UTF-8); the
+    // library placeStamp looks in, unset for either.
+    std::string stamp;
+    std::string category;
+    std::vector<std::string> tags;
+    enum class Library { Bundled, User };
+    std::optional<Library> library;
 };
 
 // The window's size a steps file may set, in pixels.
@@ -365,6 +402,15 @@ struct Script {
     // The bundled text style presets applyTextStyle steps name, their
     // .style.json bytes by name, read by the load pass too.
     std::map<std::string, std::string> presets;
+    // The stamps placeStamp steps can name (#431), read by the load pass
+    // when a step places one: the bundled library's and the user library's
+    // the replay is given (library::scan), each sorted by path.
+    std::vector<library::Stamp> bundledStamps, userStamps;
+    // For each name a saveToLibrary step saves, the user library's stamp a
+    // save of it writes over (library::stampPathFor: one of that title in
+    // the library's own folder, never one in a subfolder), read by the load
+    // pass; a name the library holds no such stamp of isn't here.
+    std::map<std::string, std::filesystem::path> userOverwrites;
 };
 
 // The actions a steps file may name, in the order PLAN §9 lists them.

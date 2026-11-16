@@ -2,6 +2,7 @@
 
 #include "blockwright/ansi.h"
 #include "blockwright/big_text.h"
+#include "blockwright/cp437.h"
 #include "blockwright/face.h"
 #include "blockwright/library.h"
 #include "blockwright/project.h"
@@ -91,7 +92,11 @@ const std::vector<ActionKeys>& actionKeys() {
         // the canvas: Format > Canvas Size... (#420)
         {"canvasSize", {"size", "anchor"}},
         // the window's view (#398)
-        {"view", {"zoom", "scrollTo", "ircFit", "ircPad", "ircSwapShades"}},
+        {"view", {"zoom", "scrollTo", "ircFit", "ircPad", "ircSwapShades", "guides"}},
+        // the Library (#431): a stamp placed from the dock, and Selection >
+        // Save to Library...
+        {"placeStamp", {"stamp", "at", "library"}},
+        {"saveToLibrary", {"stamp", "category", "tags"}},
     };
     return all;
 }
@@ -152,6 +157,19 @@ std::string stringOf(const std::string& where, const std::string& key, const QJs
     if (!v.isString())
         fail(where, "\"" + key + "\" must be a string, not " + kindOf(v));
     return utf8(v.toString());
+}
+
+// A string as CP437 bytes, NFC-composed as the Save to Library dialog takes
+// a name (toCp437): refused when a character has no CP437 glyph.
+std::string cp437Text(const std::string& where, const std::string& key, const std::string& text) {
+    std::string out;
+    for (const char32_t ch : QString::fromStdString(text).normalized(QString::NormalizationForm_C).toUcs4()) {
+        const std::optional<std::uint8_t> b = unicodeToCp437(ch);
+        if (!b || *b == 0)
+            fail(where, "\"" + key + "\" \"" + text + "\" holds a character CP437 has no glyph for");
+        out += char(*b);
+    }
+    return out;
 }
 
 // One of `names` (a name per enum value, in order).
@@ -582,6 +600,43 @@ Step readStep(const QJsonValue& v, int number) {
         st.points.push_back(pointOf(where, "at", o["at"], false));
     else if (st.action == "paste")
         fail(where, "paste needs \"at\": the cell the block's top-left corner lands on");
+    else if (st.action == "placeStamp")
+        fail(where, "placeStamp needs \"at\": the cell the stamp's top-left corner lands on");
+    if (st.action == "placeStamp" || st.action == "saveToLibrary") {
+        if (!o.contains("stamp"))
+            fail(where, st.action + " needs \"stamp\", the stamp's name");
+        // saveToLibrary's name, category and tags are trimmed as the Save
+        // to Library dialog's are (library::stampText); placeStamp's name
+        // is a stamp's title as it is
+        std::string name = stringOf(where, "stamp", o["stamp"]);
+        if (st.action == "saveToLibrary")
+            name = library::stampText(name);
+        st.stamp = cp437Text(where, "stamp", name);
+        if (st.stamp.empty())
+            fail(where, "\"stamp\" must not be empty");
+    }
+    if (o.contains("library"))
+        st.library = choiceOf<Step::Library>(where, "library", o["library"],
+                                             {{"bundled", Step::Library::Bundled}, {"user", Step::Library::User}});
+    if (st.action == "saveToLibrary") {
+        if (!o.contains("category"))
+            fail(where, "saveToLibrary needs \"category\", the category the Library dock lists the stamp under");
+        st.category = library::stampText(stringOf(where, "category", o["category"]));
+        if (o.contains("tags")) {
+            if (!o["tags"].isArray())
+                fail(where, "\"tags\" must be an array of strings");
+            // an empty tag is refused, as the library refuses it; the rest
+            // are kept once each, as the dialog keeps them (library::stampTags)
+            const QJsonArray a = o["tags"].toArray();
+            std::vector<std::string> given;
+            for (qsizetype i = 0; i < a.size(); ++i) {
+                given.push_back(stringOf(where, "tags[" + std::to_string(i) + "]", a[i]));
+                if (library::stampText(given.back()).empty())
+                    fail(where, "\"tags[" + std::to_string(i) + "]\" must not be empty");
+            }
+            st.tags = library::stampTags(given);
+        }
+    }
     if (st.action == "text" && o.contains("at") != o.contains("text"))
         fail(where, o.contains("at") ? "text needs \"text\" to type at its \"at\" cell: a click with nothing typed "
                                        "makes no text layer"
@@ -710,8 +765,13 @@ Step readStep(const QJsonValue& v, int number) {
             v.ircPad = boolOf(where, "ircPad", o["ircPad"]);
         if (o.contains("ircSwapShades"))
             v.ircSwapShades = boolOf(where, "ircSwapShades", o["ircSwapShades"]);
+        if (o.contains("guides"))
+            v.guides = choiceOf<std::string>(
+                where, "guides", o["guides"],
+                {{"none", "none"}, {"80x25", "80x25"}, {"80x40", "80x40"}, {"80x50", "80x50"}});
         if (v == View{})
-            fail(where, "view needs at least one of \"zoom\", \"scrollTo\", \"ircFit\", \"ircPad\" or \"ircSwapShades\"");
+            fail(where, "view needs at least one of \"zoom\", \"scrollTo\", \"ircFit\", \"ircPad\", "
+                        "\"ircSwapShades\" or \"guides\"");
     }
     if (st.screenshot && st.screenshot->pointer && !pointerAt(st, false))
         fail(where, "\"screenshot pointer\" needs a step the pointer makes, with \"points\", \"from\" and \"to\", "

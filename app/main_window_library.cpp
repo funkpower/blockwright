@@ -252,8 +252,9 @@ bool MainWindow::placeStamp(const std::filesystem::path& path, QPoint cell, QStr
 }
 
 QString MainWindow::libraryPathFor(const QString& name, bool* exists, QString* error, const QString& category) const {
-    const std::optional<std::string> bytes = toCp437(name.trimmed());
-    const std::string title = bytes ? *bytes : name.trimmed().toStdString();
+    const QString trimmed = QString::fromStdString(library::stampText(name.toStdString()));
+    const std::optional<std::string> bytes = toCp437(trimmed);
+    const std::string title = bytes ? *bytes : trimmed.toStdString();
     QString ambiguous;
     const library::Collection* collection = library_->uniqueCollection(category.trimmed(), &ambiguous);
     if (!ambiguous.isEmpty()) {
@@ -296,7 +297,10 @@ QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& c
         *error = tr("nothing is selected");
         return {};
     }
-    const std::optional<std::string> title = toCp437(name.trimmed());
+    // what the dialog was given, trimmed as the replay's saveToLibrary
+    // step trims it (library::stampText)
+    const QString trimmed = QString::fromStdString(library::stampText(name.toStdString()));
+    const std::optional<std::string> title = toCp437(trimmed);
     if (!title) {
         *error = tr("the name holds a character CP437 has no glyph for");
         return {};
@@ -307,7 +311,7 @@ QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& c
     }
     std::vector<std::string> tagList;
     for (const QString& t : tags)
-        tagList.push_back(t.trimmed().toStdString());
+        tagList.push_back(library::stampText(t.toStdString()));
     QString path;
     // A category that names one of the user's collections saves into its
     // folder (#464).
@@ -326,14 +330,14 @@ QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& c
         const std::filesystem::path held = collection ? library_->stampTitled(*collection, *title) : std::filesystem::path();
         path = qpath(held.empty() ? t.path : held);
         if (!replace && (t.exists || !held.empty())) {
-            *error = tr("a stamp named \"%1\" already exists (%2)").arg(name.trimmed(), path);
+            *error = tr("a stamp named \"%1\" already exists (%2)").arg(trimmed, path);
             return {};
         }
         if (collection) {
             path = qpath(library::addStamp(library_->userDir(), collection->name, *title, tagList, cells,
                                            doc_.ansi().ice, slice, replace));
         } else {
-            const library::StampFiles files = library::encodeStamp(*title, category.trimmed().toStdString(), tagList,
+            const library::StampFiles files = library::encodeStamp(*title, library::stampText(category.toStdString()), tagList,
                                                                    cells, doc_.ansi().ice, slice);
             library::writeStamp(t.path, files);
         }

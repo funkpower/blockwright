@@ -9,6 +9,7 @@
 #include "draw_tools.h"
 #include "face_picker.h"
 #include "irc_meter.h"
+#include "library_dock.h"
 #include "lint_dock.h"
 #include "main_window.h"
 #include "text_options.h"
@@ -26,6 +27,7 @@
 #include "blockwright/composite.h"
 #include "blockwright/font_store.h"
 #include "blockwright/irc_render.h"
+#include "blockwright/library.h"
 #include "blockwright/ramp.h"
 #include "blockwright/render.h"
 #include "blockwright/steps.h"
@@ -66,6 +68,9 @@
 #endif
 
 #include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -969,6 +974,110 @@ TEST_CASE("a crop of cells a device pixel wider than the viewport is refused (#3
                                          scroll->verticalScrollBar()->setValue(0);
                                      }),
                     bwcli::Failure);
+}
+
+TEST_CASE("a view step's guides show View > Guides' choice on the canvas and in the menu (#431)",
+          "[screenshot][view][library]") {
+    const steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720],
+        "steps": [
+        {"name": "on", "action": "view", "guides": "80x25", "screenshot": {}},
+        {"name": "tall", "action": "view", "guides": "80x50", "screenshot": {}},
+        {"name": "z", "action": "view", "zoom": 2, "screenshot": {}},
+        {"name": "off", "action": "view", "guides": "none", "screenshot": {}}]})");
+    MainWindow w;
+    std::map<std::string, QSize> guide;
+    std::map<std::string, bool> ticked;
+    screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        guide[sh.stem] = w.canvasView()->guide();
+        QAction* none = w.findChild<QAction*>(QStringLiteral("guideNone"));
+        REQUIRE(none);
+        ticked[sh.stem] = none->isChecked();
+    });
+    CHECK(guide["01-on"] == QSize(80, 25));
+    CHECK_FALSE(ticked["01-on"]);
+    CHECK(guide["02-tall"] == QSize(80, 50));
+    CHECK(guide["03-z"] == QSize(80, 50));  // kept by a view step that doesn't set it
+    CHECK(guide["04-off"].isEmpty());
+    CHECK(ticked["04-off"]);
+}
+
+TEST_CASE("a screenshot replay's saveToLibrary stamp is in the Library dock, and placeStamp chooses Select (#431)",
+          "[screenshot][library]") {
+    QTemporaryDir tmp;
+    const fs::path bundled = fs::path(tmp.path().toStdString()) / "bundled";
+    const fs::path user = fs::path(tmp.path().toStdString()) / "user";
+    fs::create_directories(bundled);
+    fs::create_directories(user);
+    steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720],
+        "steps": [
+        {"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+        {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+        {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words", "screenshot": {"of": "library"}},
+        {"name": "none", "action": "deselect"},
+        {"name": "pen", "action": "glyph", "points": [[5, 5]], "screenshot": {}},
+        {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [8, 4], "screenshot": {}}]})");
+    bwcli::replay::load(s, fs::path(), bundled, user);
+    MainWindow w;
+    w.libraryWidget()->setDirectories(bundled, user);
+    std::map<std::string, QStringList> names;
+    std::map<std::string, QString> tool;
+    const auto shots = screenshot::take(w, s, startOf(s), [&](const screenshot::Shot& sh) {
+        names[sh.stem] = w.libraryWidget()->shownNames();
+        tool[sh.stem] = w.tools()->active() ? w.tools()->active()->id() : QString();
+    });
+    REQUIRE(shots.size() == 3);
+    // saved where the dock reads the user library, and listed in the picture's moment
+    CHECK(names["03-save"].contains(QStringLiteral("Hi")));
+    REQUIRE(library::stampPathFor(user, "Hi").exists);
+    CHECK(library::readStamp(library::stampPathFor(user, "Hi").path).meta.category == "words");
+    // the stamp placed and selected, with the Select tool, as the dock places one
+    CHECK(tool["05-pen"] != QStringLiteral("select"));
+    CHECK(tool["06-put"] == QStringLiteral("select"));
+    const Canvas& c = w.document()->canvas();
+    CHECK(c.at(8, 4).ch == U'h');
+    CHECK(c.at(9, 4).ch == U'i');
+}
+
+TEST_CASE("a save that fails in --screenshot's copy of --user-library names the file in --user-library (#506)",
+          "[screenshot][library]") {
+    QTemporaryDir tmp;
+    const fs::path root = fs::path(QFile::encodeName(tmp.path()).toStdString());
+    const fs::path user = root / "user";
+    fs::create_directories(user);
+    {
+        std::ofstream f(root / "save.json");
+        f << R"({"version": 1, "start": {"blank": [20, 8]}, "steps": [
+            {"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+            {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+            {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words", "screenshot": {}}]})";
+    }
+    struct Reset {
+        ~Reset() { library::testing::writeStampFault = nullptr; }
+    } reset;
+    library::testing::writeStampFault = [](std::string_view step) {
+        if (step == "art")
+            throw library::LibraryError("no space left");
+    };
+    std::ostringstream err;
+    std::streambuf* was = std::cerr.rdbuf(err.rdbuf());
+    // with a trailing slash, as a shell's completion leaves it
+    const int status = screenshot::run(QFile::decodeName((root / "save.json").c_str()),
+                                       QFile::decodeName((root / "out").c_str()),
+                                       QFile::decodeName(user.c_str()) + QLatin1Char('/'));
+    std::cerr.rdbuf(was);
+    CHECK(status == 1);
+    CHECK(err.str() == "blockwright: step 3 (save): " + (user / "hi.ans").string() + ": no space left\n");
+    CHECK(fs::is_empty(user));
+    CHECK_FALSE(fs::exists(root / "out"));
+}
+
+TEST_CASE("inUserLibrary names the scratch copy's paths as --user-library's (#506)", "[screenshot][library]") {
+    CHECK(screenshot::inUserLibrary("/tmp/s-1/hi.ans: x; /tmp/s-1/hi.json", "/tmp/s-1", "lib") ==
+          "lib/hi.ans: x; lib/hi.json");
+    CHECK(screenshot::inUserLibrary("/tmp/s-1/hi.ans: x", "/tmp/s-1", "lib/") == "lib/hi.ans: x");
+    // a --user-library holding the scratch's name isn't replaced again
+    CHECK(screenshot::inUserLibrary("/s/a /s/b", "/s", "/s/s") == "/s/s/a /s/s/b");
+    CHECK(screenshot::inUserLibrary("step 1 (save): nothing", "/tmp/s-1", "lib") == "step 1 (save): nothing");
 }
 
 TEST_CASE("a steps file with no view step leaves the window's view as it opens (#398)", "[screenshot][view]") {

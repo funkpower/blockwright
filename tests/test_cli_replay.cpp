@@ -1173,6 +1173,336 @@ TEST_CASE("a view step sets the view where it stands and changes no cell (#398)"
     CHECK(out.notes.empty());
 }
 
+namespace {
+
+// A bundled and a user library in a temporary directory, for the steps
+// that place or save a Library stamp (#431).
+struct Libraries {
+    QTemporaryDir tmp;
+    fs::path bundled = fs::path(tmp.path().toStdString()) / "bundled";
+    fs::path user = fs::path(tmp.path().toStdString()) / "user";
+    Libraries() {
+        fs::create_directories(bundled);
+        fs::create_directories(user);
+    }
+    static void add(const fs::path& dir, const std::string& name, const CellBlock& b) {
+        library::writeStamp(library::stampPathFor(dir, name).path, library::encodeStamp(name, "test", {}, b, true));
+    }
+};
+
+Cell inked(char32_t ch, int fg) {
+    Cell c;
+    c.ch = ch;
+    c.fg = Color::indexed(std::uint8_t(fg));
+    return c;
+}
+
+// 3x2: A . C over D E F, the middle of the top row blank.
+CellBlock lettered() {
+    CellBlock b(3, 2);
+    b.at(0, 0) = inked(U'A', 12);
+    b.at(2, 0) = inked(U'C', 12);
+    b.at(0, 1) = inked(U'D', 10);
+    b.at(1, 1) = inked(U'E', 10);
+    b.at(2, 1) = inked(U'F', 10);
+    return b;
+}
+
+bwcli::replay::Outcome onLibraries(const Libraries& l, const std::string& steps,
+                                   const bwcli::replay::Observer& observe = {}, bool withUser = true) {
+    steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [)" + steps + "]}");
+    bwcli::replay::load(s, kReplay, l.bundled, withUser ? l.user : fs::path());
+    return bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples), observe);
+}
+
+std::string refusedOnLibraries(const Libraries& l, const std::string& steps, bool withUser = true) {
+    try {
+        onLibraries(l, steps, {}, withUser);
+    } catch (const bwcli::Failure& f) {
+        return f.message;
+    }
+    return "(replayed)";
+}
+
+} // namespace
+
+TEST_CASE("placeStamp floats a Library stamp transparent, keeps the paste mode and selects it (#431)",
+          "[replay][library]") {
+    Libraries l;
+    Libraries::add(l.bundled, "Letters", lettered());
+    std::vector<std::pair<Selection, PasteMode>> after;
+    const auto out = onLibraries(l, R"({"name": "ink", "action": "keyboard", "at": [2, 1], "text": "xyz"},
+                                       {"name": "put", "action": "placeStamp", "stamp": "Letters", "at": [2, 1]},
+                                       {"name": "edge", "action": "placeStamp", "stamp": "Letters", "at": [18, 9],
+                                        "library": "bundled"})",
+                                 [&](const bwcli::replay::Moment& m) {
+                                     if (!m.before)
+                                         after.emplace_back(m.selection, m.settings.pasteMode);
+                                 });
+    const Canvas c = flat(out.captures.back().project);
+    CHECK(c.at(2, 1).ch == U'A');
+    // the stamp's blank cell lets the y under it show, as the dock's float does
+    CHECK(c.at(3, 1).ch == U'y');
+    CHECK(c.at(4, 1).ch == U'C');
+    CHECK(c.at(2, 2).ch == U'D');
+    CHECK(c.at(3, 2).ch == U'E');
+    CHECK(c.at(4, 2).ch == U'F');
+    CHECK(c.at(18, 9).ch == U'A');
+    CHECK(c.at(19, 9).ch != U'C');  // blank in the stamp, nothing under it
+    REQUIRE(after.size() == 3);
+    CHECK(after[1].first.bounds() == CellRect{2, 1, 3, 2});
+    CHECK(after[2].first.bounds() == CellRect{18, 9, 2, 1});  // clipped to the canvas
+    // the transparent float is for the stamp only; the steps' paste mode stays
+    CHECK(after[2].second == PasteMode::Normal);
+}
+
+TEST_CASE("placeStamp refuses a stamp it can't find or can't tell apart, naming the step (#431)",
+          "[replay][library]") {
+    Libraries l;
+    Libraries::add(l.bundled, "Letters", lettered());
+    Libraries::add(l.user, "Letters", lettered());
+    Libraries::add(l.user, "Mine", lettered());
+    library::writeStamp(l.user / "dup-a.ans", library::encodeStamp("Twice", "test", {}, lettered(), true));
+    library::writeStamp(l.user / "dup-b.ans", library::encodeStamp("Twice", "test", {}, lettered(), true));
+    const auto put = [&](const std::string& fields, bool withUser = true) {
+        return refusedOnLibraries(l, R"({"name": "put", "action": "placeStamp", "at": [1, 1], )" + fields + "}",
+                                  withUser);
+    };
+    CHECK_THAT(put(R"("stamp": "Nope")"),
+               ContainsSubstring("step 1 (put): no stamp named \"Nope\" in the bundled or the user library"));
+    CHECK_THAT(put(R"("stamp": "Mine", "library": "bundled")"),
+               ContainsSubstring("step 1 (put): no stamp named \"Mine\" in the bundled library"));
+    CHECK_THAT(put(R"("stamp": "Mine")", false),
+               ContainsSubstring("step 1 (put): no stamp named \"Mine\" in the bundled or the user library"));
+    CHECK_THAT(put(R"("stamp": "Letters")"),
+               ContainsSubstring("step 1 (put): the bundled and the user library both have a stamp named \"Letters\"; "
+                                 "say which with \"library\": \"bundled\" or \"user\""));
+    CHECK_THAT(put(R"("stamp": "Twice")"),
+               ContainsSubstring("step 1 (put): 2 stamps in the user library are named \"Twice\": "));
+    // said which, either is found; one only in the user library needs no "library"
+    CHECK(put(R"("stamp": "Letters", "library": "user")") == "(replayed)");
+    CHECK(put(R"("stamp": "Letters", "library": "bundled")") == "(replayed)");
+    CHECK(put(R"("stamp": "Mine")") == "(replayed)");
+    // off the canvas is refused as a paste is
+    CHECK_THAT(refusedOnLibraries(l, R"({"name": "far", "action": "placeStamp", "stamp": "Mine", "at": [25, 1]})"),
+               ContainsSubstring("step 1 (far): "));
+}
+
+TEST_CASE("saveToLibrary saves the selection as the canvas shows it, for a later placeStamp and the user library (#431)",
+          "[replay][library]") {
+    Libraries l;
+    std::vector<std::pair<std::string, std::size_t>> seen;
+    const auto out = onLibraries(l, R"({"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+                                       {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+                                       {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words",
+                                        "tags": ["short", "greeting"]},
+                                       {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [5, 5]})",
+                                 [&](const bwcli::replay::Moment& m) {
+                                     seen.emplace_back(m.step.name + (m.before ? " before" : " after"), m.saved.size());
+                                 });
+    REQUIRE(out.saved.size() == 1);
+    CHECK(out.saved[0].step == "step 3 (save)");
+    CHECK(out.saved[0].name == "Hi");
+    const library::Stamp st = library::parseStamp(out.saved[0].files);
+    CHECK(st.name == "Hi");
+    CHECK(st.meta.category == "words");
+    CHECK(st.meta.tags == std::vector<std::string>{"short", "greeting"});
+    const CellBlock b = st.block();
+    REQUIRE((b.width == 2 && b.height == 1));
+    CHECK(b.at(0, 0).ch == U'h');
+    CHECK(b.at(1, 0).ch == U'i');
+    // the saved stamp is in the replay's user library for the next step
+    const Canvas c = flat(out.captures.back().project);
+    CHECK(c.at(5, 5).ch == U'h');
+    CHECK(c.at(6, 5).ch == U'i');
+    // the observer sees it once the step has saved it
+    const std::vector<std::pair<std::string, std::size_t>> want = {
+        {"ink before", 0}, {"ink after", 0}, {"pick before", 0}, {"pick after", 0},
+        {"save before", 0}, {"save after", 1}, {"put before", 1}, {"put after", 1}};
+    CHECK(seen == want);
+    // nothing is written to the library during the replay
+    CHECK(fs::is_empty(l.user));
+
+    // writeSaved writes the two files, making the directory
+    const fs::path into = l.user / "new" / "dir";
+    bwcli::replay::writeSaved(out.saved[0], into);
+    const library::Stamp back = library::readStamp(library::stampPathFor(into, "Hi").path);
+    CHECK(back.name == "Hi");
+    CHECK(back.meta.tags == st.meta.tags);
+    CHECK(bwcli::readFile(back.path.string()) == out.saved[0].files.ans);
+}
+
+TEST_CASE("saveToLibrary saves what every visible layer shows, and replaces a stamp of its name (#431)",
+          "[replay][library]") {
+    Libraries l;
+    Libraries::add(l.user, "Hi", lettered());
+    const auto out = onLibraries(l, R"({"name": "ink", "action": "keyboard", "at": [1, 1], "text": "a"},
+                                       {"name": "top", "action": "newCellsLayer"},
+                                       {"name": "over", "action": "keyboard", "at": [2, 1], "text": "b"},
+                                       {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+                                       {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words"},
+                                       {"name": "again", "action": "saveToLibrary", "stamp": "Hi", "category": "words"},
+                                       {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [5, 5]})");
+    REQUIRE(out.saved.size() == 2);
+    const CellBlock b = library::parseStamp(out.saved[0].files).block();
+    REQUIRE(b.width == 2);
+    CHECK(b.at(0, 0).ch == U'a');  // the layer below, through the active one
+    CHECK(b.at(1, 0).ch == U'b');
+    const auto noted = [&](const std::string& step) {
+        return std::count_if(out.notes.begin(), out.notes.end(), [&](const std::string& n) {
+            return n == step + ": replaces the stamp \"Hi\" in the user library";
+        });
+    };
+    CHECK(noted("step 5 (save)") == 1);
+    CHECK(noted("step 6 (again)") == 1);
+    // the one placed is the one saved, not the one the library had
+    const Canvas c = flat(out.captures.back().project);
+    CHECK(c.at(5, 5).ch == U'a');
+}
+
+TEST_CASE("saveToLibrary saves the name, category and tags trimmed, as Save to Library does (#431)",
+          "[replay][library]") {
+    Libraries l;
+    const auto out = onLibraries(l, R"({"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+                                       {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+                                       {"name": "save", "action": "saveToLibrary", "stamp": " Hi", "category": " words ",
+                                        "tags": [" t ", "t", "u"]},
+                                       {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [5, 5]})");
+    REQUIRE(out.saved.size() == 1);
+    const library::Stamp st = library::parseStamp(out.saved[0].files);
+    CHECK(st.name == "Hi");
+    CHECK(st.meta.category == "words");
+    // each tag once after trimming, as the dialog keeps them (#506)
+    CHECK(st.meta.tags == std::vector<std::string>{"t", "u"});
+    CHECK(flat(out.captures.back().project).at(5, 5).ch == U'h');
+}
+
+TEST_CASE("saveToLibrary replaces only the stamp a save writes over, not one of its name in a subfolder (#431)",
+          "[replay][library]") {
+    Libraries l;
+    Libraries::add(l.user / "words", "Hi", lettered());
+    const std::string save = R"({"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+                                {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+                                {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words"})";
+    const auto out = onLibraries(l, save);
+    const auto noted = [&](const bwcli::replay::Outcome& o, const std::string& says) {
+        return std::count_if(o.notes.begin(), o.notes.end(),
+                             [&](const std::string& n) { return n.find(says) != std::string::npos; });
+    };
+    // Save to Library writes hi.ans in the library's folder beside words/hi.ans
+    CHECK(noted(out, "replaces") == 0);
+    CHECK(noted(out, "step 3 (save): the user library's stamp \"Hi\" in " + (l.user / "words" / "hi.ans").string() +
+                         " is kept beside it, as Save to Library keeps it") == 1);
+    // both are in the replay's library, as in the dock afterwards: a place of the name can't tell them apart
+    CHECK_THAT(refusedOnLibraries(l, save + R"(, {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [5, 5]})"),
+               ContainsSubstring("step 4 (put): 2 stamps in the user library are named \"Hi\": " +
+                                 (l.user / "words" / "hi.ans").string() + ", the one an earlier step saved"));
+    bwcli::replay::writeSaved(out.saved[0], l.user);
+    CHECK(fs::exists(l.user / "hi.ans"));
+    CHECK(fs::exists(l.user / "words" / "hi.ans"));
+    CHECK_THAT(refusedOnLibraries(l, R"({"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [5, 5]})"),
+               ContainsSubstring("step 1 (put): 2 stamps in the user library are named \"Hi\""));
+    // now the folder's own hi.ans is the one a save writes over; words/hi.ans still stays
+    const auto again = onLibraries(l, save);
+    CHECK(noted(again, "step 3 (save): replaces the stamp \"Hi\" in the user library") == 1);
+    CHECK(noted(again, "is kept beside it") == 1);
+}
+
+TEST_CASE("replay refuses a --user-library that isn't a directory, or can't be written to by a save, before any step (#431)",
+          "[replay][library]") {
+    Libraries l;
+    const fs::path file = l.user / "plain";
+    std::ofstream(file) << "x";
+    const std::string put = R"({"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [5, 5]})";
+    const std::string save = R"({"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+                                {"name": "all", "action": "selectAll"},
+                                {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words"})";
+    const auto loaded = [&](const std::string& steps, const fs::path& user) {
+        steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [)" + steps + "]}");
+        try {
+            bwcli::replay::load(s, kReplay, l.bundled, user);
+        } catch (const bwcli::Failure& f) {
+            return f.message;
+        }
+        return std::string("(loaded)");
+    };
+    // a regular file is no empty library, whatever the steps
+    CHECK(loaded(put, file) == "--user-library " + file.string() + ": not a directory");
+    CHECK(loaded(save, file) == "--user-library " + file.string() + ": not a directory");
+    CHECK(loaded(R"({"name": "all", "action": "selectAll"})", file) == "--user-library " + file.string() + ": not a directory");
+    CHECK(loaded(save, file / "sub") == "--user-library " + (file / "sub").string() + ": " + file.string() + ": not a directory");
+    // one that isn't there yet is made by the save
+    CHECK(loaded(save, l.user / "new" / "dir") == "(loaded)");
+#ifndef _WIN32
+    if (::geteuid() == 0)
+        SKIP("root writes a read-only directory");
+    const fs::path ro = l.user / "ro";
+    fs::create_directories(ro);
+    fs::permissions(ro, fs::perms::owner_read | fs::perms::owner_exec);
+    const std::string denied = std::strerror(EACCES);
+    const std::string onSave = loaded(save, ro), onPut = loaded(put, ro), below = loaded(save, ro / "new");
+    // a save that can't be written names the path once
+    std::string written;
+    {
+        const auto out = onLibraries(l, save, {}, false);
+        try {
+            bwcli::replay::writeSaved(out.saved[0], ro);
+        } catch (const bwcli::Failure& f) {
+            written = f.message;
+        }
+    }
+    fs::permissions(ro, fs::perms::owner_all);
+    CHECK(onSave == "--user-library " + ro.string() + ": can't be written: " + denied);
+    CHECK(onPut == "(loaded)");  // only read
+    CHECK(below == "--user-library " + (ro / "new").string() + ": " + ro.string() + ": can't be written: " + denied);
+    INFO(written);
+    CHECK(written.starts_with("step 3 (save): "));
+    std::size_t count = 0;
+    for (std::size_t at = written.find(ro.string()); at != std::string::npos; at = written.find(ro.string(), at + 1))
+        ++count;
+    CHECK(count == 1);
+#endif
+}
+
+TEST_CASE("saveToLibrary refuses no selection and a name a stamp can't have, naming the step (#431)",
+          "[replay][library]") {
+    Libraries l;
+    CHECK_THAT(refusedOnLibraries(l, R"({"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "x"})"),
+               ContainsSubstring("step 1 (save): saveToLibrary needs a selection: select or selectAll first"));
+    const std::string longName(36, 'x');
+    CHECK_THAT(refusedOnLibraries(l, R"({"name": "ink", "action": "keyboard", "at": [0, 0], "text": "x"},
+                                        {"name": "all", "action": "selectAll"},
+                                        {"name": "save", "action": "saveToLibrary", "stamp": ")" +
+                                         longName + R"(", "category": "x"})"),
+               ContainsSubstring("step 3 (save): the name is longer than SAUCE's 35 bytes"));
+    // nothing drawn is no stamp, as Save to Library refuses it
+    CHECK_THAT(refusedOnLibraries(l, R"({"name": "all", "action": "selectAll"},
+                                        {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "x"})"),
+               ContainsSubstring("step 2 (save): every cell is blank, so the stamp would draw nothing"));
+    // without a user library the stamp is still saved for the replay
+    CHECK(refusedOnLibraries(l, R"({"name": "ink", "action": "keyboard", "at": [0, 0], "text": "x"},
+                                   {"name": "all", "action": "selectAll"},
+                                   {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "x"},
+                                   {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [0, 0]})",
+                             false) == "(replayed)");
+}
+
+TEST_CASE("a view step's guides reach the window's moment (#431)", "[replay][view][library]") {
+    steps::Script s = steps::parse(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [
+        {"name": "on", "action": "view", "guides": "80x25"},
+        {"name": "z", "action": "view", "zoom": 2},
+        {"name": "off", "action": "view", "guides": "none"}]})");
+    std::vector<std::optional<std::string>> after;
+    bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples), [&](const bwcli::replay::Moment& m) {
+        if (!m.before)
+            after.push_back(m.view.guides);
+    });
+    REQUIRE(after.size() == 3);
+    CHECK(after[0] == std::string("80x25"));
+    CHECK(after[1] == std::string("80x25"));  // a later view step keeps what it doesn't set
+    CHECK(after[2] == std::string("none"));
+}
+
 TEST_CASE("a view step's scroll cell off the canvas stops the replay, named (#398)", "[replay][view]") {
     CHECK_THAT(onBlank(R"({"name": "a", "action": "selectAll"}, {"name": "far", "action": "view", "scrollTo": [20, 0]})"),
                ContainsSubstring("step 2 (far): scrollTo cell (20, 0) is off the 20 x 10 canvas"));

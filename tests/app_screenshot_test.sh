@@ -268,13 +268,136 @@ else
   bad "without the machine's fonts (exit $st) the Layers dock's rows differ: $out"
 fi
 
+# --user-library (#431): the user Library a saveToLibrary step saves to, made
+# if it isn't there, and a placeStamp step finds the stamp in
+cat > "$tmp/library.json" <<'EOF2'
+{"version": 1, "start": {"blank": [20, 8]}, "window": [1024, 720], "steps": [
+ {"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+ {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+ {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words", "screenshot": {"of": "library"}},
+ {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [8, 4], "screenshot": {}},
+ {"name": "guides", "action": "view", "guides": "80x25", "screenshot": {}}]}
+EOF2
+out=$("$bin" --screenshot "$tmp/library.json" -o "$tmp/library" --user-library "$tmp/user-lib/new" 2>&1); st=$?
+if [ "$st" -eq 0 ]; then ok "--screenshot with --user-library exits 0"; else bad "--screenshot with --user-library (exit $st): $out"; fi
+for stem in 03-save 04-put 05-guides; do
+  if [ -f "$tmp/library/$stem.png" ]; then ok "library: $stem.png written"; else bad "library: no $stem.png"; fi
+done
+n=$(ls "$tmp/user-lib/new" 2>/dev/null | grep -c '\.ans$')
+j=$(ls "$tmp/user-lib/new" 2>/dev/null | grep -c '\.json$')
+if [ "$n" -eq 1 ] && [ "$j" -eq 1 ]; then ok "--user-library holds the saved stamp"; else bad "--user-library holds: $(ls "$tmp/user-lib/new" 2>&1)"; fi
+# without it the stamp goes to a scratch library, and the placeStamp still finds it
+out=$("$bin" --screenshot "$tmp/library.json" -o "$tmp/library-scratch" 2>&1); st=$?
+if [ "$st" -eq 0 ] && [ -f "$tmp/library-scratch/04-put.png" ]; then ok "--screenshot without --user-library saves to a scratch library"; else bad "without --user-library (exit $st): $out"; fi
+
+# the stamps in --user-library are the dock's and placeStamp's in a later run
+cat > "$tmp/library-put.json" <<'EOF2'
+{"version": 1, "start": {"blank": [20, 8]}, "steps": [
+ {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [8, 4], "screenshot": {"of": "library"}}]}
+EOF2
+out=$("$bin" --screenshot "$tmp/library-put.json" -o "$tmp/library-put" --user-library "$tmp/user-lib/new" 2>&1); st=$?
+if [ "$st" -eq 0 ] && [ -f "$tmp/library-put/01-put.png" ]; then ok "--user-library's stamps are placed in a later run"; else bad "a later run placing from --user-library (exit $st): $out"; fi
+# a run that fails after a save writes nothing to --user-library, as
+# blockwright-cli replay doesn't (#431)
+cat > "$tmp/library-fails.json" <<'EOF2'
+{"version": 1, "start": {"blank": [20, 8]}, "steps": [
+ {"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+ {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+ {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words", "screenshot": {"of": "library"}},
+ {"name": "bad", "action": "placeStamp", "stamp": "Nope", "at": [1, 1]}]}
+EOF2
+out=$("$bin" --screenshot "$tmp/library-fails.json" -o "$tmp/library-fails" --user-library "$tmp/user-lib/fails" 2>&1); st=$?
+if [ "$st" -eq 1 ]; then ok "--screenshot: a run that fails after a save exits 1"; else bad "a run that fails after a save (exit $st): $out"; fi
+if [ ! -e "$tmp/user-lib/fails" ] && [ ! -e "$tmp/library-fails" ]; then ok "--screenshot: a failed run writes nothing to --user-library"; else bad "--screenshot: a failed run wrote: $(ls "$tmp/user-lib/fails" "$tmp/library-fails" 2>&1)"; fi
+# --user-library that is a regular file is refused, naming the flag
+printf 'x' > "$tmp/user-lib/plain"
+out=$("$bin" --screenshot "$tmp/library.json" -o "$tmp/library-plain" --user-library "$tmp/user-lib/plain" 2>&1); st=$?
+if [ "$st" -eq 1 ] && [ "$out" = "blockwright: --user-library $tmp/user-lib/plain: not a directory" ] && [ ! -e "$tmp/library-plain" ]; then
+  ok "--screenshot: a --user-library that is a file is refused before any step"
+else
+  bad "--screenshot with a file for --user-library (exit $st): $out"
+fi
+
+# a file in --user-library the window's copy of it can't read fails the run
+# before any picture, naming that file (#506); root reads it anyway
+if [ "$(id -u)" -ne 0 ]; then
+  mkdir -p "$tmp/user-lib/locked"
+  cp "$tmp/user-lib/new/"* "$tmp/user-lib/locked/"
+  printf 'x' > "$tmp/user-lib/locked/notes.txt"
+  chmod 000 "$tmp/user-lib/locked/notes.txt"
+  out=$("$bin" --screenshot "$tmp/library-put.json" -o "$tmp/library-locked" --user-library "$tmp/user-lib/locked" 2>&1); st=$?
+  chmod 644 "$tmp/user-lib/locked/notes.txt"
+  case $out in
+    *"--user-library $tmp/user-lib/locked: $tmp/user-lib/locked/notes.txt: can't be copied for the window: "*) named=1 ;;
+    *) named=0 ;;
+  esac
+  if [ "$st" -eq 1 ] && [ "$named" -eq 1 ] && [ ! -e "$tmp/library-locked" ]; then
+    ok "--screenshot: a --user-library file that can't be copied fails the run, naming it"
+  else
+    bad "--screenshot with an unreadable file in --user-library (exit $st): $out"
+  fi
+fi
+
+# a relative link in --user-library that leads out of it still names its
+# stamp in the window's copy, so the dock shows that stamp as in a library
+# holding the file itself (#506); nothing outside the library changes
+cat > "$tmp/save-outside.json" <<'EOF2'
+{"version": 1, "start": {"blank": [20, 8]}, "steps": [
+ {"name": "ink", "action": "keyboard", "at": [1, 1], "text": "ox"},
+ {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+ {"name": "save", "action": "saveToLibrary", "stamp": "Outside", "category": "out"}]}
+EOF2
+cat > "$tmp/save-own.json" <<'EOF2'
+{"version": 1, "start": {"blank": [20, 8]}, "steps": [
+ {"name": "ink", "action": "keyboard", "at": [1, 1], "text": "ow"},
+ {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+ {"name": "save", "action": "saveToLibrary", "stamp": "Own", "category": "own"}]}
+EOF2
+cat > "$tmp/put-outside.json" <<'EOF2'
+{"version": 1, "start": {"blank": [20, 8]}, "steps": [
+ {"name": "put", "action": "placeStamp", "stamp": "Outside", "at": [5, 5], "screenshot": {"of": "library"}}]}
+EOF2
+links=$tmp/user-lib/links
+mkdir -p "$links"
+"$bin" --screenshot "$tmp/save-outside.json" -o "$tmp/links-made" --user-library "$links/shared" >/dev/null 2>&1
+"$bin" --screenshot "$tmp/save-own.json" -o "$tmp/links-made" --user-library "$links/own" >/dev/null 2>&1
+mkdir -p "$links/relL" "$links/copyL"
+cp "$links/own/"* "$links/relL/"
+cp "$links/own/"* "$links/copyL/"
+made=0
+for f in "$links/shared/"*.ans "$links/shared/"*.json; do
+  [ -f "$f" ] || continue
+  ext=${f##*.}
+  ln -s "../shared/${f##*/}" "$links/relL/rel.$ext"
+  cp "$f" "$links/copyL/rel.$ext"
+  made=$((made + 1))
+done
+if [ "$made" -eq 2 ]; then ok "--user-library links: the stamps are made"; else bad "--user-library links: shared holds $(ls "$links/shared" 2>&1)"; fi
+(cd "$links" && ls -lR shared relL | sed 's/.*:[0-9][0-9] //') > "$tmp/links-before"
+cp -R "$links/shared" "$tmp/shared-before"
+out=$("$bin" --screenshot "$tmp/put-outside.json" -o "$tmp/links-rel" --user-library "$links/relL" 2>&1); st=$?
+out2=$("$bin" --screenshot "$tmp/put-outside.json" -o "$tmp/links-copy" --user-library "$links/copyL" 2>&1); st2=$?
+if [ "$st" -eq 0 ] && [ "$st2" -eq 0 ] && [ -f "$tmp/links-rel/01-put.png" ] && cmp -s "$tmp/links-rel/01-put.png" "$tmp/links-copy/01-put.png"; then
+  ok "--screenshot: a relative link out of --user-library shows its stamp in the dock"
+else
+  bad "--screenshot with a relative link out of --user-library (exit $st, $st2), the dock differs from the copied files': $out $out2"
+fi
+(cd "$links" && ls -lR shared relL | sed 's/.*:[0-9][0-9] //') > "$tmp/links-after"
+if cmp -s "$tmp/links-before" "$tmp/links-after" && diff -r "$tmp/shared-before" "$links/shared" >/dev/null; then
+  ok "--screenshot: a library with links leaves what they name alone"
+else
+  bad "--screenshot with links changed them or what they name: $(diff "$tmp/links-before" "$tmp/links-after")"
+fi
+
 # A steps file that can't be read is an error, not a crash.
 out=$("$bin" --screenshot "$tmp/missing.json" -o "$tmp/missing" 2>&1); st=$?
 if [ "$st" -eq 1 ]; then ok "a missing steps file exits 1"; else bad "a missing steps file (exit $st): $out"; fi
 
 # Usage.
 for args in "--screenshot" "--screenshot $tmp/nope.json" "-o $tmp/x" "--screenshot $tmp/nope.json -o $tmp/x a.ans" \
-            "--screenshot $tmp/nope.json -o $tmp/x -o $tmp/y" "--screenshot $tmp/nope.json -o $tmp/x --list-actions"; do
+            "--screenshot $tmp/nope.json -o $tmp/x -o $tmp/y" "--screenshot $tmp/nope.json -o $tmp/x --list-actions" \
+            "--user-library $tmp/u" "--screenshot $tmp/nope.json -o $tmp/x --user-library $tmp/u --user-library $tmp/v" \
+            "--screenshot $tmp/nope.json -o $tmp/x --user-library"; do
   # shellcheck disable=SC2086
   out=$("$bin" $args 2>&1); st=$?
   if [ "$st" -eq 2 ]; then ok "usage: $args"; else bad "usage: $args (exit $st): $out"; fi

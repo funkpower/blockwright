@@ -1219,12 +1219,12 @@ QString StampDialog::name() const { return name_->text().trimmed(); }
 QString StampDialog::category() const { return category_->currentText().trimmed(); }
 
 QStringList StampDialog::tags() const {
+    std::vector<std::string> given;
+    for (const QString& t : tags_->text().split(QLatin1Char(',')))
+        given.push_back(t.toStdString());
     QStringList out;
-    for (const QString& t : tags_->text().split(QLatin1Char(','))) {
-        const QString s = t.trimmed();
-        if (!s.isEmpty() && !out.contains(s))
-            out << s;
-    }
+    for (const std::string& t : library::stampTags(given))
+        out << QString::fromStdString(t);
     return out;
 }
 

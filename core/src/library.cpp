@@ -862,39 +862,18 @@ fs::path writeFrameStyle(const fs::path& dir, const FrameStyle& style) {
     return p;
 }
 
-Stamp readStamp(const fs::path& ans) {
+namespace {
+
+// The checks readStamp and parseStamp share: `data` is the .ans and
+// `readSidecar` gives its sidecar, called once, before the art when the
+// .ans starts with a byte order mark and after it otherwise.
+template <typename ReadSidecar> Stamp stampFrom(const std::string& data, ReadSidecar readSidecar) {
     Stamp s;
-    s.path = ans;
-    std::error_code ec;
-    if (!fs::exists(fs::status(ans, ec)))
-        throw LibraryError(".ans can't be read");
-    if (!regular(ans))
-        throw LibraryError(".ans is not a regular file");
-    std::string data;
-    try {
-        data = readAll(ans);
-    } catch (const LibraryError& e) {
-        throw LibraryError(std::string(".ans ") + e.what());
-    }
     // A stamp that starts with a byte order mark is UTF-8, and its sidecar
     // must say so: it is read first, and one that doesn't is refused (no
     // CP437 stamp Blockwright writes starts with the mark; they start with
     // ESC). Any other stamp is read as CP437, as it always was, and its
     // sidecar checked after the art.
-    const auto readSidecar = [&] {
-        const fs::path side = pairedSidecar(ans);
-        if (!fs::exists(fs::status(side, ec)))
-            throw LibraryError("no sidecar " + side.filename().string());
-        if (!regular(side))
-            throw LibraryError("sidecar " + side.filename().string() + " is not a regular file");
-        std::string json;
-        try {
-            json = readRegularFile(side, kMaxSidecarBytes);
-        } catch (const LibraryError& e) {
-            throw LibraryError("sidecar " + std::string(e.what()));
-        }
-        return parseSidecar(json);
-    };
     const bool bom = data.starts_with(kBom);
     std::optional<StampMeta> meta;
     if (bom) {
@@ -939,10 +918,62 @@ Stamp readStamp(const fs::path& ans) {
     return s;
 }
 
+} // namespace
+
+Stamp readStamp(const fs::path& ans) {
+    std::error_code ec;
+    if (!fs::exists(fs::status(ans, ec)))
+        throw LibraryError(".ans can't be read");
+    if (!regular(ans))
+        throw LibraryError(".ans is not a regular file");
+    std::string data;
+    try {
+        data = readAll(ans);
+    } catch (const LibraryError& e) {
+        throw LibraryError(std::string(".ans ") + e.what());
+    }
+    Stamp s = stampFrom(data, [&] {
+        const fs::path side = pairedSidecar(ans);
+        if (!fs::exists(fs::status(side, ec)))
+            throw LibraryError("no sidecar " + side.filename().string());
+        if (!regular(side))
+            throw LibraryError("sidecar " + side.filename().string() + " is not a regular file");
+        std::string json;
+        try {
+            json = readRegularFile(side, kMaxSidecarBytes);
+        } catch (const LibraryError& e) {
+            throw LibraryError("sidecar " + std::string(e.what()));
+        }
+        return parseSidecar(json);
+    });
+    s.path = ans;
+    return s;
+}
+
+Stamp parseStamp(const StampFiles& files) {
+    return stampFrom(files.ans, [&] {
+        if (files.json.size() > kMaxSidecarBytes)
+            throw LibraryError("sidecar is larger than " + std::to_string(kMaxSidecarBytes) + " bytes");
+        return parseSidecar(files.json);
+    });
+}
+
 namespace {
 StampFiles encodeChecked(const std::string& name, const std::string& category, const std::vector<std::string>& tags,
                          const CellBlock& cells, bool ice, const std::optional<StampSlice>& slice);
 } // namespace
+
+std::string stampText(const std::string& text) {
+    return QString::fromStdString(text).trimmed().toStdString();
+}
+
+std::vector<std::string> stampTags(const std::vector<std::string>& tags) {
+    std::vector<std::string> out;
+    for (const std::string& t : tags)
+        if (std::string s = stampText(t); !s.empty() && std::find(out.begin(), out.end(), s) == out.end())
+            out.push_back(std::move(s));
+    return out;
+}
 
 StampFiles encodeStamp(const std::string& name, const std::string& category, const std::vector<std::string>& tags,
                        const CellBlock& cells, bool ice, const std::optional<StampSlice>& slice) {

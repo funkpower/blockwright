@@ -61,6 +61,7 @@ int main(int argc, char** argv) {
     bool listActions = false;
     const char* screenshotSteps = nullptr;
     const char* screenshotDir = nullptr;
+    const char* userLibrary = nullptr;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         if (dashdash || a[0] != '-' || !a[1]) {
@@ -79,7 +80,7 @@ int main(int argc, char** argv) {
         } else if (!std::strcmp(a, "--help") || !std::strcmp(a, "-h")) {
             messagesToConsole();
             std::cout << "Usage: blockwright [file.ans | file.xb | file.bin | project.bwp | project-directory]\n"
-                         "       blockwright --screenshot <steps.json> -o <dir>\n\n"
+                         "       blockwright --screenshot <steps.json> -o <dir> [--user-library <dir>]\n\n"
                          "ANSI and IRC art editor.\n\n"
                          "  -h, --help      show this help\n"
                          "  -v, --version   show the version, the Qt it runs on and the credits\n"
@@ -101,18 +102,27 @@ int main(int argc, char** argv) {
                          "                  last point (its first in a picture before it); Tool\n"
                          "                  Options and the palette show the options and colours\n"
                          "                  each step is applied with; the window's font is the\n"
-                         "                  bundled Noto Sans at 10 pt\n";
+                         "                  bundled Noto Sans at 10 pt\n"
+                         "  --user-library <dir>\n"
+                         "                  --screenshot: the user Library the Library dock shows,\n"
+                         "                  placeStamp steps find stamps in and saveToLibrary steps\n"
+                         "                  save to (default: an empty scratch one); the stamps are\n"
+                         "                  written to it once every picture is, so a run that\n"
+                         "                  fails writes nothing to it\n";
             return 0;
         } else if (!std::strcmp(a, "--list-actions")) {
             listActions = true;
-        } else if (!std::strcmp(a, "--screenshot") || !std::strcmp(a, "-o") || !std::strcmp(a, "--output")) {
-            const bool steps = !std::strcmp(a, "--screenshot");
-            if (i + 1 >= argc || (steps ? screenshotSteps : screenshotDir)) {
+        } else if (!std::strcmp(a, "--screenshot") || !std::strcmp(a, "-o") || !std::strcmp(a, "--output") ||
+                   !std::strcmp(a, "--user-library")) {
+            const char*& value = !std::strcmp(a, "--screenshot")     ? screenshotSteps
+                                 : !std::strcmp(a, "--user-library") ? userLibrary
+                                                                     : screenshotDir;
+            if (i + 1 >= argc || value) {
                 messagesToConsole();
                 std::cerr << "blockwright: " << a << (i + 1 >= argc ? " needs a value\n" : " given twice\n");
                 return 2;
             }
-            (steps ? screenshotSteps : screenshotDir) = argv[++i];
+            value = argv[++i];
         } else {
             messagesToConsole();
             std::cerr << "blockwright: unknown option " << a << "\n";
@@ -134,10 +144,10 @@ int main(int argc, char** argv) {
         qunsetenv("QT_QPA_PLATFORMTHEME");
         qunsetenv("QT_STYLE_OVERRIDE");
     }
-    const bool screenshot = screenshotSteps || screenshotDir;
+    const bool screenshot = screenshotSteps || screenshotDir || userLibrary;
     if (screenshot && (!screenshotSteps || !screenshotDir || listActions || !files.empty())) {
         messagesToConsole();
-        std::cerr << "blockwright: usage: blockwright --screenshot <steps.json> -o <dir>\n";
+        std::cerr << "blockwright: usage: blockwright --screenshot <steps.json> -o <dir> [--user-library <dir>]\n";
         return 2;
     }
     // Offscreen on fixed screens, one at device pixel ratio 1 and one at 2,
@@ -189,7 +199,8 @@ int main(int argc, char** argv) {
             return 1;
         }
         bw::useLinuxStandardKeys();
-        return bw::screenshot::run(QString::fromLocal8Bit(screenshotSteps), QString::fromLocal8Bit(screenshotDir));
+        return bw::screenshot::run(QString::fromLocal8Bit(screenshotSteps), QString::fromLocal8Bit(screenshotDir),
+                                   userLibrary ? QString::fromLocal8Bit(userLibrary) : QString());
     }
     if (listActions) {
         // Under scratch settings the window has its default keys and layout,

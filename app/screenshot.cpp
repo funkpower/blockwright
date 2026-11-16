@@ -2,6 +2,7 @@
 
 #include "canvas_view.h"
 #include "draw_tools.h"
+#include "library_dock.h"
 #include "lint_dock.h"
 #include "main_window.h"
 #include "preferences.h"
@@ -251,6 +252,14 @@ void showView(MainWindow& w, const steps::View& v) {
     check("ircFit", v.ircFit);
     check("ircPad", v.ircPad);
     check("ircSwapShades", v.ircSwapShades);
+    // View > Guides (#431): the action of that guide set, triggered as the
+    // menu triggers it
+    if (v.guides) {
+        const QString name = *v.guides == "none" ? QStringLiteral("guideNone")
+                                                 : QStringLiteral("guide") + QString::fromStdString(*v.guides);
+        if (auto* a = w.findChild<QAction*>(name))
+            a->trigger();
+    }
     if (v.scrollTo) {
         // the view resized to the zoom before it is scrolled
         settle();
@@ -320,6 +329,9 @@ void show(MainWindow& w, const bwcli::replay::Moment& m) {
     doc->setActiveLayer(m.active);
     if (Tool* t = w.tools()->find(QString::fromStdString(m.step.action)))
         w.tools()->setActive(t);
+    else if (m.step.action == "placeStamp" && !m.before)
+        // placing a stamp chooses the Select tool (MainWindow::placeStamp)
+        w.tools()->setActive(w.selectTool());
     showSettings(w, m.settings);
     w.canvasView()->setSelection(m.selection);
     settle();
@@ -468,7 +480,8 @@ FixedScreens::FixedScreens() {
 }
 
 std::vector<Shot> take(MainWindow& window, const steps::Script& script, project::Project start,
-                       const std::function<void(const Shot&)>& taken) {
+                       const std::function<void(const Shot&)>& taken,
+                       std::vector<bwcli::replay::SavedStamp>* saved) {
     // As openProject: the renderer takes the canvas first, at its cell
     // width, so one too large to display is refused before the window has it.
     {
@@ -488,7 +501,18 @@ std::vector<Shot> take(MainWindow& window, const steps::Script& script, project:
     std::vector<Shot> shots;
     const int count = int(script.steps.size());
     QSize sizeBefore;
-    bwcli::replay::run(script, std::move(start), [&](const bwcli::replay::Moment& m) {
+    std::size_t written = 0;  // of the stamps saveToLibrary steps saved (#431)
+    bwcli::replay::Outcome outcome = bwcli::replay::run(script, std::move(start), [&](const bwcli::replay::Moment& m) {
+        // a stamp saved goes into the Library dock's user library as the
+        // step saves it, and the dock is rescanned, as Save to Library does
+        if (m.saved.size() > written) {
+            LibraryDock* library = window.libraryWidget();
+            if (library->userDir().empty())
+                fail(m.step, "there is no user library directory");
+            for (; written < m.saved.size(); ++written)
+                bwcli::replay::writeSaved(m.saved[written], library->userDir());
+            library->rescan();
+        }
         // a canvasSize step is refused as the dialog refuses it
         // (MainWindow::resizeCanvas) when the renderer can't take the new
         // canvas at its cell width, whether or not the step asks for a
@@ -539,6 +563,8 @@ std::vector<Shot> take(MainWindow& window, const steps::Script& script, project:
         if (taken)
             taken(shots.back());
     });
+    if (saved)
+        *saved = std::move(outcome.saved);
     return shots;
 }
 
@@ -562,7 +588,18 @@ void write(const std::vector<Shot>& shots, const fs::path& dir, const std::funct
     bwcli::saveAll(files, beforeCommit);
 }
 
-Scratch::Scratch() {
+std::string inUserLibrary(std::string message, const fs::path& scratch, const fs::path& userLibrary) {
+    const std::string from = scratch.string();
+    // "lib/" is named as "lib", so its files aren't "lib//hi.ans"
+    const std::string to = (userLibrary.has_filename() ? userLibrary : userLibrary.parent_path()).string();
+    if (from.empty())
+        return message;
+    for (std::size_t at = message.find(from); at != std::string::npos; at = message.find(from, at + to.size()))
+        message.replace(at, from.size(), to);
+    return message;
+}
+
+Scratch::Scratch(const fs::path& userLibrary) : userLibrary_(userLibrary) {
     // Default keys and layout whatever the user changed, and nothing the
     // window writes kept.
     if (!settings_.valid()) {
@@ -582,6 +619,72 @@ Scratch::Scratch() {
     hadLibrary_ = qEnvironmentVariableIsSet("BLOCKWRIGHT_USER_LIBRARY");
     libraryBefore_ = qgetenv("BLOCKWRIGHT_USER_LIBRARY");
     qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(library_.path()));
+    // With --user-library the scratch one starts as a copy of it, so the
+    // dock shows its stamps and a step's save lands in the copy: the
+    // library itself is written only once the run has succeeded (#431).
+    // What it holds is copied, links as links (copyLink); the directory
+    // itself may be a link.
+    // Anything that isn't a file, a folder or a link (a FIFO, a socket) is
+    // left out, as the Library never reads one. A copy that fails fails the
+    // run, naming what in the library couldn't be copied (#506).
+    std::error_code ec;
+    if (!userLibrary_.empty() && fs::is_directory(fs::status(userLibrary_, ec)))
+        copyLibrary(userLibrary_, this->userLibrary());
+}
+
+void Scratch::copyLibrary(const fs::path& from, const fs::path& to) {
+    const auto failed = [&](const fs::path& what, const std::error_code& ec) {
+        error_ = "--user-library " + userLibrary_.string() + ": " + what.string() +
+                 ": can't be copied for the window: " + ec.message();
+    };
+    std::error_code ec;
+    fs::directory_iterator it(from, ec);
+    for (const fs::directory_iterator end; !ec && it != end && error_.empty(); it.increment(ec)) {
+        const fs::path& src = it->path();
+        const fs::path dst = to / src.filename();
+        std::error_code e;
+        const fs::file_status st = it->symlink_status(e);
+        if (!e) {
+            if (fs::is_symlink(st))
+                copyLink(src, dst, e);
+            else if (fs::is_directory(st)) {
+                if (fs::create_directory(dst, e); !e)
+                    copyLibrary(src, dst);
+            } else if (fs::is_regular_file(st))
+                fs::copy_file(src, dst, e);
+        }
+        if (e)
+            failed(src, e);
+    }
+    if (ec && error_.empty())
+        failed(from, ec);
+}
+
+// A link is copied as a link. A relative one that leads out of the library
+// would lead somewhere else from the scratch copy, so it is given the
+// absolute path it names from the library, worked out on the path alone, so
+// a link to nothing still leads to nothing; one that stays inside keeps its
+// text, so it follows a save in the copy that replaces what it names (#506).
+void Scratch::copyLink(const fs::path& src, const fs::path& dst, std::error_code& e) const {
+    fs::path target = fs::read_symlink(src, e);
+    if (e)
+        return;
+    if (target.is_relative()) {
+        const fs::path root = fs::absolute(userLibrary_, e).lexically_normal();
+        if (e)
+            return;
+        const fs::path named = fs::absolute(src.parent_path() / target, e).lexically_normal();
+        if (e)
+            return;
+        const fs::path rel = named.lexically_relative(root);
+        if (rel.empty() || *rel.begin() == "..")
+            target = named;
+    }
+    fs::create_symlink(target, dst, e);
+}
+
+fs::path Scratch::userLibrary() const {
+    return fs::path(QFile::encodeName(library_.path()).toStdString());
 }
 
 Scratch::~Scratch() {
@@ -593,7 +696,7 @@ Scratch::~Scratch() {
         qunsetenv("BLOCKWRIGHT_USER_LIBRARY");
 }
 
-int run(const QString& stepsPath, const QString& outDir) {
+int run(const QString& stepsPath, const QString& outDir, const QString& userLibrary) {
     const std::string path = QFile::encodeName(stepsPath).toStdString();
     try {
         steps::Script script;
@@ -610,20 +713,41 @@ int run(const QString& stepsPath, const QString& outDir) {
         // says it: before any step and before the window is made (#383)
         const fs::path stepsDir = fs::path(path).parent_path();
         project::Project start = bwcli::replay::startSaying(script, stepsDir, samplesDir, std::cerr, "blockwright", path);
-        // every file a step reads, as blockwright-cli replay reads them (#422)
-        bwcli::replay::load(script, stepsDir, library::bundledLibraryDir(binDir));
-
-        const Scratch scratch;
+        // every file a step reads, as blockwright-cli replay reads them
+        // (#422), and the Library's stamps (#431), with --user-library
+        // checked as it checks it
+        const fs::path userDir = userLibrary.isEmpty() ? fs::path() : native(userLibrary);
+        bwcli::replay::load(script, stepsDir, library::bundledLibraryDir(binDir), userDir);
+        const Scratch scratch(userDir);
         if (!scratch.error().empty())
             throw Failure{scratch.error()};
+
         std::vector<Shot> shots;
-        {
+        std::vector<bwcli::replay::SavedStamp> saved;
+        try {
             MainWindow w;
-            shots = take(w, script, std::move(start));
+            shots = take(w, script, std::move(start), {}, &saved);
+        } catch (const Failure& f) {
+            // a stamp a step saved goes into the scratch copy of
+            // --user-library; what failed there is named as in the
+            // library itself, where it would have gone (#506)
+            if (userDir.empty())
+                throw;
+            throw Failure{inUserLibrary(f.message, scratch.userLibrary(), userDir)};
         }
         if (shots.empty())
             std::cerr << "blockwright: " << path << ": no step asks for a screenshot\n";
         write(shots, native(outDir));
+        // the stamps saved, into --user-library once every picture is
+        // written, as blockwright-cli replay writes them (#431)
+        if (!userDir.empty())
+            for (const bwcli::replay::SavedStamp& st : saved)
+                try {
+                    bwcli::replay::writeSaved(st, userDir);
+                } catch (const Failure& f) {
+                    throw Failure{path + ": " + f.message + " (the pictures are written; this stamp and any saved "
+                                  "after it are not)"};
+                }
         return 0;
     } catch (const Failure& f) {
         std::cerr << "blockwright: " << f.message << "\n";

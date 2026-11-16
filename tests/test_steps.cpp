@@ -298,7 +298,9 @@ TEST_CASE("a view step's bad value is refused, naming the step (#398)", "[steps]
         {R"("zoom": 4, "fg": 2)", "view takes no \"fg\""},
         {R"("zoom": 4, "size": 3)", "view takes no \"size\""},
         {R"("ircFit": true, "pasteMode": "over")", "view takes no \"pasteMode\""},
-        {R"("screenshot": {})", "view needs at least one of \"zoom\", \"scrollTo\", \"ircFit\", \"ircPad\" or \"ircSwapShades\""},
+        {R"("screenshot": {})", "view needs at least one of \"zoom\", \"scrollTo\", \"ircFit\", \"ircPad\", \"ircSwapShades\" or \"guides\""},
+        {R"("guides": "80x30")", "\"guides\" takes none, 80x25, 80x40, 80x50, not \"80x30\""},
+        {R"("guides": 80)", "\"guides\""},
     };
     for (const auto& [fields, says] : cases) {
         INFO(fields);
@@ -311,6 +313,113 @@ TEST_CASE("a view step's bad value is refused, naming the step (#398)", "[steps]
     // and a zoom key on another action is refused as before
     CHECK_THAT(refusal(script(R"({"name": "z", "action": "glyph", "zoom": 4})")),
                ContainsSubstring("step 1 (z): glyph takes no \"zoom\""));
+}
+
+TEST_CASE("a view step reads View > Guides; a guides-only view is a view (#431)", "[steps][view][library]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "g", "action": "view", "guides": "80x25"},
+        {"name": "off", "action": "view", "guides": "none", "zoom": 2},
+        {"name": "z", "action": "view", "zoom": 3})"));
+    REQUIRE(s.steps.size() == 3);
+    CHECK(s.steps[0].view.guides == std::string("80x25"));
+    CHECK(s.steps[1].view.guides == std::string("none"));
+    CHECK(s.steps[1].view.zoom == 2);
+    CHECK_FALSE(s.steps[2].view.guides);
+    for (const char* g : {"80x40", "80x50"})
+        CHECK(steps::parse(script(std::string(R"({"name": "g", "action": "view", "guides": ")") + g + "\"}"))
+                  .steps[0]
+                  .view.guides == std::string(g));
+}
+
+TEST_CASE("placeStamp and saveToLibrary read the stamp's name as CP437, the cell, the library and the tags (#431)",
+          "[steps][library]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "put", "action": "placeStamp", "stamp": "Café █", "at": [3, 4], "library": "user"},
+        {"name": "put2", "action": "placeStamp", "stamp": "Heart", "at": [0, 0], "library": "bundled"},
+        {"name": "put3", "action": "placeStamp", "stamp": "Heart", "at": [1, 2]},
+        {"name": "keep", "action": "saveToLibrary", "stamp": "Mine", "category": "Logos", "tags": ["neon", "cafe"]},
+        {"name": "bare", "action": "saveToLibrary", "stamp": "Bare", "category": "Misc"})"));
+    REQUIRE(s.steps.size() == 5);
+    const steps::Step& put = s.steps[0];
+    CHECK(put.action == "placeStamp");
+    // é is 0x82 and █ 0xDB in CP437, as the dock lists a stamp's name
+    CHECK(put.stamp == std::string("Caf\x82 \xDB"));
+    REQUIRE(put.points.size() == 1);
+    CHECK((put.points[0].x == 3 && put.points[0].y == 4));
+    CHECK(put.library == steps::Step::Library::User);
+    CHECK(s.steps[1].library == steps::Step::Library::Bundled);
+    CHECK_FALSE(s.steps[2].library);
+
+    const steps::Step& keep = s.steps[3];
+    CHECK(keep.action == "saveToLibrary");
+    CHECK(keep.stamp == "Mine");
+    CHECK(keep.category == "Logos");
+    CHECK(keep.tags == std::vector<std::string>{"neon", "cafe"});
+    CHECK(s.steps[4].tags.empty());
+    // another action has none of it
+    CHECK(s.steps[0].category.empty());
+    for (const char* a : {"placeStamp", "saveToLibrary"})
+        CHECK(std::find(steps::actions().begin(), steps::actions().end(), a) != steps::actions().end());
+}
+
+TEST_CASE("saveToLibrary trims its name, category and tags as Save to Library does; placeStamp's name is as given (#431)",
+          "[steps][library]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "save", "action": "saveToLibrary", "stamp": " Hi\t", "category": " words ", "tags": [" t ", "u"]},
+        {"name": "end", "action": "saveToLibrary", "stamp": "Hi ", "category": "words"},
+        {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [0, 0]})"));
+    REQUIRE(s.steps.size() == 3);
+    CHECK(s.steps[0].stamp == "Hi");
+    CHECK(s.steps[0].category == "words");
+    CHECK(s.steps[0].tags == std::vector<std::string>{"t", "u"});
+    // a trailing space, which SAUCE would drop, is trimmed as the dialog trims it
+    CHECK(s.steps[1].stamp == "Hi");
+    // a name of spaces only is empty once trimmed
+    CHECK_THAT(refusal(script(R"({"name": "save", "action": "saveToLibrary", "stamp": "  ", "category": "words"})")),
+               ContainsSubstring("step 1 (save): \"stamp\" must not be empty"));
+    // placeStamp names a stamp's title as it is, spaces and all
+    CHECK(refusal(script(R"({"name": "put", "action": "placeStamp", "stamp": "  ", "at": [0, 0]})")) == "(accepted)");
+}
+
+TEST_CASE("saveToLibrary keeps each tag once after trimming, as the Save to Library dialog does (#506)",
+          "[steps][library]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words", "tags": [" t ", "t", "u", "t"]})"));
+    REQUIRE(s.steps.size() == 1);
+    CHECK(s.steps[0].tags == std::vector<std::string>{"t", "u"});
+    // a tag empty once trimmed is refused, not dropped
+    CHECK_THAT(refusal(script(R"({"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words",
+                                  "tags": ["t", "  "]})")),
+               ContainsSubstring("step 1 (save): \"tags[1]\" must not be empty"));
+}
+
+TEST_CASE("placeStamp and saveToLibrary refuse a missing or bad field, naming the step (#431)", "[steps][library]") {
+    const std::pair<const char*, const char*> cases[] = {
+        {R"("action": "placeStamp", "stamp": "Heart")", "placeStamp needs \"at\""},
+        {R"("action": "placeStamp", "at": [1, 1])", "placeStamp needs \"stamp\", the stamp's name"},
+        {R"("action": "placeStamp", "stamp": "", "at": [1, 1])", "\"stamp\" must not be empty"},
+        {R"("action": "placeStamp", "stamp": 3, "at": [1, 1])", "\"stamp\""},
+        {R"("action": "placeStamp", "stamp": "中", "at": [1, 1])", "\"stamp\" \"中\" holds a character CP437 has no glyph for"},
+        {R"("action": "placeStamp", "stamp": "Heart", "at": [1, 1], "library": "mine")", "\"library\" takes"},
+        {R"("action": "placeStamp", "stamp": "Heart", "at": [1, 1], "category": "Logos")",
+         "placeStamp takes no \"category\""},
+        {R"("action": "saveToLibrary", "category": "Logos")", "saveToLibrary needs \"stamp\", the stamp's name"},
+        {R"("action": "saveToLibrary", "stamp": "Mine")", "saveToLibrary needs \"category\""},
+        {R"("action": "saveToLibrary", "stamp": "Mine", "category": "Logos", "tags": "neon")",
+         "\"tags\" must be an array of strings"},
+        {R"("action": "saveToLibrary", "stamp": "Mine", "category": "Logos", "tags": ["neon", 4])", "\"tags[1]\" must be a string, not a number"},
+        {R"("action": "saveToLibrary", "stamp": "Mine", "category": "Logos", "library": "user")",
+         "saveToLibrary takes no \"library\""},
+        {R"("action": "saveToLibrary", "stamp": "Mine", "category": "Logos", "at": [1, 1])",
+         "saveToLibrary takes no \"at\""},
+        {R"("action": "selectAll", "stamp": "Heart")", "selectAll takes no \"stamp\""},
+    };
+    for (const auto& [fields, says] : cases) {
+        INFO(fields);
+        const std::string why =
+            refusal(script(std::string(R"({"name": "first", "action": "selectAll"}, {"name": "lib", )") + fields + "}"));
+        CHECK_THAT(why, ContainsSubstring(std::string("step 2 (lib): ") + says));
+    }
 }
 
 TEST_CASE("a canvasSize step reads the new size and the anchor, top-left when left out (#420)",

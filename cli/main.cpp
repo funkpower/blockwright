@@ -32,7 +32,7 @@
 //   blockwright-cli import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]
 //                                <scene.py> <out.bwp|dir>
 //   blockwright-cli replay [--project] [--render [--scale N] [--font-width 8|9]] [--allow-lossy]
-//                          [--output-encoding cp437|utf-8] <steps.json> -o <dir>
+//                          [--output-encoding cp437|utf-8] [--user-library <dir>] <steps.json> -o <dir>
 //
 // info, convert, render, export, shade, lint, pack and unpack take
 // --encoding auto|cp437|utf-8: what an .ans input's text is read as (PLAN §8).
@@ -921,6 +921,11 @@ Options:
   --allow-lossy        write an .ans that loses something (a warning says what)
   --output-encoding cp437|utf-8
                        the .ans files' text (default cp437)
+  --user-library <dir> the user library placeStamp steps find stamps in
+                       and saveToLibrary steps save to, written once
+                       every capture is (made if it isn't there), so a
+                       run that fails writes nothing to it; without it
+                       a saved stamp is kept for this replay only
 
 A steps file is JSON:
 
@@ -1011,6 +1016,17 @@ mouse button (default left).
                  selectAll, deselect, moveSelection "by": [dx, dy], copy,
                  cut, deleteSelection, paste "at" (a cell), flipHorizontal,
                  flipVertical, rotateClockwise, rotateCounterClockwise
+  library        placeStamp "stamp" (a Library stamp's name), "at" (a
+                 cell), "library": "bundled" | "user" (needed only when
+                 both hold the name): the stamp placed as the Library
+                 dock places it, in transparent paste mode for that
+                 stamp only, and committed as a paste. The user library
+                 is --user-library's and what earlier steps saved.
+                 saveToLibrary "stamp" (a name of CP437 glyphs),
+                 "category", "tags": [...] (optional): Selection > Save
+                 to Library..., the selected cells as the canvas shows
+                 them saved as a stamp in the user library, replacing
+                 one of that name
   layers         newCellsLayer, newPixelLayer (each above the active layer
                  and made active; "rename" names it, else Layer N),
                  deleteLayer, raiseLayer, lowerLayer, setActiveLayer
@@ -1026,7 +1042,8 @@ mouse button (default left).
                  "zoom" 1-8, "scrollTo" [x, y] (a cell on the canvas, put
                  at the view's top left), "ircFit", "ircPad",
                  "ircSwapShades" (booleans: View > IRC's Fit, Pad, Swap
-                 Shades); at least one. This command has no window and
+                 Shades), "guides": none|80x25|80x40|80x50 (View >
+                 Guides); at least one. This command has no window and
                  refuses a file with a view step (exit status 1)
 
 Two keys are the window's, read by blockwright --screenshot and passed over
@@ -1116,6 +1133,8 @@ struct ReplayArgs {
     bool allowLossy = false;
     // the date of the SAUCE record a capture with none gets (SOURCE_DATE_EPOCH)
     std::optional<std::string> today;
+    // --user-library (#431)
+    std::optional<std::string> userLibrary;
 };
 
 // SOURCE_DATE_EPOCH's day in UTC (bw::sauceDateFromEpoch), which import-scene
@@ -1147,7 +1166,7 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
     // as a bad step is
     if (const bw::steps::Step* v = bwcli::replay::viewStep(script))
         throw Failure{stepsPath + ": " + bw::steps::stepLabel(*v) +
-                      ": view sets the window's zoom, scroll and IRC options, and blockwright-cli replay has no "
+                      ": view sets the window's zoom, scroll, guides and IRC options, and blockwright-cli replay has no "
                       "window; replay this file with blockwright --screenshot"};
     const auto native = [](const QString& p) { return fs::path(QFile::encodeName(p).toStdString()); };
     const fs::path binDir = bw::library::realBinDir(native(QCoreApplication::applicationFilePath()),
@@ -1161,7 +1180,8 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
         const fs::path stepsDir = fs::path(stepsPath).parent_path();
         startProject = bwcli::replay::startSaying(script, stepsDir, samplesDir, std::cerr, "blockwright-cli", stepsPath);
         // every file a step reads, before any step runs (#422)
-        bwcli::replay::load(script, stepsDir, bw::library::bundledLibraryDir(binDir));
+        bwcli::replay::load(script, stepsDir, bw::library::bundledLibraryDir(binDir),
+                            a.userLibrary ? fs::path(*a.userLibrary) : fs::path());
     } catch (const Failure& f) {
         throw Failure{stepsPath + ": " + f.message};
     }
@@ -1217,6 +1237,22 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
     if (fs::exists(dir, ec) ? !fs::is_directory(dir, ec) : !fs::create_directories(dir, ec))
         throw Failure{a.outDir + ": " + (ec ? ec.message() : std::string("not a directory"))};
     bwcli::saveAll(files);
+    // the stamps saved, once every capture is written (#431)
+    for (const bwcli::replay::SavedStamp& saved : outcome.saved) {
+        if (!a.userLibrary) {
+            std::cerr << "blockwright-cli: note: " << stepsPath << ": " << saved.step
+                      << ": the stamp is kept for this replay only (--user-library <dir> writes it)\n";
+            continue;
+        }
+        try {
+            bwcli::replay::writeSaved(saved, *a.userLibrary);
+        } catch (const Failure& f) {
+            // the load pass checked the library, so this is rare: a full
+            // disk, a folder changed under the replay
+            throw Failure{stepsPath + ": " + f.message + " (the captures are written; this stamp and any saved after it "
+                          "are not)"};
+        }
+    }
     return kOk;
 }
 
@@ -1828,6 +1864,11 @@ int main(int argc, char** argv) {
     const QCommandLineOption renderOpt(QStringLiteral("render"),
                                        QStringLiteral("replay: also write each capture as a PNG"));
     parser.addOption(renderOpt);
+    const QCommandLineOption userLibraryOpt(
+        QStringLiteral("user-library"),
+        QStringLiteral("replay: the user library placeStamp steps find stamps in and saveToLibrary steps save to"),
+        QStringLiteral("dir"));
+    parser.addOption(userLibraryOpt);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators, import-scene or replay"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
@@ -1875,7 +1916,7 @@ int main(int argc, char** argv) {
                   << "       | import-scene [--timeout S] [--bake] [--author NAME] [--date CCYYMMDD]\n"
                   << "         <scene.py> <out.bwp|dir>\n"
                   << "       | replay [--project] [--render [--scale N] [--font-width 8|9]] [--allow-lossy]\n"
-                  << "         <steps.json> -o <dir>   (replay --help gives the steps format)\n"
+                  << "         [--user-library <dir>] <steps.json> -o <dir>   (replay --help gives the steps format)\n"
                   << "       | --version\n"
                   << "       info, convert, render, export, shade, lint, pack and unpack take --encoding auto|cp437|utf-8\n"
                   << "       convert, shade, snapshot and replay take --output-encoding cp437|utf-8\n";
@@ -1904,6 +1945,7 @@ int main(int argc, char** argv) {
         {&outputEncodingOpt, {"convert", "shade", "snapshot", "replay"}},
         {&targetOpt, {"lint", "pack", "unpack"}},
         {&outputOpt, {"replay"}},          {&projectOpt, {"replay"}}, {&renderOpt, {"replay"}},
+        {&userLibraryOpt, {"replay"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
@@ -2231,6 +2273,8 @@ int main(int argc, char** argv) {
             a.outDir = parser.value(outputOpt).toStdString();
             a.project = parser.isSet(projectOpt);
             a.allowLossy = parser.isSet(lossyOpt);
+            if (parser.isSet(userLibraryOpt))
+                a.userLibrary = parser.value(userLibraryOpt).toStdString();
             // checked before the steps file is read, as import-scene checks it
             // before the scene runs
             a.today = sourceDateEpochDay();

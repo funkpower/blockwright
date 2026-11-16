@@ -8,6 +8,7 @@
 #include "blockwright/brushes/clone.h"
 #include "blockwright/edit.h"
 #include "blockwright/font_store.h"
+#include "blockwright/library.h"
 #include "blockwright/project.h"
 #include "blockwright/steps.h"
 #include "blockwright/text_source.h"
@@ -29,8 +30,19 @@ struct Capture {
     bw::project::Project project;
 };
 
+// A stamp a saveToLibrary step saved (#431): the step ("step 3 (save)"),
+// the stamp's name (its SAUCE title, CP437) and its two files, for the
+// user library the replay is given (writeSaved).
+struct SavedStamp {
+    std::string step;
+    std::string name;
+    bw::library::StampFiles files;
+};
+
 struct Outcome {
     std::vector<Capture> captures;
+    // What the saveToLibrary steps saved, in step order (#431).
+    std::vector<SavedStamp> saved;
     // A step that changed nothing, say: worth a warning, not a failure.
     std::vector<std::string> notes;
 };
@@ -72,8 +84,27 @@ bw::project::Project startSaying(const bw::steps::Script& script, const std::fil
 // (Step::stylePreset) are read into script.presets from `libraryDir`'s
 // text-styles/ (library::bundledLibraryDir): one it doesn't hold is
 // refused naming the step and listing the ones it does.
+//
+// When a step places or saves a Library stamp (#431), the stamps in
+// `libraryDir` and in `userLibraryDir`, the user library the replay is
+// given (none when empty), are read into script.bundledStamps and
+// script.userStamps (library::scan; what it can't read is left out, as the
+// Library dock leaves it out), and for each name a saveToLibrary step saves
+// the stamp the save writes over into script.userOverwrites. Before
+// anything is read, a `userLibraryDir` that is there and isn't a directory
+// (a regular file is refused, not read as an empty library), or that a
+// saveToLibrary step couldn't write to (it, or the nearest directory above
+// it a save would make it in, isn't writable), throws Failure naming
+// --user-library. A user library that can't be listed throws Failure
+// naming it.
 void load(bw::steps::Script& script, const std::filesystem::path& dir,
-          const std::filesystem::path& libraryDir = {});
+          const std::filesystem::path& libraryDir = {}, const std::filesystem::path& userLibraryDir = {});
+
+// `saved` written into the user library `dir` (made if it isn't there) as
+// Save to Library writes it (library::stampPathFor, library::writeStamp),
+// replacing a stamp of its name. Throws Failure naming the step and the
+// path for one that can't be written.
+void writeSaved(const SavedStamp& saved, const std::filesystem::path& dir);
 
 // A capture's canvas as replay writes it (project::toAnsi). A project with
 // no SAUCE record gets a fresh one, dated `today` (CCYYMMDD) when given and
@@ -143,6 +174,9 @@ struct Moment {
     const bw::Selection& selection;
     const ToolSettings& settings;
     const bw::steps::View& view;
+    // What the saveToLibrary steps so far have saved (#431), in step order:
+    // before a saveToLibrary step without its stamp, after it with it.
+    const std::vector<SavedStamp>& saved;
 };
 
 // The script's first "view" step, if any (#398): only the window has a

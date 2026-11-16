@@ -133,6 +133,54 @@ TEST_CASE("a stamp written from cells reads back with its name, sidecar and cell
     CHECK(widestRowBytes(s.art.canvas) == widest);
 }
 
+TEST_CASE("parseStamp reads encodeStamp's files as readStamp reads them from disk, with no path (#431)") {
+    const fs::path dir = scratch("parse-memory");
+    for (bool utf8 : {false, true}) {
+        INFO(utf8);
+        CellBlock b = tree();
+        if (utf8) {  // a wide glyph makes it a UTF-8 stamp
+            CellBlock wide(5, 2);
+            for (int y = 0; y < 2; ++y)
+                for (int x = 0; x < 4; ++x)
+                    wide.at(x, y) = tree().at(x, y);
+            wide.at(3, 0) = cell(U'中', Yellow, Blue);
+            wide.at(4, 0) = cell(U'中', Yellow, Blue);
+            wide.at(4, 0).ch = Glyph::continuation();
+            b = wide;
+        }
+        const StampFiles f = encodeStamp("Pine", "trees", {"tree"}, b, true);
+        const Stamp mem = parseStamp(f);
+        CHECK(mem.path.empty());
+        writeStamp(dir / "pine.ans", f);
+        const Stamp disk = readStamp(dir / "pine.ans");
+        CHECK(disk.path == dir / "pine.ans");
+        CHECK(mem.name == disk.name);
+        CHECK(mem.meta.category == disk.meta.category);
+        CHECK(mem.meta.tags == disk.meta.tags);
+        CHECK(mem.meta.ircBytes == disk.meta.ircBytes);
+        CHECK(mem.meta.encoding == (utf8 ? TextEncoding::Utf8 : TextEncoding::Cp437));
+        const CellBlock a = mem.block(), d = disk.block();
+        REQUIRE(a.width == d.width);
+        REQUIRE(a.height == d.height);
+        for (int y = 0; y < a.height; ++y)
+            for (int x = 0; x < a.width; ++x) {
+                INFO(x << "," << y);
+                CHECK(a.at(x, y).ch == d.at(x, y).ch);
+                CHECK(isBlank(a.at(x, y)) == isBlank(d.at(x, y)));
+            }
+    }
+}
+
+TEST_CASE("parseStamp refuses what readStamp refuses (#431)") {
+    const StampFiles good = encodeStamp("Pine", "trees", {}, tree(), true);
+    CHECK_THROWS_AS(parseStamp({good.ans, "{"}), LibraryError);
+    CHECK_THROWS_AS(parseStamp({good.ans, sidecar(R"("category": "trees", "tags": [], "ircBytes": 1)")}),
+                    LibraryError);
+    CHECK_THROWS_AS(parseStamp({good.ans, std::string(kMaxSidecarBytes + 1, ' ')}), LibraryError);
+    CHECK_THROWS_AS(parseStamp({"", good.json}), LibraryError);
+    CHECK_NOTHROW(parseStamp(good));
+}
+
 TEST_CASE("the widest row as the ascii script sends it, beside the sidecar's written size (#364)") {
     // 80 ★ in bright red and red by turns on black: written in 402 bytes,
     // the sidecar's ircBytes, and sent in 483
@@ -1416,6 +1464,26 @@ TEST_CASE("a stamp is read as CP437 even when its bytes would pass for UTF-8") {
     CHECK(back.at(0, 0).ch == U'α');
     CHECK(back.at(1, 0).ch == U'░');
     CHECK(back.at(2, 0).ch == U'▒');
+}
+
+TEST_CASE("stampText trims what Save to Library is given as QString::trimmed does (#431)", "[library]") {
+    CHECK(library::stampText(" Hi\t") == "Hi");
+    CHECK(library::stampText("\n words \r") == "words");
+    CHECK(library::stampText("a b") == "a b");
+    CHECK(library::stampText("   ").empty());
+    // U+00A0, a no-break space, is whitespace to Qt too
+    CHECK(library::stampText("\xC2\xA0" "Caf\xC3\xA9\xC2\xA0") == "Caf\xC3\xA9");
+}
+
+TEST_CASE("stampTags trims the tags, drops the empty ones and keeps each once, as Save to Library does (#506)",
+          "[library]") {
+    using Tags = std::vector<std::string>;
+    CHECK(library::stampTags({" t ", "t"}) == Tags{"t"});
+    CHECK(library::stampTags({"oak", " ", "tree", "oak "}) == Tags{"oak", "tree"});
+    CHECK(library::stampTags({"b", "a", "b"}) == Tags{"b", "a"});
+    CHECK(library::stampTags({}).empty());
+    // a different case is a different tag, as the dialog's QStringList::contains has it
+    CHECK(library::stampTags({"Oak", "oak"}) == Tags{"Oak", "oak"});
 }
 
 // Collections (#464): folders in the user's library.

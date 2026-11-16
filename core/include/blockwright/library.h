@@ -179,6 +179,10 @@ struct StampFiles {
     std::string ans, json;
 };
 
+// readStamp's checks on a stamp held in memory: `files.ans` is the .ans and
+// `files.json` its sidecar. The Stamp's path is empty.
+Stamp parseStamp(const StampFiles& files);
+
 // A stamp of `cells` (at most kMaxColumns x kMaxRows) named `name`: CP437
 // bytes, 1-35, no NUL, not ending in a space (0x01-0x1F are glyphs here,
 // ☺ ♥ …; readStamp holds a SAUCE title to the same rules). The cells are
@@ -198,6 +202,17 @@ struct StampFiles {
 StampFiles encodeStamp(const std::string& name, const std::string& category,
                        const std::vector<std::string>& tags, const CellBlock& cells, bool ice,
                        const std::optional<StampSlice>& slice = std::nullopt);
+
+// A stamp's name, category or tag as Selection > Save to Library takes it
+// from its dialog (#431): UTF-8, with the whitespace at either end dropped
+// (QString::trimmed). The editor and the replay's saveToLibrary step both
+// pass what they are given through it before encodeStamp.
+std::string stampText(const std::string& text);
+// A stamp's tags as Selection > Save to Library takes them from its dialog:
+// each through stampText, the empty ones dropped and each kept once, in the
+// order given. The dialog (StampDialog::tags) and the replay's
+// saveToLibrary step both use it.
+std::vector<std::string> stampTags(const std::vector<std::string>& tags);
 
 // Why encodeStamp refuses what writeAnsi wrote, in English with each count
 // in the singular or the plural: the cells it lost a glyph of (those with
