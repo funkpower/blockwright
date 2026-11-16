@@ -794,29 +794,32 @@ int LibraryDock::addFilesToCollection(const QString& collection, const QStringLi
     };
     if (refusal)
         refusal->clear();
-    // a folder is its own .ans files, not its subfolders' (the CLI's rule)
+    // a folder is its own .ans files, not its subfolders' (the CLI's rule).
+    // The paths stay std::filesystem::path all the way to addStamps (a name
+    // that is not valid UTF-8 would not survive a QString); `paths` holds the
+    // same files as text, for messages only.
     QStringList paths;
+    std::vector<std::filesystem::path> list;
     for (const QString& f : files) {
         if (QFileInfo(f).isDir()) {
             try {
                 const std::vector<std::filesystem::path> found = library::folderArt(fspath(f));
                 if (found.empty())
                     failed->push_back(tr("%1: no .ans files in the folder").arg(f));
-                for (const std::filesystem::path& p : found)
-                    paths << QString::fromStdString(p.string());
+                for (const std::filesystem::path& p : found) {
+                    paths << qpath(p);
+                    list.push_back(p);
+                }
             } catch (const std::exception& e) {
                 failed->push_back(tr("%1: %2").arg(f, errorText(e)));
             }
         } else {
             paths << f;
+            list.push_back(fspath(f));
         }
     }
     if (!findCollection(collection))
         return refuseAll(tr("\"%1\" is not one of your collections").arg(collection), paths.size());
-    std::vector<std::filesystem::path> list;
-    list.reserve(std::size_t(paths.size()));
-    for (const QString& f : paths)
-        list.push_back(fspath(f));
     // One scan for the lot (library::addStamps). A batch that takes a while
     // shows its progress, keeping the window painted, and Cancel stops it
     // between files.

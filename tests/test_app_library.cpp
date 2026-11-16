@@ -3486,6 +3486,46 @@ TEST_CASE("Add Folder to Collection takes a folder's own .ans files, not hidden 
     CHECK_FALSE(fs::exists(f.userPath() / "imports" / "a-2.ans"));
 }
 
+TEST_CASE("Add Folder to Collection adds a file whose name is not ASCII", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Imports"));
+    QTemporaryDir src;
+    REQUIRE(src.isValid());
+    putFile(src.path(), QStringLiteral("folder/café.ans"), "aa");
+    const QString folder = QDir(src.path()).filePath(QStringLiteral("folder"));
+
+    QStringList failed;
+    CHECK(f.dock->addFilesToCollection(QStringLiteral("Imports"), {folder}, &failed) == 1);
+    CHECK(failed.isEmpty());
+    CHECK(f.dock->findCollection(QStringLiteral("Imports"))->stamps == 1);
+    pickCategory(f.dock, QStringLiteral("Imports"));
+    CHECK(f.dock->shownNames().contains(QStringLiteral("café")));
+}
+
+#ifndef _WIN32
+TEST_CASE("Add Folder to Collection adds a file whose name is not UTF-8", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Imports"));
+    QTemporaryDir src;
+    REQUIRE(src.isValid());
+    const fs::path folder = fs::path(QFile::encodeName(src.path()).toStdString()) / "folder";
+    fs::create_directories(folder);
+    {
+        std::ofstream out(folder / "a\xfe.ans", std::ios::binary);
+        out << "aa";
+    }
+    // a filesystem may refuse a name that is not valid UTF-8
+    if (!fs::exists(folder / "a\xfe.ans"))
+        SKIP("the filesystem refuses a file name that is not UTF-8");
+    QStringList failed;
+    const int added = f.dock->addFilesToCollection(QStringLiteral("Imports"), {QFile::decodeName(folder.c_str())},
+                                                   &failed);
+    INFO(failed.join(QStringLiteral(" | ")).toStdString());
+    CHECK(added == 1);
+    CHECK(failed.isEmpty());
+}
+#endif
+
 #ifndef _WIN32
 TEST_CASE("Add Folder to Collection names a folder it can't list once", "[library][collections]") {
     if (::geteuid() == 0)
