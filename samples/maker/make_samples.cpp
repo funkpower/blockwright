@@ -2301,7 +2301,7 @@ Rgb lit(Rgb c, double f) {
 }
 
 // The screen's light: a pool on the desk things in front of the monitor,
-// the side of the near tower facing it, and along the figure's edge on
+// the side of the tall tower behind facing it, and along the figure's edge on
 // the screen side, the mask, helmet, canister, glove and sleeve. Only the
 // pixels it changes; no cell with an eye in it.
 Layer glow(Piece& sc, const std::set<int>& desk, const std::set<int>& figure, int eyesLayer) {

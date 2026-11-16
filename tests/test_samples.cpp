@@ -1775,10 +1775,6 @@ TEST_CASE("the wtc-0903 sample keeps its layers, its sunlight apart from the tow
     CHECK(project::read(out / "wtc-0903.bwp") == p);
 }
 
-// The finished pieces among the samples (PLAN §12): with the layers they
-// show, each is its piece's .ans cell for cell, the piece as it is in
-// tests/data/pieces/. A space is compared by its background alone, since
-// its foreground shows nowhere.
 TEST_CASE("the gas-mask operator sample is a Micron page in twelve-bit half blocks, its light on a colours-only layer") {
     const project::Project p = project::read(kSamples / "10-gas-mask-operator");
     CHECK(p.target == Target::Micron);
@@ -1849,8 +1845,86 @@ TEST_CASE("the gas-mask operator sample is a Micron page in twelve-bit half bloc
     CHECK(variants[1].name == "Power cut");
     CHECK(variants[2].name == "Blank lenses");
     CHECK(variants[3].name == "Empty chair");
+
+    // every layer's extent is its row in the notes' table: columns, rows
+    struct Extent {
+        const char* name;
+        int x0, x1, y0, y1;
+    };
+    const std::vector<Extent> extents{
+        {"tag", 70, 78, 1, 1},      {"glow", 14, 52, 9, 35},   {"eyes", 46, 62, 18, 19},
+        {"helmet", 37, 72, 6, 16},  {"shoulder", 52, 79, 25, 41}, {"canister", 46, 60, 21, 28},
+        {"mask", 41, 68, 14, 27},   {"body", 26, 66, 28, 41},  {"keyboard", 0, 33, 30, 41},
+        {"mouse", 21, 40, 24, 31},  {"notepad", 13, 22, 25, 29}, {"screen", 23, 33, 12, 18},
+        {"CRT", 15, 37, 8, 24},     {"towers", 0, 21, 10, 35}, {"figure shadow", 43, 76, 8, 22},
+        {"desk", 0, 79, 22, 41}};
+    for (const Extent& e : extents) {
+        INFO(e.name);
+        const Layer& l = named(p.layers, e.name);
+        CHECK(l.props.x == e.x0);
+        CHECK(l.props.y == e.y0);
+        CHECK(l.props.x + l.cells.width() - 1 == e.x1);
+        CHECK(l.props.y + l.cells.height() - 1 == e.y1);
+    }
+
+    // what hiding layers changes, as the notes count it: glow changes
+    // colours in 193 cells and no glyph, the cells of the tall tower among
+    // them (columns 16 to 20, rows 21 to 24); screen and glow together
+    // change 266; the eyes change 12 cells, all black on black, inside
+    // columns 46 to 62 and rows 18 and 19; the empty chair is the room alone
+    const auto shown = [&](const std::vector<const char*>& hide) {
+        LayerStack st = p.layers;
+        for (const char* n : hide)
+            st.find(named(st, n).props.id)->props.visible = false;
+        return composite(st, {p.ice, Cell{}});
+    };
+    const Canvas full = shown({});
+    const auto differing = [&](const Canvas& other) {
+        std::vector<std::pair<int, int>> out;
+        for (int y = 0; y < full.height(); ++y)
+            for (int x = 0; x < full.width(); ++x)
+                if (!(full.at(x, y) == other.at(x, y)))
+                    out.emplace_back(x, y);
+        return out;
+    };
+    const Canvas noGlow = shown({"glow"});
+    const auto glowCells = differing(noGlow);
+    CHECK(glowCells.size() == 193);
+    int towerCells = 0;
+    for (const auto& [x, y] : glowCells) {
+        CHECK(full.at(x, y).ch == noGlow.at(x, y).ch);
+        if (x >= 16 && x <= 20 && y >= 21 && y <= 24)
+            ++towerCells;
+    }
+    CHECK(towerCells == 14);
+    CHECK(differing(shown({"screen", "glow"})).size() == 266);
+    const Canvas blank = shown({"eyes"});
+    const auto lenses = differing(blank);
+    CHECK(lenses.size() == 12);
+    const Rgb black{0, 0, 0};
+    for (const auto& [x, y] : lenses) {
+        INFO(x << "," << y);
+        CHECK(x >= 46);
+        CHECK(x <= 62);
+        CHECK((y == 18 || y == 19));
+        const Cell& c = blank.at(x, y);
+        CHECK(c.fg.rgb == black);
+        CHECK(c.bg.rgb == black);
+    }
+    LayerStack chair = p.layers;
+    applyVariant(chair, variants[3]);
+    LayerStack roomOnly = p.layers;
+    for (const char* n : {"figure shadow", "body", "mask", "canister", "shoulder", "helmet", "eyes", "glow"})
+        roomOnly.find(named(roomOnly, n).props.id)->props.visible = false;
+    CHECK(differing(composite(chair, {p.ice, Cell{}})).size() == differing(composite(roomOnly, {p.ice, Cell{}})).size());
+    CHECK(composite(chair, {p.ice, Cell{}}) == composite(roomOnly, {p.ice, Cell{}}));
 }
 
+
+// The finished pieces among the samples (PLAN §12): with the layers they
+// show, each is its piece's .ans cell for cell, the piece as it is in
+// tests/data/pieces/. A space is compared by its background alone, since
+// its foreground shows nowhere.
 TEST_CASE("the finished samples are their pieces' .ans cell for cell") {
     const std::vector<std::pair<std::string, std::string>> pieces{
         {"02-ddos-king", "ddos-king.ans"}, {"07-battlestation", "battlestation.ans"}, {"09-wtc-0903", "wtc-0903.ans"}};
