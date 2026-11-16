@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Builds Blockwright as a Flatpak and bundles it in a single .flatpak file.
+#
+#   scripts/package-flatpak [--ref REF] [--work DIR] [--out DIR] [--check]
+#
+#   --ref    the commit to build (default HEAD): only its tracked, committed
+#            files, exported with git archive as scripts/release does, so
+#            packaging/tarball-commit gives --version the commit
+#   --work   exported tree, build state, build directory and repository
+#            (default: $BW_PACKAGE_WORK, else ~/.cache/dw/blockwright-flatpak-build)
+#   --out    where the bundle goes (default: dist/ in the repo)
+#   --check  install the bundle and run tests/flatpak_test.sh on it
+#
+# Environment: JOBS (default 8); FLATPAK_USER_DIR, a private Flatpak
+# installation to use instead of ~/.local/share/flatpak.
+#
+# flatpak-builder builds packaging/flatpak/online.pumpin.funkpower.blockwright.yml
+# against the KDE runtime and SDK, which it installs from Flathub into the
+# user installation if they aren't there yet (the flathub remote is added
+# to it if missing), and the bundle is <out>/blockwright-<version>-x86_64.flatpak
+# with its .sha256. Installing it (flatpak install --user <bundle>) fetches
+# the runtime from Flathub too. --check installs it into the user
+# installation, replacing any installed build of the app, so run it with
+# FLATPAK_USER_DIR set to keep it out of your own.
+set -euo pipefail
+
+die() { echo "package-flatpak: $*" >&2; exit 1; }
+[[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || die "run this on x86_64 Linux"
+root=$(cd "$(dirname "$0")/.." && pwd)
+app_id=online.pumpin.funkpower.blockwright
+flathub=https://dl.flathub.org/repo/flathub.flatpakrepo
+
+ref=HEAD
+work=${BW_PACKAGE_WORK:-$HOME/.cache/dw/blockwright-flatpak-build}
+out=$root/dist
+check=0
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --ref) ref=$2; shift 2 ;;
+    --work) work=$2; shift 2 ;;
+    --out) out=$2; shift 2 ;;
+    --check) check=1; shift ;;
+    -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument $1 (see --help)" ;;
+  esac
+done
+for tool in git flatpak flatpak-builder sha256sum; do
+  command -v "$tool" >/dev/null || die "$tool is not on PATH"
+done
+commit=$(git -C "$root" rev-parse --verify --short "$ref^{commit}") || die "$ref is no commit"
+mkdir -p "$work" "$out"
+work=$(cd "$work" && pwd)
+out=$(cd "$out" && pwd)
+jobs=${JOBS:-8}
+
+echo "== export $ref ($commit)"
+src=$work/src
+rm -rf "$src" && mkdir -p "$src"
+git -C "$root" archive --format=tar "$ref" | tar -x -C "$src"
+[[ $(<"$src/packaging/tarball-commit") =~ ^[0-9a-f]+$ ]] || die "git archive left packaging/tarball-commit unfilled"
+version=$(sed -n 's/^project(blockwright VERSION \([0-9.]*\).*/\1/p' "$src/CMakeLists.txt")
+[[ -n $version ]] || die "no project version in CMakeLists.txt"
+manifest=$src/packaging/flatpak/$app_id.yml
+[[ -f $manifest ]] || die "$ref has no packaging/flatpak/$app_id.yml"
+
+echo "== build (Flatpak installation: ${FLATPAK_USER_DIR:-~/.local/share/flatpak})"
+flatpak --user remote-add --if-not-exists flathub "$flathub"
+# rofiles-fuse only speeds up rebuilds and needs FUSE, which containers lack.
+nice -n 10 flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse \
+  --force-clean --jobs="$jobs" --state-dir="$work/state" --repo="$work/repo" \
+  --default-branch=stable "$work/app" "$manifest"
+
+echo "== bundle"
+bundle=$out/blockwright-$version-x86_64.flatpak
+rm -f "$bundle" "$bundle.sha256"
+flatpak build-bundle --runtime-repo="$flathub" "$work/repo" "$bundle" "$app_id" stable
+[[ -s $bundle ]] || die "flatpak build-bundle made no $bundle"
+
+if ((check)); then
+  echo "== check"
+  flatpak --user install -y --noninteractive --reinstall --bundle "$bundle"
+  bash "$root/tests/flatpak_test.sh" "$version" "$work/check" "$root/tests/data" || die "$bundle fails its check"
+fi
+sha=$(sha256sum "$bundle" | cut -d' ' -f1)
+printf '%s  %s\n' "$sha" "$(basename "$bundle")" > "$bundle.sha256"
+
+echo "== done"
+echo "$bundle ($(du -h "$bundle" | cut -f1), sha256 $sha)"

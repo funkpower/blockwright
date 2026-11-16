@@ -503,6 +503,13 @@ if(UNIX AND NOT APPLE)
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/linux_desktop_test.sh
             ${PROJECT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/linux-desktop-tmp
             ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_DATADIR} "$<CONFIG>")
+  # The Flatpak manifest, statically (the build itself is scripts/package-flatpak),
+  # and each way of breaking it the lint must catch
+  add_test(NAME flatpak_manifest
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/flatpak_manifest_test.sh ${PROJECT_SOURCE_DIR})
+  add_test(NAME flatpak_manifest_self_test
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/flatpak_manifest_test.sh --self-test ${PROJECT_SOURCE_DIR}
+            ${CMAKE_CURRENT_BINARY_DIR}/flatpak-manifest-tmp)
 endif()
 
 # Distribution builds have no network: BW_FETCH_CATCH2=OFF never downloads,

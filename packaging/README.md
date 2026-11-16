@@ -5,8 +5,8 @@
 - Windows: an MSI cross-built on Linux with `scripts/package-windows`
   ([windows/README.md](windows/README.md)).
 - Linux: a source tarball made by `scripts/release`, and the distribution
-  packages built from it (below): Arch (AUR), Debian and Ubuntu, Fedora, and
-  an AppImage.
+  packages built from it (below): Arch (AUR), Debian and Ubuntu, Fedora, an
+  AppImage and a Flatpak bundle.
 - FreeBSD: a port built from the same tarball (below).
 
 PLAN §14 records the decisions behind them, and [RELEASING.md](RELEASING.md)
@@ -233,6 +233,51 @@ checks with `ldd` that nothing in it loads Qt or Qt's libraries from the
 system, and checks that every bundled library has its notice; with
 `-DBW_APPIMAGE=<file>`, `ctest` runs it as the `appimage` test, which skips
 the Wayland run where weston isn't installed. `appimage_apprun` tests `packaging/linux/AppRun`.
+
+### Flatpak
+
+`packaging/flatpak/online.pumpin.funkpower.blockwright.yml` builds
+Blockwright against the KDE runtime 6.11 (Qt 6.11) from Flathub, with zstd
+(static, for its CMake config, which the runtime's zstd lacks) and libzip as
+modules pinned by sha256, and Blockwright from the tree two levels up,
+without the tests. `scripts/package-flatpak [--ref REF] [--out DIR] [--check]`
+exports the commit with `git archive`, as `scripts/release` does, so
+`--version` reports it, builds it with `flatpak-builder` (which installs the
+runtime and SDK from Flathub into the user installation when they are
+missing) and writes `dist/blockwright-<version>-x86_64.flatpak` and its
+`.sha256`. It needs `flatpak` and `flatpak-builder`. To keep the build and
+the check out of your own installation, point `FLATPAK_USER_DIR` at a
+directory of its own:
+
+    FLATPAK_USER_DIR=~/.cache/dw/flatpak scripts/package-flatpak --check
+
+`--check` installs the bundle and runs `tests/flatpak_test.sh`: both
+programs' `--version`, `blockwright-cli` info, render and library list, the
+editor offscreen, the Library, samples and notices, the exported desktop file
+and icon, valid AppStream metadata and the permissions. The bundle is
+installed with `flatpak install --user blockwright-<version>-x86_64.flatpak`,
+which fetches the runtime from Flathub, and runs as
+`flatpak run online.pumpin.funkpower.blockwright`; the CLI is
+`flatpak run --command=blockwright-cli online.pumpin.funkpower.blockwright`.
+
+The sandbox gets Wayland (X11 only without it), IPC, DRI and the home
+directory. The home directory, not the file chooser portal: a portal grants
+only the file picked, and pieces, projects, reference images, generator
+scripts and imported scenes are paths beside each other in the home
+directory, as are the CLI's arguments. Files outside it (another disk under
+`/mnt`, say) need `flatpak override --user --filesystem=<path>
+online.pumpin.funkpower.blockwright`. The user Library and the settings are
+in `~/.var/app/online.pumpin.funkpower.blockwright/`, apart from a native
+install's. Generators and imported scenes run inside the sandbox, with the
+runtime's Python 3: modules installed for the system's Python (ansidraw
+among them) are not there unless they are in the home directory and on
+`PYTHONPATH` (`flatpak override --user --env=PYTHONPATH=...`).
+
+To build a release rather than a commit, replace the manifest's `dir` source
+with the release tarball and its sha256, as the comment there shows. The
+static check `flatpak_manifest` (and `flatpak_manifest_self_test`, which
+breaks copies of the manifest) runs in `ctest` without network. The app is
+not on Flathub.
 
 ## FreeBSD
 

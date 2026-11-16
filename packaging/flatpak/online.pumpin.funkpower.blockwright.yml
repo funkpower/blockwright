@@ -1,0 +1,95 @@
+# Blockwright as a Flatpak: scripts/package-flatpak builds it into a
+# single-file bundle (packaging/README.md, PLAN §14).
+#
+# The KDE runtime 6.11 carries Qt 6.11, above the Qt 6.7 minimum, with
+# Qt SVG and the Wayland platform, and Python 3, which the build and
+# imported scenes run. libzip isn't in it, and its zstd has no CMake config,
+# so both are built here: zstd static, linked into the programs.
+app-id: online.pumpin.funkpower.blockwright
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+command: blockwright
+rename-desktop-file: blockwright.desktop
+rename-icon: blockwright
+finish-args:
+  # X11 only where there is no Wayland
+  - --socket=wayland
+  - --socket=fallback-x11
+  # X11 shared memory
+  - --share=ipc
+  # OpenGL for Qt's widgets and the canvas
+  - --device=dri
+  # Pieces, projects, reference images, generator scripts and the scenes an
+  # imported project names by absolute path are files in the home
+  # directory, as are blockwright-cli's file arguments. The file chooser
+  # portal hands over only the one file picked: not a scene's files beside
+  # it, a directory project's own files, a recent file reopened, or a path
+  # typed on the command line.
+  - --filesystem=home
+  # The user Library (GenericDataLocation/Blockwright/library) and the
+  # settings live in the app's own ~/.var/app/<app id>/, which persists; no
+  # finish-arg is needed for them.
+# flatpak-builder puts each module's licence files (LICENSE, COPYING) in
+# /app/share/licenses/<app id>/<module>/; Blockwright's own notices go in
+# /app/share/doc/blockwright/ as in every Linux install.
+cleanup:
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+  - '*.a'
+  - /share/man
+modules:
+  - name: zstd
+    buildsystem: cmake-ninja
+    subdir: build/cmake
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DZSTD_BUILD_SHARED=OFF
+      - -DZSTD_BUILD_STATIC=ON
+      - -DZSTD_BUILD_PROGRAMS=OFF
+      - -DZSTD_BUILD_TESTS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+        sha256: eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+
+  - name: libzip
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DENABLE_OPENSSL=ON
+      - -DENABLE_GNUTLS=OFF
+      - -DENABLE_MBEDTLS=OFF
+      - -DENABLE_BZIP2=OFF
+      - -DENABLE_LZMA=OFF
+      - -DENABLE_ZSTD=OFF
+      - -DBUILD_TOOLS=OFF
+      - -DBUILD_REGRESS=OFF
+      - -DBUILD_OSSFUZZ=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_DOC=OFF
+    sources:
+      - type: archive
+        url: https://github.com/nih-at/libzip/releases/download/v1.12.1/libzip-1.12.1.tar.xz
+        sha256: c40062022a1963c80573d48f6070792297cecd7c6bffe3aefcac0d8b9bee8913
+
+  - name: blockwright
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      # The tests run in the source and distribution builds; the bundle
+      # carries none and needs no Catch2.
+      - -DBUILD_TESTING=OFF
+    sources:
+      # The tree scripts/package-flatpak exports with git archive, two levels
+      # up from this file, whose packaging/tarball-commit gives --version
+      # its commit. To build a release instead, replace this source with the
+      # tarball scripts/release makes and its .sha256:
+      #   - type: archive
+      #     url: https://git.pumpin.online/funkpower/blockwright/releases/download/v<version>/blockwright-<version>.tar.gz
+      #     sha256: <the .sha256 beside it>
+      - type: dir
+        path: ../..

@@ -343,3 +343,14 @@ TEST_CASE("the About logo keeps a 16 px black border round the art", "[branding]
     CHECK(logo->size() == logo->pixmap().deviceIndependentSize().toSize() + QSize(32, 32));
     d->close();
 }
+
+TEST_CASE("the desktop file name is the Flatpak app id in a Flatpak, else the name run as", "[branding]") {
+    CHECK(bw::desktopFileName(QStringLiteral("/usr/bin/blockwright"), QString()) == QStringLiteral("blockwright"));
+    CHECK(bw::desktopFileName(QStringLiteral("blockwright-dev"), QString()) == QStringLiteral("blockwright-dev"));
+    CHECK(bw::desktopFileName(QStringLiteral("~/.local/bin/blockwright-dev"), QString()) ==
+          QStringLiteral("blockwright-dev"));
+    // flatpak run sets FLATPAK_ID; the exported entry is <app id>.desktop
+    CHECK(bw::desktopFileName(QStringLiteral("/app/bin/blockwright"),
+                              QStringLiteral("online.pumpin.funkpower.blockwright")) ==
+          QStringLiteral("online.pumpin.funkpower.blockwright"));
+}

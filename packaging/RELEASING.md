@@ -100,6 +100,12 @@ From the uploaded tarball, in a Debian 12 container with Qt 6.8.3:
 writes the `.sha256`. Upload `blockwright-<version>-x86_64.AppImage` and its
 `.sha256`.
 
+The Flatpak bundle, at the tag, with `flatpak` and `flatpak-builder`:
+`FLATPAK_USER_DIR=~/.cache/dw/flatpak scripts/package-flatpak --ref v<version> --check`,
+as in [README.md § Flatpak](README.md#flatpak). Upload
+`blockwright-<version>-x86_64.flatpak` and its `.sha256`. Nothing goes to
+Flathub.
+
 ## 6. macOS (dmg and Homebrew cask)
 
 On a Mac at the tag, with Qt 6.8.3 (an LTS release that runs on macOS 12, the

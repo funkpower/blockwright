@@ -32,6 +32,13 @@ QPixmap logoPixmap(const QString& path, qreal devicePixelRatio = 1.0);
 // The app icon: the PNGs at 16, 32, 48, 128, 256 and 512 px
 QIcon applicationIcon();
 
+// The desktop entry the app names as its own (QGuiApplication's desktop file
+// name, the Wayland app id): in a Flatpak, where FLATPAK_ID is the app id
+// its exported entry is named for (online.pumpin.funkpower.blockwright), that
+// id; else the file name it runs as, so the dev install's blockwright-dev
+// matches blockwright-dev.desktop
+QString desktopFileName(const QString& argv0, const QString& flatpakId);
+
 // Help > About Blockwright: the small logo over the version, the licence and
 // the credits
 class AboutDialog : public QDialog {

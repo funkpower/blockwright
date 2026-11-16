@@ -169,8 +169,10 @@ int main(int argc, char** argv) {
     QApplication::setApplicationName(QStringLiteral("Blockwright"));
     QApplication::setApplicationVersion(QStringLiteral(BLOCKWRIGHT_VERSION " (" BLOCKWRIGHT_GIT_COMMIT ")"));
     // The dev install runs as blockwright-dev, with a .desktop file of that
-    // name: matching it lets the desktop find its launcher entry.
-    QApplication::setDesktopFileName(QFileInfo(QString::fromLocal8Bit(argv[0])).fileName());
+    // name, and the Flatpak's entry is named for its app id: matching it lets
+    // the desktop find its launcher entry.
+    QApplication::setDesktopFileName(
+        bw::desktopFileName(QString::fromLocal8Bit(argv[0]), qEnvironmentVariable("FLATPAK_ID")));
     // Every window's icon (#205); a desktop shell may take the launcher's instead
     QApplication::setWindowIcon(bw::applicationIcon());
 

@@ -7,6 +7,7 @@
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QFile>
+#include <QFileInfo>
 #include <QLabel>
 #include <QVBoxLayout>
 
@@ -45,6 +46,12 @@ QIcon applicationIcon() {
     for (const int size : {16, 32, 48, 128, 256, 512})
         icon.addFile(QStringLiteral(":/branding/blockwright-%1.png").arg(size), QSize(size, size));
     return icon;
+}
+
+QString desktopFileName(const QString& argv0, const QString& flatpakId) {
+    if (!flatpakId.isEmpty())
+        return flatpakId;
+    return QFileInfo(argv0).fileName();
 }
 
 AboutDialog::AboutDialog(QWidget* parent) : QDialog(parent) {
