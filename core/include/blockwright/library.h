@@ -239,6 +239,9 @@ inline std::function<void(std::string_view step)> textStylePublishFault;
 // When set, called instead of QFile::moveToTrash; false is a trash that
 // refused. Tests only.
 inline std::function<bool(const std::filesystem::path&)> moveToTrash;
+// Called by scan with each folder it is asked to walk, so a test can count
+// the scans a command makes. Tests only.
+inline std::function<void(const std::filesystem::path&)> scanned;
 } // namespace testing
 
 // A file name for a stamp called `name` (CP437 bytes): lower-case ASCII
@@ -499,6 +502,28 @@ struct Added {
     std::string name;            // its title, CP437
 };
 Added addStampFile(const std::filesystem::path& library, const std::string& collection, const std::filesystem::path& ans);
+
+// What addStamps did with one file: `added` when it went in, else `error`,
+// the refusal addStampFile would have thrown for it.
+struct AddOutcome {
+    std::filesystem::path file;
+    std::optional<Added> added;
+    std::string error;
+};
+// Adds each of `files` to the collection as addStampFile does, in order,
+// and says what became of each: a file refused (not art, unreadable, a
+// title the collection holds already, one added earlier in the same call
+// included) is reported and the rest are still added. The library and the
+// collection are scanned once for the whole call, not once per file, and
+// the titles added are kept as it goes, so a folder of N files takes time
+// about linear in N. What addStampFile refuses whatever the file (a
+// bundled library, no such collection) is thrown (LibraryError) before any
+// file is read. `next`, when given, is called before each file with the
+// number done so far; false stops there, and the files not tried are left
+// out of the result.
+std::vector<AddOutcome> addStamps(const std::filesystem::path& library, const std::string& collection,
+                                  const std::vector<std::filesystem::path>& files,
+                                  const std::function<bool(std::size_t done)>& next = {});
 
 // Removes the stamp at `ans` (its art and its sidecar) from `library`; a
 // stamp that doesn't read cleanly, or has no sidecar, can be removed too.

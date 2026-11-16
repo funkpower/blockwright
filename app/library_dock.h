@@ -22,7 +22,16 @@
 // disabled, so it can be neither activated nor dragged, while the document
 // has them off (setIceColours); its thumbnail is still the iCE look.
 //
-// StampDialog is Selection > Save to Library...: name, category and tags.
+// The user's collections (#464, PLAN §12 Collections): the dock's
+// Collections button, the category list's context menu and the grid's hold
+// New, Rename and Delete Collection, Add Files to Collection, and for a
+// stamp Add to Collection, Edit Stamp and Remove Stamp (Delete on the grid
+// too). Each goes through library::'s Collections functions on the user
+// library, rescans, and says in message() what it did or why it was
+// refused; a bundled stamp or a bundled category is refused there.
+//
+// StampDialog is Selection > Save to Library...: name, category and tags,
+// and Edit Stamp's dialog.
 
 #include "blockwright/library.h"
 
@@ -42,6 +51,7 @@
 #include <optional>
 #include <vector>
 
+class QAction;
 class QComboBox;
 class QDialogButtonBox;
 class QLabel;
@@ -99,8 +109,13 @@ public:
     // a font or style change calls it too.
     void fitGridToItems();
 
+signals:
+    // Delete pressed on the grid.
+    void deletePressed();
+
 protected:
     void changeEvent(QEvent* e) override;
+    void keyPressEvent(QKeyEvent* e) override;
     QStringList mimeTypes() const override;
     QMimeData* mimeData(const QList<QListWidgetItem*>& items) const override;
 };
@@ -165,7 +180,72 @@ public:
     StampGrid* grid() const { return grid_; }
     QLabel* problemLabel() const { return problemLabel_; }
 
+    // Collections (#464). The user library's collections, read on each
+    // rescan (an empty one is listed as a category too).
+    const std::vector<library::Collection>& collections() const { return collections_; }
+    // The user's collection called `name`, or null. Two folders may go by
+    // one name (a folder with no marker whose stamps share a collection's
+    // name); this gives the first, so a command checks with
+    // uniqueCollection before acting.
+    const library::Collection* findCollection(const QString& name) const;
+    // The collection called `name` when exactly one folder goes by it;
+    // null otherwise, with *error saying why when it is more than one
+    // (library::findCollection's refusal, naming both) and empty when none.
+    const library::Collection* uniqueCollection(const QString& name, QString* error) const;
+    // The user stamp titled `title` (CP437) anywhere in the collection's
+    // folder, a stamp renamed in place included: the one
+    // library::addStamp(replace) writes over. Empty when there is none.
+    std::filesystem::path stampTitled(const library::Collection& c, const std::string& title) const;
+    // The category picked in the list, or empty for All.
+    QString pickedCategory() const;
+    // The stamp current in the grid, or null (nothing, or a text style).
+    const Entry* currentEntry() const;
+    // The commands without asking: each changes the user library, rescans
+    // (keeping the search and the category; a picked collection renamed
+    // stays picked under its new name), says what it did in message() and
+    // returns true; or refuses, changing nothing, with the reason in
+    // *error. A stamp or collection that isn't the user's is refused.
+    bool createCollection(const QString& name, QString* error);
+    // A removal goes to the trash unless `how` is Removal::Delete. A trash
+    // that refuses (library::TrashUnavailable: none, or it can't take the
+    // files; for a stamp, also a sidecar that can't be read, which the
+    // trash couldn't give back) removes nothing and sets *trashRefused,
+    // when given, beside the error; the ask commands then offer deleting
+    // for good.
+    bool deleteCollection(const QString& name, QString* error, library::Removal how = library::Removal::Trash,
+                          bool* trashRefused = nullptr);
+    bool renameCollection(const QString& from, const QString& to, QString* error);
+    // Copies the stamp (bundled or the user's) into the collection.
+    bool addToCollection(const std::filesystem::path& stamp, const QString& collection, QString* error);
+    // Adds each .ans of `files` (a folder: the .ans files in it and below)
+    // to the collection; how many were added. Each refused is listed in
+    // *failed as "<file>: <why>", and the rest are added. A collection
+    // refused itself (not the user's, gone from the disk since the last
+    // scan, or a user library that is the bundled one) adds nothing and
+    // lists no file: the reason goes in *refusal, when given, and the
+    // status reads "Nothing added: <why>; <n> files not added".
+    int addFilesToCollection(const QString& collection, const QStringList& files, QStringList* failed,
+                             QString* refusal = nullptr);
+    bool removeStamp(const std::filesystem::path& stamp, QString* error, library::Removal how = library::Removal::Trash,
+                     bool* trashRefused = nullptr);
+    // Renames, re-files and re-tags a user stamp (library::editStamp);
+    // only what differs from the stamp is changed.
+    bool editStamp(const std::filesystem::path& stamp, const QString& name, const QString& category,
+                   const QStringList& tags, QString* error);
+
+    // The commands' actions, asking first where they need to (each is a
+    // child of the dock, so it is listed under Library).
+    QAction* newCollectionAction() const { return newCollection_; }
+    QAction* renameCollectionAction() const { return renameCollection_; }
+    QAction* deleteCollectionAction() const { return deleteCollection_; }
+    QAction* addFilesAction() const { return addFiles_; }
+    QAction* addToCollectionAction() const { return addToCollection_; }
+    QAction* editStampAction() const { return editStamp_; }
+    QAction* removeStampAction() const { return removeStamp_; }
+
 signals:
+    // What a command did, or why it was refused, for the status bar.
+    void message(const QString& text);
     // A stamp was double-clicked or activated with Enter (its stampKey).
     void stampActivated(const QByteArray& key);
     // A text style was double-clicked or activated with Enter (the stampKey
@@ -176,6 +256,27 @@ signals:
 
 private:
     void refill();
+    void createActions();
+    void showGridMenu(const QPoint& pos);
+    void showCategoryMenu(const QPoint& pos);
+    // The commands as the actions run them, asking first.
+    void askNewCollection();
+    void askRenameCollection();
+    void askDeleteCollection();
+    void askAddFiles();
+    void askAddToCollection();
+    void askEditStamp();
+    void askRemoveStamp();
+    // The picked category as a collection of the user's, or null with the
+    // reason in message() (`what` names the command: "renamed").
+    const library::Collection* pickedCollection(const QString& what);
+    // The current stamp as one of the user's, or null with the reason in
+    // message().
+    const Entry* currentUserStamp(const QString& what);
+    // Asks which collection (an existing one, or a new name, made first);
+    // empty if cancelled or refused.
+    QString askCollection(const QString& title);
+    void refused(const QString& why);
     static QByteArray thumbnailKey(const library::Stamp& s);
     static QByteArray thumbnailKey(const library::TextStyleEntry& s);
     QImage thumbnail(const Entry& e);
@@ -187,6 +288,7 @@ private:
     std::vector<StyleEntry> styles_;
     std::vector<FrameStyle> frames_;
     std::vector<library::Problem> problems_;
+    std::vector<library::Collection> collections_;
     QHash<QByteArray, QImage> thumbnails_;
     int renders_ = 0;
     bool ice_ = true;
@@ -195,6 +297,13 @@ private:
     QListWidget* categories_;
     StampGrid* grid_;
     QLabel* problemLabel_;
+    QAction* newCollection_ = nullptr;
+    QAction* renameCollection_ = nullptr;
+    QAction* deleteCollection_ = nullptr;
+    QAction* addFiles_ = nullptr;
+    QAction* addToCollection_ = nullptr;
+    QAction* editStamp_ = nullptr;
+    QAction* removeStamp_ = nullptr;
 };
 
 // Watches the canvas view for stamps dragged from the dock and says which
@@ -222,8 +331,9 @@ class StampDialog : public QDialog {
     Q_OBJECT
 public:
     // What the fields name: a stamp (Save to Library: a CP437 name of at
-    // most a SAUCE title) or a text style preset (Save as Preset: any name).
-    enum class Purpose { Stamp, Preset };
+    // most a SAUCE title), a text style preset (Save as Preset: any name),
+    // or a stamp being edited (Edit Stamp: a stamp's fields, no Resize).
+    enum class Purpose { Stamp, Preset, Edit };
 
     StampDialog(const QStringList& categories, QWidget* parent = nullptr, Purpose purpose = Purpose::Stamp);
 

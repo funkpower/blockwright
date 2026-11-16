@@ -1661,6 +1661,105 @@ TEST_CASE("stamp files and plain .ans files are added to a collection") {
     }
 }
 
+TEST_CASE("addStamps adds a batch with one scan of the library and refuses each file as addStampFile does", "[collections][addStamps]") {
+    const fs::path root = scratch("coll-addstamps");
+    const fs::path lib = root / "user";
+    createCollection(lib, "Mine");
+    createCollection(lib, "Other");
+    addStamp(lib, "Other", "Elm", {}, tree(), true);
+    const fs::path pine = addStamp(lib, "Mine", "Pine", {}, tree(), true);
+    std::size_t scans = 0;
+    testing::scanned = [&scans](const fs::path&) { ++scans; };
+    struct Reset {
+        ~Reset() { testing::scanned = nullptr; }
+    } reset;
+    // n plain files named f000.., then the ones refused
+    const auto batch = [&](const fs::path& in, int n, char prefix = 'f') {
+        std::vector<fs::path> files;
+        for (int i = 0; i < n; ++i) {
+            char name[16];
+            std::snprintf(name, sizeof name, "%c%03d.ans", prefix, i);
+            put(in / name, "\x1b[31mX" + std::to_string(i) + "\r\n");
+            files.push_back(in / name);
+        }
+        return files;
+    };
+
+    SECTION("the scans don't grow with the files") {
+        const std::vector<fs::path> few = batch(root / "few", 4), many = batch(root / "many", 64, 'g');
+        scans = 0;
+        const std::vector<AddOutcome> a = addStamps(lib, "Mine", few);
+        const std::size_t forFew = scans;
+        scans = 0;
+        const std::vector<AddOutcome> b = addStamps(lib, "Mine", many);
+        CHECK(scans == forFew);
+        // the library's two collections once each, and Mine's titles once
+        CHECK(scans <= 3);
+        REQUIRE(a.size() == 4);
+        REQUIRE(b.size() == 64);
+        for (const AddOutcome& o : b) {
+            REQUIRE(o.added);
+            CHECK(o.error.empty());
+            CHECK(o.added->path.parent_path() == lib / "mine");
+        }
+        CHECK(b[63].added->name == "g063");
+        CHECK(scan(lib / "mine").stamps.size() == 1 + 4 + 64);
+    }
+    SECTION("each file gets addStampFile's result, a title added earlier in the call included") {
+        Sauce sauce;
+        sauce.title = "Twin";
+        const std::string body = "\x1b[33mTW\r\n";
+        put(root / "in" / "twin-a.ans", body + encodeSauce(sauce, std::uint32_t(body.size())));
+        put(root / "in" / "twin-b.ans", body + encodeSauce(sauce, std::uint32_t(body.size())));
+        put(root / "in" / "Pine.ans", "pp\r\n");
+        put(root / "in" / "blank.ans", "   \r\n");
+        put(root / "in" / "note.txt", "hi");
+        put(root / "in" / "moon.ans", "mm\r\n");
+        const std::vector<fs::path> files = {root / "in" / "twin-a.ans", root / "in" / "Pine.ans",
+                                             root / "in" / "blank.ans",  root / "in" / "note.txt",
+                                             root / "in" / "missing.ans", root / "in" / "twin-b.ans",
+                                             root / "in" / "moon.ans"};
+        const std::vector<AddOutcome> out = addStamps(lib, "Mine", files);
+        REQUIRE(out.size() == files.size());
+        for (std::size_t i = 0; i < out.size(); ++i)
+            CHECK(out[i].file == files[i]);
+        REQUIRE(out[0].added);
+        CHECK(out[0].added->name == "Twin");
+        CHECK(out[0].added->path == lib / "mine" / "twin.ans");
+        CHECK_FALSE(out[1].added);
+        CHECK(out[1].error == "the collection \"Mine\" already holds a stamp named \"Pine\" (" + pine.string() + ")");
+        CHECK(out[2].error == ".ans has nothing drawn in it");
+        CHECK(out[3].error == "not an .ans file");
+        CHECK_THAT(out[4].error, Catch::Matchers::StartsWith(".ans "));
+        CHECK_FALSE(out[5].added);
+        CHECK(out[5].error == "the collection \"Mine\" already holds a stamp named \"Twin\" (" +
+                                  (lib / "mine" / "twin.ans").string() + ")");
+        REQUIRE(out[6].added);
+        CHECK(out[6].added->name == "moon");
+        // each refusal is the one addStampFile gives for the file
+        for (const std::size_t i : {1, 2, 3, 4, 5})
+            CHECK(refusal([&] { addStampFile(lib, "Mine", files[i]); }) == out[i].error);
+        CHECK(scan(lib / "mine").stamps.size() == 3);
+    }
+    SECTION("next stops the call between files") {
+        const std::vector<fs::path> files = batch(root / "in", 10);
+        std::vector<std::size_t> asked;
+        const std::vector<AddOutcome> out = addStamps(lib, "Mine", files, [&asked](std::size_t done) {
+            asked.push_back(done);
+            return done < 3;
+        });
+        CHECK(asked == std::vector<std::size_t>{0, 1, 2, 3});
+        CHECK(out.size() == 3);
+        CHECK(scan(lib / "mine").stamps.size() == 1 + 3);
+    }
+    SECTION("what every file would be refused for is thrown before any is read") {
+        const std::vector<fs::path> files = batch(root / "in", 3);
+        CHECK(refusal([&] { addStamps(lib, "Nope", files); }) ==
+              "no collection named \"Nope\" in " + lib.string());
+        CHECK(scan(lib / "mine").stamps.size() == 1);
+    }
+}
+
 TEST_CASE("removing a stamp takes its art and sidecar, inside the library only") {
     const fs::path root = scratch("coll-remove");
     const fs::path lib = root / "user";

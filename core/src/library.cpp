@@ -1225,6 +1225,8 @@ std::string slug(std::string_view name) {
 }
 
 ScanResult scan(const fs::path& dir) {
+    if (testing::scanned)
+        testing::scanned(dir);
     ScanResult r;
     std::error_code ec;
     if (!fs::is_directory(dir, ec))
@@ -1853,11 +1855,10 @@ std::filesystem::path addStamp(const fs::path& library, const std::string& colle
     return dest;
 }
 
-Added addStampFile(const fs::path& library, const std::string& collection, const fs::path& ans) {
-    if (!isArtName(ans))
-        throw LibraryError("not an .ans file");
-    refuseBundled(library);
-    const Collection c = requireCollection(library, collection);
+namespace {
+
+// What addStampFile writes into collection `c` for `ans`: its title and files.
+std::pair<std::string, StampFiles> stampFromFile(const Collection& c, const fs::path& ans) {
     std::string name;
     StampFiles files;
     if (present(pairedSidecar(ans))) {
@@ -1902,13 +1903,66 @@ Added addStampFile(const fs::path& library, const std::string& collection, const
                 block.at(x, y) = doc.canvas.at(x, y);
         files = encodeStamp(name, c.name, {}, block, doc.ice);
     }
-    const std::optional<fs::path> held = titledIn(c.dir, name, true, {});
-    const StampTarget t = stampPathFor(c.dir, name);
-    if (held || t.exists)
-        throw LibraryError("the collection " + q(c.name) + " already holds a stamp named " +
-                           q(cp437ToUtf8(name)) + " (" + (held ? *held : t.path).string() + ")");
-    writeStamp(t.path, files);
-    return {t.path, name};
+    return {name, files};
+}
+
+// addStampFile's adds into one collection, which is found and has its
+// titles read once: each stamp added puts its title in too, so a batch
+// refuses a title it added itself, as a fresh scan would.
+class Adder {
+public:
+    Adder(const fs::path& library, const std::string& collection) {
+        refuseBundled(library);
+        c_ = requireCollection(library, collection);
+        // titledIn's scan, kept: the first stamp holding each title
+        for (Stamp& s : scan(c_.dir).stamps)
+            titles_.emplace(std::move(s.name), std::move(s.path));
+    }
+    Added add(const fs::path& ans) {
+        if (!isArtName(ans))
+            throw LibraryError("not an .ans file");
+        auto [name, files] = stampFromFile(c_, ans);
+        const auto held = titles_.find(name);
+        const StampTarget t = stampPathFor(c_.dir, name);
+        if (held != titles_.end() || t.exists)
+            throw LibraryError("the collection " + q(c_.name) + " already holds a stamp named " +
+                               q(cp437ToUtf8(name)) + " (" +
+                               (held != titles_.end() ? held->second : t.path).string() + ")");
+        writeStamp(t.path, files);
+        titles_.emplace(name, t.path);
+        return {t.path, name};
+    }
+
+private:
+    Collection c_;
+    std::map<std::string, fs::path> titles_;
+};
+
+} // namespace
+
+Added addStampFile(const fs::path& library, const std::string& collection, const fs::path& ans) {
+    if (!isArtName(ans))
+        throw LibraryError("not an .ans file");
+    return Adder(library, collection).add(ans);
+}
+
+std::vector<AddOutcome> addStamps(const fs::path& library, const std::string& collection,
+                                  const std::vector<fs::path>& files, const std::function<bool(std::size_t)>& next) {
+    Adder adder(library, collection);
+    std::vector<AddOutcome> out;
+    out.reserve(files.size());
+    for (const fs::path& f : files) {
+        if (next && !next(out.size()))
+            break;
+        AddOutcome o{f, std::nullopt, {}};
+        try {
+            o.added = adder.add(f);
+        } catch (const LibraryError& e) {
+            o.error = e.what();
+        }
+        out.push_back(std::move(o));
+    }
+    return out;
 }
 
 void requireRemovable(const fs::path& library, const fs::path& ans) {

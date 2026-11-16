@@ -61,6 +61,7 @@ void MainWindow::createLibrary() {
     if (auto* frame = qobject_cast<FrameTool*>(tools_->find(QStringLiteral("frame")))) {
         connect(library_, &LibraryDock::rescanned, frame, [this, frame] { frame->setLibraryStyles(library_->frameStyles()); });
     }
+    connect(library_, &LibraryDock::message, this, [this](const QString& text) { statusBar()->showMessage(text, 5000); });
     library_->setDirectories(library::bundledLibraryDir(binDir),
                              library::userLibraryDir());
 
@@ -250,14 +251,25 @@ bool MainWindow::placeStamp(const std::filesystem::path& path, QPoint cell, QStr
     return true;
 }
 
-QString MainWindow::libraryPathFor(const QString& name, bool* exists, QString* error) const {
+QString MainWindow::libraryPathFor(const QString& name, bool* exists, QString* error, const QString& category) const {
     const std::optional<std::string> bytes = toCp437(name.trimmed());
+    const std::string title = bytes ? *bytes : name.trimmed().toStdString();
+    QString ambiguous;
+    const library::Collection* collection = library_->uniqueCollection(category.trimmed(), &ambiguous);
+    if (!ambiguous.isEmpty()) {
+        if (error)
+            *error = ambiguous;
+        return {};
+    }
     try {
         const library::StampTarget t =
-            library::stampPathFor(library_->userDir(), bytes ? *bytes : name.trimmed().toStdString());
+            library::stampPathFor(collection ? collection->dir : library_->userDir(), title);
+        // In a collection the title is held anywhere in its folder, a stamp
+        // renamed in place included: that is the one a replace writes over.
+        const std::filesystem::path held = collection ? library_->stampTitled(*collection, title) : std::filesystem::path();
         if (exists)
-            *exists = t.exists;
-        return qpath(t.path);
+            *exists = !held.empty() || t.exists;
+        return qpath(held.empty() ? t.path : held);
     } catch (const std::exception& e) {
         if (error)
             *error = QString::fromStdString(e.what());
@@ -297,19 +309,34 @@ QString MainWindow::saveSelectionToLibrary(const QString& name, const QString& c
     for (const QString& t : tags)
         tagList.push_back(t.trimmed().toStdString());
     QString path;
+    // A category that names one of the user's collections saves into its
+    // folder (#464).
+    QString ambiguous;
+    const library::Collection* collection = library_->uniqueCollection(category.trimmed(), &ambiguous);
+    if (!ambiguous.isEmpty()) {
+        *error = ambiguous;
+        return {};
+    }
     try {
         // Inside the error boundary: a library folder that can't be listed
         // is refused here. The target is written by its native path, never
         // a QString round trip.
-        const library::StampTarget t = library::stampPathFor(library_->userDir(), *title);
-        path = qpath(t.path);
-        if (!replace && t.exists) {
+        const library::StampTarget t =
+            library::stampPathFor(collection ? collection->dir : library_->userDir(), *title);
+        const std::filesystem::path held = collection ? library_->stampTitled(*collection, *title) : std::filesystem::path();
+        path = qpath(held.empty() ? t.path : held);
+        if (!replace && (t.exists || !held.empty())) {
             *error = tr("a stamp named \"%1\" already exists (%2)").arg(name.trimmed(), path);
             return {};
         }
-        const library::StampFiles files =
-            library::encodeStamp(*title, category.trimmed().toStdString(), tagList, cells, doc_.ansi().ice, slice);
-        library::writeStamp(t.path, files);
+        if (collection) {
+            path = qpath(library::addStamp(library_->userDir(), collection->name, *title, tagList, cells,
+                                           doc_.ansi().ice, slice, replace));
+        } else {
+            const library::StampFiles files = library::encodeStamp(*title, category.trimmed().toStdString(), tagList,
+                                                                   cells, doc_.ansi().ice, slice);
+            library::writeStamp(t.path, files);
+        }
     } catch (const std::exception& e) {
         // LibraryError, or anything else encoding or writing threw: never
         // out of the menu action's handler.
@@ -329,7 +356,7 @@ void MainWindow::saveToLibrary() {
         return;
     bool replace = false;
     QString error;
-    const QString path = libraryPathFor(dialog.name(), &replace, &error);
+    const QString path = libraryPathFor(dialog.name(), &replace, &error, dialog.category());
     if (path.isEmpty()) {
         bw::warning(this, tr("Save to Library"), tr("Could not save the stamp:\n%1").arg(error));
         return;

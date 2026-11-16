@@ -1389,9 +1389,14 @@ constexpr const char* kPermanentHint = "; run again with --permanent to delete i
 // what would go and exits 1; with it, moves the folder to the trash, or
 // with --permanent deletes it. A trash that refuses removes nothing (exit 1).
 int libraryDelete(const std::filesystem::path& lib, const std::string& name, bool yes, bool permanent) {
-    const std::optional<bw::library::Collection> c = bw::library::findCollection(lib, name);
+    std::optional<bw::library::Collection> c;
+    try {
+        c = bw::library::findCollection(lib, name);
+    } catch (const bw::library::LibraryError& e) {
+        throw Failure{"library delete: " + printable(e.what())};
+    }
     if (!c)
-        throw Failure{"library delete: no collection named \"" + name + "\" in " + lib.string()};
+        throw Failure{"library delete: no collection named \"" + printable(name) + "\" in " + listPath(lib)};
     if (!yes) {
         std::cerr << "blockwright-cli: library delete: this would remove " << listPath(c->dir) << " and its "
                   << stampCount(c->stamps) << "; run again with --yes\n";
@@ -1402,7 +1407,9 @@ int libraryDelete(const std::filesystem::path& lib, const std::string& name, boo
         r = bw::library::deleteCollection(lib, name,
                                           permanent ? bw::library::Removal::Delete : bw::library::Removal::Trash);
     } catch (const bw::library::TrashUnavailable& e) {
-        throw Failure{std::string("library delete: ") + e.what() + kPermanentHint};
+        throw Failure{"library delete: " + printable(e.what()) + kPermanentHint};
+    } catch (const bw::library::LibraryError& e) {
+        throw Failure{"library delete: " + printable(e.what())};
     }
     std::cout << (r.trashed ? "moved to the trash\t" : "deleted\t") << listPath(c->dir) << "\t"
               << stampCount(r.stamps) << "\n";
@@ -1444,13 +1451,13 @@ int libraryAdd(const std::filesystem::path& lib, const std::string& collection,
         std::sort(found.begin(), found.end());
         files.insert(files.end(), found.begin(), found.end());
     }
+    // one scan of the library for all of them (addStamps), not one per file
     int status = kOk;
-    for (const std::filesystem::path& f : files) {
-        try {
-            const bw::library::Added a = bw::library::addStampFile(lib, collection, f);
-            std::cout << "added\t" << bw::cp437ToUtf8(a.name) << "\t" << a.path.string() << "\n";
-        } catch (const bw::library::LibraryError& e) {
-            std::cerr << "blockwright-cli: library add: " << f.string() << ": " << e.what() << "\n";
+    for (const bw::library::AddOutcome& o : bw::library::addStamps(lib, collection, files)) {
+        if (o.added) {
+            std::cout << "added\t" << bw::cp437ToUtf8(o.added->name) << "\t" << o.added->path.string() << "\n";
+        } else {
+            std::cerr << "blockwright-cli: library add: " << o.file.string() << ": " << o.error << "\n";
             status = kBadInput;
         }
     }

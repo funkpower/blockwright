@@ -204,7 +204,9 @@ public:
     bool placeStamp(const std::filesystem::path& path, QPoint cell, QString* error);
     bool placeStamp(const QString& path, QPoint cell, QString* error);  // a UTF-8 path
     // Saves the selection (or the floating selection) as a stamp in the
-    // user library and rescans the dock, at libraryPathFor(name). Refuses
+    // user library and rescans the dock, at libraryPathFor(name, category):
+    // into the folder of the user's collection the category names
+    // (library::addStamp, #464), else at the top of the library. Refuses
     // to replace the stamp of that name already there unless `replace`. The
     // path written, or empty and `error`.
     // With `slice`, the stamp is resizable (a frame or band).
@@ -233,11 +235,16 @@ public:
     // off or the styled text can't be drawn.
     LayerId newStyledText(const library::TextStyleEntry& entry, QPoint cell, QString* error);
     // The .ans a stamp called `name` is saved as in the user library
-    // (library::stampPathFor): a stamp with another title is never
-    // replaced. `exists` says whether a stamp of that name is there.
-    // Empty, with `error`, if the library folder can't be listed. The
+    // (library::stampPathFor), in the folder of the user's collection
+    // called `category` if there is one: a stamp with another title is never
+    // replaced. In a collection, a stamp holding the title anywhere in its
+    // folder (one renamed in place) is the one returned, as
+    // library::addStamp(replace) writes over it. `exists` says whether a
+    // stamp of that name is there. Empty, with `error`, if the library
+    // folder can't be listed or two folders go by the collection's name. The
     // QString is for showing; saving uses the native path.
-    QString libraryPathFor(const QString& name, bool* exists = nullptr, QString* error = nullptr) const;
+    QString libraryPathFor(const QString& name, bool* exists = nullptr, QString* error = nullptr,
+                           const QString& category = QString()) const;
 
     // File > Open Reference Image...: the picture at `path` as a new
     // reference layer (Document::addReferenceLayer) across the canvas width

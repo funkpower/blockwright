@@ -38,9 +38,11 @@
 #include <QScrollArea>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QElapsedTimer>
 #include <QFocusEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -50,6 +52,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPointingDevice>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QStatusBar>
 #include <QStyleOptionViewItem>
@@ -62,6 +65,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -2835,4 +2839,1099 @@ TEST_CASE("an iCE switch that restyles no layer keeps a float, as does its undo 
     press(v, Qt::Key_Return, QStringLiteral("\r"));
     CHECK_FALSE(s->floating());
     CHECK(doc->layerCanvas().at(6, 3).ch.codePoint().value() == U'x');
+}
+
+// Collections (#464 slice 2, PLAN §12 Collections): the Library dock's
+// commands on the user's own stamps and collections.
+
+namespace {
+
+// A window as Fixture's whose trash is a scratch folder
+// (library::testing::moveToTrash), never the system's: each path trashed
+// is moved into it and listed in `trashed`. With `trashRefuses` the trash
+// refuses, as where there is none.
+struct CollectionFixture : Fixture {
+    QTemporaryDir trash;
+    bool trashRefuses = false;
+    std::vector<fs::path> trashed;
+    CollectionFixture() {
+        REQUIRE(trash.isValid());
+        library::testing::moveToTrash = [this](const fs::path& p) {
+            if (trashRefuses)
+                return false;
+            std::error_code ec;
+            fs::rename(p, fspath(trash.path()) / std::to_string(trashed.size()), ec);
+            if (ec)
+                return false;
+            trashed.push_back(p);
+            return true;
+        };
+    }
+    ~CollectionFixture() { library::testing::moveToTrash = nullptr; }
+    CollectionFixture(const CollectionFixture&) = delete;
+    CollectionFixture& operator=(const CollectionFixture&) = delete;
+    fs::path userPath() const { return fspath(user.path()); }
+    bool trashEmpty() const { return fs::is_empty(fspath(trash.path())); }
+};
+
+// Answers the next QInputDialog with `text` (OK) or cancels it; `ran`
+// says whether one opened.
+void answerInput(MainWindow& w, const QString& text, bool ok, bool* ran) {
+    *ran = false;
+    QTimer::singleShot(0, &w, [&w, text, ok, ran] {
+        auto* d = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        if (!d)
+            return;
+        *ran = true;
+        d->setTextValue(text);
+        ok ? d->accept() : d->reject();
+        (void)w;
+    });
+}
+
+// Answers the next QMessageBox with `button`, keeping its text and default.
+struct Box {
+    bool ran = false;
+    QString text;
+    QMessageBox::StandardButton defaultButton = QMessageBox::NoButton;
+};
+void answerBox(MainWindow& w, QMessageBox::StandardButton button, Box* seen) {
+    *seen = {};
+    QTimer::singleShot(0, &w, [button, seen] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!box)
+            return;
+        seen->ran = true;
+        seen->text = bw::boxText(box);
+        seen->defaultButton = box->standardButton(box->defaultButton());
+        box->button(button)->click();
+    });
+}
+
+// Runs `trigger`, answering each QMessageBox that opens meanwhile, in
+// turn, with the next of `buttons`, and keeping each one's text and
+// default in *seen. Answers left over when `trigger` returns (fewer boxes
+// opened) are dropped with the timer, so they can't answer a later box.
+void answerBoxes(MainWindow& w, std::vector<QMessageBox::StandardButton> buttons, std::vector<Box>* seen,
+                 const std::function<void()>& trigger) {
+    seen->clear();
+    // stopped and deleted however `trigger` ends (deleteLater alone waits
+    // for an event loop to return to)
+    const std::unique_ptr<QTimer> timer(new QTimer(&w));
+    timer->setInterval(5);
+    std::size_t answered = 0;
+    QObject::connect(timer.get(), &QTimer::timeout, timer.get(), [&buttons, seen, &answered] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!box || !box->isVisible() || answered >= buttons.size())
+            return;
+        Box b;
+        b.ran = true;
+        b.text = bw::boxText(box);
+        b.defaultButton = box->standardButton(box->defaultButton());
+        seen->push_back(b);
+        box->button(buttons[answered++])->click();
+    });
+    timer->start();
+    trigger();
+}
+
+// Runs `trigger` where no dialog should open: any that does is cancelled,
+// and noted.
+bool opensNoDialog(MainWindow& w, const std::function<void()>& trigger) {
+    bool opened = false;
+    QTimer::singleShot(0, &w, [&opened] {
+        if (QWidget* m = QApplication::activeModalWidget()) {
+            opened = true;
+            if (auto* d = qobject_cast<QDialog*>(m))
+                d->reject();
+        }
+    });
+    trigger();
+    QCoreApplication::processEvents();
+    return !opened;
+}
+
+void pickCategory(LibraryDock* dock, const QString& name) {
+    const auto found = dock->categoryList()->findItems(name, Qt::MatchExactly);
+    REQUIRE(found.size() == 1);
+    dock->categoryList()->setCurrentItem(found.first());
+}
+
+void pickStamp(LibraryDock* dock, const QString& name) { dock->grid()->setCurrentItem(item(dock, name)); }
+
+QStringList listed(LibraryDock* dock) {
+    QStringList out;
+    for (int i = 0; i < dock->categoryList()->count(); ++i)
+        out << dock->categoryList()->item(i)->text();
+    return out;
+}
+
+QString status(MainWindow& w) { return w.statusBar()->currentMessage(); }
+
+// A collection made through the dock, without asking.
+void makeCollection(LibraryDock* dock, const QString& name) {
+    QString error;
+    REQUIRE(dock->createCollection(name, &error));
+}
+
+// Saves "ab" from the canvas as `name` in `category` through Selection >
+// Save to Library.
+void saveStamp(MainWindow& w, const QString& name, const QString& category, const QString& tags = {},
+               QStringList* offered = nullptr) {
+    write(w, 0, 0, QStringLiteral("ab"));
+    w.tools()->setActive(w.selectTool());
+    w.selectTool()->select({0, 0, 2, 1});
+    bool ran = false;
+    QTimer::singleShot(0, &w, [&] {
+        auto* d = qobject_cast<StampDialog*>(QApplication::activeModalWidget());
+        REQUIRE(d);
+        ran = true;
+        if (offered)
+            for (int i = 0; i < d->categoryBox()->count(); ++i)
+                *offered << d->categoryBox()->itemText(i);
+        d->nameEdit()->setText(name);
+        d->categoryBox()->setCurrentText(category);
+        d->tagsEdit()->setText(tags);
+        d->buttons()->button(QDialogButtonBox::Ok)->click();
+    });
+    act(w, "saveToLibrary")->trigger();
+    REQUIRE(ran);
+}
+
+} // namespace
+
+TEST_CASE("New Collection makes an empty collection, listed at once and kept on a restart", "[library][collections]") {
+    CollectionFixture f;
+    // the search and the picked category stay through the rescan
+    pickCategory(f.dock, QStringLiteral("figures"));
+    f.dock->searchEdit()->setText(QStringLiteral("tu"));
+    bool ran = false;
+
+    answerInput(f.w, QStringLiteral("My Trees"), false, &ran);
+    act(f.w, "newLibraryCollection")->trigger();
+    CHECK(ran);
+    CHECK(f.dock->collections().empty());
+    CHECK(listed(f.dock) == QStringList{QStringLiteral("All"), QStringLiteral("figures"), QStringLiteral("sky")});
+
+    answerInput(f.w, QStringLiteral("My Trees"), true, &ran);
+    act(f.w, "newLibraryCollection")->trigger();
+    CHECK(ran);
+    REQUIRE(f.dock->collections().size() == 1);
+    CHECK(f.dock->collections()[0].stamps == 0);
+    CHECK(fs::is_directory(f.userPath() / "my-trees"));
+    CHECK(listed(f.dock) == QStringList{QStringLiteral("All"), QStringLiteral("My Trees"), QStringLiteral("figures"),
+                                        QStringLiteral("sky")});
+    CHECK(status(f.w) == QStringLiteral("Made the collection \"My Trees\""));
+    CHECK(f.dock->pickedCategory() == QStringLiteral("figures"));
+    CHECK(f.dock->searchEdit()->text() == QStringLiteral("tu"));
+    CHECK(f.dock->shownNames() == QStringList{QStringLiteral("Tux")});
+
+    // a name in use is refused, with the reason
+    answerInput(f.w, QStringLiteral("My Trees"), true, &ran);
+    act(f.w, "newLibraryCollection")->trigger();
+    CHECK(ran);
+    CHECK(f.dock->collections().size() == 1);
+    CHECK(status(f.w).startsWith(QStringLiteral("No collection made: a collection named \"My Trees\" already exists")));
+
+    // a second dock on the same user library, as after a restart
+    LibraryDock again;
+    again.setDirectories(bwtest::dataDir() / "library", f.userPath());
+    REQUIRE(again.collections().size() == 1);
+    CHECK(again.collections()[0].name == "My Trees");
+    CHECK(again.categories() == f.dock->categories());
+}
+
+TEST_CASE("a new MainWindow on the same user library shows the same collections and stamps", "[library][collections]") {
+    QTemporaryDir user;
+    REQUIRE(user.isValid());
+    const QByteArray env = qgetenv("BLOCKWRIGHT_USER_LIBRARY");
+    REQUIRE(!env.isEmpty());
+    qputenv("BLOCKWRIGHT_USER_LIBRARY", QFile::encodeName(user.path()));
+    struct Restore {
+        QByteArray env;
+        ~Restore() { qputenv("BLOCKWRIGHT_USER_LIBRARY", env); }
+    } restore{env};
+    {
+        MainWindow w;
+        makeCollection(w.libraryWidget(), QStringLiteral("Empty One"));
+        makeCollection(w.libraryWidget(), QStringLiteral("Rocks"));
+        saveStamp(w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+        w.document()->undoStack()->setClean();
+        REQUIRE(w.close());
+    }
+    MainWindow w;
+    LibraryDock* dock = w.libraryWidget();
+    REQUIRE(dock->collections().size() == 2);
+    CHECK(dock->collections()[0].name == "Empty One");
+    CHECK(dock->collections()[0].stamps == 0);
+    CHECK(dock->collections()[1].name == "Rocks");
+    CHECK(dock->collections()[1].stamps == 1);
+    CHECK(dock->categories().contains(QStringLiteral("Empty One")));
+    pickCategory(dock, QStringLiteral("Rocks"));
+    CHECK(dock->shownNames() == QStringList{QStringLiteral("Pebble")});
+}
+
+TEST_CASE("Save to Library offers an empty collection and saves into its folder", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    QStringList offered;
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"), QStringLiteral("small, grey"), &offered);
+    CHECK(offered.contains(QStringLiteral("Rocks")));
+    const fs::path pebble = f.userPath() / "rocks" / "pebble.ans";
+    REQUIRE(fs::exists(pebble));
+    CHECK(fs::exists(f.userPath() / "rocks" / "pebble.json"));
+    CHECK_FALSE(fs::exists(f.userPath() / "pebble.ans"));
+    const library::Stamp* s = f.dock->find(pebble);
+    REQUIRE(s);
+    CHECK(s->meta.category == "Rocks");
+    CHECK(s->meta.tags == std::vector<std::string>{"small", "grey"});
+    CHECK(f.dock->findCollection(QStringLiteral("Rocks"))->stamps == 1);
+
+    // the same name again in the collection asks to replace it, there
+    bool exists = false;
+    CHECK(fspath(f.w.libraryPathFor(QStringLiteral("Pebble"), &exists, nullptr, QStringLiteral("Rocks"))) == pebble);
+    CHECK(exists);
+    CHECK(fspath(f.w.libraryPathFor(QStringLiteral("Pebble"), &exists)) == f.userPath() / "pebble.ans");
+    CHECK_FALSE(exists);
+
+    // a category that is no collection saves at the top, as before
+    saveStamp(f.w, QStringLiteral("Loose"), QStringLiteral("odds"));
+    CHECK(fs::exists(f.userPath() / "loose.ans"));
+    CHECK(f.dock->collections().size() == 1);
+}
+
+TEST_CASE("Delete Collection asks, naming the stamp count, and leaves a bundled category", "[library][collections]") {
+    CollectionFixture f;
+    // a collection named like the bundled category "sky", holding a copy of
+    // the bundled star and a stamp of its own
+    makeCollection(f.dock, QStringLiteral("sky"));
+    const fs::path star = bwtest::dataDir() / "library" / "sky" / "small-star.ans";
+    QString error;
+    REQUIRE(f.dock->addToCollection(star, QStringLiteral("sky"), &error));
+    saveStamp(f.w, QStringLiteral("Cloud"), QStringLiteral("sky"));
+    REQUIRE(f.dock->findCollection(QStringLiteral("sky"))->stamps == 2);
+    const auto starBytes = [&] {
+        QFile file(QString::fromStdString(star.string()));
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        return file.readAll();
+    };
+    const QByteArray before = starBytes();
+
+    pickCategory(f.dock, QStringLiteral("sky"));
+    f.dock->searchEdit()->setText(QStringLiteral("s"));
+    Box box;
+    answerBox(f.w, QMessageBox::No, &box);
+    act(f.w, "deleteLibraryCollection")->trigger();
+    REQUIRE(box.ran);
+    CHECK(box.defaultButton == QMessageBox::No);
+    CHECK(box.text.contains(QStringLiteral("Delete the collection \"sky\" and the 2 stamps in it?")));
+    CHECK(box.text.contains(QStringLiteral("They go to the trash.")));
+    CHECK(box.text.contains(QStringLiteral("The bundled stamps in \"sky\" stay.")));
+    CHECK(fs::is_directory(f.userPath() / "sky"));
+    CHECK(f.dock->collections().size() == 1);
+
+    answerBox(f.w, QMessageBox::Yes, &box);
+    act(f.w, "deleteLibraryCollection")->trigger();
+    REQUIRE(box.ran);
+    CHECK_FALSE(fs::exists(f.userPath() / "sky"));
+    CHECK(f.trashed == std::vector<fs::path>{f.userPath() / "sky"});
+    CHECK(f.dock->collections().empty());
+    CHECK(status(f.w) == QStringLiteral("Moved the collection \"sky\" and its 2 stamps to the trash"));
+    // the bundled category stays, picked, with the search, its stamp untouched
+    CHECK(listed(f.dock) == QStringList{QStringLiteral("All"), QStringLiteral("figures"), QStringLiteral("sky")});
+    CHECK(f.dock->pickedCategory() == QStringLiteral("sky"));
+    CHECK(f.dock->searchEdit()->text() == QStringLiteral("s"));
+    CHECK(f.dock->shownNames() == QStringList{QStringLiteral("Small star")});
+    CHECK(starBytes() == before);
+
+    // a bundled category, and All, are refused with a reason and no dialog
+    CHECK(opensNoDialog(f.w, [&] { act(f.w, "deleteLibraryCollection")->trigger(); }));
+    CHECK(status(f.w) == QStringLiteral("\"sky\" is a bundled category, not one of your collections; nothing deleted"));
+    pickCategory(f.dock, QStringLiteral("All"));
+    CHECK(opensNoDialog(f.w, [&] { act(f.w, "renameLibraryCollection")->trigger(); }));
+    CHECK(status(f.w) == QStringLiteral("Pick one of your collections in the category list first; nothing renamed"));
+    CHECK(starBytes() == before);
+}
+
+TEST_CASE("Rename Collection renames its folder and stamps and keeps it picked", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    makeCollection(f.dock, QStringLiteral("Gems"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+    f.dock->searchEdit()->setText(QStringLiteral("peb"));
+    bool ran = false;
+
+    answerInput(f.w, QStringLiteral("Stones"), false, &ran);
+    act(f.w, "renameLibraryCollection")->trigger();
+    CHECK(ran);
+    CHECK(fs::is_directory(f.userPath() / "rocks"));
+    CHECK(f.dock->pickedCategory() == QStringLiteral("Rocks"));
+
+    // a name in use is refused
+    answerInput(f.w, QStringLiteral("Gems"), true, &ran);
+    act(f.w, "renameLibraryCollection")->trigger();
+    CHECK(ran);
+    CHECK(status(f.w).startsWith(QStringLiteral("Collection not renamed: a collection named \"Gems\" already exists")));
+    CHECK(fs::is_directory(f.userPath() / "rocks"));
+
+    answerInput(f.w, QStringLiteral("Stones"), true, &ran);
+    act(f.w, "renameLibraryCollection")->trigger();
+    CHECK(ran);
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks"));
+    const fs::path pebble = f.userPath() / "stones" / "pebble.ans";
+    REQUIRE(f.dock->find(pebble));
+    CHECK(f.dock->find(pebble)->meta.category == "Stones");
+    CHECK(listed(f.dock) == QStringList{QStringLiteral("All"), QStringLiteral("Gems"), QStringLiteral("Stones"),
+                                        QStringLiteral("figures"), QStringLiteral("sky")});
+    CHECK(f.dock->pickedCategory() == QStringLiteral("Stones"));
+    CHECK(f.dock->searchEdit()->text() == QStringLiteral("peb"));
+    CHECK(f.dock->shownNames() == QStringList{QStringLiteral("Pebble")});
+    CHECK(status(f.w) == QStringLiteral("Renamed the collection \"Rocks\" to \"Stones\""));
+
+    // a bundled category can't be renamed
+    pickCategory(f.dock, QStringLiteral("figures"));
+    CHECK(opensNoDialog(f.w, [&] { act(f.w, "renameLibraryCollection")->trigger(); }));
+    CHECK(status(f.w) == QStringLiteral("\"figures\" is a bundled category, not one of your collections; nothing renamed"));
+}
+
+TEST_CASE("Add to Collection copies a bundled stamp; Edit and Remove refuse one", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Mine"));
+    pickStamp(f.dock, QStringLiteral("Tux"));
+    REQUIRE(f.dock->currentEntry());
+    CHECK(f.dock->currentEntry()->bundled);
+    const fs::path tux = bwtest::dataDir() / "library" / "figures" / "tux.ans";
+
+    CHECK(opensNoDialog(f.w, [&] { act(f.w, "editLibraryStamp")->trigger(); }));
+    CHECK(status(f.w).startsWith(QStringLiteral("Tux is a bundled stamp, which can't be changed; nothing changed")));
+    CHECK(opensNoDialog(f.w, [&] { act(f.w, "removeLibraryStamp")->trigger(); }));
+    CHECK(status(f.w).startsWith(QStringLiteral("Tux is a bundled stamp, which can't be changed; nothing removed")));
+    CHECK(opensNoDialog(f.w, [&] { press(f.dock->grid(), Qt::Key_Delete); }));
+    CHECK(fs::exists(tux));
+
+    bool ran = false;
+    answerInput(f.w, QStringLiteral("Mine"), false, &ran);
+    act(f.w, "addStampToLibraryCollection")->trigger();
+    CHECK(ran);
+    CHECK(f.dock->findCollection(QStringLiteral("Mine"))->stamps == 0);
+
+    answerInput(f.w, QStringLiteral("Mine"), true, &ran);
+    act(f.w, "addStampToLibraryCollection")->trigger();
+    CHECK(ran);
+    const fs::path copy = f.userPath() / "mine" / "tux.ans";
+    REQUIRE(f.dock->find(copy));
+    CHECK(f.dock->find(copy)->meta.category == "Mine");
+    CHECK(f.dock->find(tux)->meta.category == "figures");
+    CHECK(status(f.w) == QStringLiteral("Added Tux to the collection \"Mine\""));
+    CHECK(listed(f.dock) == QStringList{QStringLiteral("All"), QStringLiteral("Mine"), QStringLiteral("figures"),
+                                        QStringLiteral("sky")});
+
+    // a new name makes the collection first
+    pickStamp(f.dock, QStringLiteral("Small star"));
+    answerInput(f.w, QStringLiteral("Night"), true, &ran);
+    act(f.w, "addStampToLibraryCollection")->trigger();
+    CHECK(ran);
+    REQUIRE(f.dock->findCollection(QStringLiteral("Night")));
+    CHECK(f.dock->findCollection(QStringLiteral("Night"))->stamps == 1);
+    CHECK(fs::exists(f.userPath() / "night" / "small-star.ans"));
+
+    // the same stamp again is refused
+    pickStamp(f.dock, QStringLiteral("Small star"));
+    answerInput(f.w, QStringLiteral("Night"), true, &ran);
+    act(f.w, "addStampToLibraryCollection")->trigger();
+    CHECK(status(f.w).startsWith(QStringLiteral("Stamp not added: the collection \"Night\" already holds a stamp named")));
+
+    // nothing picked
+    f.dock->grid()->clearSelection();
+    f.dock->grid()->setCurrentItem(nullptr);
+    CHECK(opensNoDialog(f.w, [&] { act(f.w, "addStampToLibraryCollection")->trigger(); }));
+    CHECK(status(f.w) == QStringLiteral("Pick a stamp in the Library first; nothing added"));
+}
+
+TEST_CASE("Remove Stamp asks, default No, from the action and the Delete key", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Loose"), QStringLiteral("odds"));
+    const fs::path pebble = f.userPath() / "rocks" / "pebble.ans";
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+    pickStamp(f.dock, QStringLiteral("Pebble"));
+
+    Box box;
+    answerBox(f.w, QMessageBox::No, &box);
+    act(f.w, "removeLibraryStamp")->trigger();
+    REQUIRE(box.ran);
+    CHECK(box.defaultButton == QMessageBox::No);
+    CHECK(box.text.startsWith(QStringLiteral("Remove the stamp Pebble (")));
+    CHECK(box.text.contains(QStringLiteral("It goes to the trash.")));
+    CHECK(fs::exists(pebble));
+
+    pickStamp(f.dock, QStringLiteral("Pebble"));
+    answerBox(f.w, QMessageBox::Yes, &box);
+    press(f.dock->grid(), Qt::Key_Delete);
+    REQUIRE(box.ran);
+    CHECK_FALSE(fs::exists(pebble));
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks" / "pebble.json"));
+    // the sidecar goes first (removeStamp puts it back if the art can't follow)
+    CHECK(f.trashed == std::vector<fs::path>{f.userPath() / "rocks" / "pebble.json", pebble});
+    CHECK(status(f.w).startsWith(QStringLiteral("Moved ")));
+    CHECK(status(f.w).endsWith(QStringLiteral(" to the trash")));
+    // the collection stays, empty, and picked
+    CHECK(f.dock->findCollection(QStringLiteral("Rocks"))->stamps == 0);
+    CHECK(f.dock->pickedCategory() == QStringLiteral("Rocks"));
+    CHECK(f.dock->shownNames().isEmpty());
+
+    // a user stamp outside any collection can go too
+    pickCategory(f.dock, QStringLiteral("odds"));
+    pickStamp(f.dock, QStringLiteral("Loose"));
+    answerBox(f.w, QMessageBox::Yes, &box);
+    act(f.w, "removeLibraryStamp")->trigger();
+    REQUIRE(box.ran);
+    CHECK_FALSE(fs::exists(f.userPath() / "loose.ans"));
+    CHECK_FALSE(listed(f.dock).contains(QStringLiteral("odds")));
+}
+
+TEST_CASE("Edit Stamp is prefilled from the stamp and renames, re-files and re-tags it", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    makeCollection(f.dock, QStringLiteral("Gems"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"), QStringLiteral("small"));
+    const fs::path pebble = f.userPath() / "rocks" / "pebble.ans";
+    pickStamp(f.dock, QStringLiteral("Pebble"));
+
+    const auto edit = [&](bool ok, const QString& name, const QString& category, const QString& tags) {
+        bool ran = false;
+        QTimer::singleShot(0, &f.w, [&] {
+            auto* d = qobject_cast<StampDialog*>(QApplication::activeModalWidget());
+            REQUIRE(d);
+            ran = true;
+            CHECK(d->windowTitle() == QStringLiteral("Edit Stamp"));
+            CHECK_FALSE(d->resizeBox());
+            CHECK(d->nameEdit()->text() == QStringLiteral("Pebble"));
+            CHECK(d->categoryBox()->currentText() == QStringLiteral("Rocks"));
+            CHECK(d->tagsEdit()->text() == QStringLiteral("small"));
+            d->nameEdit()->setText(name);
+            d->categoryBox()->setCurrentText(category);
+            d->tagsEdit()->setText(tags);
+            ok ? d->buttons()->button(QDialogButtonBox::Ok)->click() : d->reject();
+        });
+        act(f.w, "editLibraryStamp")->trigger();
+        CHECK(ran);
+    };
+    edit(false, QStringLiteral("Ruby"), QStringLiteral("Gems"), QStringLiteral("red"));
+    REQUIRE(f.dock->find(pebble));
+    CHECK(f.dock->find(pebble)->meta.tags == std::vector<std::string>{"small"});
+
+    edit(true, QStringLiteral("Ruby"), QStringLiteral("Gems"), QStringLiteral("red, shiny"));
+    CHECK_FALSE(fs::exists(pebble));
+    const fs::path ruby = f.userPath() / "gems" / "ruby.ans";
+    const library::Stamp* s = f.dock->find(ruby);
+    REQUIRE(s);
+    CHECK(s->name == "Ruby");
+    CHECK(s->meta.category == "Gems");
+    CHECK(s->meta.tags == std::vector<std::string>{"red", "shiny"});
+    CHECK(f.dock->findCollection(QStringLiteral("Rocks"))->stamps == 0);
+    CHECK(f.dock->findCollection(QStringLiteral("Gems"))->stamps == 1);
+    CHECK(status(f.w) == QStringLiteral("Changed %1").arg(QString::fromStdString(ruby.string())));
+}
+
+TEST_CASE("Add Files to Collection adds .ans files and folders and names the ones refused", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Imports"));
+    QTemporaryDir src;
+    REQUIRE(src.isValid());
+    const auto put = [&](const QString& name, const QByteArray& bytes) {
+        const QString path = QDir(src.path()).filePath(name);
+        QDir().mkpath(QFileInfo(path).path());
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write(bytes);
+        return path;
+    };
+    const QString good = put(QStringLiteral("good one.ans"), "\x1b[31mXY\r\n Z");
+    const QString blank = put(QStringLiteral("blank.ans"), "   \r\n   ");
+    const QString missing = QDir(src.path()).filePath(QStringLiteral("missing.ans"));
+    put(QStringLiteral("folder/a.ans"), "aa");
+    put(QStringLiteral("folder/deeper/b.ans"), "bb");
+    put(QStringLiteral("folder/notes.txt"), "not art");
+    const QString folder = QDir(src.path()).filePath(QStringLiteral("folder"));
+
+    QStringList failed;
+    CHECK(f.dock->addFilesToCollection(QStringLiteral("Imports"), {good, blank, missing, folder}, &failed) == 3);
+    REQUIRE(failed.size() == 2);
+    CHECK(failed[0].startsWith(blank + QStringLiteral(": ")));
+    CHECK(failed[1].startsWith(missing + QStringLiteral(": ")));
+    CHECK(status(f.w) == QStringLiteral("Added 3 stamps to the collection \"Imports\"; 2 files refused"));
+    CHECK(f.dock->findCollection(QStringLiteral("Imports"))->stamps == 3);
+    pickCategory(f.dock, QStringLiteral("Imports"));
+    QStringList names = f.dock->shownNames();
+    names.sort();
+    CHECK(names == QStringList{QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("good one")});
+
+    // not a collection: refused as a whole, no file listed
+    failed.clear();
+    QString refusal;
+    CHECK(f.dock->addFilesToCollection(QStringLiteral("figures"), {good}, &failed, &refusal) == 0);
+    CHECK(failed.isEmpty());
+    CHECK(refusal == QStringLiteral("\"figures\" is not one of your collections"));
+    CHECK(status(f.w) == QStringLiteral("Nothing added: \"figures\" is not one of your collections; 1 file not added"));
+}
+
+namespace {
+
+// A folder of `n` one-line .ans files, <prefix>000.ans up.
+QString stampFolder(const QTemporaryDir& dir, int n, const QString& prefix = QStringLiteral("f")) {
+    for (int i = 0; i < n; ++i) {
+        QFile file(QDir(dir.path()).filePath(prefix + QStringLiteral("%1.ans").arg(i, 3, 10, QLatin1Char('0'))));
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write("\x1b[31mX" + QByteArray::number(i) + "\r\n");
+    }
+    return dir.path();
+}
+
+} // namespace
+
+TEST_CASE("Add Files to Collection on a collection the core refuses says so once, not as a refused file",
+          "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    REQUIRE(f.dock->findCollection(QStringLiteral("Rocks")));
+    QTemporaryDir src;
+    REQUIRE(src.isValid());
+    const QString folder = stampFolder(src, 3);
+    // gone from the disk since the dock's last scan
+    fs::remove_all(f.userPath() / "rocks");
+
+    QStringList failed;
+    QString refusal;
+    CHECK(f.dock->addFilesToCollection(QStringLiteral("Rocks"), {folder}, &failed, &refusal) == 0);
+    // no file is listed as refused: the collection was
+    CHECK(failed.isEmpty());
+    CHECK(refusal.startsWith(QStringLiteral("no collection named \"Rocks\"")));
+    CHECK(status(f.w) == QStringLiteral("Nothing added: %1; 3 files not added").arg(refusal));
+    CHECK_FALSE(status(f.w).contains(QStringLiteral("refused")));
+    // rescanned: the collection is gone from the dock too
+    CHECK_FALSE(f.dock->findCollection(QStringLiteral("Rocks")));
+    CHECK_FALSE(listed(f.dock).contains(QStringLiteral("Rocks")));
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks"));
+}
+
+TEST_CASE("Add Files to Collection on a folder scans the library once, not once per file (#505)",
+          "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Imports"));
+    makeCollection(f.dock, QStringLiteral("Other"));
+    QTemporaryDir few, many;
+    REQUIRE(few.isValid());
+    REQUIRE(many.isValid());
+    std::size_t scans = 0;
+    library::testing::scanned = [&scans](const fs::path&) { ++scans; };
+    struct Reset {
+        ~Reset() { library::testing::scanned = nullptr; }
+    } reset;
+    QStringList failed;
+    CHECK(f.dock->addFilesToCollection(QStringLiteral("Imports"), {stampFolder(few, 3)}, &failed) == 3);
+    const std::size_t forFew = scans;
+    scans = 0;
+    CHECK(f.dock->addFilesToCollection(QStringLiteral("Imports"), {stampFolder(many, 60, QStringLiteral("g"))}, &failed) == 60);
+    CHECK(failed.isEmpty());
+    // the same scans for 60 files as for 3: the import's and the rescan's
+    CHECK(scans == forFew);
+    CHECK(f.dock->findCollection(QStringLiteral("Imports"))->stamps == 63);
+    CHECK(status(f.w) == QStringLiteral("Added 60 stamps to the collection \"Imports\""));
+}
+
+TEST_CASE("Add Files to Collection shows its progress and stops between files on Cancel (#505)",
+          "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Imports"));
+    QTemporaryDir src;
+    REQUIRE(src.isValid());
+    const QString folder = stampFolder(src, 40);
+    // Cancel pressed while the fifth file is written
+    int written = 0;
+    int maximum = -1;
+    library::testing::writeStampFault = [&](std::string_view step) {
+        if (step != "art" || ++written != 5)
+            return;
+        auto* progress = f.dock->findChild<QProgressDialog*>();
+        REQUIRE(progress);
+        maximum = progress->maximum();
+        CHECK(progress->labelText().contains(QStringLiteral("\"Imports\"")));
+        progress->cancel();
+    };
+    struct Reset {
+        ~Reset() { library::testing::writeStampFault = nullptr; }
+    } reset;
+    QStringList failed;
+    CHECK(f.dock->addFilesToCollection(QStringLiteral("Imports"), {folder}, &failed) == 5);
+    CHECK(maximum == 40);
+    CHECK(failed.isEmpty());
+    CHECK(f.dock->findCollection(QStringLiteral("Imports"))->stamps == 5);
+    CHECK(status(f.w) == QStringLiteral("Added 5 stamps to the collection \"Imports\"; cancelled, 35 files not added"));
+    CHECK(f.dock->findChild<QProgressDialog*>() == nullptr);
+}
+
+TEST_CASE("timing: Add Files to Collection on a folder of 150, 300 and 600 stamps (#505)", "[.perf]") {
+    for (const int n : {150, 300, 600}) {
+        CollectionFixture f;
+        makeCollection(f.dock, QStringLiteral("Imports"));
+        QTemporaryDir src;
+        REQUIRE(src.isValid());
+        const QString folder = stampFolder(src, n);
+        QStringList failed;
+        QElapsedTimer t;
+        t.start();
+        CHECK(f.dock->addFilesToCollection(QStringLiteral("Imports"), {folder}, &failed) == n);
+        WARN(n << " files: " << t.elapsed() << " ms");
+    }
+}
+
+TEST_CASE("Delete Collection where the trash refuses asks again before deleting for good", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    f.trashRefuses = true;
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+
+    // No to the second question: nothing goes
+    std::vector<Box> boxes;
+    answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::No}, &boxes, [&] { act(f.w, "deleteLibraryCollection")->trigger(); });
+    REQUIRE(boxes.size() == 2);
+    CHECK(boxes[1].defaultButton == QMessageBox::No);
+    CHECK(boxes[1].text.contains(QStringLiteral("The trash can't take the collection \"Rocks\" (")));
+    CHECK(boxes[1].text.contains(
+        QStringLiteral("Delete the collection \"Rocks\" and the 1 stamp in it permanently? This can't be undone.")));
+    CHECK(fs::exists(f.userPath() / "rocks" / "pebble.ans"));
+    CHECK(fs::exists(f.userPath() / "rocks" / library::kCollectionMarker));
+    CHECK(f.dock->collections().size() == 1);
+    CHECK(status(f.w) == QStringLiteral("Collection not deleted: the trash refused it, and nothing was removed"));
+
+    // No to the first: the second never opens
+    answerBoxes(f.w, {QMessageBox::No}, &boxes, [&] { act(f.w, "deleteLibraryCollection")->trigger(); });
+    CHECK(boxes.size() == 1);
+    CHECK(fs::exists(f.userPath() / "rocks"));
+
+    // Yes to both: deleted for good, never trashed
+    answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::Yes}, &boxes, [&] { act(f.w, "deleteLibraryCollection")->trigger(); });
+    REQUIRE(boxes.size() == 2);
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks"));
+    CHECK(f.dock->collections().empty());
+    CHECK(f.trashed.empty());
+    CHECK(f.trashEmpty());
+    CHECK(status(f.w) == QStringLiteral("Deleted the collection \"Rocks\" and its 1 stamp"));
+}
+
+TEST_CASE("Remove Stamp where the trash refuses asks again before deleting for good", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    const fs::path pebble = f.userPath() / "rocks" / "pebble.ans";
+    f.trashRefuses = true;
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+    pickStamp(f.dock, QStringLiteral("Pebble"));
+
+    std::vector<Box> boxes;
+    answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::No}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+    REQUIRE(boxes.size() == 2);
+    CHECK(boxes[1].defaultButton == QMessageBox::No);
+    CHECK(boxes[1].text.contains(QStringLiteral("The stamp Pebble can't go to the trash: ")));
+    CHECK(boxes[1].text.contains(QStringLiteral("Delete the stamp Pebble (%1) permanently? This can't be undone.")
+                                     .arg(QString::fromStdString(pebble.string()))));
+    CHECK(fs::exists(pebble));
+    CHECK(fs::exists(f.userPath() / "rocks" / "pebble.json"));
+    CHECK(f.dock->shownNames() == QStringList{QStringLiteral("Pebble")});
+    CHECK(status(f.w).startsWith(QStringLiteral("Stamp not removed: ")));
+    CHECK(status(f.w).contains(QStringLiteral("can't be moved to the trash")));
+    CHECK(status(f.w).endsWith(QStringLiteral("nothing was removed")));
+
+    pickStamp(f.dock, QStringLiteral("Pebble"));
+    answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::Yes}, &boxes, [&] { press(f.dock->grid(), Qt::Key_Delete); });
+    REQUIRE(boxes.size() == 2);
+    CHECK_FALSE(fs::exists(pebble));
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks" / "pebble.json"));
+    CHECK(f.trashed.empty());
+    CHECK(f.trashEmpty());
+    CHECK(status(f.w).startsWith(QStringLiteral("Removed ")));
+    CHECK(f.dock->findCollection(QStringLiteral("Rocks"))->stamps == 0);
+}
+
+TEST_CASE("a collection name two folders go by is refused in the status bar, changing nothing",
+          "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    // a folder made by hand, no marker, whose stamp's category is "Rocks"
+    fs::create_directories(f.userPath() / "zz");
+    fs::copy_file(f.userPath() / "rocks" / "pebble.ans", f.userPath() / "zz" / "pebble.ans");
+    fs::copy_file(f.userPath() / "rocks" / "pebble.json", f.userPath() / "zz" / "pebble.json");
+    f.dock->rescan();
+    REQUIRE(f.dock->collections().size() == 2);
+    QString why;
+    CHECK_FALSE(f.dock->uniqueCollection(QStringLiteral("Rocks"), &why));
+    CHECK(why.startsWith(QStringLiteral("more than one folder goes by the collection name \"Rocks\"")));
+    CHECK(why.contains(QString::fromStdString((f.userPath() / "zz").string())));
+
+    const auto unchanged = [&] {
+        CHECK(fs::exists(f.userPath() / "rocks" / "pebble.ans"));
+        CHECK(fs::exists(f.userPath() / "zz" / "pebble.ans"));
+        CHECK(f.dock->collections().size() == 2);
+        CHECK(f.trashed.empty());
+    };
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+    CHECK(opensNoDialog(f.w, [&] { act(f.w, "deleteLibraryCollection")->trigger(); }));
+    CHECK(status(f.w).startsWith(QStringLiteral("more than one folder goes by the collection name \"Rocks\"")));
+    CHECK(status(f.w).endsWith(QStringLiteral("; nothing deleted")));
+    unchanged();
+    CHECK(opensNoDialog(f.w, [&] { act(f.w, "renameLibraryCollection")->trigger(); }));
+    CHECK(status(f.w).endsWith(QStringLiteral("; nothing renamed")));
+    unchanged();
+
+    // Add to Collection, the name typed
+    pickCategory(f.dock, QStringLiteral("All"));
+    pickStamp(f.dock, QStringLiteral("Tux"));
+    bool ran = false;
+    answerInput(f.w, QStringLiteral("Rocks"), true, &ran);
+    act(f.w, "addStampToLibraryCollection")->trigger();
+    CHECK(ran);
+    CHECK(status(f.w).startsWith(QStringLiteral("No collection picked: more than one folder")));
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks" / "tux.ans"));
+    CHECK_FALSE(fs::exists(f.userPath() / "zz" / "tux.ans"));
+    unchanged();
+
+    // Save to Library into it
+    write(f.w, 0, 0, QStringLiteral("ab"));
+    f.w.tools()->setActive(f.w.selectTool());
+    f.w.selectTool()->select({0, 0, 2, 1});
+    QString error;
+    CHECK(f.w.libraryPathFor(QStringLiteral("Flint"), nullptr, &error, QStringLiteral("Rocks")).isEmpty());
+    CHECK(error.startsWith(QStringLiteral("more than one folder")));
+    error.clear();
+    CHECK(f.w.saveSelectionToLibrary(QStringLiteral("Flint"), QStringLiteral("Rocks"), {}, &error).isEmpty());
+    CHECK(error.startsWith(QStringLiteral("more than one folder")));
+    CHECK_FALSE(fs::exists(f.userPath() / "flint.ans"));
+    unchanged();
+}
+
+TEST_CASE("New and Rename Collection refuse a name past kMaxCollectionName bytes", "[library][collections]") {
+    CollectionFixture f;
+    const QString longest(int(library::kMaxCollectionName), QLatin1Char('a'));
+    const QString tooLong = longest + QLatin1Char('a');
+    // two bytes each in UTF-8: 65 of them is 130 bytes
+    const QString tooLongWide(int(library::kMaxCollectionName) / 2 + 1, QChar(0x00e9));
+    bool ran = false;
+    for (const QString& name : {tooLong, tooLongWide}) {
+        answerInput(f.w, name, true, &ran);
+        act(f.w, "newLibraryCollection")->trigger();
+        CHECK(ran);
+        CHECK(status(f.w).startsWith(QStringLiteral("No collection made: ")));
+        CHECK(f.dock->collections().empty());
+        CHECK(fs::is_empty(f.userPath()));
+    }
+    answerInput(f.w, longest, true, &ran);
+    act(f.w, "newLibraryCollection")->trigger();
+    REQUIRE(f.dock->collections().size() == 1);
+
+    pickCategory(f.dock, longest);
+    answerInput(f.w, tooLong, true, &ran);
+    act(f.w, "renameLibraryCollection")->trigger();
+    CHECK(ran);
+    CHECK(status(f.w).startsWith(QStringLiteral("Collection not renamed: ")));
+    REQUIRE(f.dock->collections().size() == 1);
+    CHECK(QString::fromStdString(f.dock->collections()[0].name) == longest);
+}
+
+TEST_CASE("the dock's commands on a user library that is the bundled one are refused, with the reason",
+          "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    const QByteArray env = qgetenv("BLOCKWRIGHT_BUNDLED_LIBRARY");
+    struct Restore {
+        QByteArray env;
+        ~Restore() { qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", env); }
+    } restore{env};
+    qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QFile::encodeName(f.user.path()));
+
+    bool ran = false;
+    answerInput(f.w, QStringLiteral("Gems"), true, &ran);
+    act(f.w, "newLibraryCollection")->trigger();
+    CHECK(ran);
+    CHECK(status(f.w).startsWith(QStringLiteral("No collection made: ")));
+    CHECK(status(f.w).contains(QStringLiteral("bundled stamps are never changed")));
+    CHECK_FALSE(fs::exists(f.userPath() / "gems"));
+
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+    std::vector<Box> boxes;
+    answerBoxes(f.w, {QMessageBox::Yes}, &boxes, [&] { act(f.w, "deleteLibraryCollection")->trigger(); });
+    REQUIRE(boxes.size() == 1);
+    CHECK(status(f.w).startsWith(QStringLiteral("Collection not deleted: ")));
+    CHECK(status(f.w).contains(QStringLiteral("bundled stamps are never changed")));
+    CHECK(fs::exists(f.userPath() / "rocks" / "pebble.ans"));
+    CHECK(f.trashed.empty());
+
+    pickStamp(f.dock, QStringLiteral("Pebble"));
+    answerBoxes(f.w, {QMessageBox::Yes}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+    REQUIRE(boxes.size() == 1);
+    CHECK(status(f.w).startsWith(QStringLiteral("Stamp not removed: ")));
+    CHECK(status(f.w).contains(QStringLiteral("bundled stamps are never changed")));
+    CHECK(fs::exists(f.userPath() / "rocks" / "pebble.ans"));
+    CHECK(f.trashed.empty());
+}
+
+TEST_CASE("Save to Library replaces the stamp holding the title in a collection, one renamed in place included",
+          "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    const fs::path pebble = f.userPath() / "rocks" / "pebble.ans";
+    // renamed in place: pebble.ans now holds "Rock"
+    QString error;
+    REQUIRE(f.dock->editStamp(pebble, QStringLiteral("Rock"), QStringLiteral("Rocks"), {}, &error));
+    REQUIRE(f.dock->find(pebble));
+    REQUIRE(f.dock->find(pebble)->name == "Rock");
+
+    bool exists = false;
+    CHECK(fspath(f.w.libraryPathFor(QStringLiteral("Rock"), &exists, nullptr, QStringLiteral("Rocks"))) == pebble);
+    CHECK(exists);
+    // "Pebble" is free again: it would go to a new file, not over "Rock"
+    CHECK(fspath(f.w.libraryPathFor(QStringLiteral("Pebble"), &exists, nullptr, QStringLiteral("Rocks"))) != pebble);
+    CHECK_FALSE(exists);
+
+    write(f.w, 0, 0, QStringLiteral("cd"));
+    f.w.tools()->setActive(f.w.selectTool());
+    f.w.selectTool()->select({0, 0, 2, 1});
+    CHECK(f.w.saveSelectionToLibrary(QStringLiteral("Rock"), QStringLiteral("Rocks"), {}, &error).isEmpty());
+    CHECK(error.contains(QString::fromStdString(pebble.string())));
+    CHECK(fspath(f.w.saveSelectionToLibrary(QStringLiteral("Rock"), QStringLiteral("Rocks"), {}, &error, true)) ==
+          pebble);
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks" / "rock.ans"));
+    CHECK(f.dock->findCollection(QStringLiteral("Rocks"))->stamps == 1);
+    REQUIRE(f.dock->find(pebble));
+    CHECK(f.dock->find(pebble)->name == "Rock");
+}
+
+TEST_CASE("Remove Stamp says what went when the trash refuses half a stamp", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    const fs::path dir = f.userPath() / "rocks";
+    const fs::path pebble = dir / "pebble.ans", side = dir / "pebble.json";
+    const fs::path bin = fspath(f.trash.path());
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+    pickStamp(f.dock, QStringLiteral("Pebble"));
+    std::vector<Box> boxes;
+
+    SECTION("the trash refuses the sidecar, which goes first: nothing goes") {
+        library::testing::moveToTrash = [&](const fs::path& p) {
+            if (p.extension() == ".json")
+                return false;
+            fs::rename(p, bin / p.filename());
+            return true;
+        };
+        answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::No}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+        REQUIRE(boxes.size() == 2);
+        CHECK(boxes[1].text.contains(QString::fromStdString(side.string())));
+        CHECK(status(f.w) == QStringLiteral("Stamp not removed: %1 can't be moved to the trash (there is none, or it "
+                                            "refused); nothing was removed")
+                                 .arg(QString::fromStdString(side.string())));
+        CHECK(fs::exists(pebble));
+        CHECK(fs::exists(side));
+        CHECK(f.dock->shownNames() == QStringList{QStringLiteral("Pebble")});
+        CHECK(f.trashEmpty());
+    }
+    SECTION("the trash refuses the art after the sidecar: the sidecar is put back") {
+        library::testing::moveToTrash = [&](const fs::path& p) {
+            if (p.extension() == ".ans")
+                return false;
+            fs::rename(p, bin / p.filename());
+            return true;
+        };
+        answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::No}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+        REQUIRE(boxes.size() == 2);
+        CHECK(boxes[1].text.contains(QStringLiteral("was put back")));
+        // the trash keeps the sidecar's copy, and the status says so
+        CHECK(status(f.w).startsWith(QStringLiteral("Stamp not removed: ")));
+        CHECK(status(f.w).contains(QStringLiteral("nothing was removed")));
+        CHECK(status(f.w).contains(QStringLiteral("was put back; the trash keeps a copy of it")));
+        CHECK(fs::exists(pebble));
+        CHECK(fs::exists(side));
+        CHECK(f.dock->shownNames() == QStringList{QStringLiteral("Pebble")});
+        CHECK(f.dock->findCollection(QStringLiteral("Rocks"))->stamps == 1);
+
+        // Yes to both: deleted for good
+        pickStamp(f.dock, QStringLiteral("Pebble"));
+        answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::Yes}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+        REQUIRE(boxes.size() == 2);
+        CHECK_FALSE(fs::exists(pebble));
+        CHECK_FALSE(fs::exists(side));
+        CHECK(f.dock->shownNames().isEmpty());
+    }
+    SECTION("the sidecar can't be put back: the dock says the stamp is half removed and stops listing it") {
+        if (::geteuid() == 0)
+            SKIP("root writes every folder");
+        struct Unlock {
+            fs::path p;
+            ~Unlock() { fs::permissions(p, fs::perms::owner_all); }
+        } unlock{dir};
+        // the sidecar goes, then the folder turns read-only: the art can't
+        // follow and the sidecar can't come back
+        library::testing::moveToTrash = [&](const fs::path& p) {
+            fs::rename(p, bin / p.filename());
+            fs::permissions(dir, fs::perms::owner_read | fs::perms::owner_exec);
+            return true;
+        };
+        answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::No}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+        CHECK(boxes.size() == 1);
+        CHECK(status(f.w).startsWith(QStringLiteral("Stamp only partly removed: ")));
+        CHECK(status(f.w).contains(QStringLiteral("couldn't be put back")));
+        CHECK_FALSE(status(f.w).contains(QStringLiteral("nothing was removed")));
+        CHECK(fs::exists(pebble));
+        CHECK_FALSE(fs::exists(side));
+        // art with no sidecar is no stamp: off the grid, named as a problem
+        CHECK(f.dock->shownNames().isEmpty());
+        CHECK(f.dock->problemLabel()->text() == QStringLiteral("1 file skipped"));
+        CHECK(f.dock->problemLabel()->toolTip().contains(QStringLiteral("pebble.ans")));
+    }
+}
+
+TEST_CASE("Remove Stamp refuses a stamp whose sidecar can't be read before the trash takes anything",
+          "[library][collections]") {
+    if (::geteuid() == 0)
+        SKIP("root reads every file");
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    const fs::path dir = f.userPath() / "rocks";
+    const fs::path pebble = dir / "pebble.ans", side = dir / "pebble.json";
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+    pickStamp(f.dock, QStringLiteral("Pebble"));
+    // unreadable since the dock's scan
+    struct Unlock {
+        fs::path p;
+        ~Unlock() {
+            std::error_code ec;
+            fs::permissions(p, fs::perms::owner_read | fs::perms::owner_write, ec);
+        }
+    } unlock{side};
+    fs::permissions(side, fs::perms::none);
+    std::vector<Box> boxes;
+
+    SECTION("No: nothing moved, and the status says why") {
+        answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::No}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+        REQUIRE(boxes.size() == 2);
+        CHECK(boxes[1].defaultButton == QMessageBox::No);
+        // the trash wasn't tried, so the box doesn't say it refused
+        CHECK_FALSE(boxes[1].text.contains(QStringLiteral("The trash can't take")));
+        CHECK(boxes[1].text.contains(QString::fromStdString(side.string()) + QStringLiteral(" can't be read")));
+        CHECK(boxes[1].text.contains(QStringLiteral("Delete the stamp Pebble (%1) permanently? This can't be undone.")
+                                         .arg(QString::fromStdString(pebble.string()))));
+        CHECK(fs::exists(pebble));
+        CHECK(fs::exists(side));
+        CHECK(f.trashed.empty());
+        CHECK(f.trashEmpty());
+        CHECK(status(f.w).startsWith(QStringLiteral("Stamp not removed: ")));
+        CHECK(status(f.w).contains(QString::fromStdString(side.string()) + QStringLiteral(" can't be read")));
+        CHECK(status(f.w).contains(QStringLiteral("nothing was removed")));
+        CHECK_FALSE(status(f.w).contains(QStringLiteral("the trash refused")));
+    }
+    SECTION("Yes: deleted for good, art and sidecar, and the trash stays empty") {
+        answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::Yes}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+        REQUIRE(boxes.size() == 2);
+        CHECK_FALSE(fs::exists(pebble));
+        CHECK_FALSE(fs::exists(fs::symlink_status(side)));
+        CHECK(f.trashed.empty());
+        CHECK(f.trashEmpty());
+        CHECK(status(f.w).startsWith(QStringLiteral("Removed ")));
+        CHECK(f.dock->findCollection(QStringLiteral("Rocks"))->stamps == 0);
+    }
+}
+
+TEST_CASE("a refused command rescans, so what is gone from the disk goes from the dock", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    makeCollection(f.dock, QStringLiteral("Sand"));
+    saveStamp(f.w, QStringLiteral("Grain"), QStringLiteral("Sand"));
+    std::vector<Box> boxes;
+
+    // a collection deleted on disk: Delete Collection is refused, and it goes
+    fs::remove_all(f.userPath() / "rocks");
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+    answerBoxes(f.w, {QMessageBox::Yes}, &boxes, [&] { act(f.w, "deleteLibraryCollection")->trigger(); });
+    CHECK(boxes.size() == 1);
+    CHECK(status(f.w).startsWith(QStringLiteral("Collection not deleted: no collection named \"Rocks\"")));
+    CHECK_FALSE(listed(f.dock).contains(QStringLiteral("Rocks")));
+    CHECK_FALSE(f.dock->findCollection(QStringLiteral("Rocks")));
+
+    // a stamp removed on disk, and another added: Remove Stamp is refused,
+    // and the count is fresh
+    pickCategory(f.dock, QStringLiteral("Sand"));
+    pickStamp(f.dock, QStringLiteral("Grain"));
+    const library::Collection* sand = f.dock->findCollection(QStringLiteral("Sand"));
+    REQUIRE(sand);
+    CellBlock dune(1, 1);
+    dune.at(0, 0).ch = U'#';
+    library::addStamp(f.userPath(), "Sand", "Dune", {}, dune, false);
+    fs::remove(f.userPath() / "sand" / "grain.ans");
+    fs::remove(f.userPath() / "sand" / "grain.json");
+    answerBoxes(f.w, {QMessageBox::Yes}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+    CHECK(boxes.size() == 1);
+    CHECK(status(f.w).startsWith(QStringLiteral("Stamp not removed: ")));
+    CHECK(f.dock->shownNames() == QStringList{QStringLiteral("Dune")});
+    CHECK(f.dock->findCollection(QStringLiteral("Sand"))->stamps == 1);
+
+    // a collection made on disk: New Collection of its name is refused, and it shows
+    library::createCollection(f.userPath(), "Late");
+    QString error;
+    CHECK_FALSE(f.dock->createCollection(QStringLiteral("Late"), &error));
+    CHECK(error == QStringLiteral("a collection named \"Late\" already exists"));
+    CHECK(listed(f.dock).contains(QStringLiteral("Late")));
+}
+
+TEST_CASE("Delete Collection on an empty collection says so, not \"the 0 stamps in it\"", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Empty"));
+    pickCategory(f.dock, QStringLiteral("Empty"));
+    std::vector<Box> boxes;
+
+    answerBoxes(f.w, {QMessageBox::No}, &boxes, [&] { act(f.w, "deleteLibraryCollection")->trigger(); });
+    REQUIRE(boxes.size() == 1);
+    CHECK(boxes[0].text == QStringLiteral("Delete the empty collection \"Empty\"?\nIt goes to the trash."));
+
+    f.trashRefuses = true;
+    answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::No}, &boxes, [&] { act(f.w, "deleteLibraryCollection")->trigger(); });
+    REQUIRE(boxes.size() == 2);
+    CHECK(boxes[1].text.endsWith(
+        QStringLiteral("Delete the empty collection \"Empty\" permanently? This can't be undone.")));
+    CHECK_FALSE(boxes[1].text.contains(QStringLiteral("0 stamps")));
+
+    f.trashRefuses = false;
+    answerBoxes(f.w, {QMessageBox::Yes}, &boxes, [&] { act(f.w, "deleteLibraryCollection")->trigger(); });
+    REQUIRE(boxes.size() == 1);
+    CHECK(status(f.w) == QStringLiteral("Moved the empty collection \"Empty\" to the trash"));
+    CHECK_FALSE(fs::exists(f.userPath() / "empty"));
+}
+
+TEST_CASE("answerBoxes stops answering when its call returns, though fewer boxes opened", "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Pebble"), QStringLiteral("Rocks"));
+    saveStamp(f.w, QStringLiteral("Flint"), QStringLiteral("Rocks"));
+    pickCategory(f.dock, QStringLiteral("Rocks"));
+    std::vector<Box> boxes;
+
+    // two answers, one box: the No is left over
+    pickStamp(f.dock, QStringLiteral("Pebble"));
+    answerBoxes(f.w, {QMessageBox::Yes, QMessageBox::No}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+    CHECK(boxes.size() == 1);
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks" / "pebble.ans"));
+
+    // and must not answer Flint's box
+    pickStamp(f.dock, QStringLiteral("Flint"));
+    answerBoxes(f.w, {QMessageBox::Yes}, &boxes, [&] { act(f.w, "removeLibraryStamp")->trigger(); });
+    REQUIRE(boxes.size() == 1);
+    CHECK(boxes[0].text.contains(QStringLiteral("Flint")));
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks" / "flint.ans"));
 }

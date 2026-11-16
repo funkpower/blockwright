@@ -62,6 +62,17 @@ expect "add refuses a clash, adds the rest" 1 'already holds a stamp named "Smal
 expect "add needs a collection that exists" 1 'no collection named "Nope"' -- \
   "$cli" library add Nope "$tmp/Big Moon.ans"
 expect "add needs a file" 2 'library add takes' -- "$cli" library add "My Trees"
+# one call adds a batch, refusing a title it added itself
+mkdir -p "$tmp/twin-a" "$tmp/twin-b"
+printf '\033[32mTW\r\n' > "$tmp/twin-a/Twin.ans"
+printf '\033[33mTW\r\n' > "$tmp/twin-b/Twin.ans"
+expect "add in one call adds the first of two titles" 1 "^added	Twin	$lib/my-trees/twin\.ans\$" -- \
+  "$cli" library add "My Trees" "$tmp/twin-a/Twin.ans" "$tmp/twin-b/Twin.ans"
+there "add in one call wrote the first Twin" "$lib/my-trees/twin.ans"
+gone "add in one call didn't write the second Twin" "$lib/my-trees/twin-2.ans"
+expect "add in one call refuses the second, naming the first" 1 \
+  "twin-b/Twin\.ans: the collection \"My Trees\" already holds a stamp named \"Twin\" \($lib/my-trees/twin\.ans\)" -- \
+  "$cli" library add "My Trees" "$tmp/twin-b/Twin.ans"
 expect "list counts the stamps" 0 "^collection	My Trees	[0-9]+	" -- "$cli" library list
 expect "list shows a stamp in its collection" 0 "^stamp	My Trees	Big Moon	2x1	" -- "$cli" library list --dir "$lib"
 
@@ -277,6 +288,21 @@ if [[ $st -eq 1 && $out == *"would remove $lib/t${fff}x and its 2 stamps"* && $o
 else bad "delete without --yes, tab in a path: exit $st: $out"; fi
 expect "remove prints a tab in the path as U+FFFD" 0 "^deleted	$lib/t${fff}x/fir\.ans\$" -- \
   "$cli" library remove --yes --permanent "$lib/t	x/fir.ans"
+out=$("$cli" library delete --yes "N	O" 2>&1); st=$?
+if [[ $st -eq 1 && $out == *"no collection named \"N${fff}O\""* && $out != *"	"* ]]; then
+  ok "delete of no such collection prints a tab in its name as U+FFFD"
+else bad "delete of no such collection, tab in its name: exit $st: $out"; fi
+if [[ $(id -u) -ne 0 ]]; then
+  # delete --yes refusals print the tab as U+FFFD too.
+  chmod 555 "$lib/t	x"
+  for how in "" --permanent; do
+    out=$("$cli" library delete --yes $how TX 2>&1); st=$?
+    if [[ $st -eq 1 && $out == *"$lib/t${fff}x can't be emptied"* && $out != *"	"* ]]; then
+      ok "delete --yes ${how:+$how }refusal prints a tab in a path as U+FFFD"
+    else bad "delete --yes ${how:+$how }refusal, tab in a path: exit $st: $out"; fi
+  done
+  chmod 755 "$lib/t	x"
+fi
 expect "delete prints a tab in the path as U+FFFD" 0 "^deleted	$lib/t${fff}x	1 stamp\$" -- \
   "$cli" library delete --yes --permanent TX
 gone "delete took the tab-named folder" "$lib/t	x"
