@@ -34,6 +34,8 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <exception>
 #include <map>
@@ -121,6 +123,7 @@ struct State : ToolSettings {
     // the bytes of the files the steps read, by their paths as written (the
     // load pass's Script::files)
     const std::map<std::string, std::string>* files = nullptr;
+    const std::map<std::string, std::string>* presets = nullptr;  // Script::presets
     LayerId active = 0;
     Selection selection;
     std::optional<CellBlock> clipboard;
@@ -686,6 +689,235 @@ void text(State& s, const Step& st, Outcome& out) {
     keepFont(s, face);
 }
 
+// The bytes of a file the load pass read for `st`, by its path as written.
+const std::string& loaded(State& s, const Step& st, const std::string& path) {
+    const auto read = s.files ? s.files->find(path) : std::map<std::string, std::string>::const_iterator{};
+    if (!s.files || read == s.files->end())
+        fail(st, path + ": not read; the load pass reads a step's files before the replay runs");
+    return read->second;
+}
+
+// editText (#422 D3): the active live text layer's whole text replaced in
+// one edit (textEdit), as the Text tool's typing would leave it. The layer
+// must be one the tool's click could edit: a live text layer, visible and
+// unlocked (textLayerAt). The same text changes nothing.
+void editText(State& s, const Step& st, Outcome& out) {
+    Layer& l = s.layer();
+    const std::string name = "the active layer \"" + l.props.name + "\"";
+    if (l.props.kind != LayerKind::Text || !l.props.text)
+        fail(st, name + " is " +
+                     (l.props.kind == LayerKind::Text ? std::string("a text layer with no source (cells read as text)")
+                                                      : std::string("a ") + kindName(l.props.kind) + " layer") +
+                     "; editText edits a live text layer's text");
+    if (l.props.locked)
+        fail(st, name + " is locked");
+    if (!l.props.visible)
+        fail(st, name + " is hidden");
+    if (l.props.text->text == st.text) {
+        out.notes.push_back(steps::stepLabel(st) + ": changes nothing");
+        return;
+    }
+    const FontSources fonts{&s.p.fonts, nullptr, &s.fonts};
+    TextSource next = *l.props.text;
+    next.text = st.text;
+    if (const auto problem = textSourceProblem(next, fonts))
+        fail(st, "the text can't be set: " + *problem);
+    applyEdit(s.stack(), textEdit(l, std::move(next), 0, s.p.ice), false, fonts);
+}
+
+// applyTextStyle (#422 D2): a Library text style on the active layer, as
+// the Library dock's activation puts it there (MainWindow::applyTextStyle):
+// refused when it needs iCE colours and they are off, on a layer that
+// isn't live text, cells or pixels, and when the layer can't draw it
+// (layerStyleProblem); the style the layer has already changes nothing.
+void applyTextStyle(State& s, const Step& st, Outcome& out) {
+    std::string what;
+    library::TextStyleEntry entry;
+    try {
+        if (st.stylePreset) {
+            what = "text style \"" + *st.stylePreset + "\"";
+            const auto it = s.presets ? s.presets->find(*st.stylePreset)
+                                      : std::map<std::string, std::string>::const_iterator{};
+            if (!s.presets || it == s.presets->end())
+                fail(st, what + ": not read; the load pass reads the presets before the replay runs");
+            entry = library::parseTextStyleEntry(it->second);
+        } else {
+            what = st.files.at(0).path;
+            entry = library::parseTextStyleEntry(loaded(s, st, what));
+        }
+    } catch (const library::LibraryError& e) {
+        fail(st, what + ": " + e.what());
+    }
+    if (entry.iceRequired && !s.p.ice)
+        fail(st, what + " (" + entry.name + ") needs iCE colours, which are off");
+    Layer& l = s.layer();
+    if (!(l.props.kind == LayerKind::Cells || l.props.kind == LayerKind::Pixels ||
+          (l.props.kind == LayerKind::Text && l.props.text)))
+        fail(st, "the active layer \"" + l.props.name + "\" is a " + kindName(l.props.kind) +
+                     " layer; a text style goes on a live text, cells or pixels layer");
+    LayerProperties props = l.props;
+    props.style = entry.style;
+    if (props.style == l.props.style) {
+        out.notes.push_back(steps::stepLabel(st) + ": changes nothing (the layer has this style already)");
+        return;
+    }
+    const FontSources fonts{&s.p.fonts, nullptr, &s.fonts};
+    if (const auto problem = layerStyleProblem(props, fonts))
+        fail(st, "the active layer \"" + l.props.name + "\" can't take " + what + ": " + *problem);
+    applyEdit(s.stack(), propsEdit(l, std::move(props), 0, s.p.ice), false, fonts);
+}
+
+// The EXIF orientation (1-8) in a JPEG's APP1 segments joined in order, as
+// Qt's JPEG reader finds it (the editor reads with auto-transform): the
+// joined bytes start "Exif\0\0" and a TIFF header in either byte order, and
+// the first Orientation tag (0x0112) in up to 10 linked IFDs, each starting
+// at or past the end of the one before (the first at 8 or later), counts if
+// it is one SHORT. 0 when there is none or the bytes run out, which the editor
+// takes as no turn either.
+unsigned exifOrientation(std::string_view e) {
+    if (e.size() < 14 || e.substr(0, 6) != std::string_view("Exif\0\0", 6))
+        return 0;
+    const std::string_view t = e.substr(6);  // offsets count from the TIFF header
+    bool little = false;
+    if (t.substr(0, 2) == "II")
+        little = true;
+    else if (t.substr(0, 2) != "MM")
+        return 0;
+    const auto u16 = [&](std::size_t i) -> std::optional<unsigned> {
+        if (i > t.size() || t.size() - i < 2)
+            return std::nullopt;
+        const unsigned a = static_cast<unsigned char>(t[i]), b = static_cast<unsigned char>(t[i + 1]);
+        return little ? (b << 8) | a : (a << 8) | b;
+    };
+    const auto u32 = [&](std::size_t i) -> std::optional<std::uint32_t> {
+        const auto a = u16(i), b = u16(i + 2);
+        if (!a || !b)
+            return std::nullopt;
+        return little ? (std::uint32_t(*b) << 16) | *a : (std::uint32_t(*a) << 16) | *b;
+    };
+    if (u16(2) != 0x2Au)
+        return 0;
+    auto offset = u32(4);
+    // Qt's reader reads the TIFF bytes as a stream that only seeks forward:
+    // an IFD that starts before where the stream stands (8 after the header,
+    // then just past the previous IFD's link) is refused, no turn.
+    std::size_t next = 8;
+    for (int ifd = 0; offset && *offset != 0 && ifd < 10; ++ifd) {
+        if (*offset < next)
+            return 0;
+        const auto count = u16(*offset);
+        if (!count)
+            return 0;
+        for (unsigned n = 0; n < *count; ++n) {
+            const std::size_t entry = std::size_t(*offset) + 2 + std::size_t(n) * 12;
+            const auto tag = u16(entry);
+            if (!tag)
+                return 0;
+            if (*tag != 0x0112)
+                continue;
+            const auto type = u16(entry + 2);
+            const auto values = u32(entry + 4);
+            const auto value = u16(entry + 8);
+            if (type != 3u || values != 1u || !value || *value < 1 || *value > 8)
+                return 0;
+            return *value;
+        }
+        const std::size_t link = std::size_t(*offset) + 2 + std::size_t(*count) * 12;
+        offset = u32(link);
+        next = link + 4;
+    }
+    return 0;
+}
+
+// A PNG's or JPEG's size in pixels as the editor shows it, from its header
+// (IHDR, or the first JPEG start-of-frame marker with the EXIF orientation
+// of the segments before the scan: 5-8 turn it a quarter, so width and
+// height swap), or nothing when it can't be found there.
+std::optional<std::pair<int, int>> pictureSize(std::string_view b, std::string_view type) {
+    const auto byte = [&](std::size_t i) { return unsigned(static_cast<unsigned char>(b[i])); };
+    const auto be16 = [&](std::size_t i) { return (byte(i) << 8) | byte(i + 1); };
+    const auto be32 = [&](std::size_t i) { return (std::uint32_t(be16(i)) << 16) | be16(i + 2); };
+    std::uint32_t w = 0, h = 0;
+    bool turned = false;
+    if (type == "png") {
+        // Qt's PNG reader applies no orientation (an eXIf chunk is ignored)
+        if (b.size() < 24 || b.substr(12, 4) != "IHDR")
+            return std::nullopt;
+        w = be32(16);
+        h = be32(20);
+    } else {
+        std::string exif;  // the APP1 segments' bytes, joined
+        bool frame = false;
+        std::size_t i = 2;  // past SOI
+        while (true) {
+            while (i < b.size() && byte(i) != 0xFF)
+                ++i;
+            while (i < b.size() && byte(i) == 0xFF)
+                ++i;
+            if (i >= b.size())
+                break;
+            const unsigned m = byte(i++);
+            if (m == 0x01 || (m >= 0xD0 && m <= 0xD8))
+                continue;  // markers with no length
+            if (m == 0xD9 || m == 0xDA || i + 2 > b.size())
+                break;  // the end, the scan, or a cut segment
+            const unsigned len = be16(i);
+            if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC && !frame) {
+                if (len < 7 || i + 7 > b.size())
+                    return std::nullopt;
+                h = be16(i + 3);
+                w = be16(i + 5);
+                frame = true;
+            }
+            if (len < 2)
+                break;
+            if (m == 0xE1)
+                exif.append(b.substr(i + 2, std::min<std::size_t>(len - 2, b.size() - (i + 2))));
+            i += len;
+        }
+        if (!frame)
+            return std::nullopt;
+        turned = exifOrientation(exif) >= 5;
+    }
+    if (w == 0 || h == 0 || w > std::uint32_t(ReferenceImage::kMaxPlace) || h > std::uint32_t(ReferenceImage::kMaxPlace))
+        return std::nullopt;
+    if (turned)
+        std::swap(w, h);
+    return std::pair{int(w), int(h)};
+}
+
+// File > Open Reference Image... (#422 D5, MainWindow::loadReferenceImage):
+// the picture kept byte for byte, PNG and JPEG only (the window would
+// re-encode any other format as a PNG, which isn't the same bytes on every
+// system), as a new reference layer "Reference N" on top of the stack, made
+// active, scaled across the canvas's width in pixels with its aspect kept.
+void openReferenceImage(State& s, const Step& st) {
+    const std::string& path = st.files.at(0).path;
+    const std::string& bytes = loaded(s, st, path);
+    const auto type = referenceImageType(bytes);
+    if (!type)
+        fail(st, path + ": not a PNG or JPEG picture; save it as a PNG for a steps file");
+    const auto size = pictureSize(bytes, *type);
+    if (!size)
+        fail(st, path + ": its size can't be read from its " + (*type == "png" ? "PNG" : "JPEG") + " header");
+    // the editor decodes a PNG in full, so refuses one past its ceiling (a
+    // JPEG it decodes scaled down)
+    if (*type == "png" && std::int64_t(size->first) * size->second > ReferenceImage::kMaxDecodePixels)
+        fail(st, path + ": too large to decode: " + std::to_string(size->first) + " x " +
+                     std::to_string(size->second) + " pixels (limit " +
+                     std::to_string(ReferenceImage::kMaxDecodePixels) + "), as File > Open Reference Image... refuses it");
+    ReferenceImage picture;
+    picture.bytes = std::make_shared<const std::string>(bytes);
+    picture.width = std::max(1, s.width() * canvasCellWidth(s.p.sauce));
+    picture.height = int(std::clamp<double>(std::round(double(picture.width) * size->second / size->first), 1,
+                                            ReferenceImage::kMaxPlace));
+    Layer layer = makeLayer(LayerKind::Reference, 0, 0, freeLayerName(s, "Reference"));
+    layer.props.reference = std::move(picture);
+    if (const auto problem = project::layerReferenceProblem(layer.props))
+        fail(st, path + ": the picture can't be kept in a project: " + *problem);
+    s.active = s.stack().add(std::move(layer), s.stack().size());
+}
+
 // Format > Canvas Size... as the dialog applies it (Document::resizeCanvas):
 // a size canvasSizeProblem refuses stops the replay, the canvas's own size
 // changes nothing, and any other is every layer through resizeCanvas, with
@@ -883,6 +1115,12 @@ void step(State& s, const Step& st, Outcome& out) {
         canvasSize(s, st, out);
     } else if (a == "text") {
         text(s, st, out);
+    } else if (a == "editText") {
+        editText(s, st, out);
+    } else if (a == "applyTextStyle") {
+        applyTextStyle(s, st, out);
+    } else if (a == "openReferenceImage") {
+        openReferenceImage(s, st);
     } else if (a == "view") {
         // the window's, not the document's: no cell changes
         const steps::View& v = st.view;
@@ -1035,8 +1273,31 @@ project::Project start(const steps::Script& script, const fs::path& dir, const f
     return p;
 }
 
-void load(steps::Script& script, const fs::path& dir) {
+void load(steps::Script& script, const fs::path& dir, const fs::path& libraryDir) {
     for (const Step& st : script.steps) {
+        if (st.stylePreset && !script.presets.count(*st.stylePreset)) {
+            const fs::path styles = libraryDir / "text-styles";
+            const fs::path p = styles / (*st.stylePreset + ".style.json");
+            std::error_code ec;
+            if (libraryDir.empty() || !fs::exists(fs::status(p, ec))) {
+                // the presets there, by name, sorted so the message is the same on any system
+                std::set<std::string> names;
+                if (!libraryDir.empty())
+                    for (const auto& e : fs::directory_iterator(styles, ec))
+                        if (const std::string f = e.path().filename().string(); library::isTextStyleName(f))
+                            names.insert(f.substr(0, f.size() - std::string_view(".style.json").size()));
+                std::string list;
+                for (const std::string& n : names)
+                    list += (list.empty() ? "" : ", ") + n;
+                fail(st, "no bundled text style \"" + *st.stylePreset + "\"" +
+                             (list.empty() ? std::string(" (no bundled library found)") : "; the bundled ones are " + list));
+            }
+            try {
+                script.presets.emplace(*st.stylePreset, readChecked(p, library::kMaxSidecarBytes));
+            } catch (const Failure& e) {
+                fail(st, e.message);
+            }
+        }
         for (const steps::FileRef& f : st.files) {
             if (const auto why = steps::pathProblem(f.path))
                 fail(st, "\"" + f.key + "\" " + *why);
@@ -1083,6 +1344,7 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
     State s;
     s.p = std::move(project);
     s.files = &script.files;
+    s.presets = &script.presets;
     if (s.stack().empty())
         throw Failure{"start: it has no layers"};
     // the editor opens on the bottom layer

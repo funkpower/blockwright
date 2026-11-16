@@ -926,8 +926,9 @@ A steps file is JSON:
    "ice": true,                              a blank start's iCE colours (default on)
    "steps": [{"name": "base-ramp", "action": "gradient", ...}, ...]}
 
-A path in a steps file ("file" here, a text step's "tdf") is relative to
-the steps file's directory, with / between directories, and .. may leave
+A path in a steps file ("file" here, in openReferenceImage and in
+applyTextStyle's "style", and a text step's "tdf") is relative to the
+steps file's directory, with / between directories, and .. may leave
 that directory. An absolute path (/..., C:...) and one with a \ in it are
 refused, so a steps file and the files beside it replay the same anywhere.
 A missing or unreadable file stops the replay before any step is applied,
@@ -966,6 +967,28 @@ mouse button (default left).
                  does: on the active text layer's settings, which become
                  the defaults, and on the layer unless it is locked;
                  settings it already shows change nothing
+  editText       "text" (as the text step's): the active live text
+                 layer's whole text replaced, in its own settings; a
+                 locked or hidden layer, or one that isn't live text, is
+                 refused, and the text it has already changes nothing
+  applyTextStyle "style": a bundled Library text style's name ("chrome",
+                 its file's name under the library's text-styles/) or
+                 {"file": "my.style.json"} (a Library text style file,
+                 up to 1 MiB, read strictly): the style put on the active
+                 layer, as the Library dock does. The layer must be live
+                 text, cells or pixels; a style that needs iCE colours is
+                 refused when they are off, and the style the layer has
+                 already changes nothing
+  openReferenceImage
+                 "file": a PNG or JPEG picture (up to 256 MiB), kept byte
+                 for byte; any other format is refused (save it as a
+                 PNG). File > Open Reference Image...: a new reference
+                 layer "Reference N" on top of the stack, made active,
+                 the canvas's width in pixels across with its aspect kept
+                 (a JPEG turned as its EXIF orientation says). A PNG over
+                 2^26 pixels is refused, as the editor refuses to decode
+                 it. Captures don't show it: the .ans holds cells, and a
+                 reference layer is only a guide to draw over
   keyboard       "at" (a cell), "text" (NFC-composed, as typing is; a
                  newline starts the next row at the "at" column). What
                  may be typed follows the start's target and .ans
@@ -1121,8 +1144,9 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
                       ": view sets the window's zoom, scroll and IRC options, and blockwright-cli replay has no "
                       "window; replay this file with blockwright --screenshot"};
     const auto native = [](const QString& p) { return fs::path(QFile::encodeName(p).toStdString()); };
-    const fs::path samplesDir = bw::samples::bundledDir(bw::library::realBinDir(
-        native(QCoreApplication::applicationFilePath()), native(QCoreApplication::applicationDirPath())));
+    const fs::path binDir = bw::library::realBinDir(native(QCoreApplication::applicationFilePath()),
+                                                    native(QCoreApplication::applicationDirPath()));
+    const fs::path samplesDir = bw::samples::bundledDir(binDir);
     bwcli::replay::Outcome outcome;
     // what reading the start changed, said before any step runs, whether or
     // not a step then fails: the read happened either way (#370)
@@ -1131,7 +1155,7 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
         const fs::path stepsDir = fs::path(stepsPath).parent_path();
         startProject = bwcli::replay::startSaying(script, stepsDir, samplesDir, std::cerr, "blockwright-cli", stepsPath);
         // every file a step reads, before any step runs (#422)
-        bwcli::replay::load(script, stepsDir);
+        bwcli::replay::load(script, stepsDir, bw::library::bundledLibraryDir(binDir));
     } catch (const Failure& f) {
         throw Failure{stepsPath + ": " + f.message};
     }

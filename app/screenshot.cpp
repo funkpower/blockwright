@@ -603,14 +603,15 @@ int run(const QString& stepsPath, const QString& outDir) {
             throw Failure{path + ": " + e.what()};
         }
         const auto native = [](const QString& p) { return fs::path(QFile::encodeName(p).toStdString()); };
-        const fs::path samplesDir = samples::bundledDir(library::realBinDir(
-            native(QCoreApplication::applicationFilePath()), native(QCoreApplication::applicationDirPath())));
+        const fs::path binDir = library::realBinDir(native(QCoreApplication::applicationFilePath()),
+                                                    native(QCoreApplication::applicationDirPath()));
+        const fs::path samplesDir = samples::bundledDir(binDir);
         // what reading the start changed, said as blockwright-cli replay
         // says it: before any step and before the window is made (#383)
         const fs::path stepsDir = fs::path(path).parent_path();
         project::Project start = bwcli::replay::startSaying(script, stepsDir, samplesDir, std::cerr, "blockwright", path);
         // every file a step reads, as blockwright-cli replay reads them (#422)
-        bwcli::replay::load(script, stepsDir);
+        bwcli::replay::load(script, stepsDir, library::bundledLibraryDir(binDir));
 
         const Scratch scratch;
         if (!scratch.error().empty())

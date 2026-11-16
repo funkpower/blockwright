@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "start": {"blank": [48, 16]},
+  "steps": [
+    {"name": "title", "action": "text", "at": [1, 1], "text": "BW", "textOptions": {"face": "block"}},
+    {"name": "retitle", "action": "editText", "text": "ART"},
+    {"name": "chrome", "action": "applyTextStyle", "style": "chrome"},
+    {"name": "own-style", "action": "applyTextStyle", "style": {"file": "styles/red-shadow.style.json"}},
+    {"name": "trace", "action": "openReferenceImage", "file": "reference/grid.png"}
+  ]
+}

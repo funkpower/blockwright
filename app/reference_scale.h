@@ -2,6 +2,8 @@
 // Reducing the reference image (PLAN §4): an area average, read a few source
 // pixels at a time so a large or odd-format picture is never converted whole.
 
+#include "blockwright/layer.h"
+
 #include <QByteArray>
 #include <QImage>
 #include <QRect>
@@ -17,7 +19,7 @@ inline constexpr int kMaxConvertPixels = 1 << 20;
 
 // Full decoding is bounded by checked raster headers (PNG, JPEG, BMP),
 // or Qt's allocation limit for the handlers referenceDecode allows.
-inline constexpr qint64 kMaxReferenceDecodePixels = qint64{1} << 26;
+inline constexpr qint64 kMaxReferenceDecodePixels = ReferenceImage::kMaxDecodePixels;
 
 // How a full decode of a picture Qt reads as `format` (QImageReader::format()
 // of its bytes, not a file suffix) is bounded.

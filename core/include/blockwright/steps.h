@@ -126,6 +126,26 @@
 // which must have it. The step lists the file (Step::files), so the load
 // pass reads it; the replay finds the font when the step is applied.
 //
+// Three steps edit text layers and add a reference layer (#422):
+//
+//   {"name": ..., "action": "editText", "text": "..."}
+//   {"name": ..., "action": "applyTextStyle",
+//    "style": "chrome" | {"file": "styles/x.style.json"}}
+//   {"name": ..., "action": "openReferenceImage", "file": "refs/sketch.png"}
+//
+// editText replaces the active layer's whole text, which must be a live
+// text layer the Text tool could click into (visible and unlocked), in one
+// edit; "text" is checked as a text step's is. applyTextStyle puts a
+// Library text style on the active live text, cells or pixels layer, as
+// the Library dock's activation does (MainWindow::applyTextStyle): a
+// bundled preset by its name (the file name before .style.json in the
+// bundled library's text-styles/), or a .style.json relative to the steps
+// file, read strictly (library::parseTextStyleEntry). openReferenceImage is
+// File > Open Reference Image...: a PNG or JPEG relative to the steps file,
+// kept byte for byte (any other format is refused), as a new top reference
+// layer "Reference N", made active, the canvas's width in pixels with its
+// aspect kept. The load pass reads each step's file, and the presets.
+//
 // Every key is checked: an unknown key, a key the action doesn't take, a
 // value of the wrong kind or out of range is refused, and the error names
 // the step by number and name. Where a point, rectangle or radial symmetry
@@ -321,9 +341,13 @@ struct Step {
     // clone: the source cell Ctrl+click sets before the stroke (#418)
     std::optional<Point> source;
     // The files the step reads (#422), in the order it names them: a text
-    // step's TheDraw face (key "textOptions face tdf"). Style files and
-    // reference pictures will come.
+    // step's TheDraw face (key "textOptions face tdf"), applyTextStyle's
+    // .style.json ("style file") and openReferenceImage's picture ("file").
     std::vector<FileRef> files;
+    // applyTextStyle (#422 D2): a bundled Library preset by its name, the
+    // file name before .style.json in the bundled library's text-styles/;
+    // the load pass reads it into Script::presets. Unset for a style file.
+    std::optional<std::string> stylePreset;
 };
 
 // The window's size a steps file may set, in pixels.
@@ -338,6 +362,9 @@ struct Script {
     // Each step's files' bytes by their paths as written, the load pass's
     // (bwcli::replay::load); empty until it runs.
     std::map<std::string, std::string> files;
+    // The bundled text style presets applyTextStyle steps name, their
+    // .style.json bytes by name, read by the load pass too.
+    std::map<std::string, std::string> presets;
 };
 
 // The actions a steps file may name, in the order PLAN §9 lists them.

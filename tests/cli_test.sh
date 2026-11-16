@@ -1062,6 +1062,12 @@ if diff -r "$data/replay/text" "$rp/text-saved" > /dev/null; then ok "replay: th
 expect "replay: TheDraw text steps with SOURCE_DATE_EPOCH" 0 '^$' -- env SOURCE_DATE_EPOCH=1794009600 TZ=Etc/GMT-14 \
   "$cli" replay "$data/replay/tdf-text.json" -o "$rp/tdf-saved"
 if diff -r "$data/replay/tdf-text" "$rp/tdf-saved" > /dev/null; then ok "replay: the TheDraw text steps write their saved bytes"; else bad "replay: the TheDraw text steps differ from data/replay/tdf-text"; fi
+# editText, applyTextStyle and openReferenceImage (#422): a bundled preset
+# from the repo's library, a style file and a picture beside the steps file
+expect "replay: text and reference layer steps with SOURCE_DATE_EPOCH" 0 '^$' -- env SOURCE_DATE_EPOCH=1794009600 TZ=Etc/GMT-14 \
+  BLOCKWRIGHT_BUNDLED_LIBRARY="$data/../../library" "$cli" replay "$data/replay/text-layers.json" -o "$rp/text-layers-saved"
+if diff -r "$data/replay/text-layers" "$rp/text-layers-saved" > /dev/null; then ok "replay: the text and reference layer steps write their saved bytes"; else bad "replay: the text and reference layer steps differ from data/replay/text-layers"; fi
+expect "replay: a preset the bundled library doesn't hold names the step (#422)" 1 '^blockwright-cli: .*text-layers\.json: step 3 \(chrome\): no bundled text style "chrome" \(no bundled library found\)$' -- env BLOCKWRIGHT_BUNDLED_LIBRARY="$rp/no-library" "$cli" replay "$data/replay/text-layers.json" -o "$rp/text-layers-nolib"
 # --project: each project carries a copy of the fonts its layers are set in,
 # fonts/<sha256>.tdf (the outline font the title was restyled out of is not
 # kept), and draws alone what the capture draws
@@ -1158,6 +1164,9 @@ mkfifo "$rp/paths/fifo.ans"
 printf '{"version": 1, "start": {"file": "fifo.ans"}, "steps": [{"name": "dot", "action": "glyph", "points": [[1, 1]]}]}' > "$rp/paths/fifo.json"
 expect "replay: a FIFO start is not a regular file" 1 "^blockwright-cli: $rp/paths/fifo\\.json: start: $rp/paths/fifo\\.ans: not a regular file\$" -- "$cli" replay "$rp/paths/fifo.json" -o "$rp/paths/fifo"
 expect "replay --help says paths are relative and absolute ones refused (#422)" 0 '^that directory\. An absolute path \(/\.\.\., C:\.\.\.\) and one with a \\ in it are$' -- "$cli" replay --help
+expect "replay --help documents editText (#422)" 0 '^  editText       "text" \(as the text step.s\): the active live text$' -- "$cli" replay --help
+expect "replay --help documents applyTextStyle (#422)" 0 '^  applyTextStyle "style": a bundled Library text style.s name \("chrome",$' -- "$cli" replay --help
+expect "replay --help documents openReferenceImage (#422)" 0 '^  openReferenceImage$' -- "$cli" replay --help
 long=$("$cli" replay --help | awk '/^A path in a steps file/ { p = 1 } p && /^$/ { exit } p && length > 79')
 if [[ -z $long ]]; then ok "replay --help's paths paragraph fits 79 columns"; else bad "replay --help's paths paragraph runs past 79 columns: $long"; fi
 long=$("$cli" replay --help | awk '/^  "textOptions"/ { p = 1 } p && /^$/ { exit } p && length > 79')

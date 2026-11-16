@@ -68,8 +68,12 @@ bw::project::Project startSaying(const bw::steps::Script& script, const std::fil
 // file"), or the key for a path steps::pathProblem refuses, for a file that
 // isn't there, isn't a regular file or can't be read, and one larger than
 // its step allows. A path named twice is read once and holds to the
-// smaller limit.
-void load(bw::steps::Script& script, const std::filesystem::path& dir);
+// smaller limit. The bundled text style presets applyTextStyle steps name
+// (Step::stylePreset) are read into script.presets from `libraryDir`'s
+// text-styles/ (library::bundledLibraryDir): one it doesn't hold is
+// refused naming the step and listing the ones it does.
+void load(bw::steps::Script& script, const std::filesystem::path& dir,
+          const std::filesystem::path& libraryDir = {});
 
 // A capture's canvas as replay writes it (project::toAnsi). A project with
 // no SAUCE record gets a fresh one, dated `today` (CCYYMMDD) when given and

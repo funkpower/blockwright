@@ -6,6 +6,7 @@
 
 #include "canvas_view.h"
 #include "document.h"
+#include "exif_jpeg.h"
 #include "main_window.h"
 #include "reference_scale.h"
 #include "tool.h"
@@ -435,6 +436,42 @@ TEST_CASE("reference decoding refuses PNG and BMP above the full decode ceiling"
         QString error;
         CHECK(readReferencePicture(data, CanvasView::kMaxReferencePixels, nullptr, &error).isNull());
         CHECK(error.contains(QStringLiteral("too large to decode")));
+    }
+}
+
+TEST_CASE("Open Reference Image turns a JPEG as its EXIF orientation says (#422)", "[reference]") {
+    // the same EXIF test_cli_replay.cpp gives the replay's openReferenceImage
+    const std::string jpg = *encoded(filled(12, 6, Qt::green), "JPEG");
+    MainWindow w;
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("pic.jpg"));
+    // whether the reference layer is placed turned a quarter (6x12, not 12x6)
+    const auto turned = [&](const std::string& bytes) {
+        QFile f(path);
+        REQUIRE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        REQUIRE(f.write(bytes.data(), qint64(bytes.size())) == qint64(bytes.size()));
+        f.close();
+        QString error;
+        const bool loaded = w.loadReferenceImage(path, &error);
+        INFO(error.toStdString());
+        REQUIRE(loaded);
+        const ReferenceImage& r = *w.document()->active()->props.reference;
+        CHECK(*r.bytes == bytes);
+        if (r.height == 2 * r.width)
+            return true;
+        CHECK(r.width == 2 * r.height);
+        return false;
+    };
+    for (const bool little : {false, true})
+        for (unsigned orientation = 1; orientation <= 8; ++orientation) {
+            INFO((little ? "II, orientation " : "MM, orientation ") << orientation);
+            CHECK(turned(exif_jpeg::afterSoi(jpg, exif_jpeg::app1(exif_jpeg::exif(little, orientation)))) ==
+                  (orientation >= 5));
+        }
+    for (const exif_jpeg::Case& c : exif_jpeg::oddCases()) {
+        INFO(c.what);
+        CHECK(turned(c.make(jpg)) == c.turned);
     }
 }
 

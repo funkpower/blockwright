@@ -3,6 +3,8 @@
 
 #include "blockwright/big_text.h"
 #include "blockwright/face.h"
+#include "blockwright/library.h"
+#include "blockwright/project.h"
 #include "blockwright/steps.h"
 #include "blockwright/tdf.h"
 
@@ -974,4 +976,73 @@ TEST_CASE("a text step's bad value is refused, naming the step (#421)", "[steps]
     // keyboard keeps its own reading: NFC, with any control character in it
     const steps::Script k = steps::parse(script(R"({"name": "k", "action": "keyboard", "at": [0, 0], "text": "é"})"));
     CHECK(k.steps[0].text == U"é");
+}
+
+TEST_CASE("editText, applyTextStyle and openReferenceImage read their keys and name their files (#422)",
+          "[steps][text]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "retitle", "action": "editText", "text": "Two\nlines"},
+        {"name": "chrome", "action": "applyTextStyle", "style": "gold-3d"},
+        {"name": "own", "action": "applyTextStyle", "style": {"file": "../styles/mine.style.json"}},
+        {"name": "trace", "action": "openReferenceImage", "file": "refs/sketch.png"})"));
+    REQUIRE(s.steps.size() == 4);
+    CHECK(s.steps[0].text == U"Two\nlines");
+    CHECK(s.steps[0].files.empty());
+    CHECK(s.steps[1].stylePreset == "gold-3d");
+    CHECK(s.steps[1].files.empty());
+    CHECK_FALSE(s.steps[2].stylePreset);
+    REQUIRE(s.steps[2].files.size() == 1);
+    CHECK(s.steps[2].files[0].key == "style file");
+    CHECK(s.steps[2].files[0].path == "../styles/mine.style.json");
+    CHECK(s.steps[2].files[0].maxBytes == library::kMaxSidecarBytes);
+    REQUIRE(s.steps[3].files.size() == 1);
+    CHECK(s.steps[3].files[0].key == "file");
+    CHECK(s.steps[3].files[0].path == "refs/sketch.png");
+    CHECK(s.steps[3].files[0].maxBytes == project::kMaxEntryBytes);
+    // editText's text is as typed, not NFC-composed, as a text step's
+    const steps::Script typed = steps::parse(script(R"({"name": "e", "action": "editText", "text": "e\u0301"})"));
+    CHECK(typed.steps[0].text == U"e\u0301");
+}
+
+TEST_CASE("editText, applyTextStyle and openReferenceImage refuse a bad value, naming the step (#422)",
+          "[steps][text]") {
+    const std::pair<std::string, std::string> cases[] = {
+        {R"("action": "editText")", "editText needs \"text\", the active text layer's whole new text"},
+        {R"("action": "editText", "text": "")", "\"text\" must be 1 to 4096 characters"},
+        {R"("action": "editText", "text": "a\tb")", "control character the Text tool doesn't type (U+0009)"},
+        {R"("action": "editText", "text": 3)", "\"text\""},
+        {R"("action": "editText", "text": "a", "at": [1, 1])", "editText takes no \"at\""},
+        {R"("action": "editText", "text": "a", "textOptions": {"colour": 3})", "editText takes no \"textOptions\""},
+        {R"("action": "applyTextStyle")", "applyTextStyle needs \"style\""},
+        {R"("action": "applyTextStyle", "style": "Chrome")", "\"style\" must be a bundled Library preset's name"},
+        {R"("action": "applyTextStyle", "style": "../chrome")", "not \"../chrome\""},
+        {R"("action": "applyTextStyle", "style": "")", "\"style\" must be a bundled Library preset's name"},
+        {R"("action": "applyTextStyle", "style": 3)", "\"style\" must be a bundled Library preset's name or {\"file\": ...}, not a number"},
+        {R"("action": "applyTextStyle", "style": {})", "\"style\" needs \"file\""},
+        {R"("action": "applyTextStyle", "style": {"file": "a.style.json", "name": "x"})", "\"name\""},
+        {R"("action": "applyTextStyle", "style": {"file": 3})", "\"style file\""},
+        {R"("action": "applyTextStyle", "style": {"file": ""})", "\"style file\" is empty"},
+        {R"("action": "applyTextStyle", "style": {"file": "/styles/a.style.json"})",
+         "\"style file\" \"/styles/a.style.json\" is absolute; a steps file names its files relative to its own directory"},
+        {R"("action": "applyTextStyle", "style": {"file": "C:/a.style.json"})", "is absolute"},
+        {R"("action": "applyTextStyle", "style": {"file": "styles\\a.style.json"})", "has a \\ in it"},
+        {R"("action": "applyTextStyle", "style": "chrome", "file": "a.png")", "applyTextStyle takes no \"file\""},
+        {R"("action": "openReferenceImage")", "openReferenceImage needs \"file\", a PNG or JPEG picture's path"},
+        {R"("action": "openReferenceImage", "file": 3)", "\"file\""},
+        {R"("action": "openReferenceImage", "file": "")", "\"file\" is empty"},
+        {R"("action": "openReferenceImage", "file": "/home/a.png")", "\"file\" \"/home/a.png\" is absolute"},
+        {R"("action": "openReferenceImage", "file": "D:/a.png")", "is absolute"},
+        {R"("action": "openReferenceImage", "file": "refs\\a.png")", "has a \\ in it"},
+        {R"("action": "openReferenceImage", "file": "a.png", "opacity": 50)", "\"opacity\""},
+        {R"("action": "openReferenceImage", "file": "a.png", "style": "chrome")", "openReferenceImage takes no \"style\""},
+        {R"("action": "text", "at": [1, 1], "text": "a", "style": "chrome")", "text takes no \"style\""},
+        {R"("action": "selectAll", "file": "a.png")", "selectAll takes no \"file\""},
+    };
+    for (const auto& [fields, says] : cases) {
+        INFO(fields);
+        const std::string why =
+            refusal(script(R"({"name": "first", "action": "selectAll"}, {"name": "st", )" + fields + "}"));
+        CHECK_THAT(why, ContainsSubstring("step 2 (st): "));
+        CHECK_THAT(why, ContainsSubstring(says));
+    }
 }

@@ -3,6 +3,7 @@
 // data/replay/tour.json takes every kind of step and writes, every run, the
 // bytes saved beside it in data/replay/tour/.
 
+#include "exif_jpeg.h"
 #include "loss.h"
 #include "read_file.h"
 #include "replay.h"
@@ -21,6 +22,7 @@
 #include "blockwright/glyph.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
+#include "blockwright/library.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/sauce.h"
@@ -64,11 +66,14 @@ namespace {
 const fs::path kReplay = fs::path(BW_TEST_DATA) / "replay";
 const fs::path kSamples = BW_SAMPLES_SOURCE;
 
+const fs::path kLibrary = BW_BUNDLED_LIBRARY;
+
 // The script run as blockwright-cli replay runs it: the load pass reads the
-// files its steps name, from `dir`, first.
+// files its steps name, from `dir`, and the bundled text styles they name,
+// first.
 bwcli::replay::Outcome replayed(const std::string& json, const fs::path& dir = kReplay) {
     steps::Script s = steps::parse(json);
-    bwcli::replay::load(s, dir);
+    bwcli::replay::load(s, dir, kLibrary);
     return bwcli::replay::run(s, bwcli::replay::start(s, dir, kSamples));
 }
 
@@ -2548,4 +2553,345 @@ TEST_CASE("a project a TheDraw text step wrote reads back and draws without the 
     const project::Project& more = again.captures[0].project;
     CHECK(more.fonts == p.fonts);
     CHECK(layerNamed(more, "Text 2").props.text->face == layerNamed(p, "Text 1").props.text->face);
+}
+
+namespace {
+
+// A blank 20x10 start (iCE colours as `ice` says) with a text layer "Text 1"
+// saying "AB" at (1, 1), active, and then `steps`.
+std::string onText(const std::string& steps, bool ice = true) {
+    return std::string(R"({"version": 1, "start": {"blank": [20, 10]}, "ice": )") + (ice ? "true" : "false") +
+           R"(, "steps": [{"name": "one", "action": "text", "at": [1, 1], "text": "AB"})" +
+           (steps.empty() ? "" : ", " + steps) + "]}";
+}
+
+library::TextStyleEntry bundledStyle(const std::string& name) {
+    return library::parseTextStyleEntry(
+        bwcli::readFile((kLibrary / "text-styles" / (name + ".style.json")).string()));
+}
+
+} // namespace
+
+TEST_CASE("an editText step replaces the active text layer's whole text in its own settings (#422)",
+          "[replay][text][edit-text]") {
+    const auto out = replayed(onText(R"({"name": "big", "action": "text", "textOptions": {"colour": 12, "letterSpacing": 1}},
+        {"name": "two", "action": "editText", "text": "Two\nlines"})"));
+    REQUIRE(out.captures.size() == 3);
+    const project::Project& before = out.captures[1].project;
+    const project::Project& p = out.captures[2].project;
+    CHECK(layerNames(p) == std::vector<std::string>{"Background", "Text 1"});
+    const Layer& edited = layerNamed(p, "Text 1");
+    REQUIRE(edited.props.text);
+    CHECK(edited.props.text->text == U"Two\nlines");
+    // the rest of its source as it was
+    TextSource expect = *layerNamed(before, "Text 1").props.text;
+    expect.text = U"Two\nlines";
+    CHECK(*edited.props.text == expect);
+    // drawn as the Text tool draws that source, where it was
+    checkSameText(edited, makeTextLayer(expect, "Text 1", 1, 1, FontSources{}));
+    CHECK(flat(p) != flat(before));
+    CHECK(out.notes.empty());
+}
+
+TEST_CASE("an editText step with the text the layer has changes nothing (#422)", "[replay][text][edit-text]") {
+    const auto out = replayed(onText(R"({"name": "same", "action": "editText", "text": "AB"})"));
+    REQUIRE(out.captures.size() == 2);
+    CHECK(out.captures[1].project.layers == out.captures[0].project.layers);
+    CHECK(out.notes == std::vector<std::string>{"step 2 (same): changes nothing"});
+}
+
+TEST_CASE("an editText step on a layer that isn't live text, or that the Text tool can't edit, is refused (#422)",
+          "[replay][text][edit-text]") {
+    CHECK_THAT(onBlank(R"({"name": "e", "action": "editText", "text": "x"})"),
+               ContainsSubstring("step 1 (e): the active layer \"Background\" is a cells layer; editText edits a "
+                                 "live text layer's text"));
+    CHECK_THAT(failure(onText(R"({"name": "px", "action": "newPixelLayer"}, {"name": "e", "action": "editText", "text": "x"})")),
+               ContainsSubstring("step 3 (e): the active layer \"Layer 1\" is a pixels layer"));
+    CHECK_THAT(failure(onText(R"({"name": "lock", "action": "layerProperties", "locked": true},
+                                 {"name": "e", "action": "editText", "text": "x"})")),
+               ContainsSubstring("step 3 (e): the active layer \"Text 1\" is locked"));
+    CHECK_THAT(failure(onText(R"({"name": "hide", "action": "layerProperties", "visible": false},
+                                 {"name": "e", "action": "editText", "text": "x"})")),
+               ContainsSubstring("step 3 (e): the active layer \"Text 1\" is hidden"));
+}
+
+TEST_CASE("an applyTextStyle step puts a bundled preset on the active layer, as the Library dock does (#422)",
+          "[replay][text][text-style]") {
+    const auto out = replayed(onText(R"({"name": "chrome", "action": "applyTextStyle", "style": "chrome"})"));
+    REQUIRE(out.captures.size() == 2);
+    const Layer& styled = layerNamed(out.captures[1].project, "Text 1");
+    REQUIRE(styled.props.style);
+    CHECK(*styled.props.style == bundledStyle("chrome").style);
+    // the text itself as it was, drawn with the style
+    CHECK(styled.props.text == layerNamed(out.captures[0].project, "Text 1").props.text);
+    CHECK(flat(out.captures[1].project) != flat(out.captures[0].project));
+    CHECK(out.notes.empty());
+    // a cells layer and a pixels layer take one too
+    for (const char* make : {R"({"name": "a", "action": "selectAll"})", R"({"name": "a", "action": "newPixelLayer"})"}) {
+        INFO(make);
+        const auto on = blank(std::string(make) + R"(, {"name": "s", "action": "applyTextStyle", "style": "shadow"})");
+        const project::Project& p = on.captures.back().project;
+        const Layer& l = p.layers.layers().back();
+        REQUIRE(l.props.style);
+        CHECK(*l.props.style == bundledStyle("shadow").style);
+    }
+}
+
+TEST_CASE("an applyTextStyle step reads a style file the steps file names, strictly (#422)",
+          "[replay][text][text-style]") {
+    const auto out = replayed(onText(R"({"name": "own", "action": "applyTextStyle",
+                                         "style": {"file": "styles/red-shadow.style.json"}})"));
+    const Layer& styled = layerNamed(out.captures.back().project, "Text 1");
+    REQUIRE(styled.props.style);
+    CHECK(*styled.props.style ==
+          library::parseTextStyleEntry(bwcli::readFile((kReplay / "styles/red-shadow.style.json").string())).style);
+
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    std::ofstream(dir / "bad.style.json", std::ios::binary) << R"({"kind": "text-style", "name": "Bad", "effects": [], "size": 3})";
+    std::ofstream(dir / "brush.json", std::ios::binary) << R"({"kind": "brush", "name": "B"})";
+    CHECK_THAT(failure(onText(R"({"name": "bad", "action": "applyTextStyle", "style": {"file": "bad.style.json"}})"), dir),
+               ContainsSubstring("step 2 (bad): bad.style.json: "));
+    CHECK_THAT(failure(onText(R"({"name": "bad", "action": "applyTextStyle", "style": {"file": "brush.json"}})"), dir),
+               ContainsSubstring("step 2 (bad): brush.json: "));
+    CHECK_THAT(failure(onText(R"({"name": "gone", "action": "applyTextStyle", "style": {"file": "none.style.json"}})"), dir),
+               ContainsSubstring("step 2 (gone)"));
+    CHECK_THAT(failure(onText(R"({"name": "gone", "action": "applyTextStyle", "style": {"file": "none.style.json"}})"), dir),
+               ContainsSubstring("none.style.json"));
+}
+
+TEST_CASE("an applyTextStyle step naming a preset the library doesn't hold stops before any step runs (#422)",
+          "[replay][text][text-style]") {
+    const std::string why = failure(onText(R"({"name": "x", "action": "applyTextStyle", "style": "glitter"})"));
+    CHECK_THAT(why, ContainsSubstring("step 2 (x): no bundled text style \"glitter\"; the bundled ones are "));
+    CHECK_THAT(why, ContainsSubstring("chrome, fire, gold-3d"));
+    // no bundled library at all
+    steps::Script s = steps::parse(onText(R"({"name": "x", "action": "applyTextStyle", "style": "chrome"})"));
+    try {
+        bwcli::replay::load(s, kReplay);
+        FAIL("loaded with no library");
+    } catch (const bwcli::Failure& f) {
+        CHECK_THAT(f.message, ContainsSubstring("step 2 (x): no bundled text style \"chrome\" (no bundled library found)"));
+    }
+}
+
+TEST_CASE("an applyTextStyle step is refused where the Library dock refuses it (#422)", "[replay][text][text-style]") {
+    // a style that needs iCE colours, with them off
+    CHECK_THAT(failure(onText(R"({"name": "ice", "action": "applyTextStyle", "style": {"file": "styles/bright-plate.style.json"}})",
+                              false)),
+               ContainsSubstring("step 2 (ice): styles/bright-plate.style.json (Bright Plate) needs iCE colours, which are off"));
+    // and with them on it goes on
+    const auto on = replayed(onText(R"({"name": "ice", "action": "applyTextStyle", "style": {"file": "styles/bright-plate.style.json"}})"));
+    CHECK(layerNamed(on.captures.back().project, "Text 1").props.style);
+    // a reference layer takes none
+    CHECK_THAT(failure(onText(R"({"name": "ref", "action": "openReferenceImage", "file": "reference/grid.png"},
+                                 {"name": "s", "action": "applyTextStyle", "style": "chrome"})")),
+               ContainsSubstring("step 3 (s): the active layer \"Reference 1\" is a reference layer; a text style goes on "
+                                 "a live text, cells or pixels layer"));
+}
+
+TEST_CASE("an applyTextStyle step with the style the layer has changes nothing (#422)", "[replay][text][text-style]") {
+    const auto out = replayed(onText(R"({"name": "a", "action": "applyTextStyle", "style": "neon"},
+                                        {"name": "b", "action": "applyTextStyle", "style": "neon"})"));
+    REQUIRE(out.captures.size() == 3);
+    CHECK(out.captures[2].project.layers == out.captures[1].project.layers);
+    CHECK(out.notes == std::vector<std::string>{"step 3 (b): changes nothing (the layer has this style already)"});
+}
+
+TEST_CASE("an openReferenceImage step adds the picture byte for byte as a reference layer on top (#422)",
+          "[replay][reference]") {
+    for (const char* file : {"reference/grid.png", "reference/grid.jpg"}) {
+        INFO(file);
+        const auto out = replayed(onText(std::string(R"({"name": "low", "action": "setActiveLayer", "layer": "Background"},
+            {"name": "ref", "action": "openReferenceImage", "file": ")") + file + R"("},
+            {"name": "again", "action": "openReferenceImage", "file": ")" + file + R"("})"));
+        REQUIRE(out.captures.size() == 4);
+        const project::Project& p = out.captures[2].project;
+        // on top of the stack, whichever layer was active
+        CHECK(layerNames(p) == std::vector<std::string>{"Background", "Text 1", "Reference 1"});
+        const Layer& ref = layerNamed(p, "Reference 1");
+        CHECK(ref.props.kind == LayerKind::Reference);
+        REQUIRE(ref.props.reference);
+        const ReferenceImage& r = *ref.props.reference;
+        REQUIRE(r.bytes);
+        CHECK(*r.bytes == bwcli::readFile((kReplay / file).string()));
+        // across the canvas's 20 cells of 8 pixels, a 12x6 picture's aspect kept
+        CHECK(r.x == 0);
+        CHECK(r.y == 0);
+        CHECK(r.width == 160);
+        CHECK(r.height == 80);
+        CHECK(r.opacity == 50);
+        // the .ans holds cells: a reference layer doesn't show in it
+        CHECK(ansBytes(p) == ansBytes(out.captures[1].project));
+        // the next is Reference 2, on top again
+        CHECK(layerNames(out.captures[3].project) ==
+              std::vector<std::string>{"Background", "Text 1", "Reference 1", "Reference 2"});
+        CHECK(out.notes.empty());
+    }
+}
+
+TEST_CASE("an openReferenceImage step scales to a 9-pixel canvas's width (#422)", "[replay][reference]") {
+    const std::string sample = bwcli::readFile((fs::path(BW_TEST_DATA) / "replay/reference/grid.png").string());
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    std::ofstream(dir / "grid.png", std::ios::binary) << sample;
+    // a start 10 cells wide whose SAUCE asks for 9-pixel cells
+    project::Project start = blank(R"({"name": "a", "action": "selectAll"})").captures[0].project;
+    AnsiDocument nine = bwcli::replay::document(start, kSavedDay);
+    nine.canvas = Canvas(10, 4);
+    REQUIRE(nine.sauce);
+    nine.sauce->flags = std::uint8_t((nine.sauce->flags & ~6) | (2 << 1));
+    REQUIRE(nine.sauce->letterSpacing() == 2);
+    std::ofstream(dir / "nine.ans", std::ios::binary) << writeArt(nine, ArtFormat::Ansi, TextEncoding::Cp437).bytes;
+    const auto out = replayed(R"({"version": 1, "start": {"file": "nine.ans"}, "steps": [
+        {"name": "ref", "action": "openReferenceImage", "file": "grid.png"}]})",
+                              dir);
+    const ReferenceImage& r = *layerNamed(out.captures[0].project, "Reference 1").props.reference;
+    CHECK(r.width == 90);
+    CHECK(r.height == 45);
+}
+
+TEST_CASE("an openReferenceImage step turns a JPEG as its EXIF orientation says, as File > Open Reference Image... does (#422)",
+          "[replay][reference]") {
+    const std::string jpg = bwcli::readFile((kReplay / "reference/grid.jpg").string());
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    // the 12x6 picture across the 20-cell canvas's 160 pixels: 80 high, or
+    // turned a quarter (shown 6x12), 320
+    const auto height = [&](const std::string& bytes) {
+        std::ofstream(dir / "pic.jpg", std::ios::binary | std::ios::trunc) << bytes;
+        const auto out = replayed(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [
+            {"name": "ref", "action": "openReferenceImage", "file": "pic.jpg"}]})",
+                                  dir);
+        const ReferenceImage& r = *layerNamed(out.captures[0].project, "Reference 1").props.reference;
+        CHECK(*r.bytes == bytes);
+        CHECK(r.width == 160);
+        return r.height;
+    };
+    for (const bool little : {false, true})
+        for (unsigned orientation = 1; orientation <= 8; ++orientation) {
+            INFO((little ? "II, orientation " : "MM, orientation ") << orientation);
+            CHECK(height(exif_jpeg::afterSoi(jpg, exif_jpeg::app1(exif_jpeg::exif(little, orientation)))) ==
+                  (orientation >= 5 ? 320 : 80));
+        }
+    // EXIF the editor's reader can't use turns nothing, and no bad offset
+    // reads past the bytes
+    for (const exif_jpeg::Case& c : exif_jpeg::oddCases()) {
+        INFO(c.what);
+        CHECK(height(c.make(jpg)) == (c.turned ? 320 : 80));
+    }
+}
+
+TEST_CASE("an openReferenceImage step refuses a PNG past the editor's full decode ceiling by its header (#422)",
+          "[replay][reference]") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    // a PNG's signature and IHDR only: the replay reads no further
+    const auto header = [](std::uint32_t w, std::uint32_t h) {
+        const auto be32 = [](std::uint32_t v) {
+            return std::string{char(v >> 24), char((v >> 16) & 0xFF), char((v >> 8) & 0xFF), char(v & 0xFF)};
+        };
+        return std::string("\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR", 16) + be32(w) + be32(h) + std::string("\x08\0\0\0\0", 5) +
+               std::string(4, '\0');
+    };
+    const auto at = [&](std::uint32_t w, std::uint32_t h) {
+        std::ofstream(dir / "big.png", std::ios::binary | std::ios::trunc) << header(w, h);
+        return R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [
+            {"name": "ref", "action": "openReferenceImage", "file": "big.png"}]})";
+    };
+    static_assert(std::int64_t{8192} * 8192 == ReferenceImage::kMaxDecodePixels);
+    const std::string limit = std::to_string(ReferenceImage::kMaxDecodePixels);
+    CHECK_THAT(failure(at(8193, 8192), dir),
+               ContainsSubstring("step 1 (ref): big.png: too large to decode: 8193 x 8192 pixels (limit " + limit +
+                                 "), as File > Open Reference Image... refuses it"));
+    CHECK_THAT(failure(at(9000, 9000), dir), ContainsSubstring("big.png: too large to decode: 9000 x 9000 pixels"));
+    CHECK_THAT(failure(at(16777216, 5), dir), ContainsSubstring("too large to decode: 16777216 x 5 pixels"));
+    // at the ceiling it is placed; a picture with no body past its header is
+    // kept too, as PLAN §9 D5 says, since telling would need a decoder
+    const auto out = replayed(at(8192, 8192), dir);
+    const ReferenceImage& r = *layerNamed(out.captures[0].project, "Reference 1").props.reference;
+    CHECK(r.width == 160);
+    CHECK(r.height == 160);
+}
+
+TEST_CASE("an openReferenceImage step refuses a file that isn't a PNG or JPEG (#422)", "[replay][reference]") {
+    CHECK_THAT(onBlank(R"({"name": "gif", "action": "openReferenceImage", "file": "reference/grid.gif"})"),
+               ContainsSubstring("step 1 (gif): reference/grid.gif: not a PNG or JPEG picture; save it as a PNG"));
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    const std::string png = bwcli::readFile((kReplay / "reference/grid.png").string());
+    const std::string jpg = bwcli::readFile((kReplay / "reference/grid.jpg").string());
+    std::ofstream(dir / "short.png", std::ios::binary) << png.substr(0, 20);
+    std::string zero = png;
+    zero.replace(16, 4, std::string(4, '\0'));  // IHDR width 0
+    std::ofstream(dir / "zero.png", std::ios::binary) << zero;
+    std::ofstream(dir / "short.jpg", std::ios::binary) << jpg.substr(0, 4);
+    std::ofstream(dir / "empty.png", std::ios::binary);
+    const auto at = [&](const std::string& file) {
+        return failure(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [
+            {"name": "ref", "action": "openReferenceImage", "file": ")" + file + R"("}]})",
+                       dir);
+    };
+    CHECK_THAT(at("short.png"), ContainsSubstring("step 1 (ref): short.png: its size can't be read from its PNG header"));
+    CHECK_THAT(at("zero.png"), ContainsSubstring("zero.png: its size can't be read from its PNG header"));
+    CHECK_THAT(at("short.jpg"), ContainsSubstring("short.jpg: its size can't be read from its JPEG header"));
+    CHECK_THAT(at("empty.png"), ContainsSubstring("empty.png: not a PNG or JPEG picture"));
+    CHECK_THAT(at("missing.png"), ContainsSubstring("step 1 (ref)"));
+    CHECK_THAT(at("missing.png"), ContainsSubstring("missing.png"));
+}
+
+TEST_CASE("a picture beside the steps file's directory is found by .. and a project keeps it (#422)",
+          "[replay][reference][paths]") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    fs::create_directories(dir / "steps");
+    fs::create_directories(dir / "pictures");
+    const std::string jpg = bwcli::readFile((kReplay / "reference/grid.jpg").string());
+    std::ofstream(dir / "pictures/grid.jpg", std::ios::binary) << jpg;
+    const auto out = replayed(R"({"version": 1, "start": {"blank": [20, 10]}, "steps": [
+        {"name": "ref", "action": "openReferenceImage", "file": "../pictures/grid.jpg"}]})",
+                              dir / "steps");
+    const project::Project& p = out.captures[0].project;
+    project::writeZip(p, dir / "01-ref.bwp");
+    fs::remove_all(dir / "pictures");
+    const project::Project back = project::read(dir / "01-ref.bwp");
+    CHECK(back.layers == p.layers);
+    CHECK(*layerNamed(back, "Reference 1").props.reference->bytes == jpg);
+}
+
+TEST_CASE("the text layers set writes the bytes saved for it, the same every run (#422)", "[replay][text]") {
+    steps::Script s = steps::parse(bwcli::readFile((kReplay / "text-layers.json").string()));
+    bwcli::replay::load(s, kReplay, kLibrary);
+    const bwcli::replay::Outcome out = bwcli::replay::run(s, bwcli::replay::start(s, kReplay, kSamples));
+    CHECK(out.notes.empty());
+    std::set<std::string> saved;
+    for (const auto& e : fs::directory_iterator(kReplay / "text-layers"))
+        saved.insert(e.path().filename().string());
+    std::set<std::string> written;
+    for (const auto& c : out.captures) {
+        INFO(c.stem);
+        CHECK_FALSE(c.project.sauce);
+        written.insert(c.stem + ".ans");
+        const fs::path golden = kReplay / "text-layers" / (c.stem + ".ans");
+        REQUIRE(fs::exists(golden));
+        CHECK(ansBytes(c.project) == bwcli::readFile(golden.string()));
+    }
+    CHECK(written == saved);
+    REQUIRE(out.captures.size() == s.steps.size());
+    // the last step adds a reference layer, on top, which the .ans doesn't show
+    CHECK(layerNames(out.captures.back().project) == std::vector<std::string>{"Background", "Text 1", "Reference 1"});
+
+    // a second run gives the same projects
+    steps::Script again = steps::parse(bwcli::readFile((kReplay / "text-layers.json").string()));
+    bwcli::replay::load(again, kReplay, kLibrary);
+    const bwcli::replay::Outcome second = bwcli::replay::run(again, bwcli::replay::start(again, kReplay, kSamples));
+    REQUIRE(second.captures.size() == out.captures.size());
+    for (std::size_t i = 0; i < out.captures.size(); ++i)
+        CHECK(second.captures[i].project.layers == out.captures[i].project.layers);
 }

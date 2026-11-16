@@ -3,6 +3,8 @@
 #include "blockwright/ansi.h"
 #include "blockwright/big_text.h"
 #include "blockwright/face.h"
+#include "blockwright/library.h"
+#include "blockwright/project.h"
 #include "blockwright/tdf.h"
 #include "blockwright/text.h"
 
@@ -58,6 +60,10 @@ const std::vector<ActionKeys>& actionKeys() {
         // the Text tool: its click, what is typed and its Tool Options,
         // which are its alone (#421)
         {"text", {"at", "text", "textOptions"}},
+        // the active live text layer's whole text replaced, and a Library
+        // text style put on the active layer (#422 D3, D2)
+        {"editText", {"text"}},
+        {"applyTextStyle", {"style"}},
         {"move", {"by"}},
         // the selection
         {"select", {"rect"}},
@@ -80,6 +86,8 @@ const std::vector<ActionKeys>& actionKeys() {
         {"lowerLayer", {}},
         {"setActiveLayer", {"layer"}},
         {"layerProperties", {"rename", "visible", "locked", "alphaLocked"}},
+        // File > Open Reference Image... (#422 D5)
+        {"openReferenceImage", {"file"}},
         // the canvas: Format > Canvas Size... (#420)
         {"canvasSize", {"size", "anchor"}},
         // the window's view (#398)
@@ -578,7 +586,9 @@ Step readStep(const QJsonValue& v, int number) {
         fail(where, o.contains("at") ? "text needs \"text\" to type at its \"at\" cell: a click with nothing typed "
                                        "makes no text layer"
                                      : "\"text\" needs an \"at\" cell to start from");
-    if (st.action == "text" && o.contains("text")) {
+    if (st.action == "editText" && !o.contains("text"))
+        fail(where, "editText needs \"text\", the active text layer's whole new text");
+    if ((st.action == "text" || st.action == "editText") && o.contains("text")) {
         // as typed: the Text tool takes the characters as they come, Enter
         // as a new line, and types no other control character, C0, DEL or
         // C1 (typedInText)
@@ -600,6 +610,37 @@ Step readStep(const QJsonValue& v, int number) {
         st.text = QString::fromStdString(stringOf(where, "text", o["text"]))
                       .normalized(QString::NormalizationForm_C)
                       .toStdU32String();
+    }
+    if (st.action == "applyTextStyle") {
+        if (!o.contains("style"))
+            fail(where, "applyTextStyle needs \"style\": a bundled Library preset's name, or {\"file\": ...}");
+        const QJsonValue& v = o["style"];
+        if (v.isObject()) {
+            const QJsonObject f = objectOf(where, "style", v, {"file"});
+            if (!f.contains("file"))
+                fail(where, "\"style\" needs \"file\", a .style.json's path");
+            const std::string path = stringOf(where, "style file", f["file"]);
+            if (const auto why = pathProblem(path))
+                fail(where, "\"style file\" " + *why);
+            st.files.push_back({"style file", path, library::kMaxSidecarBytes});
+        } else if (v.isString()) {
+            const std::string name = utf8(v.toString());
+            if (!goodName(name))
+                fail(where, "\"style\" must be a bundled Library preset's name (1-64 of a-z 0-9 - _, the file name "
+                            "before .style.json) or {\"file\": ...}, not \"" + name + "\"");
+            st.stylePreset = name;
+        } else {
+            fail(where, std::string("\"style\" must be a bundled Library preset's name or {\"file\": ...}, not ") +
+                            kindOf(v));
+        }
+    }
+    if (st.action == "openReferenceImage") {
+        if (!o.contains("file"))
+            fail(where, "openReferenceImage needs \"file\", a PNG or JPEG picture's path");
+        const std::string path = stringOf(where, "file", o["file"]);
+        if (const auto why = pathProblem(path))
+            fail(where, "\"file\" " + *why);
+        st.files.push_back({"file", path, project::kMaxEntryBytes});
     }
     if (o.contains("source"))
         st.source = pointOf(where, "source", o["source"], false);

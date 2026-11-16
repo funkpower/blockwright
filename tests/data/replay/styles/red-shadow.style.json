@@ -1,0 +1,10 @@
+{
+  "kind": "text-style",
+  "name": "Red Shadow",
+  "category": "classic",
+  "tags": ["shadow"],
+  "effects": [
+    {"kind": "shadow", "enabled": true, "colour": 8, "direction": "se", "distance": 1, "form": "drop"},
+    {"kind": "fill", "enabled": true, "colour": 4, "mode": "flat", "ramp": "fire"}
+  ]
+}

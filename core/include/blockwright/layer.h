@@ -99,6 +99,10 @@ CellRect unite(CellRect a, CellRect b, CellRect clip);
 // scaled across, its aspect kept or not. Opacity is a percentage.
 struct ReferenceImage {
     static constexpr int kMaxPlace = 1 << 24;  // |x|, |y|, width and height at most
+    // The most pixels File > Open Reference Image... decodes a picture at
+    // in full (kMaxReferenceDecodePixels): a PNG larger by its header is
+    // refused there, and by a steps file's openReferenceImage.
+    static constexpr std::int64_t kMaxDecodePixels = std::int64_t{1} << 26;
     std::shared_ptr<const std::string> bytes;
     int x = 0, y = 0;
     int width = 1, height = 1;
