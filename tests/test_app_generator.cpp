@@ -37,11 +37,14 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QList>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScopeGuard>
@@ -57,10 +60,12 @@
 #include <QTreeWidget>
 #include <QUndoStack>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
 #include <filesystem>
+#include <fstream>
 
 using namespace bw;
 namespace fs = std::filesystem;
@@ -1237,4 +1242,425 @@ TEST_CASE("a float on a Generator layer the undo of Bake Layer gives back is ref
     key(Qt::Key_Escape);
     CHECK(!s->floating());
     CHECK(d.canvas() == canvas);
+}
+
+// ---- Layer > Add Generator Layer… (#439) ------------------------------------
+
+namespace {
+
+void writeText(const fs::path& p, const std::string& text) {
+    std::ofstream out(p, std::ios::binary);
+    out << text;
+    REQUIRE(out.good());
+}
+
+// A generator in `dir` that adds a line to `counter` each time it runs and
+// draws "AB" (or fails, with `fail`); the directory, made.
+QString counterGenerator(const QString& dir, const QString& counter, bool fail = false) {
+#ifdef _WIN32
+    SKIP("the generator is a shell script; test_generator_win.cpp runs generators on Windows");
+#endif
+    REQUIRE(QDir().mkpath(dir));
+    const fs::path d = fpath(dir);
+    writeText(d / "generator.json", R"({"command": ["sh", "./gen.sh"]})");
+    std::string script = "echo run >> '" + fpath(counter).string() + "'\n";
+    script += fail ? "echo 'counter: asked to fail' >&2\nexit 3\n" : "printf AB\n";
+    writeText(d / "gen.sh", script);
+    return dir;
+}
+
+// How many times the counter generator ran.
+int runs(const QString& counter) {
+    QFile f(counter);
+    if (!f.open(QIODevice::ReadOnly))
+        return 0;
+    return int(f.readAll().count('\n'));
+}
+
+// A 12x2 project of two cells layers, "ground" under "top", no generators,
+// written as a zip at `path`.
+void writeTwoLayers(const QString& path) {
+    project::Project p = project::fromAnsi(parseAnsi("x"));
+    p.sauce.reset();
+    p.layers = LayerStack(12, 2);
+    p.layers.add(makeLayer(LayerKind::Cells, 12, 2, "ground"));
+    p.layers.add(makeLayer(LayerKind::Cells, 12, 2, "top"));
+    project::writeZip(p, fpath(path));
+}
+
+std::vector<std::string> layerNames(const Document& d) {
+    std::vector<std::string> out;
+    for (const Layer& l : d.layers().layers())
+        out.push_back(l.props.name);
+    return out;
+}
+
+// The kept files under scripts/<id>/, by their path from it.
+std::map<std::string, std::string> scriptFiles(const Document& d, LayerId id) {
+    std::map<std::string, std::string> out;
+    const std::string dir = generator::directory(id);
+    for (const auto& [path, bytes] : d.project().files)
+        if (path.starts_with(dir))
+            out.emplace(path.substr(dir.size()), bytes);
+    return out;
+}
+
+struct TwoLayersWindow {
+    QTemporaryDir tmp;
+    QString path = tmp.filePath(QStringLiteral("two.bwp"));
+    QString counter = tmp.filePath(QStringLiteral("runs.txt"));
+    MainWindow w;
+
+    TwoLayersWindow() {
+        writeTwoLayers(path);
+        QString error;
+        REQUIRE(w.openFile(path, &error));
+        REQUIRE(w.document()->layers()[0].props.name == "ground");
+        REQUIRE(w.document()->setActiveLayer(w.document()->layers()[0].props.id));
+    }
+};
+
+} // namespace
+
+TEST_CASE("Add Generator Layer adds the generator above the active layer, run once, as one undo step") {
+    TwoLayersWindow o;
+    Document& d = *o.w.document();
+    const QString dir = counterGenerator(o.tmp.filePath(QStringLiteral("stars")), o.counter);
+    const std::vector<Layer> before = d.layers().layers();
+    const auto filesBefore = d.project().files;
+    const LayerId ground = d.activeLayer();
+    CHECK_FALSE(o.w.generatorsTrusted());
+
+    Truster trust(QMessageBox::Yes);
+    QString error;
+    const LayerId id = o.w.addGeneratorFrom(dir, &error);
+    REQUIRE(id != 0);
+    CHECK(error.isEmpty());
+    CHECK(trust.asked == 1);
+    CHECK(runs(o.counter) == 1);
+    CHECK(o.w.generatorRunner()->started() == 0);
+    CHECK(layerNames(d) == std::vector<std::string>{"ground", "stars", "top"});
+    const Layer* l = d.layers().find(id);
+    REQUIRE(l);
+    CHECK(l->props.kind == LayerKind::Generator);
+    CHECK(row(d, id) == "AB");
+    CHECK(d.activeLayer() == id);
+    CHECK(scriptFiles(d, id) == generator::readDirectory(fpath(dir)));
+    CHECK(d.undoStack()->count() == 1);
+    CHECK(d.undoStack()->undoText() == QStringLiteral("Add Generator Layer"));
+    CHECK(d.isModified());
+    CHECK(o.w.statusBar()->currentMessage().contains(QStringLiteral("Added generator layer stars")));
+    // the Yes ran this generator once; the project's trust is as it was
+    CHECK_FALSE(o.w.generatorsTrusted());
+    // the generator form shows for it
+    CHECK(o.w.layersWidget()->generatorForm()->isVisibleTo(o.w.layersWidget()));
+    const std::vector<Layer> added = d.layers().layers();
+
+    // one undo puts the stack, the files and the active layer back exactly
+    d.undoStack()->undo();
+    CHECK(d.layers().layers() == before);
+    CHECK(d.project().files == filesBefore);
+    CHECK(d.activeLayer() == ground);
+    CHECK_FALSE(d.isModified());
+    // redo gives the layer back, with its id, cells and files, running nothing
+    d.undoStack()->redo();
+    CHECK(d.layers().layers() == added);
+    CHECK(scriptFiles(d, id) == generator::readDirectory(fpath(dir)));
+    CHECK(d.activeLayer() == id);
+    QApplication::processEvents();
+    CHECK(runs(o.counter) == 1);
+
+    // saved, it reopens with the layer's files and cells
+    REQUIRE(o.w.save());
+    REQUIRE(o.w.openFile(o.path, &error));
+    CHECK(layerNames(d) == std::vector<std::string>{"ground", "stars", "top"});
+    CHECK(row(d, id) == "AB");
+    CHECK(scriptFiles(d, id) == generator::readDirectory(fpath(dir)));
+    CHECK(runs(o.counter) == 1);
+}
+
+TEST_CASE("Add Generator Layer asks every time, and a Yes trusts no generator the project already had") {
+    BarsWindow o;
+    Document& d = *o.w.document();
+    const QString counter = o.tmp.filePath(QStringLiteral("runs.txt"));
+    const QString dir = counterGenerator(o.tmp.filePath(QStringLiteral("gen")), counter);
+    Truster trust(QMessageBox::Yes);
+    QString error;
+    const LayerId id = o.w.addGeneratorFrom(dir, &error);
+    REQUIRE(id != 0);
+    CHECK(trust.asked == 1);
+    // the bars layer was the project's before; it is asked about at its run
+    CHECK_FALSE(o.w.generatorsTrusted());
+    CHECK(d.layers()[d.layers().size() - 1].props.id == id);
+
+    // once the project is trusted, a directory's generator is still asked about
+    REQUIRE(d.setActiveLayer(o.id));
+    REQUIRE(d.requestGeneratorRun(o.id));
+    REQUIRE(waitFor([&] { return o.w.generatorRunner()->started() == 1 && idle(o.w); }));
+    CHECK(trust.asked == 2);
+    REQUIRE(o.w.generatorsTrusted());
+    REQUIRE(o.w.addGeneratorFrom(dir, &error) != 0);
+    CHECK(trust.asked == 3);
+    CHECK(runs(counter) == 2);
+}
+
+TEST_CASE("a Yes to Add Generator Layer leaves an untrusted project untrusted: the new generator's next run asks") {
+    TwoLayersWindow o;
+    Document& d = *o.w.document();
+    o.w.generatorRunner()->setDebounce(0);
+    const QString dir = counterGenerator(o.tmp.filePath(QStringLiteral("stars")), o.counter);
+    REQUIRE_FALSE(o.w.generatorsTrusted());
+    Truster trust(QMessageBox::Yes);
+    QString error;
+    const LayerId id = o.w.addGeneratorFrom(dir, &error);
+    REQUIRE(id != 0);
+    CHECK(trust.asked == 1);
+    CHECK(runs(o.counter) == 1);
+    CHECK_FALSE(o.w.generatorsTrusted());
+
+    // its form's Run asks as for any untrusted project; a No runs nothing
+    trust.button = QMessageBox::No;
+    REQUIRE(d.requestGeneratorRun(id));
+    REQUIRE(waitFor([&] { return trust.asked == 2 && idle(o.w); }));
+    CHECK(runs(o.counter) == 1);
+    CHECK(o.w.generatorRunner()->started() == 0);
+    CHECK(row(d, id) == "AB");
+    CHECK_FALSE(o.w.generatorsTrusted());
+
+    // saved and opened again it is still untrusted, and asked about
+    REQUIRE(o.w.save());
+    REQUIRE(o.w.openFile(o.path, &error));
+    o.w.generatorRunner()->setDebounce(0);
+    CHECK_FALSE(o.w.generatorsTrusted());
+    REQUIRE(d.setActiveLayer(id));
+    trust.button = QMessageBox::Yes;
+    REQUIRE(d.requestGeneratorRun(id));
+    REQUIRE(waitFor([&] { return o.w.generatorRunner()->started() == 1 && idle(o.w); }));
+    CHECK(trust.asked == 3);
+    CHECK(runs(o.counter) == 2);
+    CHECK(o.w.generatorsTrusted());
+}
+
+TEST_CASE("a Yes to Add Generator Layer keeps a trusted project trusted") {
+    BarsWindow o;
+    Document& d = *o.w.document();
+    const QString counter = o.tmp.filePath(QStringLiteral("runs.txt"));
+    const QString dir = counterGenerator(o.tmp.filePath(QStringLiteral("gen")), counter);
+    Truster trust(QMessageBox::Yes);
+    REQUIRE(d.requestGeneratorRun(o.id));
+    REQUIRE(waitFor([&] { return o.w.generatorRunner()->started() == 1 && idle(o.w); }));
+    REQUIRE(trust.asked == 1);
+    REQUIRE(o.w.generatorsTrusted());
+    QString error;
+    const LayerId id = o.w.addGeneratorFrom(dir, &error);
+    REQUIRE(id != 0);
+    CHECK(trust.asked == 2);
+    CHECK(o.w.generatorsTrusted());
+    // its next run, a generator of a trusted project's, asks nothing
+    REQUIRE(d.requestGeneratorRun(id));
+    REQUIRE(waitFor([&] { return o.w.generatorRunner()->started() == 2 && idle(o.w); }));
+    CHECK(trust.asked == 2);
+    CHECK(runs(counter) == 2);
+}
+
+namespace {
+
+// Bars' untrusted generator taken off the stack by `takeOff` (Delete or
+// Bake), a directory's generator added with a Yes, and both undone: bars
+// is back, and its Run must still ask.
+void checkTakenOffGeneratorStillAsks(const std::function<bool(Document&, LayerId)>& takeOff) {
+    BarsWindow o;
+    Document& d = *o.w.document();
+    const QString counter = o.tmp.filePath(QStringLiteral("runs.txt"));
+    const QString dir = counterGenerator(o.tmp.filePath(QStringLiteral("gen")), counter);
+    REQUIRE_FALSE(o.w.generatorsTrusted());
+    REQUIRE(takeOff(d, o.id));
+    REQUIRE(generator::generatorLayers(d.layers()).empty());
+    Truster trust(QMessageBox::Yes);
+    QString error;
+    REQUIRE(o.w.addGeneratorFrom(dir, &error) != 0);
+    CHECK(trust.asked == 1);
+    CHECK_FALSE(o.w.generatorsTrusted());
+    d.undoStack()->undo(); // the add
+    d.undoStack()->undo(); // the delete or bake: bars is back
+    REQUIRE(d.layers().find(o.id));
+    REQUIRE(d.layers().find(o.id)->props.kind == LayerKind::Generator);
+    REQUIRE(d.setActiveLayer(o.id));
+    trust.button = QMessageBox::No;
+    REQUIRE(d.requestGeneratorRun(o.id)); // its form's Run
+    REQUIRE(waitFor([&] { return trust.asked == 2 && idle(o.w); }));
+    CHECK(trust.asked == 2);
+    CHECK_FALSE(o.w.generatorsTrusted());
+    CHECK(o.w.generatorRunner()->started() == 0);
+}
+
+} // namespace
+
+TEST_CASE("a Yes to Add Generator Layer doesn't trust a generator a Delete Layer took out") {
+    checkTakenOffGeneratorStillAsks([](Document& d, LayerId id) { return d.removeLayer(id); });
+}
+
+TEST_CASE("a Yes to Add Generator Layer doesn't trust a generator a Bake Layer took out") {
+    checkTakenOffGeneratorStillAsks([](Document& d, LayerId id) { return d.bakeLayer(id); });
+}
+
+TEST_CASE("Add Generator Layer declined, refused or failed adds nothing") {
+    TwoLayersWindow o;
+    Document& d = *o.w.document();
+    const std::vector<Layer> before = d.layers().layers();
+    const auto filesBefore = d.project().files;
+    QString error;
+
+    SECTION("the trust question answered No runs nothing and adds nothing") {
+        const QString dir = counterGenerator(o.tmp.filePath(QStringLiteral("gen")), o.counter);
+        Truster trust(QMessageBox::No);
+        CHECK(o.w.addGeneratorFrom(dir, &error) == 0);
+        CHECK(error.isEmpty());
+        CHECK(trust.asked == 1);
+        CHECK(runs(o.counter) == 0);
+        CHECK(o.w.statusBar()->currentMessage().contains(QStringLiteral("not added")));
+        CHECK_FALSE(o.w.generatorsTrusted());
+    }
+    SECTION("a directory without generator.json is refused before anything is asked") {
+        const QString dir = o.tmp.filePath(QStringLiteral("empty"));
+        REQUIRE(QDir().mkpath(dir));
+        writeText(fpath(dir) / "gen.sh", "printf AB");
+        Truster trust(QMessageBox::Yes);
+        CHECK(o.w.addGeneratorFrom(dir, &error) == 0);
+        CHECK(error == QStringLiteral("a generator needs a generator.json"));
+        CHECK(trust.asked == 0);
+    }
+    SECTION("a file or a missing path for the directory is refused") {
+        Truster trust(QMessageBox::Yes);
+        CHECK(o.w.addGeneratorFrom(o.path, &error) == 0);
+        CHECK(error.endsWith(QStringLiteral(": not a directory")));
+        CHECK(o.w.addGeneratorFrom(o.tmp.filePath(QStringLiteral("missing")), &error) == 0);
+        CHECK(error.endsWith(QStringLiteral(": not a directory")));
+        CHECK(trust.asked == 0);
+    }
+    SECTION("a generator.json that can't be read is refused before anything is asked") {
+        const QString dir = o.tmp.filePath(QStringLiteral("bad"));
+        REQUIRE(QDir().mkpath(dir));
+        writeText(fpath(dir) / "generator.json", R"({"command": []})");
+        Truster trust(QMessageBox::Yes);
+        CHECK(o.w.addGeneratorFrom(dir, &error) == 0);
+        CHECK_FALSE(error.isEmpty());
+        CHECK(trust.asked == 0);
+    }
+    SECTION("a program that fails adds nothing, and says why") {
+        const QString dir = counterGenerator(o.tmp.filePath(QStringLiteral("broken")), o.counter, true);
+        Truster trust(QMessageBox::Yes);
+        CHECK(o.w.addGeneratorFrom(dir, &error) == 0);
+        CHECK(trust.asked == 1);
+        CHECK(runs(o.counter) == 1);
+        CHECK(error.contains(QStringLiteral("asked to fail")));
+        CHECK_FALSE(o.w.generatorsTrusted());
+    }
+    CHECK(d.layers().layers() == before);
+    CHECK(d.project().files == filesBefore);
+    CHECK(d.undoStack()->count() == 0);
+    CHECK_FALSE(d.isModified());
+}
+
+TEST_CASE("Layer > Add Generator Layer picks a directory, asks, and adds the layer; a failure shows in a box") {
+    // A QFileDialog writes Qt's own settings when it is destroyed. Only where
+    // they are in the scratch directory may this test build one.
+    if (!bwtest::qtSettingsInScratch(QFileInfo(bwtest::scratchSettingsFile()).absolutePath()))
+        SKIP("a QFileDialog would write Qt's native settings, which can't be moved off the user's on this platform");
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    struct Restore {
+        ~Restore() { QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, false); }
+    } restore;
+    TwoLayersWindow o;
+    Document& d = *o.w.document();
+    QAction* add = o.w.findChild<QAction*>(QStringLiteral("addGeneratorLayer"));
+    REQUIRE(add);
+    CHECK(add->text() == QStringLiteral("Add &Generator Layer…"));
+    CHECK(add->isEnabled());
+    QMenu* layerMenu = nullptr;
+    for (QAction* a : o.w.menuBar()->actions())
+        if (a->text() == QStringLiteral("&Layer"))
+            layerMenu = a->menu();
+    REQUIRE(layerMenu);
+    CHECK(layerMenu->actions().contains(add));
+
+    const bool fail = GENERATE(false, true);
+    const QString dir = counterGenerator(o.tmp.filePath(QStringLiteral("gen")), o.counter, fail);
+    Truster trust(QMessageBox::Yes);
+    bool picked = false;
+    QString warned;
+    QTimer answer;
+    answer.setInterval(10);
+    QObject::connect(&answer, &QTimer::timeout, [&] {
+        QWidget* modal = QApplication::activeModalWidget();
+        if (auto* dialog = qobject_cast<QFileDialog*>(modal); dialog && !picked) {
+            picked = true;
+            auto* name = dialog->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"));
+            REQUIRE(name);
+            name->setText(dir);
+            QMetaObject::invokeMethod(dialog, "accept");
+        } else if (auto* box = qobject_cast<QMessageBox*>(modal);
+                   box && box->objectName() != QStringLiteral("trustGenerators")) {
+            warned = boxTitle(box) + QStringLiteral(": ") + boxText(box);
+            box->accept();
+        }
+    });
+    answer.start();
+    add->trigger();
+    answer.stop();
+    CHECK(picked);
+    CHECK(trust.asked == 1);
+    CHECK(runs(o.counter) == 1);
+    if (fail) {
+        CHECK(warned.startsWith(QStringLiteral("Add Generator Layer: Could not add the generator in %1:")
+                                    .arg(QDir::toNativeSeparators(dir))));
+        CHECK(warned.contains(QStringLiteral("asked to fail")));
+        CHECK(layerNames(d) == std::vector<std::string>{"ground", "top"});
+    } else {
+        CHECK(warned.isEmpty());
+        CHECK(layerNames(d) == std::vector<std::string>{"ground", "gen", "top"});
+        CHECK(d.undoStack()->count() == 1);
+    }
+}
+
+TEST_CASE("Layer > Add Generator Layer while a generator runs refuses before it asks or runs anything") {
+    BarsWindow o(20);
+    Truster trust(QMessageBox::Yes);
+    GeneratorRunner* runner = o.w.generatorRunner();
+    countSpin(o.w.layersWidget()->generatorForm())->setValue(4);
+    REQUIRE(waitFor([&] { return runner->started() == 1; }));
+    REQUIRE(runner->busy());
+    const int asked = trust.asked;
+    QString error;
+    const QString counter = o.tmp.filePath(QStringLiteral("runs.txt"));
+    CHECK(o.w.addGeneratorFrom(counterGenerator(o.tmp.filePath(QStringLiteral("gen")), counter), &error) == 0);
+    CHECK(error == QStringLiteral("a generator is running; add the layer when it ends"));
+    CHECK(trust.asked == asked);
+    CHECK(runs(counter) == 0);
+
+    QStringList shown;
+    QTimer answer;
+    answer.setInterval(10);
+    QObject::connect(&answer, &QTimer::timeout, [&] {
+        QWidget* modal = QApplication::activeModalWidget();
+        if (!modal || !modal->isVisible())
+            return;
+        if (auto* box = qobject_cast<QMessageBox*>(modal)) {
+            if (box->objectName() == QStringLiteral("trustGenerators"))
+                return;
+            shown << boxTitle(box) + QStringLiteral(": ") + boxText(box);
+            box->reject();
+        } else if (auto* dialog = qobject_cast<QDialog*>(modal)) {
+            shown << dialog->windowTitle();
+            dialog->reject();
+        }
+    });
+    answer.start();
+    o.w.findChild<QAction*>(QStringLiteral("addGeneratorLayer"))->trigger();
+    answer.stop();
+    CHECK(shown == QStringList{QStringLiteral("Add Generator Layer: A generator is running; add the layer when it ends.")});
+
+    generator::killRunning();
+    REQUIRE(waitFor([&] { return idle(o.w); }, 10000));
+    generator::testing::allowRuns();
 }

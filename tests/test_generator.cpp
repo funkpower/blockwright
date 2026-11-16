@@ -716,6 +716,28 @@ TEST_CASE("the CLI reads a generator's directory, skipping hidden entries and re
     }
 }
 
+TEST_CASE("core reads a generator's directory as the CLI does, each refusal naming its path", "[generator]") {
+    // the CLI's add-generator and the app's Layer > Add Generator Layer read it (#439)
+    const fs::path dir = scratch("core-read");
+    writeFile(dir / "generator.json", R"({"command": ["sh", "gen.sh"]})");
+    writeFile(dir / "gen.sh", "printf x");
+    writeFile(dir / ".hidden", "h");
+    CHECK(generator::readDirectory(dir) ==
+          Files{{"generator.json", R"({"command": ["sh", "gen.sh"]})"}, {"gen.sh", "printf x"}});
+    CHECK(bwcli::readGeneratorDir(dir) == generator::readDirectory(dir));
+    try {
+        generator::readDirectory(dir / "gen.sh");
+        FAIL("no throw");
+    } catch (const generator::GeneratorError& e) {
+        CHECK(std::string(e.what()) == (dir / "gen.sh").string() + ": not a directory");
+    }
+    CHECK_THROWS_AS(generator::readDirectory(dir / "missing"), generator::GeneratorError);
+
+    CHECK(generator::directoryLayerName(dir) == "core-read");
+    CHECK(generator::directoryLayerName(dir / "") == "core-read");
+    CHECK(generator::directoryLayerName(dir / "." ) == "core-read");
+}
+
 TEST_CASE("the CLI runs the generators asked for, bottom first, or every one", "[generator][cli]") {
     LayerStack s(4, 2);
     const LayerId c = s.add(makeLayer(LayerKind::Cells, 4, 2, "cells"));

@@ -277,6 +277,18 @@ public:
     // (main_window_generators.cpp). The scene runs with `python`, or with
     // scene::findPython()'s when it is empty.
     bool openSceneFile(const QString& path, QString* error, const std::vector<std::string>& python = {});
+    // Layer > Add Generator Layer… once its directory is picked: reads the
+    // generator in `dir` (generator::readDirectory), asks whether to run it
+    // (the trust question, naming its command, every time: the program
+    // comes from outside the project), runs it once on a copy of the
+    // project (generator::add, the CLI's add-generator) and adds the layer
+    // with its files above the active one as one undo step
+    // (Document::addGeneratorLayer). Returns the new layer's id; 0 and
+    // `error` when the directory can't be read or holds no generator, or
+    // the run fails, leaving the document as it was; 0 and an empty
+    // `error` when the question is answered No. A Yes runs this generator
+    // once and leaves the project's trust as it was.
+    LayerId addGeneratorFrom(const QString& dir, QString* error);
     // Opens the sample project at `path` (samples.h) as an untitled copy,
     // without asking anything: unmodified, off the recent list, its
     // generators not trusted. False and `error` on failure, leaving the
@@ -341,6 +353,9 @@ public slots:
     // File > Open Scene...: a file picker, then the question whether to run
     // the scene, before openSceneFile.
     void openScene();
+    // Layer > Add Generator Layer…: a directory picker, then
+    // addGeneratorFrom, a failure in a warning box.
+    void addGeneratorLayer();
     bool save();
     // Save As in the document's form: a directory picker for a project
     // directory, else the file dialog (.ans or .bwp, by its filter).

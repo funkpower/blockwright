@@ -37,7 +37,8 @@
 //
 // The program runs with the user's environment and rights: a project's
 // generators run only when asked for (cli run-generators, add-generator;
-// in the app, a changed parameter or Run once the project is trusted).
+// in the app, a changed parameter or Run once the project is trusted, and
+// Layer > Add Generator Layer after asking each time).
 // It leads a process group of its own, and the run ends with the group
 // killed whichever way it ends (a success too): a background process it
 // leaves behind is stopped, and what that process would have written is
@@ -74,6 +75,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <optional>
@@ -272,6 +274,24 @@ void allowRuns() noexcept;
 // keeping the layer's offset and properties. On a throw the project is as
 // it was.
 void refresh(project::Project& project, LayerId id, const RunOptions& options = {});
+
+// At most this many files and bytes in a generator's directory (readDirectory).
+inline constexpr std::size_t kMaxDirectoryFiles = 1000;
+inline constexpr std::size_t kMaxDirectoryBytes = std::size_t{64} << 20;
+
+// The files under `dir`, by their path from it ('/'-separated), as add
+// takes them: what `blockwright-cli add-generator` and the app's Layer > Add
+// Generator Layer read. Hidden files and directories (a leading '.', such
+// as .git) are skipped; a symbolic link (a junction too, links.h) or
+// anything else that isn't a plain file or directory is refused, as a
+// project directory refuses one, and so is a directory over the limits
+// above. Throws GeneratorError, each message leading with the path it is
+// about.
+std::map<std::string, std::string> readDirectory(const std::filesystem::path& dir);
+
+// The name a generator layer added from `dir` takes by default: the
+// directory's own name ("stars" for "gens/stars/" as for "gens/stars").
+std::string directoryLayerName(const std::filesystem::path& dir);
 
 // Adds a generator layer named `name` on top of the stack, the canvas's
 // size at (0, 0), with `files` (paths relative to the generator's

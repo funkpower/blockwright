@@ -121,6 +121,16 @@ void MainWindow::createDocks() {
     layerMenu_->setToolTipsVisible(true);
     layerMenu_->addAction(layers_->newCellsAction());
     layerMenu_->addAction(layers_->newPixelsAction());
+    // Add Generator Layer…: a generator from a directory (PLAN §7), run once
+    // after the trust question; the window always holds a document, so
+    // it is never disabled, and a running generator refuses it as it
+    // refuses Open Scene.
+    QAction* addGenerator =
+        layerMenu_->addAction(tr("Add &Generator Layer…"), this, &MainWindow::addGeneratorLayer);
+    addGenerator->setObjectName(QStringLiteral("addGeneratorLayer"));
+    addGenerator->setStatusTip(tr("Add a Generator layer above the active layer from a directory holding a "
+                                  "generator.json, and run its program once"));
+    addGenerator->setToolTip(addGenerator->statusTip());
     layerMenu_->addAction(layers_->deleteAction());
     layerMenu_->addSeparator();
     layerMenu_->addAction(layers_->raiseAction());

@@ -495,12 +495,8 @@ int addGenerator(const std::string& path, const std::string& dir, std::optional<
     bw::project::Project p = loadProject(path);
     const auto files = bwcli::readGeneratorDir(dir);
     bwcli::prepareToRunGenerators();
-    if (!name) {
-        std::filesystem::path d = std::filesystem::absolute(dir).lexically_normal();
-        if (d.filename().empty())
-            d = d.parent_path();
-        name = d.filename().string();
-    }
+    if (!name)
+        name = bw::generator::directoryLayerName(dir);
     bw::LayerId id = 0;
     try {
         id = bw::generator::add(p, files, *name, opts);

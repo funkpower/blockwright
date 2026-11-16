@@ -5,7 +5,9 @@
 // cells the last run left. A refused or failed run leaves the cells too,
 // and says why in the status bar. File > Open Scene... opens a Python scene
 // as a new project of generator layers (scene_import.h), running the scene
-// once, after asking.
+// once, after asking. Layer > Add Generator Layer… adds the generator in a
+// directory as a new layer, running it once, after asking; the project's
+// trust is left as it was.
 
 #include "main_window.h"
 
@@ -27,6 +29,8 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <exception>
+#include <filesystem>
+#include <map>
 #include <optional>
 #include <utility>
 
@@ -40,6 +44,14 @@ QString projectKey(const QString& path) {
         return {};
     const QString canonical = QFileInfo(path).canonicalFilePath();
     return canonical.isEmpty() ? QDir::cleanPath(QFileInfo(path).absoluteFilePath()) : canonical;
+}
+
+// The command a spec runs, as the trust question shows it.
+QString commandText(const generator::Spec& spec) {
+    QString command;
+    for (const std::string& arg : spec.command)
+        command += (command.isEmpty() ? QString() : QStringLiteral(" ")) + QString::fromStdString(arg);
+    return command;
 }
 
 } // namespace
@@ -88,8 +100,7 @@ bool MainWindow::trustGenerators(LayerId id) {
         return true;
     QString command;
     if (const std::optional<generator::Spec> spec = doc_.generatorSpec(id, nullptr))
-        for (const std::string& arg : spec->command)
-            command += (command.isEmpty() ? QString() : QStringLiteral(" ")) + QString::fromStdString(arg);
+        command = commandText(*spec);
     const QString where = doc_.path().isEmpty() ? tr("this document") : QDir::toNativeSeparators(doc_.path());
     if (!askToRun(tr("Run the generators in %1?").arg(where),
                   tr("A generator is a program the project names, run on this computer with your "
@@ -222,6 +233,104 @@ bool MainWindow::openSceneFile(const QString& path, QString* error, const std::v
     generatorsTrusted_ = true;
     statusBar()->showMessage(tr("Opened scene %1").arg(QFileInfo(path).fileName()), 5000);
     return true;
+}
+
+void MainWindow::addGeneratorLayer() {
+    // As Open Scene: generator::killRunning knows one run's group.
+    if (runner_->busy()) {
+        bw::warning(this, tr("Add Generator Layer"), tr("A generator is running; add the layer when it ends."));
+        return;
+    }
+    const QString start = doc_.path().isEmpty() ? QString() : QFileInfo(doc_.path()).absolutePath();
+    const QString dir = QFileDialog::getExistingDirectory(this, tr("Add Generator Layer"), start);
+    if (dir.isEmpty())
+        return;
+    QString error;
+    if (!addGeneratorFrom(dir, &error) && !error.isEmpty())
+        bw::warning(this, tr("Add Generator Layer"),
+                    tr("Could not add the generator in %1:\n%2").arg(QDir::toNativeSeparators(dir), error));
+}
+
+LayerId MainWindow::addGeneratorFrom(const QString& dir, QString* error) {
+    error->clear();
+    if (runner_->busy()) {
+        *error = tr("a generator is running; add the layer when it ends");
+        return 0;
+    }
+    const std::filesystem::path path(QFile::encodeName(dir).toStdString());
+    std::map<std::string, std::string> files;
+    generator::Spec spec;
+    try {
+        files = generator::readDirectory(path);
+        const auto it = files.find(std::string(generator::kSpecFile));
+        if (it == files.end())
+            throw generator::GeneratorError("a generator needs a " + std::string(generator::kSpecFile));
+        spec = generator::parseSpec(it->second);
+    } catch (const std::exception& e) {
+        *error = QString::fromStdString(e.what());
+        return 0;
+    }
+    const QFileInfo fi(dir);
+    const QString where =
+        QDir::toNativeSeparators(fi.canonicalFilePath().isEmpty() ? fi.absoluteFilePath() : fi.canonicalFilePath());
+    // Asked every time, trusted project or not: the program is the
+    // directory's, which the project's trust doesn't cover. A Yes runs it
+    // this once and leaves the project's trust as it was: a deleted or
+    // baked generator an undo can bring back is the project's too, so
+    // whether the project "had none" can't be told from the layers.
+    if (!askToRun(tr("Run the generator in %1?").arg(where),
+                  tr("Adding a generator layer runs its program on this computer with your permissions, now for "
+                     "the layer's cells and again when its form changes. Run it only if you trust where it came "
+                     "from."),
+                  commandText(spec))) {
+        statusBar()->showMessage(tr("Generator layer not added: its generator was not run"), 8000);
+        return 0;
+    }
+    struct Added {
+        std::optional<Layer> layer;
+        std::map<std::string, std::string> files;
+        QString error;
+    };
+    QProgressDialog progress(tr("Running the generator..."), QString(), 0, 0, this);
+    progress.setObjectName(QStringLiteral("addGeneratorProgress"));
+    progress.setWindowTitle(tr("Add Generator Layer"));
+    progress.setCancelButton(nullptr);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.show();
+    QFutureWatcher<Added> watcher;
+    QEventLoop loop;
+    connect(&watcher, &QFutureWatcher<Added>::finished, &loop, &QEventLoop::quit);
+    watcher.setFuture(QtConcurrent::run(
+        [p = doc_.project(), files = std::move(files), name = generator::directoryLayerName(path)]() mutable {
+            Added out;
+            try {
+                const LayerId id = generator::add(p, files, std::move(name));
+                out.layer = std::move(*p.layers.remove(id));
+                const std::string prefix = generator::directory(id);
+                for (auto it = p.files.lower_bound(prefix); it != p.files.end() && it->first.starts_with(prefix); ++it)
+                    out.files.insert(*it);
+            } catch (const std::exception& e) {
+                out.error = QString::fromStdString(e.what());
+            }
+            return out;
+        }));
+    if (!watcher.isFinished())
+        loop.exec();
+    progress.hide();
+    Added result = watcher.result();
+    if (!result.layer) {
+        *error = result.error;
+        return 0;
+    }
+    const QString name = QString::fromStdString(result.layer->props.name);
+    const LayerId id = doc_.addGeneratorLayer(std::move(*result.layer), std::move(result.files));
+    if (!id) {
+        *error = tr("the document changed while the generator ran");
+        return 0;
+    }
+    statusBar()->showMessage(tr("Added generator layer %1").arg(name), 5000);
+    return id;
 }
 
 } // namespace bw

@@ -1,7 +1,9 @@
 #include "blockwright/generator.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/links.h"
 #include "blockwright/ramp.h"
+#include "blockwright/regular_file.h"
 #include "blockwright/selection.h"
 
 #include <QByteArray>
@@ -1353,6 +1355,63 @@ std::string probeCommand(const std::vector<std::string>& command, const std::str
 void refresh(project::Project& project, LayerId id, const RunOptions& options) {
     Canvas cells = run(project, id, options);
     project.layers.find(id)->cells = std::move(cells);
+}
+
+std::map<std::string, std::string> readDirectory(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    // a junction is a link here too (links.h)
+    if (!fs::is_directory(linkStatus(dir, ec)))
+        fail(dir.string() + ": not a directory");
+    std::map<std::string, std::string> files;
+    std::size_t total = 0;
+    fs::recursive_directory_iterator it(dir, ec);
+    if (ec)
+        fail(dir.string() + ": " + ec.message());
+    for (const fs::recursive_directory_iterator end; it != end; it.increment(ec)) {
+        if (ec)
+            fail(dir.string() + ": " + ec.message());
+        const fs::path& p = it->path();
+        std::error_code entryEc;  // ec is the step's alone, checked after the loop too
+        if (p.filename().string().starts_with(".")) {
+            it.disable_recursion_pending();  // never walked into, whatever it is
+            continue;
+        }
+        const fs::file_status st = linkStatus(*it, entryEc);
+        if (fs::is_directory(st))
+            continue;
+        if (!fs::is_regular_file(st))
+            fail(p.string() + ": not a plain file (a generator's files can't be links, pipes or devices)");
+        if (files.size() == kMaxDirectoryFiles)
+            fail(dir.string() + ": more than " + std::to_string(kMaxDirectoryFiles) + " files");
+        std::string bytes;
+        try {
+            // through its opened handle, so a FIFO swapped in is never waited on
+            bytes = readRegular(p, kMaxDirectoryBytes - total);
+        } catch (const RegularFileError& e) {
+            switch (e.reason) {
+            case RegularFileError::Reason::NotRegular: fail(p.string() + ": " + e.what());
+            case RegularFileError::Reason::TooLarge: fail(p.string() + ": input too large");
+            case RegularFileError::Reason::Missing:
+            case RegularFileError::Reason::Unreadable: break;
+            }
+            fail(p.string() + ": " + e.systemMessage());
+        }
+        total += bytes.size();
+        files.emplace(fs::relative(p, dir).generic_string(), std::move(bytes));
+    }
+    // a failed step (a directory it can't open) can leave the iterator at its
+    // end, which ends the loop before the check at its top
+    if (ec)
+        fail(dir.string() + ": " + ec.message());
+    return files;
+}
+
+std::string directoryLayerName(const std::filesystem::path& dir) {
+    std::filesystem::path d = std::filesystem::absolute(dir).lexically_normal();
+    if (d.filename().empty())
+        d = d.parent_path();
+    return d.filename().string();
 }
 
 LayerId add(project::Project& project, const std::map<std::string, std::string>& files, std::string name,

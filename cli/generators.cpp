@@ -2,8 +2,6 @@
 
 #include "read_file.h"
 
-#include "blockwright/links.h"
-
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -18,40 +16,11 @@ namespace fs = std::filesystem;
 namespace bwcli {
 
 std::map<std::string, std::string> readGeneratorDir(const fs::path& dir) {
-    std::error_code ec;
-    // a junction is a link here too (links.h)
-    if (!fs::is_directory(bw::linkStatus(dir, ec)))
-        throw Failure{dir.string() + ": not a directory"};
-    std::map<std::string, std::string> files;
-    std::size_t total = 0;
-    fs::recursive_directory_iterator it(dir, ec);
-    if (ec)
-        throw Failure{dir.string() + ": " + ec.message()};
-    for (const fs::recursive_directory_iterator end; it != end; it.increment(ec)) {
-        if (ec)
-            throw Failure{dir.string() + ": " + ec.message()};
-        const fs::path& p = it->path();
-        std::error_code entryEc;  // ec is the step's alone, checked after the loop too
-        if (p.filename().string().starts_with(".")) {
-            it.disable_recursion_pending();  // never walked into, whatever it is
-            continue;
-        }
-        const fs::file_status st = bw::linkStatus(*it, entryEc);
-        if (fs::is_directory(st))
-            continue;
-        if (!fs::is_regular_file(st))
-            throw Failure{p.string() + ": not a plain file (a generator's files can't be links, pipes or devices)"};
-        if (files.size() == kMaxGeneratorFiles)
-            throw Failure{dir.string() + ": more than " + std::to_string(kMaxGeneratorFiles) + " files"};
-        std::string bytes = readFile(p.string(), kMaxGeneratorBytes - total);
-        total += bytes.size();
-        files.emplace(fs::relative(p, dir).generic_string(), std::move(bytes));
+    try {
+        return bw::generator::readDirectory(dir);
+    } catch (const bw::generator::GeneratorError& e) {
+        throw Failure{e.what()};
     }
-    // a failed step (a directory it can't open) can leave the iterator at its
-    // end, which ends the loop before the check at its top
-    if (ec)
-        throw Failure{dir.string() + ": " + ec.message()};
-    return files;
 }
 
 namespace {

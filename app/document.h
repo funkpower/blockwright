@@ -320,6 +320,16 @@ public:
     // top of the stack and made active: one undo step. 0 when the project
     // writer would refuse the picture (project::layerReferenceProblem).
     LayerId addReferenceLayer(ReferenceImage picture);
+    // A generator layer with its files (project paths, each under
+    // scripts/<id>/, generator.json among them), as generator::add made
+    // them on a copy of project(): goes just above the active layer and
+    // becomes active, one undo command ("Add Generator Layer"); undo takes
+    // the layer and its files away and makes the layer that was active
+    // active again, redo puts both back. The layer keeps its id, which
+    // must be the one the stack gives next (the stack is as the copy
+    // was), with no kept file under its directory. Returns the id, or 0
+    // and nothing pushed when any of that doesn't hold.
+    LayerId addGeneratorLayer(Layer layer, std::map<std::string, std::string> files);
     // Takes back a text layer addTextLayer made that holds no text, when the
     // steps after its own, done or undone, only change its properties (its
     // typing): the layer goes and so do those steps, with nothing left to

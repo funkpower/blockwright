@@ -14,15 +14,9 @@
 
 namespace bwcli {
 
-// At most this many files and bytes in a generator's directory.
-inline constexpr std::size_t kMaxGeneratorFiles = 1000;
-inline constexpr std::size_t kMaxGeneratorBytes = std::size_t{64} << 20;
-
-// The files under `dir`, by their path from it ('/'-separated), as
-// generator::add takes them. Hidden files and directories (a leading '.',
-// such as .git) are skipped; a symbolic link or anything else that isn't a
-// plain file or directory is refused, as a project directory refuses one,
-// and so is a directory over the limits above. Throws Failure.
+// The files under `dir` as generator::add takes them
+// (generator::readDirectory, which the app reads a generator with too).
+// Throws Failure.
 std::map<std::string, std::string> readGeneratorDir(const std::filesystem::path& dir);
 
 // Readies this program to run generators: puts SIGCHLD back to its default

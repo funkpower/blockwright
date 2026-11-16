@@ -117,12 +117,19 @@ public:
         return c;
     }
 
+    // Add also puts `files` (project paths to bytes) in the project's kept
+    // files, before the layer goes in, and takes them out after it has gone:
+    // a generator layer's scripts/<id>/ (addGeneratorLayer).
+    void keepFiles(std::map<std::string, std::string> files) { files_ = std::move(files); }
+
     LayerId layerId() const { return layer_.props.id; }
     bool adds(LayerId id) const { return op_ == Op::Add && layer_.props.id == id; }
 
     void redo() override {
         switch (op_) {
         case Op::Add: {
+            for (const auto& [path, bytes] : files_)
+                doc_->extras_.files[path] = bytes;
             const LayerId id = doc_->insertLayer(layer_, index_);
             layer_.props.id = id;
             doc_->makeActive(id);
@@ -142,6 +149,8 @@ public:
         case Op::Add:
             layer_ = doc_->takeLayer(layer_.props.id);
             doc_->makeActive(activeBefore_);
+            for (const auto& [path, bytes] : files_)
+                doc_->extras_.files.erase(path);
             break;
         case Op::Remove:
             doc_->insertLayer(layer_, index_);
@@ -158,6 +167,7 @@ private:
     Op op_;
     // The layer (Add, and Remove once done) or just its id (Move).
     Layer layer_;
+    std::map<std::string, std::string> files_;
     std::size_t index_ = 0, from_ = 0;
     LayerId activeBefore_ = 0, activeAfter_ = 0;
 };
@@ -1018,6 +1028,27 @@ LayerId Document::addReferenceLayer(ReferenceImage picture) {
         return 0;
     emit layersAboutToChange();
     auto* c = LayerStackCommand::add(this, std::move(layer), stack_.size(), tr("New Reference Layer"));
+    undo_.push(c);
+    return c->layerId();
+}
+
+LayerId Document::addGeneratorLayer(Layer layer, std::map<std::string, std::string> files) {
+    emit commandAboutToPush();
+    const LayerId id = layer.props.id;
+    if (layer.props.kind != LayerKind::Generator || id == 0 || id != stack_.nextId())
+        return 0;
+    const std::string dir = generator::directory(id);
+    for (const auto& [path, bytes] : files)
+        if (!path.starts_with(dir))
+            return 0;
+    const auto held = extras_.files.lower_bound(dir);
+    if (!files.contains(dir + std::string(generator::kSpecFile)) ||
+        (held != extras_.files.end() && held->first.starts_with(dir)))
+        return 0;
+    emit layersAboutToChange();
+    const std::optional<std::size_t> at = stack_.indexOf(active_);
+    auto* c = LayerStackCommand::add(this, std::move(layer), at ? *at + 1 : stack_.size(), tr("Add Generator Layer"));
+    c->keepFiles(std::move(files));
     undo_.push(c);
     return c->layerId();
 }
