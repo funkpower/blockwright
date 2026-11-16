@@ -1916,7 +1916,6 @@ TEST_CASE("the gas-mask operator sample is a Micron page in twelve-bit half bloc
     LayerStack roomOnly = p.layers;
     for (const char* n : {"figure shadow", "body", "mask", "canister", "shoulder", "helmet", "eyes", "glow"})
         roomOnly.find(named(roomOnly, n).props.id)->props.visible = false;
-    CHECK(differing(composite(chair, {p.ice, Cell{}})).size() == differing(composite(roomOnly, {p.ice, Cell{}})).size());
     CHECK(composite(chair, {p.ice, Cell{}}) == composite(roomOnly, {p.ice, Cell{}}));
 }
 
