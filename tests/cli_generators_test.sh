@@ -135,7 +135,7 @@ same "refused runs left the project alone" "$tmp/p.bwp" "$tmp/before.bwp"
 expect "--layer takes an id" 2 "--layer takes a layer id, not 'sky'" -- "$cli" run-generators --layer sky "$tmp/p.bwp"
 expect "--timeout range" 2 "--timeout must be 1-3600, not '0'" -- "$cli" run-generators --timeout 0 "$tmp/p.bwp"
 expect "--timeout belongs to the generator commands" 2 '^blockwright-cli: --timeout is an add-generator, run-generators or import-scene option, not a info option$' -- "$cli" info --timeout 5 "$tmp/p.bwp"
-expect "--name belongs to add-generator" 2 '^blockwright-cli: --name is an add-generator option, not a run-generators option$' -- "$cli" run-generators --name x "$tmp/p.bwp"
+expect "--name belongs to add-generator" 2 '^blockwright-cli: --name is an add-generator or library option, not a run-generators option$' -- "$cli" run-generators --name x "$tmp/p.bwp"
 expect "add-generator usage" 2 'add-generator takes a project and a generator directory' -- "$cli" add-generator "$tmp/p.bwp"
 expect "run-generators usage" 2 'run-generators takes one project' -- "$cli" run-generators "$tmp/p.bwp" "$gen"
 

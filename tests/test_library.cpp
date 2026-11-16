@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
+#include <map>
 
 #include <chrono>
 #include <future>
@@ -1415,3 +1417,764 @@ TEST_CASE("a stamp is read as CP437 even when its bytes would pass for UTF-8") {
     CHECK(back.at(1, 0).ch == U'░');
     CHECK(back.at(2, 0).ch == U'▒');
 }
+
+// Collections (#464): folders in the user's library.
+
+namespace {
+
+std::vector<std::string> names(const std::vector<Collection>& cs) {
+    std::vector<std::string> out;
+    for (const Collection& c : cs)
+        out.push_back(c.name);
+    return out;
+}
+
+// The bytes of every file under `dir`, by relative path.
+std::map<std::string, std::string> snapshot(const fs::path& dir) {
+    std::map<std::string, std::string> out;
+    for (const fs::directory_entry& e : fs::recursive_directory_iterator(dir))
+        out[e.path().lexically_relative(dir).generic_string()] =
+            e.is_regular_file() ? bwtest::readFile(e.path()) : std::string("<dir>");
+    return out;
+}
+
+std::string refusal(const std::function<void()>& f) {
+    try {
+        f();
+    } catch (const LibraryError& e) {
+        return e.what();
+    }
+    return "no error";
+}
+
+} // namespace
+
+TEST_CASE("a collection's folder is its name's slug") {
+    CHECK(collectionSlug("My Trees") == "my-trees");
+    CHECK(collectionSlug("Café — Signs") == "caf-signs");
+    CHECK(collectionSlug("木") == "u6728");
+    CHECK(collectionSlug("") == "stamp");
+}
+
+TEST_CASE("an empty collection is kept and named by its marker") {
+    const fs::path lib = scratch("coll-empty") / "user";
+    const Collection c = createCollection(lib, "My Trees");
+    CHECK(c.name == "My Trees");
+    CHECK(c.dir == lib / "my-trees");
+    CHECK(c.stamps == 0);
+    CHECK(fs::is_directory(lib / "my-trees"));
+    CHECK(bwtest::readFile(lib / "my-trees" / kCollectionMarker) == "My Trees\n");
+
+    // A fresh look finds it, with its name, though nothing is in it.
+    const std::vector<Collection> all = collections(lib);
+    REQUIRE(all.size() == 1);
+    CHECK(all[0].name == "My Trees");
+    CHECK(all[0].stamps == 0);
+    // The marker isn't a stamp or a problem to scan.
+    const ScanResult r = scan(lib);
+    CHECK(r.stamps.empty());
+    CHECK(r.problems.empty());
+    CHECK(collections(scratch("coll-none") / "missing").empty());
+}
+
+TEST_CASE("a collection with no marker goes by its stamps' category, else its folder") {
+    const fs::path lib = scratch("coll-nomarker");
+    writeStamp(lib / "signs" / "stop.ans", encodeStamp("Stop", "Road Signs", {}, tree(), true));
+    fs::create_directories(lib / "bare");
+    CHECK(names(collections(lib)) == std::vector<std::string>{"Road Signs", "bare"});
+}
+
+TEST_CASE("collection names that clash are refused") {
+    const fs::path lib = scratch("coll-clash");
+    createCollection(lib, "Trees");
+    CHECK(refusal([&] { createCollection(lib, "Trees"); }) == "a collection named \"Trees\" already exists");
+    // Another name with the same slug: the folder is taken.
+    CHECK_THAT(refusal([&] { createCollection(lib, "trees!"); }),
+               Catch::Matchers::ContainsSubstring("as the collection \"Trees\""));
+    put(lib / "rocks", "a file");
+    CHECK_THAT(refusal([&] { createCollection(lib, "Rocks"); }),
+               Catch::Matchers::ContainsSubstring("already exists"));
+    CHECK_THAT(refusal([&] { createCollection(lib, ""); }), Catch::Matchers::ContainsSubstring("empty"));
+    CHECK(refusal([&] { createCollection(lib, "bad\xff"); }) == "the collection name isn't UTF-8");
+    CHECK(names(collections(lib)) == std::vector<std::string>{"Trees"});
+}
+
+TEST_CASE("deleting a collection removes its folder and only that") {
+    const fs::path lib = scratch("coll-delete");
+    createCollection(lib, "Trees");
+    createCollection(lib, "Rocks");
+    addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    addStamp(lib, "Trees", "Oak", {}, tree(), true);
+    writeStamp(lib / "top.ans", encodeStamp("Top", "loose", {}, tree(), true));
+
+    const Removed r = deleteCollection(lib, "Trees", Removal::Delete);
+    CHECK(r.stamps == 2);
+    CHECK_FALSE(r.trashed);
+    CHECK_FALSE(fs::exists(lib / "trees"));
+    CHECK(names(collections(lib)) == std::vector<std::string>{"Rocks"});
+    CHECK(fs::exists(lib / "top.ans"));
+    CHECK(refusal([&] { deleteCollection(lib, "Trees", Removal::Delete); }) ==
+          "no collection named \"Trees\" in " + lib.string());
+}
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+TEST_CASE("deleting to the trash puts the folder in the XDG trash") {
+    const fs::path root = scratch("coll-trash");
+    EnvGuard home("HOME", (root / "home").string());
+    EnvGuard data("XDG_DATA_HOME", (root / "home" / "data").string());
+    fs::create_directories(root / "home" / "data");
+    const fs::path lib = root / "home" / "lib";
+    createCollection(lib, "Trees");
+    addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    Removed r;
+    try {
+        r = deleteCollection(lib, "Trees");
+    } catch (const TrashUnavailable&) {
+        // No trash this machine's Qt can use: nothing may have gone.
+        CHECK(fs::exists(lib / "trees" / "pine.ans"));
+        return;
+    }
+    CHECK(r.stamps == 1);
+    CHECK(r.trashed);
+    CHECK_FALSE(fs::exists(lib / "trees"));
+    CHECK(fs::exists(root / "home" / "data" / "Trash" / "files" / "trees" / "pine.ans"));
+}
+#endif
+
+TEST_CASE("renaming a collection moves its folder and rewrites its stamps' category") {
+    const fs::path lib = scratch("coll-rename");
+    createCollection(lib, "Trees");
+    const fs::path pine = addStamp(lib, "Trees", "Pine", {"green"}, tree(), true);
+    const std::string art = bwtest::readFile(pine);
+
+    const Collection c = renameCollection(lib, "Trees", "Forest Things");
+    CHECK(c.name == "Forest Things");
+    CHECK(c.dir == lib / "forest-things");
+    CHECK(c.stamps == 1);
+    CHECK_FALSE(fs::exists(lib / "trees"));
+    const Stamp s = readStamp(lib / "forest-things" / "pine.ans");
+    CHECK(s.meta.category == "Forest Things");
+    CHECK(s.meta.tags == std::vector<std::string>{"green"});
+    CHECK(bwtest::readFile(s.path) == art);
+    CHECK(bwtest::readFile(c.dir / kCollectionMarker) == "Forest Things\n");
+
+    SECTION("a new name with the same slug keeps the folder") {
+        const Collection d = renameCollection(lib, "Forest Things", "forest things");
+        CHECK(d.dir == lib / "forest-things");
+        CHECK(names(collections(lib)) == std::vector<std::string>{"forest things"});
+        CHECK(readStamp(d.dir / "pine.ans").meta.category == "forest things");
+    }
+    SECTION("onto another collection's name or folder: refused, nothing moves") {
+        createCollection(lib, "Rocks");
+        const auto before = snapshot(lib);
+        CHECK(refusal([&] { renameCollection(lib, "Forest Things", "Rocks"); }) ==
+              "a collection named \"Rocks\" already exists");
+        CHECK_THAT(refusal([&] { renameCollection(lib, "Forest Things", "rocks?"); }),
+                   Catch::Matchers::ContainsSubstring("already exists"));
+        CHECK(refusal([&] { renameCollection(lib, "Nope", "Other"); }) ==
+              "no collection named \"Nope\" in " + lib.string());
+        CHECK(snapshot(lib) == before);
+    }
+}
+
+TEST_CASE("a stamp made from cells goes into its collection") {
+    const fs::path lib = scratch("coll-add");
+    createCollection(lib, "My Trees");
+    const fs::path p = addStamp(lib, "My Trees", "Pine", {"tree"}, tree(), true);
+    CHECK(p == lib / "my-trees" / "pine.ans");
+    const Stamp s = readStamp(p);
+    CHECK(s.name == "Pine");
+    CHECK(s.meta.category == "My Trees");
+    CHECK(collections(lib)[0].stamps == 1);
+
+    CHECK_THAT(refusal([&] { addStamp(lib, "My Trees", "Pine", {}, tree(), true); }),
+               Catch::Matchers::StartsWith("the collection \"My Trees\" already holds a stamp named \"Pine\""));
+    CHECK(refusal([&] { addStamp(lib, "Nope", "Pine", {}, tree(), true); }) ==
+          "no collection named \"Nope\" in " + lib.string());
+
+    SECTION("replacing it, a failed write leaves the old files") {
+        const std::string oldArt = bwtest::readFile(p), oldJson = bwtest::readFile(lib / "my-trees" / "pine.json");
+        struct Reset {
+            ~Reset() { testing::writeStampFault = nullptr; }
+        } reset;
+        testing::writeStampFault = [](std::string_view step) {
+            if (step == "art")
+                throw LibraryError("art: injected");
+        };
+        CellBlock wide(6, 1);
+        wide.at(0, 0) = cell(U'#', Red);
+        CHECK_THROWS_AS(addStamp(lib, "My Trees", "Pine", {}, wide, true, std::nullopt, true), LibraryError);
+        CHECK(bwtest::readFile(p) == oldArt);
+        CHECK(bwtest::readFile(lib / "my-trees" / "pine.json") == oldJson);
+    }
+}
+
+TEST_CASE("stamp files and plain .ans files are added to a collection") {
+    const fs::path root = scratch("coll-addfile");
+    const fs::path lib = root / "user";
+    createCollection(lib, "Mine");
+
+    SECTION("a stamp is copied as it is, into the collection's category") {
+        writeStamp(root / "bundled" / "pine.ans", encodeStamp("Pine", "trees", {"green"}, tree(), true));
+        const Added a = addStampFile(lib, "Mine", root / "bundled" / "pine.ans");
+        CHECK(a.name == "Pine");
+        CHECK(a.path == lib / "mine" / "pine.ans");
+        CHECK(bwtest::readFile(a.path) == bwtest::readFile(root / "bundled" / "pine.ans"));
+        const Stamp s = readStamp(a.path);
+        CHECK(s.meta.category == "Mine");
+        CHECK(s.meta.tags == std::vector<std::string>{"green"});
+        CHECK(readStamp(root / "bundled" / "pine.ans").meta.category == "trees");
+        CHECK_THAT(refusal([&] { addStampFile(lib, "Mine", root / "bundled" / "pine.ans"); }),
+                   Catch::Matchers::ContainsSubstring("already holds a stamp named \"Pine\""));
+    }
+    SECTION("an .ans with no sidecar and no SAUCE is named from its file") {
+        put(root / "in" / "Big Moon.ans", "\x1b[31mAB\r\n\x1b[32mCD\r\n");
+        const Added a = addStampFile(lib, "Mine", root / "in" / "Big Moon.ans");
+        CHECK(a.name == "Big Moon");
+        CHECK(a.path == lib / "mine" / "big-moon.ans");
+        const Stamp s = readStamp(a.path);
+        CHECK(s.name == "Big Moon");
+        CHECK(s.meta.category == "Mine");
+        CHECK(s.art.canvas.width() == 2);
+        CHECK(s.art.canvas.height() == 2);
+    }
+    SECTION("an .ans with nothing drawn is refused") {
+        put(root / "in" / "blank.ans", "   \r\n");
+        CHECK(refusal([&] { addStampFile(lib, "Mine", root / "in" / "blank.ans"); }) == ".ans has nothing drawn in it");
+    }
+    SECTION("an .ans with a SAUCE title is named from it") {
+        Sauce sauce;
+        sauce.title = "Crescent";
+        const std::string body = "\x1b[33mXY\r\n";
+        put(root / "in" / "moon.ans", body + encodeSauce(sauce, std::uint32_t(body.size())));
+        CHECK(addStampFile(lib, "Mine", root / "in" / "moon.ans").name == "Crescent");
+    }
+    SECTION("a long file name is cut to SAUCE's 35 bytes") {
+        put(root / "in" / (std::string(40, 'a') + ".ans"), "hi\r\n");
+        CHECK(addStampFile(lib, "Mine", root / "in" / (std::string(40, 'a') + ".ans")).name == std::string(35, 'a'));
+    }
+    SECTION("refusals") {
+        put(root / "in" / "note.txt", "hi");
+        CHECK(refusal([&] { addStampFile(lib, "Mine", root / "in" / "note.txt"); }) == "not an .ans file");
+        CHECK_THAT(refusal([&] { addStampFile(lib, "Mine", root / "in" / "missing.ans"); }),
+                   Catch::Matchers::StartsWith(".ans "));
+    }
+}
+
+TEST_CASE("removing a stamp takes its art and sidecar, inside the library only") {
+    const fs::path root = scratch("coll-remove");
+    const fs::path lib = root / "user";
+    createCollection(lib, "Mine");
+    const fs::path p = addStamp(lib, "Mine", "Pine", {}, tree(), true);
+    addStamp(lib, "Mine", "Oak", {}, tree(), true);
+    writeStamp(root / "bundled" / "fir.ans", encodeStamp("Fir", "trees", {}, tree(), true));
+
+    const Removed r = removeStamp(lib, p, Removal::Delete);
+    CHECK(r.stamps == 1);
+    CHECK_FALSE(fs::exists(p));
+    CHECK_FALSE(fs::exists(lib / "mine" / "pine.json"));
+    CHECK(fs::exists(lib / "mine" / "oak.ans"));
+
+    CHECK_THAT(refusal([&] { removeStamp(lib, root / "bundled" / "fir.ans", Removal::Delete); }),
+               Catch::Matchers::ContainsSubstring("isn't in the library"));
+    CHECK_THAT(refusal([&] { removeStamp(lib, lib / "mine" / ".." / ".." / "bundled" / "fir.ans", Removal::Delete); }),
+               Catch::Matchers::ContainsSubstring("isn't in the library"));
+    CHECK(fs::exists(root / "bundled" / "fir.ans"));
+    CHECK_THAT(refusal([&] { removeStamp(lib, p, Removal::Delete); }), Catch::Matchers::EndsWith("doesn't exist"));
+    CHECK_THAT(refusal([&] { removeStamp(lib, lib / "mine" / "oak.json", Removal::Delete); }),
+               Catch::Matchers::EndsWith("isn't a stamp's .ans"));
+}
+
+TEST_CASE("editing a stamp keeps its file where it can") {
+    const fs::path lib = scratch("coll-edit");
+    createCollection(lib, "Trees");
+    createCollection(lib, "Rocks");
+    const fs::path p = addStamp(lib, "Trees", "Pine", {"a"}, tree(), true);
+    const std::string body = std::string(splitSauce(bwtest::readFile(p)).content);
+
+    SECTION("a new name retitles it in place") {
+        CHECK(editStamp(lib, p, {.name = "Tall Pine"}) == p);
+        const Stamp s = readStamp(p);
+        CHECK(s.name == "Tall Pine");
+        CHECK(std::string(splitSauce(bwtest::readFile(p)).content) == body);
+        CHECK(s.meta.category == "Trees");
+    }
+    SECTION("new tags stay in place; an empty list clears them") {
+        CHECK(editStamp(lib, p, {.tags = std::vector<std::string>{"x", "y"}}) == p);
+        CHECK(readStamp(p).meta.tags == std::vector<std::string>{"x", "y"});
+        editStamp(lib, p, {.tags = std::vector<std::string>{}});
+        CHECK(readStamp(p).meta.tags.empty());
+    }
+    SECTION("another collection's name moves it there") {
+        const fs::path q = editStamp(lib, p, {.category = "Rocks"});
+        CHECK(q == lib / "rocks" / "pine.ans");
+        CHECK_FALSE(fs::exists(p));
+        CHECK_FALSE(fs::exists(lib / "trees" / "pine.json"));
+        CHECK(readStamp(q).meta.category == "Rocks");
+        // A category no collection has: out to the top of the library.
+        const fs::path t = editStamp(lib, q, {.category = "loose"});
+        CHECK(t == lib / "pine.ans");
+        CHECK(readStamp(t).meta.category == "loose");
+        // And a top-level stamp given a collection's name goes into it.
+        CHECK(editStamp(lib, t, {.category = "Trees"}) == p);
+    }
+    SECTION("a clash is refused and nothing changes") {
+        addStamp(lib, "Rocks", "Pine", {}, tree(), true);
+        addStamp(lib, "Trees", "Oak", {}, tree(), true);
+        const auto before = snapshot(lib);
+        CHECK_THAT(refusal([&] { editStamp(lib, p, {.category = "Rocks"}); }),
+                   Catch::Matchers::ContainsSubstring("already holds a stamp named \"Pine\""));
+        CHECK_THAT(refusal([&] { editStamp(lib, p, {.name = "Oak"}); }),
+                   Catch::Matchers::ContainsSubstring("already holds a stamp named \"Oak\""));
+        CHECK_THAT(refusal([&] { editStamp(lib, p, {.name = std::string(36, 'x')}); }),
+                   Catch::Matchers::ContainsSubstring("35"));
+        CHECK_THAT(refusal([&] { editStamp(lib, p, {.tags = std::vector<std::string>{"a,b"}}); }),
+                   Catch::Matchers::ContainsSubstring("comma"));
+        CHECK(snapshot(lib) == before);
+    }
+    SECTION("a failed write leaves the old files") {
+        const auto before = snapshot(lib);
+        struct Reset {
+            ~Reset() { testing::writeStampFault = nullptr; }
+        } reset;
+        testing::writeStampFault = [](std::string_view step) {
+            if (step == "art")
+                throw LibraryError("art: injected");
+        };
+        CHECK_THROWS_AS(editStamp(lib, p, {.name = "Tall Pine"}), LibraryError);
+        CHECK_THROWS_AS(editStamp(lib, p, {.category = "Rocks"}), LibraryError);
+        CHECK(snapshot(lib) == before);
+    }
+}
+
+TEST_CASE("collections never touch a read-only bundled library") {
+#ifdef _WIN32
+    SKIP("no POSIX file modes on Windows");
+#else
+    if (::geteuid() == 0)
+        SKIP("root writes every folder");
+    const fs::path root = scratch("coll-bundled");
+    const fs::path bundled = root / "bundled", lib = root / "user";
+    writeStamp(bundled / "trees" / "pine.ans", encodeStamp("Pine", "trees", {}, tree(), true));
+    fs::permissions(bundled / "trees", fs::perms::owner_read | fs::perms::owner_exec);
+    fs::permissions(bundled, fs::perms::owner_read | fs::perms::owner_exec);
+    struct Unlock {
+        fs::path a, b;
+        ~Unlock() {
+            fs::permissions(a, fs::perms::owner_all);
+            fs::permissions(b, fs::perms::owner_all);
+        }
+    } unlock{bundled, bundled / "trees"};
+    const auto before = snapshot(bundled);
+
+    // A collection named like a bundled category is the user's own.
+    createCollection(lib, "trees");
+    const Added a = addStampFile(lib, "trees", bundled / "trees" / "pine.ans");
+    CHECK(a.path == lib / "trees" / "pine.ans");
+    editStamp(lib, a.path, {.name = "My Pine"});
+    renameCollection(lib, "trees", "evergreens");
+    deleteCollection(lib, "evergreens", Removal::Delete);
+    CHECK_THROWS_AS(removeStamp(lib, bundled / "trees" / "pine.ans", Removal::Delete), LibraryError);
+    CHECK_THROWS_AS(editStamp(lib, bundled / "trees" / "pine.ans", {.name = "X"}), LibraryError);
+    CHECK(snapshot(bundled) == before);
+#endif
+}
+
+// Fix round 1 of #500's review.
+
+namespace {
+
+struct TrashHook {
+    explicit TrashHook(std::function<bool(const fs::path&)> f) { testing::moveToTrash = std::move(f); }
+    ~TrashHook() { testing::moveToTrash = nullptr; }
+};
+
+} // namespace
+
+TEST_CASE("a trash that refuses removes nothing and never deletes instead") {
+    const fs::path lib = scratch("coll-notrash") / "user";
+    createCollection(lib, "Trees");
+    const fs::path pine = addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    addStamp(lib, "Trees", "Oak", {}, tree(), true);
+    const auto before = snapshot(lib);
+    std::vector<fs::path> asked;
+    TrashHook hook([&](const fs::path& p) {
+        asked.push_back(p);
+        return false;
+    });
+
+    CHECK_THROWS_AS(deleteCollection(lib, "Trees"), TrashUnavailable);
+    CHECK_THAT(refusal([&] { deleteCollection(lib, "Trees"); }), Catch::Matchers::ContainsSubstring("nothing was removed"));
+    CHECK_THROWS_AS(removeStamp(lib, pine), TrashUnavailable);
+    CHECK(snapshot(lib) == before);
+    // The whole folder in one call, not stamp by stamp.
+    REQUIRE_FALSE(asked.empty());
+    CHECK(asked.front() == lib / "trees");
+
+    // Deleting outright is the caller's own choice.
+    CHECK(removeStamp(lib, pine, Removal::Delete).stamps == 1);
+    CHECK_FALSE(fs::exists(pine));
+    const Removed r = deleteCollection(lib, "Trees", Removal::Delete);
+    CHECK_FALSE(r.trashed);
+    CHECK_FALSE(fs::exists(lib / "trees"));
+}
+
+// Fix round 2: a stamp's two files go one at a time, so a trash that takes
+// one and refuses the other must still leave the stamp whole.
+TEST_CASE("a trash that refuses half a stamp leaves the stamp whole") {
+    const fs::path root = scratch("coll-halftrash");
+    const fs::path lib = root / "user";
+    const fs::path bin = root / "trash";
+    fs::create_directories(bin);
+    createCollection(lib, "Trees");
+    const fs::path pine = addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    const fs::path side = lib / "trees" / "pine.json";
+    REQUIRE(fs::exists(side));
+    const auto before = snapshot(lib);
+    // A trash that takes every file but those with the extension `refuse`.
+    std::string refuse;
+    TrashHook hook([&](const fs::path& p) {
+        if (p.extension() == refuse)
+            return false;
+        fs::rename(p, bin / p.filename());
+        return true;
+    });
+
+    SECTION("the sidecar refused") {
+        refuse = ".json";
+        const std::string why = refusal([&] { removeStamp(lib, pine); });
+        CHECK_THROWS_AS(removeStamp(lib, pine), TrashUnavailable);
+        CHECK_THAT(why, Catch::Matchers::ContainsSubstring("nothing was removed"));
+        CHECK_THAT(why, Catch::Matchers::ContainsSubstring(side.string()));
+        CHECK(snapshot(lib) == before);
+        CHECK(fs::is_empty(bin));
+    }
+    SECTION("the art refused, after its sidecar went") {
+        refuse = ".ans";
+        const std::string why = refusal([&] { removeStamp(lib, pine); });
+        CHECK_THROWS_AS(removeStamp(lib, pine), TrashUnavailable);
+        CHECK_THAT(why, Catch::Matchers::ContainsSubstring("nothing was removed"));
+        CHECK_THAT(why, Catch::Matchers::ContainsSubstring("put back"));
+        CHECK(snapshot(lib) == before);
+        CHECK(readStamp(pine).name == "Pine");
+    }
+    // Then a trash that takes both removes the stamp.
+    refuse = ".none";
+    const Removed r = removeStamp(lib, pine);
+    CHECK(r.trashed);
+    CHECK_FALSE(fs::exists(pine));
+    CHECK_FALSE(fs::exists(side));
+    CHECK(fs::exists(bin / "pine.ans"));
+    CHECK(fs::exists(bin / "pine.json"));
+}
+
+#ifndef _WIN32
+TEST_CASE("a sidecar that can't be put back leaves art remove still takes") {
+    if (::geteuid() == 0)
+        SKIP("root writes every folder");
+    const fs::path root = scratch("coll-noputback");
+    const fs::path lib = root / "user";
+    const fs::path bin = root / "trash";
+    fs::create_directories(bin);
+    createCollection(lib, "Trees");
+    const fs::path pine = addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    const fs::path dir = lib / "trees";
+    struct Unlock {
+        fs::path p;
+        ~Unlock() { fs::permissions(p, fs::perms::owner_all); }
+    } unlock{dir};
+    // The sidecar goes, then the folder turns read-only: the art can't
+    // follow it and the sidecar can't come back.
+    TrashHook hook([&](const fs::path& p) {
+        fs::rename(p, bin / p.filename());
+        fs::permissions(dir, fs::perms::owner_read | fs::perms::owner_exec);
+        return true;
+    });
+    const std::string why = refusal([&] { removeStamp(lib, pine); });
+    CHECK_THAT(why, !Catch::Matchers::ContainsSubstring("nothing was removed"));
+    CHECK_THAT(why, Catch::Matchers::ContainsSubstring("couldn't be put back"));
+    CHECK(fs::exists(pine));
+    CHECK_FALSE(fs::exists(dir / "pine.json"));
+    CHECK(fs::exists(bin / "pine.json"));
+
+    // What is left is art alone, and remove still takes it.
+    fs::permissions(dir, fs::perms::owner_all);
+    testing::moveToTrash = nullptr;
+    CHECK(removeStamp(lib, pine, Removal::Delete).stamps == 1);
+    CHECK_FALSE(fs::exists(pine));
+}
+#endif
+
+TEST_CASE("a delete a permission would stop halfway removes nothing") {
+#ifdef _WIN32
+    SKIP("no POSIX file modes on Windows");
+#else
+    if (::geteuid() == 0)
+        SKIP("root writes every folder");
+    const fs::path lib = scratch("coll-half") / "user";
+    createCollection(lib, "Half");
+    for (const char* n : {"H1", "H2", "H3"})
+        addStamp(lib, "Half", n, {}, tree(), true);
+    writeStamp(lib / "half" / "sub" / "s.ans", encodeStamp("S", "Half", {}, tree(), true));
+    fs::permissions(lib / "half" / "sub", fs::perms::owner_read | fs::perms::owner_exec);
+    struct Unlock {
+        fs::path p;
+        ~Unlock() { fs::permissions(p, fs::perms::owner_all); }
+    } unlock{lib / "half" / "sub"};
+    const auto before = snapshot(lib);
+    CHECK_THAT(refusal([&] { deleteCollection(lib, "Half", Removal::Delete); }),
+               Catch::Matchers::ContainsSubstring("nothing was removed"));
+    CHECK(snapshot(lib) == before);
+
+    // The library itself read-only: the folder can't be taken out of it, so
+    // nothing inside it is deleted either.
+    fs::permissions(lib / "half" / "sub", fs::perms::owner_all);
+    fs::permissions(lib, fs::perms::owner_read | fs::perms::owner_exec);
+    struct Unlock2 {
+        fs::path p;
+        ~Unlock2() { fs::permissions(p, fs::perms::owner_all); }
+    } unlock2{lib};
+    const auto before2 = snapshot(lib);
+    CHECK_THROWS_AS(deleteCollection(lib, "Half", Removal::Delete), LibraryError);
+    CHECK(snapshot(lib) == before2);
+#endif
+}
+
+TEST_CASE("nothing changes the bundled library, by any spelling of it") {
+    const fs::path root = scratch("coll-bundled-dir");
+    const fs::path bundled = root / "bundled";
+    writeStamp(bundled / "trees" / "pine.ans", encodeStamp("Pine", "trees", {}, tree(), true));
+    writeStamp(bundled / "plants" / "fern.ans", encodeStamp("Fern", "plants", {}, tree(), true));
+    put(root / "in" / "moon.ans", "\x1b[31mAB\r\n");
+    EnvGuard env("BLOCKWRIGHT_BUNDLED_LIBRARY", bundled.string());
+    CHECK(bundledLibraryDir() == bundled);
+    const auto before = snapshot(bundled);
+
+    std::vector<fs::path> spellings = {bundled, bundled / "trees", root / "x" / ".." / "bundled", root};
+#ifndef _WIN32
+    fs::create_symlink(bundled, root / "link");
+    spellings.push_back(root / "link");
+#endif
+    for (const fs::path& lib : spellings) {
+        INFO(lib.string());
+        const auto bundledRefusal = Catch::Matchers::ContainsSubstring("the bundled library");
+        CHECK_THAT(refusal([&] { createCollection(lib, "New"); }), bundledRefusal);
+        CHECK_THAT(refusal([&] { deleteCollection(lib, "trees", Removal::Delete); }), bundledRefusal);
+        CHECK_THAT(refusal([&] { deleteCollection(lib, "trees"); }), bundledRefusal);
+        CHECK_THAT(refusal([&] { renameCollection(lib, "plants", "Flora"); }), bundledRefusal);
+        CHECK_THAT(refusal([&] { addStamp(lib, "trees", "Oak", {}, tree(), true); }), bundledRefusal);
+        CHECK_THAT(refusal([&] { addStampFile(lib, "trees", root / "in" / "moon.ans"); }), bundledRefusal);
+        CHECK_THAT(refusal([&] { removeStamp(lib, lib / "trees" / "pine.ans", Removal::Delete); }), bundledRefusal);
+        CHECK_THAT(refusal([&] { editStamp(lib, lib / "trees" / "pine.ans", {.name = "X"}); }), bundledRefusal);
+    }
+    CHECK(snapshot(bundled) == before);
+
+    // A library beside it is the user's own, and works.
+    createCollection(root / "user", "trees");
+    CHECK(addStampFile(root / "user", "trees", bundled / "trees" / "pine.ans").name == "Pine");
+    CHECK(snapshot(bundled) == before);
+}
+
+TEST_CASE("a title is checked across the collection, a stamp renamed in place included") {
+    const fs::path root = scratch("coll-title");
+    const fs::path lib = root / "user";
+    createCollection(lib, "Trees");
+    const fs::path pine = addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    CHECK(editStamp(lib, pine, {.name = "Birch"}) == pine);  // kept as pine.ans
+    const fs::path oak = addStamp(lib, "Trees", "Oak", {}, tree(), true);
+    writeStamp(lib / "trees" / "sub" / "elm.ans", encodeStamp("Elm", "Trees", {}, tree(), true));
+    const auto before = snapshot(lib);
+
+    CHECK_THAT(refusal([&] { addStamp(lib, "Trees", "Birch", {}, tree(), true); }),
+               Catch::Matchers::ContainsSubstring("already holds a stamp named \"Birch\" (" + pine.string() + ")"));
+    put(root / "in" / "Birch.ans", "\x1b[31mAB\r\n");
+    CHECK_THAT(refusal([&] { addStampFile(lib, "Trees", root / "in" / "Birch.ans"); }),
+               Catch::Matchers::ContainsSubstring("already holds a stamp named \"Birch\""));
+    CHECK_THAT(refusal([&] { editStamp(lib, oak, {.name = "Birch"}); }),
+               Catch::Matchers::ContainsSubstring("already holds a stamp named \"Birch\""));
+    // In a subfolder of the collection too.
+    CHECK_THAT(refusal([&] { editStamp(lib, oak, {.name = "Elm"}); }),
+               Catch::Matchers::ContainsSubstring("already holds a stamp named \"Elm\""));
+    CHECK(snapshot(lib) == before);
+
+    // A tags-only edit makes no new clash.
+    CHECK(editStamp(lib, pine, {.tags = std::vector<std::string>{"white"}}) == pine);
+    // Replacing writes over the stamp that has the title, wherever it is.
+    CHECK(addStamp(lib, "Trees", "Birch", {"new"}, tree(), true, std::nullopt, true) == pine);
+    CHECK(readStamp(pine).meta.tags == std::vector<std::string>{"new"});
+    CHECK_FALSE(fs::exists(lib / "trees" / "birch.ans"));
+}
+
+TEST_CASE("a collection name is at most kMaxCollectionName bytes") {
+    const fs::path lib = scratch("coll-long");
+    const std::string longest(kMaxCollectionName, 'x'), over(kMaxCollectionName + 1, 'x');
+    CHECK(refusal([&] { createCollection(lib, over); }) == "the collection name is longer than 128 bytes");
+    const Collection c = createCollection(lib, longest);
+    CHECK(findCollection(lib, longest).has_value());
+    CHECK(collections(lib).at(0).name == longest);
+    CHECK(refusal([&] { renameCollection(lib, longest, over); }) == "the collection name is longer than 128 bytes");
+    CHECK(collections(lib).at(0).name == longest);
+    CHECK(fs::exists(c.dir));
+}
+
+TEST_CASE("a name two folders go by is refused, naming both") {
+    const fs::path lib = scratch("coll-dupe");
+    createCollection(lib, "Trees");
+    addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    // A folder made by hand whose stamps share the name.
+    writeStamp(lib / "zz" / "oak.ans", encodeStamp("Oak", "Trees", {}, tree(), true));
+    CHECK(names(collections(lib)) == std::vector<std::string>{"Trees", "Trees"});
+    const auto before = snapshot(lib);
+    const std::string why = refusal([&] { findCollection(lib, "Trees"); });
+    CHECK_THAT(why, Catch::Matchers::StartsWith("more than one folder goes by the collection name \"Trees\""));
+    CHECK_THAT(why, Catch::Matchers::ContainsSubstring((lib / "trees").string()));
+    CHECK_THAT(why, Catch::Matchers::ContainsSubstring((lib / "zz").string()));
+    CHECK_THAT(refusal([&] { deleteCollection(lib, "Trees", Removal::Delete); }),
+               Catch::Matchers::StartsWith("more than one folder"));
+    CHECK_THAT(refusal([&] { renameCollection(lib, "Trees", "Woods"); }), Catch::Matchers::StartsWith("more than one folder"));
+    CHECK_THAT(refusal([&] { addStamp(lib, "Trees", "Fir", {}, tree(), true); }),
+               Catch::Matchers::StartsWith("more than one folder"));
+    CHECK(snapshot(lib) == before);
+    // Giving one a name of its own settles it.
+    put(lib / "zz" / kCollectionMarker, "Oaks\n");
+    CHECK(findCollection(lib, "Trees")->dir == lib / "trees");
+}
+
+#ifndef _WIN32
+TEST_CASE("a folder's own name never gives a collection a tab or newline") {
+    const fs::path lib = scratch("coll-ctrl");
+    fs::create_directories(lib / "a\tb");
+    fs::create_directories(lib / "c\nd");
+    std::vector<std::string> want = {"a\xEF\xBF\xBD" "b", "c\xEF\xBF\xBD" "d"};
+#ifndef __APPLE__
+    // APFS refuses a name that isn't UTF-8.
+    fs::create_directories(lib / "e\xff");
+    want.push_back("e\xEF\xBF\xBD");
+#endif
+    CHECK(names(collections(lib)) == want);
+    CHECK(findCollection(lib, "a\xEF\xBF\xBD" "b")->dir == lib / "a\tb");
+}
+#endif
+
+TEST_CASE("a collection named as a Windows device gets a folder Windows allows") {
+    CHECK(collectionSlug("CON") == "con-");
+    CHECK(collectionSlug("aux") == "aux-");
+    CHECK(collectionSlug("Com1") == "com1-");
+    CHECK(collectionSlug("LPT9") == "lpt9-");
+    CHECK(collectionSlug("Con Air") == "con-air");
+    CHECK(collectionSlug("com10") == "com10");
+    const fs::path lib = scratch("coll-reserved");
+    CHECK(createCollection(lib, "Nul").dir == lib / "nul-");
+    CHECK(findCollection(lib, "Nul").has_value());
+}
+
+// Fix round 3 of #500's review.
+
+TEST_CASE("remove's check refuses a stamp its folder won't let go, as remove does") {
+#ifdef _WIN32
+    SKIP("no POSIX file modes on Windows");
+#else
+    if (::geteuid() == 0)
+        SKIP("root writes every folder");
+    const fs::path lib = scratch("coll-rmcheck") / "user";
+    createCollection(lib, "Trees");
+    const fs::path pine = addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    const fs::path dir = lib / "trees";
+    fs::permissions(dir, fs::perms::owner_read | fs::perms::owner_exec);
+    struct Unlock {
+        fs::path p;
+        ~Unlock() { fs::permissions(p, fs::perms::owner_all); }
+    } unlock{dir};
+    const auto before = snapshot(lib);
+    CHECK_THAT(refusal([&] { requireRemovable(lib, pine); }),
+               Catch::Matchers::ContainsSubstring(dir.string() + " can't be emptied"));
+    CHECK_THAT(refusal([&] { removeStamp(lib, pine, Removal::Delete); }),
+               Catch::Matchers::ContainsSubstring("nothing was removed"));
+    CHECK(snapshot(lib) == before);
+#endif
+}
+
+#ifndef _WIN32
+TEST_CASE("a sidecar that can't be read is refused before the trash takes anything") {
+    const fs::path root = scratch("coll-unreadable");
+    const fs::path lib = root / "user";
+    const fs::path bin = root / "trash";
+    fs::create_directories(bin);
+    createCollection(lib, "Trees");
+    const fs::path pine = addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    const fs::path side = lib / "trees" / "pine.json";
+    // A trash that refuses the art and takes everything else.
+    TrashHook hook([&](const fs::path& p) {
+        if (p.extension() == ".ans")
+            return false;
+        fs::rename(p, bin / p.filename());
+        return true;
+    });
+
+    SECTION("mode 000") {
+        if (::geteuid() == 0)
+            SKIP("root reads every file");
+        fs::permissions(side, fs::perms::none);
+        struct Unlock {
+            fs::path p;
+            ~Unlock() {
+                std::error_code ec;
+                fs::permissions(p, fs::perms::owner_read | fs::perms::owner_write, ec);
+            }
+        } unlock{side};
+        const std::string why = refusal([&] { removeStamp(lib, pine); });
+        CHECK_THROWS_AS(removeStamp(lib, pine), TrashUnavailable);
+        CHECK_THAT(why, Catch::Matchers::ContainsSubstring(side.string() + " can't be read"));
+        CHECK_THAT(why, Catch::Matchers::ContainsSubstring("nothing was removed"));
+        CHECK(fs::exists(side));
+        CHECK(fs::exists(pine));
+        CHECK(fs::is_empty(bin));
+        // Delete takes it.
+        CHECK(removeStamp(lib, pine, Removal::Delete).stamps == 1);
+        CHECK_FALSE(fs::exists(pine));
+        CHECK_FALSE(fs::exists(side));
+    }
+    SECTION("not a regular file") {
+        fs::remove(side);
+        REQUIRE(::mkfifo(side.c_str(), 0600) == 0);
+        const std::string why = refusal([&] { removeStamp(lib, pine); });
+        CHECK_THAT(why, Catch::Matchers::ContainsSubstring("is not a regular file"));
+        CHECK_THAT(why, Catch::Matchers::ContainsSubstring("nothing was removed"));
+        CHECK(fs::is_fifo(fs::symlink_status(side)));
+        CHECK(fs::exists(pine));
+        CHECK(fs::is_empty(bin));
+    }
+}
+
+TEST_CASE("a sidecar put back keeps its permission bits and modification time") {
+    const fs::path root = scratch("coll-putback-mode");
+    const fs::path lib = root / "user";
+    const fs::path bin = root / "trash";
+    fs::create_directories(bin);
+    createCollection(lib, "Trees");
+    const fs::path pine = addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    const fs::path side = lib / "trees" / "pine.json";
+    // Read-only for its owner alone: no umask makes a new file that.
+    const fs::perms mode = fs::perms::owner_read;
+    fs::permissions(side, mode);
+    const fs::file_time_type mtime = fs::last_write_time(side) - std::chrono::hours(48);
+    fs::last_write_time(side, mtime);
+    TrashHook hook([&](const fs::path& p) {
+        if (p.extension() == ".ans")
+            return false;
+        fs::rename(p, bin / p.filename());
+        return true;
+    });
+    const std::string why = refusal([&] { removeStamp(lib, pine); });
+    CHECK_THAT(why, Catch::Matchers::ContainsSubstring("was put back; the trash keeps a copy of it"));
+    REQUIRE(fs::exists(side));
+    CHECK((fs::status(side).permissions() & fs::perms::all) == mode);
+    // Milliseconds as a plain integer: libc++'s file_time_type counts in
+    // __int128, which Catch2 can't print.
+    const long long off = static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(fs::last_write_time(side) - mtime).count());
+    CHECK(off > -2000);
+    CHECK(off < 2000);
+    CHECK(readStamp(pine).name == "Pine");
+}
+#endif

@@ -12,6 +12,7 @@
 #include "style_json.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -174,10 +175,12 @@ void checkWritable(const fs::path& p) {
 // constructor itself throws. Paths stay std::filesystem paths throughout,
 // so a name that isn't UTF-8 is written as itself (a QString would turn its
 // bytes into U+FFFD). Replacing a file keeps its permission bits (0777; not
-// set-ID or sticky); a new one gets 0666 less the umask.
+// set-ID or sticky); a new one gets `mode` when given (its 0777 bits, POSIX
+// only), else 0666 less the umask.
 class Staged {
 public:
-    Staged(const fs::path& target, const std::string& bytes) : target_(target) {
+    Staged(const fs::path& target, const std::string& bytes, std::optional<fs::perms> mode = {})
+        : target_(target), mode_(mode) {
         try {
             write(bytes);
         } catch (...) {
@@ -286,7 +289,8 @@ private:
             // 0600, never wider than the file it replaces.
             struct stat old {};
             const bool replacing = ::lstat(target_.c_str(), &old) == 0 && S_ISREG(old.st_mode);
-            const int fd = ::open(temp_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, replacing ? 0600 : 0666);
+            const bool chmodded = replacing || mode_;
+            const int fd = ::open(temp_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, chmodded ? 0600 : 0666);
             if (fd < 0) {
                 if (errno == EEXIST && attempt < 100)
                     continue;
@@ -307,7 +311,7 @@ private:
                 data += n;
                 left -= std::size_t(n);
             }
-            if (replacing && ::fchmod(fd_, old.st_mode & 0777) != 0)
+            if (chmodded && ::fchmod(fd_, (replacing ? old.st_mode : static_cast<mode_t>(*mode_)) & 0777) != 0)
                 throw LibraryError(target_.string() + ": " + std::strerror(errno));
             // Always close, and report the first error.
             int err = ::fsync(fd_) != 0 ? errno : 0;
@@ -413,6 +417,7 @@ private:
     }
 
     fs::path target_, temp_;
+    std::optional<fs::perms> mode_;
 #if BW_LIBRARY_POSIX
     int fd_ = -1;
 #endif
@@ -1168,12 +1173,18 @@ StampTarget stampPathFor(const fs::path& dir, const std::string& name) {
     }
 }
 
-std::string slug(std::string_view name) {
+namespace {
+
+// The slug of a name given as its code points: ASCII letters and digits,
+// lower-cased, runs of anything else as one '-'; for a name with neither,
+// the code points ("u2665"), spaces skipped. Both slug() and
+// collectionSlug() are this, so a glyph slugs alike in either.
+std::string slugOf(const std::vector<char32_t>& cps) {
     constexpr std::size_t kMax = 48;
     std::string out;
     bool dash = false;
-    for (const char c : name) {
-        const char l = lower(c);
+    for (const char32_t cp : cps) {
+        const char l = cp < 0x80 ? lower(static_cast<char>(cp)) : '\0';
         if ((l >= 'a' && l <= 'z') || (l >= '0' && l <= '9')) {
             if (dash && !out.empty())
                 out += '-';
@@ -1190,17 +1201,27 @@ std::string slug(std::string_view name) {
     if (!out.empty())
         return out;
     // No ASCII letter or digit: the glyphs' code points (♥ is u2665).
-    for (const char c : name) {
-        if (c == ' ')
+    for (const char32_t cp : cps) {
+        if (cp == U' ')
             continue;
         char buf[16];
-        std::snprintf(buf, sizeof buf, "u%04x", unsigned(cp437ToUnicode(static_cast<std::uint8_t>(c))));
+        std::snprintf(buf, sizeof buf, "u%04x", unsigned(cp));
         const std::string part = (out.empty() ? "" : "-") + std::string(buf);
         if (out.size() + part.size() > kMax)
             break;
         out += part;
     }
     return out.empty() ? "stamp" : out;
+}
+
+} // namespace
+
+std::string slug(std::string_view name) {
+    std::vector<char32_t> cps;
+    cps.reserve(name.size());
+    for (const char c : name)
+        cps.push_back(cp437ToUnicode(static_cast<std::uint8_t>(c)));
+    return slugOf(cps);
 }
 
 ScanResult scan(const fs::path& dir) {
@@ -1360,6 +1381,692 @@ bool matches(const TextStyleEntry& style, std::string_view query) {
     return matchesTerms(style.name, style.tags, query);
 }
 
+// Collections (#464).
+
+namespace {
+
+std::string q(const std::string& s) { return "\"" + s + "\""; }
+
+void checkCollectionName(const std::string& name) {
+    checkText(name, "the collection name");
+    for (std::size_t i = 0; i < name.size();)
+        if (!nextUtf8(name, i))
+            throw LibraryError("the collection name isn't UTF-8");
+    if (name.size() > kMaxCollectionName)
+        throw LibraryError("the collection name is longer than " + std::to_string(kMaxCollectionName) + " bytes");
+}
+
+// A folder's own name as a collection's: each control character and each
+// byte that isn't UTF-8 as U+FFFD, so `library list` never prints a tab or
+// newline in a name.
+std::string folderName(const std::string& raw) {
+    static const std::string kReplacement = "\xEF\xBF\xBD";
+    std::string out;
+    for (std::size_t i = 0; i < raw.size();) {
+        const std::size_t at = i;
+        const std::optional<char32_t> cp = nextUtf8(raw, i);
+        if (i == at)
+            ++i;
+        if (!cp || *cp < 0x20 || *cp == 0x7F)
+            out += kReplacement;
+        else
+            out.append(raw, at, i - at);
+    }
+    return out;
+}
+
+fs::path canonicalish(const fs::path& p) {
+    std::error_code ec;
+    fs::path r = fs::weakly_canonical(p, ec);
+    if (ec)
+        r = fs::absolute(p, ec).lexically_normal();
+    return r;
+}
+
+// `inner` is `outer` or inside it, both already canonical.
+bool within(const fs::path& inner, const fs::path& outer) {
+    const fs::path rel = inner.lexically_relative(outer);
+    return !rel.empty() && *rel.begin() != "..";
+}
+
+} // namespace
+
+void refuseBundled(const fs::path& library) {
+    const fs::path bundled = bundledLibraryDir();
+    if (bundled.empty())
+        return;
+    const fs::path lib = canonicalish(library), b = canonicalish(bundled);
+    const char* how = lib == b ? "is" : within(lib, b) ? "is inside" : within(b, lib) ? "holds" : nullptr;
+    if (how)
+        throw LibraryError(library.string() + " " + how + " the bundled library (" + bundled.string() +
+                           "); bundled stamps are never changed");
+}
+
+namespace {
+
+QString qpath(const fs::path& p) {
+#ifdef _WIN32
+    return QString::fromStdWString(p.native());
+#else
+    return QFile::decodeName(QByteArray(p.native().data(), qsizetype(p.native().size())));
+#endif
+}
+
+bool realDir(const fs::path& p) {
+    std::error_code ec;
+    const fs::file_status st = linkStatus(p, ec);
+    return !ec && fs::is_directory(st) && !fs::is_symlink(st);
+}
+
+// The marker's name, if it holds one a collection can have.
+std::optional<std::string> markerName(const fs::path& dir) {
+    const fs::path m = dir / kCollectionMarker;
+    if (!regular(m))
+        return std::nullopt;
+    try {
+        std::string s = readRegularFile(m, 4096);
+        if (s.ends_with('\n'))
+            s.pop_back();
+        if (s.ends_with('\r'))
+            s.pop_back();
+        checkCollectionName(s);
+        return s;
+    } catch (const LibraryError&) {
+        return std::nullopt;
+    }
+}
+
+// A folder that can't be read is still listed, with no stamps, so one bad
+// folder doesn't hide the others; scan() reports it as a problem.
+Collection collectionAt(const fs::path& dir) {
+    ScanResult r;
+    try {
+        r = scan(dir);
+    } catch (const LibraryError&) {
+    }
+    Collection c{{}, dir, r.stamps.size()};
+    if (const std::optional<std::string> m = markerName(dir)) {
+        c.name = *m;
+    } else {
+        std::set<std::string> cats;
+        for (const Stamp& s : r.stamps)
+            cats.insert(s.meta.category);
+        c.name = cats.size() == 1 ? *cats.begin() : folderName(dir.filename().string());
+    }
+    return c;
+}
+
+void writeMarker(const fs::path& dir, const std::string& name) {
+    const fs::path m = dir / kCollectionMarker;
+    checkWritable(m);
+    Staged(m, name + "\n").commit();
+}
+
+// The stamp titled `name` in `dir` (in its subfolders too when `deep`),
+// other than the file `except`, if any.
+std::optional<fs::path> titledIn(const fs::path& dir, const std::string& name, bool deep, const fs::path& except) {
+    std::error_code ec;
+    if (!fs::exists(dir, ec))
+        return std::nullopt;
+    for (const Stamp& s : scan(dir).stamps) {
+        if (s.name != name || (!deep && s.path.parent_path() != dir))
+            continue;
+        if (!except.empty() && fs::equivalent(s.path, except, ec))
+            continue;
+        return s.path;
+    }
+    return std::nullopt;
+}
+
+Collection requireCollection(const fs::path& library, const std::string& name) {
+    if (std::optional<Collection> c = findCollection(library, name))
+        return *c;
+    throw LibraryError("no collection named " + q(name) + " in " + library.string());
+}
+
+// `p` with its folder's links resolved (not a link `p` itself is), so a
+// path into the library through another spelling is still in it.
+fs::path resolvedParent(const fs::path& p) {
+    std::error_code ec;
+    const fs::path parent = p.has_parent_path() ? p.parent_path() : fs::path(".");
+    fs::path r = fs::weakly_canonical(parent, ec);
+    if (ec)
+        r = fs::absolute(parent, ec).lexically_normal();
+    return r / p.filename();
+}
+
+// `p` relative to `library` when it is inside it, else nothing.
+std::optional<fs::path> insideLibrary(const fs::path& library, const fs::path& p) {
+    std::error_code ec;
+    fs::path base = fs::weakly_canonical(library, ec);
+    if (ec)
+        base = fs::absolute(library, ec).lexically_normal();
+    const fs::path rel = resolvedParent(p).lexically_relative(base);
+    if (rel.empty() || rel == "." || *rel.begin() == "..")
+        return std::nullopt;
+    return rel;
+}
+
+fs::path requireInside(const fs::path& library, const fs::path& p, const char* what) {
+    if (std::optional<fs::path> rel = insideLibrary(library, p))
+        return *rel;
+    throw LibraryError(p.string() + " isn't in the library " + library.string() + "; only the stamps there can be " +
+                       what);
+}
+
+// Refuses `p` when a permission would stop deleting it: the folder holding
+// it, and every folder in it, must be listable and writable. POSIX only.
+void checkDeletable(const fs::path& p) {
+#if BW_LIBRARY_POSIX
+    const auto check = [](const fs::path& dir, int mode) {
+        if (::access(dir.c_str(), mode) != 0)
+            throw LibraryError(dir.string() + " can't be emptied: " + std::strerror(errno) + "; nothing was removed");
+    };
+    check(p.has_parent_path() ? p.parent_path() : fs::path("."), W_OK | X_OK);
+    if (!realDir(p))
+        return;
+    check(p, R_OK | W_OK | X_OK);
+    std::error_code ec;
+    fs::recursive_directory_iterator it(p, ec);
+    for (const fs::recursive_directory_iterator end; !ec && it != end; it.increment(ec))
+        if (realDir(it->path()))
+            check(it->path(), R_OK | W_OK | X_OK);
+    if (ec)
+        throw LibraryError(p.string() + " can't be listed: " + ec.message() + "; nothing was removed");
+#else
+    (void)p;
+#endif
+}
+
+// Moves `p` (a file, or a folder and everything in it) to the trash in one
+// call, or deletes it. Whether it went to the trash. A trash that refuses
+// throws TrashUnavailable, having removed nothing: never a delete instead.
+// Both first check that `p` could be deleted (checkDeletable): a trash that
+// can't rename it may copy it and then remove it (Qt does, across volumes),
+// and that removal must not stop halfway.
+bool discard(const fs::path& p, Removal how) {
+    checkDeletable(p);
+    if (how == Removal::Trash) {
+        if (!(testing::moveToTrash ? testing::moveToTrash(p) : QFile::moveToTrash(qpath(p))))
+            throw TrashUnavailable(p.string() + " can't be moved to the trash (there is none, or it refused); " +
+                                   "nothing was removed");
+        // Qt reports success when it copied `p` to the trash but couldn't
+        // remove it.
+        std::error_code ec;
+        if (fs::exists(linkStatus(p, ec)))
+            throw TrashUnavailable(p.string() + " was copied to the trash but can't be removed from here; " +
+                                   "nothing was removed");
+        return true;
+    }
+    std::error_code ec;
+    if (realDir(p))
+        fs::remove_all(p, ec);
+    else
+        fs::remove(p, ec);
+    if (ec)
+        throw LibraryError(p.string() + " can't be removed: " + ec.message());
+    return false;
+}
+
+// Renames the folder `from` to `to` only if nothing sits on `to`.
+void renameDirNoReplace(const fs::path& from, const fs::path& to) {
+#if BW_LIBRARY_POSIX && defined(__linux__) && defined(RENAME_NOREPLACE)
+    if (::renameat2(AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE) == 0)
+        return;
+    if (errno == EEXIST)
+        throw LibraryError(to.string() + " already exists");
+    if (errno != EINVAL && errno != ENOSYS)
+        throw LibraryError(from.string() + " can't be renamed: " + std::strerror(errno));
+#elif BW_LIBRARY_POSIX && defined(__APPLE__)
+    if (::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) == 0)
+        return;
+    if (errno == EEXIST)
+        throw LibraryError(to.string() + " already exists");
+    if (errno != ENOTSUP && errno != EINVAL)
+        throw LibraryError(from.string() + " can't be renamed: " + std::strerror(errno));
+#endif
+    // No exclusive rename here: checked, then renamed.
+    if (present(to))
+        throw LibraryError(to.string() + " already exists");
+    std::error_code ec;
+    fs::rename(from, to, ec);
+    if (ec)
+        throw LibraryError(from.string() + " can't be renamed: " + ec.message());
+}
+
+// The art `bytes` with its SAUCE title made `name`: the text before the
+// record kept as it is, the record (comments and all) rewritten. It must
+// read back with the new title and the same widest row.
+std::string retitled(const std::string& bytes, const std::string& name, TextEncoding encoding,
+                     std::size_t ircBytes) {
+    const SauceSplit split = splitSauce(bytes);
+    if (!split.sauce)
+        throw LibraryError(".ans has no SAUCE record (the title is the stamp's name)");
+    Sauce s = *split.sauce;
+    s.title = name;
+    std::string out(split.content);
+    out += encodeSauce(s, std::uint32_t(split.content.size()));
+    try {
+        const AnsiDocument back = parseAnsi(out, stampParse(encoding));
+        if (!back.sauce || back.sauce->title != name || widestRowBytes(back.canvas) != ircBytes)
+            throw LibraryError("the stamp doesn't read back the same with its new title");
+    } catch (const AnsiError& e) {
+        throw LibraryError(std::string("the retitled .ans does not parse: ") + e.what());
+    } catch (const irc::IrcError& e) {
+        throw LibraryError(std::string("the IRC encoder failed: ") + e.what());
+    }
+    return out;
+}
+
+// An imported piece's name: its SAUCE title when that is a stamp's name,
+// else its file name in CP437 (what CP437 has no glyph for dropped), cut to
+// SAUCE's 35 bytes.
+std::string importName(const AnsiDocument& doc, const fs::path& ans) {
+    if (doc.sauce) {
+        try {
+            checkName(doc.sauce->title);
+            return doc.sauce->title;
+        } catch (const LibraryError&) {
+        }
+    }
+    const std::string stem = ans.stem().string();
+    std::string name;
+    for (std::size_t i = 0; i < stem.size();) {
+        const std::optional<char32_t> cp = nextUtf8(stem, i);
+        if (!cp || *cp == 0)
+            continue;
+        if (const std::optional<std::uint8_t> b = unicodeToCp437(*cp); b && *b)
+            name += char(*b);
+    }
+    const auto trim = [&] {
+        while (!name.empty() && name.back() == ' ')
+            name.pop_back();
+        while (!name.empty() && name.front() == ' ')
+            name.erase(name.begin());
+    };
+    trim();
+    if (name.size() > Sauce::kTitleLen)
+        name.resize(Sauce::kTitleLen);
+    trim();
+    return name.empty() ? "stamp" : name;
+}
+
+constexpr std::size_t kMaxImportBytes = std::size_t(32) << 20;
+
+} // namespace
+
+std::string collectionSlug(std::string_view name) {
+    std::vector<char32_t> cps;
+    for (std::size_t i = 0; i < name.size();)
+        if (const std::optional<char32_t> cp = nextUtf8(name, i))
+            cps.push_back(*cp);
+    std::string s = slugOf(cps);
+    // Windows's device names, which no folder there may have.
+    static const std::set<std::string> kReserved = {"con",  "prn",  "aux",  "nul",  "com1", "com2", "com3", "com4",
+                                                    "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3",
+                                                    "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"};
+    if (kReserved.count(s))
+        s += '-';
+    return s;
+}
+
+std::vector<Collection> collections(const fs::path& library) {
+    std::vector<Collection> out;
+    std::error_code ec;
+    fs::directory_iterator it(library, ec);
+    if (ec == std::errc::no_such_file_or_directory)
+        return out;
+    for (const fs::directory_iterator end; !ec && it != end; it.increment(ec))
+        if (realDir(it->path()))
+            out.push_back(collectionAt(it->path()));
+    if (ec)
+        throw LibraryError(library.string() + " can't be listed: " + ec.message());
+    std::sort(out.begin(), out.end(), [](const Collection& a, const Collection& b) {
+        return a.name != b.name ? a.name < b.name : a.dir < b.dir;
+    });
+    return out;
+}
+
+std::optional<Collection> findCollection(const fs::path& library, const std::string& name) {
+    std::vector<Collection> found;
+    for (Collection& c : collections(library))
+        if (c.name == name)
+            found.push_back(std::move(c));
+    if (found.empty())
+        return std::nullopt;
+    if (found.size() > 1) {
+        std::string dirs;
+        for (const Collection& c : found)
+            dirs += (dirs.empty() ? "" : ", ") + c.dir.string();
+        throw LibraryError("more than one folder goes by the collection name " + q(name) + ": " + dirs +
+                           "; give one of them another name (in its " + kCollectionMarker + " file) first");
+    }
+    return std::move(found.front());
+}
+
+std::optional<Collection> collectionOf(const fs::path& library, const fs::path& path) {
+    const std::optional<fs::path> rel = insideLibrary(library, path);
+    if (!rel || std::distance(rel->begin(), rel->end()) < 2)
+        return std::nullopt;
+    const fs::path dir = library / *rel->begin();
+    if (!realDir(dir))
+        return std::nullopt;
+    return collectionAt(dir);
+}
+
+Collection createCollection(const fs::path& library, const std::string& name) {
+    checkCollectionName(name);
+    refuseBundled(library);
+    std::error_code ec;
+    fs::create_directories(library, ec);
+    if (ec)
+        throw LibraryError(library.string() + ": " + ec.message());
+    if (findCollection(library, name))
+        throw LibraryError("a collection named " + q(name) + " already exists");
+    const fs::path dir = library / collectionSlug(name);
+    if (present(dir))
+        throw LibraryError(dir.string() + " already exists" +
+                           (realDir(dir) ? " as the collection " + q(collectionAt(dir).name) : std::string()) +
+                           "; the collection " + q(name) + " would need that folder");
+    if (!fs::create_directory(dir, ec) || ec)
+        throw LibraryError(dir.string() + (ec ? ": " + ec.message() : std::string(" already exists")));
+    try {
+        writeMarker(dir, name);
+    } catch (...) {
+        fs::remove_all(dir, ec);
+        throw;
+    }
+    return {name, dir, 0};
+}
+
+Removed deleteCollection(const fs::path& library, const std::string& name, Removal how) {
+    refuseBundled(library);
+    const Collection c = requireCollection(library, name);
+    if (!realDir(c.dir))
+        throw LibraryError(c.dir.string() + " is no longer a folder");
+    return {c.stamps, discard(c.dir, how)};
+}
+
+Collection renameCollection(const fs::path& library, const std::string& from, const std::string& to) {
+    checkCollectionName(to);
+    refuseBundled(library);
+    const Collection c = requireCollection(library, from);
+    if (from == to)
+        return c;
+    if (findCollection(library, to))
+        throw LibraryError("a collection named " + q(to) + " already exists");
+    const fs::path dir = library / collectionSlug(to);
+    const bool move = dir.filename() != c.dir.filename();
+    if (move && present(dir))
+        throw LibraryError(dir.string() + " already exists; the collection " + q(to) + " would need that folder");
+    // Every new sidecar is made before anything moves, so a stamp that can't
+    // take the new category refuses the rename.
+    const ScanResult r = scan(c.dir);
+    std::vector<std::pair<fs::path, std::string>> sidecars;  // relative to the folder
+    for (const Stamp& s : r.stamps) {
+        StampMeta meta = s.meta;
+        meta.category = to;
+        const fs::path side = pairedSidecar(s.path);
+        checkWritable(side);
+        sidecars.emplace_back(side.lexically_relative(c.dir), sidecarJson(meta));
+    }
+    if (move)
+        renameDirNoReplace(c.dir, dir);
+    std::string failed;
+    std::size_t failures = 0;
+    for (const auto& [rel, json] : sidecars) {
+        try {
+            checkWritable(dir / rel);
+            Staged(dir / rel, json).commit();
+        } catch (const LibraryError& e) {
+            failed += std::string(failures++ ? "; " : "") + e.what();
+        }
+    }
+    // The marker last: until it is written the name is the old one, and
+    // the folder's stamps are what a collection with no marker goes by.
+    try {
+        writeMarker(dir, to);
+    } catch (const LibraryError& e) {
+        failed += std::string(failures ? "; " : "") + "the marker: " + e.what();
+        ++failures;
+    }
+    if (failures)
+        throw LibraryError("the collection " + q(from) + " was moved to " + dir.string() +
+                           ", but not everything in it could be renamed " + q(to) + ": " + failed);
+    return {to, dir, r.stamps.size()};
+}
+
+std::filesystem::path addStamp(const fs::path& library, const std::string& collection, const std::string& name,
+                               const std::vector<std::string>& tags, const CellBlock& cells, bool ice,
+                               const std::optional<StampSlice>& slice, bool replace) {
+    refuseBundled(library);
+    const Collection c = requireCollection(library, collection);
+    const StampFiles files = encodeStamp(name, c.name, tags, cells, ice, slice);
+    // The title anywhere in the collection, a stamp renamed in place included.
+    const std::optional<fs::path> held = titledIn(c.dir, name, true, {});
+    const StampTarget t = stampPathFor(c.dir, name);
+    if ((held || t.exists) && !replace)
+        throw LibraryError("the collection " + q(c.name) + " already holds a stamp named " +
+                           q(cp437ToUtf8(name)) + " (" + (held ? *held : t.path).string() + ")");
+    const fs::path dest = held ? *held : t.path;
+    writeStamp(dest, files);
+    return dest;
+}
+
+Added addStampFile(const fs::path& library, const std::string& collection, const fs::path& ans) {
+    if (!isArtName(ans))
+        throw LibraryError("not an .ans file");
+    refuseBundled(library);
+    const Collection c = requireCollection(library, collection);
+    std::string name;
+    StampFiles files;
+    if (present(pairedSidecar(ans))) {
+        // A stamp: copied as it is, into the collection's category.
+        const Stamp s = readStamp(ans);
+        StampMeta meta = s.meta;
+        meta.category = c.name;
+        try {
+            files = {readAll(ans), sidecarJson(meta)};
+        } catch (const LibraryError& e) {
+            throw LibraryError(std::string(".ans ") + e.what());
+        }
+        name = s.name;
+    } else {
+        std::string data;
+        try {
+            data = readRegularFile(ans, kMaxImportBytes);
+        } catch (const LibraryError& e) {
+            throw LibraryError(std::string(".ans ") + e.what());
+        }
+        AnsiDocument doc;
+        try {
+            doc = parseAnsi(data);
+        } catch (const AnsiError& e) {
+            throw LibraryError(std::string(".ans does not parse: ") + e.what());
+        }
+        name = importName(doc, ans);
+        // The canvas is 80 wide however little is drawn on it: the blank
+        // columns to the right and rows below go.
+        int w = 0, h = 0;
+        for (int y = 0; y < doc.canvas.height(); ++y)
+            for (int x = 0; x < doc.canvas.width(); ++x)
+                if (!isBlank(doc.canvas.at(x, y))) {
+                    w = std::max(w, x + 1);
+                    h = y + 1;
+                }
+        if (!w)
+            throw LibraryError(".ans has nothing drawn in it");
+        CellBlock block(w, h);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                block.at(x, y) = doc.canvas.at(x, y);
+        files = encodeStamp(name, c.name, {}, block, doc.ice);
+    }
+    const std::optional<fs::path> held = titledIn(c.dir, name, true, {});
+    const StampTarget t = stampPathFor(c.dir, name);
+    if (held || t.exists)
+        throw LibraryError("the collection " + q(c.name) + " already holds a stamp named " +
+                           q(cp437ToUtf8(name)) + " (" + (held ? *held : t.path).string() + ")");
+    writeStamp(t.path, files);
+    return {t.path, name};
+}
+
+void requireRemovable(const fs::path& library, const fs::path& ans) {
+    if (!isArtName(ans))
+        throw LibraryError(ans.string() + " isn't a stamp's .ans");
+    refuseBundled(library);
+    requireInside(library, ans, "removed");
+    std::error_code ec;
+    const fs::file_status st = linkStatus(ans, ec);
+    if (!fs::exists(st))
+        throw LibraryError(ans.string() + " doesn't exist");
+    if (fs::is_directory(st))
+        throw LibraryError(ans.string() + " is a folder, not a stamp");
+    // The art and its sidecar share the folder, so this covers both.
+    checkDeletable(ans);
+}
+
+Removed removeStamp(const fs::path& library, const fs::path& ans, Removal how) {
+    requireRemovable(library, ans);
+    const fs::path side = pairedSidecar(ans);
+    if (!present(side) || realDir(side))
+        return {1, discard(ans, how)};
+    // The sidecar goes first, kept here (its bytes, or where a link to it
+    // points): when the art then can't go, the sidecar is put back, so a
+    // refusal leaves the stamp whole. An art file left without its sidecar
+    // is still a stamp remove takes.
+    std::error_code ec;
+    std::optional<std::string> kept;
+    std::optional<fs::path> link;
+    std::optional<fs::perms> mode;
+    std::optional<fs::file_time_type> mtime;
+    const fs::file_status sideStatus = fs::symlink_status(side, ec);
+    if (fs::is_symlink(sideStatus)) {
+        if (fs::path to = fs::read_symlink(side, ec); !ec)
+            link = to;
+    } else {
+        try {
+            kept = readAll(side);
+        } catch (const LibraryError& e) {
+            // The trash would take a sidecar that can't come back, and an
+            // art file the trash then refuses would be left without it.
+            if (how == Removal::Trash)
+                throw TrashUnavailable(side.string() + " " + e.what() +
+                                       ", so it couldn't be put back if the art can't go to the trash; " +
+                                       "nothing was removed");
+        }
+        // Put back as it was: its permission bits and modification time.
+        if (!ec)
+            mode = sideStatus.permissions() & fs::perms::all;
+        if (const fs::file_time_type t = fs::last_write_time(side, ec); !ec)
+            mtime = t;
+    }
+    discard(side, how);
+    try {
+        return {1, discard(ans, how)};
+    } catch (const LibraryError& e) {
+        std::string why = e.what();
+        const std::string gone = how == Removal::Trash ? "moved to the trash" : "deleted";
+        try {
+            if (link) {
+                fs::create_symlink(*link, side, ec);
+                if (ec)
+                    throw LibraryError(ec.message());
+            } else if (kept) {
+                Staged(side, *kept, mode).commitNoReplace();
+                if (mtime)
+                    fs::last_write_time(side, *mtime, ec);
+            } else {
+                throw LibraryError("it couldn't be read beforehand");
+            }
+        } catch (const LibraryError& r) {
+            const std::string nothing = "; nothing was removed";
+            if (why.size() >= nothing.size() && why.compare(why.size() - nothing.size(), nothing.size(), nothing) == 0)
+                why.erase(why.size() - nothing.size());
+            throw LibraryError(why + "; its sidecar " + side.string() + ", already " + gone +
+                               ", couldn't be put back (" + r.what() + "), so only the art is still here");
+        }
+        // The trash's copy stays: Qt can't take an entry back out of it.
+        why += " (its sidecar, already " + gone + ", was put back" +
+               (how == Removal::Trash ? "; the trash keeps a copy of it" : "") + ")";
+        if (dynamic_cast<const TrashUnavailable*>(&e))
+            throw TrashUnavailable(why);
+        throw LibraryError(why);
+    }
+}
+
+std::filesystem::path editStamp(const fs::path& library, const fs::path& ans, const StampEdit& edit) {
+    refuseBundled(library);
+    requireInside(library, ans, "changed");
+    const Stamp s = readStamp(ans);
+    const std::string name = edit.name.value_or(s.name);
+    checkName(name);
+    StampMeta meta = s.meta;
+    if (edit.category) {
+        checkText(*edit.category, "the category");
+        meta.category = *edit.category;
+    }
+    if (edit.tags) {
+        for (const std::string& t : *edit.tags)
+            checkTag(t, "a tag");
+        meta.tags = *edit.tags;
+    }
+    std::string art;
+    try {
+        art = readAll(ans);
+    } catch (const LibraryError& e) {
+        throw LibraryError(std::string(".ans ") + e.what());
+    }
+    if (name != s.name)
+        art = retitled(art, name, meta.encoding, meta.ircBytes);
+    const StampFiles files{art, sidecarJson(meta)};
+
+    const fs::path here = ans.has_parent_path() ? ans.parent_path() : fs::path(".");
+    fs::path dest = here;
+    if (meta.category != s.meta.category) {
+        const std::optional<Collection> from = collectionOf(library, ans);
+        if (const std::optional<Collection> to = findCollection(library, meta.category)) {
+            if (!from || from->dir != to->dir)
+                dest = to->dir;
+        } else if (from) {
+            dest = library;
+        }
+    }
+    std::error_code ec;
+    const bool moving = !fs::equivalent(dest, here, ec);
+    const StampTarget t = stampPathFor(dest, name);
+    // Another stamp with the title: anywhere in the destination collection
+    // (one renamed in place keeps its old file name), or among the stamps
+    // at the top of the library.
+    const std::optional<Collection> into = collectionOf(library, dest / "x");
+    const std::optional<fs::path> held = into ? titledIn(into->dir, name, true, ans) : titledIn(dest, name, false, ans);
+    const auto clash = [&] {
+        return LibraryError(dest.string() + " already holds a stamp named " + q(cp437ToUtf8(name)) + " (" +
+                            (held ? *held : t.path).string() + ")");
+    };
+    // A stamp that keeps its title and folder makes no new clash.
+    if (held && (moving || name != s.name))
+        throw clash();
+    if (!moving) {
+        if (t.exists && !fs::equivalent(t.path, ans, ec))
+            throw clash();
+        writeStamp(ans, files);
+        return ans;
+    }
+    if (t.exists)
+        throw clash();
+    const fs::path oldSide = pairedSidecar(ans);
+    writeStamp(t.path, files);
+    std::string why;
+    for (const fs::path& p : {ans, oldSide})
+        if (present(p) && !fs::remove(p, ec) && ec)
+            why += (why.empty() ? "" : "; ") + p.string() + ": " + ec.message();
+    if (!why.empty())
+        throw LibraryError("the stamp was written to " + t.path.string() + ", but its old files can't be removed: " +
+                           why);
+    return t.path;
+}
+
 fs::path realBinDir(const fs::path& exe, const fs::path& fallback) {
     // libc++ resolves an empty path to the working directory; it names no
     // executable
@@ -1376,6 +2083,15 @@ fs::path bundledLibraryDir(const fs::path& binDir) {
     if (fs::path p = envPath("BLOCKWRIGHT_BUNDLED_LIBRARY"); !p.empty())
         return p;
     return (binDir / BW_LIBRARY_FROM_BINDIR).lexically_normal();
+}
+
+fs::path bundledLibraryDir() {
+    if (fs::path p = envPath("BLOCKWRIGHT_BUNDLED_LIBRARY"); !p.empty())
+        return p;
+    if (!QCoreApplication::instance())
+        return {};
+    return bundledLibraryDir(realBinDir(fspath(QCoreApplication::applicationFilePath()),
+                                        fspath(QCoreApplication::applicationDirPath())));
 }
 
 fs::path userLibraryDir() {

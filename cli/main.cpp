@@ -16,8 +16,14 @@
 //   blockwright-cli lint [--ramp NAME|c,c,...]... [--box x0,y0,x1,y1] [--target ansi|irc|micron] [--json] <in.ans>
 //   blockwright-cli render --irc [--budget N] [--fit] [--pad] [--swap-shades]
 //                          [--scale N] [--font-width 8|9] <in.ans|project> <out.png>
-//   blockwright-cli library list [dir]
+//   blockwright-cli library list [dir] | library list [--dir DIR]
 //   blockwright-cli library check <dir>
+//   blockwright-cli library new [--dir DIR] <collection>
+//   blockwright-cli library delete [--dir DIR] [--yes] [--permanent] <collection>
+//   blockwright-cli library rename [--dir DIR] <collection> <new name>
+//   blockwright-cli library add [--dir DIR] <collection> <file.ans|folder>...
+//   blockwright-cli library remove [--dir DIR] [--yes] [--permanent] <stamp.ans>...
+//   blockwright-cli library edit [--dir DIR] [--name N] [--category C] [--tags t1,t2] <stamp.ans>
 //   blockwright-cli pack [--allow-lossy] [--target ansi|irc|micron] <in.ans|project> <out.bwp>
 //   blockwright-cli unpack [--allow-lossy] [--target ansi|irc|micron] <in.ans|project> <dir>
 //   blockwright-cli snapshot [--allow-lossy] [--output-encoding cp437|utf-8] <project>
@@ -1246,19 +1252,43 @@ std::filesystem::path libraryDir(const std::string& dir) {
     return dir;
 }
 
+void listCollections(const std::filesystem::path& lib);
+
+// Text as library list, delete and remove print it: each control
+// character (a tab or newline in a folder's name) as U+FFFD, so a path
+// stays one field of one line.
+std::string printable(std::string_view text) {
+    std::string out;
+    for (const char c : text) {
+        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F)
+            out += "\xEF\xBF\xBD";
+        else
+            out += c;
+    }
+    return out;
+}
+
+std::string listPath(const std::filesystem::path& p) { return printable(p.string()); }
+
 // library list [dir]: one entry a line, tab-separated: its kind (stamp or
 // text-style), category, name, width x height, the widest row's IRC bytes,
 // "ice" for a text style that needs iCE colours ("-" otherwise), tags
 // (comma-separated: a tag never holds a comma or a tab, and a category or
-// name never holds a tab or newline), path. A text style's size and bytes
-// are its thumbnail sample's, drawn with iCE colours.
-// Without a dir, the bundled library and then the user library: in each,
-// the stamps and then the text styles. Entries that can't be read are
-// warnings on stderr; the exit status is still 0.
-int libraryList(const std::optional<std::string>& dir) {
+// name never holds a tab or newline), path (each control character in it,
+// a tab or newline in a folder's name, printed as U+FFFD). A text style's
+// size and bytes are its thumbnail sample's, drawn with iCE colours.
+// Without a dir, the bundled library and then the user library (or --dir
+// alone): in each, the stamps and then the text styles. The user library
+// (or --dir) starts with its collections, empty ones included, one a line:
+// "collection", name, how many stamps, path. Entries that can't be read, and
+// a user library whose collections can't be listed, are warnings on stderr;
+// the exit status is still 0.
+int libraryList(const std::optional<std::string>& dir, const std::optional<std::filesystem::path>& userDir) {
     std::vector<std::filesystem::path> dirs;
     if (dir) {
         dirs.push_back(libraryDir(*dir));
+    } else if (userDir) {
+        dirs.push_back(*userDir);
     } else {
         // Beside the real binary, not a symlink to it.
         const auto native = [](const QString& p) { return std::filesystem::path(QFile::encodeName(p).toStdString()); };
@@ -1267,16 +1297,19 @@ int libraryList(const std::optional<std::string>& dir) {
         dirs.push_back(bw::library::userLibraryDir());
     }
     for (const auto& d : dirs) {
+        // The user library's collections first, empty ones included.
+        if (!dir && d == dirs.back())
+            listCollections(d);
         const bw::library::ScanResult r = bw::library::scan(d);
         for (const bw::library::Stamp& s : r.stamps)
             std::cout << "stamp\t" << s.meta.category << "\t" << s.displayName() << "\t" << s.art.canvas.width()
                       << "x" << s.art.canvas.height() << "\t" << s.meta.ircBytes << "\t-\t"
-                      << joined(s.meta.tags, ",") << "\t" << s.path.string() << "\n";
+                      << joined(s.meta.tags, ",") << "\t" << listPath(s.path) << "\n";
         for (const bw::library::TextStyleEntry& t : r.styles) {
             const bw::Canvas sample = bw::library::textStyleSample(t.style, true);
             std::cout << "text-style\t" << t.category << "\t" << t.name << "\t" << sample.width() << "x"
                       << sample.height() << "\t" << bw::library::widestRowBytes(sample) << "\t"
-                      << (t.iceRequired ? "ice" : "-") << "\t" << joined(t.tags, ",") << "\t" << t.path.string()
+                      << (t.iceRequired ? "ice" : "-") << "\t" << joined(t.tags, ",") << "\t" << listPath(t.path)
                       << "\n";
         }
         for (const bw::library::Problem& p : r.problems)
@@ -1303,6 +1336,161 @@ int libraryCheck(const std::string& dir) {
               << (r.styles.size() == 1 ? " text style, " : " text styles, ") << problems
               << (problems == 1 ? " problem\n" : " problems\n");
     return problems ? kBadInput : kOk;
+}
+
+// The library the collection subcommands work on: --dir, else the user's.
+std::filesystem::path userLibrary(const std::optional<std::filesystem::path>& dir) {
+    return dir ? *dir : bw::library::userLibraryDir();
+}
+
+// library list's collection lines: "collection", name, how many stamps,
+// path, tab-separated. A library that can't be listed is a warning, as an
+// unreadable entry is: library list still exits 0.
+void listCollections(const std::filesystem::path& lib) {
+    std::vector<bw::library::Collection> cs;
+    try {
+        cs = bw::library::collections(lib);
+    } catch (const bw::library::LibraryError& e) {
+        std::cerr << "warning: " << e.what() << "\n";
+        return;
+    }
+    for (const bw::library::Collection& c : cs)
+        std::cout << "collection\t" << c.name << "\t" << c.stamps << "\t" << listPath(c.dir) << "\n";
+}
+
+// A stamp's name typed as UTF-8, as SAUCE holds it: CP437.
+std::string cp437Name(const std::string& utf8) {
+    std::string out;
+    for (std::size_t i = 0; i < utf8.size();) {
+        const std::optional<char32_t> cp = bw::nextUtf8(utf8, i);
+        if (!cp)
+            throw Failure{"library edit: --name isn't UTF-8"};
+        const std::optional<std::uint8_t> b = bw::unicodeToCp437(*cp);
+        if (!b)
+            throw Failure{"library edit: --name holds a character CP437 has no glyph for"};
+        out += char(*b);
+    }
+    return out;
+}
+
+std::string stampCount(std::size_t n) { return std::to_string(n) + (n == 1 ? " stamp" : " stamps"); }
+
+// library new <collection>: makes the collection's folder; prints it.
+int libraryNew(const std::filesystem::path& lib, const std::string& name) {
+    std::cout << bw::library::createCollection(lib, name).dir.string() << "\n";
+    return kOk;
+}
+
+// What a removal says when the trash refused: nothing went, and how to
+// delete it for good instead.
+constexpr const char* kPermanentHint = "; run again with --permanent to delete it for good";
+
+// library delete <collection> [--yes] [--permanent]: without --yes, says
+// what would go and exits 1; with it, moves the folder to the trash, or
+// with --permanent deletes it. A trash that refuses removes nothing (exit 1).
+int libraryDelete(const std::filesystem::path& lib, const std::string& name, bool yes, bool permanent) {
+    const std::optional<bw::library::Collection> c = bw::library::findCollection(lib, name);
+    if (!c)
+        throw Failure{"library delete: no collection named \"" + name + "\" in " + lib.string()};
+    if (!yes) {
+        std::cerr << "blockwright-cli: library delete: this would remove " << listPath(c->dir) << " and its "
+                  << stampCount(c->stamps) << "; run again with --yes\n";
+        return kBadInput;
+    }
+    bw::library::Removed r;
+    try {
+        r = bw::library::deleteCollection(lib, name,
+                                          permanent ? bw::library::Removal::Delete : bw::library::Removal::Trash);
+    } catch (const bw::library::TrashUnavailable& e) {
+        throw Failure{std::string("library delete: ") + e.what() + kPermanentHint};
+    }
+    std::cout << (r.trashed ? "moved to the trash\t" : "deleted\t") << listPath(c->dir) << "\t"
+              << stampCount(r.stamps) << "\n";
+    return kOk;
+}
+
+// library rename <collection> <new name>: prints the collection's folder.
+int libraryRename(const std::filesystem::path& lib, const std::string& from, const std::string& to) {
+    std::cout << bw::library::renameCollection(lib, from, to).dir.string() << "\n";
+    return kOk;
+}
+
+// library add <collection> <file.ans|folder>...: each .ans (a folder's own
+// .ans files, not its subfolders') added as a stamp, one line each: added,
+// name, path. One that can't be added is an error on stderr; the rest are
+// still added, and the exit status is 1.
+int libraryAdd(const std::filesystem::path& lib, const std::string& collection,
+               const std::vector<std::filesystem::path>& inputs) {
+    if (!bw::library::findCollection(lib, collection))
+        throw Failure{"library add: no collection named \"" + collection + "\" in " + lib.string()};
+    std::vector<std::filesystem::path> files;
+    for (const std::filesystem::path& in : inputs) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(in, ec)) {
+            files.push_back(in);
+            continue;
+        }
+        std::vector<std::filesystem::path> found;
+        std::filesystem::directory_iterator it(in, ec);
+        for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec)) {
+            std::error_code dirEc;
+            if (bw::library::isArtName(it->path()) && !std::filesystem::is_directory(it->path(), dirEc))
+                found.push_back(it->path());
+        }
+        if (ec)
+            throw Failure{"library add: " + in.string() + " can't be listed: " + ec.message()};
+        if (found.empty())
+            throw Failure{"library add: " + in.string() + " holds no .ans files"};
+        std::sort(found.begin(), found.end());
+        files.insert(files.end(), found.begin(), found.end());
+    }
+    int status = kOk;
+    for (const std::filesystem::path& f : files) {
+        try {
+            const bw::library::Added a = bw::library::addStampFile(lib, collection, f);
+            std::cout << "added\t" << bw::cp437ToUtf8(a.name) << "\t" << a.path.string() << "\n";
+        } catch (const bw::library::LibraryError& e) {
+            std::cerr << "blockwright-cli: library add: " << f.string() << ": " << e.what() << "\n";
+            status = kBadInput;
+        }
+    }
+    return status;
+}
+
+// library remove <stamp.ans>... --yes [--permanent]: each stamp's .ans and
+// sidecar moved to the trash, or with --permanent deleted; one line each,
+// the path as library list prints it. Without --yes, says what would go
+// (and why any of them wouldn't) and exits 1. A trash that refuses removes
+// nothing.
+int libraryRemove(const std::filesystem::path& lib, const std::vector<std::filesystem::path>& stamps, bool yes,
+                  bool permanent) {
+    if (!yes) {
+        for (const std::filesystem::path& s : stamps) {
+            try {
+                bw::library::requireRemovable(lib, s);
+                std::cerr << "blockwright-cli: library remove: this would remove " << listPath(s) << "\n";
+            } catch (const bw::library::LibraryError& e) {
+                std::cerr << "blockwright-cli: library remove: " << printable(e.what()) << "\n";
+            }
+        }
+        std::cerr << "blockwright-cli: library remove: run again with --yes\n";
+        return kBadInput;
+    }
+    int status = kOk;
+    for (const std::filesystem::path& s : stamps) {
+        try {
+            const bw::library::Removed r = bw::library::removeStamp(
+                lib, s, permanent ? bw::library::Removal::Delete : bw::library::Removal::Trash);
+            std::cout << (r.trashed ? "moved to the trash\t" : "deleted\t") << listPath(s) << "\n";
+        } catch (const bw::library::TrashUnavailable& e) {
+            std::cerr << "blockwright-cli: library remove: " << printable(e.what()) << kPermanentHint << "\n";
+            status = kBadInput;
+        } catch (const bw::library::LibraryError& e) {
+            std::cerr << "blockwright-cli: library remove: " << printable(e.what()) << "\n";
+            status = kBadInput;
+        }
+    }
+    return status;
 }
 
 // An option as it is typed: `-o` for a one-letter name, `--name` for a long one.
@@ -1377,6 +1565,33 @@ int main(int argc, char** argv) {
         "                       its thumbnail sample's)\n"
         "  library check <dir>  check every stamp, sidecar and text style in dir,\n"
         "                       drawing each text style's sample\n"
+        "  library new <collection>\n"
+        "                       make a collection: a folder in the user library\n"
+        "                       (or --dir), named for the collection\n"
+        "  library delete <collection> --yes [--permanent]\n"
+        "                       move a collection's folder and its stamps to the\n"
+        "                       trash, or with --permanent delete them; where the\n"
+        "                       trash refuses, nothing goes and it exits 1; without\n"
+        "                       --yes it says what would go and exits 1. Neither\n"
+        "                       this nor new, rename, add, remove or edit changes\n"
+        "                       the bundled library\n"
+        "  library rename <collection> <new name>\n"
+        "                       rename a collection, its folder and its stamps'\n"
+        "                       category\n"
+        "  library add <collection> <file.ans|folder>...\n"
+        "                       copy stamps, or .ans files (a folder's own), into a\n"
+        "                       collection; one without a sidecar is named from its\n"
+        "                       SAUCE title, else its file name\n"
+        "  library remove <stamp.ans>... --yes [--permanent]\n"
+        "                       move a stamp in the user library (or --dir) and its\n"
+        "                       sidecar to the trash, or with --permanent delete\n"
+        "                       them\n"
+        "  library edit <stamp.ans> [--name N] [--category C] [--tags t1,t2]\n"
+        "                       rename a stamp or change its category or tags; a\n"
+        "                       category that is another collection's name moves\n"
+        "                       it there. library list shows the user library's\n"
+        "                       collections (and --dir's) first: collection, name,\n"
+        "                       stamps, path\n"
         "  pack <in> <out.bwp>  write an .ans or a project as a project zip\n"
         "  unpack <in> <dir>    write an .ans or a project as a project directory;\n"
         "                       <dir> must be empty or a project already. A\n"
@@ -1525,10 +1740,30 @@ int main(int argc, char** argv) {
     parser.addOption(iceOpt);
     const QCommandLineOption jsonOpt(QStringLiteral("json"), QStringLiteral("lint: the findings as JSON"));
     parser.addOption(jsonOpt);
-    const QCommandLineOption nameOpt(QStringLiteral("name"),
-                                     QStringLiteral("add-generator: the layer's name (default: the directory's)"),
-                                     QStringLiteral("name"));
+    const QCommandLineOption nameOpt(
+        QStringLiteral("name"),
+        QStringLiteral("add-generator: the layer's name (default: the directory's); library edit: the stamp's new name"),
+        QStringLiteral("name"));
     parser.addOption(nameOpt);
+    const QCommandLineOption dirOpt(QStringLiteral("dir"),
+                                    QStringLiteral("library: the library to work on (default: the user library)"),
+                                    QStringLiteral("dir"));
+    parser.addOption(dirOpt);
+    const QCommandLineOption yesOpt(QStringLiteral("yes"),
+                                    QStringLiteral("library delete, library remove: do it, without asking"));
+    parser.addOption(yesOpt);
+    const QCommandLineOption permanentOpt(
+        QStringLiteral("permanent"),
+        QStringLiteral("library delete, library remove: delete for good rather than move to the trash"));
+    parser.addOption(permanentOpt);
+    const QCommandLineOption categoryOpt(QStringLiteral("category"),
+                                         QStringLiteral("library edit: the stamp's new category"),
+                                         QStringLiteral("category"));
+    parser.addOption(categoryOpt);
+    const QCommandLineOption tagsOpt(QStringLiteral("tags"),
+                                     QStringLiteral("library edit: the stamp's new tags, comma-separated (empty: none)"),
+                                     QStringLiteral("t1,t2"));
+    parser.addOption(tagsOpt);
     const QCommandLineOption layerOpt(
         QStringLiteral("layer"),
         QStringLiteral("run-generators: run this generator layer (an id, as info lists them), even a hidden one; "
@@ -1623,7 +1858,9 @@ int main(int argc, char** argv) {
                   << "       | lint [--ramp R]... [--box x0,y0,x1,y1] [--target ansi|irc|micron] [--json] <in>\n"
                   << "       | render --irc [--budget N] [--fit] [--pad] [--swap-shades] [--scale N] [--font-width 8|9]\n"
                   << "         <in> <out.png>\n"
-                  << "       | library list [dir] | library check <dir>\n"
+                  << "       | library list [dir] | library list [--dir DIR] | library check <dir>\n"
+                  << "       | library new|delete [--yes] [--permanent]|rename|add|remove [--yes] [--permanent]|edit [--dir DIR] ...\n"
+                  << "         (--help lists them)\n"
                   << "       | pack [--target ansi|irc|micron] <in> <out.bwp> | unpack [--target ansi|irc|micron] <in> <dir>\n"
                   << "       | snapshot [--allow-lossy] [--output-encoding enc] <project>\n"
                   << "       | add-generator [--name NAME] [--timeout S] <project> <dir>\n"
@@ -1651,7 +1888,9 @@ int main(int argc, char** argv) {
         {&boxOpt, {"shade", "lint"}},      {&iceOpt, {"shade"}},     {&jsonOpt, {"lint"}},
         {&formOpt, {"shade"}},             {&glintOpt, {"shade"}},   {&despeckleOpt, {"shade"}},
         {&rimOpt, {"shade"}},              {&lightOpt, {"shade"}},   {&maskOpt, {"shade"}},
-        {&nameOpt, {"add-generator"}},     {&layerOpt, {"run-generators"}},
+        {&nameOpt, {"add-generator", "library"}},
+        {&dirOpt, {"library"}},            {&yesOpt, {"library"}},     {&permanentOpt, {"library"}},
+        {&categoryOpt, {"library"}},       {&tagsOpt, {"library"}},     {&layerOpt, {"run-generators"}},
         {&timeoutOpt, {"add-generator", "run-generators", "import-scene"}},
         {&bakeOpt, {"import-scene"}},      {&authorOpt, {"import-scene"}}, {&dateOpt, {"import-scene"}},
         {&encodingOpt, {"info", "convert", "render", "export", "shade", "lint", "pack", "unpack"}},
@@ -1808,18 +2047,96 @@ int main(int argc, char** argv) {
         }
         if (cmd == QLatin1String("library")) {
             const QString sub = args.value(1);
-            if (sub == QLatin1String("list")) {
-                if (args.size() > 3)
-                    return usage("library list takes at most one directory");
-                return libraryList(args.size() == 3 ? std::optional(args[2].toStdString()) : std::nullopt);
+            const std::string s = sub.toStdString();
+            // Each subcommand's own options.
+            const std::pair<const QCommandLineOption*, std::vector<const char*>> subOwners[] = {
+                {&dirOpt, {"list", "new", "delete", "rename", "add", "remove", "edit"}},
+                {&yesOpt, {"delete", "remove"}},
+                {&permanentOpt, {"delete", "remove"}},
+                {&nameOpt, {"edit"}}, {&categoryOpt, {"edit"}}, {&tagsOpt, {"edit"}},
+            };
+            for (const auto& [o, subs] : subOwners)
+                if (parser.isSet(*o) && std::none_of(subs.begin(), subs.end(), [&](const char* x) { return s == x; }))
+                    return usage((optionName(*o) + " isn't a library " + (s.empty() ? "" : s + " ") + "option").c_str());
+            const auto native = [](const QString& p) {
+                return std::filesystem::path(QFile::encodeName(p).toStdString());
+            };
+            const std::optional<std::filesystem::path> dir =
+                parser.isSet(dirOpt) ? std::optional(native(parser.value(dirOpt))) : std::nullopt;
+            const auto paths = [&](qsizetype from) {
+                std::vector<std::filesystem::path> out;
+                for (qsizetype i = from; i < args.size(); ++i)
+                    out.push_back(native(args[i]));
+                return out;
+            };
+            try {
+                // Bundled stamps are never changed, whatever --dir names.
+                for (const char* m : {"new", "delete", "rename", "add", "remove", "edit"})
+                    if (s == m)
+                        bw::library::refuseBundled(userLibrary(dir));
+                if (sub == QLatin1String("list")) {
+                    if (args.size() > 3)
+                        return usage("library list takes at most one directory");
+                    if (args.size() == 3 && dir)
+                        return usage("library list takes a directory or --dir, not both");
+                    return libraryList(args.size() == 3 ? std::optional(args[2].toStdString()) : std::nullopt, dir);
+                }
+                if (sub == QLatin1String("check")) {
+                    if (args.size() != 3)
+                        return usage("library check takes one directory");
+                    return libraryCheck(args[2].toStdString());
+                }
+                if (sub == QLatin1String("new")) {
+                    if (args.size() != 3)
+                        return usage("library new takes a collection's name");
+                    return libraryNew(userLibrary(dir), args[2].toStdString());
+                }
+                if (sub == QLatin1String("delete")) {
+                    if (args.size() != 3)
+                        return usage("library delete takes a collection's name");
+                    return libraryDelete(userLibrary(dir), args[2].toStdString(), parser.isSet(yesOpt),
+                                         parser.isSet(permanentOpt));
+                }
+                if (sub == QLatin1String("rename")) {
+                    if (args.size() != 4)
+                        return usage("library rename takes a collection's name and its new name");
+                    return libraryRename(userLibrary(dir), args[2].toStdString(), args[3].toStdString());
+                }
+                if (sub == QLatin1String("add")) {
+                    if (args.size() < 4)
+                        return usage("library add takes a collection's name and one or more .ans files or folders");
+                    return libraryAdd(userLibrary(dir), args[2].toStdString(), paths(3));
+                }
+                if (sub == QLatin1String("remove")) {
+                    if (args.size() < 3)
+                        return usage("library remove takes one or more stamps' .ans files");
+                    return libraryRemove(userLibrary(dir), paths(2), parser.isSet(yesOpt), parser.isSet(permanentOpt));
+                }
+                if (sub == QLatin1String("edit")) {
+                    if (args.size() != 3)
+                        return usage("library edit takes one stamp's .ans file");
+                    bw::library::StampEdit edit;
+                    if (parser.isSet(nameOpt))
+                        edit.name = cp437Name(parser.value(nameOpt).toStdString());
+                    if (parser.isSet(categoryOpt))
+                        edit.category = parser.value(categoryOpt).toStdString();
+                    if (parser.isSet(tagsOpt)) {
+                        std::vector<std::string> tags;
+                        for (const QString& t : parser.value(tagsOpt).split(QLatin1Char(','), Qt::SkipEmptyParts))
+                            tags.push_back(t.trimmed().toStdString());
+                        edit.tags = tags;
+                    }
+                    if (!edit.name && !edit.category && !edit.tags)
+                        return usage("library edit needs --name, --category or --tags");
+                    std::cout << bw::library::editStamp(userLibrary(dir), native(args[2]), edit).string() << "\n";
+                    return kOk;
+                }
+            } catch (const bw::library::LibraryError& e) {
+                std::cerr << "blockwright-cli: library " << s << ": " << e.what() << "\n";
+                return kBadInput;
             }
-            if (sub == QLatin1String("check")) {
-                if (args.size() != 3)
-                    return usage("library check takes one directory");
-                return libraryCheck(args[2].toStdString());
-            }
-            return usage(sub.isEmpty() ? "library needs a subcommand: list or check"
-                                       : ("unknown library subcommand '" + sub.toStdString() + "'").c_str());
+            return usage(sub.isEmpty() ? "library needs a subcommand: list, check, new, delete, rename, add, remove or edit"
+                                       : ("unknown library subcommand '" + s + "'").c_str());
         }
         if (cmd == QLatin1String("lint")) {
             if (args.size() != 2)

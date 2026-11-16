@@ -191,6 +191,10 @@ add_test(NAME cli_generators
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_generators_test.sh
           ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-generators-tmp)
 set_tests_properties(cli_generators PROPERTIES ENVIRONMENT "${BW_CLI_ENV}" SKIP_RETURN_CODE 77)
+add_test(NAME cli_library
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_library_test.sh
+          ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-library-tmp)
+set_tests_properties(cli_library PROPERTIES ENVIRONMENT "${BW_CLI_ENV}" SKIP_RETURN_CODE 77)
 add_test(NAME cli_scene
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli_scene_test.sh
           ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-scene-tmp

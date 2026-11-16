@@ -84,6 +84,13 @@ class LibraryError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
+// A removal with Removal::Trash that the trash refused (none, or it
+// couldn't take the file): nothing was removed. A caller may then ask the
+// user and remove it again with Removal::Delete.
+class TrashUnavailable : public LibraryError {
+public:
+    using LibraryError::LibraryError;
+};
 
 // What the sidecar holds.
 struct StampMeta {
@@ -229,6 +236,9 @@ inline std::function<void(const std::filesystem::path&)> beforeTextStylePublish;
 // hard-link fallback runs) and "unlink" (a throw is taken as removing the
 // temporary's name after the link failing with EIO). POSIX only. Tests only.
 inline std::function<void(std::string_view step)> textStylePublishFault;
+// When set, called instead of QFile::moveToTrash; false is a trash that
+// refused. Tests only.
+inline std::function<bool(const std::filesystem::path&)> moveToTrash;
 } // namespace testing
 
 // A file name for a stamp called `name` (CP437 bytes): lower-case ASCII
@@ -368,6 +378,167 @@ bool matches(const Stamp& stamp, std::string_view query);
 // The same for a text style, by its name and tags.
 bool matches(const TextStyleEntry& style, std::string_view query);
 
+// Collections (#464, PLAN §12): the user's own named sets of stamps.
+//
+// A collection is a folder at the top of the user library,
+// <library>/<collectionSlug(name)>/, whose stamps (scanned recursively, as
+// any library folder is) carry its name as their sidecar category. The
+// folder holds a one-line marker file, kCollectionMarker, with the name in
+// UTF-8, so a collection keeps its name exactly ("My Trees", not the folder's
+// "my-trees") while it holds no stamp; the marker is a dot file with no .json
+// or .ans extension, which the scan (this build's and older ones) never
+// reads. A folder with no readable marker is still a collection: its name is
+// the category its stamps share if they all share one, else the folder's
+// own name. Stamps at the top of the library belong to no collection and
+// work as they always did.
+//
+// Every function here takes the library to change (the user library, or a
+// folder the CLI's --dir names) and changes nothing outside it, so a
+// collection named like a bundled category never touches the bundled
+// stamps. Each that changes anything refuses a library that is, is inside
+// or holds the running program's bundled library (bundledLibraryDir(),
+// compared with links resolved): bundled stamps are never changed. Each
+// refuses (LibraryError) a name that isn't a category's (empty, blank, a
+// control character), isn't UTF-8 or is longer than kMaxCollectionName
+// bytes, a name already taken, a folder that can't be listed, and a stamp
+// outside `library`, before writing anything; a write that fails leaves the
+// old files (writeStamp's rules).
+
+inline constexpr const char* kCollectionMarker = ".collection";
+inline constexpr std::size_t kMaxCollectionName = 128;  // bytes of UTF-8
+
+struct Collection {
+    std::string name;            // UTF-8, as a category is
+    std::filesystem::path dir;   // <library>/<slug>
+    std::size_t stamps = 0;      // stamps in it that read cleanly
+};
+
+// The folder name for a collection called `name` (UTF-8), made as slug()
+// makes a stamp's: "My Trees" is my-trees, "♥" u2665. A slug Windows
+// reserves as a device (con, prn, aux, nul, com1-com9, lpt1-lpt9) gets a
+// '-' after it ("con-"), which no other name's slug ends in.
+std::string collectionSlug(std::string_view name);
+
+// Every collection in `library`, sorted by name: each folder at its top
+// (not a link to one: the scan doesn't follow those either). A library that
+// doesn't exist has none; one that can't be listed throws LibraryError. A
+// folder named by its own name (no marker, no shared category) has each
+// control character and each byte that isn't UTF-8 in it as U+FFFD, so a
+// name never holds a tab or newline.
+std::vector<Collection> collections(const std::filesystem::path& library);
+// The collection called exactly `name`, if there is one. Two folders going
+// by the name (a folder with no marker whose stamps share another
+// collection's name) is refused (LibraryError naming both), not settled by
+// picking one.
+std::optional<Collection> findCollection(const std::filesystem::path& library, const std::string& name);
+// The collection whose folder holds `path`, if any.
+std::optional<Collection> collectionOf(const std::filesystem::path& library, const std::filesystem::path& path);
+
+// Refuses (LibraryError) a library that is, is inside or holds
+// bundledLibraryDir(), links resolved. Every function below that changes
+// anything calls it first; a caller may too, before its own checks.
+void refuseBundled(const std::filesystem::path& library);
+
+// Makes an empty collection: its folder and marker, and `library` if need
+// be. Refused when a collection has the name already or something sits on
+// its folder's name.
+Collection createCollection(const std::filesystem::path& library, const std::string& name);
+
+// How a stamp or a collection goes: to the system trash
+// (QFile::moveToTrash), or deleted outright. Trash never falls back to
+// deleting: when the trash refuses (there is none, or it can't take the
+// file), TrashUnavailable is thrown and nothing is removed; Delete is the
+// caller's explicit choice, after its own confirmation.
+enum class Removal { Trash, Delete };
+struct Removed {
+    std::size_t stamps = 0;  // the stamps that went
+    bool trashed = false;    // moved to the trash rather than deleted
+};
+
+// Removes the collection called `name`, its folder and everything in it.
+// Either way it first checks that every folder in it, and the library
+// holding it, can be listed and written (POSIX access(); not checked on
+// Windows), so a permission that would stop it halfway refuses it before
+// anything goes. Trash then moves the folder in one call (on Linux and the
+// BSDs one rename into the trash when the trash is on the same volume, so
+// all of it goes or none), and a trash that reports success with the
+// folder still here is TrashUnavailable. What the check can't see (an
+// immutable file, a change made meanwhile) can still stop Delete, or a
+// trash that copies, partway; the error then names the path.
+Removed deleteCollection(const std::filesystem::path& library, const std::string& name, Removal how = Removal::Trash);
+
+// Renames a collection: its folder to collectionSlug(to) (kept when the slug
+// is the same), its marker, and the category of every stamp in it. Refused
+// when no collection has the name `from`, one has `to` already, or
+// something else sits on the new folder's name. Every stamp is read and its
+// new sidecar made before anything moves; a sidecar that can't be written
+// afterwards keeps its old category, and the error names it.
+Collection renameCollection(const std::filesystem::path& library, const std::string& from, const std::string& to);
+
+// Adds a stamp of `cells` named `name` to the collection (encodeStamp, with
+// the collection's name as the category), at stampPathFor in its folder, and
+// returns the .ans path. Refused when the collection doesn't exist or holds
+// a stamp with that title already (anywhere in its folder, whatever the
+// file is called), unless `replace`, which writes over that stamp.
+std::filesystem::path addStamp(const std::filesystem::path& library, const std::string& collection,
+                               const std::string& name, const std::vector<std::string>& tags, const CellBlock& cells,
+                               bool ice, const std::optional<StampSlice>& slice = std::nullopt, bool replace = false);
+
+// Adds the art file `ans` (isArtName) to the collection as a copy. A stamp
+// (an .ans with a sidecar beside it, bundled or the user's) is copied as it
+// is, its art byte for byte and its sidecar with the collection's name as
+// the category; it must read cleanly (readStamp). Any other .ans is
+// imported: read as the CLI reads one (its encoding detected), named by its
+// SAUCE title when that is a stamp's name, else by its file name (in CP437,
+// what CP437 can't hold dropped, cut to SAUCE's 35 bytes), and written by
+// encodeStamp with no tags and the piece's own iCE colours. Refused as
+// addStamp refuses, and for anything encodeStamp refuses (all blank, past
+// the size limits, glyphs a stamp can't hold).
+struct Added {
+    std::filesystem::path path;  // the new .ans
+    std::string name;            // its title, CP437
+};
+Added addStampFile(const std::filesystem::path& library, const std::string& collection, const std::filesystem::path& ans);
+
+// Removes the stamp at `ans` (its art and its sidecar) from `library`; a
+// stamp that doesn't read cleanly, or has no sidecar, can be removed too.
+// Refused for anything outside `library` (a bundled stamp), not named as
+// art, or not there, or in a folder a permission stops it leaving
+// (requireRemovable). The sidecar goes first, then the art. When either
+// can't (TrashUnavailable, or Delete's folder check) nothing is removed: a
+// sidecar already gone is written back from a copy read beforehand, with
+// its permission bits and modification time (the trash keeps the copy it
+// took). A sidecar that can't be read beforehand couldn't be written back,
+// so Trash refuses it (TrashUnavailable) before anything goes; Delete
+// takes it. Only if a write-back fails does the art stay without its
+// sidecar, and the error says so.
+Removed removeStamp(const std::filesystem::path& library, const std::filesystem::path& ans, Removal how = Removal::Trash);
+// What removeStamp checks before it removes anything (LibraryError when
+// `ans` isn't a stamp it would take), so a caller can say what would go.
+// It can't know beforehand whether the trash will take the files, or
+// whether a sidecar can be read for a write-back: removeStamp may still
+// refuse those (TrashUnavailable), removing nothing.
+void requireRemovable(const std::filesystem::path& library, const std::filesystem::path& ans);
+
+// A change to a stamp: each field left empty is kept.
+struct StampEdit {
+    std::optional<std::string> name;               // CP437, encodeStamp's rules
+    std::optional<std::string> category;           // UTF-8
+    std::optional<std::vector<std::string>> tags;  // UTF-8
+};
+// Renames, re-files or re-tags the stamp at `ans` in `library` and returns
+// where it is now. The file stays where it is unless the category moves it:
+// into the folder of the collection the new category names, or, for a stamp
+// leaving a collection for a category no collection has, to the top of the
+// library. A new name rewrites only the SAUCE title (the art's bytes before
+// it are kept); a stamp moved is written at stampPathFor in its new folder
+// and its old files removed. Refused for a stamp outside `library`, one that
+// doesn't read cleanly, a name or category encodeStamp would refuse, and a
+// title another stamp has in the destination collection (anywhere in its
+// folder) or, at the top of the library, among the stamps there.
+std::filesystem::path editStamp(const std::filesystem::path& library, const std::filesystem::path& ans,
+                                const StampEdit& edit);
+
 // Where the libraries are. BLOCKWRIGHT_BUNDLED_LIBRARY and
 // BLOCKWRIGHT_USER_LIBRARY override them (tests, and running a build tree
 // against the repo's library/). The bundled library is found from the
@@ -378,6 +549,10 @@ bool matches(const TextStyleEntry& style, std::string_view query);
 // and macOS that is the GUI's AppDataLocation + "/library"; on Windows it is
 // under AppData/Local (AppLocalDataLocation), not the roaming AppData.
 std::filesystem::path bundledLibraryDir(const std::filesystem::path& binDir);
+// The running program's bundled library: BLOCKWRIGHT_BUNDLED_LIBRARY, else
+// bundledLibraryDir(realBinDir(...)) of the QCoreApplication's executable.
+// Empty with neither (no override and no QCoreApplication).
+std::filesystem::path bundledLibraryDir();
 // The directory of the real executable `exe`, with symlinks resolved, so a
 // binary started through a link elsewhere (the dev install's ~/.local/bin
 // links) still finds its own prefix. When `exe` can't be resolved (renamed
