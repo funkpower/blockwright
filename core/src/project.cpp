@@ -74,6 +74,16 @@ constexpr std::uint8_t kReservedFlags = 0xE0;  // SAUCE TFlags bits 5-7
 constexpr std::size_t kMaxNameBytes = 255;     // a name on most disks (NAME_MAX)
 constexpr std::size_t kMaxPathBytes = 1024;    // a path in a project, leaving room for where it goes
 constexpr std::size_t kTmpNameBytes = 64;      // writeTemporary's temporary name, at most
+#if BW_PROJECT_POSIX
+// The longest path, in bytes with its terminator, a directory save writes on
+// a POSIX system: PATH_MAX, or Linux's 4096 on a system that sets none (GNU
+// Hurd), past which common tools and file managers fail anyway.
+#ifdef PATH_MAX
+constexpr std::size_t kMaxSystemPath = PATH_MAX;
+#else
+constexpr std::size_t kMaxSystemPath = 4096;
+#endif
+#endif
 
 [[noreturn]] void fail(const std::string& what) { throw ProjectError(what); }
 
@@ -1114,10 +1124,14 @@ std::string windowsError(DWORD code) {
 
 // Opens `p` to read, sharing it as a POSIX open would; with `reparse`, the
 // reparse point (a symbolic link, a junction) at `p` itself rather than
-// what it leads to.
+// what it leads to. A directory opens too (FILE_FLAG_BACKUP_SEMANTICS), as
+// POSIX's open does, so a directory or junction put where a file was is
+// refused for what it is rather than as a failed open.
 HANDLE openToRead(const fs::path& p, bool reparse) {
     return ::CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                         OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN | (reparse ? FILE_FLAG_OPEN_REPARSE_POINT : 0),
+                         OPEN_EXISTING,
+                         FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_BACKUP_SEMANTICS |
+                             (reparse ? FILE_FLAG_OPEN_REPARSE_POINT : 0),
                          nullptr);
 }
 
@@ -1149,6 +1163,32 @@ std::string readOpened(const FileHandle& h, const fs::path& p, std::size_t size)
 }
 #endif
 
+#if !BW_PROJECT_POSIX && !defined(_WIN32)
+// Refuses to `verb` the project directory `p` on a system with no checked
+// open (readWhole). A save can be a .bwp instead; a read can't, the user
+// has to make the .bwp where the directory can be read.
+[[noreturn]] void noCheckedOpen(const char* verb, const fs::path& p) {
+    const bool read = std::string_view(verb) == "read";
+    fail(std::string("can't ") + verb + " " + p.string() +
+         ": a project directory needs a checked open, and this system has none (" +
+         (read ? "save it as a .bwp on a system that has one" : "save a .bwp instead") + ")");
+}
+#endif
+
+#if BW_PROJECT_POSIX
+// Whether `err`, from an open with O_NOFOLLOW, means the name is a symbolic
+// link: ELOOP on Linux, macOS and OpenBSD, EMLINK on FreeBSD, EFTYPE on
+// NetBSD. For the opens here (no O_CREAT, no O_REGULAR) neither EMLINK nor
+// EFTYPE means anything else.
+bool linkRefused(int err) {
+#ifdef EFTYPE
+    if (err == EFTYPE)
+        return true;
+#endif
+    return err == ELOOP || err == EMLINK;
+}
+#endif
+
 // Reads the `size` bytes of the file a directory walk found at `p`. What is
 // there now may not be what the walk saw, so it is opened without following
 // a link or waiting on a FIFO, and read only if it is a plain file of that
@@ -1157,7 +1197,7 @@ std::string readWhole(const fs::path& p, std::size_t size) {
 #if BW_PROJECT_POSIX
     Descriptor fd(::open(p.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
     if (fd.get() < 0)
-        fail(errno == ELOOP ? p.string() + " is a symbolic link" : "can't read " + p.string() + ": " + std::strerror(errno));
+        fail(linkRefused(errno) ? p.string() + " is a symbolic link" : "can't read " + p.string() + ": " + std::strerror(errno));
     return readOpened(std::move(fd), p, size);
 #elif defined(_WIN32)
     // Windows: the reparse point itself is opened, never what it leads to. A
@@ -1185,14 +1225,12 @@ std::string readWhole(const fs::path& p, std::size_t size) {
         fail(p.string() + " changed while it was read");
     return readOpened(through, p, size);
 #else
-    std::string out(size, '\0');
-    std::ifstream in(p, std::ios::binary);
-    if (!in)
-        fail("can't read " + p.string());
-    in.read(out.data(), std::streamsize(size));
-    if (std::size_t(in.gcount()) != size || in.peek() != std::char_traits<char>::eof())
-        fail(p.string() + " changed while it was read");
-    return out;
+    // A system neither POSIX nor Windows has no open here that refuses a
+    // link or checks what it opened, so nothing is read unchecked: the
+    // directory format is refused there (readDirectory, writeDirectory),
+    // and this is never reached.
+    (void)size;
+    noCheckedOpen("read", p);
 #endif
 }
 
@@ -1354,6 +1392,9 @@ Entries readZip(const fs::path& path) {
 }
 
 Entries readDirectory(const fs::path& root) {
+#if !BW_PROJECT_POSIX && !defined(_WIN32)
+    noCheckedOpen("read", root);
+#endif
     Entries out;
     std::uint64_t total = 0;
     std::size_t fonts = 0;
@@ -1635,9 +1676,14 @@ std::vector<std::string> namesIn(const Folder& in) {
 // FIFO not waited on.
 std::string readIn(const Folder& in, const std::string& name) {
 #if BW_PROJECT_POSIX
-    Descriptor fd(::openat(in.fd, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
-    if (fd.get() < 0)
-        fail("can't read " + (in / name).string() + ": " + std::strerror(errno));
+    int err = injected("open to read", in, name);
+    Descriptor fd(err ? -1 : ::openat(in.fd, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+    if (fd.get() < 0) {
+        if (!err)
+            err = errno;
+        fail(linkRefused(err) ? (in / name).string() + " is a symbolic link"
+                              : "can't read " + (in / name).string() + ": " + std::strerror(err));
+    }
     struct stat st {};
     if (::fstat(fd.get(), &st) != 0)
         fail("can't read " + (in / name).string() + ": " + std::strerror(errno));
@@ -2732,10 +2778,12 @@ void writeDirectory(const Project& project, const fs::path& path, CellsFrame cel
             if ((full / fs::path(name)).native().size() + kTmpNameBytes >= limit)
                 fail("can't write " + (path / fs::path(name)).string() + ": the path is too long");
     }
-#elif defined(PATH_MAX)
+#elif BW_PROJECT_POSIX
     for (const auto& [name, bytes] : entries)
-        if ((path / fs::path(name)).native().size() + kTmpNameBytes >= PATH_MAX)
+        if ((path / fs::path(name)).native().size() + kTmpNameBytes >= kMaxSystemPath)
             fail("can't write " + (path / fs::path(name)).string() + ": the path is too long");
+#else
+    noCheckedOpen("write", path);
 #endif
     std::error_code ec;
     const bool existed = fs::exists(path, ec) || fs::is_symlink(path, ec);

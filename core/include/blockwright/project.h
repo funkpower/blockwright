@@ -451,6 +451,8 @@ inline std::function<void(std::string_view step, const std::filesystem::path& at
 // - "mkdirat": making the directory `at`, which may already be there.
 // - "openat": creating the temporary file `at`, the save's or, on a
 //   failure, the one holding a replaced file's old bytes.
+// - "open to read": opening the file `at`, which the save is about to
+//   replace, to read its old bytes; a link there is refused by the open.
 inline std::function<int(std::string_view call, const std::filesystem::path& at)> systemCall;
 // The call above that moves a file to a name where nothing may be
 // replaced: "renameat2" where the system has such a rename, else "linkat"

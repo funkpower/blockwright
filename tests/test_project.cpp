@@ -1900,6 +1900,9 @@ TEST_CASE("a path longer than a directory save can write is refused", "[project]
 #elif defined(PATH_MAX)
     // macOS opens no path of PATH_MAX (1024) bytes or more
     const bool tooLong = (dir / "piece" / deep).native().size() + 64 >= PATH_MAX;
+#elif defined(__unix__) || defined(__APPLE__)
+    // a POSIX system without PATH_MAX: the writer takes 4096
+    const bool tooLong = (dir / "piece" / deep).native().size() + 64 >= 4096;
 #else
     const bool tooLong = false;
 #endif
@@ -3654,6 +3657,93 @@ TEST_CASE("a directory read refuses a file that changed size after the walk saw 
     CHECK(reading);
 #endif
 }
+
+TEST_CASE("a directory read refuses a directory or link put where the walk saw a file", "[project][io][safety]") {
+    const fs::path root = scratch("swapped-for-file");
+    const fs::path dir = root / "piece";
+    Project p = everything();
+    p.files["refs/victim"] = "hello!";
+    project::writeDirectory(p, dir);
+    writeBytes(root / "outside.txt", "SECRET");
+    const fs::path victim = dir / "refs" / "victim";
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    // what the read says when `swap` runs between the walk seeing the file
+    // and the read opening it
+    const auto readSwapped = [&](const std::function<void()>& swap) {
+        bool reading = false;
+        project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+            if (step == "read" && at == victim)
+                swap();
+            if (step == "reading" && at == victim)
+                reading = true;
+        };
+        std::string error;
+        try {
+            project::read(dir);
+        } catch (const ProjectError& e) {
+            error = e.what();
+        }
+        project::testing::directoryStep = nullptr;
+        CHECK_FALSE(reading);
+        std::error_code ec;
+        fs::remove(victim, ec);
+        writeBytes(victim, "hello!");
+        return error;
+    };
+    // a directory: opened (on Windows too) and refused for what it is
+    CHECK(readSwapped([&] {
+              fs::remove(victim);
+              fs::create_directory(victim);
+          }) == victim.string() + " is not a file");
+#if defined(__unix__) || defined(__APPLE__)
+    // a symbolic link, never followed, with the same message whichever errno
+    // the open gives (ELOOP; EMLINK on FreeBSD) (Windows: test_junction_win.cpp)
+    CHECK(readSwapped([&] {
+              fs::remove(victim);
+              fs::create_symlink(root / "outside.txt", victim);
+          }) == victim.string() + " is a symbolic link");
+#endif
+    CHECK(project::read(dir) == p);
+}
+
+#if defined(__unix__) || defined(__APPLE__)
+TEST_CASE("a directory save names a link it meets reading the file it replaces", "[project][io][safety]") {
+    // the open of the file the save is about to replace refuses a link put
+    // there after the save looked: the same message whichever errno the
+    // system gives for it (ELOOP; EMLINK on FreeBSD), any other errno named
+    const fs::path dir = scratch("save-reads-link") / "piece";
+    Project p = everything();
+    p.files["refs/victim"] = "hello!";
+    project::writeDirectory(p, dir);
+    const fs::path victim = dir / "refs" / "victim";
+    const auto before = tree(dir);
+    struct Reset {
+        ~Reset() { project::testing::systemCall = nullptr; }
+    } reset;
+    Project q = p;
+    q.files["refs/victim"] = "changed";
+    const auto saveFailing = [&](int err) {
+        project::testing::systemCall = [&](std::string_view call, const fs::path& at) {
+            return call == "open to read" && at == victim ? err : 0;
+        };
+        std::string error;
+        try {
+            project::writeDirectory(q, dir);
+        } catch (const ProjectError& e) {
+            error = e.what();
+        }
+        project::testing::systemCall = nullptr;
+        return error;
+    };
+    CHECK(saveFailing(ELOOP) == victim.string() + " is a symbolic link");
+    CHECK(saveFailing(EMLINK) == victim.string() + " is a symbolic link");
+    CHECK(saveFailing(EIO) == "can't read " + victim.string() + ": " + std::strerror(EIO));
+    CHECK(tree(dir) == before);
+    CHECK(project::read(dir) == p);
+}
+#endif
 
 #if defined(__linux__)
 TEST_CASE("a directory read refuses a link swapped in after the walk saw a file", "[project][io][safety]") {

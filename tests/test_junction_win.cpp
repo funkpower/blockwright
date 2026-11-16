@@ -17,8 +17,10 @@
 
 #include <cstdlib>
 #include <process.h>
+#include <windows.h>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -103,6 +105,35 @@ fs::path projectThroughJunction(const fs::path& dir, const fs::path& outside) {
     fs::remove(proj / "layers");
     junction(proj / "layers", outside);
     return proj;
+}
+
+// A saved project holding refs\victim, and what its read says when `swap`
+// runs between the walk seeing that file and the read opening it ("read").
+// The read is refused before a byte is read ("reading" never fires).
+std::string readSwapped(const fs::path& dir, const std::function<void(const fs::path&)>& swap) {
+    const fs::path proj = dir / "proj";
+    project::Project p = dots();
+    p.files["refs/victim"] = "hello!";
+    project::writeDirectory(p, proj);
+    const fs::path victim = proj / "refs" / "victim";
+    struct Reset {
+        ~Reset() { project::testing::directoryStep = nullptr; }
+    } reset;
+    bool reading = false;
+    project::testing::directoryStep = [&](std::string_view step, const fs::path& at) {
+        if (step == "read" && at == victim)
+            swap(victim);
+        if (step == "reading" && at == victim)
+            reading = true;
+    };
+    std::string error;
+    try {
+        project::read(proj);
+    } catch (const project::ProjectError& e) {
+        error = e.what();
+    }
+    CHECK_FALSE(reading);
+    return error;
 }
 
 } // namespace
@@ -230,4 +261,48 @@ TEST_CASE("a generator's folder can't be a junction or hold one", "[junction][ge
     fs::remove(gen / "lib");
     junction(gen / ".lib", dir / "outside");
     CHECK(bwcli::readGeneratorDir(gen).size() == 1);
+}
+
+// readWhole's Windows branch (#139): each file is opened as the reparse
+// point at its name, never what it leads to, so a link put where the walk
+// saw a file is refused, and nothing outside the project is read. A reparse
+// point that is not a name surrogate (a cloud placeholder, a deduplicated
+// file) needs a filter driver wine doesn't have, so the branch that opens
+// one again through the driver isn't tried here.
+TEST_CASE("a project read refuses a junction put where the walk saw a file", "[junction][project]") {
+    const Scratch sc("swap-junction");
+    const fs::path& dir = sc.dir;
+    fs::create_directories(dir / "outside");
+    writeBytes(dir / "outside" / "secret.txt", "SECRET");
+    fs::path victim;
+    const std::string error = readSwapped(dir, [&](const fs::path& at) {
+        victim = at;
+        fs::remove(at);
+        junction(at, dir / "outside");
+    });
+    CHECK(error == victim.string() + " is a symbolic link");
+}
+
+TEST_CASE("a project read refuses a symbolic link put where the walk saw a file", "[junction][project]") {
+    const Scratch sc("swap-symlink");
+    const fs::path& dir = sc.dir;
+    writeBytes(dir / "secret.txt", "SECRET");
+    // a file symbolic link needs Developer Mode or the privilege on Windows
+    // (wine needs neither); where it can't be made there is nothing to test
+    const fs::path probe = dir / "probe";
+    if (!::CreateSymbolicLinkW(probe.c_str(), (dir / "secret.txt").c_str(),
+                               SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+        SKIP("this system makes no file symbolic link for an unprivileged process (error " << ::GetLastError() << ")");
+    }
+    REQUIRE(isLink(probe));
+    fs::path victim;
+    bool made = false;
+    const std::string error = readSwapped(dir, [&](const fs::path& at) {
+        victim = at;
+        fs::remove(at);
+        made = ::CreateSymbolicLinkW(at.c_str(), (dir / "secret.txt").c_str(),
+                                     SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE);
+    });
+    REQUIRE(made);
+    CHECK(error == victim.string() + " is a symbolic link");
 }
