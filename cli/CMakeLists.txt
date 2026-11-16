@@ -8,6 +8,10 @@ target_link_libraries(blockwright_cli_io PUBLIC blockwright::core PRIVATE Qt6::C
 target_compile_options(blockwright_cli_io PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)
 
+# The web build (#211) has no command line: only the library above, for the GUI.
+if(EMSCRIPTEN)
+  return()
+endif()
 add_executable(blockwright-cli main.cpp)
 add_dependencies(blockwright-cli bw_version)
 target_include_directories(blockwright-cli PRIVATE ${CMAKE_BINARY_DIR}/generated)

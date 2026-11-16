@@ -186,7 +186,13 @@ target_link_libraries(blockwright_app PUBLIC blockwright::core blockwright::rend
 target_compile_options(blockwright_app PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>)
 
-add_executable(blockwright main.cpp)
+# The web build (#211, PLAN §18) needs Qt's own executable, which adds the
+# Emscripten link options and writes blockwright.html and qtloader.js.
+if(EMSCRIPTEN)
+  qt_add_executable(blockwright main.cpp)
+else()
+  add_executable(blockwright main.cpp)
+endif()
 if(WIN32)
   # a GUI program: no console window opens with it (main.cpp writes
   # --version and --help to the one it was started from)

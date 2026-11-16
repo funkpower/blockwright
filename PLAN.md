@@ -437,6 +437,7 @@ Phase 2b's done-when is a test, and it is met (`test_shading_brushes.cpp`, "Phas
 - Reference images are layers (#178, 2026-10-26), saved with the project, not a session-only view overlay: a picture traced from belongs to the piece, and a layer gives it a place, visibility and undo like any other. The compositor skips them, so they are never exported.
 - Reference layers move and resize in canvas pixels (#178, 2026-10-30): Alt+drag moves one as it moves any layer, and a Move/Transform tool (Ctrl+Shift+J) takes a plain drag to move the active layer and drags from corner handles to resize a reference one, aspect kept unless Shift is held, with numbers in Tool Options. The handles belong to that tool so that Alt+drag with any other tool stays a plain move.
 - A reference layer draws in its place in the stack (#178, 2026-10-30), under the visible art layers above it and clipped by the halves of cells they cover, not over all the art: raising or lowering it in the Layers dock decides whether the art or the picture is on top, as for any layer. The art above covers it whole, not at an opacity (layers have none), and the compositor still skips it, so the stack order changes what the view shows and nothing that is exported.
+- The web build is single-threaded (#211, 2026-11-16): drawing keeps up without threads, and a threaded build needs COOP/COEP headers on the page (§18).
 - Every PR gets an adversarial Codex review before merge; when Codex is unavailable a Claude reviewer that didn't write the change stands in (AGENTS.md).
 - Documentation: a separate repo, `funkpower/blockwright-docs` (tutorials and the manual), served at https://blockwright-docs.pumpin.online/; it is the last scheduled phase, and a page describes only what is on `main`.
 - Packages are published and maintained as funkpower, with funkpower's own address (funkpower's maintainer address, the only real email address tracked files may carry, and only in the packaging fields AGENTS.md lists): AUR, Launchpad, Copr and every other account, the maintainer fields and the signing key. Nothing a package or source tarball ships carries a real name.
@@ -758,3 +759,25 @@ A third target beside ANSI and IRC (§6 `target`, #350), for pages NomadNet show
 3. Colours > Snap to Micron Colours: the selection's or layer's RGB colours to the nearest twelve-bit colour, as one undo step, for a piece brought over from IRC.
 4. A NomadNet view, as the IRC view (§8): the page as NomadNet draws it at 256 colours.
 5. Opening a `.mu` page as a Micron document.
+
+## 18. The web build (#211)
+
+Blockwright in a browser with Qt for WebAssembly, served by the docs site under `/app/`. The build here produces the files; publishing them is the site's job.
+
+**Toolchain.** Qt 6.12.0's `wasm_singlethread` kit and the Emscripten its CMake names (`QT_EMCC_RECOMMENDED_VERSION`, 5.0.5 for 6.12.0), with zlib 1.3.1, zstd 1.5.7 and libzip 1.11.4 built for wasm as static libraries (no bzip2, lzma or crypto). A host Qt of the same version gives the tools (`QT_HOST_PATH`). Configured with the kit's `qt-cmake` and `-DBUILD_TESTING=OFF`. Neither CI runner has Emscripten; the build runs on the dev machine.
+
+**What CMake does under Emscripten.** `blockwright` is a `qt_add_executable`, which adds the Emscripten link options and writes `blockwright.html`, `blockwright.js`, `blockwright.wasm` and `qtloader.js`. `blockwright-cli` is not built; `blockwright_cli_io` is, for the window's screenshots. `generator::run` starts no program: `start` fails with `ENOSYS`, so a run reports that it could not start. Native builds are unchanged.
+
+**Spike (2026-11-16).** Everything compiles; once the two changes above were in, it links. The start screen, New, the main window with its docks, menus and the half-block brush work in Chromium. A 300-move stroke at 2× was drawn one move per frame with no backlog. `.wasm` 24.5 MB (9.5 MB gzip, 7.0 MB brotli), `.js` 212 KB (48 KB gzip), `qtloader.js` 14 KB. Ready in about 0.6 s from a local server with the files uncached. The first modal `exec()` (File > Open's `QFileDialog::getOpenFileName`) aborts the program: Qt for WebAssembly without Asyncify or JSPI can't block in a nested event loop.
+
+**Decisions.** Single-threaded: a threaded build needs SharedArrayBuffer and so COOP/COEP headers on the page, and drawing keeps up without threads. Proposed, for the maintainer to confirm: no Asyncify, since it makes the `.wasm` 38% bigger (8.4 MB brotli) and File > Open still showed no dialog in the spike. JSPI needs a Qt built for it, which the prebuilt kit is not (it fails at startup). Modal prompts in the web build therefore run without `exec()`: `QDialog::open()` with a slot, and `QFileDialog::getOpenFileContent` and `saveFileContent` for opening and saving.
+
+**Left out of the web build.** External generators (the layer shows its last output; Run is off and says why), Python scene import, project directories (`.bwp` and `.ans` only), the fonts folder (bundled faces; `.tdf` uploads into browser storage later), and the command line.
+
+**Slices.**
+1. `scripts/build-wasm`: fetches and builds the wasm dependencies under a toolchain directory, configures and builds, and writes `blockwright.html`, `.js`, `.wasm`, `qtloader.js` to one output directory; a smoke test there (headless Chromium: the page loads and a stroke draws).
+2. No `exec()` in the web build: every modal prompt (`message_box.cpp`, the save-changes question, Save As, the SAUCE, canvas size and layer style dialogs, the IRC and Micron exports) as `open()` with a slot, a shared helper so native and web take one path where they can.
+3. Open and Save through `getOpenFileContent` and `saveFileContent`: `.ans` and `.bwp` read from and written to bytes, Recent hidden, Open Project Directory and Save As Project Directory hidden.
+4. Gates: generator Run off with a note, Open Scene and Add Generator Layer hidden, the fonts folder setting hidden, the Library and samples bundled (the Library looks beside `applicationDirPath()`, which in a browser is the virtual root: preload them there or as resources).
+5. Browser keys (Ctrl+N, Ctrl+T, Ctrl+W, Ctrl+Tab, F5, F11, F12): a second binding for each action, and the shortcuts sheet showing the web build's.
+6. Settings in browser storage (`appSettings()` checked there), the system clipboard where the browser allows it, and the scripted Firefox and Chromium smoke test the issue's done-when asks for.

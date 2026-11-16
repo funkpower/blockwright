@@ -233,6 +233,12 @@ bool outputPipe(Fd& read, Fd& write) {
 // a handler). Returns 0 and sets `error` when it can't start.
 pid_t start(Slot& slot, const std::vector<std::string>& argv, const std::string& dir, int in, int out, int err,
             int& error) {
+#ifdef __EMSCRIPTEN__
+    // a browser starts no programs: the web build runs no generator
+    (void)slot, (void)argv, (void)dir, (void)in, (void)out, (void)err;
+    error = ENOSYS;
+    return 0;
+#else
     std::vector<char*> args;
     for (const std::string& a : argv)
         args.push_back(const_cast<char*>(a.c_str()));
@@ -278,6 +284,7 @@ pid_t start(Slot& slot, const std::vector<std::string>& argv, const std::string&
     posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&actions);
     return error ? 0 : pid;
+#endif
 }
 
 // The running program's process group, from its start to its reap. Its id
