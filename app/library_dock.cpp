@@ -10,7 +10,6 @@
 #include <QAction>
 #include <QComboBox>
 #include <QCryptographicHash>
-#include <QDirIterator>
 #include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -191,7 +190,7 @@ LibraryDock::LibraryDock(QWidget* parent) : QWidget(parent) {
     collectionsButton->setToolTip(tr("Make, rename and delete your own collections, and add stamps to them"));
     collectionsButton->setPopupMode(QToolButton::InstantPopup);
     auto* collectionsMenu = new QMenu(collectionsButton);
-    collectionsMenu->addActions({newCollection_, renameCollection_, deleteCollection_, addFiles_});
+    collectionsMenu->addActions({newCollection_, renameCollection_, deleteCollection_, addFiles_, addFolder_});
     collectionsMenu->addSeparator();
     collectionsMenu->addActions({addToCollection_, editStamp_, removeStamp_});
     collectionsButton->setMenu(collectionsMenu);
@@ -557,6 +556,9 @@ void LibraryDock::createActions() {
     addFiles_ = action(tr("Add &Files to Collection..."), "addFilesToLibraryCollection",
                        tr("Add .ans files from disk to one of your collections as stamps"),
                        &LibraryDock::askAddFiles);
+    addFolder_ = action(tr("Add Fol&der to Collection..."), "addFolderToLibraryCollection",
+                        tr("Add the .ans files in a folder on disk to one of your collections as stamps"),
+                        &LibraryDock::askAddFolder);
     addToCollection_ = action(tr("&Add to Collection..."), "addStampToLibraryCollection",
                               tr("Copy the stamp picked in the Library into one of your collections"),
                               &LibraryDock::askAddToCollection);
@@ -572,7 +574,7 @@ void LibraryDock::showGridMenu(const QPoint& pos) {
     QMenu menu(this);
     menu.addActions({addToCollection_, editStamp_, removeStamp_});
     menu.addSeparator();
-    menu.addActions({newCollection_, addFiles_});
+    menu.addActions({newCollection_, addFiles_, addFolder_});
     menu.exec(grid_->viewport()->mapToGlobal(pos));
 }
 
@@ -580,7 +582,7 @@ void LibraryDock::showCategoryMenu(const QPoint& pos) {
     if (QListWidgetItem* it = categories_->itemAt(pos))
         categories_->setCurrentItem(it);
     QMenu menu(this);
-    menu.addActions({newCollection_, renameCollection_, deleteCollection_, addFiles_});
+    menu.addActions({newCollection_, renameCollection_, deleteCollection_, addFiles_, addFolder_});
     menu.exec(categories_->viewport()->mapToGlobal(pos));
 }
 
@@ -792,20 +794,19 @@ int LibraryDock::addFilesToCollection(const QString& collection, const QStringLi
     };
     if (refusal)
         refusal->clear();
-    // a folder is the .ans files in it and below, in name order
+    // a folder is its own .ans files, not its subfolders' (the CLI's rule)
     QStringList paths;
     for (const QString& f : files) {
         if (QFileInfo(f).isDir()) {
-            QStringList found;
-            QDirIterator it(f, {QStringLiteral("*.ans"), QStringLiteral("*.ANS")}, QDir::Files,
-                            QDirIterator::Subdirectories);
-            while (it.hasNext())
-                found << it.next();
-            found.sort();
-            found.removeDuplicates();
-            if (found.isEmpty())
-                failed->push_back(tr("%1: no .ans files in the folder").arg(f));
-            paths << found;
+            try {
+                const std::vector<std::filesystem::path> found = library::folderArt(fspath(f));
+                if (found.empty())
+                    failed->push_back(tr("%1: no .ans files in the folder").arg(f));
+                for (const std::filesystem::path& p : found)
+                    paths << QString::fromStdString(p.string());
+            } catch (const std::exception& e) {
+                failed->push_back(tr("%1: %2").arg(f, errorText(e)));
+            }
         } else {
             paths << f;
         }
@@ -1010,19 +1011,28 @@ void LibraryDock::askDeleteCollection() {
 void LibraryDock::askAddFiles() {
     const QStringList files = QFileDialog::getOpenFileNames(this, tr("Add Files to Collection"), QString(),
                                                             tr("ANSI art (*.ans *.ANS);;All files (*)"));
+    addPicked(tr("Add Files to Collection"), files);
+}
+
+void LibraryDock::askAddFolder() {
+    const QString folder = QFileDialog::getExistingDirectory(this, tr("Add Folder to Collection"));
+    if (!folder.isEmpty())
+        addPicked(tr("Add Folder to Collection"), {folder});
+}
+
+void LibraryDock::addPicked(const QString& title, const QStringList& files) {
     if (files.isEmpty())
         return;
-    const QString collection = askCollection(tr("Add Files to Collection"));
+    const QString collection = askCollection(title);
     if (collection.isEmpty())
         return;
     QStringList failed;
     QString refusal;
     addFilesToCollection(collection, files, &failed, &refusal);
     if (!refusal.isEmpty())
-        bw::warning(this, tr("Add Files to Collection"), tr("Nothing was added: %1").arg(refusal));
+        bw::warning(this, title, tr("Nothing was added: %1").arg(refusal));
     else if (!failed.isEmpty())
-        bw::warning(this, tr("Add Files to Collection"),
-                    tr("These files were not added:\n%1").arg(failed.join(QLatin1Char('\n'))));
+        bw::warning(this, title, tr("These files were not added:\n%1").arg(failed.join(QLatin1Char('\n'))));
 }
 
 void LibraryDock::askAddToCollection() {

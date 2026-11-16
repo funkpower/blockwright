@@ -239,6 +239,7 @@ public:
     QAction* renameCollectionAction() const { return renameCollection_; }
     QAction* deleteCollectionAction() const { return deleteCollection_; }
     QAction* addFilesAction() const { return addFiles_; }
+    QAction* addFolderAction() const { return addFolder_; }
     QAction* addToCollectionAction() const { return addToCollection_; }
     QAction* editStampAction() const { return editStamp_; }
     QAction* removeStampAction() const { return removeStamp_; }
@@ -264,6 +265,8 @@ private:
     void askRenameCollection();
     void askDeleteCollection();
     void askAddFiles();
+    void askAddFolder();
+    void addPicked(const QString& title, const QStringList& files);
     void askAddToCollection();
     void askEditStamp();
     void askRemoveStamp();
@@ -301,6 +304,7 @@ private:
     QAction* renameCollection_ = nullptr;
     QAction* deleteCollection_ = nullptr;
     QAction* addFiles_ = nullptr;
+    QAction* addFolder_ = nullptr;
     QAction* addToCollection_ = nullptr;
     QAction* editStamp_ = nullptr;
     QAction* removeStamp_ = nullptr;

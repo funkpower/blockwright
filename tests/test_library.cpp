@@ -1079,6 +1079,28 @@ TEST_CASE("a library folder that can't be listed is refused, not taken as empty"
 #endif
 }
 
+TEST_CASE("folderArt takes a folder's own art, not hidden or AppleDouble files, and doesn't name the folder when it can't list it") {
+    const fs::path dir = scratch("folder-art");
+    for (const char* name : {"x.ans", ".h.ans", "._x.ans", "notes.txt"})
+        std::ofstream(dir / name) << "x";
+    fs::create_directories(dir / "deeper");
+    std::ofstream(dir / "deeper" / "y.ans") << "y";
+    CHECK(folderArt(dir) == std::vector<fs::path>{dir / "x.ans"});
+#ifndef _WIN32
+    if (::geteuid() != 0) {
+        fs::permissions(dir, fs::perms::none);
+        std::string message;
+        try {
+            folderArt(dir);
+        } catch (const LibraryError& e) {
+            message = e.what();
+        }
+        fs::permissions(dir, fs::perms::owner_all);
+        CHECK(message == "can't be listed: Permission denied");
+    }
+#endif
+}
+
 TEST_CASE("a FIFO is refused by the opened handle, without blocking") {
 #ifdef _WIN32
     SKIP("no FIFOs or POSIX file modes on Windows");

@@ -1977,6 +1977,24 @@ Added addStampFile(const fs::path& library, const std::string& collection, const
     return Adder(library, collection).add(ans);
 }
 
+std::vector<fs::path> folderArt(const fs::path& dir) {
+    std::vector<fs::path> found;
+    std::error_code ec;
+    fs::directory_iterator it(dir, ec);
+    for (const fs::directory_iterator end; !ec && it != end; it.increment(ec)) {
+        std::error_code dirEc;
+        // a dot-prefixed file is hidden, and on a Mac an AppleDouble ._x.ans
+        // sits beside x.ans: neither is art
+        if (it->path().filename().string().rfind('.', 0) != 0 && isArtName(it->path()) &&
+            !fs::is_directory(it->path(), dirEc))
+            found.push_back(it->path());
+    }
+    if (ec)
+        throw LibraryError("can't be listed: " + ec.message());
+    std::sort(found.begin(), found.end());
+    return found;
+}
+
 std::vector<AddOutcome> addStamps(const fs::path& library, const std::string& collection,
                                   const std::vector<fs::path>& files, const std::function<bool(std::size_t)>& next) {
     Adder adder(library, collection);

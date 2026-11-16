@@ -540,6 +540,13 @@ std::vector<AddOutcome> addStamps(const std::filesystem::path& library, const st
                                   const std::vector<std::filesystem::path>& files,
                                   const std::function<bool(std::size_t done)>& next = {});
 
+// The art files (isArtName, not directories) in `dir` itself, not its
+// subfolders', hidden (dot-prefixed) files left out, sorted by path: what the
+// CLI's `library add` and the dock's Add Folder to Collection take from a
+// folder. Empty when it holds none. Throws LibraryError when `dir` can't be
+// listed; its message doesn't name `dir`, the caller does.
+std::vector<std::filesystem::path> folderArt(const std::filesystem::path& dir);
+
 // Removes the stamp at `ans` (its art and its sidecar) from `library`; a
 // stamp that doesn't read cleanly, or has no sidecar, can be removed too.
 // Refused for anything outside `library` (a bundled stamp), not named as

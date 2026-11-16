@@ -59,6 +59,42 @@ expect "add names a plain .ans from its file" 0 "^added	Big Moon	$lib/my-trees/b
   "$cli" library add "My Trees" "$tmp/Big Moon.ans"
 expect "add refuses a clash, adds the rest" 1 'already holds a stamp named "Small star"' -- \
   "$cli" library add "My Trees" "$data/library/sky/small-star.ans" "$data/library/figures"
+# a folder is its own .ans files: not its subfolders' or hidden (dot-prefixed, AppleDouble ._ files too), and a folder with none is refused by name while the rest are added
+mkdir -p "$tmp/tree/deeper" "$tmp/tree-empty"
+printf '\033[31mAA\r\n' > "$tmp/tree/Top.ans"
+printf '\033[32mBB\r\n' > "$tmp/tree/.Hid.ans"
+printf 'AppleDouble' > "$tmp/tree/._Top.ans"
+printf '\033[33mCC\r\n' > "$tmp/tree/deeper/Low.ans"
+printf 'not art' > "$tmp/tree-empty/notes.txt"
+"$cli" library new Folders >/dev/null
+expect "add takes a folder's own .ans files" 1 "^added	Top	$lib/folders/top\.ans\$" -- \
+  "$cli" library add Folders "$tmp/tree-empty" "$tmp/tree"
+expect "add refuses a folder with no .ans file, naming it" 1 "tree-empty: no \.ans files in the folder" -- \
+  "$cli" library add Folders "$tmp/tree-empty"
+gone "add left a hidden .ans" "$lib/folders/hid.ans"
+gone "add left an AppleDouble ._Top.ans, and Top kept its name" "$lib/folders/top-2.ans"
+gone "add didn't stamp the AppleDouble file as ._Top" "$lib/folders/._top.ans"
+gone "add left a subfolder's .ans" "$lib/folders/low.ans"
+# a folder that can't be listed is refused once, naming it once
+if [[ $(id -u) -ne 0 ]]; then
+  mkdir "$tmp/locked" && chmod 000 "$tmp/locked"
+  out=$("$cli" library add Folders "$tmp/locked" 2>&1); st=$?
+  chmod 700 "$tmp/locked"
+  if [[ $st -eq 1 && $out == *"locked: can't be listed: "* && $(grep -o "$tmp/locked" <<<"$out" | wc -l) -eq 1 ]]; then
+    ok "add names a folder it can't list once"
+  else
+    bad "add names a folder it can't list once: exit $st: $out"
+  fi
+fi
+# an error line keeps a tab or newline in a path or reason to one field, as list does
+tab=$(printf '\t_'); tab=${tab%_}
+printf '  ' > "$tmp/bad${tab}name.ans"
+expect "add's error line has no raw tab" 1 'bad.*name\.ans: ' -- "$cli" library add Folders "$tmp/bad${tab}name.ans"
+out=$("$cli" library add Folders "$tmp/bad${tab}name.ans" 2>&1)
+case $out in
+  *"$tab"*) bad "add's stderr holds a raw tab" ;;
+  *) ok "add's stderr holds no raw tab" ;;
+esac
 expect "add needs a collection that exists" 1 'no collection named "Nope"' -- \
   "$cli" library add Nope "$tmp/Big Moon.ans"
 expect "add needs a file" 2 'library add takes' -- "$cli" library add "My Trees"

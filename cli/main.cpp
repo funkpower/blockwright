@@ -1459,13 +1459,19 @@ int libraryRename(const std::filesystem::path& lib, const std::string& from, con
 }
 
 // library add <collection> <file.ans|folder>...: each .ans (a folder's own
-// .ans files, not its subfolders') added as a stamp, one line each: added,
-// name, path. One that can't be added is an error on stderr; the rest are
+// .ans files, not its subfolders'; not hidden ones) added as a stamp, one
+// line each: added, name, path. One that can't be added, or a folder with no
+// .ans file or one that can't be listed, is an error on stderr; the rest are
 // still added, and the exit status is 1.
 int libraryAdd(const std::filesystem::path& lib, const std::string& collection,
                const std::vector<std::filesystem::path>& inputs) {
     if (!bw::library::findCollection(lib, collection))
-        throw Failure{"library add: no collection named \"" + collection + "\" in " + lib.string()};
+        throw Failure{"library add: no collection named \"" + printable(collection) + "\" in " + listPath(lib)};
+    int status = kOk;
+    const auto refuse = [&](const std::filesystem::path& file, std::string_view why) {
+        std::cerr << "blockwright-cli: library add: " << listPath(file) << ": " << printable(why) << "\n";
+        status = kBadInput;
+    };
     std::vector<std::filesystem::path> files;
     for (const std::filesystem::path& in : inputs) {
         std::error_code ec;
@@ -1473,29 +1479,22 @@ int libraryAdd(const std::filesystem::path& lib, const std::string& collection,
             files.push_back(in);
             continue;
         }
-        std::vector<std::filesystem::path> found;
-        std::filesystem::directory_iterator it(in, ec);
-        for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec)) {
-            std::error_code dirEc;
-            if (bw::library::isArtName(it->path()) && !std::filesystem::is_directory(it->path(), dirEc))
-                found.push_back(it->path());
+        try {
+            std::vector<std::filesystem::path> found = bw::library::folderArt(in);
+            if (found.empty())
+                refuse(in, "no .ans files in the folder");
+            files.insert(files.end(), found.begin(), found.end());
+        } catch (const std::exception& e) {
+            refuse(in, e.what());
         }
-        if (ec)
-            throw Failure{"library add: " + in.string() + " can't be listed: " + ec.message()};
-        if (found.empty())
-            throw Failure{"library add: " + in.string() + " holds no .ans files"};
-        std::sort(found.begin(), found.end());
-        files.insert(files.end(), found.begin(), found.end());
     }
     // one scan of the library for all of them (addStamps), not one per file
-    int status = kOk;
     for (const bw::library::AddOutcome& o : bw::library::addStamps(lib, collection, files)) {
-        if (o.added) {
-            std::cout << "added\t" << bw::cp437ToUtf8(o.added->name) << "\t" << o.added->path.string() << "\n";
-        } else {
-            std::cerr << "blockwright-cli: library add: " << o.file.string() << ": " << o.error << "\n";
-            status = kBadInput;
-        }
+        if (o.added)
+            std::cout << "added\t" << printable(bw::cp437ToUtf8(o.added->name)) << "\t" << listPath(o.added->path)
+                      << "\n";
+        else
+            refuse(o.file, o.error);
     }
     return status;
 }
@@ -1622,9 +1621,11 @@ int main(int argc, char** argv) {
         "                       rename a collection, its folder and its stamps'\n"
         "                       category\n"
         "  library add <collection> <file.ans|folder>...\n"
-        "                       copy stamps, or .ans files (a folder's own), into a\n"
-        "                       collection; one without a sidecar is named from its\n"
-        "                       SAUCE title, else its file name\n"
+        "                       copy stamps, or .ans files (a folder's own, not\n"
+        "                       hidden ones or its subfolders'), into a collection;\n"
+        "                       one without a sidecar is named from its SAUCE\n"
+        "                       title, else its file name; a folder with no .ans\n"
+        "                       file is refused and the rest are added\n"
         "  library remove <stamp.ans>... --yes [--permanent]\n"
         "                       move a stamp in the user library (or --dir) and its\n"
         "                       sidecar to the trash, or with --permanent delete\n"

@@ -41,6 +41,7 @@
 #include <QElapsedTimer>
 #include <QFocusEvent>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QInputDialog>
 #include <QKeyEvent>
@@ -3358,16 +3359,16 @@ TEST_CASE("Add Files to Collection adds .ans files and folders and names the one
     const QString folder = QDir(src.path()).filePath(QStringLiteral("folder"));
 
     QStringList failed;
-    CHECK(f.dock->addFilesToCollection(QStringLiteral("Imports"), {good, blank, missing, folder}, &failed) == 3);
+    CHECK(f.dock->addFilesToCollection(QStringLiteral("Imports"), {good, blank, missing, folder}, &failed) == 2);
     REQUIRE(failed.size() == 2);
     CHECK(failed[0].startsWith(blank + QStringLiteral(": ")));
     CHECK(failed[1].startsWith(missing + QStringLiteral(": ")));
-    CHECK(status(f.w) == QStringLiteral("Added 3 stamps to the collection \"Imports\"; 2 files refused"));
-    CHECK(f.dock->findCollection(QStringLiteral("Imports"))->stamps == 3);
+    CHECK(status(f.w) == QStringLiteral("Added 2 stamps to the collection \"Imports\"; 2 files refused"));
+    CHECK(f.dock->findCollection(QStringLiteral("Imports"))->stamps == 2);
     pickCategory(f.dock, QStringLiteral("Imports"));
     QStringList names = f.dock->shownNames();
     names.sort();
-    CHECK(names == QStringList{QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("good one")});
+    CHECK(names == QStringList{QStringLiteral("a"), QStringLiteral("good one")});  // not folder/deeper/b.ans
 
     // not a collection: refused as a whole, no file listed
     failed.clear();
@@ -3377,6 +3378,133 @@ TEST_CASE("Add Files to Collection adds .ans files and folders and names the one
     CHECK(refusal == QStringLiteral("\"figures\" is not one of your collections"));
     CHECK(status(f.w) == QStringLiteral("Nothing added: \"figures\" is not one of your collections; 1 file not added"));
 }
+
+namespace {
+
+// Writes `bytes` to `name` under `root`, making its folders.
+QString putFile(const QString& root, const QString& name, const QByteArray& bytes) {
+    const QString path = QDir(root).filePath(name);
+    QDir().mkpath(QFileInfo(path).path());
+    QFile file(path);
+    REQUIRE(file.open(QIODevice::WriteOnly));
+    file.write(bytes);
+    return path;
+}
+
+// Drives the next file dialog: picks `pick` in it, accepts it, and answers
+// the collection prompt that follows with `collection`. `fileDialog` says
+// whether a QFileDialog opened and `prompt` whether the prompt did.
+struct PickedDialog {
+    bool fileDialog = false;
+    bool prompt = false;
+};
+void pickInFileDialog(MainWindow& w, const QString& pick, const QString& collection, PickedDialog* seen) {
+    *seen = {};
+    QTimer::singleShot(0, &w, [&w, pick, collection, seen] {
+        auto* d = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        if (!d) {
+            // some other modal (a swapped-in dialog): close it so the
+            // trigger returns and the checks fail, instead of hanging
+            if (QWidget* other = QApplication::activeModalWidget())
+                other->close();
+            return;
+        }
+        seen->fileDialog = true;
+        QTimer::singleShot(0, &w, [collection, seen] {
+            auto* in = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            if (!in) {
+                if (QWidget* other = QApplication::activeModalWidget())
+                    other->close();
+                return;
+            }
+            seen->prompt = true;
+            in->setTextValue(collection);
+            in->accept();
+        });
+        d->selectFile(pick);
+        static_cast<QDialog*>(d)->accept();
+    });
+}
+
+} // namespace
+
+TEST_CASE("Add Files to Collection and Add Folder to Collection reach the collection prompt from their file dialogs",
+          "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Imports"));
+    QTemporaryDir src;
+    REQUIRE(src.isValid());
+    putFile(src.path(), QStringLiteral("folder/a.ans"), "aa");
+    const QString file = QDir(src.path()).filePath(QStringLiteral("folder/a.ans"));
+
+    // a file still goes through the dialog to the collection prompt
+    PickedDialog seen;
+    pickInFileDialog(f.w, file, QStringLiteral("Imports"), &seen);
+    f.dock->addFilesAction()->trigger();
+    CHECK(seen.fileDialog);
+    CHECK(seen.prompt);
+    CHECK(f.dock->findCollection(QStringLiteral("Imports"))->stamps == 1);
+
+    // Add Folder to Collection takes the folder from a directory dialog
+    REQUIRE(f.dock->addFolderAction());
+    putFile(src.path(), QStringLiteral("more/c.ans"), "cc");
+    putFile(src.path(), QStringLiteral("more/deeper/d.ans"), "dd");
+    pickInFileDialog(f.w, QDir(src.path()).filePath(QStringLiteral("more")), QStringLiteral("Imports"), &seen);
+    f.dock->addFolderAction()->trigger();
+    CHECK(seen.fileDialog);
+    CHECK(seen.prompt);
+    CHECK(f.dock->findCollection(QStringLiteral("Imports"))->stamps == 2);
+    CHECK(status(f.w) == QStringLiteral("Added 1 stamp to the collection \"Imports\""));
+}
+
+TEST_CASE("Add Folder to Collection takes a folder's own .ans files, not hidden ones or AppleDouble files, as the CLI does",
+          "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Imports"));
+    QTemporaryDir src;
+    REQUIRE(src.isValid());
+    putFile(src.path(), QStringLiteral("folder/a.ans"), "aa");
+    putFile(src.path(), QStringLiteral("folder/.hidden.ans"), "hh");
+    putFile(src.path(), QStringLiteral("folder/._a.ans"), "AppleDouble");
+    putFile(src.path(), QStringLiteral("folder/Upper.ANS"), "uu");
+    putFile(src.path(), QStringLiteral("folder/deeper/b.ans"), "bb");
+    putFile(src.path(), QStringLiteral("folder/notes.txt"), "not art");
+    putFile(src.path(), QStringLiteral("empty/notes.txt"), "not art");
+    const QString folder = QDir(src.path()).filePath(QStringLiteral("folder"));
+    const QString empty = QDir(src.path()).filePath(QStringLiteral("empty"));
+
+    // a folder with no .ans file is one refusal, and the rest are still added
+    QStringList failed;
+    CHECK(f.dock->addFilesToCollection(QStringLiteral("Imports"), {empty, folder}, &failed) == 2);
+    REQUIRE(failed.size() == 1);
+    CHECK(failed[0] == empty + QStringLiteral(": no .ans files in the folder"));
+    CHECK(f.dock->findCollection(QStringLiteral("Imports"))->stamps == 2);
+    pickCategory(f.dock, QStringLiteral("Imports"));
+    CHECK_FALSE(f.dock->shownNames().contains(QStringLiteral("b")));
+    CHECK_FALSE(f.dock->shownNames().contains(QStringLiteral("hidden")));
+    CHECK_FALSE(f.dock->shownNames().contains(QStringLiteral("._a")));
+    CHECK_FALSE(fs::exists(f.userPath() / "imports" / "a-2.ans"));
+}
+
+#ifndef _WIN32
+TEST_CASE("Add Folder to Collection names a folder it can't list once", "[library][collections]") {
+    if (::geteuid() == 0)
+        SKIP("root lists every folder");
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Imports"));
+    QTemporaryDir src;
+    REQUIRE(src.isValid());
+    const QString locked = QDir(src.path()).filePath(QStringLiteral("locked"));
+    REQUIRE(QDir().mkpath(locked));
+    fs::permissions(fspath(locked), fs::perms::none);
+    QStringList failed;
+    f.dock->addFilesToCollection(QStringLiteral("Imports"), {locked}, &failed);
+    fs::permissions(fspath(locked), fs::perms::owner_all);
+    REQUIRE(failed.size() == 1);
+    CHECK(failed[0].startsWith(locked + QStringLiteral(": can't be listed: ")));
+    CHECK(failed[0].count(locked) == 1);
+}
+#endif
 
 namespace {
 
