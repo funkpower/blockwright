@@ -8,7 +8,7 @@ A native editor for ANSI and IRC block art, with layers, generator scripts and
 a live IRC byte budget, and a headless `blockwright-cli` built from the same
 core. C++20 and Qt 6, for Linux, macOS, Windows and FreeBSD.
 
-<p align="center"><img src="docs/screenshot.png" width="900" alt="The Blockwright window with the Battlestation sample open: a night desk lit by its monitor on the canvas, with the IRC row meter's bars beside it; the Ramp Shade Brush's settings in the Tool Options dock on the left, with the Toolbox above it; the Preview, Palette, Layers, Library and Lint docks on the right; the Glyphs dock along the bottom"></p>
+<p align="center"><img src="docs/screenshot.png" width="900" alt="The Blockwright window with the wtc-0903 sample open: Lower Manhattan seen across the East River, a plane going into the South Tower and a fireball breaking from its east face, the North Tower burning behind it, with the IRC row meter bars beside the canvas; the Ramp Shade Brush on the fire ramp in the Tool Options dock on the left, with the Toolbox above it; the Preview, Palette, Layers (the fireball layer selected), Library and Lint docks on the right; the Glyphs dock along the bottom"></p>
 
 ## Install
 

@@ -1,10 +1,10 @@
 {
  "version": 1,
- "start": {"sample": "07-battlestation"},
- "window": [1440, 900],
+ "start": {"sample": "09-wtc-0903"},
+ "window": [1600, 1000],
  "steps": [
-  {"name": "layer", "action": "setActiveLayer", "layer": "monitor frame"},
+  {"name": "layer", "action": "setActiveLayer", "layer": "fireball"},
   {"name": "zoom", "action": "view", "zoom": 1, "scrollTo": [0, 0]},
-  {"name": "screenshot", "action": "rampShade", "ramp": "sea", "size": 3, "fg": 9, "bg": 0, "screenshot": {"of": "window"}}
+  {"name": "screenshot", "action": "rampShade", "ramp": "fire", "size": 3, "screenshot": {"of": "window"}}
  ]
 }
