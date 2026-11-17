@@ -1026,7 +1026,8 @@ mouse button (default left).
                  "category", "tags": [...] (optional): Selection > Save
                  to Library..., the selected cells as the canvas shows
                  them saved as a stamp in the user library, replacing
-                 one of that name
+                 one of that name; a "category" naming one of its
+                 collections saves into that collection's folder
   layers         newCellsLayer, newPixelLayer (each above the active layer
                  and made active; "rename" names it, else Layer N),
                  deleteLayer, raiseLayer, lowerLayer, setActiveLayer

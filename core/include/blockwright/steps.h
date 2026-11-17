@@ -168,7 +168,10 @@
 // saveToLibrary is Selection > Save to Library...: the selection's cells as
 // the canvas shows them, as a stamp named "stamp" in category "category"
 // with "tags" (none if left out), into the user library, replacing a stamp
-// of that name there as the dialog does when told to. The name and every
+// of that name there as the dialog does when told to. A category that names
+// one of the user library's collections (#513) saves into that collection's
+// folder, as the dialog does, and a category two folders go by is refused
+// when the step runs. The name and every
 // tag hold only characters CP437 has a glyph for.
 //
 // Every key is checked: an unknown key, a key the action doesn't take, a
@@ -198,6 +201,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace bw::steps {
@@ -406,11 +410,24 @@ struct Script {
     // when a step places one: the bundled library's and the user library's
     // the replay is given (library::scan), each sorted by path.
     std::vector<library::Stamp> bundledStamps, userStamps;
-    // For each name a saveToLibrary step saves, the user library's stamp a
-    // save of it writes over (library::stampPathFor: one of that title in
-    // the library's own folder, never one in a subfolder), read by the load
-    // pass; a name the library holds no such stamp of isn't here.
-    std::map<std::string, std::filesystem::path> userOverwrites;
+    // The user library's collections a saveToLibrary step's category names
+    // (#513), by category, read by the load pass: the collection's folder,
+    // or in `error` the reason the category is refused (two folders go by
+    // the name) when that step runs. A category that names no collection
+    // isn't here: its stamp goes to the library's top level.
+    struct SaveCollection {
+        std::filesystem::path dir;
+        std::string error;
+    };
+    std::map<std::string, SaveCollection> userCollections;
+    // For each {collection, name} a saveToLibrary step saves (collection
+    // empty for the library's top level), the user library's stamp a save
+    // of it writes over, read by the load pass: at the top level, one of
+    // that title in the library's own folder (library::stampPathFor), never
+    // one in a subfolder; in a collection, one of that title anywhere in
+    // its folder, as the editor's save replaces it. A save with no such
+    // stamp isn't here.
+    std::map<std::pair<std::string, std::string>, std::filesystem::path> userOverwrites;
 };
 
 // The actions a steps file may name, in the order PLAN §9 lists them.

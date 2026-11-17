@@ -32,11 +32,13 @@ struct Capture {
 
 // A stamp a saveToLibrary step saved (#431): the step ("step 3 (save)"),
 // the stamp's name (its SAUCE title, CP437) and its two files, for the
-// user library the replay is given (writeSaved).
+// user library the replay is given (writeSaved). `collection` is the name
+// of the collection it goes in (#513), empty for the library's top level.
 struct SavedStamp {
     std::string step;
     std::string name;
     bw::library::StampFiles files;
+    std::string collection;
 };
 
 struct Outcome {
@@ -90,7 +92,9 @@ bw::project::Project startSaying(const bw::steps::Script& script, const std::fil
 // given (none when empty), are read into script.bundledStamps and
 // script.userStamps (library::scan; what it can't read is left out, as the
 // Library dock leaves it out), and for each name a saveToLibrary step saves
-// the stamp the save writes over into script.userOverwrites. Before
+// the stamp the save writes over into script.userOverwrites, and the
+// collections a saveToLibrary category names into script.userCollections
+// (#513). Before
 // anything is read, a `userLibraryDir` that is there and isn't a directory
 // (a regular file is refused, not read as an empty library), or that a
 // saveToLibrary step couldn't write to (it, or the nearest directory above
@@ -102,7 +106,9 @@ void load(bw::steps::Script& script, const std::filesystem::path& dir,
 
 // `saved` written into the user library `dir` (made if it isn't there) as
 // Save to Library writes it (library::stampPathFor, library::writeStamp),
-// replacing a stamp of its name. Throws Failure naming the step and the
+// replacing a stamp of its name. A stamp saved into a collection (#513) goes
+// in that collection's folder of `dir`, over the stamp of its title anywhere
+// in the folder; a collection `dir` no longer has is refused. Throws Failure naming the step and the
 // path for one that can't be written.
 void writeSaved(const SavedStamp& saved, const std::filesystem::path& dir);
 

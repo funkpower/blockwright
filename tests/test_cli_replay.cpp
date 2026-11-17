@@ -1396,7 +1396,7 @@ TEST_CASE("saveToLibrary replaces only the stamp a save writes over, not one of 
     // both are in the replay's library, as in the dock afterwards: a place of the name can't tell them apart
     CHECK_THAT(refusedOnLibraries(l, save + R"(, {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [5, 5]})"),
                ContainsSubstring("step 4 (put): 2 stamps in the user library are named \"Hi\": " +
-                                 (l.user / "words" / "hi.ans").string() + ", the one an earlier step saved"));
+                                 (l.user / "words" / "hi.ans").string() + ", the one step 3 (save) saved at the top level"));
     bwcli::replay::writeSaved(out.saved[0], l.user);
     CHECK(fs::exists(l.user / "hi.ans"));
     CHECK(fs::exists(l.user / "words" / "hi.ans"));
@@ -1406,6 +1406,112 @@ TEST_CASE("saveToLibrary replaces only the stamp a save writes over, not one of 
     const auto again = onLibraries(l, save);
     CHECK(noted(again, "step 3 (save): replaces the stamp \"Hi\" in the user library") == 1);
     CHECK(noted(again, "is kept beside it") == 1);
+}
+
+TEST_CASE("saveToLibrary saves into the collection its category names, replacing as Save to Library does (#513)",
+          "[replay][library]") {
+    Libraries l;
+    library::createCollection(l.user, "Trees");
+    const std::string save = R"({"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+                                {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+                                {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "Trees"})";
+    const auto noted = [&](const bwcli::replay::Outcome& o, const std::string& says) {
+        return std::count_if(o.notes.begin(), o.notes.end(),
+                             [&](const std::string& n) { return n.find(says) != std::string::npos; });
+    };
+    const auto out = onLibraries(l, save);
+    REQUIRE(out.saved.size() == 1);
+    CHECK(out.saved[0].collection == "Trees");
+    CHECK(out.notes.empty());
+    CHECK(library::parseStamp(out.saved[0].files).meta.category == "Trees");
+    // nothing is written during the replay; writeSaved puts it in the folder
+    CHECK(fs::is_empty(l.user / "trees") == false);  // the marker only
+    CHECK_FALSE(fs::exists(library::stampPathFor(l.user / "trees", "Hi").path));
+    bwcli::replay::writeSaved(out.saved[0], l.user);
+    CHECK(library::readStamp(library::stampPathFor(l.user / "trees", "Hi").path).meta.category == "Trees");
+    CHECK_FALSE(fs::exists(l.user / "hi.ans"));
+    CHECK(library::findCollection(l.user, "Trees")->stamps == 1);
+
+    // a later placeStamp finds the one saved
+    const auto put = onLibraries(
+        l, save + R"(, {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [5, 5]})");
+    CHECK(flat(put.captures.back().project).at(5, 5).ch == U'h');
+
+    // the collection now holds the title: the next save replaces it
+    const auto again = onLibraries(l, save);
+    CHECK(noted(again, "step 3 (save): replaces the stamp \"Hi\" in the user library") == 1);
+    CHECK(noted(again, "kept beside") == 0);
+    bwcli::replay::writeSaved(again.saved[0], l.user);
+    CHECK(library::findCollection(l.user, "Trees")->stamps == 1);
+    CHECK_FALSE(fs::exists(l.user / "hi.ans"));
+
+    // a stamp of the title at the top level is another stamp: kept, with no note
+    Libraries::add(l.user, "Hi", lettered());
+    const auto top = onLibraries(l, save);
+    CHECK(noted(top, "replaces") == 1);
+    CHECK(noted(top, "kept beside") == 0);
+    // and a save at the top level of the same title doesn't replace the collection's
+    const std::string plain = R"({"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+                                 {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+                                 {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "words"})";
+    const auto other = onLibraries(l, plain);
+    // (the collection's stamp is one in a subfolder, kept beside as ever)
+    CHECK(noted(other, "replaces") == 1);
+    CHECK(noted(other, "kept beside") == 1);
+    CHECK(other.saved[0].collection.empty());
+
+    // a stamp of the title in a subfolder of the collection is the one replaced
+    fs::create_directories(l.user / "trees" / "sub");
+    fs::remove(library::stampPathFor(l.user / "trees", "Hi").path);
+    fs::remove(fs::path(library::stampPathFor(l.user / "trees", "Hi").path).replace_extension(".json"));
+    Libraries::add(l.user / "trees" / "sub", "Hi", lettered());
+    const auto held = onLibraries(l, save);
+    CHECK(noted(held, "step 3 (save): replaces the stamp \"Hi\" in the user library") == 1);
+    bwcli::replay::writeSaved(held.saved[0], l.user);
+    CHECK(library::readStamp(l.user / "trees" / "sub" / "hi.ans").meta.category == "Trees");
+    CHECK_FALSE(fs::exists(l.user / "trees" / "hi.ans"));
+}
+
+TEST_CASE("placeStamp's refusal of two saved stamps of one title says which step saved each and where (#513)",
+          "[replay][library]") {
+    Libraries l;
+    library::createCollection(l.user, "Trees");
+    CHECK_THAT(refusedOnLibraries(l, R"({"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+                                       {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+                                       {"name": "s", "action": "saveToLibrary", "stamp": "Hi", "category": "Trees"},
+                                       {"name": "t", "action": "saveToLibrary", "stamp": "Hi", "category": "words"},
+                                       {"name": "put", "action": "placeStamp", "stamp": "Hi", "at": [4, 2]})"),
+               ContainsSubstring("step 5 (put): 2 stamps in the user library are named \"Hi\": the one step 3 (s) "
+                                 "saved in the collection \"Trees\", the one step 4 (t) saved at the top level"));
+}
+
+TEST_CASE("saveToLibrary refuses a category two folders go by, naming its step; writeSaved refuses a collection that is gone (#513)",
+          "[replay][library]") {
+    Libraries l;
+    // two collections going by one name: a marked folder, and an unmarked one
+    // whose stamps share the category
+    library::createCollection(l.user, "Trees");
+    fs::create_directories(l.user / "elsewhere");
+    library::writeStamp(library::stampPathFor(l.user / "elsewhere", "Oak").path,
+                        library::encodeStamp("Oak", "Trees", {}, lettered(), true));
+    const std::string save = R"({"name": "ink", "action": "keyboard", "at": [1, 1], "text": "hi"},
+                                {"name": "pick", "action": "select", "rect": [1, 1, 2, 1]},
+                                {"name": "save", "action": "saveToLibrary", "stamp": "Hi", "category": "Trees"})";
+    CHECK_THAT(refusedOnLibraries(l, save), ContainsSubstring("step 3 (save): ") && ContainsSubstring("Trees"));
+    // another category in the same script is unaffected
+    CHECK(onLibraries(l, std::string(save).replace(save.find("Trees"), 5, "Shrubs")).saved.size() == 1);
+
+    Libraries g;
+    library::createCollection(g.user, "Trees");
+    const auto out = onLibraries(g, save);
+    fs::remove_all(g.user / "trees");
+    try {
+        bwcli::replay::writeSaved(out.saved[0], g.user);
+        FAIL("writeSaved took a collection that is gone");
+    } catch (const bwcli::Failure& f) {
+        CHECK_THAT(f.message, ContainsSubstring("step 3 (save): ") && ContainsSubstring("Trees"));
+    }
+    CHECK_FALSE(fs::exists(g.user / "hi.ans"));
 }
 
 TEST_CASE("replay refuses a --user-library that isn't a directory, or can't be written to by a save, before any step (#431)",

@@ -128,7 +128,8 @@ struct State : ToolSettings {
     // load pass's Script::files)
     const std::map<std::string, std::string>* files = nullptr;
     const std::map<std::string, std::string>* presets = nullptr;  // Script::presets
-    const std::map<std::string, fs::path>* overwrites = nullptr;  // Script::userOverwrites
+    const std::map<std::pair<std::string, std::string>, fs::path>* overwrites = nullptr;  // Script::userOverwrites
+    const std::map<std::string, steps::Script::SaveCollection>* collections = nullptr;  // Script::userCollections
     LayerId active = 0;
     Selection selection;
     std::optional<CellBlock> clipboard;
@@ -463,6 +464,18 @@ void paste(State& s, const Step& step, Outcome& out) {
         s.selection = Selection(CellRect{p.x, p.y, s.clipboard->width, s.clipboard->height}).clipped(canvasOf(s));
 }
 
+// Which step saved a stamp that has no file yet, and where it went: the last
+// save of its title into its collection, or at the top level when its
+// category names none (saveToLibrary replaces an earlier one of the same place).
+std::string savedBy(const State& s, const library::Stamp& st) {
+    const std::string collection = s.collections->count(st.meta.category) ? st.meta.category : std::string();
+    for (auto it = s.saved.rbegin(); it != s.saved.rend(); ++it)
+        if (it->name == st.name && it->collection == collection)
+            return "the one " + it->step + " saved " +
+                   (collection.empty() ? std::string("at the top level") : "in the collection \"" + collection + "\"");
+    return "the one an earlier step saved";
+}
+
 // The stamp a placeStamp step names (#431): the only one of that name in
 // the library it says, or in either when it says none.
 const library::Stamp& stampNamed(const State& s, const Step& step) {
@@ -488,8 +501,7 @@ const library::Stamp& stampNamed(const State& s, const Step& step) {
     if (found.size() > 1) {
         std::string paths;
         for (const library::Stamp* st : found)
-            paths += (paths.empty() ? "" : ", ") +
-                     (st->path.empty() ? std::string("the one an earlier step saved") : st->path.string());
+            paths += (paths.empty() ? "" : ", ") + (st->path.empty() ? savedBy(s, *st) : st->path.string());
         fail(step, std::to_string(found.size()) + " stamps in the " + (inUser ? "user" : "bundled") +
                        " library are named \"" + name + "\": " + paths);
     }
@@ -507,14 +519,28 @@ void placeStamp(State& s, const Step& step, Outcome& out) {
         s.selection = Selection(CellRect{p.x, p.y, block.width, block.height}).clipped(canvasOf(s));
 }
 
+// Whether `path` is inside folder `dir`, lexically.
+bool under(const fs::path& path, const fs::path& dir) {
+    const fs::path rel = path.lexically_relative(dir);
+    return !rel.empty() && *rel.begin() != "..";
+}
+
 // Selection > Save to Library... (MainWindow::saveSelectionToLibrary): the
 // selection's cells as the canvas shows them, as a stamp in the user
 // library, replacing the one of its name the save writes over: one an
 // earlier step saved, or the one in the library's own folder
 // (Script::userOverwrites). One of its name in a subfolder is kept beside
-// it, as Save to Library keeps it, with a note.
+// it, as Save to Library keeps it, with a note. A category that names a
+// collection (#513) saves into it: the same rule, within its folder, where
+// the stamp it replaces is one of that title anywhere in the folder. A
+// category two folders go by is refused.
 void saveToLibrary(State& s, const Step& step, Outcome& out) {
     needSelection(s, step);
+    const auto into = s.collections->find(step.category);
+    if (into != s.collections->end() && !into->second.error.empty())
+        fail(step, into->second.error);
+    const bool inCollection = into != s.collections->end();
+    const fs::path& folder = inCollection ? into->second.dir : fs::path();
     const CellBlock cells = copyBlock(compositeOf(s), s.selection);
     library::StampFiles files;
     library::Stamp stamp;
@@ -524,20 +550,26 @@ void saveToLibrary(State& s, const Step& step, Outcome& out) {
     } catch (const library::LibraryError& e) {
         fail(step, e.what());
     }
-    const auto over = s.overwrites->find(step.stamp);
+    const auto over = s.overwrites->find({inCollection ? step.category : std::string(), step.stamp});
+    // a stamp an earlier step saved is in this save's place when it went to
+    // the same collection, or both went to the top level
+    const auto savedHere = [&](const library::Stamp& st) {
+        return inCollection ? st.meta.category == step.category : s.collections->count(st.meta.category) == 0;
+    };
     const auto had = std::remove_if(s.user.begin(), s.user.end(), [&](const library::Stamp& st) {
-        return st.name == step.stamp && (st.path.empty() || (over != s.overwrites->end() && st.path == over->second));
+        return st.name == step.stamp &&
+               (st.path.empty() ? savedHere(st) : over != s.overwrites->end() && st.path == over->second);
     });
     const std::string name = cp437ToUtf8(step.stamp);
     if (had != s.user.end())
         out.notes.push_back(steps::stepLabel(step) + ": replaces the stamp \"" + name + "\" in the user library");
     s.user.erase(had, s.user.end());
     for (const library::Stamp& st : s.user)
-        if (st.name == step.stamp)
+        if (st.name == step.stamp && !st.path.empty() && (!inCollection || under(st.path, folder)))
             out.notes.push_back(steps::stepLabel(step) + ": the user library's stamp \"" + name + "\" in " +
                                 st.path.string() + " is kept beside it, as Save to Library keeps it");
     s.user.push_back(std::move(stamp));
-    s.saved.push_back({steps::stepLabel(step), step.stamp, std::move(files)});
+    s.saved.push_back({steps::stepLabel(step), step.stamp, std::move(files), inCollection ? step.category : std::string()});
 }
 
 Layer* layerNamed(State& s, const Step& step, const std::string& name) {
@@ -1425,12 +1457,42 @@ void load(steps::Script& script, const fs::path& dir, const fs::path& libraryDir
     // another title sits on, so an earlier save in the replay can't change it
     if (saves && !userLibraryDir.empty())
         for (const Step& st : script.steps) {
-            if (st.action != "saveToLibrary" || script.userOverwrites.count(st.stamp))
+            if (st.action != "saveToLibrary")
                 continue;
             try {
-                const library::StampTarget t = library::stampPathFor(userLibraryDir, st.stamp);
+                // a category that names a collection saves into it (#513);
+                // one two folders go by is refused when its step runs
+                if (!script.userCollections.count(st.category)) {
+                    try {
+                        if (const auto c = library::findCollection(userLibraryDir, st.category))
+                            script.userCollections[st.category] = {c->dir, {}};
+                    } catch (const library::LibraryError& e) {
+                        script.userCollections[st.category] = {{}, e.what()};
+                    }
+                }
+                const auto into = script.userCollections.find(st.category);
+                const bool inCollection = into != script.userCollections.end();
+                if (inCollection && !into->second.error.empty())
+                    continue;
+                const auto key = std::make_pair(inCollection ? st.category : std::string(), st.stamp);
+                if (script.userOverwrites.count(key))
+                    continue;
+                if (inCollection) {
+                    // the title held anywhere in the folder, a stamp
+                    // renamed in place included
+                    const auto held = std::find_if(script.userStamps.begin(), script.userStamps.end(),
+                                                   [&](const library::Stamp& s) {
+                                                       return s.name == st.stamp && under(s.path, into->second.dir);
+                                                   });
+                    if (held != script.userStamps.end()) {
+                        script.userOverwrites[key] = held->path;
+                        continue;
+                    }
+                }
+                const library::StampTarget t =
+                    library::stampPathFor(inCollection ? into->second.dir : userLibraryDir, st.stamp);
                 if (t.exists)
-                    script.userOverwrites[st.stamp] = t.path;
+                    script.userOverwrites[key] = t.path;
             } catch (const std::exception& e) {
                 throw Failure{"the user library " + userLibraryDir.string() + ": " + e.what()};
             }
@@ -1484,7 +1546,23 @@ void writeSaved(const SavedStamp& saved, const fs::path& dir) {
                       (ec ? ec.message() : std::string("not a directory"))};
     fs::path path = dir;
     try {
-        path = library::stampPathFor(dir, saved.name).path;
+        fs::path folder = dir;
+        if (!saved.collection.empty()) {
+            // a stamp saved into a collection (#513) goes in its folder,
+            // over the one of its title there, as Save to Library writes it
+            library::refuseBundled(dir);
+            const auto c = library::findCollection(dir, saved.collection);
+            if (!c)
+                throw library::LibraryError("no collection is called \"" + saved.collection + "\"");
+            folder = c->dir;
+            for (const library::Stamp& st : library::scan(folder).stamps)
+                if (st.name == saved.name) {
+                    path = st.path;
+                    break;
+                }
+        }
+        if (path == dir)
+            path = library::stampPathFor(folder, saved.name).path;
         library::writeStamp(path, saved.files);
     } catch (const std::exception& e) {
         // the library's errors name the file or folder already
@@ -1524,6 +1602,7 @@ Outcome run(const steps::Script& script, project::Project project, const Observe
     s.files = &script.files;
     s.presets = &script.presets;
     s.overwrites = &script.userOverwrites;
+    s.collections = &script.userCollections;
     s.bundled = &script.bundledStamps;
     s.user = script.userStamps;
     if (s.stack().empty())
