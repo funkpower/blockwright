@@ -153,6 +153,9 @@ public:
 signals:
     // The help panel's link to Help > Keyboard Shortcuts was clicked.
     void shortcutsRequested();
+    // Its "More in the manual" link was clicked: the tool's section, a help
+    // page name (help_docs.h).
+    void manualRequested(const QString& page);
 
 private:
     // Shows or folds away the help panel, and keeps the choice in the
@@ -240,6 +243,7 @@ private:
     QSpinBox* spraySeed_;
     QCheckBox* rimLint_;
     Options shown_;
+    QString shownTool_;  // the id of the tool shown, for the manual link
     bool syncing_ = false;
 };
 

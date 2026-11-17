@@ -1,5 +1,5 @@
 #pragma once
-// Help > Manual...: what each tool and layer kind is for, from the help text
+// Help > Tool Reference...: what each tool and layer kind is for, from the help text
 // store (help_text.h), one section a tool in the Tools menu's order with its
 // key and its picture (tool_illustration.h), then the layer kinds. It opens offline; the docs site's full manual
 // (#57) isn't bundled. A button opens Help > Keyboard Shortcuts.

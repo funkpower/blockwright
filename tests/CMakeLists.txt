@@ -653,14 +653,18 @@ add_executable(blockwright-app-tests
   test_app_shortcut_settings.cpp
   test_app_list_actions.cpp
   test_app_help.cpp
+  test_app_help_docs.cpp
   test_app_scene.cpp
   test_app_branding.cpp
   test_app_screenshot.cpp
   scene_env.h
   scratch_settings.h
   system_input.h
+  url_recorder.h
   util.h
 )
+# url_recorder.h is a QObject.
+set_target_properties(blockwright-app-tests PROPERTIES AUTOMOC ON)
 # QWindowSystemInterface, to deliver input as the platform does
 if(NOT TARGET Qt6::GuiPrivate)
   set(QT_NO_PRIVATE_MODULE_WARNING ON)

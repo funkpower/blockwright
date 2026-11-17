@@ -4,7 +4,7 @@
 // Screen.... The
 // large logo, drawn by the renderer on black, with the version under it; then
 // the actions, each a button in one column with its key (New, Open...,
-// Open Project Directory...), and the sections beside them, side by side
+// Open Project Directory..., Tutorials), and the sections beside them, side by side
 // (Recent, and Samples when any came with the app). Every
 // action goes through the window's own path. Anything that opens or makes a
 // document while the screen is up closes it, whatever started it (its
@@ -77,6 +77,9 @@ public:
     void openDirectory();
     void openRecent(const QString& path);
     void openSample(const QString& path);
+    // Tutorials: closes the screen as Esc does, then opens the tutorials
+    // (MainWindow::showHelpPage).
+    void openTutorials();
 
 protected:
     void done(int result) override;

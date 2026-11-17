@@ -1,6 +1,7 @@
 #include "start_screen.h"
 
 #include "document.h"
+#include "help_docs.h"
 #include "main_window.h"
 #include "message_box.h"
 #include "preferences.h"
@@ -240,6 +241,16 @@ StartScreen::StartScreen(MainWindow* window, const Options& options)
     QPushButton* dir = addAction(QStringLiteral("startOpenDirectory"), tr("Open Project &Directory..."), {},
                                  [this] { openDirectory(); });
     dir->setToolTip(tr("A project saved as a directory"));
+    // Both opens on one row, so Tutorials costs the screen no height.
+    auto* opens = new QHBoxLayout;
+    for (QPushButton* b : {open, dir}) {
+        actions_->removeWidget(b);
+        opens->addWidget(b);
+    }
+    actions_->addLayout(opens);
+    QPushButton* tutorials = addAction(QStringLiteral("startTutorials"), tr("&Tutorials"), {QKeySequence(Qt::Key_T)},
+                                       [this] { openTutorials(); });
+    tutorials->setToolTip(tr("Start on a new canvas with the tutorials open beside it (T)"));
     actions_->addStretch(1);
     auto* show = new QCheckBox(tr("&Show at startup"));
     show->setObjectName(QStringLiteral("startShowAtStartup"));
@@ -425,6 +436,13 @@ void StartScreen::openFile() { window_->open(); }
 void StartScreen::openDirectory() { window_->openDirectory(); }
 
 void StartScreen::openRecent(const QString& path) { window_->openRequested(path); }
+
+void StartScreen::openTutorials() {
+    // The screen is modal over the window, so it goes first: a new canvas,
+    // as Esc gives, with the tutorials beside it.
+    done(QDialog::Rejected);
+    window_->showHelpPage(QString::fromLatin1(helpdocs::kTutorialsPage));
+}
 
 void StartScreen::openSample(const QString& path) { window_->openSample(path); }
 

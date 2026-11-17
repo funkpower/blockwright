@@ -106,6 +106,7 @@ void MainWindow::createDocks() {
                              findChild<QAction*>(QStringLiteral("brushLarger")),
                              findChild<QAction*>(QStringLiteral("mirrorMode")));
     connect(toolOptions_, &ToolOptions::shortcutsRequested, this, [this] { showShortcuts(this); });
+    connect(toolOptions_, &ToolOptions::manualRequested, this, &MainWindow::showHelpPage);
     auto* optionsScroll = new QScrollArea;
     optionsScroll->setWidget(toolOptions_);
     optionsScroll->setWidgetResizable(true);

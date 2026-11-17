@@ -14,6 +14,7 @@
 #include "blockwright/canvas_renderer.h"
 
 #include "document.h"
+#include "help_docs.h"
 
 #include "blockwright/micron.h"
 #include "blockwright/samples.h"
@@ -138,6 +139,7 @@ QString saveWarning(const AnsiOutput& out, bool project = false, ArtFormat forma
 
 class SelectTool;
 class GlyphBar;
+class HelpWindow;
 class IrcViewDock;
 class LayersDock;
 class LibraryDock;
@@ -298,14 +300,28 @@ public:
     LayerId addGeneratorFrom(const QString& dir, QString* error);
     // Opens the sample project at `path` (samples.h) as an untitled copy,
     // without asking anything: unmodified, off the recent list, its
-    // generators not trusted. False and `error` on failure, leaving the
-    // document as it was (main_window_samples.cpp).
+    // generators not trusted. A flat .ans (a tutorial's starting file in
+    // the help bundle) opens the same way. False and `error` on failure,
+    // leaving the document as it was (main_window_samples.cpp).
     bool openSampleFile(const QString& path, QString* error);
     // The samples that came with the app (samples::bundledDir beside the real
     // binary), as Help > Samples and the start screen list them.
     static std::vector<samples::Sample> bundledSamples();
     // Help > Samples, filled from bundledSamples() each time it opens.
     QMenu* samplesMenu() const { return samplesMenu_; }
+    // Help > Getting Started, Tutorials and Manual, the start screen's
+    // Tutorials and Tool Options' "More in the manual" (#210): `page` (a
+    // help page name, help_docs.h) in the help window when a help bundle is
+    // installed, else on the website in the system's browser.
+    void showHelpPage(const QString& page);
+    // Where the help bundle is looked for: helpdocs::installedDir() until
+    // set. The bundle is read again the next time a page is asked for.
+    void setHelpDir(const QString& dir);
+    // The help bundle, read from the help directory; invalid when none is
+    // installed there.
+    const helpdocs::Bundle& helpBundle();
+    // The help window, once a page has opened in it; else null.
+    HelpWindow* helpWindow() const { return helpWindow_; }
     // Saves to `path` without asking anything, in the document's form if
     // `path` is its file, else in the form the path asks for (fileFormFor):
     // a flat .ans (the layers flattened, project::toAnsi), a .bwp zip or a
@@ -583,6 +599,9 @@ private:
     QMenu* windowMenu_ = nullptr;
     QMenu* openRecentMenu_ = nullptr;
     QMenu* samplesMenu_ = nullptr;
+    QString helpDir_;
+    std::optional<helpdocs::Bundle> helpBundle_;  // read on first use
+    HelpWindow* helpWindow_ = nullptr;
     QHash<QString, QAction*> toolActions_;  // the Tools menu's, by tool id
     LibraryDock* library_ = nullptr;
     QDockWidget* libraryDock_ = nullptr;

@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "docsCommit": "0000000",
+  "checkedWith": "0.0.0 (0000000)",
+  "contents": [
+    {
+      "title": "Tutorials",
+      "page": "tutorials/index.html",
+      "pages": [
+        {
+          "title": "What ANSI art is",
+          "page": "tutorials/01-what-ansi-art-is.html"
+        }
+      ]
+    },
+    {
+      "title": "Manual",
+      "page": "manual/index.html",
+      "pages": [
+        {
+          "title": "Tools and their options",
+          "page": "manual/04-tools.html"
+        }
+      ]
+    }
+  ]
+}

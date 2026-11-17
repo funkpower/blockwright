@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "branding.h"
+#include "help_window.h"
 #include "canvas_view.h"
 #include "irc_meter.h"
 #include "manual_dialog.h"
@@ -22,6 +23,7 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
+#include <QDesktopServices>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -843,12 +845,31 @@ void MainWindow::createActions() {
     a = help->addAction(tr("&Keyboard Shortcuts..."), this, [this] { showShortcuts(this); });
     a->setObjectName(QStringLiteral("keyboardShortcuts"));
     a->setStatusTip(tr("List every action that has a key, with its keys"));
-    a = help->addAction(tr("&Manual..."), this, [this] { showManual(*tools_, this); });
+    // The tutorials and the manual (#210): offline from the help bundle when
+    // one is installed, else on the website.
+    a = help->addAction(tr("&Getting Started"), this,
+                        [this] { showHelpPage(QString::fromLatin1(helpdocs::kGettingStartedPage)); });
+    a->setObjectName(QStringLiteral("gettingStarted"));
+    a->setStatusTip(tr("The first tutorial: what ANSI art is and how Blockwright draws it"));
+    a = help->addAction(tr("&Tutorials"), this,
+                        [this] { showHelpPage(QString::fromLatin1(helpdocs::kTutorialsPage)); });
+    a->setObjectName(QStringLiteral("tutorials"));
+    a->setStatusTip(tr("Tutorials from a blank canvas to a piece posted on IRC"));
+    a = help->addAction(tr("&Manual"), this, [this] { showHelpPage(QString::fromLatin1(helpdocs::kManualPage)); });
     a->setObjectName(QStringLiteral("manual"));
+    a->setStatusTip(tr("Every menu, dock, tool, option, command and file format"));
+    a = help->addAction(tr("Tool &Reference..."), this, [this] { showManual(*tools_, this); });
+    a->setObjectName(QStringLiteral("toolReference"));
     a->setStatusTip(tr("What each tool, its options and each kind of layer do"));
     createSamplesMenu(help);
     help->addSeparator();
-    a = help->addAction(tr("&About Blockwright"), this, [this] { showAbout(this); });
+    a = help->addAction(tr("&About Blockwright"), this, [this] {
+        const helpdocs::Bundle& b = helpBundle();
+        showAbout(this, b.valid() ? tr("Help: the tutorials and manual of docs commit %1, checked against "
+                                       "Blockwright %2")
+                                        .arg(b.docsCommit, b.checkedWith)
+                                  : QString());
+    });
     a->setObjectName(QStringLiteral("about"));
     a->setStatusTip(tr("Blockwright's version, commit, licence and credits"));
     a = help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
@@ -934,6 +955,38 @@ void MainWindow::canvasReset() {
     preview_->canvasReset();
     view_->setCellCursor({0, 0});
     updateStatus();
+}
+
+void MainWindow::setHelpDir(const QString& dir) {
+    helpDir_ = dir;
+    helpBundle_.reset();
+}
+
+const helpdocs::Bundle& MainWindow::helpBundle() {
+    if (!helpBundle_)
+        helpBundle_ = helpdocs::read(helpDir_.isEmpty() ? helpdocs::installedDir() : helpDir_);
+    return *helpBundle_;
+}
+
+void MainWindow::showHelpPage(const QString& page) {
+    const helpdocs::Bundle& bundle = helpBundle();
+    if (!bundle.valid()) {
+        QDesktopServices::openUrl(helpdocs::websiteUrl(page));
+        return;
+    }
+    // A bundle read again (setHelpDir) gets a window of its own.
+    if (helpWindow_ && helpWindow_->bundle().dir != bundle.dir) {
+        delete helpWindow_;
+        helpWindow_ = nullptr;
+    }
+    if (!helpWindow_) {
+        helpWindow_ = new HelpWindow(bundle, this);
+        connect(helpWindow_, &HelpWindow::fileRequested, this, &MainWindow::openSample);
+    }
+    helpWindow_->open(page);
+    helpWindow_->show();
+    helpWindow_->raise();
+    helpWindow_->activateWindow();
 }
 
 bool MainWindow::openFile(const QString& path, QString* error, std::optional<TextEncoding> encoding) {

@@ -35,6 +35,21 @@ std::vector<samples::Sample> MainWindow::bundledSamples() {
 }
 
 bool MainWindow::openSampleFile(const QString& path, QString* error) {
+    if (!project::isProject(QFile::encodeName(path).toStdString()) && fileFormFor(path) == FileForm::Ansi) {
+        AnsiDocument candidate;
+        if (!Document::read(path, &candidate, error))
+            return false;
+        try {
+            renderer_.setCanvas(&candidate.canvas, glyphWidth(candidate));
+        } catch (const std::exception&) {
+            *error = tr("the canvas is too large to display");
+            return false;
+        }
+        // Untitled and off the recent list, as a sample project is.
+        doc_.replace(std::move(candidate), QString());
+        statusBar()->showMessage(tr("Opened a copy of %1").arg(QFileInfo(path).fileName()), 5000);
+        return true;
+    }
     project::Project p;
     if (!Document::readProject(path, &p, error))
         return false;

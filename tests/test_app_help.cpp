@@ -1,5 +1,5 @@
 // In-app help (#153): every tool in the registry has help text, and the
-// toolbox tooltips, the Tool Options help panel, Help > Manual and What's
+// toolbox tooltips, the Tool Options help panel, Help > Tool Reference and What's
 // This all read it from the one store (help_text.h); every tool but those
 // that change no cells has a picture made by running it (tool_illustration.h). main() is in
 // test_app.cpp.
@@ -301,9 +301,9 @@ TEST_CASE("the help panel's link opens the keyboard shortcuts", "[help]") {
     d->close();
 }
 
-TEST_CASE("Help > Manual shows every tool's and layer's help, offline", "[help]") {
+TEST_CASE("Help > Tool Reference shows every tool's and layer's help, offline", "[help]") {
     MainWindow w;
-    auto* manual = w.findChild<QAction*>(QStringLiteral("manual"));
+    auto* manual = w.findChild<QAction*>(QStringLiteral("toolReference"));
     REQUIRE(manual);
     QMenu* helpMenu = menuHolding(w, manual);
     REQUIRE(helpMenu);
@@ -854,7 +854,7 @@ TEST_CASE("the Tool Options help panel shows the active tool's picture", "[help]
     appSettings()->remove(QStringLiteral("toolOptions/showHelp"));
 }
 
-TEST_CASE("Help > Manual shows each tool's picture under its heading", "[help][illustration]") {
+TEST_CASE("Help > Tool Reference shows each tool's picture under its heading", "[help][illustration]") {
     MainWindow w;
     const QString md = manualMarkdown(*w.tools(), &w);
     for (const Tool* t : w.tools()->tools()) {

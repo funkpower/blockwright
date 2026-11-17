@@ -1,4 +1,5 @@
 #include "tool_options.h"
+#include "help_docs.h"
 
 #include "shortcut_settings.h"
 
@@ -164,7 +165,12 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     help_->setTextFormat(Qt::MarkdownText);
     help_->setWordWrap(true);
     help_->setTextInteractionFlags(Qt::TextBrowserInteraction);
-    connect(help_, &QLabel::linkActivated, this, &ToolOptions::shortcutsRequested);
+    connect(help_, &QLabel::linkActivated, this, [this](const QString& link) {
+        if (link == QLatin1String("manual"))
+            emit manualRequested(helpdocs::toolPage(shownTool_));
+        else
+            emit shortcutsRequested();
+    });
     illustration_ = new QLabel;
     illustration_->setObjectName(QStringLiteral("toolIllustration"));
 
@@ -580,8 +586,10 @@ void ToolOptions::showFor(Tool* tool) {
     shown_ = o;
     title_->setText(tool ? QString(tool->name()).remove(QLatin1Char('&')) : QString());
     const QString help = tool ? help::toolText(tool->id()) : QString();
-    help_->setText(help.isEmpty() ? help
-                                  : help + tr("\n\n[All keyboard shortcuts](shortcuts) (Help > Keyboard Shortcuts)"));
+    shownTool_ = tool ? tool->id() : QString();
+    // The links share a line, so they take no more height than one did.
+    const QString more = helpdocs::toolPage(shownTool_).isEmpty() ? QString() : tr(" · [More in the manual](manual)");
+    help_->setText(help.isEmpty() ? help : help + tr("\n\n[All keyboard shortcuts](shortcuts)") + more);
     const help::Illustration* picture = tool ? help::toolIllustration(tool->id()) : nullptr;
     illustration_->setPixmap(picture ? QPixmap::fromImage(picture->image) : QPixmap());
     illustration_->setAccessibleName(picture ? tr("Picture of the %1 tool at work").arg(title_->text()) : QString());

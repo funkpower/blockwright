@@ -89,6 +89,13 @@ AboutDialog::AboutDialog(QWidget* parent) : QDialog(parent) {
     // as wide as the logo's panel, so the credits wrap under it
     text->setMinimumWidth(logo->sizeHint().width());
     layout->addWidget(text);
+    help_ = new QLabel(this);
+    help_->setObjectName(QStringLiteral("aboutHelp"));
+    help_->setWordWrap(true);
+    help_->setTextFormat(Qt::PlainText);
+    help_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    help_->hide();
+    layout->addWidget(help_);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -107,10 +114,16 @@ bool AboutDialog::event(QEvent* e) {
     return QDialog::event(e);
 }
 
-AboutDialog* showAbout(QWidget* window) {
+void AboutDialog::setHelpLine(const QString& line) {
+    help_->setText(line);
+    help_->setVisible(!line.isEmpty());
+}
+
+AboutDialog* showAbout(QWidget* window, const QString& helpLine) {
     auto* d = window->findChild<AboutDialog*>(QString(), Qt::FindDirectChildrenOnly);
     if (!d)
         d = new AboutDialog(window);
+    d->setHelpLine(helpLine);
     d->show();
     d->raise();
     d->activateWindow();

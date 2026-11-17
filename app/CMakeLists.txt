@@ -29,8 +29,12 @@ add_library(blockwright_app STATIC
   generator_runner.h
   glyph_bar.cpp
   glyph_bar.h
+  help_docs.cpp
+  help_docs.h
   help_text.cpp
   help_text.h
+  help_window.cpp
+  help_window.h
   irc_meter.cpp
   irc_meter.h
   document.h
@@ -105,6 +109,12 @@ add_library(blockwright_app STATIC
   whats_this.h
 )
 set_target_properties(blockwright_app PROPERTIES AUTOMOC ON)
+# Where the help bundle (help_docs.h, #210) is installed, from the binaries'
+# directory, beside the bundled samples and Library.
+file(RELATIVE_PATH BW_HELP_FROM_BINDIR ${CMAKE_INSTALL_FULL_BINDIR}
+     ${CMAKE_INSTALL_FULL_DATADIR}/blockwright/help)
+set_source_files_properties(help_docs.cpp PROPERTIES
+  COMPILE_DEFINITIONS "BW_HELP_FROM_BINDIR=\"${BW_HELP_FROM_BINDIR}\"")
 # The help text (help_text.h): a Markdown file a tool and a layer kind.
 qt_add_resources(blockwright_app "help" PREFIX "/help" BASE help FILES
   help/layers/cells.md

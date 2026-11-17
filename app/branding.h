@@ -45,6 +45,9 @@ class AboutDialog : public QDialog {
     Q_OBJECT
 public:
     explicit AboutDialog(QWidget* parent = nullptr);
+    // The line under the version on the installed help bundle (#210), or
+    // empty for none.
+    void setHelpLine(const QString& line);
 
 protected:
     // The logo is drawn again for a screen of another pixel ratio
@@ -53,9 +56,11 @@ protected:
 private:
     void drawLogo();
     QLabel* logo_ = nullptr;
+    QLabel* help_ = nullptr;
 };
 
-// Shows the window's About dialog, made the first time, and returns it
-AboutDialog* showAbout(QWidget* window);
+// Shows the window's About dialog, made the first time, with `helpLine`
+// under the version, and returns it
+AboutDialog* showAbout(QWidget* window, const QString& helpLine = {});
 
 } // namespace bw
