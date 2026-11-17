@@ -301,8 +301,9 @@ it, copy that directory to `graphics/blockwright` in a ports tree, put the
 tarball in `DISTDIR`, and run `make stage check-plist`, `make test` and
 `portlint -AC`.
 
-The CI's `freebsd` job builds and tests every push on FreeBSD 14 with the
-same packages.
+The CI's `freebsd` job builds and tests on FreeBSD 14 with the same
+packages. It takes up to two hours, so it runs only as a release check: on a
+push of a `v*` tag, or when the workflow is run by hand on a branch.
 
 ## macOS: Blockwright.app, the disk image and the Homebrew cask
 

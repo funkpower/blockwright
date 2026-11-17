@@ -4,14 +4,18 @@
 # self-hosted runners. The FreeBSD runner is a virtual machine that runs jobs
 # directly on its host, with no container; it has the packages the port
 # depends on (packaging/freebsd) installed, and handles one job at a time.
+# Its job takes up to two hours, so it is a release check: it runs on a push
+# of a release tag (v*) and when the workflow is run by hand
+# (workflow_dispatch, on any branch), not on branch pushes.
 #
-# Trigger policy: pushes to this repository's branches only. Only people with
-# write access can push here, and maintainers' PR branches live in this
-# repository, so a push covers them. Don't add pull_request or
-# pull_request_target. That alone doesn't keep strangers' code off the runner:
-# a fork or AGit pull request runs the workflow files in its own head commit,
-# whatever this file says. What stops it is the forge's controlled
-# registration (the maintainer decides who gets an account) plus Forgejo's
+# Trigger policy: pushes to this repository's branches and release tags, and
+# runs by hand. Only people with write access can push here or run a workflow
+# by hand, and maintainers' PR branches live in this repository, so a push
+# covers them. Don't add pull_request or pull_request_target. That alone
+# doesn't keep strangers' code off the runner: a fork or AGit pull request
+# runs the workflow files in its own head commit, whatever this file says.
+# What stops it is the forge's controlled registration (the maintainer
+# decides who gets an account) plus Forgejo's
 # approval gate for pull requests from users without write access: Forgejo
 # holds a run when neither the PR's poster nor the user whose action fired it
 # has write access or is marked "always trust", however many of their PRs were
@@ -56,6 +60,8 @@ name: ci
 on:
   push:
     branches: ['**']
+    tags: ['v*']
+  workflow_dispatch:
 
 jobs:
   linux:
@@ -183,6 +189,9 @@ jobs:
 
   freebsd:
     name: freebsd (14, packaged Qt 6)
+    # A release check: a release tag's push or a run by hand, never a branch
+    # push.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: bw-freebsd
     # The runner stops any job at two hours.
     timeout-minutes: 120
