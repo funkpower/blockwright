@@ -10,6 +10,7 @@
 #include "blockwright/irc.h"
 #include "blockwright/irc_view.h"
 #include "blockwright/library.h"
+#include "blockwright/micron.h"
 #include "blockwright/palette.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
@@ -417,6 +418,8 @@ TEST_CASE("every bundled sample reads, and its notes describe its layers top fir
     }
 }
 
+// Each under its own target: a Micron page is linted as one and has no line
+// budget to fit (PLAN §17).
 TEST_CASE("every bundled sample, in every variant, lints clean and fits one IRC line a row") {
     for (const Sample& s : list(kSamples)) {
         const project::Project saved = project::read(s.path);
@@ -428,9 +431,13 @@ TEST_CASE("every bundled sample, in every variant, lints clean and fits one IRC 
             project::Project p = saved;
             REQUIRE_NOTHROW(applyVariant(p.layers, v));
             const AnsiDocument doc = project::toAnsi(p);
-            const lint::LintReport r = bwcli::lintDocument(doc, {});
+            bwcli::LintCliOptions o;
+            o.target = saved.target;
+            const lint::LintReport r = bwcli::lintDocument(doc, o);
             INFO(bwcli::lintText(r));
-            CHECK(r.findings.empty());
+            CHECK(r.clean());
+            if (saved.target == Target::Micron)
+                continue;
             const std::vector<std::string> lines = irc::encodeCanvas(doc.canvas);
             CHECK(irc::txtOverBudget(lines, saved.ircBudget.bytes).empty());
         }
@@ -1766,6 +1773,181 @@ TEST_CASE("the wtc-0903 sample keeps its layers, its sunlight apart from the tow
     CHECK(project::read(out / "dir") == p);
     project::writeZip(p, out / "wtc-0903.bwp");
     CHECK(project::read(out / "wtc-0903.bwp") == p);
+}
+
+TEST_CASE("the gas-mask operator sample is a Micron page in twelve-bit half blocks, its light on a colours-only layer") {
+    const project::Project p = project::read(kSamples / "10-gas-mask-operator");
+    CHECK(p.target == Target::Micron);
+    CHECK(p.ice);
+    CHECK(p.ansEncoding == TextEncoding::Utf8);
+    CHECK(p.layers.width() == 80);
+    CHECK(p.layers.height() == 42);
+    const std::vector<std::string> order{"wall",     "desk",  "figure shadow", "towers",   "CRT",      "screen",
+                                         "notepad",  "mouse", "keyboard",      "body",     "mask",     "canister",
+                                         "shoulder", "helmet", "eyes",         "glow",     "tag"};
+    REQUIRE(names(p.layers) == order);
+    CHECK(p.snapshots.size() == 3);
+
+    const Rgb white{255, 255, 255};
+    for (const Layer& l : p.layers.layers()) {
+        INFO(l.props.name);
+        CHECK(l.props.kind == LayerKind::Cells);
+        CHECK(l.props.mode == (l.props.name == "glow" ? LayerMode::ColoursOnly : LayerMode::Normal));
+        CHECK(l.props.locked == (l.props.name == "wall"));
+        CHECK(l.props.alphaLocked == (l.props.name == "screen" || l.props.name == "mask"));
+        CHECK(l.props.visible);
+        CHECK(insideCanvas(l, p.layers));
+        // every colour is one a page writes in three digits, every cell
+        // but the tag's a half block, and white is in the eyes alone
+        for (int y = 0; y < l.cells.height(); ++y)
+            for (int x = 0; x < l.cells.width(); ++x) {
+                const Cell& c = l.cells.at(x, y);
+                if (c.transparent)
+                    continue;
+                INFO(x << "," << y);
+                REQUIRE(c.fg.kind == Color::Kind::Rgb);
+                REQUIRE(c.bg.kind == Color::Kind::Rgb);
+                CHECK(micron::isTwelveBit(c.fg.rgb));
+                CHECK(micron::isTwelveBit(c.bg.rgb));
+                if (l.props.name != "tag")
+                    CHECK(c.ch == U'▀');
+                if (l.props.name != "eyes")
+                    CHECK_FALSE((c.fg.rgb == white || c.bg.rgb == white));
+            }
+    }
+
+    // the eyes' whites show in the finished piece, and the glow touches no
+    // cell of them
+    const Layer& eyes = *std::find_if(p.layers.layers().begin(), p.layers.layers().end(),
+                                      [](const Layer& l) { return l.props.name == "eyes"; });
+    const Layer& glow = *std::find_if(p.layers.layers().begin(), p.layers.layers().end(),
+                                      [](const Layer& l) { return l.props.name == "glow"; });
+    int whites = 0;
+    for (int y = 0; y < eyes.cells.height(); ++y)
+        for (int x = 0; x < eyes.cells.width(); ++x) {
+            const Cell& c = eyes.cells.at(x, y);
+            if (!(c.fg.kind == Color::Kind::Rgb && (c.fg.rgb == white || c.bg.rgb == white)))
+                continue;
+            const int cx = eyes.props.x + x, cy = eyes.props.y + y;
+            const Cell shown = compositeCell(p.layers, cx, cy, CompositeOptions{true, Cell{}});
+            CHECK((shown.fg.rgb == white || shown.bg.rgb == white));
+            const int gx = cx - glow.props.x, gy = cy - glow.props.y;
+            if (gx >= 0 && gy >= 0 && gx < glow.cells.width() && gy < glow.cells.height())
+                CHECK(glow.cells.at(gx, gy).transparent);
+            ++whites;
+        }
+    CHECK(whites >= 8);
+
+    // every layer's cells are where the notes' Layers table puts them
+    struct Extent {
+        const char* name;
+        int x0, x1, y0, y1;
+        const char* words;
+    };
+    const Extent extents[] = {
+        {"tag", 70, 78, 1, 1, "row 1, columns 70 to 78"},
+        {"glow", 17, 40, 13, 28, "columns 17 to 40, rows 13 to 28"},
+        {"eyes", 42, 59, 14, 16, "columns 42 to 59, rows 14 to 16"},
+        {"helmet", 36, 70, 2, 16, "columns 36 to 70, rows 2 to 16"},
+        {"shoulder", 46, 79, 14, 41, "columns 46 to 79, rows 14 to 41"},
+        {"canister", 41, 53, 18, 25, "columns 41 to 53, rows 18 to 25"},
+        {"mask", 36, 66, 13, 24, "columns 36 to 66, rows 13 to 24"},
+        {"body", 29, 56, 22, 32, "columns 29 to 56, rows 22 to 32"},
+        {"keyboard", 0, 31, 27, 40, "columns 0 to 31, rows 27 to 40"},
+        {"mouse", 13, 47, 23, 38, "columns 13 to 47, rows 23 to 38"},
+        {"notepad", 17, 31, 21, 26, "columns 17 to 31, rows 21 to 26"},
+        {"screen", 34, 35, 13, 20, "columns 34 and 35, rows 13 to 20"},
+        {"CRT", 19, 37, 9, 21, "columns 19 to 37, rows 9 to 21"},
+        {"towers", 0, 18, 10, 29, "columns 0 to 18, rows 10 to 29"},
+        {"figure shadow", 34, 63, 4, 20, "columns 34 to 63, rows 4 to 20"},
+        {"desk", 0, 79, 21, 41, "from row 21 down"},
+        {"wall", 0, 79, 0, 41, "The wall"},
+    };
+    for (const Extent& e : extents) {
+        INFO(e.name);
+        const Layer& l = named(p.layers, e.name);
+        CHECK(l.props.x == e.x0);
+        CHECK(l.props.y == e.y0);
+        CHECK(l.props.x + l.cells.width() - 1 == e.x1);
+        CHECK(l.props.y + l.cells.height() - 1 == e.y1);
+        const std::string row = "| " + std::string(e.name) + " | ";
+        const std::size_t at = p.notes.find(row);
+        REQUIRE(at != std::string::npos);
+        const std::string line = p.notes.substr(at, p.notes.find('\n', at) - at);
+        CHECK(line.find(e.words) != std::string::npos);
+    }
+
+    // what the variants and the "Try this" steps say each change does
+    const int W = p.layers.width(), H = p.layers.height();
+    const Canvas whole = composite(p.layers, {p.ice, Cell{}});
+    const auto without = [&](const std::set<std::string>& hide) {
+        return composite(hiding(p, hide).layers, {p.ice, Cell{}});
+    };
+    const auto changed = [&](const Canvas& b) {
+        std::vector<std::pair<int, int>> out;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                if (whole.at(x, y) != b.at(x, y))
+                    out.emplace_back(x, y);
+        return out;
+    };
+    // No glow: 76 cells lose the blue, inside the glow's columns and rows,
+    // and no glyph changes
+    const Canvas noGlow = without({"glow"});
+    const auto glowCells = changed(noGlow);
+    CHECK(glowCells.size() == 76);
+    for (const auto& [x, y] : glowCells) {
+        INFO(x << "," << y);
+        CHECK((x >= 17 && x <= 40 && y >= 13 && y <= 28));
+        CHECK(noGlow.at(x, y).ch == whole.at(x, y).ch);
+    }
+    // Power cut: the glow's cells and the screen's strip, 85 cells
+    const auto cutCells = changed(without({"screen", "glow"}));
+    CHECK(cutCells.size() == 85);
+    for (const auto& [x, y] : cutCells)
+        CHECK(((x >= 17 && x <= 40 && y >= 13 && y <= 28) || ((x == 34 || x == 35) && y >= 13 && y <= 20)));
+    // Blank lenses: 34 cells, all in the eyes' columns and rows, and no
+    // white left anywhere
+    const Canvas blank = without({"eyes"});
+    const auto eyeCells = changed(blank);
+    CHECK(eyeCells.size() == 34);
+    for (const auto& [x, y] : eyeCells)
+        CHECK((x >= 42 && x <= 59 && y >= 14 && y <= 16));
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            CHECK_FALSE((blank.at(x, y).fg.rgb == white || blank.at(x, y).bg.rgb == white));
+    // Empty chair: the room alone, with no colour of the figure, its mask,
+    // its shadow or the screen's light on the figure left in any cell
+    const Canvas empty = without({"figure shadow", "body", "mask", "canister", "shoulder", "helmet", "eyes", "glow"});
+    // the cloth, the mask and the shadow on the wall (the steel and the strap
+    // share their colours with the keys and the desk)
+    const std::set<std::uint32_t> figureColours{0xddccaa, 0xbbaa88, 0x998866, 0x666644, 0x554422,
+                                                0x445544, 0x334433, 0x223322, 0x111111, 0x222233};
+    const auto hex = [](const Rgb& c) { return std::uint32_t(c.r) << 16 | std::uint32_t(c.g) << 8 | c.b; };
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            INFO("Empty chair, cell " << x << "," << y);
+            CHECK_FALSE(figureColours.count(hex(empty.at(x, y).fg.rgb)));
+            CHECK_FALSE(figureColours.count(hex(empty.at(x, y).bg.rgb)));
+        }
+
+    // the notes' words for the layer count, the glow's depth, the eyes' rows
+    // and each variant's changes
+    CHECK(p.layers.size() == 17);
+    CHECK(p.notes.find("Seventeen layers") != std::string::npos);
+    CHECK(p.notes.find("a pixel deep") != std::string::npos);
+    CHECK(p.notes.find("the eyes layer is three rows of cells") != std::string::npos);
+    for (const char* row : {"| No glow | hide glow |", "| Power cut | hide screen; hide glow |", "| Blank lenses | hide eyes |",
+                            "| Empty chair | hide figure shadow; hide body; hide mask; hide canister; hide shoulder; hide helmet; hide eyes; hide glow |"})
+        CHECK(p.notes.find(row) != std::string::npos);
+
+    // the variants are the ones the notes give
+    const std::vector<Variant> variants = parseNotes(p.notes).variants;
+    REQUIRE(variants.size() == 4);
+    CHECK(variants[0].name == "No glow");
+    CHECK(variants[1].name == "Power cut");
+    CHECK(variants[2].name == "Blank lenses");
+    CHECK(variants[3].name == "Empty chair");
 }
 
 // The finished pieces among the samples (PLAN §12): with the layers they

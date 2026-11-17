@@ -19,6 +19,7 @@
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
 #include "blockwright/library.h"
+#include "blockwright/micron.h"
 #include "blockwright/palette.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
@@ -37,6 +38,7 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -1743,6 +1745,769 @@ project::Project wtc0903(const fs::path& makerDir) {
     return p;
 }
 
+// ---- the gas-mask operator --------------------------------------------------
+
+// The Micron piece: drawn in twelve-bit colours (#rgb, a digit a channel, as
+// a page writes them), in half-block pixels, two to a cell. Each layer is
+// drawn whole as pixels, then cut into the cells it touches; a cell it fills
+// only half of takes its other half from the layers under it as they are
+// drawn here. Every cell is ▀ with the top pixel in its foreground and the
+// bottom one in its background, so a colours-only layer over them changes
+// the light and never a glyph.
+namespace gas {
+
+constexpr int kW = 80, kH = 42, kPx = 2 * kH;
+
+// The twelve-bit colour with these three hex digits: 0xa50 is #aa5500.
+Rgb c3(int rgb) { return micron::twelveBit((rgb >> 8) & 15, (rgb >> 4) & 15, rgb & 15); }
+
+// the inks and the surfaces, a lit and a shadow tone each; the light falls
+// from the upper right, and the screen's cool light from the left
+const Rgb kInk = c3(0x211), kLens = c3(0x000), kWhite = c3(0xfff);
+const Rgb kWall = c3(0x334), kWallLit = c3(0x445);
+const Rgb kDesk = c3(0x322), kDeskBack = c3(0x211);
+// the hardware's putty plastic, paler and greyer than the cloth
+const Rgb kPuttyTop = c3(0xddc), kPutty = c3(0xbba), kPuttySide = c3(0x998), kPuttyDeep = c3(0x665);
+// the back of the monitor, a cool grey
+const Rgb kCaseBack = c3(0x889), kCaseBackShade = c3(0x667);
+// the fatigues, the helmet cover and the gloves: one khaki cloth, pale where
+// it is lit and olive in shade
+const Rgb kKhakiHi = c3(0xdca), kKhakiLit = c3(0xba8), kKhaki = c3(0x986), kKhakiShade = c3(0x664), kKhakiDeep = c3(0x542);
+// the mask's rubber, duller and darker than the cloth, the eyepieces' steel
+// and the canister
+const Rgb kMaskLit = c3(0x454), kMask = c3(0x343), kMaskShade = c3(0x232), kMaskDeep = c3(0x111);
+const Rgb kSteelLit = c3(0x99a), kSteel = c3(0x778), kSteelShade = c3(0x556), kSteelDeep = c3(0x334);
+// the helmet band and the pack strap
+const Rgb kStrap = c3(0x322), kStrapLit = c3(0x433);
+// the face behind the lenses
+const Rgb kSkin = c3(0x864), kSkinShade = c3(0x643), kIris = c3(0x421), kEyeGrey = c3(0xccd), kLid = c3(0x100);
+// the screen's light at the monitor's edge, and the green lights
+const Rgb kScreenEdge = c3(0x8cf), kScreenEdgeDim = c3(0x58b);
+const Rgb kLed = c3(0x5f8), kLedDim = c3(0x3a5);
+const Rgb kPad = c3(0x233), kPadEdge = c3(0x122), kKey = c3(0x556), kKeyTop = c3(0x889), kKeyBed = c3(0x222);
+const Rgb kPaper = c3(0xcdd), kPaperShade = c3(0x9ab), kCable = c3(0xccb);
+// the screen's light, which the glow layer mixes into what faces it
+const Rgb kGlowLight = c3(0x7bf);
+
+struct Region {
+    std::vector<bool> on = std::vector<bool>(std::size_t(kW * kPx));
+    bool operator()(int x, int y) const { return x >= 0 && y >= 0 && x < kW && y < kPx && on[std::size_t(y * kW + x)]; }
+    void set(int x, int y, bool v = true) {
+        if (x >= 0 && y >= 0 && x < kW && y < kPx)
+            on[std::size_t(y * kW + x)] = v;
+    }
+};
+
+// The pixels whose centres are inside.
+template <class F> Region regionOf(F inside) {
+    Region r;
+    for (int y = 0; y < kPx; ++y)
+        for (int x = 0; x < kW; ++x)
+            r.set(x, y, inside(x + 0.5, y + 0.5));
+    return r;
+}
+
+template <class F> Region combine(const Region& a, const Region& b, F op) {
+    Region r;
+    for (std::size_t i = 0; i < r.on.size(); ++i)
+        r.on[i] = op(bool(a.on[i]), bool(b.on[i]));
+    return r;
+}
+Region operator|(const Region& a, const Region& b) { return combine(a, b, [](bool p, bool q) { return p || q; }); }
+Region operator&(const Region& a, const Region& b) { return combine(a, b, [](bool p, bool q) { return p && q; }); }
+Region operator-(const Region& a, const Region& b) { return combine(a, b, [](bool p, bool q) { return p && !q; }); }
+
+// The region moved by (dx, dy).
+Region shifted(const Region& s, int dx, int dy) {
+    Region r;
+    for (int y = 0; y < kPx; ++y)
+        for (int x = 0; x < kW; ++x)
+            r.set(x, y, s(x - dx, y - dy));
+    return r;
+}
+
+// Grown or shrunk by a pixel all round, corners included, so the ring
+// between is joined side to side and never only at its corners.
+Region grown(const Region& s) {
+    Region r;
+    for (int y = 0; y < kPx; ++y)
+        for (int x = 0; x < kW; ++x)
+            for (int dy = -1; dy <= 1 && !r(x, y); ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                    if (s(x + dx, y + dy))
+                        r.set(x, y);
+    return r;
+}
+Region shrunk(const Region& s) {
+    Region r;
+    for (int y = 0; y < kPx; ++y)
+        for (int x = 0; x < kW; ++x) {
+            bool all = s(x, y);
+            for (int dy = -1; dy <= 1 && all; ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                    all = all && s(x + dx, y + dy);
+            r.set(x, y, all);
+        }
+    return r;
+}
+
+Region ellipse(double cx, double cy, double rx, double ry) {
+    return regionOf([=](double x, double y) {
+        const double dx = (x - cx) / rx, dy = (y - cy) / ry;
+        return dx * dx + dy * dy <= 1.0;
+    });
+}
+Region disc(double cx, double cy, double r) { return ellipse(cx, cy, r, r); }
+
+Region polygon(const std::vector<std::pair<double, double>>& pts) {
+    return regionOf([&](double x, double y) {
+        bool in = false;
+        for (std::size_t i = 0, j = pts.size() - 1; i < pts.size(); j = i++) {
+            const auto [xi, yi] = pts[i];
+            const auto [xj, yj] = pts[j];
+            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi)
+                in = !in;
+        }
+        return in;
+    });
+}
+
+// Pixels x0-x1, y0-y1, corners included.
+Region rect(int x0, int y0, int x1, int y1) {
+    Region r;
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+            r.set(x, y);
+    return r;
+}
+
+Region capsule(double ax, double ay, double bx, double by, double rad) {
+    return regionOf([=](double x, double y) {
+        const double vx = bx - ax, vy = by - ay;
+        const double t = std::clamp(((x - ax) * vx + (y - ay) * vy) / (vx * vx + vy * vy), 0.0, 1.0);
+        const double dx = x - (ax + t * vx), dy = y - (ay + t * vy);
+        return dx * dx + dy * dy <= rad * rad;
+    });
+}
+
+// A line a pixel wide through the points, joined side to side at every
+// step, so it never runs as a dotted diagonal.
+Region path(const std::vector<std::pair<int, int>>& pts) {
+    Region r;
+    for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
+        int x = pts[i].first, y = pts[i].second;
+        const int x1 = pts[i + 1].first, y1 = pts[i + 1].second;
+        const int dx = std::abs(x1 - x), dy = -std::abs(y1 - y), sx = x < x1 ? 1 : -1, sy = y < y1 ? 1 : -1;
+        int err = dx + dy;
+        r.set(x, y);
+        while (x != x1 || y != y1) {
+            const int e2 = 2 * err;
+            if (e2 >= dy && x != x1) {
+                err += dy;
+                x += sx;
+            } else {
+                err += dx;
+                y += sy;
+            }
+            r.set(x, y);
+        }
+    }
+    return r;
+}
+
+// One layer's pixels, and which of them are ink.
+struct Art {
+    std::vector<std::optional<Rgb>> px = std::vector<std::optional<Rgb>>(std::size_t(kW * kPx));
+    Region ink;
+    std::optional<Rgb> at(int x, int y) const {
+        if (x < 0 || y < 0 || x >= kW || y >= kPx)
+            return std::nullopt;
+        return px[std::size_t(y * kW + x)];
+    }
+    void fill(const Region& r, Rgb c) {
+        for (std::size_t i = 0; i < px.size(); ++i)
+            if (r.on[i]) {
+                px[i] = c;
+                ink.on[i] = false;
+            }
+    }
+    // A pixel-wide ink line round the outside of the shape.
+    void outline(const Region& s, Rgb c = kInk) {
+        const Region ring = grown(s) - s;
+        fill(ring, c);
+        ink = ink | ring;
+    }
+    void line(const Region& r, Rgb c = kInk) {
+        fill(r, c);
+        ink = ink | r;
+    }
+    Region drawn() const {
+        Region r;
+        for (std::size_t i = 0; i < px.size(); ++i)
+            r.on[i] = px[i].has_value();
+        return r;
+    }
+};
+
+// A two-tone cel: the shape lit, and in shadow where a step of (sx, sy)
+// away from the light leaves it.
+void cel(Art& a, const Region& s, Rgb lit, Rgb shadow, int sx, int sy) {
+    a.fill(s, lit);
+    a.fill(s - shifted(s, -sx, -sy), shadow);
+}
+
+// A channel a digit darker.
+Rgb darker(Rgb c) {
+    const auto d = [](std::uint8_t v) { return std::uint8_t(v >= 17 ? v - 17 : 0); };
+    return {d(c.r), d(c.g), d(c.b)};
+}
+
+// ---- the room
+
+Region deskTop() { return rect(0, 44, kW - 1, kPx - 1); }
+
+Art wall() {
+    Art a;
+    a.fill(rect(0, 0, kW - 1, kPx - 1), kWall);
+    // the light from the upper right, a hard-edged wedge on the wall
+    // behind the figure
+    a.fill(polygon({{40, 0}, {kW, 0}, {kW, 30}}), kWallLit);
+    return a;
+}
+
+Art desk() {
+    Art a;
+    a.fill(deskTop(), kDesk);
+    a.fill(rect(0, 44, kW - 1, 45), kDeskBack);
+    a.line(rect(0, 43, kW - 1, 43));
+    return a;
+}
+
+// ---- the hardware
+
+// The tall tower, seen from its front corner: the top, the plain face to
+// the left and the drive face to the right.
+Region towerTop() { return polygon({{0, 22.5}, {11, 21}, {17.5, 31}, {5, 32}}); }
+Region towerFace() { return polygon({{5, 32}, {12.5, 31.5}, {12.5, 52.5}, {6, 53.5}}); }
+Region towerDrives() { return polygon({{12, 31.5}, {17.5, 31}, {18.5, 52}, {12, 52.5}}); }
+Region towerSide() { return polygon({{0, 22.5}, {5, 32}, {6, 53.5}, {0, 50}}); }
+Region towerA() { return towerTop() | towerFace() | towerDrives() | towerSide(); }
+// the short tower in front of it, at the left edge
+Region towerB() { return rect(0, 45, 3, 57) | polygon({{3, 45}, {5, 46}, {5, 57}, {3, 57}}); }
+
+// The monitor from behind: its top and its back, the screen facing him.
+Region crtTop() { return polygon({{20, 20}, {35, 19.5}, {37, 26.5}, {22, 26.5}}); }
+Region crtBack() { return polygon({{22, 26.5}, {37, 26.5}, {37, 42.5}, {22.5, 42.5}}); }
+Region crtEdge() { return polygon({{20, 20}, {22, 26.5}, {22.5, 42.5}, {20.5, 41}}); }
+Region crtBody() { return crtTop() | crtBack() | crtEdge(); }
+// the screen's light, spilling round the right edge of the case
+Region screenArea() { return polygon({{34.5, 27.5}, {36.5, 27.5}, {36.5, 41.5}, {35.5, 41.5}}); }
+Region notepad() { return polygon({{18, 45}, {29, 44}, {30.9, 50.9}, {19.5, 51.9}}); }
+Region pad() { return polygon({{18, 53}, {31, 48}, {46.5, 57}, {47.5, 72}, {33, 77.5}}); }
+Region mouseBody() { return ellipse(33.5, 57.5, 3.2, 2.6); }
+
+// The keyboard, turned: a point at (a, b) on it is the far left corner
+// plus a of the top edge and b of the right edge.
+constexpr double kKbX = 0, kKbY = 61.5, kKuX = 16.5, kKuY = -6.8, kKvX = 15, kKvY = 13;
+std::pair<double, double> onKeyboard(double x, double y) {
+    const double px = x - kKbX, py = y - kKbY, det = kKuX * kKvY - kKuY * kKvX;
+    return {(px * kKvY - py * kKvX) / det, (kKuX * py - kKuY * px) / det};
+}
+Region keyboardCase() {
+    return regionOf([](double x, double y) {
+        const auto [u, v] = onKeyboard(x, y);
+        return u <= 1.0 && v >= 0.0 && v <= 1.0;
+    });
+}
+
+// ---- the figure
+
+// The helmet: a low dome over the brow and down over the ears, its band
+// round it.
+Region helmetShape() {
+    return polygon({{37, 24},   {37, 18}, {39, 13}, {42, 9},  {46, 6.5}, {52, 5},  {57, 5.3}, {62, 7},
+                    {66, 10},   {68, 14}, {69, 18}, {70.5, 22}, {70, 24}, {67.5, 26}, {68.5, 31}, {66, 33.5},
+                    {64, 32.5}, {63, 27}, {60, 26}, {50, 26.6}, {43, 26.3}, {38.5, 26}});
+}
+Region helmetBand() {
+    return path({{37, 20}, {41, 21}, {46, 22}, {51, 22}, {56, 22}, {61, 21}, {66, 20}, {70, 20}});
+}
+
+Region maskShape() {
+    return polygon({{37.5, 27}, {50, 27.5}, {63, 26.5}, {66.5, 30}, {65, 34}, {61, 38}, {58, 44}, {54, 48.5},
+                    {46, 49.5}, {40, 46.5}, {37, 40}, {36.5, 32}});
+}
+
+struct Eyepiece {
+    double cx, cy, rx, ry;
+};
+const Eyepiece kEyeL{45, 30.8, 4.6, 3.4}, kEyeR{56.5, 30.4, 5, 3.4};
+
+Region lensRim(const Eyepiece& e) { return ellipse(e.cx, e.cy, e.rx, e.ry); }
+Region lensGlass(const Eyepiece& e) { return ellipse(e.cx, e.cy, e.rx - 1, e.ry - 1.2); }
+
+// The filter canister below the left lens, tipped down and to the left:
+// its face, the side of its drum under it, and the vented rim on top.
+Region canisterFace() { return ellipse(48.5, 44.4, 5, 5); }
+Region canisterSide() { return ellipse(47.6, 45.2, 5.3, 5.7) | rect(45, 37, 51, 38); }
+
+// The near shoulder and the big sleeve over it in the lower right, the
+// cloth over the chest behind the mask, and the pack strap's arc between.
+Region chest() {
+    return polygon({{62, 34.5}, {64, 33}, {69, 31}, {75, 30}, {kW, 30}, {kW, 48}, {70, 46.5}, {62, 47}, {57, 49}, {55, 47}});
+}
+Region sleeve() {
+    return polygon({{52, 55}, {57, 51}, {64, 48.5}, {72, 48}, {kW, 49}, {kW, kPx}, {50, kPx}, {50, 62}});
+}
+Region strapArc() {
+    return path({{48, kPx - 1}, {48, 66}, {50, 59}, {53, 53}, {57, 49}, {63, 47}, {70, 46}, {kW - 1, 47}}) |
+           path({{49, kPx - 1}, {49, 66}, {51, 59}, {54, 53}, {58, 49}, {64, 47}, {71, 46}, {kW - 1, 46}}) |
+           path({{47, kPx - 1}, {47, 66}, {49, 59}, {52, 53}, {56, 49}, {62, 47}, {70, 45}, {kW - 1, 45}}) |
+           path({{50, kPx - 1}, {50, 66}, {52, 59}, {55, 53}, {59, 49}, {65, 47}, {72, 46}, {kW - 1, 47}});
+}
+Region shoulderShape() { return chest() | sleeve(); }
+// the arm in shade between the mask and the strap, reaching to the hand
+Region torso() {
+    return polygon({{40, 46}, {47, 49.5}, {55, 47}, {57, 49}, {53, 53}, {51, 58}, {50, 64}, {47, 63}, {46, 56}, {42, 50}});
+}
+// the gloved hand on the mouse, the fingers curled over its front
+Region glove() {
+    return polygon({{30, 52.5}, {33, 49.5}, {38, 48.5}, {43, 48}, {47.5, 51}, {48, 58}, {46, 62.5}, {41, 62.5}, {37, 58.5}, {33, 57}, {30, 55.5}});
+}
+
+// Whole cells: every pixel of a cell the region touches.
+Region cellsOf(const Region& r) {
+    Region out;
+    for (int y = 0; y < kPx; ++y)
+        for (int x = 0; x < kW; ++x)
+            if (r(x, y) || r(x, y ^ 1))
+                out.set(x, y);
+    return out;
+}
+
+Art figureShadow() {
+    // the figure's shadow on the wall, down and to the left of the helmet:
+    // only on the wall, never in a cell the hardware or the desk's back edge
+    // is drawn in, so the room's layers keep none of its colour when the
+    // figure is hidden
+    Art a;
+    const Region room = grown(towerA() | towerB() | crtBody()) | rect(0, 42, kW - 1, kPx - 1);
+    const Region cast = shifted(helmetShape() | maskShape(), -4, 2) - helmetShape() - cellsOf(room);
+    a.fill(cast, darker(kWall));
+    return a;
+}
+
+// ---- drawing the room and the hardware
+
+void slot(Art& a, int x, int y0, int y1) {
+    a.line(rect(x, y0, x, y1));
+    a.fill(rect(x + 1, y0, x + 1, y1), kPuttySide);
+}
+
+Art towers() {
+    Art a;
+    a.fill(towerSide(), kPuttyDeep);
+    a.fill(towerFace(), kPutty);
+    a.fill(towerDrives(), kPutty);
+    a.fill(towerTop(), kPuttyTop);
+    a.outline(towerA());
+    a.line(path({{5, 32}, {12, 31}, {17, 31}}));
+    a.line(path({{12, 32}, {12, 52}}));
+    a.line(path({{5, 33}, {6, 52}}));
+    // two drive bays, each a slot down its middle, and the lights
+    slot(a, 13, 34, 44);
+    slot(a, 16, 34, 43);
+    a.line(path({{13, 43}, {17, 42}}));
+    a.fill(rect(16, 32, 16, 33), kLed);
+    a.fill(rect(14, 47, 14, 47), kPuttyDeep);
+    a.fill(rect(16, 47, 16, 47), kPuttyDeep);
+    const Region tb = towerB();
+    a.fill(tb, kPutty);
+    a.fill(tb & rect(3, 45, 5, 57), kPuttySide);
+    a.outline(tb);
+    a.fill(rect(1, 50, 2, 50), kPuttyDeep);
+    a.fill(rect(2, 55, 2, 56), kLed);
+    return a;
+}
+
+Art crt() {
+    Art a;
+    a.fill(crtTop(), kPuttyTop);
+    a.fill(crtEdge(), kPuttySide);
+    a.fill(crtBack(), kCaseBack);
+    a.fill(crtBack() - shifted(crtBack(), 1, -1), kCaseBackShade);
+    a.outline(crtBody());
+    a.line(path({{22, 26}, {37, 26}}));
+    a.line(path({{21, 21}, {22, 26}, {22, 42}}));
+    // the moulded panel on the back
+    a.line(path({{24, 28}, {35, 28}, {35, 41}}), kCaseBackShade);
+    return a;
+}
+
+// The screen's light along the monitor's edge, where the glass faces him.
+Art screen() {
+    Art a;
+    a.fill(screenArea(), kScreenEdge);
+    a.fill(screenArea() & rect(0, 35, kW - 1, kPx - 1), kScreenEdgeDim);
+    return a;
+}
+
+Art notes() {
+    Art a;
+    const Region n = notepad();
+    a.fill(n, kPaper);
+    a.fill(n - shifted(n, 0, -1), kPaperShade);
+    a.outline(n);
+    // the spiral along its top edge
+    for (int x = 20; x <= 28; x += 2)
+        a.line(rect(x, 45, x, 45));
+    return a;
+}
+
+Art mouse() {
+    Art a;
+    const Region p = pad();
+    a.fill(p, kPad);
+    a.fill(p - shifted(p, 1, -1), kPadEdge);
+    a.outline(p);
+    // the cable, coiling from the mouse back past the notepad
+    a.fill(path({{31, 59}, {29, 59}, {28, 57}, {28, 55}, {27, 53}, {25, 52}, {22, 52}, {19, 53}, {16, 54}, {13, 55}}), kCable);
+    const Region m = mouseBody();
+    cel(a, m, kPuttyTop, kPuttySide, -1, 1);
+    a.outline(m);
+    return a;
+}
+
+Art keyboard() {
+    Art a;
+    const Region k = keyboardCase();
+    a.fill(k, kPutty);
+    a.outline(k);
+    // the bed of keys inside the case's lip, and the keys on it: main keys
+    // and the keypad to the right, a gap between
+    const Region bed = regionOf([](double x, double y) {
+        const auto [u, v] = onKeyboard(x, y);
+        return u <= 0.93 && v >= 0.14 && v <= 0.82;
+    });
+    a.fill(bed, kKeyBed);
+    Region keys;
+    for (int i = -12; i < 12; ++i)
+        for (int j = 0; j < 4; ++j) {
+            const double u = 0.07 + 0.155 * i, v = 0.2 + 0.165 * j;
+            if (u > 0.9 || (u > 0.6 && u < 0.68))
+                continue;
+            const int x = int(std::lround(kKbX + u * kKuX + v * kKvX)), y = int(std::lround(kKbY + u * kKuY + v * kKvY));
+            const Region key = rect(x, y, x + 1, y + 1);
+            if ((key & bed).on == key.on)
+                keys = keys | key;
+        }
+    a.fill(keys, kKey);
+    a.fill(keys - shifted(keys, 0, 1), kKeyTop);
+    a.fill(keys - shifted(keys, -1, 0) - shifted(keys, 0, 1), kKey);
+    return a;
+}
+
+// ---- drawing the figure
+
+Art body() {
+    Art a;
+    const Region t = torso();
+    a.fill(t, kKhaki);
+    a.fill(t & polygon({{40, 46}, {47, 49.5}, {46, 56}, {42, 50}}), kKhakiShade);
+    a.outline(t);
+    // the glove, lit from the right, its fingers draped down over the
+    // mouse: the knuckles lit, ink between the fingers, the heel of the
+    // hand in shade
+    const Region g = glove();
+    a.fill(g, kKhakiLit);
+    a.fill(g & polygon({{38, 48}, {46, 49}, {48, 52}, {40, 51}}), kKhakiHi);
+    a.fill(g & polygon({{29, 54}, {38, 55}, {41, 63}, {33, 58}}), kKhakiShade);
+    a.fill(g & polygon({{42, 59}, {48, 57}, {47, 61}, {44, 63}}), kKhaki);
+    a.outline(g);
+    a.line(path({{34, 51}, {32, 54}}));
+    a.line(path({{37, 51}, {35, 55}}));
+    a.line(path({{40, 51}, {38, 56}}));
+    a.line(path({{38, 50}, {44, 50}}));
+    return a;
+}
+
+Art mask() {
+    Art a;
+    const Region m = maskShape();
+    a.fill(m, kMask);
+    a.fill(m & polygon({{50, 33}, {60, 32}, {58, 40}, {54, 44}}), kMaskLit);
+    a.fill(m & polygon({{36, 32}, {42, 34}, {44, 40}, {42, 47}, {37, 40}}), kMaskShade);
+    // the helmet's shadow across the brow, and the dark round each lens
+    a.fill(m & rect(0, 0, kW - 1, 26), kMaskDeep);
+    a.outline(m);
+    for (const Eyepiece& e : {kEyeL, kEyeR}) {
+        const Region rim = lensRim(e);
+        a.fill(grown(rim) & m, kMaskDeep);
+        a.fill(rim, kSteel);
+        a.fill(rim & regionOf([&](double x, double y) { return (y - e.cy) < -1.2 || (x - e.cx) > e.rx - 1.5; }), kSteelLit);
+        a.fill(rim & regionOf([&](double x, double y) { return (y - e.cy) > 1.5; }), kSteelShade);
+        a.fill(lensGlass(e), kLid);
+    }
+    // the cheek seam down from the right lens
+    a.line(path({{60, 33}, {58, 38}, {56, 43}}), kMaskDeep);
+    return a;
+}
+
+Art canister() {
+    Art a;
+    const Region side = canisterSide(), face = canisterFace();
+    a.fill(side, kSteelDeep);
+    a.outline(side | face);
+    a.fill(face, kSteelShade);
+    a.fill(face - shrunk(face), kSteel);
+    a.fill((face - shrunk(face)) & polygon({{44, 38}, {54, 38}, {54, 43}}), kSteelLit);
+    // the ribs from its hub, and the hub
+    for (const auto& r : std::vector<std::vector<std::pair<int, int>>>{{{48, 41}, {48, 40}}, {{51, 44}, {52, 44}}, {{48, 47}, {48, 48}}, {{46, 44}, {45, 44}}})
+        a.line(path(r), kSteelDeep);
+    a.fill(ellipse(48.5, 44, 1.3, 1.4), kSteelDeep);
+    // the ribbed connector joining it to the mask
+    a.fill(rect(45, 37, 51, 38), kSteel);
+    for (int x = 46; x <= 50; x += 2)
+        a.fill(rect(x, 37, x, 38), kSteelDeep);
+    a.line(rect(45, 36, 51, 36));
+    return a;
+}
+
+Art shoulder() {
+    Art a;
+    const Region c = chest(), s = sleeve();
+    a.fill(c, kKhakiLit);
+    a.fill(c & polygon({{58, 33}, {65, 33}, {62, 40}, {60, 47}, {55, 47}}), kKhakiShade);
+    a.fill(c & polygon({{66, 36}, {74, 34}, {72, 40}, {64, 43}}), kKhaki);
+    a.outline(c);
+    a.line(path({{62, 38}, {66, 36}, {71, 35}}));
+    a.line(path({{63, 44}, {68, 41}, {74, 40}}));
+    a.line(path({{70, 31}, {72, 34}}));
+    a.fill(s, kKhakiLit);
+    a.fill(s & polygon({{50, 62}, {53, 55}, {58, 58}, {56, 70}, {58, kPx}, {50, kPx}}), kKhakiShade);
+    a.outline(s);
+    // the folds of the sleeve
+    // the sleeve's round seam and a fold under it
+    a.line(path({{56, 83}, {58, 74}, {62, 66}, {68, 61}, {75, 59}, {79, 59}}), kKhakiShade);
+    a.line(path({{57, 83}, {59, 75}, {63, 67}, {69, 62}, {75, 60}, {79, 60}}));
+    const Region st = strapArc();
+    a.fill(st, kStrap);
+    a.outline(st);
+    a.fill(st & shifted(st, -2, 0) - shifted(st, 2, 0), kStrapLit);
+    return a;
+}
+
+Art helmet() {
+    Art a;
+    const Region h = helmetShape();
+    a.fill(h, kKhakiLit);
+    a.fill(h & polygon({{58, 6}, {63, 8}, {65, 12}, {60, 11}}), kKhakiHi);
+    // the shade down the left of the dome and under its brow
+    a.fill(h & polygon({{36, 30}, {36, 6}, {44, 7}, {40, 13}, {44, 14}, {49, 15}, {52, 17}, {53, 22}, {44, 23}, {43, 28}}), kKhakiShade);
+    a.fill(h & polygon({{64, 27}, {67, 26.5}, {68, 31}, {66, 33}}), kKhakiShade);
+    a.outline(h);
+    // the seams of the cover and the band round it
+    a.line(path({{55, 5}, {57, 9}, {57, 15}, {56, 20}}), kInk);
+    a.line(path({{55, 24}, {55, 27}}), kInk);
+    a.fill(helmetBand() & h, kInk);
+    return a;
+}
+
+// The eyes behind the lenses, a scowl back over the shoulder: a heavy lid
+// across the top, a small white and the brown iris turned toward the
+// viewer, and the skin of the cheek under them.
+Art eyes() {
+    Art a;
+    const Region glass = lensGlass(kEyeL) | lensGlass(kEyeR);
+    const auto put = [&](int x0, int y0, const std::vector<std::string>& rows) {
+        for (std::size_t y = 0; y < rows.size(); ++y)
+            for (std::size_t x = 0; x < rows[y].size(); ++x) {
+                const Region p = rect(x0 + int(x), y0 + int(y), x0 + int(x), y0 + int(y)) & glass;
+                switch (rows[y][x]) {
+                case 'W': a.fill(p, kWhite); break;
+                case 'i': a.fill(p, kIris); break;
+                case 'k': a.fill(p, kLens); break;
+                case 's': a.fill(p, kSkin); break;
+                case 'd': a.fill(p, kSkinShade); break;
+                case 'g': a.fill(p, kEyeGrey); break;
+                default: break;
+                }
+            }
+    };
+    // rows: the lid; the eye, its white and the iris turned to the right,
+    // back toward the viewer; the cheek
+    put(42, 29, {"kkkkkkk", "gWWWiik", "dWWiikd", "sssssss", "sssssss"});
+    put(52, 28, {"........", ".kkkkkkk", "gWWWWiik", "dWWWiikd", "ssssssss", "ssssssss"});
+    // a glint high on each glass
+    put(43, 29, {"W"});
+    put(54, 29, {"W"});
+    return a;
+}
+
+// ---- cutting into cells
+
+Cell halves(Rgb top, Rgb bottom) {
+    Cell c;
+    c.ch = U'▀';
+    c.fg = Color::fromRgb(top);
+    c.bg = Color::fromRgb(bottom);
+    return c;
+}
+
+struct Piece {
+    std::vector<Rgb> shown = std::vector<Rgb>(std::size_t(kW * kPx));
+    std::vector<int> owner = std::vector<int>(std::size_t(kW * kPx), -1);
+    Region ink;
+    int layers = 0;
+
+    Rgb at(int x, int y) const { return shown[std::size_t(y * kW + x)]; }
+
+    // The art as a cells layer the size of the cells it touches, and drawn
+    // over what is shown.
+    Layer add(const std::string& name, const Art& art) {
+        int x0 = kW, y0 = kH, x1 = -1, y1 = -1;
+        for (int cy = 0; cy < kH; ++cy)
+            for (int x = 0; x < kW; ++x)
+                if (art.at(x, 2 * cy) || art.at(x, 2 * cy + 1)) {
+                    x0 = std::min(x0, x);
+                    x1 = std::max(x1, x);
+                    y0 = std::min(y0, cy);
+                    y1 = std::max(y1, cy);
+                }
+        Layer l = makeLayer(LayerKind::Cells, x1 - x0 + 1, y1 - y0 + 1, name, x0, y0);
+        for (int cy = y0; cy <= y1; ++cy)
+            for (int x = x0; x <= x1; ++x) {
+                const auto top = art.at(x, 2 * cy), bottom = art.at(x, 2 * cy + 1);
+                if (top || bottom)
+                    l.cells.at(x - x0, cy - y0) = halves(top.value_or(at(x, 2 * cy)), bottom.value_or(at(x, 2 * cy + 1)));
+            }
+        for (std::size_t i = 0; i < shown.size(); ++i)
+            if (art.px[i]) {
+                shown[i] = *art.px[i];
+                owner[i] = layers;
+                ink.on[i] = art.ink.on[i];
+            }
+        ++layers;
+        return l;
+    }
+};
+
+// The nearest twelve-bit colour to a mix of `c` and the screen's light.
+Rgb lit(Rgb c, double f) {
+    const auto mix = [f](std::uint8_t a, std::uint8_t b) {
+        return std::clamp(int(std::lround((a * (1 - f) + b * f) / 17.0)), 0, 15);
+    };
+    return micron::twelveBit(mix(c.r, kGlowLight.r), mix(c.g, kGlowLight.g), mix(c.b, kGlowLight.b));
+}
+
+// The screen's light: a pool on the notepad, the pad and the cord in front
+// of the monitor, and along the left edge of the mask and the hand, the
+// figure's side facing the screen. Only the pixels it changes; no cell with
+// an eye in it.
+Layer glow(Piece& sc, const std::set<int>& desk, const std::set<int>& figure, int eyesLayer) {
+    std::vector<std::optional<Rgb>> light(sc.shown.size());
+    const auto in = [&](const std::set<int>& s, int x, int y) {
+        return x >= 0 && y >= 0 && x < kW && y < kPx && s.count(sc.owner[std::size_t(y * kW + x)]) > 0;
+    };
+    for (int y = 0; y < kPx; ++y)
+        for (int x = 0; x < kW; ++x) {
+            const std::size_t i = std::size_t(y * kW + x);
+            if (sc.ink.on[i])
+                continue;
+            double f = 0;
+            const double dx = (x + 0.5 - 27) / 10, dy = (y + 0.5 - 52) / 6;
+            if (in(desk, x, y) && dx * dx + dy * dy <= 1.0)
+                f = 0.18;
+            if (in(figure, x, y) && x < 50 && y >= 26 && y < 64) {
+                bool edge = false;
+                for (int k = 1; k <= 2; ++k)
+                    edge = edge || !in(figure, x - k, y);
+                if (edge)
+                    f = 0.15;
+            }
+            if (f > 0) {
+                const Rgb c = lit(sc.shown[i], f);
+                if (!(c == sc.shown[i]))
+                    light[i] = c;
+            }
+        }
+    // a cell with an eye pixel keeps the light off both its halves
+    for (int cy = 0; cy < kH; ++cy)
+        for (int x = 0; x < kW; ++x) {
+            const std::size_t t = std::size_t(2 * cy * kW + x), b = t + std::size_t(kW);
+            if (sc.owner[t] == eyesLayer || sc.owner[b] == eyesLayer)
+                light[t] = light[b] = std::nullopt;
+        }
+    Art a;
+    a.px = light;
+    Layer l = sc.add("glow", a);
+    l.props.mode = LayerMode::ColoursOnly;
+    return l;
+}
+
+Layer tag(const Piece& sc) {
+    const std::string text = "funkpower";
+    const int x0 = kW - 1 - int(text.size()), cy = 1;
+    Layer l = makeLayer(LayerKind::Cells, int(text.size()), 1, "tag", x0, cy);
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        Cell c;
+        c.ch = char32_t(text[i]);
+        c.fg = Color::fromRgb(c3(0xaab));
+        c.bg = Color::fromRgb(sc.at(x0 + int(i), 2 * cy));
+        l.cells.at(int(i), 0) = c;
+    }
+    return l;
+}
+
+} // namespace gas
+
+project::Project gasMaskOperator(const fs::path& makerDir) {
+    using namespace gas;
+    project::Project p;
+    p.layers = LayerStack(gas::kW, gas::kH);
+    p.target = Target::Micron;
+    p.ansEncoding = TextEncoding::Utf8;
+    p.sauce = sauceFor("Gas-mask operator");
+    Piece sc;
+
+    // the first snapshot: the room and the hardware on the desk
+    Layer w = sc.add("wall", gas::wall());
+    w.props.locked = true;
+    p.layers.add(std::move(w));
+    p.layers.add(sc.add("desk", gas::desk()));
+    p.layers.add(sc.add("figure shadow", gas::figureShadow()));
+    p.layers.add(sc.add("towers", gas::towers()));
+    p.layers.add(sc.add("CRT", gas::crt()));
+    Layer s = sc.add("screen", gas::screen());
+    s.props.alphaLocked = true;
+    p.layers.add(std::move(s));
+    p.layers.add(sc.add("notepad", gas::notes()));
+    p.layers.add(sc.add("mouse", gas::mouse()));
+    p.layers.add(sc.add("keyboard", gas::keyboard()));
+    project::takeSnapshot(p);
+
+    // the second: the figure, its mask and helmet
+    p.layers.add(sc.add("body", gas::body()));
+    Layer m = sc.add("mask", gas::mask());
+    m.props.alphaLocked = true;
+    p.layers.add(std::move(m));
+    p.layers.add(sc.add("canister", gas::canister()));
+    p.layers.add(sc.add("shoulder", gas::shoulder()));
+    p.layers.add(sc.add("helmet", gas::helmet()));
+    project::takeSnapshot(p);
+
+    // the third: the eyes, the screen's light and the tag
+    const int eyesLayer = sc.layers;
+    p.layers.add(sc.add("eyes", gas::eyes()));
+    // by their order above: 3 towers, 6 notepad, 7 mouse, 8
+    // keyboard; 9 body, 10 mask, 11 canister, 12 shoulder, 13 helmet
+    p.layers.add(glow(sc, {6, 7, 8}, {9, 10, 11, eyesLayer}, eyesLayer));
+    p.layers.add(tag(sc));
+    p.notes = readFile(makerDir / "notes" / "10-gas-mask-operator.md");
+    project::takeSnapshot(p);
+    return p;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1764,6 +2529,7 @@ int main(int argc, char** argv) {
         project::writeDirectory(battlestation(BW_MAKER_DIR), out / "07-battlestation", raw);
         project::writeDirectory(brainOnIrc(BW_MAKER_DIR), out / "08-brain-on-irc", raw);
         project::writeDirectory(wtc0903(BW_MAKER_DIR), out / "09-wtc-0903", raw);
+        project::writeDirectory(gasMaskOperator(BW_MAKER_DIR), out / "10-gas-mask-operator", raw);
     } catch (const std::exception& e) {
         std::cerr << "bw-make-samples: " << e.what() << "\n";
         return 1;
