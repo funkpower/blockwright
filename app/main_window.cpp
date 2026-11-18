@@ -806,6 +806,10 @@ void MainWindow::createActions() {
     pickBackgroundAction_ = add(colours, tr("Pick &Background Colour..."), "pickBackgroundColour",
                                 tr("Pick any of the 4096 colours a Micron code writes for the background"),
                                 QKeySequence(), [this] { pickMicronColour(false); });
+    snapMicronAction_ = add(colours, tr("S&nap to Micron Colours"), "snapMicronColours",
+                            tr("Change each RGB colour of the selection, or of the layer, to the nearest of the 4096 "
+                               "a Micron code writes in three digits"),
+                            QKeySequence(), [this] { snapToMicronColours(); });
     colours->addSeparator();
     createPaletteActions(colours);
     updateTarget();

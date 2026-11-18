@@ -296,6 +296,15 @@ public:
     // `skipped` (if given) how many layers Document skipped.
     int remapColours(const ColourMap& map, RemapScope scope, const CellRect& selection = {}, QString* error = nullptr,
                      int* skipped = nullptr);
+    // Colours > Snap to Micron Colours (#491 slice 3, PLAN §17): each RGB
+    // colour of the active layer's cells in `selection` (canvas cells), or
+    // of the whole layer when it is empty, becomes the nearest twelve-bit
+    // colour (bw::micronSnapEdit), as one undo command, "Snap to Micron
+    // Colours". Indexed colours and the layer's style stay. The active layer
+    // must be editable(). Returns how many cells changed; 0, and nothing
+    // pushed, when none did or the layer can't be edited (`error` says
+    // which).
+    int snapToMicronColours(const CellRect& selection = {}, QString* error = nullptr);
     // Fit to Palette: the palette becomes `palette` (nothing: the standard
     // one) and every layer remapColours' Document scope maps is mapped by
     // fitColourMap from the old palette to it, its cells and the colours

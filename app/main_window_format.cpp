@@ -115,6 +115,7 @@ void MainWindow::updateTarget() {
     if (pickForegroundAction_) {
         pickForegroundAction_->setEnabled(t == Target::Micron);
         pickBackgroundAction_->setEnabled(t == Target::Micron);
+        snapMicronAction_->setEnabled(t == Target::Micron);
     }
     if (palette_)
         palette_->setTarget(t, colours);
@@ -161,6 +162,21 @@ void MainWindow::pickMicronColour(bool foreground) {
         return;
     c = Color::fromRgb(dialog.colour());
     view_->setPen(pen);
+}
+
+void MainWindow::snapToMicronColours() {
+    if (doc_.target() != Target::Micron)
+        return;
+    view_->finishTool();
+    QString error;
+    const int n = doc_.snapToMicronColours(view_->selection().bounds(), &error);
+    if (!n) {
+        statusBar()->showMessage(tr("Nothing snapped: %1").arg(error), 5000);
+        return;
+    }
+    statusBar()->showMessage(plural(n, tr("Snapped to Micron colours: %n cell changed"),
+                                    tr("Snapped to Micron colours: %n cells changed")),
+                             5000);
 }
 
 void MainWindow::createPaletteActions(QMenu* colours) {

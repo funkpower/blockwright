@@ -95,6 +95,8 @@ const std::vector<ActionKeys>& actionKeys() {
         {"palette", {"preset", "colours"}},
         {"fitToPalette", {"preset", "colours"}},
         {"remapColours", {"map", "scope"}},
+        // Colours > Snap to Micron Colours (#491 slice 3)
+        {"snapMicronColours", {}},
         // the window's view (#398)
         {"view", {"zoom", "scrollTo", "ircFit", "ircPad", "ircSwapShades", "guides"}},
         // the Library (#431): a stamp placed from the dock, and Selection >
@@ -541,7 +543,7 @@ Screenshot readScreenshot(const std::string& where, const QJsonValue& v) {
 
 bool takesNoOptions(std::string_view action) {
     return action == "view" || action == "canvasSize" || action == "palette" || action == "fitToPalette" ||
-           action == "remapColours";
+           action == "remapColours" || action == "snapMicronColours";
 }
 
 Step readStep(const QJsonValue& v, int number) {

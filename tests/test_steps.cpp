@@ -1183,6 +1183,17 @@ TEST_CASE("the palette steps read a preset or 16 colours, and remapColours a map
         CHECK(std::find(steps::actions().begin(), steps::actions().end(), a) != steps::actions().end());
 }
 
+TEST_CASE("snapMicronColours is a step with no keys and no Tool Options (#491)", "[steps][micron]") {
+    const steps::Script s = steps::parse(script(R"({"name": "snap", "action": "snapMicronColours"})"));
+    REQUIRE(s.steps.size() == 1);
+    CHECK(s.steps[0].action == "snapMicronColours");
+    CHECK(std::find(steps::actions().begin(), steps::actions().end(), "snapMicronColours") != steps::actions().end());
+    CHECK_THAT(refusal(script(R"({"name": "p", "action": "snapMicronColours", "fg": 3})")),
+               ContainsSubstring("step 1 (p): snapMicronColours takes no \"fg\""));
+    CHECK_THAT(refusal(script(R"({"name": "p", "action": "snapMicronColours", "scope": "layer"})")),
+               ContainsSubstring("step 1 (p): snapMicronColours takes no \"scope\""));
+}
+
 TEST_CASE("a palette step's bad value is refused, naming the step (#497)", "[steps][palette]") {
     const std::pair<const char*, const char*> cases[] = {
         {R"("action": "palette")", "palette needs one of \"preset\", a preset's name, or \"colours\", 16 \"#rrggbb\""},

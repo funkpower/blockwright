@@ -1,6 +1,7 @@
 #include "blockwright/palette_swap.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/micron.h"
 #include "blockwright/ramp.h"
 #include "blockwright/xbin.h"
 
@@ -159,7 +160,11 @@ Cell remapCell(Cell c, const ColourMap& map) {
     return c;
 }
 
-CellEdit remapEdit(const Canvas& canvas, const ColourMap& map, std::optional<CellRect> area, bool transparentToo) {
+namespace {
+
+// The cells of `canvas` in `area` that `f` changes the colours of.
+template <typename F>
+CellEdit colourEdit(const Canvas& canvas, std::optional<CellRect> area, bool transparentToo, F f) {
     const CellRect all{0, 0, canvas.width(), canvas.height()};
     const CellRect r = area ? area->intersected(all) : all;
     CellEdit edit;
@@ -168,11 +173,29 @@ CellEdit remapEdit(const Canvas& canvas, const ColourMap& map, std::optional<Cel
             const Cell& c = canvas.at(x, y);
             if (c.transparent && !transparentToo)
                 continue;
-            const Cell after = remapCell(c, map);
+            const Cell after = f(c);
             if (!(after.fg == c.fg && after.bg == c.bg))
                 edit.changes.push_back({x, y, c, after});
         }
     return edit;
+}
+
+} // namespace
+
+CellEdit remapEdit(const Canvas& canvas, const ColourMap& map, std::optional<CellRect> area, bool transparentToo) {
+    return colourEdit(canvas, area, transparentToo, [&](const Cell& c) { return remapCell(c, map); });
+}
+
+Cell micronSnapCell(Cell c) {
+    if (!c.fg.isIndexed())
+        c.fg = Color::fromRgb(micron::nearestTwelveBit(c.fg.rgb));
+    if (!c.bg.isIndexed())
+        c.bg = Color::fromRgb(micron::nearestTwelveBit(c.bg.rgb));
+    return c;
+}
+
+CellEdit micronSnapEdit(const Canvas& canvas, std::optional<CellRect> area, bool transparentToo) {
+    return colourEdit(canvas, area, transparentToo, [](const Cell& c) { return micronSnapCell(c); });
 }
 
 int remapCanvas(Canvas& canvas, const ColourMap& map) {

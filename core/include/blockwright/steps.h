@@ -82,6 +82,17 @@
 // (remapLayers). The active layer of the first two must be one the editor
 // edits. None takes Tool Options.
 //
+// Colours > Snap to Micron Colours (#491 slice 3, PLAN §17) is a step of
+// its own, with no keys and no Tool Options:
+//
+//   {"name": ..., "action": "snapMicronColours"}
+//
+// It snaps each RGB colour of the selection on the active layer, or of the
+// whole active layer without one, to the nearest twelve-bit colour
+// (micronSnapEdit), as the menu does: the piece's target must be Micron and
+// the active layer one the editor edits. A step that changes no cell is
+// noted, as a palette step is.
+//
 // The window's view has a step of its own (#398), "action": "view":
 //
 //   {"name": ..., "action": "view", "zoom": 1-8, "scrollTo": [x, y],

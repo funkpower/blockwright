@@ -14,6 +14,7 @@
 #include "tool.h"
 
 #include "blockwright/micron.h"
+#include "blockwright/project.h"
 #include "blockwright/target.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -29,6 +30,7 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QTimer>
 #include <QUndoStack>
 
@@ -363,4 +365,77 @@ TEST_CASE("a new Micron document is UTF-8, and Preferences offers Micron", "[app
     REQUIRE(w.newCanvas(QSize(20, 5), true, &error));
     CHECK(w.document()->target() == Target::Micron);
     CHECK(w.document()->textEncoding() == TextEncoding::Utf8);
+}
+
+TEST_CASE("Snap to Micron Colours snaps the selection or the layer as one undo step", "[app][target][micron][snap]") {
+    MainWindow w;
+    Document* d = w.document();
+    QAction* snap = act(w, "snapMicronColours");
+    // a row brought over from IRC: mIRC 64 (#ff5959) on mIRC 92 (#4d4d4d),
+    // a twelve-bit red, and the 16
+    project::Project p;
+    p.layers = LayerStack(4, 2);
+    Layer l;
+    l.cells = Canvas(4, 2);
+    for (int x = 0; x < 4; ++x) {
+        Cell& c = l.cells.at(x, 0);
+        c.ch = U'A';
+        c.fg = Color::fromRgb({0xff, 0x59, 0x59});
+        c.bg = Color::fromRgb({0x4d, 0x4d, 0x4d});
+    }
+    l.cells.at(3, 0).fg = Color::fromRgb({0xff, 0x00, 0x00});
+    l.cells.at(3, 0).bg = Color::indexed(1);
+    p.layers.add(std::move(l));
+    d->replace(p, QStringLiteral("irc.bwp"), FileForm::ProjectZip);
+    const Canvas before = d->canvas();
+    const Color fg = Color::fromRgb(micron::twelveBit(15, 5, 5)), bg = Color::fromRgb(micron::twelveBit(5, 5, 5));
+
+    // not under ANSI or IRC
+    CHECK_FALSE(snap->isEnabled());
+    d->setTarget(Target::Irc);
+    CHECK_FALSE(snap->isEnabled());
+    d->setTarget(Target::Micron);
+    REQUIRE(snap->isEnabled());
+    const int steps = d->undoStack()->count();
+
+    // the selection only
+    w.canvasView()->setSelection(Selection(CellRect{1, 0, 2, 2}));
+    snap->trigger();
+    CHECK(d->undoStack()->count() == steps + 1);
+    CHECK(d->undoStack()->undoText() == QStringLiteral("Snap to Micron Colours"));
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("Snapped to Micron colours: 2 cells changed"));
+    CHECK(d->canvas().at(0, 0).fg == before.at(0, 0).fg);
+    CHECK(d->canvas().at(1, 0).fg == fg);
+    CHECK(d->canvas().at(2, 0).bg == bg);
+    CHECK(d->canvas().at(1, 0).ch == Glyph(U'A'));
+    CHECK(identical(d->canvas().at(3, 0), before.at(3, 0)));  // twelve-bit and indexed: kept
+    d->undoStack()->undo();
+    CHECK(d->canvas() == before);
+    CHECK(d->target() == Target::Micron);
+
+    // no selection: the layer; then nothing is left
+    w.canvasView()->setSelection(Selection());
+    snap->trigger();
+    CHECK(d->undoStack()->count() == steps + 1);
+    CHECK(w.statusBar()->currentMessage() == QStringLiteral("Snapped to Micron colours: 3 cells changed"));
+    for (int x = 0; x < 3; ++x) {
+        CHECK(d->canvas().at(x, 0).fg == fg);
+        CHECK(d->canvas().at(x, 0).bg == bg);
+    }
+    snap->trigger();
+    CHECK(d->undoStack()->count() == steps + 1);
+    CHECK(w.statusBar()->currentMessage().startsWith(QStringLiteral("Nothing snapped: ")));
+    d->undoStack()->undo();
+    CHECK(d->canvas() == before);
+    d->undoStack()->redo();
+    CHECK(d->canvas().at(0, 0).fg == fg);
+
+    // a locked layer is left, and says why
+    d->undoStack()->undo();
+    LayerProperties locked = d->active()->props;
+    locked.locked = true;
+    QString error;
+    REQUIRE(d->setLayerProperties(d->activeLayer(), locked, QStringLiteral("Lock")));
+    CHECK(d->snapToMicronColours({}, &error) == 0);
+    CHECK(error == QStringLiteral("the layer is locked"));
 }

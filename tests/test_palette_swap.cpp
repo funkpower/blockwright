@@ -5,6 +5,7 @@
 #include "util.h"
 
 #include "blockwright/irc.h"
+#include "blockwright/micron.h"
 #include "blockwright/mirc.h"
 #include "blockwright/palette_swap.h"
 #include "blockwright/project.h"
@@ -206,6 +207,80 @@ TEST_CASE("remapEdit maps indexed colours, leaves RGB and transparent cells, and
     all.apply(expect);
     CHECK(remapCanvas(c2, swap) == 3);
     CHECK(c2 == expect);
+}
+
+TEST_CASE("nearestTwelveBit rounds each channel to the nearest doubled digit", "[palette][micron]") {
+    CHECK(micron::nearestTwelveBit({0, 0, 0}) == Rgb{0, 0, 0});
+    CHECK(micron::nearestTwelveBit({255, 255, 255}) == Rgb{255, 255, 255});
+    // 8 is nearer 0 than 17, 9 nearer 17; 25 nearer 17, 26 nearer 34
+    CHECK(micron::nearestTwelveBit({8, 9, 25}) == Rgb{0, 17, 17});
+    CHECK(micron::nearestTwelveBit({26, 246, 247}) == Rgb{34, 238, 255});
+    // every colour lands on a twelve-bit one no farther than any other in
+    // each channel, and a twelve-bit colour is itself
+    for (int v = 0; v < 256; ++v) {
+        const Rgb c{std::uint8_t(v), std::uint8_t(255 - v), std::uint8_t(v / 2)};
+        const Rgb n = micron::nearestTwelveBit(c);
+        CHECK(micron::isTwelveBit(n));
+        for (const auto& [was, got] : {std::pair{c.r, n.r}, std::pair{c.g, n.g}, std::pair{c.b, n.b}})
+            for (int d = 0; d < 16; ++d)
+                CHECK(std::abs(int(was) - int(got)) <= std::abs(int(was) - d * 17));
+    }
+    for (int d = 0; d < 16; ++d)
+        CHECK(micron::nearestTwelveBit(micron::twelveBit(d, 15 - d, d)) == micron::twelveBit(d, 15 - d, d));
+    // the mIRC colours: 52 (#ff0000) is twelve-bit, 64 (#ff5959) rounds to f55
+    CHECK(micron::nearestTwelveBit(rgbOf(0xff0000)) == rgbOf(0xff0000));
+    CHECK(micron::nearestTwelveBit(rgbOf(0xff5959)) == micron::twelveBit(15, 5, 5));
+}
+
+TEST_CASE("micronSnapEdit snaps RGB colours, leaves indexed and transparent cells, and keeps to its area",
+          "[palette][micron]") {
+    Canvas cv(4, 2);
+    Cell both = cell(7, 0, U'▀');  // both colours RGB, neither twelve-bit
+    both.fg = Color::fromRgb(rgbOf(0xff5900));
+    both.bg = Color::fromRgb(rgbOf(0x123456));
+    both.attrs = attr::Bold;
+    cv.at(0, 0) = both;
+    Cell fgOnly = cell(9, 1);  // an RGB foreground on an indexed background
+    fgOnly.fg = Color::fromRgb(rgbOf(0x0a0b0c));
+    cv.at(1, 0) = fgOnly;
+    Cell exact = cell(0, 0);  // already twelve-bit
+    exact.fg = Color::fromRgb(rgbOf(0xaa5500));
+    exact.bg = Color::fromRgb(rgbOf(0xffffff));
+    cv.at(2, 0) = exact;
+    Cell hole = both;
+    hole.transparent = true;
+    cv.at(3, 0) = hole;
+    cv.at(0, 1) = cell(3, 11);  // the 16 stay indices
+    Cell below = fgOnly;
+    cv.at(1, 1) = below;
+
+    const CellEdit all = micronSnapEdit(cv);
+    Canvas after = cv;
+    all.apply(after);
+    CHECK(after.at(0, 0).fg == Color::fromRgb(micron::twelveBit(15, 5, 0)));
+    CHECK(after.at(0, 0).bg == Color::fromRgb(micron::twelveBit(1, 3, 5)));
+    CHECK(after.at(0, 0).ch == both.ch);
+    CHECK(after.at(0, 0).attrs == attr::Bold);
+    CHECK(after.at(1, 0).fg == Color::fromRgb(micron::twelveBit(1, 1, 1)));
+    CHECK(after.at(1, 0).bg == Color::indexed(1));
+    CHECK(identical(after.at(2, 0), exact));
+    CHECK(identical(after.at(3, 0), hole));
+    CHECK(identical(after.at(0, 1), cv.at(0, 1)));
+    CHECK(all.changes.size() == 3);
+    all.revert(after);
+    CHECK(after == cv);
+
+    // a pixel layer's half pixels are in transparent cells too
+    CHECK(micronSnapEdit(cv, std::nullopt, true).changes.size() == 4);
+    const CellEdit area = micronSnapEdit(cv, CellRect{1, 1, 3, 1});
+    REQUIRE(area.changes.size() == 1);
+    CHECK(area.changes[0].x == 1);
+    CHECK(area.changes[0].y == 1);
+    CHECK(micronSnapEdit(cv, CellRect{-5, -5, 100, 100}).changes.size() == 3);
+    // snapped once, nothing is left to snap
+    Canvas twice = cv;
+    all.apply(twice);
+    CHECK(micronSnapEdit(twice, std::nullopt, true).changes.size() == 1);  // only the hole
 }
 
 TEST_CASE("fitting to a palette keeps the look where the new one has the colours", "[palette][fit]") {

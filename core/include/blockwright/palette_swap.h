@@ -57,6 +57,16 @@ CellEdit remapEdit(const Canvas& canvas, const ColourMap& map, std::optional<Cel
 // The same, done to the canvas in place; how many cells changed.
 int remapCanvas(Canvas& canvas, const ColourMap& map);
 
+// Snap to Micron Colours (#491 slice 3, PLAN §17): `c` with each RGB colour,
+// foreground and background, the nearest twelve-bit colour
+// (micron::nearestTwelveBit); an indexed colour (one of the 16) stays the
+// index it is, and its glyph, attributes and marks as they were.
+Cell micronSnapCell(Cell c);
+// The edit that snaps the cells of `canvas` in `area` (all of it when
+// nothing), as remapEdit takes them: none for a cell already in twelve-bit
+// or indexed colours, or a transparent one unless `transparentToo`.
+CellEdit micronSnapEdit(const Canvas& canvas, std::optional<CellRect> area = std::nullopt, bool transparentToo = false);
+
 // Whether a remap of every layer maps `layer`'s cells: a cells or pixels
 // layer, or a text layer without a source. A live text layer, a generator
 // layer and a reference layer draw their cells from something else.

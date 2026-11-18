@@ -466,6 +466,8 @@ private:
     // Under the Micron target, the Micron colour dialog for the pen's
     // foreground or background (PLAN §17); the pen takes what it gives.
     void pickMicronColour(bool foreground);
+    // Colours > Snap to Micron Colours (PLAN §17), Micron only
+    void snapToMicronColours();
     // Colours > Palette, Edit Palette..., Fit to Palette and Remap
     // Colours... (#497, PLAN §8, Palettes).
     void createPaletteActions(QMenu* colours);
@@ -642,6 +644,7 @@ private:
     QAction* ircColours16Action_ = nullptr;
     QAction* pickForegroundAction_ = nullptr;
     QAction* pickBackgroundAction_ = nullptr;
+    QAction* snapMicronAction_ = nullptr;
     QMenu* reopenMenu_ = nullptr;
     QList<QAction*> glyphSetActions_;
     QAction* iceAction_ = nullptr;

@@ -219,7 +219,9 @@ or background swatch (or Colours > Pick Foreground Colour...) offers any of
 the 4096 colours a three-digit Micron code writes. A page has no byte limit,
 so the row meter is put away and lint drops the rules about what IRC trims.
 The canvas shows the cells as NomadNet draws them, and File > Export Micron
-writes their colours as they are.
+writes their colours as they are. For a piece brought over from IRC, Colours >
+Snap to Micron Colours changes the RGB colours of the selection, or of the
+layer, to the nearest three-digit ones.
 
 The Lint dock lists shading-ladder, pixel-noise and craft-rule findings and
 follows each edit; activating one moves the cell cursor to its cell.

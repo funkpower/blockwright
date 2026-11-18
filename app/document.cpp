@@ -598,6 +598,31 @@ int Document::remapColours(const ColourMap& map, RemapScope scope, const CellRec
     return int(n);
 }
 
+int Document::snapToMicronColours(const CellRect& selection, QString* error) {
+    if (!editable()) {
+        if (error)
+            *error = editProblem();
+        return 0;
+    }
+    const Layer& l = *active();
+    std::optional<CellRect> area;
+    if (!selection.empty())
+        area = CellRect{selection.x - l.props.x, selection.y - l.props.y, selection.width, selection.height};
+    CellEdit e = micronSnapEdit(l.cells, area, l.props.kind == LayerKind::Pixels);
+    const int n = int(e.changes.size());
+    if (!n) {
+        if (error)
+            *error = tr("every colour is already one a Micron code writes in three digits");
+        return 0;
+    }
+    std::vector<std::pair<LayerId, CellEdit>> edits;
+    edits.emplace_back(l.props.id, std::move(e));
+    emit layersAboutToChange();
+    emit commandAboutToPush();
+    undo_.push(new PaletteCommand(this, tr("Snap to Micron Colours"), doc_.palette, doc_.palette, std::move(edits)));
+    return n;
+}
+
 bool Document::fitToPalette(std::optional<Palette> palette, int* lost, int* skipped) {
     if (palette == kPalette)
         palette.reset();

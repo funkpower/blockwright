@@ -35,6 +35,10 @@ std::string colourCode(Rgb c);
 Rgb twelveBit(int r, int g, int b);
 // Whether `c` is a twelve-bit colour, which colourCode writes in three digits.
 bool isTwelveBit(Rgb c);
+// The twelve-bit colour nearest `c`: each channel to the nearest doubled
+// digit (0x11 * round(v / 17); no channel is ever half way between two), as
+// the Micron colour dialog opens on it. A twelve-bit colour is itself.
+Rgb nearestTwelveBit(Rgb c);
 
 // Whether NomadNet drops code point `cp` from a page before it draws it:
 // what the browser's strip_modifiers and the parser's STRIP_CONTROL_RE take

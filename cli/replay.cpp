@@ -1116,6 +1116,27 @@ void paletteStep(State& s, const Step& st, Outcome& out) {
                             (skipped == 1 ? " layer" : " layers") + " left as they are");
 }
 
+// Colours > Snap to Micron Colours (#491 slice 3), as
+// Document::snapToMicronColours does it: the selection on the active layer,
+// or the layer without one. Micron only, as the menu item is.
+void snapMicronStep(State& s, const Step& st, Outcome& out) {
+    if (s.p.target != Target::Micron)
+        fail(st, "Snap to Micron Colours needs the Micron target (Format > Target > Micron)");
+    editable(s, st);
+    Layer& l = s.layer();
+    std::optional<CellRect> area;
+    if (!s.selection.empty()) {
+        const CellRect& r = s.selection.bounds();
+        area = CellRect{r.x - l.props.x, r.y - l.props.y, r.width, r.height};
+    }
+    const CellEdit e = micronSnapEdit(l.cells, area, l.props.kind == LayerKind::Pixels);
+    if (e.changes.empty()) {
+        out.notes.push_back(steps::stepLabel(st) + ": changes nothing");
+        return;
+    }
+    e.apply(l.cells);
+}
+
 void step(State& s, const Step& st, Outcome& out) {
     centreOnCanvas(s, st);
     take(s, st.options);
@@ -1293,6 +1314,8 @@ void step(State& s, const Step& st, Outcome& out) {
         canvasSize(s, st, out);
     } else if (a == "palette" || a == "fitToPalette" || a == "remapColours") {
         paletteStep(s, st, out);
+    } else if (a == "snapMicronColours") {
+        snapMicronStep(s, st, out);
     } else if (a == "text") {
         text(s, st, out);
     } else if (a == "editText") {

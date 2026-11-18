@@ -1132,7 +1132,10 @@ mouse button (default left).
                  that show another colour and the layers left;
                  remapColours "map": "3=11,11=3" (or 16 hex digits),
                  "scope": selection|layer|document (layer): Colours >
-                 Remap Colours...
+                 Remap Colours...; snapMicronColours, no keys: Colours >
+                 Snap to Micron Colours, a Micron piece's RGB colours in
+                 the selection (else the active layer) to the nearest
+                 twelve-bit colour
 
   view           the window's view, for blockwright --screenshot only:
                  "zoom" 1-8, "scrollTo" [x, y] (a cell on the canvas, put

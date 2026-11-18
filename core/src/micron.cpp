@@ -111,6 +111,11 @@ bool isTwelveBit(Rgb c) {
     return doubled(c.r) && doubled(c.g) && doubled(c.b);
 }
 
+Rgb nearestTwelveBit(Rgb c) {
+    const auto digit = [](std::uint8_t v) { return (int(v) * 2 + 17) / 34; };
+    return twelveBit(digit(c.r), digit(c.g), digit(c.b));
+}
+
 std::string colourCode(Rgb c) {
     std::string s;
     if (isTwelveBit(c)) {

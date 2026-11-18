@@ -24,6 +24,7 @@
 #include "blockwright/layer.h"
 #include "blockwright/palette_swap.h"
 #include "blockwright/library.h"
+#include "blockwright/micron.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/sauce.h"
@@ -3365,6 +3366,59 @@ TEST_CASE("the palette steps set the project's palette, fit and remap its cells 
     CHECK(std::find_if(out.notes.begin(), out.notes.end(), [](const std::string& n) {
               return n == "step 7 (std): changes nothing";
           }) != out.notes.end());
+}
+
+TEST_CASE("snapMicronColours snaps a Micron piece's selection or layer, and refuses another target (#491)",
+          "[replay][micron]") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    // three cells in mIRC 64 (#ff5959) on mIRC 92 (#4d4d4d), in `target`
+    const auto piece = [&](const std::string& name, Target target) {
+        project::Project p;
+        p.target = target;
+        p.layers = LayerStack(3, 1);
+        Layer l;
+        l.cells = Canvas(3, 1);
+        for (int x = 0; x < 3; ++x) {
+            l.cells.at(x, 0).ch = U'A';
+            l.cells.at(x, 0).fg = Color::fromRgb({0xff, 0x59, 0x59});
+            l.cells.at(x, 0).bg = Color::fromRgb({0x4d, 0x4d, 0x4d});
+        }
+        p.layers.add(std::move(l));
+        project::writeZip(p, dir / name);
+    };
+    piece("micron.bwp", Target::Micron);
+    piece("irc.bwp", Target::Irc);
+    const auto run = [&](const std::string& name, const std::string& steps) {
+        return replayed(R"({"version": 1, "start": {"file": ")" + name + R"("}, "steps": [)" + steps + "]}", dir);
+    };
+    const Color fg = Color::fromRgb(micron::twelveBit(15, 5, 5)), bg = Color::fromRgb(micron::twelveBit(5, 5, 5));
+
+    const auto out = run("micron.bwp", R"(
+        {"name": "sel", "action": "select", "rect": [1, 0, 1, 0]},
+        {"name": "snap", "action": "snapMicronColours"},
+        {"name": "none", "action": "deselect"},
+        {"name": "layer", "action": "snapMicronColours"},
+        {"name": "again", "action": "snapMicronColours"})");
+    REQUIRE(out.captures.size() == 5);
+    const auto cell = [&](std::size_t i, int x) { return flat(out.captures[i].project).at(x, 0); };
+    CHECK(cell(1, 0).fg == Color::fromRgb({0xff, 0x59, 0x59}));  // outside the selection
+    CHECK(cell(1, 1).fg == fg);
+    CHECK(cell(1, 1).bg == bg);
+    CHECK(cell(1, 2).bg == Color::fromRgb({0x4d, 0x4d, 0x4d}));
+    for (int x = 0; x < 3; ++x) {
+        CHECK(cell(3, x).fg == fg);
+        CHECK(cell(3, x).bg == bg);
+    }
+    CHECK(std::find(out.notes.begin(), out.notes.end(), "step 5 (again): changes nothing") != out.notes.end());
+
+    try {
+        run("irc.bwp", R"({"name": "snap", "action": "snapMicronColours"})");
+        FAIL("an IRC piece was snapped");
+    } catch (const bwcli::Failure& f) {
+        CHECK_THAT(f.message, ContainsSubstring("step 1 (snap): Snap to Micron Colours needs the Micron target"));
+    }
 }
 
 TEST_CASE("fitToPalette maps a layer style's colours and notes the cells it can't keep (#497)", "[replay][palette]") {
