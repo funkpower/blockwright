@@ -44,6 +44,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QTreeWidget>
+#include <QUndoStack>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -1771,6 +1772,31 @@ TEST_CASE("under Micron the Lint dock reads the document's own palette, as an XB
     REQUIRE(colour);
     CHECK(colour->text(3).startsWith(QStringLiteral("note: 4 cells are in colours three hex digits can't write")));
     CHECK(dock->summaryLabel()->text().toStdString().starts_with("clean, 1 note (1 micron-colour), noise "));
+}
+
+TEST_CASE("under Micron the Lint dock follows a palette change and its undo") {
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    AnsiDocument small;
+    small.canvas = Canvas(4, 1);
+    Cell a;
+    a.ch = U'A';
+    a.fg = Color::indexed(9);
+    for (int x = 0; x < 4; ++x)
+        small.canvas.at(x, 0) = a;
+    doc->replace(small, QString());
+    REQUIRE(doc->setTarget(Target::Micron));
+    LintDock* dock = w.lintWidget();
+    dock->refresh();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    const auto noted = [&] { return rowAt(dock->list(), QStringLiteral("0,0"), QStringLiteral("micron-colour")); };
+    REQUIRE_FALSE(noted());  // the standard entry 9, #5555ff, is twelve-bit
+    // xterm's entry 9 is #5c5cff: the dock notes it with no refresh by hand
+    REQUIRE(doc->setPalette(palettePreset("xterm")->colours, QStringLiteral("Palette")));
+    CHECK(waitFor([&] { return noted() != nullptr; }, 3000));
+    doc->undoStack()->undo();
+    CHECK(waitFor([&] { return noted() == nullptr; }, 3000));
 }
 
 TEST_CASE("the Lint dock names a control or bidi override from a file by its code point") {

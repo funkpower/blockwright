@@ -34,9 +34,12 @@ size_is() {
 piece=$data/golden/tux.ans  # 30x17, SAUCE 8 px
 
 expect "--help lists render" 0 'render <in> <out>' -- "$cli" --help
-expect "--help says render refuses a .bwp" 0 'IBM VGA font; a \.bwp$' -- "$cli" --help
+expect "--help says render refuses a .bwp" 0 'IBM VGA font; a \.bwp <out> is refused$' -- "$cli" --help
 expect "render" 0 '^$' -- "$cli" render "$piece" "$tmp/tux.png"
 size_is "render is 8 px x 16 px per cell" "$tmp/tux.png" 240x272
+# an XBIN's own font (#497): tux-palette-font.xb's is 8 px high
+expect "render an XBIN with its own 8x8 font" 0 '^$' -- "$cli" render "$data/xbin/tux-palette-font.xb" "$tmp/tpf.png"
+size_is "render in an XBIN's 8x8 font is 8 px x 8 px per cell" "$tmp/tpf.png" 240x136
 expect "render --scale 2" 0 '^$' -- "$cli" render --scale 2 "$piece" "$tmp/tux2.png"
 size_is "--scale 2 doubles both sides" "$tmp/tux2.png" 480x544
 expect "render --font-width 9" 0 '^$' -- "$cli" render --font-width 9 "$piece" "$tmp/tux9.png"

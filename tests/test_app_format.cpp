@@ -1673,7 +1673,9 @@ TEST_CASE("a CP437 save lossy only by palette or blink gets no UTF-8 hint", "[ap
     palette.encoding = TextEncoding::Cp437;
     palette.paletteDropped = true;
     CHECK(saveWarning(palette) ==
-          QStringLiteral("Before saving as .ans:\nthe file's own palette is left out (only XBIN keeps one).\n\nSave anyway?"));
+          QStringLiteral("Before saving as .ans:\n"
+                         "the piece's own palette is left out (only XBIN and a project keep one): its colours show as the "
+                         "standard 16 (Colours > Fit to Palette > Standard first keeps its look).\n\nSave anyway?"));
     AnsiOutput blink;
     blink.encoding = TextEncoding::Cp437;
     blink.blinkDropped = 2;
@@ -1689,8 +1691,9 @@ TEST_CASE("a CP437 save lossy only by palette or blink gets no UTF-8 hint", "[ap
     const AnsiOutput out = w.document()->encode(ArtFormat::Ansi);
     REQUIRE(out.encoding == TextEncoding::Cp437);
     REQUIRE(out.unwritable.empty());
-    CHECK(saveWarning(out) == QStringLiteral("Before saving as .ans:\nthe file's own palette is left out (only XBIN "
-                                             "keeps one);\nthe file's own font is left out (only XBIN keeps one)."
+    CHECK(saveWarning(out) == QStringLiteral("Before saving as .ans:\n"
+                         "the piece's own palette is left out (only XBIN and a project keep one): its colours show as the "
+                         "standard 16 (Colours > Fit to Palette > Standard first keeps its look);\nthe file's own font is left out (only XBIN keeps one)."
                                              "\n\nSave anyway?"));
 }
 
@@ -1722,7 +1725,9 @@ TEST_CASE("the UTF-8 hint is its own paragraph, for glyphs all kept, some kept a
     CHECK(saveWarning(some) ==
           QStringLiteral("Before saving as .ans:\n2 cells hold a glyph with no CP437 code and will be written as "
                          "'?': ★ at 0,0; U+0085 at 1,0;\n1 cell lost its blink when the file was opened with iCE colours, and this save "
-                         "doesn't put it back;\nthe file's own palette is left out (only XBIN keeps one)."
+                         "doesn't put it back;\n"
+                         "the piece's own palette is left out (only XBIN and a project keep one): its colours show as the "
+                         "standard 16 (Colours > Fit to Palette > Standard first keeps its look)."
                          "\n\nA UTF-8 .ans keeps the glyph of 1 of those cells") + hintEnd);
 }
 

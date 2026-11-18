@@ -36,12 +36,11 @@ class QLayout;
 class QSpinBox;
 class QToolButton;
 
+#include "shown_palette.h"
+
 namespace bw {
 
 struct Ramp;
-
-// The ramp's colours dark to light, a swatch each: the ramp lists' icons.
-QIcon rampIcon(const Ramp& ramp);
 
 class CanvasView;
 class CloneTool;

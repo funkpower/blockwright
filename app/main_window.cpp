@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "shown_palette.h"
 
 #include "branding.h"
 #include "help_window.h"
@@ -263,7 +264,12 @@ QString lossDescription(const AnsiOutput& out, bool countWide) {
             QObject::tr("%n cells lost their blink when the file was opened with iCE colours, and this save doesn't "
                         "put it back"));
     if (out.paletteDropped)
-        parts << QObject::tr("the file's own palette is left out (only XBIN keeps one)");
+        parts << QObject::tr("the piece's own palette is left out (only XBIN and a project keep one): its colours "
+                             "show as the standard 16 (Colours > Fit to Palette > Standard first keeps its look)");
+    if (out.paletteRounded)
+        parts << plural(out.paletteRounded,
+                        QObject::tr("%n palette colour is rounded to the 64 levels a channel XBIN holds"),
+                        QObject::tr("%n palette colours are rounded to the 64 levels a channel XBIN holds"));
     if (out.fontDropped)
         parts << QObject::tr("the file's own font is left out (only XBIN keeps one)");
     if (out.letterSpacingDropped)
@@ -562,6 +568,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(&doc_, &Document::encodingChanged, this, &MainWindow::updateEncoding);
     connect(&doc_, &Document::reset, this, &MainWindow::updateTarget);
     connect(&doc_, &Document::targetChanged, this, &MainWindow::updateTarget);
+    connect(&doc_, &Document::paletteChanged, this, &MainWindow::paletteChanged);
+    connect(&doc_, &Document::fontChanged, this, [this] {
+        if (syncFont()) {
+            view_->canvasReset();
+            preview_->canvasReset();
+        } else {
+            view_->update();
+            preview_->update();
+        }
+    });
     connect(&doc_, &Document::fileWritten, this, [](const QString& path) { addRecentFile(path); });
     connect(view_, &CanvasView::cursorMoved, this, [this] {
         const QRect r = view_->toWidget(view_->cellRect(view_->cellCursor()));
@@ -790,6 +806,8 @@ void MainWindow::createActions() {
     pickBackgroundAction_ = add(colours, tr("Pick &Background Colour..."), "pickBackgroundColour",
                                 tr("Pick any of the 4096 colours a Micron code writes for the background"),
                                 QKeySequence(), [this] { pickMicronColour(false); });
+    colours->addSeparator();
+    createPaletteActions(colours);
     updateTarget();
 
     QMenu* glyphs = menuBar()->addMenu(tr("&Glyphs"));
@@ -950,6 +968,11 @@ void MainWindow::canvasReset() {
     // always fits, so this does not throw.
     renderer_.setCanvas(&doc_.canvas(), glyphWidth(doc_.ansi()));
     renderer_.setIceColours(doc_.ansi().ice);
+    renderer_.setPalette(doc_.palette());
+    ShownPalette::instance().set(doc_.palette());
+    if (palette_)
+        palette_->setColours(doc_.palette());
+    syncFont();
     syncFormatActions();
     view_->canvasReset();
     preview_->canvasReset();

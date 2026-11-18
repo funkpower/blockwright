@@ -91,6 +91,10 @@ const std::vector<ActionKeys>& actionKeys() {
         {"openReferenceImage", {"file"}},
         // the canvas: Format > Canvas Size... (#420)
         {"canvasSize", {"size", "anchor"}},
+        // the Colours menu's palette items (#497)
+        {"palette", {"preset", "colours"}},
+        {"fitToPalette", {"preset", "colours"}},
+        {"remapColours", {"map", "scope"}},
         // the window's view (#398)
         {"view", {"zoom", "scrollTo", "ircFit", "ircPad", "ircSwapShades", "guides"}},
         // the Library (#431): a stamp placed from the dock, and Selection >
@@ -535,7 +539,10 @@ Screenshot readScreenshot(const std::string& where, const QJsonValue& v) {
     return shot;
 }
 
-bool takesNoOptions(std::string_view action) { return action == "view" || action == "canvasSize"; }
+bool takesNoOptions(std::string_view action) {
+    return action == "view" || action == "canvasSize" || action == "palette" || action == "fitToPalette" ||
+           action == "remapColours";
+}
 
 Step readStep(const QJsonValue& v, int number) {
     Step st;
@@ -747,6 +754,56 @@ Step readStep(const QJsonValue& v, int number) {
                 names.emplace_back(anchorName(Anchor(i)), Anchor(i));
             st.anchor = choiceOf<Anchor>(where, "anchor", o["anchor"], names);
         }
+    }
+    if (st.action == "palette" || st.action == "fitToPalette") {
+        if (o.contains("preset") == o.contains("colours"))
+            fail(where, st.action + " needs one of \"preset\", a preset's name, or \"colours\", 16 \"#rrggbb\"");
+        if (o.contains("preset")) {
+            const std::string name = stringOf(where, "preset", o["preset"]);
+            const PalettePreset* p = palettePreset(name);
+            if (!p) {
+                std::string names;
+                for (const PalettePreset& q : palettePresets())
+                    names += (names.empty() ? "" : ", ") + std::string(q.name);
+                fail(where, "\"preset\" takes " + names + ", not \"" + name + "\"");
+            }
+            st.palette = p->colours;
+        } else {
+            const QJsonValue& c = o["colours"];
+            if (!c.isArray() || c.toArray().size() != 16)
+                fail(where, "\"colours\" must be a list of 16 \"#rrggbb\"");
+            for (qsizetype i = 0; i < 16; ++i) {
+                const std::string v = stringOf(where, "colours", c.toArray()[i]);
+                const auto hex = [](char ch) {
+                    return ch >= '0' && ch <= '9'   ? ch - '0'
+                           : ch >= 'a' && ch <= 'f' ? ch - 'a' + 10
+                           : ch >= 'A' && ch <= 'F' ? ch - 'A' + 10
+                                                    : -1;
+                };
+                bool ok = v.size() == 7 && v[0] == '#';
+                for (std::size_t j = 1; ok && j < 7; ++j)
+                    ok = hex(v[j]) >= 0;
+                if (!ok)
+                    fail(where, "\"colours\" " + std::to_string(i) + " must be \"#rrggbb\", not \"" + v + "\"");
+                st.palette[std::size_t(i)] = {std::uint8_t(hex(v[1]) << 4 | hex(v[2])),
+                                              std::uint8_t(hex(v[3]) << 4 | hex(v[4])),
+                                              std::uint8_t(hex(v[5]) << 4 | hex(v[6]))};
+            }
+        }
+    }
+    if (st.action == "remapColours") {
+        if (!o.contains("map"))
+            fail(where, "remapColours needs \"map\": FROM=TO pairs (\"3=11,11=3\") or 16 hex digits");
+        std::string error;
+        const std::optional<ColourMap> m = parseColourMap(stringOf(where, "map", o["map"]), &error);
+        if (!m)
+            fail(where, "\"map\": " + error);
+        st.colourMap = *m;
+        if (o.contains("scope"))
+            st.remapScope = choiceOf<Step::RemapScope>(where, "scope", o["scope"],
+                                                       {{"selection", Step::RemapScope::Selection},
+                                                        {"layer", Step::RemapScope::Layer},
+                                                        {"document", Step::RemapScope::Document}});
     }
     if (st.action == "view") {
         View& v = st.view;

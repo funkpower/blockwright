@@ -48,17 +48,6 @@
 
 namespace bw {
 
-QIcon rampIcon(const Ramp& ramp) {
-    constexpr int kSwatch = 8, kHeight = 12;
-    QPixmap pm(kSwatch * int(ramp.colours.size()), kHeight);
-    QPainter p(&pm);
-    for (size_t i = 0; i < ramp.colours.size(); ++i) {
-        const Rgb c = kPalette[ramp.colours[i] & 15];
-        p.fillRect(int(i) * kSwatch, 0, kSwatch, kHeight, QColor(c.r, c.g, c.b));
-    }
-    return QIcon(pm);
-}
-
 namespace {
 
 const QString kShowHelpKey = QStringLiteral("toolOptions/showHelp");
@@ -204,6 +193,13 @@ ToolOptions::ToolOptions(CanvasView* view, ToolRegistry* tools, SelectTool* sele
     for (const Ramp& r : namedRamps())
         ramp_->addItem(rampIcon(r), QString::fromStdString(r.name), QString::fromStdString(r.name));
     ramp_->setIconSize(QSize(48, 12));
+    markSwatches(ramp_, SwatchList::Ramps);
+    // the swatches in the document's palette (#497), the custom ramp's too
+    connect(&ShownPalette::instance(), &ShownPalette::changed, this, [this] {
+        refreshSwatches(this);
+        if (const int custom = ramp_->findData(QStringLiteral("custom")); custom >= 0)
+            ramp_->setItemIcon(custom, rampIcon(view_->ramp()));
+    });
     ramp_->setToolTip(tr("The colours the brush steps through, dark to light"));
 
     lock_ = new QCheckBox(tr("Alpha lock"));

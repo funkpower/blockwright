@@ -1,4 +1,5 @@
 #include "layer_style_dialog.h"
+#include "shown_palette.h"
 
 #include "document.h"
 #include "item_check_style.h"
@@ -71,12 +72,6 @@ QString kindLabel(EffectKind kind) {
     return {};
 }
 
-QIcon swatch(int index) {
-    QPixmap pm(16, 16);
-    const Rgb c = kPalette[std::size_t(index) & 15];
-    pm.fill(QColor(c.r, c.g, c.b));
-    return QIcon(pm);
-}
 
 QComboBox* colourBox(const QString& name) {
     auto* box = new QComboBox;
@@ -90,7 +85,7 @@ QComboBox* colourBox(const QString& name) {
                                LayerStyleDialog::tr("Light red"),     LayerStyleDialog::tr("Light magenta"),
                                LayerStyleDialog::tr("Yellow"),        LayerStyleDialog::tr("White")};
     for (int i = 0; i < 16; ++i)
-        box->addItem(swatch(i), names[i], i);
+        box->addItem(swatchIcon(i), names[i], i);
     return box;
 }
 
@@ -98,15 +93,8 @@ QComboBox* rampBox(const QString& name) {
     auto* box = new QComboBox;
     box->setObjectName(name);
     for (const Ramp& r : namedRamps()) {
-        // the ramp's colours dark to light
-        QPixmap pm(8 * int(r.colours.size()), 12);
-        QPainter p(&pm);
-        for (std::size_t i = 0; i < r.colours.size(); ++i) {
-            const Rgb c = kPalette[r.colours[i] & 15];
-            p.fillRect(int(i) * 8, 0, 8, 12, QColor(c.r, c.g, c.b));
-        }
-        p.end();
-        box->addItem(QIcon(pm), QString::fromStdString(r.name), QString::fromStdString(r.name));
+        // the ramp's colours dark to light, in the document's palette
+        box->addItem(rampIcon(r), QString::fromStdString(r.name), QString::fromStdString(r.name));
     }
     return box;
 }
@@ -575,7 +563,7 @@ void LayerStyleDialog::refresh() {
 
     // the widgets
     if (cells_.width() > 0 && cells_.height() > 0) {
-        preview_->setPixmap(QPixmap::fromImage(renderCanvas(cells_, 8)));
+        preview_->setPixmap(QPixmap::fromImage(renderCanvas(cells_, 8, 1, vgaFont(), doc_->palette())));
         QString text = tr("IRC: widest line %1 of %2 bytes as WeeChat's ascii script sends it, %3 as written")
                            .arg(widest_)
                            .arg(budget)

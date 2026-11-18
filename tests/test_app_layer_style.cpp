@@ -761,3 +761,33 @@ TEST_CASE("the undo of Bake Layer Style under a lift drops the float, as the lay
         CHECK(doc->undoStack()->count() == steps);
     }
 }
+
+TEST_CASE("the layer style dialog's preview draws in the document's palette", "[style][palette]") {
+    MainWindow w;
+    Document* d = w.document();
+    project::Project p;
+    p.layers = LayerStack(6, 3);
+    Layer l;
+    l.props.name = "art";
+    l.cells = Canvas(6, 3);
+    Cell c;
+    c.ch = U' ';
+    c.fg = Color::indexed(15);
+    c.bg = Color::indexed(1);
+    for (int y = 0; y < 3; ++y)
+        for (int x = 0; x < 6; ++x)
+            l.cells.at(x, y) = c;
+    const LayerId id = p.layers.add(std::move(l));
+    d->replace(p, QStringLiteral("s.bwp"), FileForm::ProjectZip);
+    d->setActiveLayer(id);
+    REQUIRE(d->setPalette(palettePreset("xterm")->colours, QStringLiteral("Palette")));
+    LayerStyleDialog dlg(d, id);
+    dlg.previewCells();
+    const QImage img = dlg.previewLabel()->pixmap().toImage();
+    REQUIRE_FALSE(img.isNull());
+    // xterm's entry 1 is #0000ee; the standard one #0000aa
+    const QRgb got = img.pixel(0, 0);
+    CHECK(qRed(got) == 0x00);
+    CHECK(qGreen(got) == 0x00);
+    CHECK(qBlue(got) == 0xee);
+}

@@ -1,4 +1,5 @@
 #include "generator_form.h"
+#include "shown_palette.h"
 
 #include "document.h"
 #include "tool_options.h"
@@ -45,12 +46,6 @@ QString colourName(int i) {
     return QStringLiteral("%1 %2").arg(i).arg(GeneratorForm::tr(names[i & 15]));
 }
 
-QIcon swatch(int i) {
-    QPixmap pm(16, 12);
-    const Rgb c = kPalette[std::size_t(i & 15)];
-    pm.fill(QColor(c.r, c.g, c.b));
-    return QIcon(pm);
-}
 
 // The fewest decimals (up to 6, all a number param has) that show `d` as
 // it is: written with them and read back unchanged, as QDoubleSpinBox
@@ -72,6 +67,7 @@ GeneratorForm::GeneratorForm(Document* doc, QWidget* parent)
     : QWidget(parent), doc_(doc), fields_(new QWidget), form_(new QFormLayout(fields_)), message_(new QLabel),
       run_(new QPushButton(tr("&Run"))) {
     setObjectName(QStringLiteral("generatorForm"));
+    connect(&ShownPalette::instance(), &ShownPalette::changed, this, [this] { refreshSwatches(this); });
     form_->setContentsMargins(0, 0, 0, 0);
     message_->setObjectName(QStringLiteral("generatorMessage"));
     message_->setWordWrap(true);
@@ -203,7 +199,8 @@ void GeneratorForm::rebuild(const generator::Spec& spec) {
         case ParamType::Colour: {
             auto* box = new QComboBox;
             for (int i = 0; i < 16; ++i)
-                box->addItem(swatch(i), colourName(i));
+                box->addItem(swatchIcon(i), colourName(i));
+            markSwatches(box, SwatchList::Colours);
             connect(box, &QComboBox::activated, this, [this, name](int i) { commit(name, double(i)); });
             w = box;
             break;
@@ -212,6 +209,7 @@ void GeneratorForm::rebuild(const generator::Spec& spec) {
             auto* box = new QComboBox;
             for (const Ramp& r : namedRamps())
                 box->addItem(rampIcon(r), QString::fromStdString(r.name), QString::fromStdString(r.name));
+            markSwatches(box, SwatchList::Ramps);
             connect(box, &QComboBox::activated, this, [this, name, box](int i) {
                 commit(name, box->itemData(i).toString().toStdString());
             });

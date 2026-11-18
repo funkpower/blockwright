@@ -23,6 +23,7 @@
 #include "blockwright/edit.h"
 #include "blockwright/generator.h"
 #include "blockwright/layer.h"
+#include "blockwright/palette_swap.h"
 #include "blockwright/project.h"
 #include "blockwright/selection.h"
 #include "blockwright/text.h"
@@ -269,6 +270,42 @@ public:
     // refuses; true and nothing pushed when the size is the canvas's.
     bool resizeCanvas(int width, int height, Anchor anchor, const Selection& selection, Cursor cursor,
                       QString* error = nullptr);
+
+    // ---- palette (PLAN §8, Palettes) -----------------------------------------
+
+    // The 16 colours an indexed cell shows: the document's own
+    // (AnsiDocument::palette: an XBIN's, a project's, or one set here), or
+    // kPalette.
+    Palette palette() const { return doc_.palette.value_or(kPalette); }
+    // Sets the palette as one undo command named `text` ("Palette"): the
+    // cells stay, so every indexed cell shows the new entry. Nothing is the
+    // standard palette. False, and nothing pushed, if it changes nothing.
+    // A project and an XBIN save it; an .ans or BIN save drops it, a loss
+    // the save reports (paletteDropped).
+    bool setPalette(std::optional<Palette> palette, const QString& text);
+    // Which cells remapColours maps: the selection on the active layer, the
+    // active layer, or every layer whose cells are art (cells, pixels and
+    // text layers without a source; not live text, generator or reference
+    // layers, whose cells are drawn from something else).
+    enum class RemapScope { Selection, Layer, Document };
+    // Maps the indexed colours of the cells `scope` names (bw::remapEdit;
+    // `selection` in canvas cells for Selection) as one undo command,
+    // "Remap Colours". The active layer must be editable() for Selection and
+    // Layer. Returns how many cells changed; 0, and nothing pushed, when
+    // none did or the layer can't be edited (`error` says which), and in
+    // `skipped` (if given) how many layers Document skipped.
+    int remapColours(const ColourMap& map, RemapScope scope, const CellRect& selection = {}, QString* error = nullptr,
+                     int* skipped = nullptr);
+    // Fit to Palette: the palette becomes `palette` (nothing: the standard
+    // one) and every layer remapColours' Document scope maps is mapped by
+    // fitColourMap from the old palette to it, its cells and the colours
+    // its style names (remapStyles), so the art looks as it did as near as
+    // the new 16 allow, as one undo command, "Fit to Palette". `lost` (if
+    // given) gets the composite's cells that show another colour after it
+    // (lookChanged: the layers and style ramps it leaves count too),
+    // `skipped` the layers left as they were. False, and nothing pushed,
+    // when neither the palette nor any cell or style would change.
+    bool fitToPalette(std::optional<Palette> palette, int* lost = nullptr, int* skipped = nullptr);
 
     // ---- layers ------------------------------------------------------------
 
@@ -542,6 +579,12 @@ signals:
     // target() or ircColours() changed (setTarget, setIrcColours, their undo
     // and redo; not on open or new, see reset).
     void targetChanged();
+    // palette() changed: a palette or remap step, its undo or redo, or a
+    // save to a file that holds none (not on open or new, see reset).
+    void paletteChanged();
+    // The XBIN font the document draws in (AnsiDocument::font) went: a save
+    // to a file that holds none (not on open or new, see reset).
+    void fontChanged();
     // A command (a layer panel change, a text source, a format, the IRC
     // budget, a snapshot) is about to be pushed: emitted first, before the
     // command reads the document and outside any undo command, so a handler
@@ -571,6 +614,7 @@ private:
     friend class IrcColoursCommand;
     friend class FormatCommand;
     friend class CanvasSizeCommand;
+    friend class PaletteCommand;
 
     void setModified(bool on);
     // Copies the TheDraw font file `face` names from the fonts folder (or
@@ -580,6 +624,7 @@ private:
     // `pattern` ("Layer %1") with the first number no layer's name takes.
     std::string freeLayerName(const QString& pattern) const;
     void applyIrcBudget(const project::IrcBudget& budget);
+    void applyPalette(const std::optional<Palette>& palette);
     void applyTarget(Target target);
     void applyIrcColours(IrcColours colours);
     CompositeOptions compositeOptions() const { return {doc_.ice, Cell{}}; }

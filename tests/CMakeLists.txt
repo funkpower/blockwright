@@ -110,6 +110,7 @@ add_executable(blockwright-tests
   test_scene_import.cpp
   scene_env.h
   test_xbin.cpp
+  test_palette_swap.cpp
   test_width.cpp
   test_selection.cpp
   test_symmetry_stroke.cpp
@@ -161,6 +162,14 @@ add_test(NAME cli
           ${BW_CLI_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/cli-tmp)
 set_tests_properties(cli PROPERTIES ENVIRONMENT "${BW_CLI_ENV}")
 set_property(TEST cli APPEND PROPERTY ENVIRONMENT "BW_LOGO=${PROJECT_SOURCE_DIR}/branding/logo.txt")
+# BW_PNG_SAME compares a render with a golden PNG by its pixels; a cross
+# build's helper would need the emulator, so there the script leaves it out
+# (blockwright-render-tests checks the same golden's pixels)
+if(NOT CMAKE_CROSSCOMPILING)
+  add_executable(bw-png-same png_same.cpp)
+  target_link_libraries(bw-png-same PRIVATE Qt6::Gui)
+  set_property(TEST cli APPEND PROPERTY ENVIRONMENT "BW_PNG_SAME=$<TARGET_FILE:bw-png-same>")
+endif()
 if(CMAKE_CROSSCOMPILING)
   set_tests_properties(cli PROPERTIES TIMEOUT 900)  # some hundred programs under an emulator
 endif()
@@ -576,6 +585,7 @@ add_executable(blockwright-render-tests
   test_canvas_renderer.cpp
   test_render.cpp
   test_render_golden.cpp
+  test_render_palette.cpp
   test_irc_render.cpp
   test_glyph_perf.cpp
   util.h
@@ -609,6 +619,7 @@ set(BW_APP_TEST_RUNNER ${BW_APP_TEST_ENV} ${CMAKE_CROSSCOMPILING_EMULATOR})
 
 add_executable(blockwright-app-tests
   test_app_wide.cpp
+  test_app_palette.cpp
   test_app_fifo.cpp
   test_app.cpp
   test_app_brush.cpp

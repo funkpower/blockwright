@@ -44,6 +44,7 @@ add_library(blockwright_core STATIC
   src/micron.cpp
   src/mirc.cpp
   src/palette.cpp
+  src/palette_swap.cpp
   src/pc_fonts.cpp
   src/project.cpp
   src/regular_file.cpp

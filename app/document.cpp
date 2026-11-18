@@ -322,6 +322,40 @@ private:
     std::vector<LayerPropsEdit> restyles_;
 };
 
+// A palette change, a remap or both (PLAN §8, Palettes): the palette before
+// and after, and each layer's cell delta in its own cells.
+class PaletteCommand : public QUndoCommand {
+public:
+    PaletteCommand(Document* doc, const QString& text, std::optional<Palette> before, std::optional<Palette> after,
+                   std::vector<std::pair<LayerId, CellEdit>> edits, std::vector<LayerPropsEdit> styles = {})
+        : QUndoCommand(text), doc_(doc), before_(before), after_(after), edits_(std::move(edits)),
+          styles_(std::move(styles)) {}
+
+    void redo() override {
+        if (before_ != after_)
+            doc_->applyPalette(after_);
+        for (const auto& [id, e] : edits_)
+            doc_->applyLayerEdit(id, e, false);
+        for (const LayerPropsEdit& e : styles_)
+            doc_->putProperties(e, false);
+    }
+    void undo() override {
+        for (auto it = styles_.rbegin(); it != styles_.rend(); ++it)
+            doc_->putProperties(*it, true);
+        for (auto it = edits_.rbegin(); it != edits_.rend(); ++it)
+            doc_->applyLayerEdit(it->first, it->second, true);
+        if (before_ != after_)
+            doc_->applyPalette(before_);
+    }
+
+private:
+    Document* doc_;
+    std::optional<Palette> before_, after_;
+    std::vector<std::pair<LayerId, CellEdit>> edits_;
+    // the layers' styles a fit maps (remapStyles)
+    std::vector<LayerPropsEdit> styles_;
+};
+
 // Canvas Size (PLAN §5): the stack before the step, which undo puts back
 // whole, so every layer's cells, offset and reference picture come back
 // exactly; redo works the step out again from it (bw::resizeCanvas is
@@ -430,6 +464,7 @@ void Document::replace(project::Project p, const QString& path, FileForm form) {
     doc_.ice = p.ice;
     doc_.sauce = std::move(p.sauce);
     doc_.encoding = p.ansEncoding;
+    doc_.palette = p.palette;
     resetLayers(std::move(p.layers));
     extras_ = {std::move(p.ircBudget), std::move(p.notes), std::move(p.snapshots), std::move(p.files),
                std::move(p.fonts), p.target, p.ircColours};
@@ -462,6 +497,8 @@ project::Project Document::project() const {
     p.target = extras_.target;
     p.ircColours = extras_.ircColours;
     p.ansEncoding = doc_.encoding;
+    if (customPalette(doc_))
+        p.palette = doc_.palette;
     return p;
 }
 
@@ -502,6 +539,95 @@ bool Document::nextSnapshot(project::Snapshot* snapshot, AnsiOutput* out, QStrin
 void Document::addSnapshot(project::Snapshot snapshot) {
     emit commandAboutToPush();
     undo_.push(new SnapshotCommand(this, std::move(snapshot)));
+}
+
+bool Document::setPalette(std::optional<Palette> palette, const QString& text) {
+    if (palette == kPalette)
+        palette.reset();
+    if (palette == doc_.palette)
+        return false;
+    emit layersAboutToChange();
+    emit commandAboutToPush();
+    undo_.push(new PaletteCommand(this, text, doc_.palette, palette, {}));
+    return true;
+}
+
+void Document::applyPalette(const std::optional<Palette>& palette) {
+    doc_.palette = palette;
+    emit paletteChanged();
+}
+
+int Document::remapColours(const ColourMap& map, RemapScope scope, const CellRect& selection, QString* error,
+                           int* skipped) {
+    if (skipped)
+        *skipped = 0;
+    std::vector<std::pair<LayerId, CellEdit>> edits;
+    if (scope == RemapScope::Document) {
+        edits = bw::remapLayers(stack_, map, skipped);
+    } else {
+        if (!editable()) {
+            if (error)
+                *error = editProblem();
+            return 0;
+        }
+        const Layer& l = *active();
+        std::optional<CellRect> area;
+        if (scope == RemapScope::Selection) {
+            if (selection.empty()) {
+                if (error)
+                    *error = tr("nothing is selected");
+                return 0;
+            }
+            area = CellRect{selection.x - l.props.x, selection.y - l.props.y, selection.width, selection.height};
+        }
+        CellEdit e = remapEdit(l.cells, map, area, l.props.kind == LayerKind::Pixels);
+        if (!e.changes.empty())
+            edits.emplace_back(l.props.id, std::move(e));
+    }
+    std::size_t n = 0;
+    for (const auto& [id, e] : edits)
+        n += e.changes.size();
+    if (!n) {
+        if (error)
+            *error = tr("no cell holds a colour the map moves");
+        return 0;
+    }
+    emit layersAboutToChange();
+    emit commandAboutToPush();
+    undo_.push(new PaletteCommand(this, tr("Remap Colours"), doc_.palette, doc_.palette, std::move(edits)));
+    return int(n);
+}
+
+bool Document::fitToPalette(std::optional<Palette> palette, int* lost, int* skipped) {
+    if (palette == kPalette)
+        palette.reset();
+    const Palette from = this->palette(), to = palette.value_or(kPalette);
+    const ColourMap map = fitColourMap(from, to);
+    std::vector<std::pair<LayerId, CellEdit>> edits = bw::remapLayers(stack_, map, skipped);
+    const std::vector<std::pair<LayerId, TextStyle>> mapped = remapStyles(stack_, map);
+    if (palette == doc_.palette && edits.empty() && mapped.empty()) {
+        if (lost)
+            *lost = 0;
+        return false;
+    }
+    std::vector<LayerPropsEdit> styles;
+    for (const auto& [id, style] : mapped)
+        styles.push_back(styleEdit(*stack_.find(id), style, doc_.ice));
+    if (lost) {
+        // the composite after, against the one before: what the fit left
+        // (a generator, live text, a style's ramps) counts too
+        LayerStack after = stack_;
+        for (const auto& [id, e] : edits)
+            e.apply(after.find(id)->cells);
+        for (const auto& [id, style] : mapped)
+            after.find(id)->props.style = style;
+        *lost = lookChanged(doc_.canvas, from, composite(after, compositeOptions()), to);
+    }
+    emit layersAboutToChange();
+    emit commandAboutToPush();
+    undo_.push(
+        new PaletteCommand(this, tr("Fit to Palette"), doc_.palette, palette, std::move(edits), std::move(styles)));
+    return true;
 }
 
 bool Document::setIrcBudget(const project::IrcBudget& budget) {
@@ -755,8 +881,13 @@ bool Document::save(const QString& path, const AnsiOutput& out, QString* error) 
     }
     if (!xbin) {
         // nor a palette or font, now it is the document's file
+        const bool palette = doc_.palette.has_value(), font = doc_.font.has_value();
         doc_.palette.reset();
         doc_.font.reset();
+        if (palette)
+            emit paletteChanged();
+        if (font)
+            emit fontChanged();
     } else if (dropsSauce) {
         // nor the SAUCE letter spacing, aspect or font name an XBIN left out.
         // Those are format state the undo stack holds (#319), so dropping
@@ -815,8 +946,10 @@ bool Document::saveProject(const QString& path, FileForm form, QString* error) {
         emit pathChanged(path_);
     }
     countLostBlink_ = false;
-    doc_.palette.reset();  // a project keeps neither
-    doc_.font.reset();
+    if (doc_.font) {  // a project keeps the palette, not the font
+        doc_.font.reset();
+        emit fontChanged();
+    }
     undo_.setClean();
     setModified(false);
     return true;

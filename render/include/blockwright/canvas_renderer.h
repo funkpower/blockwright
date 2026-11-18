@@ -44,6 +44,19 @@ public:
     virtual void setRgbBackgroundsKept(bool on) = 0;
     virtual bool rgbBackgroundsKept() const = 0;
 
+    // The 16 colours an indexed cell draws in (the document's palette, PLAN
+    // §8, Palettes), kPalette until set. It holds across setCanvas; a change
+    // marks every cell dirty.
+    virtual void setPalette(const Palette& palette) = 0;
+    virtual const Palette& palette() const = 0;
+    // The font cells draw in: the bundled IBM VGA 8x16 until set, or a
+    // document's own (an XBIN's, fileFont), whose bits must outlive its use.
+    // Its height is the cells' height, so a change remakes the cache for the
+    // canvas (every cell dirty, cellSize() and imageSize() new) and throws
+    // as setCanvas does, the font then as it was.
+    virtual void setFont(const BitmapFont& font) = 0;
+    virtual const BitmapFont& font() const = 0;
+
     // One cell in pixels at 1x (glyph width by font height).
     virtual QSize cellSize() const = 0;
     // The whole canvas in pixels at 1x.
@@ -62,16 +75,16 @@ public:
     virtual void paint(QPainter& painter, const QRect& source, const QPoint& target, int zoom) = 0;
 };
 
-// Glyph images for one font and cell width, drawn in each palette colour on
-// a transparent background, so a cell is a background fill plus one
-// drawImage from a source rect. 24-bit colours get their own glyph images,
+// Glyph images for one font, cell width and palette, drawn in each of the
+// palette's colours on a transparent background, so a cell is a background
+// fill plus one drawImage from a source rect. 24-bit colours get their own glyph images,
 // made on first use. In 9 px mode the 9th column repeats the 8th for the
 // line-drawing glyphs 0xC0-0xDF, as in renderCanvas. A cell drawn from rows
 // (bw::cellImage: Unifont, a cluster, either half of a pair) gets an image
 // per (rows, colour) on first use.
 class GlyphAtlas {
 public:
-    GlyphAtlas(const BitmapFont& font, int glyphWidth);
+    GlyphAtlas(const BitmapFont& font, int glyphWidth, const Palette& palette = kPalette);
 
     QSize cellSize() const { return {gw_, font_->height}; }
     const QImage& image() const { return atlas_; }
@@ -91,6 +104,7 @@ private:
 
     const BitmapFont* font_;
     int gw_;
+    Palette palette_;
     QImage atlas_;  // 256 glyphs across, 16 colours down
     std::array<bool, 256> blank_{};
     QHash<quint64, QImage> rgb_;  // (glyph, rgb) -> glyph image
@@ -109,6 +123,10 @@ public:
     bool iceColours() const override { return ice_; }
     void setRgbBackgroundsKept(bool on) override;
     bool rgbBackgroundsKept() const override { return keepRgb_; }
+    void setPalette(const Palette& palette) override;
+    const Palette& palette() const override { return palette_; }
+    void setFont(const BitmapFont& font) override;
+    const BitmapFont& font() const override { return font_; }
     QSize cellSize() const override;
     QSize imageSize() const override { return cache_.size(); }
     void markDirty(const QRegion& cells) override;
@@ -120,13 +138,14 @@ public:
     const QImage& cache() const { return cache_; }
 
 private:
-    const BitmapFont* font_;
+    BitmapFont font_;
     const Canvas* canvas_ = nullptr;
     std::unique_ptr<GlyphAtlas> atlas_;
     QImage cache_;
     QRegion dirty_;
     bool ice_ = true;
     bool keepRgb_ = false;
+    Palette palette_ = kPalette;
 };
 
 } // namespace bw

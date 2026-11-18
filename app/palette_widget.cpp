@@ -21,12 +21,19 @@ constexpr int kSmall = 16, kMircColumns = 12;
 // swap arrow and the reset.
 constexpr int kPen = 2 * kSwatch + kGap, kPenSwatch = kPen * 2 / 3;
 
-QColor toQColor(const Color& c) {
-    const Rgb rgb = c.isIndexed() ? kPalette[c.index] : c.rgb;
+} // namespace
+
+QColor PaletteWidget::toQColor(const Color& c) const {
+    const Rgb rgb = c.isIndexed() ? colours_[c.index & 15] : c.rgb;
     return QColor(rgb.r, rgb.g, rgb.b);
 }
 
-} // namespace
+void PaletteWidget::setColours(const Palette& colours) {
+    if (colours == colours_)
+        return;
+    colours_ = colours;
+    update();
+}
 
 PaletteWidget::PaletteWidget(QWidget* parent) : QWidget(parent) {
     // A fixed horizontal policy caps the entire dock column at this hint.
@@ -41,10 +48,10 @@ void PaletteWidget::setKeyActions(QAction* swap, QAction* reset) {
 }
 
 void PaletteWidget::setTarget(Target target, IrcColours colours) {
-    if (target == target_ && colours == colours_)
+    if (target == target_ && colours == ircColours_)
         return;
     target_ = target;
-    colours_ = colours;
+    ircColours_ = colours;
     updateGeometry();
     update();
 }
@@ -77,7 +84,7 @@ QRect PaletteWidget::resetRect() const {
 }
 
 QRect PaletteWidget::swatchRect(int index) const {
-    if (index < 0 || index >= swatchCount(target_, colours_))
+    if (index < 0 || index >= swatchCount(target_, ircColours_))
         return {};
     if (index >= 16) {
         const int top = penRect().bottom() + 1 + 2 * kGap;
@@ -91,15 +98,15 @@ QRect PaletteWidget::swatchRect(int index) const {
 }
 
 int PaletteWidget::indexAt(QPoint p) const {
-    for (int i = 0; i < swatchCount(target_, colours_); ++i)
+    for (int i = 0; i < swatchCount(target_, ircColours_); ++i)
         if (swatchRect(i).contains(p))
             return i;
     return -1;
 }
 
 QSize PaletteWidget::sizeHint() const {
-    const int w = std::max(swatchRect(15).right(), swatchRect(swatchCount(target_, colours_) - 1).right()) + 1 + kGap;
-    const int last = swatchCount(target_, colours_) > 16 ? swatchRect(swatchCount(target_, colours_) - 1).bottom() : penRect().bottom();
+    const int w = std::max(swatchRect(15).right(), swatchRect(swatchCount(target_, ircColours_) - 1).right()) + 1 + kGap;
+    const int last = swatchCount(target_, ircColours_) > 16 ? swatchRect(swatchCount(target_, ircColours_) - 1).bottom() : penRect().bottom();
     return QSize(w, last + 1 + kGap);
 }
 
@@ -141,12 +148,12 @@ void PaletteWidget::paintEvent(QPaintEvent*) {
         p.drawRect(front.adjusted(0, 0, -1, -1));
     }
 
-    const int fg = swatchOf(pen_.fg, target_, colours_), bg = swatchOf(pen_.bg, target_, colours_);
+    const int fg = swatchOf(pen_.fg, target_, ircColours_), bg = swatchOf(pen_.bg, target_, ircColours_);
     QFont f = font();
     f.setBold(true);
     f.setPixelSize(kSwatch / 2);
     p.setFont(f);
-    for (int i = 0; i < swatchCount(target_, colours_); ++i) {
+    for (int i = 0; i < swatchCount(target_, ircColours_); ++i) {
         if (i == 16) {
             f.setPixelSize(kSmall / 2);
             p.setFont(f);

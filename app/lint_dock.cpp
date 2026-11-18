@@ -54,6 +54,8 @@ FollowsDocument::FollowsDocument(Document* doc, const QString& staleText, QWidge
     connect(doc_, &Document::reset, this, &FollowsDocument::schedule);
     connect(doc_, &Document::formatChanged, this, &FollowsDocument::schedule);
     connect(doc_, &Document::targetChanged, this, &FollowsDocument::schedule);
+    // the Micron colour notes read the document's palette
+    connect(doc_, &Document::paletteChanged, this, &FollowsDocument::schedule);
     connect(watcher_, &QFutureWatcher<Show>::finished, this, &FollowsDocument::finished);
 }
 

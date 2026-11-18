@@ -63,6 +63,25 @@
 // after it are checked against the new size. Its "size" is the canvas's,
 // so it takes no Tool Options, as a view step takes none.
 //
+// The palette is three steps (#497, PLAN §8, Palettes), the Colours menu's
+// Palette, Fit to Palette and Remap Colours...:
+//
+//   {"name": ..., "action": "palette", "preset": "xterm"}
+//   {"name": ..., "action": "palette", "colours": ["#rrggbb", ... 16]}
+//   {"name": ..., "action": "fitToPalette", "preset": ... | "colours": [...]}
+//   {"name": ..., "action": "remapColours", "map": "3=11,11=3",
+//    "scope": "selection" | "layer" | "document"}
+//
+// "palette" gives the piece the palette (a preset's name, palettePreset, or
+// 16 colours) and changes no cell; "fitToPalette" gives it the palette and
+// maps every layer whose cells are art to the nearest of its entries
+// (fitColourMap, remapLayers); each takes one of "preset" and "colours".
+// "remapColours" maps the cells' colour indices by "map" (parseColourMap:
+// FROM=TO pairs or 16 hex digits) in "scope": the selection on the active
+// layer, the active layer (without one) or every layer whose cells are art
+// (remapLayers). The active layer of the first two must be one the editor
+// edits. None takes Tool Options.
+//
 // The window's view has a step of its own (#398), "action": "view":
 //
 //   {"name": ..., "action": "view", "zoom": 1-8, "scrollTo": [x, y],
@@ -189,6 +208,7 @@
 #include "blockwright/canvas_size.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/library.h"
+#include "blockwright/palette_swap.h"
 #include "blockwright/ramp.h"
 #include "blockwright/selection.h"
 #include "blockwright/text_source.h"
@@ -371,6 +391,12 @@ struct Step {
     // canvasSize: the new size in cells and where the old canvas sits in it
     int canvasWidth = 0, canvasHeight = 0;
     Anchor anchor = Anchor::TopLeft;
+    // palette and fitToPalette: the palette (#497); remapColours: the map
+    // and what it applies to
+    Palette palette = kPalette;
+    ColourMap colourMap = identityColourMap();
+    enum class RemapScope { Selection, Layer, Document };
+    RemapScope remapScope = RemapScope::Layer;
     // clone: the source cell Ctrl+click sets before the stroke (#418)
     std::optional<Point> source;
     // The files the step reads (#422), in the order it names them: a text

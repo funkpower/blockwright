@@ -30,6 +30,12 @@ struct BitmapFont {
 // third_party/oldschool-pc-fonts/).
 const BitmapFont& vgaFont();
 
+// A font a file carries (an XBIN's, FileFont) as a BitmapFont over its
+// bits, which must outlive it: 256 glyphs `height` px high.
+BitmapFont fileFont(const FileFont& font);
+// The font a document draws in: its own (an XBIN's) or vgaFont().
+BitmapFont documentFont(const AnsiDocument& doc);
+
 struct RenderOptions {
     // Glyph cell width: 8 or 9, or 0 to follow the SAUCE letter-spacing flag
     // (9 px only when it says 9 px; 8 px when it says 8 px, is unset or there
@@ -93,8 +99,9 @@ inline CellImage cellImage(const Canvas& canvas, int x, int y, int fontHeight) {
 // renderCanvas draws it, with formatRows' formatting.
 GlyphRows formattedRows(const CellImage& ci, std::uint8_t attrs, int glyphWidth, const BitmapFont& font = vgaFont());
 
-// The colour a cell colour renders as: a palette entry or its 24-bit value.
-Rgb resolveColor(const Color& c);
+// The colour a cell colour renders as: entry n of `palette` (the document's,
+// PLAN §8, Palettes) or its 24-bit value.
+Rgb resolveColor(const Color& c, const Palette& palette = kPalette);
 
 // The whole canvas as an RGB32 image, width * glyphWidth * scale by
 // height * 16 * scale. Colours are drawn as the cells hold them: with iCE on
@@ -102,7 +109,13 @@ Rgb resolveColor(const Color& c);
 // off a blinking cell shows its "on" phase (glyph visible, dark background),
 // as libansilove draws it. In 9 px mode the 9th column repeats the 8th for
 // the line-drawing glyphs 0xC0-0xDF and is background otherwise, as VGA does.
-// Each cell draws its cellImage in its own colours.
+// Each cell draws its cellImage in its own colours, an index as the entry
+// of `palette`: renderDocument's is the document's own (an XBIN's, or one
+// a palette swap set), kPalette when it has none. renderDocument draws in
+// the document's own font too (an XBIN's, documentFont), its cells as high
+// as the font; a glyph with no CP437 byte, a lead and its continuation draw
+// from Unifont only with a 16 px font, as cellImage says. With a font over
+// 16 px, bold, italic and underline aren't drawn.
 // A cell with bold, italic or underline draws its formattedRows.
 // The SAUCE aspect-ratio flag is not applied: pixels are always square.
 // Transparent cells draw like any other (layers come later).
@@ -110,6 +123,7 @@ Rgb resolveColor(const Color& c);
 // or 0-row) canvas, and
 // std::length_error if the image would be too large to allocate.
 QImage renderDocument(const AnsiDocument& doc, const RenderOptions& opts = {});
-QImage renderCanvas(const Canvas& canvas, int glyphWidth, int scale = 1, const BitmapFont& font = vgaFont());
+QImage renderCanvas(const Canvas& canvas, int glyphWidth, int scale = 1, const BitmapFont& font = vgaFont(),
+                    const Palette& palette = kPalette);
 
 } // namespace bw

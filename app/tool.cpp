@@ -112,7 +112,7 @@ void EditPreview::paint(QPainter& p, const CanvasView& view, const QRect& expose
     }
     QImage image;
     try {
-        image = renderCanvas(part, r->cellSize().width());
+        image = renderCanvas(part, r->cellSize().width(), 1, r->font(), r->palette());
     } catch (const std::exception&) {
         return;
     }

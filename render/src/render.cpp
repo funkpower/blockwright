@@ -169,6 +169,12 @@ const BitmapFont& vgaFont() {
     return font;
 }
 
+BitmapFont fileFont(const FileFont& font) {
+    return {font.height, std::span(reinterpret_cast<const std::uint8_t*>(font.bits.data()), font.bits.size())};
+}
+
+BitmapFont documentFont(const AnsiDocument& doc) { return doc.font ? fileFont(*doc.font) : vgaFont(); }
+
 int glyphWidth(const AnsiDocument& doc, const RenderOptions& opts) {
     if (opts.fontWidth)
         return opts.fontWidth;
@@ -184,7 +190,7 @@ std::uint8_t glyphIndex(Glyph g) {
     return cp ? glyphIndex(*cp) : std::uint8_t('?');
 }
 
-Rgb resolveColor(const Color& c) { return c.isIndexed() ? kPalette[c.index & 15] : c.rgb; }
+Rgb resolveColor(const Color& c, const Palette& palette) { return c.isIndexed() ? palette[c.index & 15] : c.rgb; }
 
 GlyphRows formattedRows(const CellImage& ci, std::uint8_t attrs, int gw, const BitmapFont& font) {
     const int gh = std::min(font.height, 16);
@@ -202,7 +208,7 @@ GlyphRows formattedRows(const CellImage& ci, std::uint8_t attrs, int gw, const B
     return formatRows(rows, attrs, gw, gh);
 }
 
-QImage renderCanvas(const Canvas& canvas, int gw, int scale, const BitmapFont& font) {
+QImage renderCanvas(const Canvas& canvas, int gw, int scale, const BitmapFont& font, const Palette& palette) {
     if (gw != 8 && gw != 9)
         throw std::invalid_argument("font width must be 8 or 9");
     if (scale < 1 || scale > kMaxScale)
@@ -222,9 +228,9 @@ QImage renderCanvas(const Canvas& canvas, int gw, int scale, const BitmapFont& f
             const Cell& cell = canvas.at(cx, cy);
             CellImage ci = cellImage(canvas, cx, cy, gh);
             const std::uint8_t g = ci.index;
-            const QRgb fg = toQRgb(resolveColor(cell.fg)), bg = toQRgb(resolveColor(cell.bg));
+            const QRgb fg = toQRgb(resolveColor(cell.fg, palette)), bg = toQRgb(resolveColor(cell.bg, palette));
             GlyphRows formatted;
-            if (cell.attrs & attr::Formatting) {
+            if ((cell.attrs & attr::Formatting) && gh <= 16) {
                 formatted = formattedRows(ci, cell.attrs, gw, font);
                 ci.rows = &formatted;
             }
@@ -261,7 +267,8 @@ QImage renderCanvas(const Canvas& canvas, int gw, int scale, const BitmapFont& f
 }
 
 QImage renderDocument(const AnsiDocument& doc, const RenderOptions& opts) {
-    return renderCanvas(doc.canvas, glyphWidth(doc, opts), opts.scale);
+    return renderCanvas(doc.canvas, glyphWidth(doc, opts), opts.scale, documentFont(doc),
+                        doc.palette.value_or(kPalette));
 }
 
 } // namespace bw

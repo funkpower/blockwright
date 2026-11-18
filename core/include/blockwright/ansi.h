@@ -47,17 +47,21 @@ struct AnsiDocument {
     TextEncoding encoding = TextEncoding::Cp437;
     std::optional<Sauce> sauce;
     bool ice = true;  // blink = bright background
-    // What an XBIN carries besides its cells, kept so that saving it as XBIN
-    // writes them back. Nothing draws with them yet: the editor and renderer
-    // use kPalette and the bundled IBM VGA font. Only XBIN can hold them, so
-    // the other writers report them lost (AnsiOutput, customPalette).
-    std::optional<std::array<Rgb, 16>> palette;
+    // The document's 16 colours (PLAN §8, Palettes): an XBIN's own, or one
+    // set by a palette swap; nothing is the standard kPalette. An indexed
+    // cell shows entry n of it on the canvas, in the preview and in a render.
+    // A font is an XBIN's: the canvas and a render draw in it
+    // (documentFont), and saving it as XBIN writes it back. Only
+    // XBIN (and a project, for the palette) can hold them, so the other
+    // writers report them lost (AnsiOutput, customPalette).
+    std::optional<Palette> palette;
     std::optional<FileFont> font;
     // What parseAnsi dropped reading it.
     ReadLoss readLoss;
 };
 
-// Whether `doc` has a palette other than kPalette, which only XBIN can write.
+// Whether `doc` has a palette other than kPalette, which only XBIN (and a
+// project) can write.
 bool customPalette(const AnsiDocument& doc);
 
 class AnsiError : public std::runtime_error {
@@ -160,6 +164,9 @@ struct AnsiOutput {
     // can't hold, left out.
     bool paletteDropped = false;
     bool fontDropped = false;
+    // XBIN: the palette's entries written as other colours, an XBIN holding
+    // 6 bits a channel (xbinRoundedEntries).
+    int paletteRounded = 0;
     // SAUCE fields an XBIN has no place for (its record's TFlags and TInfoS
     // are 0, and its header has neither), left out by writeXbin: 9 px
     // letter spacing (an XBIN draws 8 px), the aspect ratio (SAUCE's value,
@@ -177,7 +184,8 @@ struct AnsiOutput {
     int formattingDropped = 0;
 
     bool lossy() const {
-        return !unwritable.empty() || blinkDropped || paletteDropped || fontDropped || letterSpacingDropped ||
+        return !unwritable.empty() || blinkDropped || paletteDropped || fontDropped || paletteRounded ||
+               letterSpacingDropped ||
                aspectDropped || !fontNameDropped.empty() || coloursQuantised || formattingDropped;
     }
 };

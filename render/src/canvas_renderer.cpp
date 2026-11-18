@@ -17,7 +17,8 @@ QRgb toQRgb(Rgb c) { return qRgb(c.r, c.g, c.b); }
 
 } // namespace
 
-GlyphAtlas::GlyphAtlas(const BitmapFont& font, int glyphWidth) : font_(&font), gw_(glyphWidth) {
+GlyphAtlas::GlyphAtlas(const BitmapFont& font, int glyphWidth, const Palette& palette)
+    : font_(&font), gw_(glyphWidth), palette_(palette) {
     if (gw_ != 8 && gw_ != 9)
         throw std::invalid_argument("font width must be 8 or 9");
     atlas_ = QImage(256 * gw_, 16 * font.height, QImage::Format_ARGB32_Premultiplied);
@@ -33,7 +34,7 @@ GlyphAtlas::GlyphAtlas(const BitmapFont& font, int glyphWidth) : font_(&font), g
     p.setCompositionMode(QPainter::CompositionMode_Source);
     for (int c = 0; c < 16; ++c)
         for (int g = 0; g < 256; ++g)
-            p.drawImage(g * gw_, c * font.height, drawGlyph(std::uint8_t(g), toQRgb(kPalette[c])));
+            p.drawImage(g * gw_, c * font.height, drawGlyph(std::uint8_t(g), toQRgb(palette_[c])));
 }
 
 QImage GlyphAtlas::drawGlyph(std::uint8_t g, QRgb color) const {
@@ -64,7 +65,7 @@ std::pair<const QImage*, QRect> GlyphAtlas::glyph(std::uint8_t g, const Color& f
 }
 
 const QImage& GlyphAtlas::rows(const GlyphRows& rows, const Color& fg) {
-    const QRgb color = toQRgb(resolveColor(fg));
+    const QRgb color = toQRgb(resolveColor(fg, palette_));
     const auto key = std::pair(&rows, color);
     auto it = rows_.find(key);
     if (it == rows_.end())
@@ -73,7 +74,7 @@ const QImage& GlyphAtlas::rows(const GlyphRows& rows, const Color& fg) {
 }
 
 QImage GlyphAtlas::drawRows(const GlyphRows& rows, const Color& fg) const {
-    const QRgb color = toQRgb(resolveColor(fg));
+    const QRgb color = toQRgb(resolveColor(fg, palette_));
     const int h = std::min(font_->height, 16);
     QImage img(gw_, h, QImage::Format_ARGB32_Premultiplied);
     img.fill(Qt::transparent);
@@ -86,11 +87,26 @@ QImage GlyphAtlas::drawRows(const GlyphRows& rows, const Color& fg) const {
     return img;
 }
 
-AtlasRenderer::AtlasRenderer(const BitmapFont& font) : font_(&font) {}
+AtlasRenderer::AtlasRenderer(const BitmapFont& font) : font_(font) {}
+
+void AtlasRenderer::setFont(const BitmapFont& font) {
+    if (font.height == font_.height && font.bits.data() == font_.bits.data() && font.bits.size() == font_.bits.size())
+        return;
+    const BitmapFont was = font_;
+    font_ = font;
+    if (!canvas_)
+        return;
+    try {
+        setCanvas(canvas_, atlas_->cellSize().width());
+    } catch (...) {
+        font_ = was;
+        throw;
+    }
+}
 
 void AtlasRenderer::setCanvas(const Canvas* canvas, int glyphWidth) {
-    auto atlas = std::make_unique<GlyphAtlas>(*font_, glyphWidth);
-    const qint64 w = qint64(canvas->width()) * glyphWidth, h = qint64(canvas->height()) * font_->height;
+    auto atlas = std::make_unique<GlyphAtlas>(font_, glyphWidth, palette_);
+    const qint64 w = qint64(canvas->width()) * glyphWidth, h = qint64(canvas->height()) * font_.height;
     if (w <= 0 || h <= 0 || w * h > kMaxPixels)
         throw std::length_error("canvas too large to display");
     // A cache of the right size is reused (it is all dirty below), so
@@ -122,6 +138,16 @@ void AtlasRenderer::setRgbBackgroundsKept(bool on) {
         dirty_ = QRegion(0, 0, canvas_->width(), canvas_->height());
 }
 
+void AtlasRenderer::setPalette(const Palette& palette) {
+    if (palette_ == palette)
+        return;
+    palette_ = palette;
+    if (!canvas_)
+        return;
+    atlas_ = std::make_unique<GlyphAtlas>(font_, atlas_->cellSize().width(), palette_);
+    dirty_ = QRegion(0, 0, canvas_->width(), canvas_->height());
+}
+
 QSize AtlasRenderer::cellSize() const { return atlas_ ? atlas_->cellSize() : QSize(); }
 
 void AtlasRenderer::markDirty(const QRegion& cells) {
@@ -140,10 +166,10 @@ QRegion AtlasRenderer::flush() {
                 const Cell& raw = canvas_->at(cx, cy);
                 const Cell cell = keepRgb_ && !raw.bg.isIndexed() ? raw : iceCell(raw, ice_);
                 const QRect target(QPoint(cx * cs.width(), cy * cs.height()), cs);
-                p.fillRect(target, QColor(toQRgb(resolveColor(cell.bg))));
-                const CellImage ci = cellImage(*canvas_, cx, cy, font_->height);
+                p.fillRect(target, QColor(toQRgb(resolveColor(cell.bg, palette_))));
+                const CellImage ci = cellImage(*canvas_, cx, cy, font_.height);
                 if (cell.attrs & attr::Formatting) {
-                    const GlyphRows rows = formattedRows(ci, cell.attrs, cs.width(), *font_);
+                    const GlyphRows rows = formattedRows(ci, cell.attrs, cs.width(), font_);
                     p.drawImage(target.topLeft(), atlas_->drawRows(rows, cell.fg));
                     continue;
                 }

@@ -1155,3 +1155,53 @@ TEST_CASE("editText, applyTextStyle and openReferenceImage refuse a bad value, n
         CHECK_THAT(why, ContainsSubstring(says));
     }
 }
+
+TEST_CASE("the palette steps read a preset or 16 colours, and remapColours a map and a scope (#497)",
+          "[steps][palette]") {
+    const steps::Script s = steps::parse(script(R"(
+        {"name": "xt", "action": "palette", "preset": "XTERM"},
+        {"name": "own", "action": "palette", "colours": ["#000000", "#0000AA", "#00aa00", "#00aaaa", "#aa0000",
+            "#aa00aa", "#aa5500", "#aaaaaa", "#555555", "#5555ff", "#55ff55", "#55ffff", "#ff5555", "#ff55ff",
+            "#ffff55", "#123456"]},
+        {"name": "fit", "action": "fitToPalette", "preset": "vga"},
+        {"name": "swap", "action": "remapColours", "map": "3=11,11=3", "scope": "selection"},
+        {"name": "all", "action": "remapColours", "map": "fedcba9876543210", "scope": "document"},
+        {"name": "plain", "action": "remapColours", "map": "1=2"})"));
+    REQUIRE(s.steps.size() == 6);
+    CHECK(s.steps[0].palette == palettePreset("xterm")->colours);
+    Palette own = kPalette;
+    own[15] = {0x12, 0x34, 0x56};
+    CHECK(s.steps[1].palette == own);
+    CHECK(s.steps[2].action == "fitToPalette");
+    CHECK(s.steps[2].palette == kPalette);
+    CHECK(s.steps[3].colourMap == swapColourMap(3, 11));
+    CHECK(s.steps[3].remapScope == steps::Step::RemapScope::Selection);
+    CHECK(s.steps[4].colourMap[0] == 15);
+    CHECK(s.steps[4].remapScope == steps::Step::RemapScope::Document);
+    CHECK(s.steps[5].remapScope == steps::Step::RemapScope::Layer);
+    for (const char* a : {"palette", "fitToPalette", "remapColours"})
+        CHECK(std::find(steps::actions().begin(), steps::actions().end(), a) != steps::actions().end());
+}
+
+TEST_CASE("a palette step's bad value is refused, naming the step (#497)", "[steps][palette]") {
+    const std::pair<const char*, const char*> cases[] = {
+        {R"("action": "palette")", "palette needs one of \"preset\", a preset's name, or \"colours\", 16 \"#rrggbb\""},
+        {R"("action": "palette", "preset": "cga", "colours": [])", "palette needs one of"},
+        {R"("action": "palette", "preset": "amiga")", "\"preset\" takes cga, cga-yellow, xterm, windows, campbell, mirc, not \"amiga\""},
+        {R"("action": "fitToPalette", "colours": ["#000000"])", "\"colours\" must be a list of 16 \"#rrggbb\""},
+        {R"("action": "palette", "colours": "#000000")", "\"colours\" must be a list of 16 \"#rrggbb\""},
+        {R"("action": "palette", "colours": ["#00000g","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000","#000000"])",
+         "\"colours\" 0 must be \"#rrggbb\", not \"#00000g\""},
+        {R"("action": "remapColours")", "remapColours needs \"map\""},
+        {R"("action": "remapColours", "map": "3=16")", "\"map\": \"3=16\" is not a pair FROM=TO of colours 0-15"},
+        {R"("action": "remapColours", "map": "1=2", "scope": "all")", "\"scope\" takes selection, layer, document, not \"all\""},
+        {R"("action": "remapColours", "map": "1=2", "fg": 3)", "remapColours takes no \"fg\""},
+        {R"("action": "palette", "preset": "cga", "map": "1=2")", "palette takes no \"map\""},
+    };
+    for (const auto& [keys, want] : cases) {
+        INFO(keys);
+        const std::string got = refusal(script(std::string(R"({"name": "p", )") + keys + "}"));
+        CHECK_THAT(got, ContainsSubstring("step 1 (p): "));
+        CHECK_THAT(got, ContainsSubstring(want));
+    }
+}

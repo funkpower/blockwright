@@ -1062,6 +1062,60 @@ void canvasSize(State& s, const Step& st, Outcome& out) {
                                       std::clamp(s.symmetry.centre->second, 0, h - 1)};
 }
 
+// The Colours menu's palette steps (#497), as Document::setPalette,
+// fitToPalette and remapColours do them: the standard palette is none.
+void paletteStep(State& s, const Step& st, Outcome& out) {
+    const std::optional<Palette> to = st.palette == kPalette ? std::nullopt : std::optional(st.palette);
+    std::vector<std::pair<LayerId, CellEdit>> edits;
+    std::vector<std::pair<LayerId, TextStyle>> styles;
+    int skipped = 0;
+    if (st.action == "fitToPalette") {
+        const ColourMap map = fitColourMap(s.p.palette.value_or(kPalette), st.palette);
+        edits = remapLayers(s.stack(), map, &skipped);
+        styles = remapStyles(s.stack(), map);
+    }
+    if (st.action == "remapColours") {
+        if (st.remapScope == Step::RemapScope::Document) {
+            edits = remapLayers(s.stack(), st.colourMap);
+        } else {
+            editable(s, st);
+            if (st.remapScope == Step::RemapScope::Selection)
+                needSelection(s, st);
+            const Layer& l = s.layer();
+            std::optional<CellRect> area;
+            if (st.remapScope == Step::RemapScope::Selection) {
+                const CellRect& r = s.selection.bounds();
+                area = CellRect{r.x - l.props.x, r.y - l.props.y, r.width, r.height};
+            }
+            CellEdit e = remapEdit(l.cells, st.colourMap, area, l.props.kind == LayerKind::Pixels);
+            if (!e.changes.empty())
+                edits.emplace_back(l.props.id, std::move(e));
+        }
+    }
+    const bool palette = st.action != "remapColours" && to != s.p.palette;
+    if (!palette && edits.empty() && styles.empty()) {
+        out.notes.push_back(steps::stepLabel(st) + ": changes nothing");
+        return;
+    }
+    const Palette from = s.p.palette.value_or(kPalette);
+    const Canvas before = st.action == "fitToPalette" ? compositeOf(s) : Canvas{0, 0};
+    if (st.action != "remapColours")
+        s.p.palette = to;
+    for (const auto& [id, e] : edits)
+        e.apply(s.stack().find(id)->cells);
+    for (const auto& [id, style] : styles)
+        s.stack().find(id)->props.style = style;
+    if (st.action != "fitToPalette")
+        return;
+    // as the editor's status bar says it (MainWindow::fitToPalette)
+    if (const int lost = lookChanged(before, from, compositeOf(s), st.palette))
+        out.notes.push_back(steps::stepLabel(st) + ": " + std::to_string(lost) +
+                            (lost == 1 ? " cell shows" : " cells show") + " another colour");
+    if (skipped)
+        out.notes.push_back(steps::stepLabel(st) + ": " + std::to_string(skipped) +
+                            (skipped == 1 ? " layer" : " layers") + " left as they are");
+}
+
 void step(State& s, const Step& st, Outcome& out) {
     centreOnCanvas(s, st);
     take(s, st.options);
@@ -1237,6 +1291,8 @@ void step(State& s, const Step& st, Outcome& out) {
         clone(s, st, out);
     } else if (a == "canvasSize") {
         canvasSize(s, st, out);
+    } else if (a == "palette" || a == "fitToPalette" || a == "remapColours") {
+        paletteStep(s, st, out);
     } else if (a == "text") {
         text(s, st, out);
     } else if (a == "editText") {

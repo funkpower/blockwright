@@ -207,6 +207,13 @@ struct Project {
     // value that isn't a number is refused. A preference like target: kept
     // under ANSI and Micron, where it does nothing.
     IrcColours ircColours = IrcColours::Mirc99;
+    // The 16 colours its indexed cells show (PLAN §8, Palettes): nothing for
+    // the standard kPalette. The manifest's "palette": "cga" for none, or a
+    // list of 16 "#rrggbb" strings, written only for a palette other than
+    // the standard one. A build before #497 refuses a list ("this build has
+    // only cga"), as it should, since the cells' indices then mean other
+    // colours; so the list needs no version of its own.
+    std::optional<Palette> palette;
     IrcBudget ircBudget;
     std::string notes;               // notes.md
     std::vector<Snapshot> snapshots;  // by round, first first

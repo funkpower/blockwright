@@ -22,6 +22,7 @@
 #include "blockwright/glyph.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
+#include "blockwright/palette_swap.h"
 #include "blockwright/library.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
@@ -39,7 +40,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -3330,4 +3333,131 @@ TEST_CASE("the text layers set writes the bytes saved for it, the same every run
     REQUIRE(second.captures.size() == out.captures.size());
     for (std::size_t i = 0; i < out.captures.size(); ++i)
         CHECK(second.captures[i].project.layers == out.captures[i].project.layers);
+}
+
+TEST_CASE("the palette steps set the project's palette, fit and remap its cells (#497)", "[replay][palette]") {
+    const auto out = blank(R"(
+        {"name": "dots", "action": "glyph", "fg": 3, "bg": 1, "points": [[0, 0], [1, 0], [2, 0]]},
+        {"name": "xt", "action": "palette", "preset": "xterm"},
+        {"name": "sel", "action": "select", "rect": [1, 0, 2, 0]},
+        {"name": "swap", "action": "remapColours", "map": "3=11,11=3", "scope": "selection"},
+        {"name": "all", "action": "remapColours", "map": "1=4", "scope": "document"},
+        {"name": "fit", "action": "fitToPalette", "preset": "cga"},
+        {"name": "std", "action": "palette", "preset": "cga"})");
+    REQUIRE(out.captures.size() == 7);
+    const auto cell = [&](std::size_t i, int x) { return flat(out.captures[i].project).at(x, 0); };
+    CHECK_FALSE(out.captures[0].project.palette);
+    CHECK(out.captures[1].project.palette == palettePreset("xterm")->colours);
+    CHECK(cell(1, 0).fg == Color::indexed(3));  // a swap changes no cell
+    CHECK(cell(3, 0).fg == Color::indexed(3));
+    CHECK(cell(3, 1).fg == Color::indexed(11));
+    CHECK(cell(3, 2).fg == Color::indexed(11));
+    CHECK(cell(3, 1).bg == Color::indexed(1));
+    CHECK(cell(4, 0).bg == Color::indexed(4));
+    CHECK(cell(4, 2).bg == Color::indexed(4));
+    // the fit: each index to the standard entry nearest its xterm colour
+    const ColourMap m = fitColourMap(palettePreset("xterm")->colours, kPalette);
+    CHECK_FALSE(out.captures[5].project.palette);
+    CHECK(cell(5, 0).fg == Color::indexed(m[3]));
+    CHECK(cell(5, 1).fg == Color::indexed(m[11]));
+    CHECK(cell(5, 0).bg == Color::indexed(m[4]));
+    // the standard palette again: nothing changes, a note
+    CHECK(std::find_if(out.notes.begin(), out.notes.end(), [](const std::string& n) {
+              return n == "step 7 (std): changes nothing";
+          }) != out.notes.end());
+}
+
+TEST_CASE("fitToPalette maps a layer style's colours and notes the cells it can't keep (#497)", "[replay][palette]") {
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const fs::path dir = QFile::encodeName(tmp.path()).toStdString();
+    // a black ground, and above it an 'A' at 2,1 in `style`
+    const auto piece = [&](const std::string& name, const TextStyle& style) {
+        project::Project p;
+        p.layers = LayerStack(6, 3);
+        Layer ground;
+        ground.cells = Canvas(6, 3);
+        p.layers.add(std::move(ground));
+        Layer art;
+        art.cells = Canvas(6, 3);
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 6; ++x)
+                art.cells.at(x, y).transparent = true;
+        Cell a;
+        a.ch = U'A';
+        a.fg = Color::indexed(15);
+        a.bg = Color::indexed(0);
+        art.cells.at(2, 1) = a;
+        art.props.style = style;
+        p.layers.add(std::move(art));
+        project::writeZip(p, dir / name);
+        return flat(p);
+    };
+    // the standard palette backwards, which holds every standard colour
+    Palette rev{};
+    std::string colours;
+    for (std::size_t i = 0; i < 16; ++i) {
+        rev[i] = kPalette[15 - i];
+        char hex[8];
+        std::snprintf(hex, sizeof hex, "#%02x%02x%02x", rev[i].r, rev[i].g, rev[i].b);
+        colours += std::string(i ? ", " : "") + "\"" + hex + "\"";
+    }
+    const auto fit = [&](const std::string& name) {
+        return replayed(R"({"version": 1, "start": {"file": ")" + name + R"("}, "steps": [
+            {"name": "fit", "action": "fitToPalette", "colours": [)" + colours + "]}]}",
+                        dir);
+    };
+    const auto rgb = [](const Color& c, const Palette& p) { return c.isIndexed() ? p[c.index & 15] : c.rgb; };
+    // what a cell shows: a space its background, a full block its
+    // foreground (the plate's colour as the compositor draws it), else both
+    const auto shown = [&](const Cell& c, const Palette& p) {
+        if (c.ch == Glyph(U' '))
+            return std::pair{rgb(c.bg, p), rgb(c.bg, p)};
+        if (c.ch == Glyph(kFullBlock))
+            return std::pair{rgb(c.fg, p), rgb(c.fg, p)};
+        return std::pair{rgb(c.fg, p), rgb(c.bg, p)};
+    };
+    const auto changed = [&](const Canvas& before, const Canvas& after) {
+        int n = 0;
+        for (int y = 0; y < before.height(); ++y)
+            for (int x = 0; x < before.width(); ++x)
+                n += shown(before.at(x, y), kPalette) != shown(after.at(x, y), rev);
+        return n;
+    };
+    const auto noted = [](const bwcli::replay::Outcome& out, const std::string& what) {
+        return std::any_of(out.notes.begin(), out.notes.end(),
+                           [&](const std::string& n) { return n.find(what) != std::string::npos; });
+    };
+
+    // a plate names its colour: mapped, and the piece looks as it did
+    const Canvas plated = piece("plate.bwp", TextStyle{{Effect{true, PlateEffect{Blue, 1}}}});
+    const auto out = fit("plate.bwp");
+    REQUIRE(out.captures.size() == 1);
+    const project::Project& p = out.captures[0].project;
+    CHECK(p.palette == rev);
+    CHECK(std::get<PlateEffect>(p.layers.layers().back().props.style->effects[0].settings).colour == 15 - Blue);
+    CHECK(changed(plated, flat(p)) == 0);
+    CHECK_FALSE(noted(out, "another colour"));
+
+    // a glow draws from a named ramp, which no map changes: noted
+    const Canvas glowing = piece("glow.bwp", TextStyle{{Effect{true, GlowEffect{"fire", 1, 3}}}});
+    const auto glowed = fit("glow.bwp");
+    REQUIRE(glowed.captures.size() == 1);
+    const int n = changed(glowing, flat(glowed.captures[0].project));
+    REQUIRE(n > 0);
+    CHECK(noted(glowed, "step 1 (fit): " + std::to_string(n) + " cells show another colour"));
+}
+
+TEST_CASE("remapColours of a layer needs one the editor edits, and of a selection a selection (#497)",
+          "[replay][palette]") {
+    CHECK_THAT(onBlank(R"({"name": "swap", "action": "remapColours", "map": "1=2", "scope": "selection"})"),
+               ContainsSubstring("step 1 (swap): remapColours needs a selection"));
+    CHECK_THAT(onBlank(R"({"name": "lock", "action": "layerProperties", "locked": true},
+                          {"name": "swap", "action": "remapColours", "map": "1=2"})"),
+               ContainsSubstring("step 2 (swap): "));
+    // the document scope maps a locked layer too, as the dialog's Every layer does
+    CHECK(onBlank(R"({"name": "dot", "action": "glyph", "fg": 1, "points": [[0, 0]]},
+                     {"name": "lock", "action": "layerProperties", "locked": true},
+                     {"name": "swap", "action": "remapColours", "map": "1=2", "scope": "document"})") ==
+          "(replayed)");
 }

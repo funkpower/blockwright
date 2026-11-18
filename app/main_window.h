@@ -26,6 +26,7 @@
 
 #include <array>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -254,6 +255,10 @@ public:
     // step, saved with the project. A picture that is not a PNG or JPEG is
     // kept as a PNG of it. False and `error` if it can't be read or kept.
     bool loadReferenceImage(const QString& path, QString* error);
+    // Colours > Palette > From File...'s work once a file is picked: the
+    // palette file's 16 colours (readPaletteFile) become the document's, one
+    // undo step. False, and `error` says why, for a file it can't read.
+    bool loadPaletteFile(const QString& path, QString* error);
 
     // Opens `path` without asking anything; false and `error` on failure.
     // A project (project::isProject, or a name ending in .bwp, or a
@@ -461,6 +466,20 @@ private:
     // Under the Micron target, the Micron colour dialog for the pen's
     // foreground or background (PLAN §17); the pen takes what it gives.
     void pickMicronColour(bool foreground);
+    // Colours > Palette, Edit Palette..., Fit to Palette and Remap
+    // Colours... (#497, PLAN §8, Palettes).
+    void createPaletteActions(QMenu* colours);
+    void editPalette();
+    void remapColours();
+    void fitToPalette(const std::optional<Palette>& palette, const QString& name);
+    // The renderer, the views and the palette dock take the document's
+    // palette (Document::paletteChanged, and on open or new).
+    void paletteChanged();
+    // The renderer draws in the document's own font (an XBIN's), or the IBM
+    // VGA one, on open, new and Document::fontChanged; a font whose cells
+    // would make the canvas too large to display is left for the VGA one,
+    // and the status bar says so. Returns whether the cell size changed.
+    bool syncFont();
     // The renderer and the toggles follow the document's format.
     void formatChanged();
     void syncFormatActions();
@@ -577,6 +596,8 @@ private:
     // after both (~MainWindow).
     Document doc_;
     AtlasRenderer renderer_;
+    // A copy of the font syncFont gave the renderer, whose bits it draws from.
+    std::unique_ptr<FileFont> fileFont_;
     QScrollArea* scroll_ = nullptr;
     CanvasView* view_ = nullptr;
     IrcMeter* ircMeter_ = nullptr;

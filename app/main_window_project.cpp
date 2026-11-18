@@ -73,11 +73,10 @@ bool MainWindow::openProject(const QString& path, QString* error) {
 AnsiOutput MainWindow::saveLoss(const QString& path, FileForm form, std::optional<TextEncoding> encoding) const {
     if (form == FileForm::Ansi)
         return doc_.encode(artFormatFor(QFile::encodeName(path).toStdString()), encoding);
-    // A project keeps every glyph; only blink lost on open is gone, and an
-    // XBIN's palette and font, which it has no place for.
+    // A project keeps every glyph and the palette; only blink lost on open
+    // is gone, and an XBIN's font, which it has no place for.
     AnsiOutput out;
     out.blinkDropped = doc_.lostBlinkOnOpen();
-    out.paletteDropped = customPalette(doc_.ansi());
     out.fontDropped = doc_.ansi().font.has_value();
     return out;
 }

@@ -65,9 +65,10 @@ struct XbinOptions {
 
 // Writes the canvas as XBIN: the header (iCE as writtenIce gives it, the
 // font height or 16 without a font), the document's palette and font if it
-// has them, then the cells, each row compressed on its own (no run crosses a
-// row end) as few bytes as the four run kinds allow, or uncompressed. Then
-// SAUCE: the document's record or a fresh one, as XBin (DataType 6, FileType
+// has them (each palette channel's top 6 bits; entries that read back as
+// another colour are counted in paletteRounded), then the cells, each row
+// compressed on its own (no run crosses a row end) as few bytes as the four
+// run kinds allow, or uncompressed. Then SAUCE: the document's record or a fresh one, as XBin (DataType 6, FileType
 // 0, TInfo1-2 the width and height, TInfo3-4, TFlags and TInfoS 0), FileSize
 // the content's length. The record's 9 px letter spacing, aspect ratio and
 // a font name other than IBM VGA, which an XBIN has no place for, are

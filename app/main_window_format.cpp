@@ -1,7 +1,8 @@
 // The MainWindow parts for the document format: File > SAUCE..., the
 // View menu's iCE colours and letter-spacing toggles, Format > Canvas
-// Size..., Format > Target, and Edit > Preferences... (the fonts folder
-// TheDraw faces come from, the target new documents take).
+// Size..., Format > Target, the Colours menu's palette items, and Edit >
+// Preferences... (the fonts folder TheDraw faces come from, the target new
+// documents take).
 
 #include "main_window.h"
 
@@ -9,19 +10,29 @@
 #include "canvas_view.h"
 #include "message_box.h"
 #include "micron_colour_dialog.h"
+#include "palette_dialogs.h"
 #include "palette_widget.h"
+#include "shown_palette.h"
+#include "plural.h"
 #include "library_dock.h"
 #include "preferences.h"
 #include "shortcut_settings.h"
 #include "sauce_dialog.h"
 
+#include "blockwright/regular_file.h"
+
 #include <QAction>
 #include <QActionGroup>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QStatusBar>
 
+#include <filesystem>
 #include <stdexcept>
 
 namespace bw {
@@ -150,6 +161,147 @@ void MainWindow::pickMicronColour(bool foreground) {
         return;
     c = Color::fromRgb(dialog.colour());
     view_->setPen(pen);
+}
+
+void MainWindow::createPaletteActions(QMenu* colours) {
+    QMenu* palette = colours->addMenu(tr("&Palette"));
+    palette->setObjectName(QStringLiteral("paletteMenu"));
+    QMenu* fit = new QMenu(tr("&Fit to Palette"), colours);
+    fit->setObjectName(QStringLiteral("fitPaletteMenu"));
+    for (const PalettePreset& p : palettePresets()) {
+        const QString name = QString::fromLatin1(p.name.data(), qsizetype(p.name.size()));
+        const QString title = QString::fromUtf8(p.title.data(), qsizetype(p.title.size()));
+        const std::optional<Palette> pal = p.colours == kPalette ? std::nullopt : std::optional<Palette>(p.colours);
+        QAction* a = palette->addAction(title, this, [this, pal] { doc_.setPalette(pal, tr("Palette")); });
+        a->setObjectName(QStringLiteral("palette_") + name);
+        a->setStatusTip(tr("Show the piece in the %1 colours; the cells keep their colour numbers").arg(title));
+        a = fit->addAction(title, this, [this, pal, title] { fitToPalette(pal, title); });
+        a->setObjectName(QStringLiteral("fitPalette_") + name);
+        a->setStatusTip(
+            tr("Change the palette to the %1 colours and each cell to the nearest of them, so it looks the same")
+                .arg(title));
+    }
+    palette->addSeparator();
+    QAction* a = palette->addAction(tr("From &File..."), this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Palette from File"), QString(),
+            tr("Palettes (*.xb *.gpl *.pal *.hex *.txt);;All files (*)"));
+        QString error;
+        if (!path.isEmpty() && !loadPaletteFile(path, &error))
+            warning(this, tr("Palette from File"), tr("Could not read %1: %2").arg(QDir::toNativeSeparators(path), error));
+    });
+    a->setObjectName(QStringLiteral("paletteFromFile"));
+    a->setStatusTip(tr("Take the palette of an XBIN, or a GIMP, JASC or hex palette file of 16 colours"));
+    a = colours->addAction(tr("&Edit Palette..."), this, &MainWindow::editPalette);
+    a->setObjectName(QStringLiteral("editPalette"));
+    a->setStatusTip(tr("Change the colour of any of the 16 palette entries"));
+    colours->addMenu(fit);
+    a = colours->addAction(tr("&Remap Colours..."), this, &MainWindow::remapColours);
+    a->setObjectName(QStringLiteral("remapColours"));
+    a->setStatusTip(tr("Change which palette colour the cells use: swap two, or move any to another"));
+}
+
+bool MainWindow::loadPaletteFile(const QString& path, QString* error) {
+    std::string bytes;
+    try {
+        bytes = readRegular(std::filesystem::path(QFile::encodeName(path).toStdString()), project::kMaxEntryBytes);
+    } catch (const RegularFileError& e) {
+        *error = Document::readError(path, e);
+        return false;
+    }
+    std::string why;
+    int colours = 0;
+    const std::optional<Palette> p = readPaletteFile(QFile::encodeName(path).toStdString(), bytes, &why, &colours);
+    if (!p) {
+        *error = QString::fromStdString(why);
+        return false;
+    }
+    doc_.setPalette(*p, tr("Palette"));
+    statusBar()->showMessage(colours > 16 ? tr("Palette from %1: its first 16 of %2 colours")
+                                                .arg(QFileInfo(path).fileName())
+                                                .arg(colours)
+                                          : tr("Palette from %1").arg(QFileInfo(path).fileName()),
+                             5000);
+    return true;
+}
+
+void MainWindow::editPalette() {
+    PaletteEditDialog dialog(doc_.palette(), this);
+    if (dialog.exec() == QDialog::Accepted)
+        doc_.setPalette(dialog.palette(), tr("Edit Palette"));
+}
+
+void MainWindow::remapColours() {
+    const Selection& sel = view_->selection();
+    RemapDialog dialog(doc_.palette(), !sel.empty(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    view_->finishTool();
+    QString error;
+    int skipped = 0;
+    const int n = doc_.remapColours(dialog.map(), dialog.scope(), sel.bounds(), &error, &skipped);
+    if (!n) {
+        statusBar()->showMessage(tr("Nothing remapped: %1").arg(error), 5000);
+        return;
+    }
+    QString msg = plural(n, tr("%n cell remapped"), tr("%n cells remapped"));
+    if (skipped)
+        msg += tr("; %1 left as they are (live text and generators draw their own)")
+                   .arg(plural(skipped, tr("%n layer"), tr("%n layers")));
+    statusBar()->showMessage(msg, 5000);
+}
+
+void MainWindow::fitToPalette(const std::optional<Palette>& palette, const QString& name) {
+    view_->finishTool();
+    int lost = 0, skipped = 0;
+    if (!doc_.fitToPalette(palette, &lost, &skipped)) {
+        statusBar()->showMessage(tr("The piece is already in the %1 colours").arg(name), 5000);
+        return;
+    }
+    QString msg = lost ? plural(lost, tr("Fitted to %1: %n cell shows another colour"),
+                                tr("Fitted to %1: %n cells show another colour"))
+                             .arg(name)
+                       : tr("Fitted to %1: every cell looks as it did").arg(name);
+    if (skipped)
+        msg += tr("; %1 left as they are").arg(plural(skipped, tr("%n layer"), tr("%n layers")));
+    statusBar()->showMessage(msg, 8000);
+}
+
+bool MainWindow::syncFont() {
+    const QSize was = renderer_.cellSize();
+    const std::optional<FileFont>& f = doc_.ansi().font;
+    try {
+        if (!f) {
+            renderer_.setFont(vgaFont());
+            fileFont_.reset();
+        } else if (!fileFont_ || !(*fileFont_ == *f)) {
+            auto next = std::make_unique<FileFont>(*f);
+            renderer_.setFont(fileFont(*next));
+            fileFont_ = std::move(next);
+        }
+    } catch (const std::exception&) {
+        // too large in the file's font; the VGA one, 16 px, is what the
+        // canvas was checked at
+        try {
+            renderer_.setFont(vgaFont());
+        } catch (const std::exception&) {
+        }
+        fileFont_.reset();
+        statusBar()->showMessage(tr("The file's own font would make the canvas too large to show; it is drawn in "
+                                    "the IBM VGA font"),
+                                 8000);
+    }
+    return renderer_.cellSize() != was;
+}
+
+void MainWindow::paletteChanged() {
+    renderer_.setPalette(doc_.palette());
+    ShownPalette::instance().set(doc_.palette());
+    if (palette_)
+        palette_->setColours(doc_.palette());
+    // the renderer marked every cell dirty; nothing moved or changed size
+    view_->update();
+    preview_->update();
 }
 
 void MainWindow::syncFormatActions() {

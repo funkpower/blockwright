@@ -2,9 +2,11 @@
 //
 //   blockwright-cli --version
 //   blockwright-cli info <file.ans|project>
-//   blockwright-cli convert [--allow-lossy] [--output-encoding cp437|utf-8]
+//   blockwright-cli convert [--allow-lossy] [--output-encoding cp437|utf-8] [--palette P]
 //                           <in.ans|project> <out.ans|out.xb|out.bin>
-//   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
+//   blockwright-cli render [--scale N] [--font-width 8|9] [--palette P] <in.ans> <out.png>
+//   blockwright-cli remap --map 3=11,... | --fit-palette P [--allow-lossy]
+//                         [--output-encoding cp437|utf-8] <in.ans|project> <out.ans|out.xb|out.bin>
 //   blockwright-cli export --irc [--budget N] [--fit] [--pad] [--swap-shades]
 //                          [--colours 16|99] [--allow-over-budget] <in.ans|project> <out.txt>
 //   blockwright-cli export --micron [--centre] [--cache S] <in.ans|project> <out.mu>
@@ -41,6 +43,9 @@
 // output's text is written as (default cp437). snapshot takes it too,
 // defaulting to the project's own encoding (its ansEncoding).
 //
+// --palette and --fit-palette take a preset's name (cga, xterm, ...;
+// bw::palettePresets) or a palette file (bw::readPaletteFile).
+//
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
 // starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
 // .bwp zip or a project directory, as its flattened composite. convert and
@@ -67,6 +72,7 @@
 #include "blockwright/irc_render.h"
 #include "blockwright/irc_view.h"
 #include "blockwright/micron.h"
+#include "blockwright/palette_swap.h"
 #include "blockwright/library.h"
 #include "blockwright/lint.h"
 #include "blockwright/logo_text.h"
@@ -236,6 +242,7 @@ int projectInfo(const std::string& path) {
               << "encoding:    " << (p.ansEncoding == bw::TextEncoding::Utf8 ? "UTF-8" : "CP437") << "\n"
               << "target:      " << bw::targetName(p.target) << "\n"
               << "irc colours: " << bw::ircColourCount(p.ircColours) << "\n"
+              << "palette:     " << (p.palette ? "custom" : "standard") << "\n"
               << "irc budget:  " << p.ircBudget.bytes << " bytes (" << p.ircBudget.profile << ")\n"
               << "layers:      " << s.size() << " (next id " << s.nextId() << ")\n";
     // top first, as the layer panel lists them
@@ -373,7 +380,13 @@ void warnLoss(const std::string& in, const bw::AnsiOutput& res) {
                   << (n == 1 ? " blinking cell loses its blink" : " blinking cells lose their blink")
                   << ": bright backgrounds need iCE colours, where blink is a bright background\n";
     if (res.paletteDropped)
-        std::cerr << "blockwright-cli: warning: " << in << ": its palette is left out: only XBIN holds one\n";
+        std::cerr << "blockwright-cli: warning: " << in
+                  << ": its palette is left out: only XBIN and a project hold one (remap --fit-palette cga first "
+                     "keeps its look)\n";
+    if (const int n = res.paletteRounded)
+        std::cerr << "blockwright-cli: warning: " << in << ": " << n
+                  << (n == 1 ? " palette colour is" : " palette colours are")
+                  << " rounded to the 64 levels a channel XBIN holds\n";
     if (res.fontDropped)
         std::cerr << "blockwright-cli: warning: " << in << ": its font is left out: only XBIN holds one\n";
     if (res.letterSpacingDropped)
@@ -416,8 +429,59 @@ void refuseProjectOutput(const char* cmd, const char* writes, const QString& out
                       "; use pack for a project"};
 }
 
-int convert(const std::string& in, const std::string& out, bool allowLossy) {
-    saveAnsi(in, out, load(in), allowLossy);
+// A --palette or --fit-palette value: a preset's name, else a palette
+// file. The standard palette is nothing, as a document without one.
+std::optional<bw::Palette> paletteValue(const QString& v) {
+    if (const bw::PalettePreset* p = bw::palettePreset(v.toStdString()))
+        return p->colours == bw::kPalette ? std::nullopt : std::optional(p->colours);
+    const std::string path = v.toStdString();
+    if (!QFileInfo(v).isFile()) {
+        std::string names;
+        for (const bw::PalettePreset& p : bw::palettePresets())
+            names += std::string(names.empty() ? "" : ", ") + std::string(p.name);
+        throw Usage{"--palette takes a preset (" + names + ") or a palette file, not '" + path + "'"};
+    }
+    std::string error;
+    int colours = 0;
+    const std::optional<bw::Palette> p = bw::readPaletteFile(path, readFile(path, kMaxFlatBytes), &error, &colours);
+    if (!p)
+        throw Failure{path + ": " + error};
+    if (colours > 16)
+        std::cerr << "blockwright-cli: note: " << path << ": " << colours << " colours; the first 16 are the palette\n";
+    if (*p == bw::kPalette)
+        return std::nullopt;
+    return p;
+}
+
+int convert(const std::string& in, const std::string& out, bool allowLossy,
+            const std::optional<std::optional<bw::Palette>>& palette) {
+    bw::AnsiDocument doc = load(in);
+    if (palette)
+        doc.palette = *palette;
+    saveAnsi(in, out, doc, allowLossy);
+    return kOk;
+}
+
+// remap: the cells' colour indices mapped by `map`, or fitted to `fit`
+// (the palette becomes it and each index the nearest of its entries), then
+// written as convert writes.
+int remap(const std::string& in, const std::string& out, const std::optional<bw::ColourMap>& map,
+          const std::optional<std::optional<bw::Palette>>& fit, bool allowLossy) {
+    bw::AnsiDocument doc = load(in);
+    bw::ColourMap m = map.value_or(bw::identityColourMap());
+    int lost = 0;
+    if (fit) {
+        const bw::Palette from = doc.palette.value_or(bw::kPalette), to = fit->value_or(bw::kPalette);
+        m = bw::fitColourMap(from, to);
+        lost = bw::fitLoss(doc.canvas, from, to, m);
+        doc.palette = *fit;
+    }
+    const int n = bw::remapCanvas(doc.canvas, m);
+    std::cout << in << ": " << n << (n == 1 ? " cell" : " cells") << " remapped\n";
+    if (lost)
+        std::cerr << "blockwright-cli: warning: " << in << ": " << lost << (lost == 1 ? " cell shows" : " cells show")
+                  << " another colour: the new palette has no entry that matches\n";
+    saveAnsi(in, out, doc, allowLossy);
     return kOk;
 }
 
@@ -437,7 +501,7 @@ void refuseSameFile(const std::string& in, const std::string& out) {
 
 // An .ans (or XBIN, BIN) as a one-layer project, opened as the editor opens
 // it (a warning for blink that loses), or a project as it is. A project
-// doesn't keep an XBIN's palette or font: a warning for each, and nothing is
+// keeps an XBIN's palette but not its font: a warning for that, and nothing is
 // written to `out` without allowLossy, as convert refuses. Blink is lost on
 // opening, as the editor loses it, so it is only warned of. `target` and
 // `colours`, when given, are the project's target and IRC colours (a flat
@@ -453,12 +517,11 @@ bw::project::Project asProject(const std::string& in, const std::string& out, bo
     bw::Opened opened;
     bw::AnsiDocument doc = load(in);
     bw::AnsiOutput loss;
-    loss.paletteDropped = bw::customPalette(doc);
     loss.fontDropped = doc.font.has_value();
     bw::project::Project p = bw::project::fromAnsi(doc, &opened);
     loss.blinkDropped = opened.blinkDropped;
     warnLoss(in, loss);
-    if ((loss.paletteDropped || loss.fontDropped) && !allowLossy)
+    if (loss.fontDropped && !allowLossy)
         throw Failure{out + ": not written: the project loses data (--allow-lossy writes it anyway)"};
     p.target = target.value_or(bw::Target::Ansi);
     p.ircColours = colours.value_or(bw::IrcColours::Mirc99);
@@ -874,12 +937,14 @@ int shade(const std::string& in, const std::string& out, ShadeOptions o, const s
 // with the same options (ircSend), cut at the budget, and a line on stdout
 // saying how many rows the cut reaches.
 int render(const std::string& in, const std::string& out, const bw::RenderOptions& opts,
-           const std::optional<IrcArgs>& irc) {
+           const std::optional<IrcArgs>& irc, const std::optional<std::optional<bw::Palette>>& palette) {
     refuseSameFile(in, out);
     std::optional<IrcSend> send;
     if (irc)
         send = ircSend(in, *irc);
-    const bw::AnsiDocument doc = send ? send->doc : load(in);
+    bw::AnsiDocument doc = send ? send->doc : load(in);
+    if (palette)
+        doc.palette = *palette;
     if (doc.sauce && doc.sauce->aspectRatio() == 1)
         std::cerr << "blockwright-cli: note: " << in
                   << ": SAUCE asks for the legacy (stretched) aspect ratio; the PNG has square pixels\n";
@@ -1058,6 +1123,16 @@ mouse button (default left).
                  bottom-left|bottom|bottom-right (top-left): Format >
                  Canvas Size..., applied as the dialog applies it; the
                  selection moves with the cells and is cut to the canvas
+  palette        palette "preset": cga|cga-yellow|xterm|windows|campbell|
+                 mirc or "colours": [16 "#rrggbb"]: Colours > Palette,
+                 the piece's palette, no cell changed; fitToPalette, the
+                 same keys: Colours > Fit to Palette, every cells, pixels
+                 and plain text layer mapped to the nearest entries, the
+                 colours its style names too, a note counting the cells
+                 that show another colour and the layers left;
+                 remapColours "map": "3=11,11=3" (or 16 hex digits),
+                 "scope": selection|layer|document (layer): Colours >
+                 Remap Colours...
 
   view           the window's view, for blockwright --screenshot only:
                  "zoom" 1-8, "scrollTo" [x, y] (a cell on the canvas, put
@@ -1086,8 +1161,8 @@ before the step. A clone step's "source" is clicked before its stroke: the
 pointer is there before the step, and after it too when the step has no
 "points". A step with none, or a point the picture doesn't show, is refused.
 
-A tool step without points only sets Tool Options. Any step but a view or
-canvasSize step may set Tool Options, which hold for the steps after it (but
+A tool step without points only sets Tool Options. Any step but a view,
+canvasSize or palette step may set Tool Options, which hold for the steps after it (but
 for "aligned", which only clone takes, "sampleMerged", which only fill and
 eyedropper take, and "textOptions", which only text takes):
 
@@ -1588,8 +1663,19 @@ int main(int argc, char** argv) {
         "                       <in>, which is rewritten in place (export and\n"
         "                       render refuse to write over their input); a\n"
         "                       .bwp <out> is refused: pack writes a project\n"
-        "  render <in> <out>    draw an .ans as a PNG with the IBM VGA font; a .bwp\n"
-        "                       <out> is refused\n"
+        "  render <in> <out>    draw an .ans as a PNG in its own palette (an XBIN's\n"
+        "                       or a project's) or the one --palette gives, with\n"
+        "                       the IBM VGA font; a .bwp <out> is refused\n"
+        "  remap --map M <in> <out>\n"
+        "                       map the cells' colour indices (3=11,11=3 swaps 3\n"
+        "                       and 11; or 16 hex digits, digit n what n becomes)\n"
+        "                       and write as convert writes\n"
+        "  remap --fit-palette P <in> <out>\n"
+        "                       give the piece palette P and map each index to\n"
+        "                       the entry of P nearest its colour, so it looks the\n"
+        "                       same as near as P allows (the cells that don't are\n"
+        "                       counted); --fit-palette cga before a .bin or .ans\n"
+        "                       save keeps an XBIN's look\n"
         "  export --irc <in> <out>\n"
         "                       write IRC text (mIRC colour codes) and report each\n"
         "                       line's size in bytes; a project's own budget is\n"
@@ -1677,8 +1763,9 @@ int main(int argc, char** argv) {
         "  pack <in> <out.bwp>  write an .ans or a project as a project zip\n"
         "  unpack <in> <dir>    write an .ans or a project as a project directory;\n"
         "                       <dir> must be empty or a project already. A\n"
-        "                       project can't hold an XBIN's palette or font:\n"
-        "                       pack and unpack drop them only with --allow-lossy.\n"
+        "                       project keeps an XBIN's palette but can't hold its\n"
+        "                       font: pack and unpack drop it only with\n"
+        "                       --allow-lossy.\n"
         "                       --target ansi|irc|micron sets the project's target\n"
         "                       and --colours 16|99 its IRC colours (default: a\n"
         "                       project's own, else ansi and 99)\n"
@@ -1712,9 +1799,11 @@ int main(int argc, char** argv) {
         "                       --render); replay --help gives the format\n\n"
         "Every command that reads an .ans also reads an XBIN (.xb) or BIN (.bin),\n"
         "and a project (a .bwp zip or a project directory) as its flattened\n"
-        "composite. convert and shade write XBIN to an <out> named .xb and BIN\n"
-        "to one named .bin. convert, shade, export --irc and render refuse an\n"
-        "<out> named .bwp: pack writes a project.\n\n"
+        "composite. convert, shade and remap write XBIN to an <out> named .xb and\n"
+        "BIN to one named .bin. Only XBIN and a project hold a palette: an .ans or\n"
+        "BIN <out> of a piece with its own palette is lossy (--allow-lossy).\n"
+        "convert, shade, export --irc and render refuse an <out> named .bwp:\n"
+        "pack writes a project.\n\n"
         "An .ans is read as CP437, or as UTF-8 when it starts with a byte order\n"
         "mark or is all well-formed UTF-8 with a sequence of three bytes or more\n"
         "(the block and box glyphs terminals draw with); --encoding cp437 or\n"
@@ -1727,8 +1816,25 @@ int main(int argc, char** argv) {
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
     const QCommandLineOption lossyOpt(QStringLiteral("allow-lossy"),
-                                      QStringLiteral("convert, shade, pack, unpack, snapshot, replay: write even if something can't be represented"));
+                                      QStringLiteral("convert, shade, remap, pack, unpack, snapshot, replay: write even if something can't be represented"));
     parser.addOption(lossyOpt);
+    const QCommandLineOption paletteOpt(
+        QStringLiteral("palette"),
+        QStringLiteral("convert, render: give the piece this palette, a preset (cga, cga-yellow, xterm, windows, "
+                       "campbell, mirc) or a palette file (an XBIN, GIMP .gpl, JASC .pal or hex colours a line); "
+                       "the cells stay"),
+        QStringLiteral("P"));
+    parser.addOption(paletteOpt);
+    const QCommandLineOption mapOpt(
+        QStringLiteral("map"),
+        QStringLiteral("remap: what each colour index becomes, FROM=TO pairs (3=11,11=3) or 16 hex digits"),
+        QStringLiteral("M"));
+    parser.addOption(mapOpt);
+    const QCommandLineOption fitPaletteOpt(
+        QStringLiteral("fit-palette"),
+        QStringLiteral("remap: give the piece this palette (as --palette) and map each index to its nearest entry"),
+        QStringLiteral("P"));
+    parser.addOption(fitPaletteOpt);
     const QCommandLineOption scaleOpt(QStringLiteral("scale"),
                                       QStringLiteral("render, replay --render: integer zoom, nearest neighbour (1-8, default 1)"),
                                       QStringLiteral("N"), QStringLiteral("1"));
@@ -1877,14 +1983,14 @@ int main(int argc, char** argv) {
     parser.addOption(dateOpt);
     const QCommandLineOption encodingOpt(
         QStringLiteral("encoding"),
-        QStringLiteral("info, convert, render, export, shade, lint, pack, unpack: read each .ans input as auto, "
+        QStringLiteral("info, convert, render, remap, export, shade, lint, pack, unpack: read each .ans input as auto, "
                        "cp437 or utf-8 (default: auto, UTF-8 when it has a byte order mark or is all well-formed "
                        "UTF-8 with a sequence of three bytes or more, else CP437)"),
         QStringLiteral("enc"), QStringLiteral("auto"));
     parser.addOption(encodingOpt);
     const QCommandLineOption outputEncodingOpt(
         QStringLiteral("output-encoding"),
-        QStringLiteral("convert, shade, snapshot, replay: write an .ans output as cp437 or utf-8 (default: cp437, "
+        QStringLiteral("convert, shade, remap, snapshot, replay: write an .ans output as cp437 or utf-8 (default: cp437, "
                        "and for snapshot the project's encoding; SAUCE stays CP437)"),
         QStringLiteral("enc"), QStringLiteral("cp437"));
     parser.addOption(outputEncodingOpt);
@@ -1916,7 +2022,7 @@ int main(int argc, char** argv) {
         QStringLiteral("replay: the user library placeStamp steps find stamps in and saveToLibrary steps save to"),
         QStringLiteral("dir"));
     parser.addOption(userLibraryOpt);
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators, import-scene or replay"));
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("info, convert, render, remap, export, shade, lint, library, pack, unpack, snapshot, add-generator, run-generators, import-scene or replay"));
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("command arguments"), QStringLiteral("[args...]"));
     if (!parser.parse(QCoreApplication::arguments())) {
         std::cerr << "blockwright-cli: " << parser.errorText().toStdString() << "\n";
@@ -1943,8 +2049,9 @@ int main(int argc, char** argv) {
     const QStringList args = parser.positionalArguments();
     auto usage = [](const char* msg) {
         std::cerr << "blockwright-cli: " << msg << "\n"
-                  << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out>\n"
-                  << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
+                  << "usage: blockwright-cli info <file> | convert [--allow-lossy] [--palette P] <in> <out>\n"
+                  << "       | render [--scale N] [--font-width 8|9] [--palette P] <in> <out.png>\n"
+                  << "       | remap --map M | --fit-palette P [--allow-lossy] <in> <out>\n"
                   << "       | export --irc [--budget N] [--fit] [--pad] [--swap-shades] [--colours 16|99]\n"
                   << "         [--allow-over-budget] <in> <out>\n"
                   << "       | export --micron [--centre] [--cache S] <in> <out.mu>\n"
@@ -1969,7 +2076,7 @@ int main(int argc, char** argv) {
                   << "         [--user-library <dir>] <steps.json> -o <dir>   (replay --help gives the steps format)\n"
                   << "       | --version\n"
                   << "       info, convert, render, export, shade, lint, pack and unpack take --encoding auto|cp437|utf-8\n"
-                  << "       convert, shade, snapshot and replay take --output-encoding cp437|utf-8\n";
+                  << "       convert, shade, remap, snapshot and replay take --output-encoding cp437|utf-8\n";
         return kUsage;
     };
     if (args.isEmpty())
@@ -1977,7 +2084,8 @@ int main(int argc, char** argv) {
     const QString cmd = args.first();
     // Each option belongs to its commands; every other command refuses it.
     const std::pair<const QCommandLineOption*, std::vector<const char*>> owners[] = {
-        {&lossyOpt, {"convert", "shade", "pack", "unpack", "snapshot", "replay"}},
+        {&lossyOpt, {"convert", "shade", "remap", "pack", "unpack", "snapshot", "replay"}},
+        {&paletteOpt, {"convert", "render"}}, {&mapOpt, {"remap"}}, {&fitPaletteOpt, {"remap"}},
         {&scaleOpt, {"render", "replay"}}, {&fontWidthOpt, {"render", "replay"}},
         {&ircOpt, {"export", "render"}},   {&budgetOpt, {"export", "render"}}, {&overOpt, {"export"}},
         {&micronOpt, {"export"}},          {&centreOpt, {"export"}}, {&cacheOpt, {"export"}},
@@ -1991,14 +2099,15 @@ int main(int argc, char** argv) {
         {&categoryOpt, {"library"}},       {&tagsOpt, {"library"}},     {&layerOpt, {"run-generators"}},
         {&timeoutOpt, {"add-generator", "run-generators", "import-scene"}},
         {&bakeOpt, {"import-scene"}},      {&authorOpt, {"import-scene"}}, {&dateOpt, {"import-scene"}},
-        {&encodingOpt, {"info", "convert", "render", "export", "shade", "lint", "pack", "unpack"}},
-        {&outputEncodingOpt, {"convert", "shade", "snapshot", "replay"}},
+        {&encodingOpt, {"info", "convert", "render", "remap", "export", "shade", "lint", "pack", "unpack"}},
+        {&outputEncodingOpt, {"convert", "shade", "remap", "snapshot", "replay"}},
         {&targetOpt, {"lint", "pack", "unpack"}},
         {&coloursOpt, {"export", "render", "lint", "pack", "unpack"}},
         {&outputOpt, {"replay"}},          {&projectOpt, {"replay"}}, {&renderOpt, {"replay"}},
         {&userLibraryOpt, {"replay"}},
     };
     if (cmd == QLatin1String("info") || cmd == QLatin1String("convert") || cmd == QLatin1String("render") ||
+        cmd == QLatin1String("remap") ||
         cmd == QLatin1String("export") || cmd == QLatin1String("shade") || cmd == QLatin1String("lint") ||
         cmd == QLatin1String("library") ||
         cmd == QLatin1String("pack") || cmd == QLatin1String("unpack") || cmd == QLatin1String("snapshot") ||
@@ -2058,7 +2167,29 @@ int main(int argc, char** argv) {
                 return usage("convert takes an input and an output file");
             refuseProjectOutput("convert", ".ans, .xb or .bin", args[2]);
             refuseUtf8Binary(args[2]);
-            return convert(args[1].toStdString(), args[2].toStdString(), parser.isSet(lossyOpt));
+            std::optional<std::optional<bw::Palette>> palette;
+            if (parser.isSet(paletteOpt))
+                palette = paletteValue(parser.value(paletteOpt));
+            return convert(args[1].toStdString(), args[2].toStdString(), parser.isSet(lossyOpt), palette);
+        }
+        if (cmd == QLatin1String("remap")) {
+            if (parser.isSet(mapOpt) == parser.isSet(fitPaletteOpt))
+                return usage("remap needs one of --map M or --fit-palette P");
+            if (args.size() != 3)
+                return usage("remap takes an input and an output file");
+            refuseProjectOutput("remap", ".ans, .xb or .bin", args[2]);
+            refuseUtf8Binary(args[2]);
+            std::optional<bw::ColourMap> map;
+            std::optional<std::optional<bw::Palette>> fit;
+            if (parser.isSet(mapOpt)) {
+                std::string error;
+                map = bw::parseColourMap(parser.value(mapOpt).toStdString(), &error);
+                if (!map)
+                    return usage(("--map: " + error).c_str());
+            } else {
+                fit = paletteValue(parser.value(fitPaletteOpt));
+            }
+            return remap(args[1].toStdString(), args[2].toStdString(), map, fit, parser.isSet(lossyOpt));
         }
         if (cmd == QLatin1String("render")) {
             if (args.size() != 3)
@@ -2075,7 +2206,13 @@ int main(int argc, char** argv) {
             std::optional<IrcArgs> irc;
             if (parser.isSet(ircOpt))
                 irc = ircArgs();
-            return render(args[1].toStdString(), args[2].toStdString(), opts, irc);
+            // the IRC view draws in mIRC's colours, by index (PLAN §8, Palettes)
+            if (irc && parser.isSet(paletteOpt))
+                return usage("--palette is not a render --irc option: the IRC view draws mIRC's colours");
+            std::optional<std::optional<bw::Palette>> palette;
+            if (parser.isSet(paletteOpt))
+                palette = paletteValue(parser.value(paletteOpt));
+            return render(args[1].toStdString(), args[2].toStdString(), opts, irc, palette);
         }
         if (cmd == QLatin1String("export")) {
             if (parser.isSet(ircOpt) == parser.isSet(micronOpt))

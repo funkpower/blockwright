@@ -531,10 +531,10 @@ TEST_CASE("an XBIN's palette and font are kept by an XBIN save and lost after a 
     REQUIRE(w.saveFile(plain, &error));
     CHECK(bwtest::readFile(plain.toStdString()) == bwtest::readFile(bwtest::dataDir() / "xbin" / "tux.xb"));
 
-    // and a project save drops them too
+    // and a project save drops the font; it keeps the palette (#497)
     REQUIRE(w.openFile(qpath(pf), &error));
     REQUIRE(w.saveFile(bwp, &error, true));
-    CHECK_FALSE(w.document()->ansi().palette);
+    CHECK(w.document()->ansi().palette == parseXbin(bwtest::readFile(pf)).palette);
     CHECK_FALSE(w.document()->ansi().font);
 }
 

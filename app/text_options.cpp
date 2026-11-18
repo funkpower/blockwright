@@ -1,4 +1,5 @@
 #include "text_options.h"
+#include "shown_palette.h"
 
 #include "canvas_view.h"
 #include "document.h"
@@ -22,12 +23,6 @@ namespace bw {
 
 namespace {
 
-QIcon swatch(int index) {
-    QPixmap pm(16, 16);
-    const Rgb c = kPalette[size_t(index) & 15];
-    pm.fill(QColor(c.r, c.g, c.b));
-    return QIcon(pm);
-}
 
 } // namespace
 
@@ -76,7 +71,9 @@ TextOptions::TextOptions(CanvasView* view, TextTool* tool, QWidget* parent)
                                tr("Dark grey"),  tr("Light blue"),  tr("Light green"), tr("Light cyan"),
                                tr("Light red"),  tr("Light magenta"), tr("Yellow"),    tr("White")};
     for (int i = 0; i < 16; ++i)
-        colour_->addItem(swatch(i), names[i], i);
+        colour_->addItem(swatchIcon(i), names[i], i);
+    markSwatches(colour_, SwatchList::Colours);
+    connect(&ShownPalette::instance(), &ShownPalette::changed, this, [this] { refreshSwatches(this); });
     colour_->setToolTip(tr("The letters' colour"));
     // It narrows with the column, its name cut short, rather than make the
     // options scroll sideways: "Light magenta" alone is wider than the rest

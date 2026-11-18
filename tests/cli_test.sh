@@ -164,8 +164,8 @@ expect "info --encoding cp437 reads it as CP437" 0 '^encoding: +CP437$' -- "$cli
 expect "info --encoding UTF-8 reads a CP437 file as UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info --encoding UTF-8 "$piece"
 expect "info --encoding auto" 0 '^encoding: +UTF-8$' -- "$cli" info --encoding auto "$u8"
 expect "--encoding with a bad value is refused" 2 "--encoding takes auto, cp437 or utf-8, not 'latin1'" -- "$cli" info --encoding latin1 "$u8"
-expect "--encoding on library is refused" 2 '--encoding is an info, convert, render, export, shade, lint, pack or unpack option, not a library option' -- "$cli" library --encoding cp437
-expect "--help lists --encoding" 0 '^  --encoding <enc> +info, convert, render, export, shade, lint, pack,$' -- "$cli" --help
+expect "--encoding on library is refused" 2 '--encoding is an info, convert, render, remap, export, shade, lint, pack or unpack option, not a library option' -- "$cli" library --encoding cp437
+expect "--help lists --encoding" 0 '^  --encoding <enc> +info, convert, render, remap, export, shade, lint,$' -- "$cli" --help
 expect "info: an XBIN has no encoding line" 1 '' -- grep -q '^encoding:' <("$cli" info "$tmp/tux.xb")
 expect "convert a UTF-8 .ans" 0 '^$' -- "$cli" convert "$u8" "$tmp/from-u8.ans"
 if cmp -s "$piece" "$tmp/from-u8.ans"; then ok "a UTF-8 .ans converts to the CP437 piece, byte for byte"; else bad "convert of the UTF-8 piece differs from the CP437 piece"; fi
@@ -211,7 +211,7 @@ done
 expect "--output-encoding with a bad value is refused" 2 "--output-encoding takes cp437 or utf-8, not 'auto'" -- "$cli" convert --output-encoding auto "$piece" "$tmp/bad-enc.ans"
 if [[ -e $tmp/bad-enc.ans ]]; then bad "a bad --output-encoding wrote a file"; else ok "a bad --output-encoding writes nothing"; fi
 for cmd in info lint render export pack; do
-  expect "--output-encoding on $cmd is refused" 2 "--output-encoding is a convert, shade, snapshot or replay option, not an? $cmd option" -- "$cli" "$cmd" --output-encoding utf-8 "$piece" "$tmp/x"
+  expect "--output-encoding on $cmd is refused" 2 "--output-encoding is a convert, shade, remap, snapshot or replay option, not an? $cmd option" -- "$cli" "$cmd" --output-encoding utf-8 "$piece" "$tmp/x"
 done
 for out in tux-u8.xb tux-u8.XBIN tux-u8.bin; do
   expect "--output-encoding utf-8 to $out is refused" 2 "--output-encoding utf-8 writes an \.ans; .*${out//./\\.} is XBIN or BIN, which are CP437" -- "$cli" convert --output-encoding utf-8 "$piece" "$tmp/$out"
@@ -239,10 +239,10 @@ expect "info: shade wrote UTF-8" 0 '^encoding: +UTF-8$' -- "$cli" info "$tmp/sha
 "$cli" convert "$tmp/shade-u8.ans" "$tmp/shade-u8-cp.ans"
 if cmp -s "$tmp/shade-cp.ans" "$tmp/shade-u8-cp.ans"; then ok "shade's UTF-8 output is its CP437 output's cells"; else bad "shade UTF-8 and CP437 outputs differ"; fi
 expect "shade --output-encoding utf-8 to a .bin is refused" 2 'is XBIN or BIN, which are CP437' -- "$cli" shade --ramp steel --output-encoding utf-8 "$piece" "$tmp/shade.bin"
-expect "--help lists --output-encoding" 0 '^  --output-encoding <enc> +convert, shade, snapshot, replay: write an \.ans$' -- "$cli" --help
+expect "--help lists --output-encoding" 0 '^  --output-encoding <enc> +convert, shade, remap, snapshot, replay: write an$' -- "$cli" --help
 expect "--help says convert, shade and replay write UTF-8 with it" 0 '^and replay write an \.ans as CP437, or as UTF-8 with --output-encoding$' -- "$cli" --help
 expect "--help says snapshot writes the project's encoding" 0 "^sequence of three bytes or more\\)\\. snapshot writes the project's own$" -- "$cli" --help
-expect "the usage says convert, shade, snapshot and replay take it" 2 '^ +convert, shade, snapshot and replay take --output-encoding cp437\|utf-8$' -- "$cli" convert
+expect "the usage says convert, shade, remap, snapshot and replay take it" 2 '^ +convert, shade, remap, snapshot and replay take --output-encoding cp437\|utf-8$' -- "$cli" convert
 cp "$tmp/tux.xb" "$tmp/tux-xb.ans"
 expect "an XBIN is read by its header whatever its name" 0 '^format: +XBIN' -- "$cli" info "$tmp/tux-xb.ans"
 expect "convert .xb to .ans" 0 '^$' -- "$cli" convert "$tmp/tux.xb" "$tmp/from-xb.ans"
@@ -255,7 +255,7 @@ if cmp -s "$xb/tux.xb" "$tmp/again.xb"; then ok ".ans -> .xb -> .ans -> .xb is t
 expect "info: XBIN palette" 0 '^palette: +custom$' -- "$cli" info "$xb/tux-palette-font.xb"
 expect "info: XBIN font" 0 '^font: +8x8$' -- "$cli" info "$xb/tux-palette-font.xb"
 expect "info: no XBIN palette" 0 '^palette: +none$' -- "$cli" info "$tmp/tux.xb"
-expect "XBIN palette lost as .ans: refused" 1 'tux-palette-font\.xb: its palette is left out: only XBIN holds one' -- \
+expect "XBIN palette lost as .ans: refused" 1 'tux-palette-font\.xb: its palette is left out: only XBIN and a project hold one' -- \
   "$cli" convert "$xb/tux-palette-font.xb" "$tmp/pf.ans"
 expect "XBIN font lost as .bin: refused" 1 'tux-palette-font\.xb: its font is left out: only XBIN holds one' -- \
   "$cli" convert "$xb/tux-palette-font.xb" "$tmp/pf.bin"
@@ -264,21 +264,103 @@ expect "XBIN palette and font: --allow-lossy writes" 0 'its palette is left out'
   "$cli" convert --allow-lossy "$xb/tux-palette-font.xb" "$tmp/pf.ans"
 expect "XBIN to XBIN keeps the palette and font" 0 '^$' -- "$cli" convert "$xb/tux-palette-font.xb" "$tmp/pf.xb"
 if cmp -s "$xb/tux-palette-font.xb" "$tmp/pf.xb"; then ok "XBIN with a palette and font rewrites byte for byte"; else bad "XBIN with a palette and font differs rewritten"; fi
-# a project holds no palette or font either: pack and unpack refuse to drop them
-expect "pack: XBIN palette and font lost: refused" 1 \
+# a project holds no font either: pack and unpack refuse to drop it (#497: it keeps the palette)
+expect "pack: XBIN font lost: refused" 1 \
   'pf\.bwp: not written: the project loses data \(--allow-lossy writes it anyway\)' -- \
   "$cli" pack "$xb/tux-palette-font.xb" "$tmp/pf.bwp"
-expect "unpack: XBIN palette and font lost: refused" 1 \
+expect "unpack: XBIN font lost: refused" 1 \
   'pf-dir: not written: the project loses data \(--allow-lossy writes it anyway\)' -- \
   "$cli" unpack "$xb/tux-palette-font.xb" "$tmp/pf-dir"
 if [[ -e $tmp/pf.bwp || -e $tmp/pf-dir ]]; then bad "refused pack or unpack left a project"; else ok "refused pack and unpack write nothing"; fi
-expect "pack --allow-lossy writes without the palette" 0 'its palette is left out' -- \
+expect "pack --allow-lossy writes without the font" 0 'its font is left out' -- \
   "$cli" pack --allow-lossy "$xb/tux-palette-font.xb" "$tmp/pf.bwp"
+out=$("$cli" pack --allow-lossy "$xb/tux-palette-font.xb" "$tmp/pf2.bwp" 2>&1)
+if [[ $out == *"its palette"* ]]; then bad "pack warns of a palette a project keeps: $out"; else ok "pack doesn't warn of the palette"; fi
+expect "the packed project keeps the XBIN's palette" 0 '^palette: +custom$' -- "$cli" info "$tmp/pf.bwp"
+expect "an XBIN converted from the packed project has the palette again" 0 '^$' -- \
+  "$cli" convert "$tmp/pf.bwp" "$tmp/pf-again.xb"
+expect "info: the XBIN made from the project has its palette" 0 '^palette: +custom$' -- "$cli" info "$tmp/pf-again.xb"
 expect "unpack --allow-lossy writes without the font" 0 'its font is left out' -- \
   "$cli" unpack --allow-lossy "$xb/tux-palette-font.xb" "$tmp/pf-dir"
 expect "the packed project is the XBIN's cells" 0 '^size: +30x17$' -- "$cli" info "$tmp/pf.bwp"
 [[ -f $tmp/pf-dir/manifest.json ]] && ok "unpack --allow-lossy wrote the project" || bad "unpack --allow-lossy wrote no project"
 expect "pack: an XBIN without a palette or font is not lossy" 0 '^$' -- "$cli" pack "$tmp/tux.xb" "$tmp/tux-xb.bwp"
+# #497: palettes. render draws an XBIN in its own palette, --palette gives
+# another; convert --palette sets one; remap maps indices or fits a palette.
+expect "render: an XBIN in its own palette" 0 '^$' -- "$cli" render "$xb/tux-palette-font.xb" "$tmp/pf.png"
+expect "render: --palette cga draws it in the standard colours" 0 '^$' -- \
+  "$cli" render --palette cga "$xb/tux-palette-font.xb" "$tmp/pf-cga.png"
+# the same cells and font without the palette
+expect "convert --palette cga keeps the font" 0 '^$' -- \
+  "$cli" convert --palette cga "$xb/tux-palette-font.xb" "$tmp/font-only.xb"
+expect "render: the XBIN with its font and no palette" 0 '^$' -- "$cli" render "$tmp/font-only.xb" "$tmp/plain.png"
+if cmp -s "$tmp/pf-cga.png" "$tmp/plain.png"; then ok "render --palette cga is the standard-palette render"; else bad "render --palette cga differs from the standard-palette render"; fi
+if cmp -s "$tmp/pf.png" "$tmp/plain.png"; then bad "an XBIN's own palette doesn't show in render"; else ok "an XBIN's own palette shows in render"; fi
+expect "render: --palette names a palette file" 0 '^$' -- \
+  "$cli" render --palette "$xb/tux-palette-font.xb" "$tmp/font-only.xb" "$tmp/pf-file.png"
+if cmp -s "$tmp/pf-file.png" "$tmp/pf.png"; then ok "render --palette <xbin> draws in that XBIN's palette"; else bad "render --palette <xbin> differs from the XBIN's own render"; fi
+# by its pixels: the PNG's bytes depend on the zlib that wrote it
+if [[ -z ${BW_PNG_SAME:-} ]]; then echo "skip render of the XBIN against the golden PNG: no BW_PNG_SAME in a cross build"
+elif "$BW_PNG_SAME" "$tmp/pf.png" "$xb/tux-palette-font.png"; then ok "render of the XBIN is the golden PNG, its palette and font"
+else bad "render of the XBIN differs from the golden PNG"; fi
+if [[ -n ${BW_PNG_SAME:-} ]]; then
+  "$BW_PNG_SAME" "$tmp/pf.png" "$tmp/plain.png" 2>/dev/null; st=$?
+  if [[ $st -eq 1 ]]; then ok "BW_PNG_SAME tells the palettes' renders apart"; else bad "BW_PNG_SAME on two different renders: exit $st, wanted 1"; fi
+fi
+expect "render: an unknown palette" 2 "--palette takes a preset \(cga, cga-yellow, xterm, windows, campbell, mirc\) or a palette file, not 'nope'" -- \
+  "$cli" render --palette nope "$piece" "$tmp/x.png"
+printf 'ff0000\n00ff00\n' > "$tmp/short.hex"
+expect "render: a palette file of 2 colours" 1 'short\.hex: the palette has 2 colours; it needs 16' -- \
+  "$cli" render --palette "$tmp/short.hex" "$piece" "$tmp/x.png"
+expect "render --irc takes no --palette" 2 '--palette is not a render --irc option' -- \
+  "$cli" render --irc --palette xterm "$piece" "$tmp/x.png"
+expect "--palette is a convert or render option" 2 '--palette is a convert or render option, not a shade option' -- \
+  "$cli" shade --ramp steel --palette xterm "$piece" "$tmp/x.ans"
+# xterm's colours aren't all 6-bit ones: an XBIN rounds them, a loss
+expect "convert --palette xterm to XBIN: rounded, refused" 1 'tux\.ans: [0-9]+ palette colours are rounded to the 64 levels a channel XBIN holds' -- \
+  "$cli" convert --palette xterm "$piece" "$tmp/xterm.xb"
+expect "convert --palette xterm to XBIN with --allow-lossy" 0 'palette colours are rounded' -- \
+  "$cli" convert --allow-lossy --palette xterm "$piece" "$tmp/xterm.xb"
+expect "info: the converted XBIN's palette" 0 '^palette: +custom$' -- "$cli" info "$tmp/xterm.xb"
+expect "convert --palette to .ans: the palette is lost" 1 'its palette is left out' -- \
+  "$cli" convert --palette xterm "$piece" "$tmp/xterm.ans"
+expect "the rounded XBIN rewrites with nothing lost" 0 '^$' -- "$cli" convert "$tmp/xterm.xb" "$tmp/xterm2.xb"
+expect "convert --palette cga takes an XBIN's palette away" 0 '^$' -- \
+  "$cli" convert --palette cga "$xb/tux-palette-font.xb" "$tmp/std.xb"
+expect "info: no palette after --palette cga" 0 '^palette: +none$' -- "$cli" info "$tmp/std.xb"
+expect "remap --map swaps two colours" 0 'tux\.ans: [1-9][0-9]* cells remapped' -- \
+  "$cli" remap --map 0=15,15=0 "$piece" "$tmp/swapped.ans"
+expect "remap --map back" 0 'cells remapped' -- "$cli" remap --map 0=15,15=0 "$tmp/swapped.ans" "$tmp/back.ans"
+if cmp -s "$tmp/back.ans" "$tmp/tux.ans"; then ok "a swap done twice gives the piece back"; else bad "a swap done twice differs"; fi
+expect "remap --map as 16 hex digits" 0 'cells remapped' -- \
+  "$cli" remap --map f123456789abcde0 "$piece" "$tmp/swapped-hex.ans"
+if cmp -s "$tmp/swapped-hex.ans" "$tmp/swapped.ans"; then ok "the hex map is the pairs' map"; else bad "the hex map differs from the pairs"; fi
+expect "remap: a bad map" 2 '--map: "3=16" is not a pair FROM=TO of colours 0-15' -- \
+  "$cli" remap --map 3=16 "$piece" "$tmp/x.ans"
+expect "remap needs one of --map or --fit-palette" 2 'remap needs one of --map M or --fit-palette P' -- \
+  "$cli" remap "$piece" "$tmp/x.ans"
+expect "remap takes only one of them" 2 'remap needs one of --map M or --fit-palette P' -- \
+  "$cli" remap --map 1=2 --fit-palette cga "$piece" "$tmp/x.ans"
+expect "remap to a .bwp is refused" 1 'remap writes \.ans, \.xb or \.bin; use pack for a project' -- \
+  "$cli" remap --map 1=2 "$piece" "$tmp/x.bwp"
+# fit to the standard palette: an XBIN whose palette is the standard one
+# reversed fits back exactly, and its BIN then loses nothing
+expect "remap every index to its mirror" 0 'cells remapped' -- \
+  "$cli" remap --map fedcba9876543210 "$piece" "$tmp/rev-cells.ans"
+printf '%s\n' ffffff ffff55 ff55ff ff5555 55ffff 55ff55 5555ff 555555 aaaaaa aa5500 aa00aa aa0000 00aaaa 00aa00 0000aa 000000 > "$tmp/reversed.hex"
+expect "an XBIN in the reversed palette with reversed cells" 0 '^$' -- \
+  "$cli" convert --palette "$tmp/reversed.hex" "$tmp/rev-cells.ans" "$tmp/rev.xb"
+expect "render: the reversed XBIN looks like the piece" 0 '^$' -- "$cli" render "$tmp/rev.xb" "$tmp/rev.png"
+expect "render: the piece" 0 '^$' -- "$cli" render "$tmp/tux.ans" "$tmp/tux.png"
+if cmp -s "$tmp/rev.png" "$tmp/tux.png"; then ok "reversed cells in a reversed palette draw as the piece"; else bad "reversed cells in a reversed palette draw otherwise"; fi
+expect "the reversed XBIN as BIN loses its palette" 1 'its palette is left out' -- "$cli" convert "$tmp/rev.xb" "$tmp/rev.bin"
+expect "remap --fit-palette cga to BIN loses nothing" 0 'cells remapped' -- \
+  "$cli" remap --fit-palette cga "$tmp/rev.xb" "$tmp/rev.bin"
+expect "render: the fitted BIN" 0 '^$' -- "$cli" render "$tmp/rev.bin" "$tmp/rev-bin.png"
+if cmp -s "$tmp/rev-bin.png" "$tmp/tux.png"; then ok "the BIN fitted to the standard palette draws as the XBIN did"; else bad "the fitted BIN draws otherwise"; fi
+expect "remap --fit-palette counts the cells that change colour" 0 'cells show another colour' -- \
+  "$cli" remap --fit-palette windows --allow-lossy "$piece" "$tmp/fit-win.ans"
+
 # #299: XBIN has no place for SAUCE's 9 px letter spacing, aspect ratio or
 # font name (TFlags and TInfoS are 0 for XBin); BIN keeps them. tux.ans with
 # its record's TFlags 0x15 (iCE, 9 px, square) and TInfoS "Amiga Topaz 1"
@@ -676,7 +758,7 @@ expect "lint bad input" 1 'nope\.ans: No such file' -- "$cli" lint "$tmp/nope.an
 
 # Every command refuses every option it doesn't use: exit 2, a usage message
 # naming the option and the command, and nothing written.
-declare -A owner=([--allow-lossy]="convert shade pack unpack snapshot replay" [--scale]="render replay"
+declare -A owner=([--allow-lossy]="convert shade remap pack unpack snapshot replay" [--scale]="render replay"
                   [--font-width]="render replay"
                   [--irc]="export render" [--budget]="export render" [--allow-over-budget]=export
                   [--fit]="export render" [--pad]="export render" [--swap-shades]="export render"
@@ -709,7 +791,7 @@ done
 out=$("$cli" info --scale 2 "$piece" 2>/dev/null)
 if [[ -z $out ]]; then ok "info with a foreign option prints no info"; else bad "info with a foreign option printed: $out"; fi
 if [[ -z $(ls -A "$foreign") ]]; then ok "commands with a foreign option write nothing"; else bad "foreign options wrote: $(ls -A "$foreign")"; fi
-expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert, shade, pack, unpack, snapshot or replay option, not a render option$' -- \
+expect "options after the files are checked too" 2 '^blockwright-cli: --allow-lossy is a convert, shade, remap, pack, unpack, snapshot or replay option, not a render option$' -- \
   "$cli" render "$piece" "$foreign/late.png" --allow-lossy
 # a one-letter option is named as it is typed, with one dash (#443)
 expect "render refuses -o with one dash" 2 '^blockwright-cli: -o is a replay option, not a render option$' -- \

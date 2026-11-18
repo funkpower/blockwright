@@ -63,7 +63,11 @@ add_library(blockwright_app STATIC
   message_box.h
   micron_colour_dialog.cpp
   micron_colour_dialog.h
+  palette_dialogs.cpp
+  palette_dialogs.h
   palette_widget.cpp
+  shown_palette.cpp
+  shown_palette.h
   palette_widget.h
   plural.h
   preferences.cpp

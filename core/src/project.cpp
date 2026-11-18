@@ -19,6 +19,7 @@
 #include <zstd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -2270,6 +2271,45 @@ Canvas decodeCells(std::string_view data) {
 
 // ---- projects ----
 
+namespace {
+
+// The manifest's "palette" (Project::palette).
+QJsonValue paletteJson(const std::optional<Palette>& palette) {
+    if (!palette || *palette == kPalette)
+        return QStringLiteral("cga");
+    QJsonArray a;
+    for (const Rgb& c : *palette)
+        a.append(QString::asprintf("#%02x%02x%02x", c.r, c.g, c.b));
+    return a;
+}
+
+std::optional<Palette> paletteFromJson(const QJsonValue& v) {
+    if (v.isString()) {
+        if (v.toString() != QLatin1String("cga"))
+            fail("manifest.json: palette \"" + utf8(v.toString()) + "\": this build has only cga or a list of colours");
+        return std::nullopt;
+    }
+    const QJsonArray a = v.toArray();
+    if (!v.isArray() || a.size() != 16)
+        fail("manifest.json: \"palette\" is not \"cga\" or a list of 16 colours");
+    Palette p{};
+    for (qsizetype i = 0; i < 16; ++i) {
+        const QString s = a[i].toString();
+        bool ok = s.size() == 7 && s[0] == QLatin1Char('#');
+        const uint rgb = ok ? s.mid(1).toUInt(&ok, 16) : 0;
+        for (qsizetype j = 1; ok && j < 7; ++j)  // toUInt takes a sign or spaces
+            ok = s[j].unicode() < 0x80 && std::isxdigit(s[j].unicode());
+        if (!ok)
+            fail("manifest.json: palette colour " + std::to_string(i) + " is not \"#rrggbb\"");
+        p[std::size_t(i)] = {std::uint8_t(rgb >> 16), std::uint8_t(rgb >> 8), std::uint8_t(rgb)};
+    }
+    if (p == kPalette)
+        return std::nullopt;
+    return p;
+}
+
+} // namespace
+
 Project fromAnsi(const AnsiDocument& from, Opened* opened) {
     AnsiDocument doc = from;
     const Opened o = openAsEditor(doc);
@@ -2279,6 +2319,8 @@ Project fromAnsi(const AnsiDocument& from, Opened* opened) {
     p.layers = LayerStack::fromCanvas(doc.canvas);
     p.ice = doc.ice;
     p.ansEncoding = doc.encoding;
+    if (customPalette(doc))
+        p.palette = doc.palette;
     if (doc.sauce)
         p.sauce = normalSauce(*doc.sauce, doc.canvas.width(), doc.canvas.height(), doc.ice);
     return p;
@@ -2291,6 +2333,7 @@ AnsiDocument toAnsi(const Project& project) {
     doc.canvas = flatten(project.layers, o);
     doc.ice = project.ice;
     doc.encoding = project.ansEncoding;
+    doc.palette = project.palette;
     // as the editor saves a document (Document::encode)
     for (int y = 0; y < doc.canvas.height(); ++y)
         for (int x = 0; x < doc.canvas.width(); ++x)
@@ -2441,7 +2484,7 @@ Entries encode(const Project& project, CellsFrame cellsFrame) {
                                                                 : kFormatMinor))},
         {"width", stack.width()},
         {"height", stack.height()},
-        {"palette", "cga"},
+        {"palette", paletteJson(project.palette)},
         {"ice", project.ice},
         {"ircBudget", QJsonObject{{"profile", qstr(project.ircBudget.profile)},
                                   {"bytes", qint64(project.ircBudget.bytes)}}},
@@ -2499,8 +2542,7 @@ Project decode(const Entries& entries, ReadNotes* notes) {
     Project p;
     const int w = int(m.integer("width", 1, kMaxColumns));
     const int h = int(m.integer("height", 1, kMaxRows));
-    if (m.string("palette") != "cga")
-        fail("manifest.json: palette \"" + m.string("palette") + "\": this build has only cga");
+    p.palette = paletteFromJson(m.value("palette"));
     p.ice = m.boolean("ice");
     {
         const Reader b(m.object("ircBudget"), "manifest.json ircBudget");

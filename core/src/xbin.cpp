@@ -378,6 +378,8 @@ AnsiOutput writeXbin(const AnsiDocument& doc, const XbinOptions& opts) {
     s += static_cast<char>(doc.font ? doc.font->height : 16);
     s += static_cast<char>(flags);
     if (doc.palette)
+        out.paletteRounded = xbinRoundedEntries(*doc.palette);
+    if (doc.palette)
         for (const Rgb& c : *doc.palette) {
             s += static_cast<char>(c.r >> 2);
             s += static_cast<char>(c.g >> 2);

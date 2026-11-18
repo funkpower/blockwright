@@ -20,11 +20,11 @@ byte from 0x80 up belongs to well-formed UTF-8 and at least one character
 takes three or four bytes; otherwise it is read as CP437.
 .BR "\-\-encoding auto" ", " cp437 " or " utf\-8
 sets it for
-.BR info ", " convert ", " render ", " export ", " shade ", " lint ", " pack
+.BR info ", " convert ", " render ", " remap ", " export ", " shade ", " lint ", " pack
 and
 .BR unpack .
 SAUCE fields are CP437 either way.
-.BR convert ", " shade
+.BR convert ", " shade ", " remap
 and
 .B replay
 write an .ans as CP437, or as UTF-8 with
@@ -53,10 +53,35 @@ is refused, since
 .B pack
 writes a project;
 .B \-\-output\-encoding
-picks the .ans text encoding.
+picks the .ans text encoding;
+.BI \-\-palette " P"
+gives the piece palette
+.IR P ,
+a preset (cga, cga\-yellow, xterm, windows, campbell, mirc) or a palette file
+(an XBIN, a GIMP .gpl, a JASC .pal or a hex colour a line), without changing a
+cell. Only XBIN and a project hold a palette: an .ans or BIN
+.I out
+of a piece with its own palette is lossy.
+.TP
+.BI remap " in out"
+With
+.BI \-\-map " M"
+(FROM=TO pairs such as 3=11,11=3, or 16 hex digits, digit n what n becomes),
+map the cells' colour indices; with
+.BI \-\-fit\-palette " P"
+give the piece palette
+.I P
+and map each index to the entry of
+.I P
+nearest its colour, counting the cells that change colour. The palette of a
+plain remap stays. Written as
+.B convert
+writes.
 .TP
 .BI render " in out.png"
-Draw a piece as a PNG with the IBM VGA font;
+Draw a piece as a PNG with the IBM VGA font, in its own palette or the one
+.B \-\-palette
+gives;
 .B \-\-irc
 draws the IRC view, each line cut at
 .B \-\-budget
