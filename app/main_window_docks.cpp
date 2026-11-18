@@ -167,10 +167,13 @@ void MainWindow::createDocks() {
     ircViewDock_ = dock(tr("IRC View"), "ircViewDock", ircView_);
     // it scrolls with the canvas (#394)
     ircView_->followCanvas(view_, scroll_);
+    nomadnetView_ = new NomadNetViewDock(&doc_);
+    nomadnetViewDock_ = dock(tr("NomadNet View"), "nomadnetViewDock", nomadnetView_);
+    nomadnetView_->followCanvas(view_, scroll_);
     // These panels' forms, lists and buttons otherwise add their minimum
     // heights across the right column. Keep the content's own minimums,
     // scrolling the whole panel when the column has less height to share.
-    for (QDockWidget* d : {layersDock_, libraryDock_, lintDock_, ircViewDock_}) {
+    for (QDockWidget* d : {layersDock_, libraryDock_, lintDock_, ircViewDock_, nomadnetViewDock_}) {
         QWidget* content = d->widget();
         auto* scroll = new PanelScroll;
         scroll->setWidgetResizable(true);
@@ -181,9 +184,18 @@ void MainWindow::createDocks() {
     // a tab behind another is still visible to Qt, off-screen
     connect(lintDock_, &QDockWidget::visibilityChanged, lint_, &FollowsDocument::setShown);
     connect(ircViewDock_, &QDockWidget::visibilityChanged, ircView_, &FollowsDocument::setShown);
-    // View > IRC: the dock's toggle under the row meter's
-    if (auto* irc = findChild<QMenu*>(QStringLiteral("ircMenu")))
+    connect(nomadnetViewDock_, &QDockWidget::visibilityChanged, nomadnetView_, &FollowsDocument::setShown);
+    // View > IRC: the dock's toggle under the row meter's; View > NomadNet
+    // View after the IRC menu, enabled under Micron only (updateTarget)
+    if (auto* irc = findChild<QMenu*>(QStringLiteral("ircMenu"))) {
         irc->insertAction(findChild<QAction*>(QStringLiteral("ircBudget")), ircViewDock_->toggleViewAction());
+        if (auto* view = qobject_cast<QMenu*>(irc->parentWidget())) {
+            const QList<QAction*> items = view->actions();
+            const qsizetype at = items.indexOf(irc->menuAction());
+            view->insertAction(at >= 0 && at + 1 < items.size() ? items[at + 1] : nullptr,
+                               nomadnetViewDock_->toggleViewAction());
+        }
+    }
     // a finding's cell: the cursor goes there, and the view scrolls to it
     connect(lint_, &LintDock::findingActivated, this, [this](QPoint cell) {
         view_->setCellCursor(Cursor{cell.x(), cell.y()});
@@ -225,7 +237,7 @@ void MainWindow::createDocks() {
 
 QList<QDockWidget*> MainWindow::docks() const {
     return {toolboxDock_,  toolOptionsDock_, previewDock_,  paletteDock_, layersDock_,
-            libraryDock_, lintDock_,       ircViewDock_, glyphBarDock_};
+            libraryDock_, lintDock_,       ircViewDock_, nomadnetViewDock_, glyphBarDock_};
 }
 
 void MainWindow::resetLayout() {
@@ -240,7 +252,7 @@ void MainWindow::resetLayout() {
         {previewDock_, Qt::RightDockWidgetArea}, {paletteDock_, Qt::RightDockWidgetArea},
         {layersDock_, Qt::RightDockWidgetArea},  {libraryDock_, Qt::RightDockWidgetArea},
         {lintDock_, Qt::RightDockWidgetArea},    {ircViewDock_, Qt::RightDockWidgetArea},
-        {glyphBarDock_, Qt::BottomDockWidgetArea},
+        {nomadnetViewDock_, Qt::RightDockWidgetArea}, {glyphBarDock_, Qt::BottomDockWidgetArea},
     };
     for (const auto& [d, area] : places) {
         d->setFloating(false);
@@ -250,8 +262,14 @@ void MainWindow::resetLayout() {
         addDockWidget(area, d);
         d->show();
     }
-    // the second goes on top
+    // the second goes on top: Lint, then the IRC View, then the NomadNet View
+    tabifyDockWidget(ircViewDock_, nomadnetViewDock_);
     tabifyDockWidget(ircViewDock_, lintDock_);
+    // the NomadNet View only under Micron, its toggle with it (updateTarget)
+    const bool page = doc_.target() == Target::Micron;
+    nomadnetViewWanted_ = true;
+    nomadnetViewDock_->toggleViewAction()->setEnabled(page);
+    nomadnetViewDock_->setVisible(page);
     layout()->setEnabled(true);
     layout()->activate();
     defaultDockWidthsPending_ = true;
@@ -475,7 +493,8 @@ void MainWindow::applyDefaultDockHeights() {
         // The dock that takes what the others leave, and the ones that give
         // up height first when the column is short (PLAN §11).
         QDockWidget* const rest = area == Qt::LeftDockWidgetArea ? toolOptionsDock_ : libraryDock_;
-        const QDockWidget* const shrinkOrder[] = {lintDock_, ircViewDock_, previewDock_, layersDock_};
+        const QDockWidget* const shrinkOrder[] = {lintDock_, ircViewDock_, nomadnetViewDock_, previewDock_,
+                                                  layersDock_};
         QList<int> sizes;
         QList<int> minimums;
         for (int i = 0; i < stack.size(); ++i) {
@@ -496,9 +515,9 @@ void MainWindow::applyDefaultDockHeights() {
                 if (piece.width() + 2 * scroll->frameWidth() > d->width())
                     content += scroll->horizontalScrollBar()->sizeHint().height();
                 target = std::min(title + content, available / kPreviewColumnShare);
-            } else if (d == layersDock_ || d == lintDock_ || d == ircViewDock_) {
-                // The IRC View shares Lint's tab and its height.
-                const QDockWidget* panel = d == ircViewDock_ ? lintDock_ : d;
+            } else if (d == layersDock_ || d == lintDock_ || d == ircViewDock_ || d == nomadnetViewDock_) {
+                // The IRC and NomadNet Views share Lint's tab and its height.
+                const QDockWidget* panel = d == ircViewDock_ || d == nomadnetViewDock_ ? lintDock_ : d;
                 target = title + panelHeight(static_cast<const QScrollArea*>(panel->widget()), d->width());
             }
             minimums << tabs + std::max(d->minimumHeight(), d->minimumSizeHint().height());
@@ -586,6 +605,10 @@ void MainWindow::saveLayout() const {
     const auto s = appSettings();
     s->setValue(QStringLiteral("window/geometry"), saveGeometry());
     s->setValue(QStringLiteral("window/state"), saveState(kLayoutVersion));
+    // off a page the dock is hidden whatever was chosen, so the choice is kept
+    // apart from the state
+    const bool page = nomadnetViewDock_->toggleViewAction()->isEnabled();
+    s->setValue(QStringLiteral("window/nomadnetView"), page ? !nomadnetViewDock_->isHidden() : nomadnetViewWanted_);
 }
 
 void MainWindow::restoreLayout() {
@@ -600,6 +623,10 @@ void MainWindow::restoreLayout() {
     for (QDockWidget* d : docks())
         if (!d->features().testFlag(QDockWidget::DockWidgetClosable))
             d->show();
+    // The NomadNet View as it was on the last page, shown on a page only.
+    if (!defaultDockWidthsPending_)
+        nomadnetViewWanted_ = s->value(QStringLiteral("window/nomadnetView"), true).toBool();
+    nomadnetViewDock_->setVisible(doc_.target() == Target::Micron && nomadnetViewWanted_);
 }
 
 } // namespace bw

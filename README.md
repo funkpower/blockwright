@@ -222,6 +222,9 @@ The canvas shows the cells as NomadNet draws them, and File > Export Micron
 writes their colours as they are. For a piece brought over from IRC, Colours >
 Snap to Micron Colours changes the RGB colours of the selection, or of the
 layer, to the nearest three-digit ones.
+View > NomadNet View shows the page as
+NomadNet draws it in its 256-colour mode, where each colour falls to xterm's
+colour cube, with a `?` for each glyph NomadNet strips.
 
 The Lint dock lists shading-ladder, pixel-noise and craft-rule findings and
 follows each edit; activating one moves the cell cursor to its cell.

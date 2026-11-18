@@ -28,6 +28,7 @@ bool dropsAny(Glyph g) {
 // formatting it is drawn in.
 struct Out {
     std::string text;  // empty for a wide glyph's continuation
+    Glyph glyph;       // the glyph written (a continuation for a pair's second cell)
     Rgb fg, bg;
     std::uint8_t attrs = 0;
     // Whether the cell shows its foreground (not a blank, unless underlined)
@@ -71,6 +72,7 @@ std::vector<Out> rowCells(const Canvas& canvas, int y, const std::array<Rgb, 16>
         o.bg = resolve(d.bg, palette);
         o.attrs = std::uint8_t(d.attrs & attr::Formatting);
         Glyph g = glyphs[x].ch;
+        o.glyph = g;
         if (g.isContinuation())
             continue;
         const bool pair = x + 1 < glyphs.size() && glyphs[x + 1].ch.isContinuation();
@@ -81,6 +83,7 @@ std::vector<Out> rowCells(const Canvas& canvas, int y, const std::array<Rgb, 16>
             if (pair)
                 glyphs[x + 1].ch = Glyph(U' ');
         }
+        o.glyph = g;
         o.showsFg = !((g == Glyph(U' ') || g == Glyph(U'\u00a0')) && !attr::showsOnBlank(o.attrs));
         o.showsBg = g != Glyph(U'\u2588') || !fullBlockCovers(o.attrs);
         const GlyphCodePoints cps = codePoints(g);
@@ -234,6 +237,22 @@ std::vector<std::pair<int, int>> truecolourCells(const Canvas& canvas, const std
             const Out& o = cells[x];
             if (!o.text.empty() && ((o.showsFg && !isTwelveBit(o.fg)) || (o.showsBg && !isTwelveBit(o.bg))))
                 out.emplace_back(int(x), y);
+        }
+    }
+    return out;
+}
+
+Canvas pageCanvas(const Canvas& canvas, const std::array<Rgb, 16>& palette, bool ice) {
+    Canvas out(canvas.width(), canvas.height());
+    for (int y = 0; y < canvas.height(); ++y) {
+        const std::vector<Out> cells = rowCells(canvas, y, palette, ice, nullptr);
+        for (std::size_t x = 0; x < cells.size(); ++x) {
+            const Out& o = cells[x];
+            Cell& c = out.at(int(x), y);
+            c.ch = o.glyph;
+            c.fg = Color::fromRgb(o.fg);
+            c.bg = Color::fromRgb(o.bg);
+            c.attrs = o.attrs;
         }
     }
     return out;

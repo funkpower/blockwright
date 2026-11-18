@@ -1,11 +1,13 @@
 // Format > Target > Micron: the 99 swatches and the colour dialog, the
 // meter put away, and the canvas as a page shows it (PLAN §17).
 
+#include "scratch_settings.h"
 #include "util.h"
 
 #include "canvas_view.h"
 #include "document.h"
 #include "irc_meter.h"
+#include "lint_dock.h"
 #include "main_window.h"
 #include "micron_colour_dialog.h"
 #include "palette_widget.h"
@@ -14,7 +16,9 @@
 #include "tool.h"
 
 #include "blockwright/micron.h"
+#include "blockwright/nomadnet_view.h"
 #include "blockwright/project.h"
+#include "blockwright/render.h"
 #include "blockwright/target.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -23,8 +27,11 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDockWidget>
+#include <QElapsedTimer>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
@@ -50,6 +57,16 @@ void click(QWidget* w, QPoint at, Qt::MouseButton button) {
     QApplication::sendEvent(w, &press);
     QMouseEvent release(QEvent::MouseButtonRelease, QPointF(at), global, button, Qt::NoButton, Qt::NoModifier);
     QApplication::sendEvent(w, &release);
+}
+
+// Runs the event loop until `done` or `ms` pass.
+template <typename F>
+bool waitFor(F done, int ms = 5000) {
+    QElapsedTimer t;
+    t.start();
+    while (!done() && t.elapsed() < ms)
+        QApplication::processEvents(QEventLoop::AllEvents, 20);
+    return done();
 }
 
 struct DefaultTarget {
@@ -367,6 +384,140 @@ TEST_CASE("a new Micron document is UTF-8, and Preferences offers Micron", "[app
     CHECK(w.document()->textEncoding() == TextEncoding::Utf8);
 }
 
+TEST_CASE("the NomadNet View is offered under Micron only and shows the page at 256 colours",
+          "[app][target][micron]") {
+    MainWindow w;
+    w.resize(1200, 800);
+    w.show();
+    Document* doc = w.document();
+    REQUIRE(doc->target() == Target::Ansi);
+    QDockWidget* dock = w.nomadnetViewDock();
+    NomadNetViewDock* view = w.nomadnetViewWidget();
+    REQUIRE(dock);
+    REQUIRE(view);
+    QAction* toggle = act(w, "show_nomadnetViewDock");
+    CHECK(toggle == dock->toggleViewAction());
+    // View > NomadNet View, after View > IRC
+    const auto* ircMenu = w.findChild<QMenu*>(QStringLiteral("ircMenu"));
+    REQUIRE(ircMenu);
+    const auto* viewMenu = qobject_cast<QMenu*>(ircMenu->parentWidget());
+    REQUIRE(viewMenu);
+    const QList<QAction*> items = viewMenu->actions();
+    CHECK(items.value(items.indexOf(ircMenu->menuAction()) + 1) == toggle);
+
+    // off a page it is hidden and its toggle can't show it
+    for (Target t : {Target::Ansi, Target::Irc}) {
+        doc->setTarget(t);
+        CHECK_FALSE(toggle->isEnabled());
+        CHECK(dock->isHidden());
+        toggle->trigger();
+        CHECK(dock->isHidden());
+    }
+
+    // a page shows it, and its toggle hides and shows it
+    doc->setTarget(Target::Micron);
+    CHECK(toggle->isEnabled());
+    CHECK(toggle->isChecked());
+    CHECK_FALSE(dock->isHidden());
+    toggle->trigger();
+    CHECK(dock->isHidden());
+    toggle->trigger();
+    CHECK_FALSE(dock->isHidden());
+
+    // the page as NomadNet draws it at 256 colours, with a glyph it strips
+    Cell brown;
+    brown.ch = U'A';
+    brown.fg = Color::indexed(6);
+    brown.bg = Color::fromRgb({0x80, 0x80, 0x80});
+    Cell space;
+    space.ch = 0x200b;
+    REQUIRE(doc->edit(CellEdit{{CellChange{0, 0, doc->canvas().at(0, 0), brown},
+                                CellChange{1, 0, doc->canvas().at(1, 0), space}}}));
+    REQUIRE(doc->canvas().at(1, 0).ch == Glyph(char32_t(0x200b)));
+    dock->raise();
+    REQUIRE(waitFor([&] { return view->shown(); }));
+    REQUIRE(waitFor([&] { return !view->stale(); }));
+    const Canvas want = nomadnet::view256(doc->canvas(), doc->palette(), doc->ansi().ice);
+    CHECK(view->view() == want);
+    CHECK(view->view().at(0, 0).fg == Color::fromRgb({0xaf, 0x5f, 0x00}));
+    CHECK(view->view().at(0, 0).bg == Color::fromRgb({0x87, 0x87, 0x87}));
+    CHECK(view->view().at(1, 0).ch == Glyph(U'?'));
+    CHECK(view->image() == renderCanvas(want, glyphWidth(doc->ansi())));
+    CHECK(view->statusLabel()->text() ==
+          QStringLiteral("As NomadNet draws it at 256 colours; 1 glyph it strips shows as ?"));
+
+    // shown, it comes back shown with the page; closed, it stays closed
+    doc->setTarget(Target::Ansi);
+    CHECK(dock->isHidden());
+    CHECK_FALSE(toggle->isEnabled());
+    doc->setTarget(Target::Micron);
+    CHECK_FALSE(dock->isHidden());
+    toggle->trigger();
+    REQUIRE(dock->isHidden());
+    doc->setTarget(Target::Irc);
+    doc->setTarget(Target::Micron);
+    CHECK(dock->isHidden());
+    CHECK(toggle->isEnabled());
+
+    // Reset Layout shows it on a page only
+    act(w, "resetLayout")->trigger();
+    CHECK_FALSE(dock->isHidden());
+    doc->setTarget(Target::Ansi);
+    act(w, "resetLayout")->trigger();
+    CHECK(dock->isHidden());
+    CHECK_FALSE(toggle->isEnabled());
+    doc->setTarget(Target::Micron);
+    CHECK_FALSE(dock->isHidden());
+}
+
+TEST_CASE("the NomadNet View is shown on a page as it was on the last one, in the next window too",
+          "[app][target][micron]") {
+    DefaultTarget restore;
+    REQUIRE(bwtest::resetScratchSettings());
+    setDefaultTargetSetting(Target::Micron);
+    {
+        // closed on a page, and the window closed off one
+        MainWindow w;
+        w.show();
+        REQUIRE(w.document()->target() == Target::Micron);
+        REQUIRE_FALSE(w.nomadnetViewDock()->isHidden());
+        w.nomadnetViewDock()->toggleViewAction()->trigger();
+        w.document()->setTarget(Target::Ansi);
+        w.document()->undoStack()->setClean();
+        REQUIRE(w.close());
+    }
+    {
+        MainWindow w;
+        w.show();
+        QAction* toggle = w.nomadnetViewDock()->toggleViewAction();
+        CHECK(w.nomadnetViewDock()->isHidden());
+        CHECK(toggle->isEnabled());
+        toggle->trigger();
+        CHECK_FALSE(w.nomadnetViewDock()->isHidden());
+        w.document()->setTarget(Target::Irc);
+        w.document()->undoStack()->setClean();
+        REQUIRE(w.close());
+    }
+    {
+        MainWindow w;
+        w.show();
+        CHECK_FALSE(w.nomadnetViewDock()->isHidden());
+        REQUIRE(w.close());
+    }
+    // an ANSI first document hides it, and a page shows it
+    setDefaultTargetSetting(Target::Ansi);
+    {
+        MainWindow w;
+        w.show();
+        CHECK(w.nomadnetViewDock()->isHidden());
+        CHECK_FALSE(w.nomadnetViewDock()->toggleViewAction()->isEnabled());
+        w.document()->setTarget(Target::Micron);
+        CHECK_FALSE(w.nomadnetViewDock()->isHidden());
+        CHECK(w.nomadnetViewDock()->toggleViewAction()->isEnabled());
+    }
+    bwtest::resetScratchSettings();
+}
+
 TEST_CASE("Snap to Micron Colours snaps the selection or the layer as one undo step", "[app][target][micron][snap]") {
     MainWindow w;
     Document* d = w.document();
@@ -438,4 +589,37 @@ TEST_CASE("Snap to Micron Colours snaps the selection or the layer as one undo s
     REQUIRE(d->setLayerProperties(d->activeLayer(), locked, QStringLiteral("Lock")));
     CHECK(d->snapToMicronColours({}, &error) == 0);
     CHECK(error == QStringLiteral("the layer is locked"));
+}
+
+TEST_CASE("NomadNet View follows undo of a target switch and a palette change", "[app][target][micron]") {
+    MainWindow w;
+    w.resize(1200, 800);
+    w.show();
+    Document* doc = w.document();
+    QDockWidget* dock = w.nomadnetViewDock();
+    NomadNetViewDock* view = w.nomadnetViewWidget();
+    QAction* toggle = dock->toggleViewAction();
+    REQUIRE(doc->setTarget(Target::Micron));
+    REQUIRE_FALSE(dock->isHidden());
+    doc->undoStack()->undo();
+    CHECK(doc->target() == Target::Ansi);
+    CHECK(dock->isHidden());
+    CHECK_FALSE(toggle->isEnabled());
+    doc->undoStack()->redo();
+    CHECK(doc->target() == Target::Micron);
+    CHECK_FALSE(dock->isHidden());
+    CHECK(toggle->isEnabled());
+    Cell c;
+    c.ch = U'A';
+    c.fg = Color::indexed(1);
+    c.bg = Color::indexed(0);
+    REQUIRE(doc->edit(CellEdit{{CellChange{0, 0, doc->canvas().at(0, 0), c}}}));
+    dock->raise();
+    REQUIRE(waitFor([&] { return view->shown() && !view->stale(); }));
+    Palette p = kPalette;
+    p[1] = Rgb{0xff, 0xff, 0x00};
+    REQUIRE(doc->setPalette(p, QStringLiteral("Palette")));
+    REQUIRE(waitFor([&] { return !view->stale(); }));
+    CHECK(view->view().at(0, 0).fg == Color::fromRgb({0xff, 0xff, 0x00}));
+    CHECK(view->view() == nomadnet::view256(doc->canvas(), doc->palette(), doc->ansi().ice));
 }

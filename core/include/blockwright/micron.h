@@ -83,6 +83,15 @@ std::string encode(const AnsiDocument& doc, const Options& opts = {});
 // with `palette` and `ice`. The colour is written as it is, not rounded.
 std::vector<std::pair<int, int>> truecolourCells(const Canvas& canvas, const std::array<Rgb, 16>& palette, bool ice);
 
+// The page as NomadNet draws it in its 24-bit colour mode, cell for cell:
+// what encodeLine writes for each cell read back, the glyph written (a
+// glyph NomadNet drops as '?', a wide one '?' and a space, as unwritable
+// lists them), its colours as RGB (an indexed one from `palette`, a bright
+// background with `ice` off as its dark colour, an RGB background as it
+// is) and its bold, italic and underline. A colour the cell doesn't show,
+// which encodeLine doesn't write, is the cell's own all the same.
+Canvas pageCanvas(const Canvas& canvas, const std::array<Rgb, 16>& palette, bool ice);
+
 // The cells Micron writes as something else, in cell order: irc::unwritable's,
 // and each glyph written '?' for a code point NomadNet drops (Loss::NoCode,
 // `lead` set on a wide one).

@@ -115,6 +115,7 @@ struct ForgetLayout {
             return;
         bw::appSettings()->remove(QStringLiteral("window/geometry"));
         bw::appSettings()->remove(QStringLiteral("window/state"));
+        bw::appSettings()->remove(QStringLiteral("window/nomadnetView"));
     }
 };
 

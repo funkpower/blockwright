@@ -1,8 +1,8 @@
 #pragma once
-// The Lint and IRC View docks (PLAN §3, §11). The Lint dock lists the whole
-// lint (lint::lintCanvas, as `blockwright-cli lint` runs it) of the canvas
-// under every named ramp and the craft pairs (lint::craftPair), as the CLI
-// lints by default, or under one ramp, a finding to a row; activating a row asks
+// The Lint, IRC View and NomadNet View docks (PLAN §3, §11, §17). The Lint
+// dock lists the whole lint (lint::lintCanvas, as `blockwright-cli lint`
+// runs it) of the canvas under every named ramp and the craft pairs
+// (lint::craftPair), as the CLI lints by default, or under one ramp, a finding to a row; activating a row asks
 // for the cell cursor at its cell. The IRC View dock shows the canvas as an
 // IRC client shows the lines File > Export IRC Text sends (irc::ircView,
 // renderIrcView): the cells as saved with the document's iCE setting
@@ -10,10 +10,11 @@
 // Swap Shades), the mIRC palette, the client's background where IRC drops
 // cells, and a red bar where a line over the budget is cut. It follows the
 // canvas's scroll (followCanvas): its left column and top row are the canvas
-// viewport's.
+// viewport's. The NomadNet View dock shows, the same way, the page Export
+// Micron writes as NomadNet draws it at 256 colours (nomadnet::view256).
 //
-// Both follow the document a moment after each change (kRefreshDelayMs), and
-// only while they are shown: a hidden dock, or one in a tab behind another,
+// Each follows the document a moment after each change (kRefreshDelayMs), and
+// only while it is shown: a hidden dock, or one in a tab behind another,
 // catches up when it is shown. The work runs off the GUI thread on a copy of
 // the canvas; the dock shows its last result until the next is in, and drops
 // a result the document has moved past. A dock behind the document for longer
@@ -173,24 +174,18 @@ private:
     lint::LintReport report_;
 };
 
-class IrcViewDock : public FollowsDocument {
+// A dock showing a picture of the canvas at 1x, a canvas cell to every cell
+// of the picture (the IRC View, the NomadNet View), that follows the
+// canvas's scroll (followCanvas).
+class CanvasFollowingDock : public FollowsDocument {
     Q_OBJECT
 public:
-    // The view of `doc` sent with `meter`'s encoder options (IrcMeter::options),
-    // the ones Export writes with; a change to them (Fit, Pad, Swap Shades)
-    // refreshes the view as a new budget does.
-    IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent = nullptr);
+    CanvasFollowingDock(Document* doc, const QString& staleText, QWidget* parent = nullptr);
 
-    // The bytes a line may take before the view cuts it: the document's
-    // budget (extras().ircBudget, View > IRC > Budget...), the one the row
-    // meter, fit and Export use. A change to it (Document::setIrcBudget, its
-    // undo and redo, another document) refreshes the view as an edit does.
-    std::size_t budget() const;
-    const irc::View& view() const { return view_; }
-    // The view as drawn at 1x (renderIrcView), at the document's letter spacing.
+    // The picture as drawn at 1x, at the document's letter spacing.
     const QImage& image() const { return image_; }
     QLabel* picture() const { return picture_; }
-    // "Every line fits B bytes" or "N rows cut at B bytes".
+    // What the dock says under the picture.
     QLabel* statusLabel() const { return status_; }
     // The scroll area the picture is in.
     QScrollArea* scrollArea() const { return scroll_; }
@@ -224,12 +219,14 @@ public:
     bool followingCanvas() const { return following_; }
 
 protected:
-    Work snapshot() override;
     bool eventFilter(QObject* watched, QEvent* e) override;
-
-private:
+    // Shows `image`, a picture of `cells` cells (columns, rows), lined up
+    // with the canvas if following it, and `status` under it.
+    void setPicture(const QImage& image, QSize cells, const QString& status);
     // Refreshes now if shown, else when next shown.
     void follow();
+
+private:
     // The canvas scrolled, zoomed or changed size: takes its origin again
     // and lines the picture up with it.
     void canvasMoved();
@@ -238,9 +235,8 @@ private:
     // The user scrolled the picture: it stays where they put it.
     void scrolledByHand();
 
-    IrcMeter* meter_;
-    irc::View view_;
     QImage image_;
+    QSize cells_;
     QLabel* picture_;
     QLabel* status_;
     QScrollArea* scroll_;
@@ -256,6 +252,50 @@ private:
     std::optional<CanvasKey> canvasKey_;
     QPoint origin_;
     bool following_ = false;
+};
+
+class IrcViewDock : public CanvasFollowingDock {
+    Q_OBJECT
+public:
+    // The view of `doc` sent with `meter`'s encoder options (IrcMeter::options),
+    // the ones Export writes with; a change to them (Fit, Pad, Swap Shades)
+    // refreshes the view as a new budget does.
+    IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent = nullptr);
+
+    // The bytes a line may take before the view cuts it: the document's
+    // budget (extras().ircBudget, View > IRC > Budget...), the one the row
+    // meter, fit and Export use. A change to it (Document::setIrcBudget, its
+    // undo and redo, another document) refreshes the view as an edit does.
+    std::size_t budget() const;
+    const irc::View& view() const { return view_; }
+    // statusLabel() says "Every line fits B bytes" or "N rows cut at B bytes".
+
+protected:
+    Work snapshot() override;
+
+private:
+    IrcMeter* meter_;
+    irc::View view_;
+};
+
+// The NomadNet View (PLAN §17): the page File > Export Micron writes as
+// NomadNet draws it in its 256-colour mode (nomadnet::view256): the cells
+// as written with the document's palette and iCE setting, each colour as
+// urwid maps it to xterm's 256, a glyph NomadNet strips as '?'. It means
+// something only under Micron; the window shows it only then.
+class NomadNetViewDock : public CanvasFollowingDock {
+    Q_OBJECT
+public:
+    explicit NomadNetViewDock(Document* doc, QWidget* parent = nullptr);
+    // The view's cells, in the colours drawn.
+    const Canvas& view() const { return view_; }
+    // statusLabel() says the colour mode, and how many cells show '?'.
+
+protected:
+    Work snapshot() override;
+
+private:
+    Canvas view_{1, 1};
 };
 
 } // namespace bw

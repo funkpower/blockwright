@@ -42,6 +42,7 @@ add_library(blockwright_core STATIC
   src/lint_fallback.cpp
   src/lint_rules.cpp
   src/micron.cpp
+  src/nomadnet_view.cpp
   src/mirc.cpp
   src/palette.cpp
   src/palette_swap.cpp

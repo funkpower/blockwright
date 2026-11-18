@@ -142,6 +142,7 @@ class SelectTool;
 class GlyphBar;
 class HelpWindow;
 class IrcViewDock;
+class NomadNetViewDock;
 class LayersDock;
 class LibraryDock;
 class LintDock;
@@ -192,6 +193,10 @@ public:
     QDockWidget* lintDock() const { return lintDock_; }
     IrcViewDock* ircViewWidget() const { return ircView_; }
     QDockWidget* ircViewDock() const { return ircViewDock_; }
+    // The NomadNet View (PLAN §17): shown, and its toggle enabled, only
+    // under Micron.
+    NomadNetViewDock* nomadnetViewWidget() const { return nomadnetView_; }
+    QDockWidget* nomadnetViewDock() const { return nomadnetViewDock_; }
     IrcMeter* ircMeter() const { return ircMeter_; }
     // The scroll area the canvas view is in.
     QScrollArea* canvasScroll() const { return scroll_; }
@@ -632,6 +637,12 @@ private:
     QDockWidget* lintDock_ = nullptr;
     IrcViewDock* ircView_ = nullptr;
     QDockWidget* ircViewDock_ = nullptr;
+    NomadNetViewDock* nomadnetView_ = nullptr;
+    QDockWidget* nomadnetViewDock_ = nullptr;
+    // Whether the NomadNet View is to be shown when the target is Micron: as
+    // it was when the document last left Micron (closed or not), true at
+    // first and after Reset Layout.
+    bool nomadnetViewWanted_ = true;
     QLabel* status_ = nullptr;
     ToolRegistry* tools_ = nullptr;
     SelectTool* selectTool_ = nullptr;

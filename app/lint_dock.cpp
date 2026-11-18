@@ -3,9 +3,12 @@
 #include "canvas_view.h"
 #include "document.h"
 #include "irc_meter.h"
+#include "plural.h"
 #include "row_tree.h"
 
 #include "blockwright/irc_render.h"
+#include "blockwright/micron.h"
+#include "blockwright/nomadnet_view.h"
 #include "blockwright/ramp.h"
 #include "blockwright/render.h"
 
@@ -314,8 +317,8 @@ DockScrollBar::DockScrollBar(Qt::Orientation orientation) : QScrollBar(orientati
 
 } // namespace
 
-IrcViewDock::IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent) :
-    FollowsDocument(doc, tr("Updating…"), parent), meter_(meter), picture_(new QLabel), status_(new QLabel(this)),
+CanvasFollowingDock::CanvasFollowingDock(Document* doc, const QString& staleText, QWidget* parent) :
+    FollowsDocument(doc, staleText, parent), picture_(new QLabel), status_(new QLabel(this)),
     scroll_(new QScrollArea(this)) {
     picture_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     scroll_->setWidget(picture_);
@@ -336,8 +339,8 @@ IrcViewDock::IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent) :
     // (DockScrollBar's accessible interface makes it a slider action). No other change of a bar's value
     // (lineUp, the clamp into a new range, ensureVisible) stops following.
     for (QScrollBar* bar : {scroll_->horizontalScrollBar(), scroll_->verticalScrollBar()}) {
-        connect(bar, &QScrollBar::rangeChanged, this, &IrcViewDock::lineUp);
-        connect(bar, &QScrollBar::actionTriggered, this, &IrcViewDock::scrolledByHand);
+        connect(bar, &QScrollBar::rangeChanged, this, &CanvasFollowingDock::lineUp);
+        connect(bar, &QScrollBar::actionTriggered, this, &CanvasFollowingDock::scrolledByHand);
         // the menu is the bar's child, polished as it is first shown
         bar->installEventFilter(this);
     }
@@ -348,6 +351,10 @@ IrcViewDock::IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent) :
     lay->addWidget(scroll_, 1);
     lay->addWidget(status_);
     lay->addWidget(staleLabel());
+}
+
+IrcViewDock::IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent) :
+    CanvasFollowingDock(doc, tr("Updating…"), parent), meter_(meter) {
     // open, New and replace come as Document::reset, and an iCE change as
     // Document::formatChanged, which FollowsDocument follows; a new budget or
     // encoder option is redrawn at once, not after the edits' delay
@@ -355,7 +362,7 @@ IrcViewDock::IrcViewDock(Document* doc, IrcMeter* meter, QWidget* parent) :
     connect(meter_, &IrcMeter::optionsChanged, this, &IrcViewDock::follow);
 }
 
-void IrcViewDock::follow() {
+void CanvasFollowingDock::follow() {
     if (shown())
         refresh();
     else
@@ -364,7 +371,7 @@ void IrcViewDock::follow() {
 
 std::size_t IrcViewDock::budget() const { return doc_->extras().ircBudget.bytes; }
 
-void IrcViewDock::followCanvas(CanvasView* view, QAbstractScrollArea* scroll) {
+void CanvasFollowingDock::followCanvas(CanvasView* view, QAbstractScrollArea* scroll) {
     canvas_ = view;
     canvasScroll_ = scroll;
     // A scroll moves the view in the viewport, a zoom or a new canvas size
@@ -373,19 +380,19 @@ void IrcViewDock::followCanvas(CanvasView* view, QAbstractScrollArea* scroll) {
     // the view's move events wait.
     view->installEventFilter(this);
     for (QScrollBar* bar : {scroll->horizontalScrollBar(), scroll->verticalScrollBar()})
-        connect(bar, &QScrollBar::valueChanged, this, &IrcViewDock::canvasMoved);
-    connect(view, &CanvasView::zoomChanged, this, &IrcViewDock::canvasMoved);
+        connect(bar, &QScrollBar::valueChanged, this, &CanvasFollowingDock::canvasMoved);
+    connect(view, &CanvasView::zoomChanged, this, &CanvasFollowingDock::canvasMoved);
     canvasKey_.reset();
     canvasMoved();
 }
 
-bool IrcViewDock::eventFilter(QObject* watched, QEvent* e) {
+bool CanvasFollowingDock::eventFilter(QObject* watched, QEvent* e) {
     if (watched == canvas_ && (e->type() == QEvent::Move || e->type() == QEvent::Resize))
         canvasMoved();
     else if (e->type() == QEvent::ChildPolished
              && (watched == scroll_->horizontalScrollBar() || watched == scroll_->verticalScrollBar())) {
         if (auto* menu = qobject_cast<QMenu*>(static_cast<QChildEvent*>(e)->child()))
-            connect(menu, &QMenu::triggered, this, &IrcViewDock::scrolledByHand, Qt::UniqueConnection);
+            connect(menu, &QMenu::triggered, this, &CanvasFollowingDock::scrolledByHand, Qt::UniqueConnection);
     } else if (e->type() == QEvent::Gesture && watched == scroll_->viewport()) {
         // QAbstractScrollArea moves both bars by a pan's delta, after this
         auto* pan = static_cast<QPanGesture*>(static_cast<QGestureEvent*>(e)->gesture(Qt::PanGesture));
@@ -395,7 +402,7 @@ bool IrcViewDock::eventFilter(QObject* watched, QEvent* e) {
     return FollowsDocument::eventFilter(watched, e);
 }
 
-void IrcViewDock::canvasMoved() {
+void CanvasFollowingDock::canvasMoved() {
     if (!canvas_ || !canvasScroll_)
         return;
     // Only a scroll (a bar's value, a part of a cell included), a zoom or a
@@ -418,16 +425,16 @@ void IrcViewDock::canvasMoved() {
     lineUp();
 }
 
-void IrcViewDock::scrolledByHand() { following_ = false; }
+void CanvasFollowingDock::scrolledByHand() { following_ = false; }
 
-void IrcViewDock::lineUp() {
+void CanvasFollowingDock::lineUp() {
     // The picture is the view's canvas at 1x, a cell to every glyph's width
     // and the font's height, so canvas cell (x, y) is the picture's cell
     // (x, y) by number. The bars clamp to their range.
-    if (!following_ || image_.isNull() || view_.canvas.width() <= 0 || view_.canvas.height() <= 0)
+    if (!following_ || image_.isNull() || cells_.width() <= 0 || cells_.height() <= 0)
         return;
-    const int cellW = image_.width() / view_.canvas.width();
-    const int cellH = image_.height() / view_.canvas.height();
+    const int cellW = image_.width() / cells_.width();
+    const int cellH = image_.height() / cells_.height();
     scroll_->horizontalScrollBar()->setValue(origin_.x() * cellW);
     scroll_->verticalScrollBar()->setValue(origin_.y() * cellH);
 }
@@ -442,14 +449,41 @@ FollowsDocument::Work IrcViewDock::snapshot() {
         QImage image = renderIrcView(*view, glyph);
         return [this, view, image, budget] {
             view_ = std::move(*view);
-            image_ = image;
-            picture_->setPixmap(QPixmap::fromImage(image_));
-            picture_->resize(image_.size());
-            lineUp();
             const int cut = view_.cutRows();
-            status_->setText(cut == 0   ? tr("Every line fits %1 bytes").arg(budget)
-                             : cut == 1 ? tr("1 row cut at %1 bytes").arg(budget)
-                                        : tr("%1 rows cut at %2 bytes").arg(cut).arg(budget));
+            setPicture(image, QSize(view_.canvas.width(), view_.canvas.height()),
+                       cut == 0   ? tr("Every line fits %1 bytes").arg(budget)
+                       : cut == 1 ? tr("1 row cut at %1 bytes").arg(budget)
+                                  : tr("%1 rows cut at %2 bytes").arg(cut).arg(budget));
+        };
+    };
+}
+
+void CanvasFollowingDock::setPicture(const QImage& image, QSize cells, const QString& status) {
+    image_ = image;
+    cells_ = cells;
+    picture_->setPixmap(QPixmap::fromImage(image_));
+    picture_->resize(image_.size());
+    lineUp();
+    status_->setText(status);
+}
+
+NomadNetViewDock::NomadNetViewDock(Document* doc, QWidget* parent) :
+    CanvasFollowingDock(doc, tr("Updating…"), parent) {}
+
+FollowsDocument::Work NomadNetViewDock::snapshot() {
+    // what Export Micron writes: the composite with the document's palette
+    // and iCE setting
+    return [this, canvas = doc_->canvas(), palette = doc_->palette(), ice = doc_->ansi().ice,
+            glyph = glyphWidth(doc_->ansi())]() -> Show {
+        auto view = std::make_shared<Canvas>(nomadnet::view256(canvas, palette, ice));
+        const int lost = int(micron::unwritable(canvas).size());
+        QImage image = renderCanvas(*view, glyph);
+        return [this, view, image, lost] {
+            view_ = std::move(*view);
+            setPicture(image, QSize(view_.width(), view_.height()),
+                       lost == 0 ? tr("As NomadNet draws it at 256 colours")
+                                 : plural(lost, tr("As NomadNet draws it at 256 colours; %n glyph it strips shows as ?"),
+                                          tr("As NomadNet draws it at 256 colours; %n glyphs it strips show as ?")));
         };
     };
 }

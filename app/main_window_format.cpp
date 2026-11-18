@@ -24,6 +24,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QDir>
+#include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -121,6 +122,19 @@ void MainWindow::updateTarget() {
         palette_->setTarget(t, colours);
     if (formatBar_)
         formatBar_->setVisible(richTarget(t));
+    // the NomadNet View is a page's: shown under Micron as it was when the
+    // document last left Micron, hidden with its toggle disabled otherwise
+    if (nomadnetViewDock_) {
+        QAction* toggle = nomadnetViewDock_->toggleViewAction();
+        const bool micron = t == Target::Micron;
+        if (micron && !toggle->isEnabled())
+            nomadnetViewDock_->setVisible(nomadnetViewWanted_);
+        else if (!micron && toggle->isEnabled()) {
+            nomadnetViewWanted_ = !nomadnetViewDock_->isHidden();
+            nomadnetViewDock_->hide();
+        }
+        toggle->setEnabled(micron);
+    }
     // the canvas draws a cell as the page shows it (PLAN §17)
     renderer_.setRgbBackgroundsKept(t == Target::Micron);
     if (view_)

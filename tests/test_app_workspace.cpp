@@ -815,13 +815,21 @@ TEST_CASE("the Window menu lists every dock and hides and shows it") {
     QMenu* menu = windowMenu(w);
     REQUIRE(menu);
     const QList<QDockWidget*> docks = w.docks();
-    CHECK(docks.size() == 9);
+    CHECK(docks.size() == 10);
     CHECK(w.findChildren<QDockWidget*>().size() == docks.size());
     for (QDockWidget* d : docks) {
         INFO(d->objectName().toStdString());
         QAction* a = act(w, QStringLiteral("show_") + d->objectName());
         CHECK(menu->actions().contains(a));
         CHECK(a->isCheckable());
+        // the NomadNet View is a Micron page's: a new ANSI document hides it
+        // and its item can't show it (test_app_micron_target.cpp)
+        if (d == w.nomadnetViewDock()) {
+            CHECK_FALSE(a->isChecked());
+            CHECK_FALSE(a->isEnabled());
+            CHECK(d->isHidden());
+            continue;
+        }
         CHECK(a->isChecked());
         // the preview, the palette and the Library are always shown; the
         // Layers dock can close like the toolbox
@@ -918,8 +926,13 @@ TEST_CASE("the default window fits a 720-high screen including its frame", "[win
     for (QDockWidget* d : w.docks()) {
         INFO(d->objectName().toStdString());
         CAPTURE(d->minimumSizeHint().height(), d->height());
-        CHECK_FALSE(d->isHidden());
         CHECK_FALSE(d->isFloating());
+        // the NomadNet View is hidden off-Micron
+        if (d == w.nomadnetViewDock()) {
+            CHECK(d->isHidden());
+            continue;
+        }
+        CHECK_FALSE(d->isHidden());
         // The inactive IRC tab is deliberately placed offscreen by Qt.
         if (d != w.ircViewDock())
             CHECK(w.rect().contains(d->geometry()));
