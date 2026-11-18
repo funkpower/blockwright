@@ -2276,6 +2276,118 @@ TEST_CASE("nothing changes the bundled library, by any spelling of it") {
     CHECK(snapshot(bundled) == before);
 }
 
+TEST_CASE("a second path to the bundled library or a folder in it is refused, by file identity") {
+    // sameFolderHook stands in for a bind mount, which needs a mount
+    // namespace (cli_library_bind does it for real where it can)
+    const fs::path root = scratch("coll-bundled-identity");
+    const fs::path bundled = root / "top" / "bundled";
+    writeStamp(bundled / "trees" / "pine.ans", encodeStamp("Pine", "trees", {}, tree(), true));
+    put(root / "in" / "moon.ans", "\x1b[31mAB\r\n");
+    EnvGuard env("BLOCKWRIGHT_BUNDLED_LIBRARY", bundled.string());
+    const auto canon = [](const fs::path& p) { return fs::weakly_canonical(p); };
+    // alias = bundled, alias-trees = bundled/trees, alias-top = top, and
+    // a user library whose collection user/trees = bundled/trees
+    const std::vector<std::pair<fs::path, fs::path>> mounts = {
+        {canon(root / "alias"), canon(bundled)},
+        {canon(root / "alias-trees"), canon(bundled / "trees")},
+        {canon(root / "alias-top"), canon(root / "top")},
+        {canon(root / "user" / "trees"), canon(bundled / "trees")},
+        // a folder below a collection of another user library
+        {canon(root / "user2" / "wood" / "nested"), canon(bundled / "trees")},
+        {canon(root / "user2" / "oak" / "up"), canon(root / "top")},
+    };
+    for (const auto& [from, to] : mounts)
+        fs::create_directories(from);
+    writeStamp(root / "user" / "trees" / "pine.ans", encodeStamp("Pine", "trees", {}, tree(), true));
+    writeStamp(root / "user" / "rocks" / "pebble.ans", encodeStamp("Pebble", "rocks", {}, tree(), true));
+    writeStamp(root / "user2" / "wood" / "elm.ans", encodeStamp("Elm", "wood", {}, tree(), true));
+    writeStamp(root / "user2" / "oak" / "ash.ans", encodeStamp("Ash", "oak", {}, tree(), true));
+    const auto beforeBundled = snapshot(bundled);
+    const auto beforeUser = snapshot(root / "user");
+    const auto beforeUser2 = snapshot(root / "user2");
+    struct Unhook {
+        ~Unhook() { library::sameFolderHook() = {}; }
+    } unhook;
+    library::sameFolderHook() = [&](const fs::path& a, const fs::path& b) {
+        const fs::path ca = canon(a), cb = canon(b);
+        return std::any_of(mounts.begin(), mounts.end(), [&](const auto& m) {
+            return (m.first == ca && m.second == cb) || (m.first == cb && m.second == ca);
+        });
+    };
+    const auto says = [](const std::string& how) {
+        return Catch::Matchers::ContainsSubstring(how + " the bundled library");
+    };
+    CHECK_THAT(refusal([&] { createCollection(root / "alias", "New"); }), says("alias is"));
+    CHECK_THAT(refusal([&] { createCollection(root / "alias-trees", "New"); }), says("alias-trees is inside"));
+    CHECK_THAT(refusal([&] { createCollection(root / "alias-trees" / "deeper", "New"); }), says("is inside"));
+    CHECK_THAT(refusal([&] { createCollection(root / "alias-top", "New"); }), says("alias-top holds"));
+    // the user library itself is no second path, but its collection is
+    const fs::path user = root / "user";
+    const auto inside = says("trees is inside");
+    CHECK_THAT(refusal([&] { addStamp(user, "trees", "Oak", {}, tree(), true); }), inside);
+    CHECK_THAT(refusal([&] { addStampFile(user, "trees", root / "in" / "moon.ans"); }), inside);
+    CHECK_THAT(refusal([&] { editStamp(user, user / "trees" / "pine.ans", {.name = "X"}); }), inside);
+    CHECK_THAT(refusal([&] { removeStamp(user, user / "trees" / "pine.ans", Removal::Delete); }), inside);
+    CHECK_THAT(refusal([&] { renameCollection(user, "trees", "Woods"); }), inside);
+    CHECK_THAT(refusal([&] { deleteCollection(user, "trees", Removal::Delete); }), inside);
+    // an edit that would move a stamp into it
+    CHECK_THAT(refusal([&] { editStamp(user, user / "rocks" / "pebble.ans", {.category = "trees"}); }), inside);
+    // a bind mount below a collection folder: rename and delete act on
+    // everything under it, so each folder there is checked too
+    const fs::path user2 = root / "user2";
+    const auto below = Catch::Matchers::ContainsSubstring("nested is inside the bundled library");
+    CHECK_THAT(refusal([&] { renameCollection(user2, "wood", "Woods"); }), below);
+    CHECK_THAT(refusal([&] { deleteCollection(user2, "wood", Removal::Delete); }), below);
+    CHECK_THAT(refusal([&] { deleteCollection(user2, "wood", Removal::Trash); }), below);
+    // one bound to a folder that holds the bundled library
+    const auto holds = Catch::Matchers::ContainsSubstring("up is inside the bundled library");
+    CHECK_THAT(refusal([&] { renameCollection(user2, "oak", "Oaks"); }), holds);
+    CHECK_THAT(refusal([&] { deleteCollection(user2, "oak", Removal::Delete); }), holds);
+    CHECK(snapshot(user2) == beforeUser2);
+    CHECK(snapshot(bundled) == beforeBundled);
+    CHECK(snapshot(user) == beforeUser);
+    // the other collection is the user's own
+    CHECK(addStampFile(user, "rocks", root / "in" / "moon.ans").name == "moon");
+}
+
+TEST_CASE("a replacing addStamp refuses a stamp below the collection in the bundled library") {
+    const fs::path root = scratch("coll-bundled-replace-below");
+    const fs::path bundled = root / "top" / "bundled";
+    writeStamp(bundled / "trees" / "pine.ans", encodeStamp("Pine", "trees", {}, tree(), true));
+    EnvGuard env("BLOCKWRIGHT_BUNDLED_LIBRARY", bundled.string());
+    const auto canon = [](const fs::path& p) { return fs::weakly_canonical(p); };
+    const fs::path user = root / "user";
+    createCollection(user, "wood");
+    // stands in for user/wood/nested bound to bundled/trees: the same files
+    writeStamp(user / "wood" / "nested" / "pine.ans", encodeStamp("Pine", "trees", {}, tree(), true));
+    const fs::path from = canon(user / "wood" / "nested"), to = canon(bundled / "trees");
+    struct Unhook {
+        ~Unhook() { library::sameFolderHook() = {}; }
+    } unhook;
+    library::sameFolderHook() = [&](const fs::path& a, const fs::path& b) {
+        const fs::path ca = canon(a), cb = canon(b);
+        return (ca == from && cb == to) || (ca == to && cb == from);
+    };
+    const auto before = snapshot(user);
+    CHECK_THAT(refusal([&] { addStamp(user, "wood", "Pine", {"x"}, tree(), true, std::nullopt, true); }),
+               Catch::Matchers::ContainsSubstring("nested is inside the bundled library"));
+    // writeStamp itself, as replay and the dock's plain save call it
+    const StampFiles pine = encodeStamp("Pine", "x", {}, tree(), true);
+    CHECK_THAT(refusal([&] { writeStamp(user / "wood" / "nested" / "pine.ans", pine); }),
+               Catch::Matchers::ContainsSubstring("nested is inside the bundled library"));
+    CHECK_THAT(refusal([&] { writeStamp(bundled / "oak.ans", encodeStamp("Oak", "x", {}, tree(), true)); }),
+               Catch::Matchers::ContainsSubstring("is the bundled library"));
+    // a text style preset, the other writer of a library folder
+    TextStyleEntry style;
+    style.name = "Neon";
+    style.category = "neon";
+    style.style = TextStyle{{Effect{true, OutlineEffect{}}}};
+    CHECK_THAT(refusal([&] { writeTextStyle(user / "wood" / "nested", style); }),
+               Catch::Matchers::ContainsSubstring("nested is inside the bundled library"));
+    CHECK(snapshot(user) == before);
+    CHECK(!fs::exists(bundled / "oak.ans"));
+}
+
 TEST_CASE("a title is checked across the collection, a stamp renamed in place included") {
     const fs::path root = scratch("coll-title");
     const fs::path lib = root / "user";

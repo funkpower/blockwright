@@ -22,6 +22,7 @@
 #include <QString>
 
 #include <algorithm>
+#include <functional>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -799,7 +800,9 @@ fs::path textStylePathFor(const fs::path& dir, const std::string& name) {
     return freePathFor(dir, name, ".style.json");
 }
 
+
 fs::path writeTextStyle(const fs::path& dir, const TextStyleEntry& entry) {
+    refuseInsideBundled(dir);
     const std::string json = textStyleEntryJson(entry);
     parseTextStyleEntry(json);
     std::error_code ec;
@@ -844,6 +847,7 @@ fs::path frameStylePathFor(const fs::path& dir, const std::string& name) {
 }
 
 fs::path writeFrameStyle(const fs::path& dir, const FrameStyle& style) {
+    refuseInsideBundled(dir);
     checkText(style.name, "frame style name");
     std::error_code ec;
     fs::create_directories(dir, ec);
@@ -1087,6 +1091,9 @@ StampFiles encodeChecked(const std::string& name, const std::string& category, c
 } // namespace
 
 void writeStamp(const fs::path& ans, const StampFiles& files) {
+    // Every stamp write in a library comes here: the folder it lands in is
+    // checked, whatever the caller checked above it.
+    refuseInsideBundled(ans.has_parent_path() ? ans.parent_path() : fs::path("."));
     // Over the sidecar already there, in whatever case its extension has.
     const fs::path json = pairedSidecar(ans);
     for (const fs::path& p : {ans, json})
@@ -1464,15 +1471,124 @@ bool within(const fs::path& inner, const fs::path& outer) {
 
 } // namespace
 
+#ifdef BW_TEST_HOOKS
+std::function<bool(const fs::path&, const fs::path&)>& sameFolderHook() {
+    static std::function<bool(const fs::path&, const fs::path&)> hook;
+    return hook;
+}
+#endif
+
+namespace {
+
+// The same folder, by file identity (device and inode; volume and file index
+// on Windows), so a bind mount or a second export of it counts. False when
+// either is missing or can't be asked.
+bool sameFolder(const fs::path& a, const fs::path& b) {
+#ifdef BW_TEST_HOOKS
+    if (sameFolderHook() && sameFolderHook()(a, b))
+        return true;
+#endif
+    std::error_code ec;
+    return fs::equivalent(a, b, ec) && !ec;
+}
+
+// `folder` or one of its ancestors is the same folder as `other`: 0 for
+// `folder` itself, 1 for an ancestor, -1 for none.
+int sameFolderUp(const fs::path& folder, const fs::path& other) {
+    int depth = 0;
+    for (fs::path p = folder;; p = p.parent_path(), depth = 1) {
+        if (sameFolder(p, other))
+            return depth;
+        if (!p.has_relative_path())
+            return -1;
+    }
+}
+
+// The folders of the bundled tree `b`, `b` first, links not followed; at
+// most kMaxBundledFolders (a bundled library holds a few dozen).
+constexpr std::size_t kMaxBundledFolders = 4096;
+std::vector<fs::path> bundledFolders(const fs::path& b) {
+    std::vector<fs::path> out{b};
+    std::error_code ec;
+    fs::recursive_directory_iterator it(b, fs::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != fs::recursive_directory_iterator() && out.size() < kMaxBundledFolders; it.increment(ec)) {
+        std::error_code e2;
+        if (!it->is_symlink(e2) && it->is_directory(e2))
+            out.push_back(it->path());
+    }
+    return out;
+}
+
+// How `folder` or one of its ancestors is a folder of the bundled tree, by
+// file identity: "is" for `folder` itself as the root, "is inside" for any
+// other match, nullptr for none.
+const char* insideByIdentity(const fs::path& folder, const std::vector<fs::path>& folders) {
+    bool self = true;
+    for (fs::path p = folder;; p = p.parent_path(), self = false) {
+        for (std::size_t i = 0; i < folders.size(); ++i)
+            if (sameFolder(p, folders[i]))
+                return self && i == 0 ? "is" : "is inside";
+        if (!p.has_relative_path())
+            return nullptr;
+    }
+}
+
+} // namespace
+
 void refuseBundled(const fs::path& library) {
     const fs::path bundled = bundledLibraryDir();
     if (bundled.empty())
         return;
     const fs::path lib = canonicalish(library), b = canonicalish(bundled);
+    // The paths first (they cover a library or bundled folder that doesn't
+    // exist yet), then file identity against every folder of the bundled
+    // tree, for a second path to it or to a folder in it (a bind mount).
     const char* how = lib == b ? "is" : within(lib, b) ? "is inside" : within(b, lib) ? "holds" : nullptr;
+    if (!how) {
+        how = insideByIdentity(lib, bundledFolders(b));
+        if (!how && sameFolderUp(b.parent_path(), lib) >= 0)
+            how = "holds";
+    }
     if (how)
         throw LibraryError(library.string() + " " + how + " the bundled library (" + bundled.string() +
                            "); bundled stamps are never changed");
+}
+
+// Refuses a write in `folder`: the bundled library or a folder inside it, by
+// path or by file identity (a bind mount or a second export of one). A folder
+// that only holds the bundled library is not refused here; a write in it
+// leaves the bundled stamps alone.
+void refuseInsideBundled(const fs::path& folder) {
+    const fs::path bundled = bundledLibraryDir();
+    if (bundled.empty())
+        return;
+    const fs::path f = canonicalish(folder), b = canonicalish(bundled);
+    const char* how = f == b ? "is" : within(f, b) ? "is inside" : insideByIdentity(f, bundledFolders(b));
+    if (how)
+        throw LibraryError(folder.string() + " " + how + " the bundled library (" + bundled.string() +
+                           "); bundled stamps are never changed");
+}
+
+static void refuseBundledBelow(const fs::path& folder) {
+    const fs::path bundled = bundledLibraryDir();
+    if (bundled.empty())
+        return;
+    const std::vector<fs::path> folders = bundledFolders(canonicalish(bundled));
+    const fs::path above = canonicalish(bundled).parent_path();
+    std::error_code ec;
+    fs::recursive_directory_iterator it(folder, fs::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        std::error_code e2;
+        if (it->is_symlink(e2) || !it->is_directory(e2))
+            continue;
+        const fs::path& d = it->path();
+        bool hit = sameFolderUp(above, d) >= 0;  // a bind of the bundled folder's parent or an ancestor
+        for (std::size_t i = 0; !hit && i < folders.size(); ++i)
+            hit = sameFolder(d, folders[i]);
+        if (hit)
+            throw LibraryError(d.string() + " is inside the bundled library (" + bundled.string() +
+                               ") or holds it; bundled stamps are never changed");
+    }
 }
 
 namespace {
@@ -1530,6 +1646,7 @@ Collection collectionAt(const fs::path& dir) {
 }
 
 void writeMarker(const fs::path& dir, const std::string& name) {
+    refuseInsideBundled(dir);
     const fs::path m = dir / kCollectionMarker;
     checkWritable(m);
     Staged(m, name + "\n").commit();
@@ -1636,6 +1753,11 @@ fs::path trashPath(const fs::path& p) {
 // can't rename it may copy it and then remove it (Qt does, across volumes),
 // and that removal must not stop halfway.
 bool discard(const fs::path& p, Removal how) {
+    refuseInsideBundled(p.has_parent_path() ? p.parent_path() : fs::path("."));
+    if (realDir(p)) {
+        refuseBundled(p);
+        refuseBundledBelow(p);
+    }
     checkDeletable(p);
     if (how == Removal::Trash) {
         const fs::path where = trashPath(p);
@@ -1662,6 +1784,9 @@ bool discard(const fs::path& p, Removal how) {
 
 // Renames the folder `from` to `to` only if nothing sits on `to`.
 void renameDirNoReplace(const fs::path& from, const fs::path& to) {
+    refuseBundled(from);
+    refuseBundledBelow(from);
+    refuseInsideBundled(to.has_parent_path() ? to.parent_path() : fs::path("."));
 #if BW_LIBRARY_POSIX && defined(__linux__) && defined(RENAME_NOREPLACE)
     if (::renameat2(AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE) == 0)
         return;
@@ -1834,6 +1959,8 @@ Collection createCollection(const fs::path& library, const std::string& name) {
 Removed deleteCollection(const fs::path& library, const std::string& name, Removal how) {
     refuseBundled(library);
     const Collection c = requireCollection(library, name);
+    refuseBundled(c.dir);
+    refuseBundledBelow(c.dir);
     if (!realDir(c.dir))
         throw LibraryError(c.dir.string() + " is no longer a folder");
     return {c.stamps, discard(c.dir, how)};
@@ -1843,6 +1970,8 @@ Collection renameCollection(const fs::path& library, const std::string& from, co
     checkCollectionName(to);
     refuseBundled(library);
     const Collection c = requireCollection(library, from);
+    refuseBundled(c.dir);
+    refuseBundledBelow(c.dir);
     if (from == to)
         return c;
     if (findCollection(library, to))
@@ -1893,6 +2022,7 @@ std::filesystem::path addStamp(const fs::path& library, const std::string& colle
                                const std::optional<StampSlice>& slice, bool replace) {
     refuseBundled(library);
     const Collection c = requireCollection(library, collection);
+    refuseBundled(c.dir);
     const StampFiles files = encodeStamp(name, c.name, tags, cells, ice, slice);
     // The title anywhere in the collection, a stamp renamed in place included.
     const std::optional<fs::path> held = titledIn(c.dir, name, true, {});
@@ -1964,6 +2094,7 @@ public:
     Adder(const fs::path& library, const std::string& collection) {
         refuseBundled(library);
         c_ = requireCollection(library, collection);
+        refuseBundled(c_.dir);
         // titledIn's scan, kept: the first stamp holding each title
         for (Stamp& s : scan(c_.dir).stamps)
             titles_.emplace(std::move(s.name), std::move(s.path));
@@ -2038,6 +2169,7 @@ void requireRemovable(const fs::path& library, const fs::path& ans) {
         throw LibraryError(ans.string() + " isn't a stamp's .ans");
     refuseBundled(library);
     requireInside(library, ans, "removed");
+    refuseBundled(ans.has_parent_path() ? ans.parent_path() : fs::path("."));
     std::error_code ec;
     const fs::file_status st = linkStatus(ans, ec);
     if (!fs::exists(st))
@@ -2120,6 +2252,7 @@ Removed removeStamp(const fs::path& library, const fs::path& ans, Removal how) {
 std::filesystem::path editStamp(const fs::path& library, const fs::path& ans, const StampEdit& edit) {
     refuseBundled(library);
     requireInside(library, ans, "changed");
+    refuseBundled(ans.has_parent_path() ? ans.parent_path() : fs::path("."));
     const Stamp s = readStamp(ans);
     const std::string name = edit.name.value_or(s.name);
     checkName(name);
@@ -2154,6 +2287,7 @@ std::filesystem::path editStamp(const fs::path& library, const fs::path& ans, co
             dest = library;
         }
     }
+    refuseBundled(dest);
     std::error_code ec;
     const bool moving = !fs::equivalent(dest, here, ec);
     const StampTarget t = stampPathFor(dest, name);

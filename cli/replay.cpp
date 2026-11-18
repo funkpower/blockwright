@@ -1490,8 +1490,17 @@ void checkUserLibrary(const fs::path& dir, bool written) {
 void load(steps::Script& script, const fs::path& dir, const fs::path& libraryDir, const fs::path& userLibraryDir) {
     const bool saves = std::any_of(script.steps.begin(), script.steps.end(),
                                    [](const Step& st) { return st.action == "saveToLibrary"; });
-    if (!userLibraryDir.empty())
+    if (!userLibraryDir.empty()) {
         checkUserLibrary(userLibraryDir, saves);
+        if (saves) {
+            // refused here, before a capture is written or a folder made
+            try {
+                library::refuseInsideBundled(userLibraryDir);
+            } catch (const library::LibraryError& e) {
+                throw Failure{std::string("saveToLibrary: ") + e.what()};
+            }
+        }
+    }
     if (std::any_of(script.steps.begin(), script.steps.end(),
                     [](const Step& st) { return st.action == "placeStamp" || st.action == "saveToLibrary"; })) {
         // what the scan can't read is left out, as the Library dock leaves
@@ -1597,6 +1606,11 @@ void load(steps::Script& script, const fs::path& dir, const fs::path& libraryDir
 
 void writeSaved(const SavedStamp& saved, const fs::path& dir) {
     std::error_code ec;
+    try {
+        library::refuseInsideBundled(dir);  // before a folder is made there
+    } catch (const library::LibraryError& e) {
+        throw Failure{saved.step + ": " + e.what()};
+    }
     if (!fs::is_directory(dir, ec) && !fs::create_directories(dir, ec))
         throw Failure{saved.step + ": " + dir.string() + ": " +
                       (ec ? ec.message() : std::string("not a directory"))};
@@ -1610,6 +1624,7 @@ void writeSaved(const SavedStamp& saved, const fs::path& dir) {
             const auto c = library::findCollection(dir, saved.collection);
             if (!c)
                 throw library::LibraryError("no collection is called \"" + saved.collection + "\"");
+            library::refuseBundled(c->dir);
             folder = c->dir;
             for (const library::Stamp& st : library::scan(folder).stamps)
                 if (st.name == saved.name) {

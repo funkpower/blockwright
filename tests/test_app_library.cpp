@@ -3848,6 +3848,31 @@ TEST_CASE("the dock's commands on a user library that is the bundled one are ref
     CHECK(f.trashed.empty());
 }
 
+TEST_CASE("Save to Library into a user library that is the bundled one is refused, a plain category too (#504)",
+          "[library][collections]") {
+    CollectionFixture f;
+    makeCollection(f.dock, QStringLiteral("Rocks"));
+    const QByteArray env = qgetenv("BLOCKWRIGHT_BUNDLED_LIBRARY");
+    struct Restore {
+        QByteArray env;
+        ~Restore() { qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", env); }
+    } restore{env};
+    qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QFile::encodeName(f.user.path()));
+
+    write(f.w, 0, 0, QStringLiteral("x x"));
+    f.w.tools()->setActive(f.w.selectTool());
+    f.w.selectTool()->select({0, 0, 3, 1});
+    for (const QString category : {QStringLiteral("test"), QStringLiteral("Rocks")}) {
+        INFO(category.toStdString());
+        QString error;
+        CHECK(f.w.saveSelectionToLibrary(QStringLiteral("Two Dots"), category, {}, &error).isEmpty());
+        CHECK(error.contains(QStringLiteral("bundled stamps are never changed")));
+    }
+    CHECK_FALSE(fs::exists(f.userPath() / "two-dots.ans"));
+    CHECK_FALSE(fs::exists(f.userPath() / "two-dots.json"));
+    CHECK_FALSE(fs::exists(f.userPath() / "rocks" / "two-dots.ans"));
+}
+
 TEST_CASE("Save to Library replaces the stamp holding the title in a collection, one renamed in place included",
           "[library][collections]") {
     CollectionFixture f;

@@ -8,6 +8,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <QByteArray>
+#include <QtGlobal>
+
 #include <climits>
 #include <filesystem>
 #include <fstream>
@@ -291,4 +294,34 @@ TEST_CASE("a frame style file too large to be one is a problem, not read whole")
     const library::ScanResult r = library::scan(dir);
     CHECK(r.frames.empty());
     CHECK(r.problems.size() == 2);
+}
+
+TEST_CASE("a frame style is never written in the bundled library, by path or by file identity (#504)") {
+    const fs::path root = scratch("bundled");
+    const fs::path bundled = root / "bundled";
+    fs::create_directories(bundled / "trees");
+    qputenv("BLOCKWRIGHT_BUNDLED_LIBRARY", QByteArray::fromStdString(bundled.string()));
+    struct Unset {
+        ~Unset() {
+            qunsetenv("BLOCKWRIGHT_BUNDLED_LIBRARY");
+            library::sameFolderHook() = {};
+        }
+    } unset;
+    const auto s = frameStyleFromCells(box(), "", "Rope Edge", 1, 1, 1, 1, false, true);
+    REQUIRE(s);
+    // the dock's Save Frame Style into a user library that is the bundled one
+    CHECK_THROWS_WITH(library::writeFrameStyle(bundled, *s), ContainsSubstring("is the bundled library"));
+    CHECK_FALSE(fs::exists(bundled / "rope-edge.frame.json"));
+    // a user folder that is a second path to a bundled folder (a bind mount)
+    const fs::path user = root / "user";
+    fs::create_directories(user);
+    const auto canon = [](const fs::path& p) { return fs::weakly_canonical(p); };
+    library::sameFolderHook() = [&](const fs::path& a, const fs::path& b) {
+        return (canon(a) == canon(user) && canon(b) == canon(bundled / "trees")) ||
+               (canon(b) == canon(user) && canon(a) == canon(bundled / "trees"));
+    };
+    CHECK_THROWS_WITH(library::writeFrameStyle(user, *s), ContainsSubstring("is inside the bundled library"));
+    CHECK(fs::is_empty(user));
+    library::sameFolderHook() = {};
+    CHECK(library::writeFrameStyle(user, *s) == user / "rope-edge.frame.json");
 }

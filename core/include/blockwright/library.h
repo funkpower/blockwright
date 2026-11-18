@@ -234,7 +234,9 @@ std::string stampLossMessage(const AnsiOutput& out);
 // the art's rename fails the old sidecar is put back (the error says so if
 // that fails too). Refuses (LibraryError) when either path is a symbolic
 // link, rather than writing through it to a file outside the library, or
-// anything else that isn't a regular file.
+// anything else that isn't a regular file. Refuses (LibraryError) a folder
+// that is the bundled library or inside it, by path or file identity, before
+// anything is written; writeTextStyle and writeFrameStyle refuse the same.
 void writeStamp(const std::filesystem::path& ans, const StampFiles& files);
 
 namespace testing {
@@ -454,9 +456,30 @@ std::optional<Collection> findCollection(const std::filesystem::path& library, c
 std::optional<Collection> collectionOf(const std::filesystem::path& library, const std::filesystem::path& path);
 
 // Refuses (LibraryError) a library that is, is inside or holds
-// bundledLibraryDir(), links resolved. Every function below that changes
-// anything calls it first; a caller may too, before its own checks.
+// bundledLibraryDir(), links resolved and by file identity (against every
+// folder of the bundled tree), so a bind mount or another path to it or to
+// a folder in it is refused too. Every function below that changes
+// anything calls it first. Below that, the primitives that write, remove
+// or move anything in a library (writeStamp, the style writers, the
+// collection marker, removal and a collection's folder rename) check the
+// folder they act in themselves, so a stamp a save replaces below the
+// collection, or a plain save into a user library that is the bundled one,
+// is refused whatever the caller checked; a caller may check too, before
+// its own checks.
 void refuseBundled(const std::filesystem::path& library);
+
+// Refuses `folder` when it is the bundled library or inside it, by path or by
+// file identity, whether or not it exists yet (the nearest folder above it
+// that does is what is compared). A folder that only holds the bundled
+// library is allowed. Throws LibraryError.
+void refuseInsideBundled(const std::filesystem::path& folder);
+
+#ifdef BW_TEST_HOOKS
+// Tests only: when set, refuseBundled also counts two folders as one when
+// it returns true (as a bind mount would make them), beside
+// std::filesystem::equivalent.
+std::function<bool(const std::filesystem::path&, const std::filesystem::path&)>& sameFolderHook();
+#endif
 
 // Makes an empty collection: its folder and marker, and `library` if need
 // be. Refused when a collection has the name already or something sits on
