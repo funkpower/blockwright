@@ -64,6 +64,15 @@ struct EncodeOptions {
 // the mIRC colour of the same name and shade, RGB as the nearest of the 99.
 std::uint8_t mircColor(const Color& c);
 
+// The palette colour (0-15) drawn as mIRC colour `mirc` (0-15): mircColor's
+// inverse over the 16. Out of range is taken mod 16.
+std::uint8_t paletteOfMirc(std::uint8_t mirc);
+
+// `c` as IRC text in 16 colours sends it (#496): a palette colour as it is,
+// an RGB one as the palette colour whose mIRC colour is the nearest of mIRC
+// 0-15 to it (nearestMirc16), so mircColor of the result is 0-15.
+Color fold16(const Color& c);
+
 // The shortest IRC line that draws `cells`, without a line ending. A
 // transparent cell is drawn blank, NUL as a space, a C0 control or DEL as
 // its CP437 glyph, and a C1 control (U+0080-U+009F), U+2028, U+2029 or a
@@ -93,11 +102,15 @@ std::vector<Unwritable> unwritable(const Canvas& canvas);
 // IRC or Micron target a cell with an RGB background (an mIRC colour past 15, or the
 // eyedropper's) is left as it is too: iCE is the .ans's, and folding it
 // would send mIRC 80 as CGA green (#350); an indexed cell folds as under
-// ANSI, so it sends the same bytes. The row meter, File > Export IRC Text,
-// the IRC View dock and `cli export --irc` all send these.
-Cell sentCell(const Cell& c, bool ice, Target target = Target::Ansi);
+// ANSI, so it sends the same bytes. With `colours` 16 (the document's
+// setting as sentIrcColours has it) its foreground and background are then
+// folded to 0-15 (fold16); an indexed colour is left as it is, so a cell of
+// the 16 sends the same bytes either way. The row meter, File > Export IRC
+// Text, the IRC View dock and `cli export --irc` all send these.
+Cell sentCell(const Cell& c, bool ice, Target target = Target::Ansi, IrcColours colours = IrcColours::Mirc99);
 // The canvas with every cell as sentCell has it.
-Canvas sentCanvas(const Canvas& canvas, bool ice, Target target = Target::Ansi);
+Canvas sentCanvas(const Canvas& canvas, bool ice, Target target = Target::Ansi,
+                  IrcColours colours = IrcColours::Mirc99);
 
 // A canvas row as one IRC line, and how many of its cells fit changed.
 struct Line {

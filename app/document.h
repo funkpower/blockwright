@@ -79,6 +79,7 @@ struct ProjectExtras {
     std::map<std::string, std::string> files;
     FontStore fonts;
     Target target = Target::Ansi;
+    IrcColours ircColours = IrcColours::Mirc99;  // Project::ircColours
 
     bool operator==(const ProjectExtras&) const = default;
 };
@@ -221,6 +222,17 @@ public:
     // so an IRC target leaves a flat save not holding all (flatHoldsAll).
     Target target() const { return extras_.target; }
     bool setTarget(Target target);
+    // The IRC colours (extras().ircColours, #496): 99, or 0-15 only. Set as
+    // one undo command ("IRC Colours"), as setTarget is; false if it changes
+    // nothing. Changes no cell. It emits targetChanged, since everything
+    // that follows the target (the palette, the meter, the lint, the IRC
+    // view) follows it too. An .ans can't hold it, so 16 leaves a flat save
+    // not holding all (flatHoldsAll).
+    IrcColours ircColours() const { return extras_.ircColours; }
+    bool setIrcColours(IrcColours colours);
+    // What IRC text of the document carries: ircColours() under the IRC
+    // target, else 99 (sentIrcColours).
+    IrcColours sentIrcColours() const { return bw::sentIrcColours(extras_.target, extras_.ircColours); }
 
     // The SAUCE record, iCE and the composite as one flat document.
     const AnsiDocument& ansi() const { return doc_; }
@@ -527,8 +539,8 @@ signals:
     // extras().ircBudget changed (setIrcBudget, its undo and redo; not on
     // open or new, see reset).
     void ircBudgetChanged();
-    // target() changed (setTarget, its undo and redo; not on open or new,
-    // see reset).
+    // target() or ircColours() changed (setTarget, setIrcColours, their undo
+    // and redo; not on open or new, see reset).
     void targetChanged();
     // A command (a layer panel change, a text source, a format, the IRC
     // budget, a snapshot) is about to be pushed: emitted first, before the
@@ -556,6 +568,7 @@ private:
     friend class SnapshotCommand;
     friend class IrcBudgetCommand;
     friend class TargetCommand;
+    friend class IrcColoursCommand;
     friend class FormatCommand;
     friend class CanvasSizeCommand;
 
@@ -568,6 +581,7 @@ private:
     std::string freeLayerName(const QString& pattern) const;
     void applyIrcBudget(const project::IrcBudget& budget);
     void applyTarget(Target target);
+    void applyIrcColours(IrcColours colours);
     CompositeOptions compositeOptions() const { return {doc_.ice, Cell{}}; }
     // shownBelow, for fitLayerEdit
     std::function<Cell(int, int)> below() const;

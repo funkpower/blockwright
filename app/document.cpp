@@ -282,6 +282,19 @@ private:
     Target before_, after_;
 };
 
+class IrcColoursCommand : public QUndoCommand {
+public:
+    IrcColoursCommand(Document* doc, IrcColours before, IrcColours after)
+        : QUndoCommand(Document::tr("IRC Colours")), doc_(doc), before_(before), after_(after) {}
+
+    void redo() override { doc_->applyIrcColours(after_); }
+    void undo() override { doc_->applyIrcColours(before_); }
+
+private:
+    Document* doc_;
+    IrcColours before_, after_;
+};
+
 // One format change (SAUCE, iCE, letter spacing) on the stack. An iCE
 // toggle also redraws each live text layer's style (iceEdit), its cells
 // before and after kept, so undo and redo put back exactly what was shown.
@@ -419,7 +432,7 @@ void Document::replace(project::Project p, const QString& path, FileForm form) {
     doc_.encoding = p.ansEncoding;
     resetLayers(std::move(p.layers));
     extras_ = {std::move(p.ircBudget), std::move(p.notes), std::move(p.snapshots), std::move(p.files),
-               std::move(p.fonts), p.target};
+               std::move(p.fonts), p.target, p.ircColours};
     countLostBlink_ = false;
     path_ = path;
     form_ = form;
@@ -447,6 +460,7 @@ project::Project Document::project() const {
     p.files = extras_.files;
     p.fonts = extras_.fonts;
     p.target = extras_.target;
+    p.ircColours = extras_.ircColours;
     p.ansEncoding = doc_.encoding;
     return p;
 }
@@ -513,6 +527,19 @@ bool Document::setTarget(Target target) {
 
 void Document::applyTarget(Target target) {
     extras_.target = target;
+    emit targetChanged();
+}
+
+bool Document::setIrcColours(IrcColours colours) {
+    emit commandAboutToPush();
+    if (colours == extras_.ircColours)
+        return false;
+    undo_.push(new IrcColoursCommand(this, extras_.ircColours, colours));
+    return true;
+}
+
+void Document::applyIrcColours(IrcColours colours) {
+    extras_.ircColours = colours;
     emit targetChanged();
 }
 
@@ -762,7 +789,7 @@ bool Document::flatHoldsAll() const {
     const ProjectExtras none;
     if (stack_.size() != 1 || !(extras_.ircBudget == none.ircBudget && extras_.notes == none.notes &&
                                 extras_.snapshots == none.snapshots && extras_.files == none.files &&
-                                extras_.target == none.target))
+                                extras_.target == none.target && extras_.ircColours == none.ircColours))
         return false;
     // an .ans holds a styled layer's look, not its cells and style
     const Layer& l = stack_[0];

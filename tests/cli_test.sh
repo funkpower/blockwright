@@ -615,7 +615,7 @@ if [[ -e $tmp/x.ans ]]; then bad "a refused shade mode wrote $tmp/x.ans"; else o
 
 # lint: the whole lint, one planted fault a piece (#106)
 expect "--help lists lint" 0 '^  lint <in> +the ladder check' -- "$cli" --help
-expect "usage lists lint" 2 'lint \[--ramp R\]\.\.\. \[--box x0,y0,x1,y1\] \[--target ansi\|irc\|micron\] \[--json\] <in>' -- "$cli" lint
+expect "usage lists lint" 2 'lint \[--ramp R\]\.\.\. \[--box x0,y0,x1,y1\] \[--target ansi\|irc\|micron\] \[--colours 16\|99\] \[--json\] <in>' -- "$cli" lint
 k='\033[0;40m '; K='\033[0;1;30;40m\xdb'; w='\033[0;37;40m\xdb'
 s1='\033[0;1;30;40m\xb0'; s2='\033[0;1;30;40m\xb1'; s3='\033[0;1;30;40m\xb2'; Wk='\033[0;1;37;40m\xb1'
 cells() { local o=; for c in "$@"; do o+=$c; done; printf "$o"; }
@@ -1008,6 +1008,48 @@ printf '{"format": "blockwright", "version": "1.3", "width": 80, "height": 1, "i
 expect "lint: a warning beside the note exits 4" 4 '^1 finding \(1 merge\), 1 note \(1 ans-loss\), noise ' -- "$cli" lint "$tmp/rgb-merge"
 expect "lint: the note is printed beside it" 4 '^1,0 ans-loss - note: 1 cell is in a colour' -- "$cli" lint "$tmp/rgb-merge"
 expect "lint --json: a warning's severity" 4 '"kind": *"merge", *"severity": *"warning"' -- "$cli" lint --json "$tmp/rgb-merge"
+
+# IRC in 16 colours (#496): the rgb project's cell is mIRC 77 on black,
+# which 16 colours send as 15 (light grey, the nearest of 0-15)
+expect "info: a project is 99 colours by default" 0 '^irc colours: 99$' -- "$cli" info "$rgb"
+expect "pack --colours 16" 0 '^$' -- "$cli" pack --target irc --colours 16 "$rgb" "$tmp/rgb-16.bwp"
+expect "info reads 16 colours back" 0 '^irc colours: 16$' -- "$cli" info "$tmp/rgb-16.bwp"
+expect "pack keeps a project's colours" 0 '^$' -- "$cli" pack "$tmp/rgb-16.bwp" "$tmp/rgb-16b.bwp"
+expect "info: the colours are kept" 0 '^irc colours: 16$' -- "$cli" info "$tmp/rgb-16b.bwp"
+expect "unpack --colours 16" 0 '^$' -- "$cli" unpack --colours 16 "$tmp/rgb-irc.bwp" "$tmp/rgb-16d"
+if grep -Eq '"ircColours": *16' "$tmp/rgb-16d/manifest.json"; then ok "a 16-colour manifest says so"; else bad "a 16-colour manifest has no ircColours"; fi
+expect "unpack --colours 99" 0 '^$' -- "$cli" unpack --colours 99 "$tmp/rgb-16.bwp" "$tmp/rgb-99d"
+if grep -q '"ircColours"' "$tmp/rgb-99d/manifest.json"; then bad "a 99-colour manifest names its colours"; else ok "a 99-colour manifest has no ircColours key"; fi
+expect "export --irc of a 99-colour project sends 77" 0 '^1 line' -- "$cli" export --irc "$tmp/rgb-irc.bwp" "$tmp/rgb-99.txt"
+if [[ $(cat "$tmp/rgb-99.txt") == $'\00377,1X\00315BCD' ]]; then ok "99 colours send mIRC 77"; else bad "99 colours sent $(cat -v "$tmp/rgb-99.txt")"; fi
+expect "export --irc of a 16-colour project" 0 '^1 line' -- "$cli" export --irc "$tmp/rgb-16.bwp" "$tmp/rgb-16.txt"
+if [[ $(cat "$tmp/rgb-16.txt") == $'\00315,1XBCD' ]]; then ok "16 colours send mIRC 77 as 15"; else bad "16 colours sent $(cat -v "$tmp/rgb-16.txt")"; fi
+expect "export --irc --colours 16 of a 99-colour project" 0 '^1 line' -- "$cli" export --irc --colours 16 "$tmp/rgb-irc.bwp" "$tmp/rgb-16f.txt"
+if cmp -s "$tmp/rgb-16.txt" "$tmp/rgb-16f.txt"; then ok "--colours 16 sends what a 16-colour project sends"; else bad "--colours 16 differs from the project's 16"; fi
+expect "export --irc --colours 99 overrides a project's 16" 0 '^1 line' -- "$cli" export --irc --colours 99 "$tmp/rgb-16.bwp" "$tmp/rgb-99f.txt"
+if cmp -s "$tmp/rgb-99.txt" "$tmp/rgb-99f.txt"; then ok "--colours 99 sends the 99"; else bad "--colours 99 differs from 99 colours"; fi
+expect "export --irc --colours 16 of an ANSI project" 0 '^1 line' -- "$cli" export --irc --colours 16 "$rgb" "$tmp/rgb-16a.txt"
+if cmp -s "$tmp/rgb-16.txt" "$tmp/rgb-16a.txt"; then ok "--colours 16 folds under ANSI too"; else bad "--colours 16 of an ANSI project sent $(cat -v "$tmp/rgb-16a.txt")"; fi
+expect "a 16-colour project under ANSI sends the 99" 0 '^$' -- "$cli" pack --target ansi "$tmp/rgb-16.bwp" "$tmp/rgb-16-ansi.bwp"
+expect "export of it" 0 '^1 line' -- "$cli" export --irc "$tmp/rgb-16-ansi.bwp" "$tmp/rgb-16-ansi.txt"
+if cmp -s "$tmp/rgb-99.txt" "$tmp/rgb-16-ansi.txt"; then ok "16 colours do nothing under ANSI"; else bad "16 colours changed an ANSI project's export"; fi
+expect "export --irc --colours 16 of a flat file" 0 '^[0-9]+ lines' -- "$cli" export --irc --colours 16 "$piece" "$tmp/tux-16.txt"
+if cmp -s "$tmp/tux-16.txt" "$data/golden-irc/tux.txt"; then ok "a flat file sends golden-irc's bytes in 16 colours"; else bad "a flat file's 16-colour export differs from golden-irc"; fi
+expect "render --irc of a 16-colour project" 0 '^IRC view: ' -- "$cli" render --irc "$tmp/rgb-16.bwp" "$tmp/rgb-16.png"
+expect "render --irc --colours 16" 0 '^IRC view: ' -- "$cli" render --irc --colours 16 "$tmp/rgb-irc.bwp" "$tmp/rgb-16f.png"
+expect "render --irc of a 99-colour project" 0 '^IRC view: ' -- "$cli" render --irc "$tmp/rgb-irc.bwp" "$tmp/rgb-99.png"
+if cmp -s "$tmp/rgb-16.png" "$tmp/rgb-16f.png" && ! cmp -s "$tmp/rgb-16.png" "$tmp/rgb-99.png"; then ok "render --irc draws 16 colours"; else bad "render --irc --colours 16 doesn't match the 16-colour project's view"; fi
+expect "lint notes the folded cells" 0 '^0,0 irc-fold - note: 1 cell is in an mIRC colour past 15, sent as the nearest of 0-15 \(IRC in 16 colours\)$' -- "$cli" lint "$tmp/rgb-16.bwp"
+expect "lint: irc-fold is a note" 0 '^clean, 2 notes \(1 ans-loss, 1 irc-fold\), noise ' -- "$cli" lint "$tmp/rgb-16.bwp"
+expect "lint --json names irc-fold" 0 '"kind": *"irc-fold", *"severity": *"note"' -- "$cli" lint --json "$tmp/rgb-16.bwp"
+expect "lint --colours 16" 0 'irc-fold' -- "$cli" lint --target irc --colours 16 "$rgb"
+if "$cli" lint --colours 99 "$tmp/rgb-16.bwp" | grep -q irc-fold; then bad "lint --colours 99 noted folds"; else ok "lint --colours 99: no irc-fold"; fi
+if "$cli" lint --target ansi "$tmp/rgb-16.bwp" | grep -q irc-fold; then bad "lint under ANSI noted folds"; else ok "lint under ANSI: no irc-fold"; fi
+expect "a bad --colours is a usage error" 2 "--colours takes 16 or 99, not '17'" -- "$cli" export --irc --colours 17 "$rgb" "$tmp/x496.txt"
+expect "--colours is an export --irc option" 2 '--colours is an export --irc option' -- "$cli" export --micron --colours 16 "$rgb" "$tmp/x496.mu"
+expect "--colours is a render --irc option" 2 '--colours is a render --irc option' -- "$cli" render --colours 16 "$rgb" "$tmp/x496.png"
+expect "convert takes no --colours" 2 '--colours is an export, render, lint, pack or unpack option' -- "$cli" convert --colours 16 "$piece" "$tmp/x496.ans"
+if [[ -e $tmp/x496.txt || -e $tmp/x496.mu || -e $tmp/x496.png ]]; then bad "a refused --colours wrote a file"; else ok "refused --colours write nothing"; fi
 if [[ $("$cli" lint --target irc "$piece" 2>&1) == $("$cli" lint "$piece" 2>&1) ]]; then ok "lint --target irc of an .ans that loses nothing says what ANSI does"; else bad "lint --target irc of tux differs"; fi
 expect "convert refuses a colour it can't hold" 1 'warning: .*rgb: 1 cell is in a colour the file can.t hold, written as the nearest of the 16' -- "$cli" convert "$rgb" "$tmp/rgb.ans"
 if [[ -e $tmp/rgb.ans ]]; then bad "refused RGB convert wrote a file"; else ok "refused RGB convert writes nothing"; fi

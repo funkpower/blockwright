@@ -6,15 +6,16 @@
 //                           <in.ans|project> <out.ans|out.xb|out.bin>
 //   blockwright-cli render [--scale N] [--font-width 8|9] <in.ans> <out.png>
 //   blockwright-cli export --irc [--budget N] [--fit] [--pad] [--swap-shades]
-//                          [--allow-over-budget] <in.ans|project> <out.txt>
+//                          [--colours 16|99] [--allow-over-budget] <in.ans|project> <out.txt>
 //   blockwright-cli export --micron [--centre] [--cache S] <in.ans|project> <out.mu>
 //   blockwright-cli shade --ramp NAME|c,c,... [--darken] [--steps N] [--box x0,y0,x1,y1]
 //                         [--mask <mask.ans>] [--ice] [--allow-lossy] <in.ans> <out.ans>
 //   blockwright-cli shade --form dome|cylinder|plane [--glint] | --despeckle | --rim
 //                         --ramp NAME|c,c,... [--light N|NE|...|NW] --box x0,y0,x1,y1 and/or
 //                         --mask <mask.ans> [--ice] [--allow-lossy] <in.ans> <out.ans>
-//   blockwright-cli lint [--ramp NAME|c,c,...]... [--box x0,y0,x1,y1] [--target ansi|irc|micron] [--json] <in.ans>
-//   blockwright-cli render --irc [--budget N] [--fit] [--pad] [--swap-shades]
+//   blockwright-cli lint [--ramp NAME|c,c,...]... [--box x0,y0,x1,y1] [--target ansi|irc|micron]
+//                        [--colours 16|99] [--json] <in.ans>
+//   blockwright-cli render --irc [--budget N] [--fit] [--pad] [--swap-shades] [--colours 16|99]
 //                          [--scale N] [--font-width 8|9] <in.ans|project> <out.png>
 //   blockwright-cli library list [dir] | library list [--dir DIR]
 //   blockwright-cli library check <dir>
@@ -24,8 +25,8 @@
 //   blockwright-cli library add [--dir DIR] <collection> <file.ans|folder>...
 //   blockwright-cli library remove [--dir DIR] [--yes] [--permanent] <stamp.ans>...
 //   blockwright-cli library edit [--dir DIR] [--name N] [--category C] [--tags t1,t2] <stamp.ans>
-//   blockwright-cli pack [--allow-lossy] [--target ansi|irc|micron] <in.ans|project> <out.bwp>
-//   blockwright-cli unpack [--allow-lossy] [--target ansi|irc|micron] <in.ans|project> <dir>
+//   blockwright-cli pack [--allow-lossy] [--target ansi|irc|micron] [--colours 16|99] <in.ans|project> <out.bwp>
+//   blockwright-cli unpack [--allow-lossy] [--target ansi|irc|micron] [--colours 16|99] <in.ans|project> <dir>
 //   blockwright-cli snapshot [--allow-lossy] [--output-encoding cp437|utf-8] <project>
 //   blockwright-cli add-generator [--name NAME] [--timeout S] <project> <generator-dir>
 //   blockwright-cli run-generators [--layer ID]... [--timeout S] <project>
@@ -170,13 +171,23 @@ bw::AnsiDocument load(const std::string& path) {
 
 // A project as IRC text sends it: its composite as the editor saves it
 // (toAnsi), except that under the IRC or Micron target an RGB colour is sent
-// as it is, not folded by iCE (irc::sentCell).
-bw::AnsiDocument sentDocument(const bw::project::Project& p) {
+// as it is, not folded by iCE, and, under any target, in `colours` 16 as
+// the nearest of mIRC 0-15 (irc::sentCell, irc::fold16).
+bw::AnsiDocument sentDocument(const bw::project::Project& p, bw::IrcColours colours = bw::IrcColours::Mirc99) {
     bw::AnsiDocument doc = bw::project::toAnsi(p);
     if (bw::richTarget(p.target)) {
         bw::CompositeOptions o;
         o.ice = p.ice;
-        doc.canvas = bw::irc::sentCanvas(bw::flatten(p.layers, o), p.ice, p.target);
+        doc.canvas = bw::irc::sentCanvas(bw::flatten(p.layers, o), p.ice, p.target, colours);
+    } else if (colours == bw::IrcColours::Mirc16) {
+        // toAnsi keeps an RGB foreground, which the encoder would send as
+        // the nearest of the 99
+        for (int y = 0; y < doc.canvas.height(); ++y)
+            for (int x = 0; x < doc.canvas.width(); ++x) {
+                bw::Cell& c = doc.canvas.at(x, y);
+                c.fg = bw::irc::fold16(c.fg);
+                c.bg = bw::irc::fold16(c.bg);
+            }
     }
     return doc;
 }
@@ -224,6 +235,7 @@ int projectInfo(const std::string& path) {
               << "ice:         " << (p.ice ? "on" : "off") << "\n"
               << "encoding:    " << (p.ansEncoding == bw::TextEncoding::Utf8 ? "UTF-8" : "CP437") << "\n"
               << "target:      " << bw::targetName(p.target) << "\n"
+              << "irc colours: " << bw::ircColourCount(p.ircColours) << "\n"
               << "irc budget:  " << p.ircBudget.bytes << " bytes (" << p.ircBudget.profile << ")\n"
               << "layers:      " << s.size() << " (next id " << s.nextId() << ")\n";
     // top first, as the layer panel lists them
@@ -427,13 +439,15 @@ void refuseSameFile(const std::string& in, const std::string& out) {
 // it (a warning for blink that loses), or a project as it is. A project
 // doesn't keep an XBIN's palette or font: a warning for each, and nothing is
 // written to `out` without allowLossy, as convert refuses. Blink is lost on
-// opening, as the editor loses it, so it is only warned of. `target`, when
-// given, is the project's target (a flat file's is ANSI).
+// opening, as the editor loses it, so it is only warned of. `target` and
+// `colours`, when given, are the project's target and IRC colours (a flat
+// file's are ANSI and 99).
 bw::project::Project asProject(const std::string& in, const std::string& out, bool allowLossy,
-                               std::optional<bw::Target> target) {
+                               std::optional<bw::Target> target, std::optional<bw::IrcColours> colours) {
     if (bw::project::isProject(in)) {
         bw::project::Project p = loadProject(in);
         p.target = target.value_or(p.target);
+        p.ircColours = colours.value_or(p.ircColours);
         return p;
     }
     bw::Opened opened;
@@ -447,6 +461,7 @@ bw::project::Project asProject(const std::string& in, const std::string& out, bo
     if ((loss.paletteDropped || loss.fontDropped) && !allowLossy)
         throw Failure{out + ": not written: the project loses data (--allow-lossy writes it anyway)"};
     p.target = target.value_or(bw::Target::Ansi);
+    p.ircColours = colours.value_or(bw::IrcColours::Mirc99);
     return p;
 }
 
@@ -462,9 +477,9 @@ void writeProject(const bw::project::Project& p, const std::string& out, bool di
 }
 
 int pack(const std::string& in, const std::string& out, bool directory, bool allowLossy,
-         std::optional<bw::Target> target) {
+         std::optional<bw::Target> target, std::optional<bw::IrcColours> colours) {
     refuseSameFile(in, out);
-    writeProject(asProject(in, out, allowLossy, target), out, directory);
+    writeProject(asProject(in, out, allowLossy, target, colours), out, directory);
     return kOk;
 }
 
@@ -586,6 +601,9 @@ int importScene(const std::string& scene, const std::string& out, const bw::gene
 // and --swap-shades.
 struct IrcArgs {
     std::optional<std::size_t> budget;
+    // --colours: the mIRC colours sent; none, a project's own under the IRC
+    // target (sentIrcColours), else 99
+    std::optional<bw::IrcColours> colours;
     bool fit = false;
     bw::irc::EncodeOptions opts;  // pad and swapShades; fit is set by ircSend
 };
@@ -606,8 +624,10 @@ IrcSend ircSend(const std::string& in, const IrcArgs& args) {
     if (bw::project::isProject(in)) {
         const bw::project::Project p = loadProject(in);
         budget = budget.value_or(p.ircBudget.bytes);
-        s.doc = sentDocument(p);
+        s.doc = sentDocument(p, args.colours.value_or(bw::sentIrcColours(p.target, p.ircColours)));
     } else {
+        // a flat file holds only the 16 (the parser quantises any other
+        // colour as it reads it), so 16 colours change nothing
         s.doc = load(in);
     }
     s.budget = budget.value_or(bw::irc::kEfnetWeechatBudget);
@@ -1258,16 +1278,21 @@ int replay(const std::string& stepsPath, const ReplayArgs& a) {
 }
 
 // The whole lint of the piece (lint_rules.h) with its own iCE colours, for
-// `target`, else a project's own, else ANSI: one line per finding and a
-// summary, or JSON. Findings but notes exit kFindings.
-int lint(const std::string& in, bwcli::LintCliOptions o, std::optional<bw::Target> target) {
+// `target`, else a project's own, else ANSI, and under IRC for `colours`,
+// else a project's own, else 99: one line per finding and a summary, or
+// JSON. Findings but notes exit kFindings.
+int lint(const std::string& in, bwcli::LintCliOptions o, std::optional<bw::Target> target,
+         std::optional<bw::IrcColours> colours) {
     bw::AnsiDocument doc;
     if (bw::project::isProject(in)) {
         const bw::project::Project p = loadProject(in);
         o.target = target.value_or(p.target);
+        o.colours = bw::sentIrcColours(o.target, colours.value_or(p.ircColours));
+        // the cells unfolded, so irc-fold can count the ones 16 colours fold
         doc = bw::richTarget(o.target) ? sentDocument(p) : bw::project::toAnsi(p);
     } else {
         o.target = target.value_or(bw::Target::Ansi);
+        o.colours = bw::sentIrcColours(o.target, colours.value_or(bw::IrcColours::Mirc99));
         doc = load(in);
     }
     const bw::lint::LintReport r = bwcli::lintDocument(doc, o);
@@ -1568,7 +1593,10 @@ int main(int argc, char** argv) {
         "  export --irc <in> <out>\n"
         "                       write IRC text (mIRC colour codes) and report each\n"
         "                       line's size in bytes; a project's own budget is\n"
-        "                       the default; a .bwp <out> is refused\n"
+        "                       the default; a .bwp <out> is refused. --colours\n"
+        "                       16 sends only mIRC colours 0-15, any other as the\n"
+        "                       nearest of them; 99 all (default: a project's\n"
+        "                       own under the IRC target, else 99)\n"
         "  export --micron <in> <out>\n"
         "                       write a Micron page (.mu) for NomadNet: the piece\n"
         "                       in its own colours, left-aligned or --centre,\n"
@@ -1594,12 +1622,16 @@ int main(int argc, char** argv) {
         "                       no-cp437 off and counts what an .ans save drops\n"
         "                       instead (ans-loss, a note: printed with \"note:\",\n"
         "                       it exits 0); wasted-format flags bold, italic or\n"
-        "                       underline on a cell where it draws nothing\n"
+        "                       underline on a cell where it draws nothing.\n"
+        "                       --colours 16 under --target irc (default: a\n"
+        "                       project's own) notes the cells IRC text in 16\n"
+        "                       colours sends as the nearest of 0-15 (irc-fold)\n"
         "  render --irc <in> <out.png>\n"
         "                       draw the IRC view: the mIRC palette, what IRC\n"
         "                       drops, and each line cut at --budget bytes, 1 to\n"
         "                       512 (default: a project's own, else 407); --fit,\n"
-        "                       --pad and --swap-shades apply as in export --irc\n"
+        "                       --pad, --swap-shades and --colours apply as in\n"
+        "                       export --irc\n"
         "  library list [dir]   list the stamps and text styles in dir (default:\n"
         "                       the bundled and user libraries): kind, category,\n"
         "                       name, size, widest IRC row in bytes, ice when a\n"
@@ -1643,7 +1675,8 @@ int main(int argc, char** argv) {
         "                       project can't hold an XBIN's palette or font:\n"
         "                       pack and unpack drop them only with --allow-lossy.\n"
         "                       --target ansi|irc|micron sets the project's target\n"
-        "                       (default: a project's own, else ansi)\n"
+        "                       and --colours 16|99 its IRC colours (default: a\n"
+        "                       project's own, else ansi and 99)\n"
         "  snapshot <project>   save the flattened composite as the project's next\n"
         "                       round (snapshots/rN.ans) and print rN\n"
         "  add-generator <project> <dir>\n"
@@ -1856,6 +1889,13 @@ int main(int argc, char** argv) {
                        "project's target (default: a project's own, else ansi)"),
         QStringLiteral("target"));
     parser.addOption(targetOpt);
+    const QCommandLineOption coloursOpt(
+        QStringLiteral("colours"),
+        QStringLiteral("export --irc, render --irc: the mIRC colours sent, 16 (0-15, any other as the nearest of "
+                       "them) or 99; lint: under --target irc, 16 notes the cells folded; pack, unpack: the "
+                       "project's IRC colours (default: a project's own under the IRC target, else 99)"),
+        QStringLiteral("count"));
+    parser.addOption(coloursOpt);
     const QCommandLineOption outputOpt(QStringList{QStringLiteral("o"), QStringLiteral("output")},
                                        QStringLiteral("replay: the directory the captures go in"),
                                        QStringLiteral("dir"));
@@ -1900,18 +1940,21 @@ int main(int argc, char** argv) {
         std::cerr << "blockwright-cli: " << msg << "\n"
                   << "usage: blockwright-cli info <file> | convert [--allow-lossy] <in> <out>\n"
                   << "       | render [--scale N] [--font-width 8|9] <in> <out.png>\n"
-                  << "       | export --irc [--budget N] [--fit] [--pad] [--swap-shades] [--allow-over-budget] <in> <out>\n"
+                  << "       | export --irc [--budget N] [--fit] [--pad] [--swap-shades] [--colours 16|99]\n"
+                  << "         [--allow-over-budget] <in> <out>\n"
                   << "       | export --micron [--centre] [--cache S] <in> <out.mu>\n"
                   << "       | shade --ramp R [--darken] [--steps N] [--box x0,y0,x1,y1] [--mask <mask>] [--ice] [--allow-lossy] <in> <out>\n"
                   << "       | shade --form dome|cylinder|plane [--glint] | --despeckle | --rim --ramp R [--light N|NE|...|NW]\n"
                   << "         --box x0,y0,x1,y1 and/or --mask <mask> [--ice] [--allow-lossy] <in> <out>\n"
-                  << "       | lint [--ramp R]... [--box x0,y0,x1,y1] [--target ansi|irc|micron] [--json] <in>\n"
-                  << "       | render --irc [--budget N] [--fit] [--pad] [--swap-shades] [--scale N] [--font-width 8|9]\n"
+                  << "       | lint [--ramp R]... [--box x0,y0,x1,y1] [--target ansi|irc|micron] [--colours 16|99] [--json] <in>\n"
+                  << "       | render --irc [--budget N] [--fit] [--pad] [--swap-shades] [--colours 16|99] [--scale N]\n"
+                  << "         [--font-width 8|9]\n"
                   << "         <in> <out.png>\n"
                   << "       | library list [dir] | library list [--dir DIR] | library check <dir>\n"
                   << "       | library new|delete [--yes] [--permanent]|rename|add|remove [--yes] [--permanent]|edit [--dir DIR] ...\n"
                   << "         (--help lists them)\n"
-                  << "       | pack [--target ansi|irc|micron] <in> <out.bwp> | unpack [--target ansi|irc|micron] <in> <dir>\n"
+                  << "       | pack [--target ansi|irc|micron] [--colours 16|99] <in> <out.bwp>\n"
+                  << "       | unpack [--target ansi|irc|micron] [--colours 16|99] <in> <dir>\n"
                   << "       | snapshot [--allow-lossy] [--output-encoding enc] <project>\n"
                   << "       | add-generator [--name NAME] [--timeout S] <project> <dir>\n"
                   << "       | run-generators [--layer ID]... [--timeout S] <project>\n"
@@ -1946,6 +1989,7 @@ int main(int argc, char** argv) {
         {&encodingOpt, {"info", "convert", "render", "export", "shade", "lint", "pack", "unpack"}},
         {&outputEncodingOpt, {"convert", "shade", "snapshot", "replay"}},
         {&targetOpt, {"lint", "pack", "unpack"}},
+        {&coloursOpt, {"export", "render", "lint", "pack", "unpack"}},
         {&outputOpt, {"replay"}},          {&projectOpt, {"replay"}}, {&renderOpt, {"replay"}},
         {&userLibraryOpt, {"replay"}},
     };
@@ -1976,9 +2020,19 @@ int main(int argc, char** argv) {
             return t;
         throw Usage{"--target takes ansi, irc or micron, not '" + v.toStdString() + "'"};
     };
+    // --colours, read the same way for every command that takes it.
+    const auto coloursValue = [&]() -> std::optional<bw::IrcColours> {
+        if (!parser.isSet(coloursOpt))
+            return std::nullopt;
+        const QString v = parser.value(coloursOpt);
+        if (const std::optional<bw::IrcColours> c = bw::parseIrcColours(v.toStdString()))
+            return c;
+        throw Usage{"--colours takes 16 or 99, not '" + v.toStdString() + "'"};
+    };
     // export --irc's and render --irc's options, read the same way for both.
     const auto ircArgs = [&] {
         IrcArgs a;
+        a.colours = coloursValue();
         if (parser.isSet(budgetOpt))
             a.budget = budgetValue(parser.value(budgetOpt));
         a.fit = parser.isSet(fitOpt);
@@ -2010,7 +2064,7 @@ int main(int argc, char** argv) {
             if (parser.isSet(fontWidthOpt))
                 opts.fontWidth = intValue(parser.value(fontWidthOpt), "font-width", 8, 9);
             if (!parser.isSet(ircOpt))
-                for (const QCommandLineOption* o : {&budgetOpt, &fitOpt, &padOpt, &swapShadesOpt})
+                for (const QCommandLineOption* o : {&budgetOpt, &fitOpt, &padOpt, &swapShadesOpt, &coloursOpt})
                     if (parser.isSet(*o))
                         return usage((optionName(*o) + " is a render --irc option").c_str());
             std::optional<IrcArgs> irc;
@@ -2024,7 +2078,7 @@ int main(int argc, char** argv) {
             if (args.size() != 3)
                 return usage("export takes an input and an output file");
             if (parser.isSet(micronOpt)) {
-                for (const QCommandLineOption* o : {&budgetOpt, &fitOpt, &padOpt, &swapShadesOpt, &overOpt})
+                for (const QCommandLineOption* o : {&budgetOpt, &fitOpt, &padOpt, &swapShadesOpt, &overOpt, &coloursOpt})
                     if (parser.isSet(*o))
                         return usage((optionName(*o) + " is an export --irc option").c_str());
                 refuseProjectOutput("export --micron", "a Micron page", args[2]);
@@ -2198,14 +2252,14 @@ int main(int argc, char** argv) {
             if (parser.isSet(boxOpt))
                 o.box = boxValue(parser.value(boxOpt));
             o.json = parser.isSet(jsonOpt);
-            return lint(args[1].toStdString(), o, targetValue());
+            return lint(args[1].toStdString(), o, targetValue(), coloursValue());
         }
         if (cmd == QLatin1String("pack") || cmd == QLatin1String("unpack")) {
             if (args.size() != 3)
                 return usage(cmd == QLatin1String("pack") ? "pack takes an input and an output .bwp"
                                                           : "unpack takes an input and an output directory");
             return pack(args[1].toStdString(), args[2].toStdString(), cmd == QLatin1String("unpack"),
-                        parser.isSet(lossyOpt), targetValue());
+                        parser.isSet(lossyOpt), targetValue(), coloursValue());
         }
         if (cmd == QLatin1String("snapshot")) {
             if (args.size() != 2)

@@ -201,6 +201,12 @@ struct Project {
     // written only for IRC; a project without it, or with a value this build
     // doesn't know, is ANSI. Like ansEncoding it is a preference, not art.
     Target target = Target::Ansi;
+    // The mIRC colours IRC text of the project carries under the IRC target
+    // (#496): all 99, or 0-15 only. The manifest's "ircColours", written only
+    // as 16; a project without it, or with any other number, is 99, and a
+    // value that isn't a number is refused. A preference like target: kept
+    // under ANSI and Micron, where it does nothing.
+    IrcColours ircColours = IrcColours::Mirc99;
     IrcBudget ircBudget;
     std::string notes;               // notes.md
     std::vector<Snapshot> snapshots;  // by round, first first

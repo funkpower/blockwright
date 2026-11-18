@@ -363,13 +363,13 @@ struct Entry {
 
 bool scalar(char32_t ch) { return ch <= 0x10ffff && (ch < 0xd800 || ch > 0xdfff); }
 
-} // namespace
-
-std::uint8_t nearestMirc(std::uint32_t rgb) {
+// The nearest of mIRC colours 0 to count - 1 (squared distance; ties to the
+// lower number).
+std::uint8_t nearestOf(std::uint32_t rgb, std::size_t count) {
     const int r = (rgb >> 16) & 255, g = (rgb >> 8) & 255, b = rgb & 255;
     std::uint8_t best = 1;
     int bestD = INT_MAX;
-    for (std::uint8_t i = 0; i < kMircRgb.size(); ++i) {
+    for (std::uint8_t i = 0; i < count; ++i) {
         const std::uint32_t c = kMircRgb[i];
         const int dr = int((c >> 16) & 255) - r, dg = int((c >> 8) & 255) - g, db = int(c & 255) - b;
         const int d = dr * dr + dg * dg + db * db;
@@ -380,6 +380,12 @@ std::uint8_t nearestMirc(std::uint32_t rgb) {
     }
     return best;
 }
+
+} // namespace
+
+std::uint8_t nearestMirc(std::uint32_t rgb) { return nearestOf(rgb, kMircRgb.size()); }
+
+std::uint8_t nearestMirc16(std::uint32_t rgb) { return nearestOf(rgb, 16); }
 
 std::string encodeMircRow(std::span<const MircCell> cells, bool swapShades, bool solidEnd) {
     return detail::encodeMircRowWith(cells, swapShades, solidEnd, detail::Objective::Sent).line;

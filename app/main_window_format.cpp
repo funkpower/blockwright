@@ -71,24 +71,42 @@ void MainWindow::createTargetActions(QMenu* format) {
                            tr("mIRC's 99 colours; saving as .ans, XBIN or BIN reports what it can't hold"));
     micronTargetAction_ = add(tr("&Micron (NomadNet)"), "targetMicron", Target::Micron,
                               tr("A NomadNet page: mIRC's 99 colours and any of the 4096 a Micron code writes"));
+    // IRC in 16 colours (#496): a document setting beside the target, for
+    // clients without mIRC's extended 16-98; it does nothing under the
+    // other targets, so it is enabled under IRC only.
+    target->addSeparator();
+    ircColours16Action_ = target->addAction(tr("IRC in &16 Colours"));
+    ircColours16Action_->setObjectName(QStringLiteral("ircColours16"));
+    ircColours16Action_->setCheckable(true);
+    ircColours16Action_->setStatusTip(
+        tr("Send only mIRC colours 0-15, for clients without 16-98: the palette offers the 16 and IRC text sends "
+           "any other colour as the nearest of them"));
+    ircColours16Action_->setToolTip(ircColours16Action_->statusTip());
+    connect(ircColours16Action_, &QAction::triggered, this,
+            [this](bool on) { doc_.setIrcColours(on ? IrcColours::Mirc16 : IrcColours::Mirc99); });
     updateTarget();
 }
 
 void MainWindow::updateTarget() {
     const Target t = doc_.target();
+    const IrcColours colours = doc_.ircColours();
     if (targetLabel_)
-        targetLabel_->setText(targetDisplayName(t));
+        targetLabel_->setText(doc_.sentIrcColours() == IrcColours::Mirc16 ? tr("IRC 16") : targetDisplayName(t));
     if (ansiTargetAction_) {
         ansiTargetAction_->setChecked(t == Target::Ansi);
         ircTargetAction_->setChecked(t == Target::Irc);
         micronTargetAction_->setChecked(t == Target::Micron);
+    }
+    if (ircColours16Action_) {
+        ircColours16Action_->setChecked(colours == IrcColours::Mirc16);
+        ircColours16Action_->setEnabled(t == Target::Irc);
     }
     if (pickForegroundAction_) {
         pickForegroundAction_->setEnabled(t == Target::Micron);
         pickBackgroundAction_->setEnabled(t == Target::Micron);
     }
     if (palette_)
-        palette_->setTarget(t);
+        palette_->setTarget(t, colours);
     if (formatBar_)
         formatBar_->setVisible(richTarget(t));
     // the canvas draws a cell as the page shows it (PLAN §17)
@@ -107,9 +125,9 @@ std::uint8_t MainWindow::formatBit(const QAction* a) const {
 
 void MainWindow::stepColour(bool foreground, int step) {
     const Target t = doc_.target();
-    const int n = swatchCount(t);
+    const int n = swatchCount(t, doc_.ircColours());
     const Color& c = foreground ? view_->pen().fg : view_->pen().bg;
-    const int at = swatchOf(c, t);
+    const int at = swatchOf(c, t, doc_.ircColours());
     // a picked colour no swatch shows steps to the first or the last
     const int next = at < 0 ? (step > 0 ? 0 : n - 1) : ((at % n) + step + n) % n;
     if (foreground)

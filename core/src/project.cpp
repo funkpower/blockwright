@@ -2457,6 +2457,9 @@ Entries encode(const Project& project, CellsFrame cellsFrame) {
     // what it was.
     if (project.target != Target::Ansi)
         manifest.insert("target", QString::fromLatin1(targetName(project.target).data()));
+    // Likewise only for 16, so a 99-colour project's manifest is what it was.
+    if (project.ircColours == IrcColours::Mirc16)
+        manifest.insert("ircColours", 16);
     out["manifest.json"] = toJson(manifest);
     checkJsonSize("manifest.json", out["manifest.json"].size());
     if (!project.notes.empty())
@@ -2519,6 +2522,15 @@ Project decode(const Entries& entries, ReadNotes* notes) {
             p.target = Target::Irc;
         else if (t == "micron")
             p.target = Target::Micron;
+    }
+    // And for the IRC colours (#496): 16, else 99 (99, or a later build's
+    // number); a value that isn't a number is refused.
+    if (m.has("ircColours")) {
+        const QJsonValue v = m.value("ircColours");
+        if (!v.isDouble())
+            fail("manifest.json: \"ircColours\" is not a number");
+        if (v.toDouble() == 16)
+            p.ircColours = IrcColours::Mirc16;
     }
     if (const QJsonValue s = m.value("sauce"); !s.isNull()) {
         if (!s.isObject())

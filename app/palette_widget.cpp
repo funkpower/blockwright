@@ -40,10 +40,11 @@ void PaletteWidget::setKeyActions(QAction* swap, QAction* reset) {
     reset_ = reset;
 }
 
-void PaletteWidget::setTarget(Target target) {
-    if (target == target_)
+void PaletteWidget::setTarget(Target target, IrcColours colours) {
+    if (target == target_ && colours == colours_)
         return;
     target_ = target;
+    colours_ = colours;
     updateGeometry();
     update();
 }
@@ -76,7 +77,7 @@ QRect PaletteWidget::resetRect() const {
 }
 
 QRect PaletteWidget::swatchRect(int index) const {
-    if (index < 0 || index >= swatchCount(target_))
+    if (index < 0 || index >= swatchCount(target_, colours_))
         return {};
     if (index >= 16) {
         const int top = penRect().bottom() + 1 + 2 * kGap;
@@ -90,15 +91,15 @@ QRect PaletteWidget::swatchRect(int index) const {
 }
 
 int PaletteWidget::indexAt(QPoint p) const {
-    for (int i = 0; i < swatchCount(target_); ++i)
+    for (int i = 0; i < swatchCount(target_, colours_); ++i)
         if (swatchRect(i).contains(p))
             return i;
     return -1;
 }
 
 QSize PaletteWidget::sizeHint() const {
-    const int w = std::max(swatchRect(15).right(), swatchRect(swatchCount(target_) - 1).right()) + 1 + kGap;
-    const int last = richTarget(target_) ? swatchRect(swatchCount(target_) - 1).bottom() : penRect().bottom();
+    const int w = std::max(swatchRect(15).right(), swatchRect(swatchCount(target_, colours_) - 1).right()) + 1 + kGap;
+    const int last = swatchCount(target_, colours_) > 16 ? swatchRect(swatchCount(target_, colours_) - 1).bottom() : penRect().bottom();
     return QSize(w, last + 1 + kGap);
 }
 
@@ -140,12 +141,12 @@ void PaletteWidget::paintEvent(QPaintEvent*) {
         p.drawRect(front.adjusted(0, 0, -1, -1));
     }
 
-    const int fg = swatchOf(pen_.fg, target_), bg = swatchOf(pen_.bg, target_);
+    const int fg = swatchOf(pen_.fg, target_, colours_), bg = swatchOf(pen_.bg, target_, colours_);
     QFont f = font();
     f.setBold(true);
     f.setPixelSize(kSwatch / 2);
     p.setFont(f);
-    for (int i = 0; i < swatchCount(target_); ++i) {
+    for (int i = 0; i < swatchCount(target_, colours_); ++i) {
         if (i == 16) {
             f.setPixelSize(kSmall / 2);
             p.setFont(f);

@@ -41,6 +41,7 @@ struct Finding {
         BidiControl,     // a bidi control, which reorders the rest of the line in some clients
         AnsLoss,         // IRC target: what an .ans save would drop, one finding per kind
         WastedFormat,    // bold, italic or underline that draws nothing but costs IRC bytes
+        IrcFold,         // IRC in 16 colours: cells in mIRC 16-98 sent as the nearest of 0-15
     };
     Kind kind = Kind::Noise;
     std::string ramp;  // the ramp a ladder finding came from; empty for the rest
@@ -64,6 +65,7 @@ std::string_view kindName(Finding::Kind kind);
 bool ladderKind(Finding::Kind kind);
 // Whether the kind is a note: reported, but no fault, so it doesn't make a
 // report unclean or `lint` exit 4. AnsLoss is one: the art is fine for IRC.
+// IrcFold is another: the fold is what 16 colours asks for.
 bool noteKind(Finding::Kind kind);
 
 struct RuleOptions {
@@ -77,6 +79,9 @@ struct RuleOptions {
     // AnsLoss runs; under Micron the rules about what IRC drops and
     // WastedFormat are off too.
     Target target = Target::Ansi;
+    // The colours IRC text carries (sentIrcColours of the document's
+    // target and setting): with 16, IrcFold runs.
+    IrcColours colours = IrcColours::Mirc99;
 };
 
 // The craft rules over the whole canvas, in reading order (by y, then x).
@@ -140,6 +145,16 @@ struct RuleOptions {
 //   a blank, ▀ or █, or underline on █. Italic shears a block off its
 //   background, so it draws. Only glyphs the VGA font has are judged. One
 //   finding a cell, naming the attributes wasted.
+// - IrcFold: with options.colours 16 only (#496). Read from the cells as
+//   IRC sends them (irc::sentCell under IRC with options.ice). One finding,
+//   at the first cell it counts, counting the cells (not transparent, a
+//   pair at its lead) that show a colour IRC text in 99 colours sends as
+//   one of mIRC 16-98, which 16 colours send as the nearest of 0-15
+//   (irc::fold16): a foreground on a glyph that isn't blank, a background
+//   under one that isn't a full block, as ans-loss reads them. A second, at
+//   the first such cell, counting those whose glyph the fold hides: a
+//   foreground and background that differ in 99 colours and fold to the
+//   same one. Both notes.
 std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options = {});
 
 // Whether hand shading goes between the two colours, either way round,
@@ -159,6 +174,7 @@ struct LintOptions {
     bool ice = true;
     double maxNoise = 0.02;
     Target target = Target::Ansi;  // RuleOptions::target
+    IrcColours colours = IrcColours::Mirc99;  // RuleOptions::colours
 };
 
 struct LintReport {

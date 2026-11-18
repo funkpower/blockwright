@@ -618,6 +618,7 @@ private:
     QAction* ansiTargetAction_ = nullptr;
     QAction* ircTargetAction_ = nullptr;
     QAction* micronTargetAction_ = nullptr;
+    QAction* ircColours16Action_ = nullptr;
     QAction* pickForegroundAction_ = nullptr;
     QAction* pickBackgroundAction_ = nullptr;
     QMenu* reopenMenu_ = nullptr;

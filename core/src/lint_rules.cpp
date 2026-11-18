@@ -545,6 +545,43 @@ void ansLoss(const Canvas& canvas, Target target, std::vector<Finding>& out) {
     }
 }
 
+// The cells IRC text in 16 colours sends in another colour than the 99
+// would: a colour the cell shows (a foreground on a glyph that isn't blank,
+// a background under a glyph that isn't a full block, as ans-loss reads
+// them) that is sent as one of mIRC 16-98 in 99 colours. And, of those, the
+// glyphs the fold hides: a foreground and background that differ in 99
+// colours and fold to the same one of 0-15. The cells as sent under IRC
+// with `ice` (sentCell), a pair counted at its lead.
+void ircFold(const Canvas& canvas, bool ice, std::vector<Finding>& out) {
+    int n = 0, fx = 0, fy = 0, hidden = 0, hx = 0, hy = 0;
+    for (int y = 0; y < canvas.height(); ++y)
+        for (int x = 0; x < canvas.width(); ++x) {
+            const Cell& raw = canvas.at(x, y);
+            if (raw.transparent || raw.ch.isContinuation())
+                continue;
+            const Cell c = irc::sentCell(raw, ice, Target::Irc);
+            const bool showsFg = !blankGlyph(c.ch), showsBg = c.ch != Glyph(kFullBlock);
+            const std::uint8_t fg = irc::mircColor(c.fg), bg = irc::mircColor(c.bg);
+            if (!((showsFg && fg > 15) || (showsBg && bg > 15)))
+                continue;
+            if (n++ == 0)
+                fx = x, fy = y;
+            if (showsFg && showsBg && fg != bg &&
+                irc::mircColor(irc::fold16(c.fg)) == irc::mircColor(irc::fold16(c.bg)) && hidden++ == 0)
+                hx = x, hy = y;
+        }
+    if (n)
+        out.push_back(make(Kind::IrcFold, fx, fy, fx, fy,
+                           std::to_string(n) + (n == 1 ? " cell is in an mIRC colour" : " cells are in mIRC colours") +
+                               " past 15, sent as the nearest of 0-15 (IRC in 16 colours)"));
+    if (hidden)
+        out.push_back(make(Kind::IrcFold, hx, hy, hx, hy,
+                           std::to_string(hidden) +
+                               (hidden == 1 ? " cell's glyph is hidden in 16 colours: its foreground and background"
+                                            : " cells' glyphs are hidden in 16 colours: their foregrounds and backgrounds") +
+                               " fold to the same colour"));
+}
+
 // Formatting that draws nothing on its cell but costs IRC bytes: a bit
 // whose cell draws the same rows without it (formatRows, as the renderer
 // draws it) at either glyph width. Only a glyph the VGA font has is judged;
@@ -647,6 +684,7 @@ std::string_view kindName(Finding::Kind kind) {
     case Kind::BidiControl: return "bidi-control";
     case Kind::AnsLoss: return "ans-loss";
     case Kind::WastedFormat: return "wasted-format";
+    case Kind::IrcFold: return "irc-fold";
     }
     return "?";
 }
@@ -684,7 +722,7 @@ bool craftPair(std::uint8_t a, std::uint8_t b) {
 
 bool ladderKind(Finding::Kind kind) { return kind <= Kind::OneGlyph; }
 
-bool noteKind(Finding::Kind kind) { return kind == Kind::AnsLoss; }
+bool noteKind(Finding::Kind kind) { return kind == Kind::AnsLoss || kind == Kind::IrcFold; }
 
 std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options) {
     std::vector<Finding> out;
@@ -711,6 +749,8 @@ std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options
     unicodeRules(canvas, out);
     if (options.target != Target::Micron)
         wastedFormat(canvas, out);
+    if (options.colours == IrcColours::Mirc16)
+        ircFold(canvas, options.ice, out);
     std::stable_sort(out.begin(), out.end(), readingOrder);
     return out;
 }
@@ -767,6 +807,7 @@ LintReport lintCanvas(const Canvas& canvas, const LintOptions& options) {
     ro.ice = options.ice;
     ro.box = options.box;
     ro.target = options.target;
+    ro.colours = options.colours;
     for (Finding& f : checkRules(canvas, ro))
         all.push_back(std::move(f));
     if (options.box) {

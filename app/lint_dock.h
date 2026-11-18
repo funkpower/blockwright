@@ -139,7 +139,8 @@ inline constexpr int kMaxLintRows = 1000;
 // rampPick - 1, for the document's `target` (LintOptions::target). The
 // Layer Style dialog lints its preview through it too, so the two never
 // disagree.
-lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick = 0, Target target = Target::Ansi);
+lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick = 0, Target target = Target::Ansi,
+                          IrcColours colours = IrcColours::Mirc99);
 
 class LintDock : public FollowsDocument {
     Q_OBJECT

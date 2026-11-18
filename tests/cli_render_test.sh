@@ -92,7 +92,7 @@ fi
 big=$data/golden/cocktober.ans  # 120x120
 expect "--help lists render --irc" 0 'render --irc <in> <out\.png>' -- "$cli" --help
 expect "--help gives render --irc's budget default and range" 0 "512 \\(default: a project's own, else 407\\)" -- "$cli" --help
-expect "--help says --fit, --pad and --swap-shades apply to render --irc" 0 '--pad and --swap-shades apply as in export --irc' -- "$cli" --help
+expect "--help says --fit, --pad, --swap-shades and --colours apply to render --irc" 0 '--pad, --swap-shades and --colours apply as in' -- "$cli" --help
 expect "render --irc: a 120-row piece fits 407 bytes" 0 '^IRC view: 0 rows cut at 407 bytes$' -- "$cli" render --irc "$big" "$tmp/irc.png"
 size_is "render --irc is the canvas's size" "$tmp/irc.png" 960x1920
 "$cli" render "$big" "$tmp/plain.png"

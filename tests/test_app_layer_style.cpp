@@ -313,6 +313,29 @@ TEST_CASE("under IRC the dialog's lint marks ans-loss as a note, and the summary
     CHECK(lines[1] == QStringLiteral("5,3  note: ") + QString::fromStdString(d.lintReport().findings[0].message));
 }
 
+TEST_CASE("in IRC 16 colours the dialog's lint notes the folded cells, as the Lint dock does", "[style]") {
+    MainWindow w;
+    Document* doc = w.document();
+    Layer l = artLayer(LayerKind::Cells);
+    for (int y = 0; y < kH; ++y)
+        for (int x = 0; x < kW; ++x)
+            l.cells.at(x, y) = Cell{kFullBlock, Color::indexed(Black), Color::indexed(Black), 0, false};
+    l.cells.at(5, 3) = Cell{U'X', swatchColor(40), Color::indexed(Black), 0, false};
+    const LayerId id = open(w, std::move(l));
+    REQUIRE(doc->setTarget(Target::Irc));
+    const auto noted = [](const lint::LintReport& r) {
+        return std::any_of(r.findings.begin(), r.findings.end(),
+                           [](const lint::Finding& f) { return f.kind == lint::Finding::Kind::IrcFold; });
+    };
+    {
+        LayerStyleDialog d(doc, id);
+        CHECK_FALSE(noted(d.lintReport()));
+    }
+    REQUIRE(doc->setIrcColours(IrcColours::Mirc16));
+    LayerStyleDialog d(doc, id);
+    CHECK(noted(d.lintReport()));
+}
+
 TEST_CASE("the preview and its IRC bytes show the cells as the canvas does, with the project's iCE", "[style]") {
     // The colour in the middle of cell (5, 3) in the 1x preview.
     const auto shownBg = [](LayerStyleDialog& d) {

@@ -1,6 +1,7 @@
 #include "blockwright/target.h"
 
 #include "blockwright/ansi.h"
+#include "blockwright/irc.h"
 #include "blockwright/mirc.h"
 
 #include <algorithm>
@@ -29,6 +30,14 @@ std::optional<Target> parseTarget(std::string_view name) {
     return std::nullopt;
 }
 
+std::optional<IrcColours> parseIrcColours(std::string_view count) {
+    if (count == "16")
+        return IrcColours::Mirc16;
+    if (count == "99")
+        return IrcColours::Mirc99;
+    return std::nullopt;
+}
+
 TypingPolicy typingPolicy(Target target, TextEncoding encoding) {
     return richTarget(target) || encoding == TextEncoding::Utf8 ? TypingPolicy::Unicode : TypingPolicy::Cp437;
 }
@@ -41,9 +50,11 @@ Color swatchColor(int i) {
     return Color::fromRgb({std::uint8_t(c >> 16), std::uint8_t(c >> 8), std::uint8_t(c)});
 }
 
-int swatchOf(const Color& c, Target t) {
+int swatchOf(const Color& c, Target t, IrcColours colours) {
     if (c.isIndexed())
         return c.index;
+    if (sentIrcColours(t, colours) == IrcColours::Mirc16)
+        return irc::fold16(c).index;
     if (richTarget(t))
         for (int i = 16; i < swatchCount(t); ++i)
             if (swatchColor(i) == c)

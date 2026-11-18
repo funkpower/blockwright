@@ -340,17 +340,37 @@ std::vector<Unwritable> unwritable(const Canvas& canvas) {
     return lost;
 }
 
-Cell sentCell(const Cell& c, bool ice, Target target) {
-    if (c.transparent || (richTarget(target) && !c.bg.isIndexed()))
-        return c;
-    return iceCell(c, ice);
+std::uint8_t paletteOfMirc(std::uint8_t mirc) {
+    mirc &= 15;
+    for (std::uint8_t i = 0; i < 16; ++i)
+        if (kCgaToMirc[i] == mirc)
+            return i;
+    return 0;  // not reached: kCgaToMirc is a permutation of 0-15
 }
 
-Canvas sentCanvas(const Canvas& canvas, bool ice, Target target) {
+Color fold16(const Color& c) {
+    if (c.isIndexed())
+        return c;
+    return Color::indexed(
+        paletteOfMirc(nearestMirc16(std::uint32_t(c.rgb.r) << 16 | std::uint32_t(c.rgb.g) << 8 | c.rgb.b)));
+}
+
+Cell sentCell(const Cell& c, bool ice, Target target, IrcColours colours) {
+    if (c.transparent)
+        return c;
+    Cell s = richTarget(target) && !c.bg.isIndexed() ? c : iceCell(c, ice);
+    if (colours == IrcColours::Mirc16) {
+        s.fg = fold16(s.fg);
+        s.bg = fold16(s.bg);
+    }
+    return s;
+}
+
+Canvas sentCanvas(const Canvas& canvas, bool ice, Target target, IrcColours colours) {
     Canvas out = canvas;
     for (int y = 0; y < out.height(); ++y)
         for (int x = 0; x < out.width(); ++x)
-            out.at(x, y) = sentCell(out.at(x, y), ice, target);
+            out.at(x, y) = sentCell(out.at(x, y), ice, target, colours);
     return out;
 }
 

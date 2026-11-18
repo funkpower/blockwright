@@ -130,7 +130,7 @@ const IrcMeter::Row& IrcMeter::row(int y) {
                 cells[std::size_t(c->x)] = c->after;
         const bool ice = doc_->ansi().ice;
         for (Cell& k : cells)
-            k = irc::sentCell(k, ice, doc_->target());
+            k = irc::sentCell(k, ice, doc_->target(), doc_->sentIrcColours());
         r = {encoded(irc::mircRow(cells)), true};
     }
     return r;

@@ -7,7 +7,8 @@
 // greys. A left click on a swatch picks the foreground, a right click the
 // background; a swatch is its index 0-98 (swatchColor). Under Micron (PLAN
 // §17) the same 99 show, and a left click on the pen's foreground or
-// background swatch asks for the Micron colour dialog.
+// background swatch asks for the Micron colour dialog. Under IRC in 16
+// colours (#496) only the 16 show.
 
 #include "blockwright/edit.h"
 #include "blockwright/target.h"
@@ -26,9 +27,11 @@ public:
 
     const Pen& pen() const { return pen_; }
     void setPen(const Pen& pen);
-    // The target: which swatches show (swatchCount).
+    // The target and the document's IRC colours: which swatches show
+    // (swatchCount).
     Target target() const { return target_; }
-    void setTarget(Target target);
+    IrcColours ircColours() const { return colours_; }
+    void setTarget(Target target, IrcColours colours = IrcColours::Mirc99);
 
     // Swatch `index` (0-15, or 0-98 under IRC) in widget pixels, and the
     // swatch at a point (-1 when there is none).
@@ -66,6 +69,7 @@ protected:
 private:
     Pen pen_;
     Target target_ = Target::Ansi;
+    IrcColours colours_ = IrcColours::Mirc99;
     QPointer<QAction> swap_;
     QPointer<QAction> reset_;
 };

@@ -534,7 +534,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     statusBar()->addPermanentWidget(glyphSetLabel_);
     targetLabel_ = new QLabel;
     targetLabel_->setObjectName(QStringLiteral("targetLabel"));
-    targetLabel_->setToolTip(tr("The document's target: ANSI's 16 colours, IRC's 99, or a Micron page's 99 and any twelve-bit colour (Format > Target)"));
+    targetLabel_->setToolTip(tr("The document's target: ANSI's 16 colours, IRC's 99 (IRC 16: mIRC's 0-15 only), or a Micron page's 99 and any twelve-bit colour (Format > Target)"));
     statusBar()->addPermanentWidget(targetLabel_);
     encodingLabel_ = new QLabel;
     encodingLabel_->setObjectName(QStringLiteral("encodingLabel"));

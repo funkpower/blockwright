@@ -17,6 +17,7 @@ struct LintCliOptions {
     std::optional<bw::lint::Box> box;
     bool json = false;
     bw::Target target = bw::Target::Ansi;  // LintOptions::target
+    bw::IrcColours colours = bw::IrcColours::Mirc99;  // LintOptions::colours
 };
 
 // The lint of the document with its own iCE colours, for o.target. Throws Failure when

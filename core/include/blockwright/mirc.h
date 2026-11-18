@@ -37,6 +37,11 @@ inline constexpr std::array<std::uint32_t, 99> kMircRgb = {
 // The mIRC colour nearest to 0xRRGGBB (squared distance; ties go to the
 // lower number). Bits above the 24 are ignored.
 std::uint8_t nearestMirc(std::uint32_t rgb);
+// The same over mIRC colours 0-15 only (#496): what IRC text in 16 colours
+// sends an extended or RGB colour as. Each of 16-98 folds to a number 0-15;
+// the six that share an RGB with one of 0-15 (52, 54, 58, 62, 88, 98) fold
+// to that one, as nearestMirc already maps them.
+std::uint8_t nearestMirc16(std::uint32_t rgb);
 
 // One cell in mIRC colours 0-98. Its glyph may be a cluster, a lead (a
 // cell whose right neighbour holds the continuation) or the continuation
