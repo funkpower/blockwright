@@ -251,7 +251,8 @@ inline std::function<void(const std::filesystem::path&)> beforeTextStylePublish;
 // hard-link fallback runs) and "unlink" (a throw is taken as removing the
 // temporary's name after the link failing with EIO). POSIX only. Tests only.
 inline std::function<void(std::string_view step)> textStylePublishFault;
-// When set, called instead of QFile::moveToTrash; false is a trash that
+// When set, called instead of QFile::moveToTrash, with the absolute path
+// the trash would record (its Path=); false is a trash that
 // refused. Tests only.
 inline std::function<bool(const std::filesystem::path&)> moveToTrash;
 // Called by scan with each folder it is asked to walk, so a test can count

@@ -157,6 +157,25 @@ expect "delete refuses an unknown collection" 1 'no collection named "Evergreens
   "$cli" library delete --yes Evergreens
 expect "delete takes one name" 2 'library delete takes' -- "$cli" library delete --yes
 
+# A relative library or stamp still leaves the trash an absolute Path= (the
+# .trashinfo line a restore reads), percent-encoded as the trash spec has it.
+mkdir -p "$tmp/rel dir"
+"$cli" library new --dir "$tmp/rel dir" Relative >/dev/null
+"$cli" library add --dir "$tmp/rel dir" Relative "$data/golden/tux.ans" >/dev/null
+"$cli" library add --dir "$tmp/rel dir" Relative "$data/golden/cafe-mug.ans" >/dev/null
+trashed() { grep -h '^Path=' "$XDG_DATA_HOME"/Trash/info/*.trashinfo 2>/dev/null; }
+out=$(cd "$tmp" && "$cli" library remove --dir "rel dir" --yes "rel dir/relative/tux.ans" 2>&1); st=$?
+if [[ $st -eq 0 && $out == "moved to the trash"* ]]; then
+  if trashed | grep -Eq '^Path=/.*/rel%20dir/relative/tux\.ans$'; then ok "remove of a relative stamp records its absolute path"
+  else bad "remove of a relative stamp recorded: $(trashed)"; fi
+  if trashed | grep -Eq '^Path=[^/]'; then bad "the trash holds a relative Path=: $(trashed)"; else ok "no relative Path= in the trash"; fi
+  out=$(cd "$tmp/rel dir" && "$cli" library delete --dir . --yes Relative 2>&1); st=$?
+  if [[ $st -eq 0 ]] && trashed | grep -Eq '^Path=/.*/rel%20dir/relative$'; then ok "delete from a relative library records its absolute path"
+  else bad "delete from a relative library: exit $st: $out; $(trashed)"; fi
+else
+  ok "relative trash paths (skipped: the trash refused: $out)"
+fi
+
 # --dir instead of the user library
 expect "--dir works on that library" 0 "^$tmp/other/signs\$" -- "$cli" library new --dir "$tmp/other" Signs
 gone "--dir leaves the user library alone" "$lib/signs"

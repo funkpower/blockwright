@@ -1998,7 +1998,7 @@ TEST_CASE("a trash that refuses removes nothing and never deletes instead") {
     CHECK(snapshot(lib) == before);
     // The whole folder in one call, not stamp by stamp.
     REQUIRE_FALSE(asked.empty());
-    CHECK(asked.front() == lib / "trees");
+    CHECK(asked.front() == fs::canonical(lib) / "trees");
 
     // Deleting outright is the caller's own choice.
     CHECK(removeStamp(lib, pine, Removal::Delete).stamps == 1);
@@ -2006,6 +2006,118 @@ TEST_CASE("a trash that refuses removes nothing and never deletes instead") {
     const Removed r = deleteCollection(lib, "Trees", Removal::Delete);
     CHECK_FALSE(r.trashed);
     CHECK_FALSE(fs::exists(lib / "trees"));
+}
+
+// The trash records where a file was (its .trashinfo's Path=) as the path
+// it is handed, and a restore puts it back there: given a relative library
+// or stamp (`cli library remove lib/x.ans`), the trash is still handed an
+// absolute path, its folder resolved and its own name kept.
+TEST_CASE("the trash is handed absolute paths when the library and stamp are relative") {
+    const fs::path root = fs::canonical(scratch("coll-relative-trash"));
+    const fs::path bin = root / "trash";
+    fs::create_directories(bin);
+    createCollection(root / "user", "Trees");
+    addStamp(root / "user", "Trees", "Pine", {}, tree(), true);
+    addStamp(root / "user", "Trees", "Oak", {}, tree(), true);
+    std::vector<fs::path> asked;
+    TrashHook hook([&](const fs::path& p) {
+        asked.push_back(p);
+        fs::rename(p, bin / p.filename());
+        return true;
+    });
+    struct Cwd {
+        fs::path was = fs::current_path();
+        ~Cwd() { fs::current_path(was); }
+    } cwd;
+    fs::current_path(root);
+
+    CHECK(removeStamp("user", fs::path("user") / "trees" / "pine.ans").trashed);
+    REQUIRE(asked.size() == 2);
+    for (const fs::path& p : asked) {
+        INFO(p);
+        CHECK(p.is_absolute());
+        CHECK(p.parent_path() == root / "user" / "trees");
+    }
+    asked.clear();
+    // through "." and "..", and a trailing slash on the library
+    fs::current_path(root / "trash");
+    CHECK(deleteCollection(fs::path("..") / "." / "user" / "", "Trees").trashed);
+    REQUIRE(asked.size() == 1);
+    CHECK(asked[0] == root / "user" / "trees");
+    CHECK(fs::exists(bin / "trees" / "oak.ans"));
+}
+
+// `..` after a link is taken where the link leads, so `lnk/../lib` is
+// <root>/a/lib, not <root>/lib: the trash must be handed the library's own
+// folder, never the one a lexical `..` would name.
+TEST_CASE("the trash is handed the folder .. reaches through a link") {
+    const fs::path root = fs::canonical(scratch("coll-dotdot-link-trash"));
+    fs::create_directories(root / "a" / "real");
+    fs::create_directory_symlink(fs::path("a") / "real", root / "lnk");
+    for (const fs::path& lib : {root / "a" / "lib", root / "lib"}) {
+        createCollection(lib, "Trees");
+        addStamp(lib, "Trees", "Pine", {}, tree(), true);
+    }
+    std::vector<fs::path> asked;
+    TrashHook hook([&](const fs::path& p) {
+        asked.push_back(p);
+        return false;
+    });
+    const fs::path viaLink = root / "lnk" / ".." / "lib";
+    CHECK_THROWS_AS(deleteCollection(viaLink, "Trees"), TrashUnavailable);
+    REQUIRE(asked.size() == 1);
+    CHECK(asked[0] == root / "a" / "lib" / "trees");
+    asked.clear();
+    CHECK_THROWS_AS(removeStamp(viaLink, viaLink / "trees" / "pine.ans"), TrashUnavailable);
+    REQUIRE_FALSE(asked.empty());
+    CHECK(asked[0].parent_path() == root / "a" / "lib" / "trees");
+}
+
+// A library reached through a link is handed to the trash by its resolved
+// folder: Qt cuts a top directory's trash Path= by the mount root's length,
+// which only lands right on the resolved path.
+TEST_CASE("a library reached through a link is handed to the trash resolved") {
+    const fs::path root = fs::canonical(scratch("coll-linked-lib-trash"));
+    createCollection(root / "real", "Trees");
+    addStamp(root / "real", "Trees", "Pine", {}, tree(), true);
+    fs::create_directory_symlink("real", root / "via");
+    std::vector<fs::path> asked;
+    TrashHook hook([&](const fs::path& p) {
+        asked.push_back(p);
+        return false;
+    });
+    CHECK_THROWS_AS(deleteCollection(root / "via", "Trees"), TrashUnavailable);
+    REQUIRE(asked.size() == 1);
+    CHECK(asked[0] == root / "real" / "trees");
+}
+
+// A stamp whose .ans is a link goes to the trash as the link: the file it
+// points at, outside the library, stays where it is.
+TEST_CASE("a linked stamp is handed to the trash as the link") {
+    const fs::path root = fs::canonical(scratch("coll-linked-stamp-trash"));
+    createCollection(root / "user", "Trees");
+    addStamp(root / "user", "Trees", "Pine", {}, tree(), true);
+    fs::create_directories(root / "outside");
+    fs::rename(root / "user" / "trees" / "pine.ans", root / "outside" / "pine.ans");
+    fs::create_symlink(fs::path("..") / ".." / "outside" / "pine.ans", root / "user" / "trees" / "pine.ans");
+    const fs::path bin = root / "bin";
+    fs::create_directories(bin);
+    std::vector<fs::path> asked;
+    TrashHook hook([&](const fs::path& p) {
+        asked.push_back(p);
+        fs::rename(p, bin / p.filename());
+        return true;
+    });
+    try {
+        removeStamp(root / "user", root / "user" / "trees" / "pine.ans");
+    } catch (const LibraryError&) {
+    }
+    CHECK(fs::exists(root / "outside" / "pine.ans"));
+    REQUIRE(asked.size() == 2);
+    for (const fs::path& p : asked) {
+        INFO(p);
+        CHECK(p.parent_path() == root / "user" / "trees");
+    }
 }
 
 // Fix round 2: a stamp's two files go one at a time, so a trash that takes

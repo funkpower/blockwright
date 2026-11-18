@@ -1611,6 +1611,24 @@ void checkDeletable(const fs::path& p) {
 #endif
 }
 
+// `p` as the trash records it: the .trashinfo's Path=, where a restore puts
+// it back. The freedesktop trash spec takes a relative Path= as relative to
+// the folder the trash sits in ($XDG_DATA_HOME for the home trash), so a
+// relative `p` (`cli library remove lib/x.ans`) would restore to the wrong
+// place: `p` is made absolute. Its folder is resolved on disk, not
+// lexically: `..` after a link is taken where the link leads, as the library
+// code takes it, and Qt cuts a top directory's trash Path= by the length of
+// the mount root, which lands right only on a resolved path. Its own name is
+// kept, so a link is recorded as the link.
+fs::path trashPath(const fs::path& p) {
+    fs::path q = p;
+    if (q.filename().empty())
+        q = q.parent_path();
+    std::error_code ec;
+    const fs::path dir = fs::canonical(q.has_parent_path() ? q.parent_path() : fs::path("."), ec);
+    return ec ? fs::absolute(q, ec) : dir / q.filename();
+}
+
 // Moves `p` (a file, or a folder and everything in it) to the trash in one
 // call, or deletes it. Whether it went to the trash. A trash that refuses
 // throws TrashUnavailable, having removed nothing: never a delete instead.
@@ -1620,7 +1638,8 @@ void checkDeletable(const fs::path& p) {
 bool discard(const fs::path& p, Removal how) {
     checkDeletable(p);
     if (how == Removal::Trash) {
-        if (!(testing::moveToTrash ? testing::moveToTrash(p) : QFile::moveToTrash(qpath(p))))
+        const fs::path where = trashPath(p);
+        if (!(testing::moveToTrash ? testing::moveToTrash(where) : QFile::moveToTrash(qpath(where))))
             throw TrashUnavailable(p.string() + " can't be moved to the trash (there is none, or it refused); " +
                                    "nothing was removed");
         // Qt reports success when it copied `p` to the trash but couldn't
