@@ -2,6 +2,7 @@
 # Builds Blockwright as an AppImage for x86_64 Linux.
 #
 #   scripts/package-appimage [--qmake PROGRAM] [--tools DIR] [--work DIR] [--out DIR]
+#                            [--help-bundle DIR | --no-help-bundle]
 #
 #   --qmake  the qmake of the Qt 6 to bundle (default: $QMAKE, else qmake6 or
 #            qmake on PATH, else /usr/lib/qt6/bin/qmake)
@@ -12,6 +13,9 @@
 #   --work   build tree and AppDir (default: $BW_PACKAGE_WORK, else
 #            ~/.cache/dw/blockwright-appimage-build)
 #   --out    where the AppImage goes (default: dist/ in the repo)
+#   --help-bundle DIR  the help bundle to install (scripts/help-bundle; #210);
+#            default: the source tree's help/, which a release tarball holds
+#   --no-help-bundle   none: Help opens the website
 #
 # Environment: JOBS (default 8).
 #
@@ -35,12 +39,16 @@ qmake=${QMAKE:-}
 tools=$HOME/.cache/dw/toolchains/linuxdeploy
 work=${BW_PACKAGE_WORK:-$HOME/.cache/dw/blockwright-appimage-build}
 out=$root/dist
+help=
+no_help=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --qmake) qmake=$2; shift 2 ;;
     --tools) tools=$2; shift 2 ;;
     --work) work=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
+    --help-bundle) help=$2; shift 2 ;;
+    --no-help-bundle) no_help=1; shift ;;
     -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
@@ -53,6 +61,21 @@ fi
 [[ -n $qmake ]] && "$qmake" -query QT_VERSION 2>/dev/null | grep -q '^6\.' ||
   die "no qmake for Qt 6: --qmake PROGRAM or QMAKE"
 qt_prefix=$("$qmake" -query QT_INSTALL_PREFIX)
+# The help bundle (#210): --help-bundle, else the tarball's help/, else
+# refused unless --no-help-bundle
+if [[ -n $help && -n $no_help ]]; then
+  die "--help-bundle and --no-help-bundle: one or the other"
+elif [[ -n $no_help ]]; then
+  help=
+elif [[ -z $help && -f $root/help/bundle.json ]]; then
+  help=$root/help
+elif [[ -z $help ]]; then
+  die "no help bundle: build from a release tarball (its help/), or pass --help-bundle DIR (scripts/help-bundle) or --no-help-bundle"
+fi
+if [[ -n $help ]]; then
+  [[ -f $help/bundle.json ]] || die "--help-bundle $help: no bundle.json there"
+  help=$(cd "$help" && pwd)
+fi
 for tool in cmake ninja curl sha256sum file; do
   command -v "$tool" >/dev/null || die "$tool is not on PATH"
 done
@@ -90,7 +113,7 @@ done
 
 echo "== build (Qt $("$qmake" -query QT_VERSION) in $qt_prefix)"
 build=$work/build appdir=$work/AppDir
-cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+cmake -S "$root" -B "$build" -G Ninja -DBW_HELP_BUNDLE="$help" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
   -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_PREFIX_PATH="$qt_prefix" >/dev/null
 nice -n 10 cmake --build "$build" -j "$jobs"
 version=$(sed -n 's/^CMAKE_PROJECT_VERSION:[A-Z]*=//p' "$build/CMakeCache.txt")
@@ -98,6 +121,7 @@ version=$(sed -n 's/^CMAKE_PROJECT_VERSION:[A-Z]*=//p' "$build/CMakeCache.txt")
 rm -rf "$appdir"
 DESTDIR=$appdir cmake --install "$build" >/dev/null
 [[ -x $appdir/usr/bin/blockwright && -x $appdir/usr/bin/blockwright-cli ]] || die "the install left no $appdir/usr/bin"
+[[ -z $help || -f $appdir/usr/share/blockwright/help/bundle.json ]] || die "the install left out the help bundle"
 
 echo "== AppImage"
 appimage=$out/blockwright-$version-x86_64.AppImage

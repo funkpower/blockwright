@@ -2,6 +2,7 @@
 # Builds Blockwright.app and the disk image people drag it from (run on a Mac).
 #
 #   scripts/package-macos [--qt DIR] [--deps DIR] [--work DIR] [--out DIR]
+#                         [--help-bundle DIR | --no-help-bundle]
 #
 #   --qt    Qt 6 for macOS: the directory holding bin/macdeployqt and
 #           lib/cmake/Qt6 (default: $BW_QT_PREFIX)
@@ -10,6 +11,9 @@
 #   --work  build tree, staging and tools (default: $BW_PACKAGE_WORK, else
 #           ~/.cache/dw/blockwright-macos-build)
 #   --out   where the dmg goes (default: dist/ in the repo)
+#   --help-bundle DIR  the help bundle to install (scripts/help-bundle; #210);
+#            default: the source tree's help/, which a release tarball holds
+#   --no-help-bundle   none: Help opens the website
 #
 # Environment: CMAKE_OSX_ARCHITECTURES (default this Mac's; "arm64;x86_64"
 # makes a universal app, with a universal Qt), MACOSX_DEPLOYMENT_TARGET
@@ -61,12 +65,16 @@ qt=${BW_QT_PREFIX:-}
 deps=${BW_MACOS_DEPS:-}
 work=${BW_PACKAGE_WORK:-$HOME/.cache/dw/blockwright-macos-build}
 out=$root/dist
+help=
+no_help=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --qt) qt=$2; shift 2 ;;
     --deps) deps=$2; shift 2 ;;
     --work) work=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
+    --help-bundle) help=$2; shift 2 ;;
+    --no-help-bundle) no_help=1; shift ;;
     -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
@@ -74,6 +82,21 @@ done
 [[ -n $qt ]] || die "say where Qt is: --qt DIR or BW_QT_PREFIX"
 [[ -x $qt/bin/macdeployqt && -d $qt/lib/cmake/Qt6 ]] || die "$qt has no bin/macdeployqt and lib/cmake/Qt6"
 qt=$(cd "$qt" && pwd)
+# The help bundle (#210): --help-bundle, else the tarball's help/, else
+# refused unless --no-help-bundle
+if [[ -n $help && -n $no_help ]]; then
+  die "--help-bundle and --no-help-bundle: one or the other"
+elif [[ -n $no_help ]]; then
+  help=
+elif [[ -z $help && -f $root/help/bundle.json ]]; then
+  help=$root/help
+elif [[ -z $help ]]; then
+  die "no help bundle: build from a release tarball (its help/), or pass --help-bundle DIR (scripts/help-bundle) or --no-help-bundle"
+fi
+if [[ -n $help ]]; then
+  [[ -f $help/bundle.json ]] || die "--help-bundle $help: no bundle.json there"
+  help=$(cd "$help" && pwd)
+fi
 archs=${CMAKE_OSX_ARCHITECTURES:-$(uname -m)}
 project_target=$(sed -n 's/^[[:space:]]*set([[:space:]]*CMAKE_OSX_DEPLOYMENT_TARGET[[:space:]]\{1,\}"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}[[:space:])].*/\1/p' "$root/CMakeLists.txt")
 [[ -n $project_target ]] || die "no CMAKE_OSX_DEPLOYMENT_TARGET in $root/CMakeLists.txt"
@@ -115,7 +138,7 @@ deps=$(cd "$deps" && pwd)
 
 echo "== build"
 build=$work/build stage=$work/stage
-cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+cmake -S "$root" -B "$build" -G Ninja -DBW_HELP_BUNDLE="$help" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
   -DBLOCKWRIGHT_MACOS_BUNDLE=ON -DCMAKE_OSX_ARCHITECTURES="$archs" -DCMAKE_OSX_DEPLOYMENT_TARGET="$target" \
   -DCMAKE_PREFIX_PATH="$qt;$deps" -DCMAKE_INSTALL_PREFIX="$stage" >/dev/null
 nice -n 10 cmake --build "$build" -j "$jobs"
@@ -125,6 +148,7 @@ rm -rf "$stage"
 cmake --install "$build" >/dev/null
 app=$stage/Blockwright.app
 [[ -x $app/Contents/MacOS/Blockwright && -x $app/Contents/MacOS/blockwright-cli ]] || die "the install left no $app"
+[[ -z $help || -f $app/Contents/Resources/blockwright/help/bundle.json ]] || die "the install left out the help bundle"
 plist_min=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist" 2>/dev/null) || true
 [[ $plist_min == "$target" ]] || die "the app's LSMinimumSystemVersion is ${plist_min:-missing}, not the target $target"
 

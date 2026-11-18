@@ -16,7 +16,7 @@ is the checklist for publishing a version.
 
 ### The source tarball
 
-`scripts/release <version> [<ref>]` makes `dist/blockwright-<version>.tar.gz`
+`scripts/release (--help-bundle DIR | --no-help-bundle) <version> [<ref>]` makes `dist/blockwright-<version>.tar.gz`
 and its `.sha256` with `git archive` of the tag `v<version>` or the given
 commit: only tracked, committed files, under `blockwright-<version>/`, the same
 bytes from the same commit. git writes the commit into
@@ -25,6 +25,46 @@ the tarball reports it in `--version` instead of asking git, which would answer
 for whatever repository the tarball was unpacked inside. The forge's own
 archive of a tag gets the same treatment. `--check DIR` builds the tarball and
 runs its tests without network.
+
+### The help bundle
+
+The tutorials and the manual the help window shows offline (#210, PLAN §11)
+ship in the tarball as `help/`, which isn't tracked: `scripts/release
+--help-bundle DIR` appends the bundle in DIR, its files sorted, owned by 0,
+mode 644 and dated with the commit, so the same commit and bundle give the
+same tarball. It is built by `scripts/help-bundle` from the blockwright-docs
+commit `packaging/docs-commit` pins, with the release's own programs:
+
+```sh
+cmake -S . -B ~/.cache/dw/bw-release-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake --build ~/.cache/dw/bw-release-build
+scripts/help-bundle --cli ~/.cache/dw/bw-release-build/cli/blockwright-cli \
+  --app ~/.cache/dw/bw-release-build/app/blockwright ~/.cache/dw/bw-help-<version>
+```
+
+It needs a blockwright-docs checkout (beside this repository, or `--docs
+DIR`), Python 3 and Python-Markdown. `scripts/release` refuses a bundle whose
+`bundle.json` doesn't name the pinned docs commit or wasn't checked with this
+release (`checkedWith` `<version> (<commit>)`, which a CLI built from the tag
+gives), so the docs pin is moved before the tag. `--no-help-bundle` makes a
+tarball without one, whose builds' Help opens the website.
+
+The CMake cache path `BW_HELP_BUNDLE` installs a bundle as
+`<datadir>/blockwright/help/` (`Blockwright.app/Contents/Resources/blockwright/help/`
+on macOS, `share\blockwright\help\` on Windows); configure refuses a
+directory without a `bundle.json` of format 1 with contents. It defaults to
+`help/` in the source tree, so a build of the tarball installs it with nothing
+added to its recipe: the Debian, Fedora and AUR packages (whose file lists
+already take `share/blockwright/`), the FreeBSD port (`PORTDATA` lists
+`help`) and an AppImage built from the tarball. `scripts/package-flatpak`,
+`package-macos` and `package-windows` build from a checkout and take
+`--help-bundle DIR` (the Flatpak copies it into its exported tree as `help/`)
+or `--no-help-bundle`; without either and without a `help/` in the tree they
+stop. `blockwright-git` builds `main`, which has no bundle, so its Help opens
+the website. `ctest` always runs `help_bundle_check`, on the bundle a build installs, or
+without one (CI) on the stand-in in `tests/data/help-bundle`:
+`helpdocs::check` on the bundle (the three Help pages, every tool's section,
+every link and picture) and the three pages opened in the help window.
 
 ### Building without network
 

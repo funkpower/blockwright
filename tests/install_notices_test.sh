@@ -11,7 +11,9 @@
 # throwaway HOME with git, tar and the build stubbed out (its install step is
 # the real `cmake --install` of this build, staged the same way) to check the
 # dev install carries them and refuses an install without them, and that it
-# installs blockwright-dev and its launcher entry. BW_NOTICES_DIR names where
+# installs blockwright-dev and its launcher entry (with --no-help: the help
+# bundle needs a docs checkout, and only its refusal is checked here).
+# BW_NOTICES_DIR names where
 # --version says the notices are (default share/doc/blockwright/), and
 # BW_UNIFONT_CREDIT the Unifont credit's first line a BLOCKWRIGHT_SYSTEM_UNIFONT
 # build prints (default the bundled 18.0.01's).
@@ -212,7 +214,7 @@ chmod +x "$stubs"/*
 dev() {
   HOME=$home PATH=$stubs:$PATH STUB_TMP=$tmp STUB_CMAKE=$real_cmake STUB_BUILD=$build \
     STUB_CONFIG=$config STUB_BINDIR=$bindir STUB_DOCDIR=$docdir \
-    bash "$src/scripts/install-dev" --ref 0123456 "$@" 2>&1
+    bash "$src/scripts/install-dev" --ref 0123456 --no-help "$@" 2>&1
 }
 prefix=$home/.local/opt/blockwright-dev
 if out=$(dev); then ok "install-dev"; else bad "install-dev failed: $out"; fi
@@ -297,6 +299,17 @@ if [[ $(uname -s) != Darwin ]]; then
   fi
   if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the icon-less install keeps the old dev build"; else bad "the icon-less install replaced the old dev build"; fi
 fi
+# Without --no-help the help bundle is built from the docs: a missing docs
+# checkout stops the install and keeps the old dev build
+out=$(HOME=$home PATH=$stubs:$PATH STUB_TMP=$tmp STUB_CMAKE=$real_cmake STUB_BUILD=$build \
+    STUB_CONFIG=$config STUB_BINDIR=$bindir STUB_DOCDIR=$docdir \
+    bash "$src/scripts/install-dev" --ref 0123456 --docs "$tmp/no-docs" 2>&1); st=$?
+if [[ $st -ne 0 ]] && grep -q "no blockwright-docs checkout at $tmp/no-docs" <<<"$out"; then
+  ok "install-dev refuses to go on without the docs for the help bundle"
+else
+  bad "install-dev without the docs (exit $st): $out"
+fi
+if [[ -f $prefix/marker && ! -e $prefix.new ]]; then ok "the help-less install keeps the old dev build"; else bad "the help-less install replaced the old dev build"; fi
 has_library() { [[ -n $(find "$1/share/blockwright/library" -mindepth 2 -maxdepth 2 -name '*.ans' -print -quit 2>/dev/null) ]]; }
 if has_library "$prefix"; then ok "install-dev installs the bundled library"; else bad "no bundled library in $prefix"; fi
 if [[ -f $prefix/share/blockwright/samples/01-layers-showcase/manifest.json ]]; then ok "install-dev installs the sample projects"; else bad "no sample projects in $prefix"; fi

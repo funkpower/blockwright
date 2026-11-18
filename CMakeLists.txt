@@ -166,6 +166,42 @@ endif()
 # list` find from the binaries' directory, <prefix>/share/blockwright/library/.
 install(DIRECTORY library/ DESTINATION ${CMAKE_INSTALL_DATADIR}/blockwright/library)
 
+# The help bundle (#210, PLAN §11): the tutorials and the manual for the help
+# window, built by blockwright-docs (`scripts/build --help-bundle`, or
+# scripts/help-bundle here). BW_HELP_BUNDLE names its directory, which is
+# installed as <datadir>/blockwright/help/ (Blockwright.app/Contents/Resources/
+# blockwright/help/ in the macOS bundle, share\blockwright\help\ beside bin\
+# on Windows), where the app looks. A release tarball carries one in help/
+# (scripts/release), which is then the default; without one Help opens the
+# website.
+set(bw_help_default "")
+if(EXISTS ${PROJECT_SOURCE_DIR}/help/bundle.json)
+  set(bw_help_default ${PROJECT_SOURCE_DIR}/help)
+endif()
+set(BW_HELP_BUNDLE "${bw_help_default}" CACHE PATH
+    "Help bundle to install as share/blockwright/help (empty: none, Help opens the website)")
+if(BW_HELP_BUNDLE)
+  get_filename_component(bw_help_dir "${BW_HELP_BUNDLE}" ABSOLUTE BASE_DIR ${CMAKE_BINARY_DIR})
+  if(NOT EXISTS ${bw_help_dir}/bundle.json)
+    message(FATAL_ERROR "BW_HELP_BUNDLE=${BW_HELP_BUNDLE}: no bundle.json there")
+  endif()
+  file(READ ${bw_help_dir}/bundle.json bw_help_json)
+  string(JSON bw_help_format ERROR_VARIABLE bw_help_error GET "${bw_help_json}" format)
+  string(JSON bw_help_contents ERROR_VARIABLE bw_help_error2 TYPE "${bw_help_json}" contents)
+  if(NOT bw_help_format STREQUAL "1" OR NOT bw_help_contents STREQUAL "ARRAY")
+    message(FATAL_ERROR "BW_HELP_BUNDLE=${BW_HELP_BUNDLE}: bundle.json isn't help bundle format 1 with contents")
+  endif()
+  string(JSON bw_help_sections LENGTH "${bw_help_json}" contents)
+  string(JSON bw_help_commit ERROR_VARIABLE bw_help_error GET "${bw_help_json}" docsCommit)
+  if(bw_help_sections EQUAL 0)
+    message(FATAL_ERROR "BW_HELP_BUNDLE=${BW_HELP_BUNDLE}: bundle.json has no contents")
+  endif()
+  message(STATUS "Help bundle: ${bw_help_dir} (docs ${bw_help_commit})")
+  install(DIRECTORY ${bw_help_dir}/ DESTINATION ${CMAKE_INSTALL_DATADIR}/blockwright/help
+          PATTERN .blockwright-docs-manifest EXCLUDE)
+  set(BW_HELP_BUNDLE_DIR ${bw_help_dir})
+endif()
+
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()

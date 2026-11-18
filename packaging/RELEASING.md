@@ -38,12 +38,28 @@ distribution builder download the release assets anonymously.
 
 ## 2. The source tarball
 
+First pin the docs: before tagging (in the version PR of step 1), set
+`packaging/docs-commit` to the full hash of the blockwright-docs commit on
+`main` whose pages the release ships. Then, at the tag, build the release's
+programs and the help bundle from that commit, as in
+[README.md § The help bundle](README.md#the-help-bundle):
+
+```sh
+cmake -S . -B ~/.cache/dw/bw-release-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake --build ~/.cache/dw/bw-release-build
+scripts/help-bundle --cli ~/.cache/dw/bw-release-build/cli/blockwright-cli \
+  --app ~/.cache/dw/bw-release-build/app/blockwright ~/.cache/dw/bw-help-<version>
+```
+
 On the dev machine, with Catch2 3 installed (or its prefix in
 `CMAKE_PREFIX_PATH`):
 
 ```sh
-scripts/release --check ~/.cache/dw/bw-release-check <version>
+scripts/release --help-bundle ~/.cache/dw/bw-help-<version> --check ~/.cache/dw/bw-release-check <version>
 ```
+
+The tarball carries the bundle as `help/`; the check's build installs it and
+its `help_bundle_check` test checks it.
 
 It packages the tag `v<version>` (`git archive`, tracked files only), then
 unpacks the tarball, builds it with `BW_FETCH_CATCH2=OFF` and runs its tests
@@ -98,10 +114,10 @@ From the uploaded tarball, in a Debian 12 container with Qt 6.8.3:
 `scripts/package-appimage`, as in
 [README.md § AppImage](README.md#appimage); it checks the AppImage before it
 writes the `.sha256`. Upload `blockwright-<version>-x86_64.AppImage` and its
-`.sha256`.
+`.sha256`. The tarball's `help/` is installed into it.
 
 The Flatpak bundle, at the tag, with `flatpak` and `flatpak-builder`:
-`FLATPAK_USER_DIR=~/.cache/dw/flatpak scripts/package-flatpak --ref v<version> --check`,
+`FLATPAK_USER_DIR=~/.cache/dw/flatpak scripts/package-flatpak --ref v<version> --help-bundle ~/.cache/dw/bw-help-<version> --check`,
 as in [README.md § Flatpak](README.md#flatpak). Upload
 `blockwright-<version>-x86_64.flatpak` and its `.sha256`. Nothing goes to
 Flathub.
@@ -111,20 +127,23 @@ Flathub.
 On a Mac at the tag, with Qt 6.8.3 (an LTS release that runs on macOS 12, the
 oldest the app supports; Qt 6.10 and later need macOS 13): build the dmg,
 upload it with its `.sha256`, and publish the cask, as in
-[README.md § Homebrew](README.md#homebrew). `scripts/package-macos` refuses a
+[README.md § Homebrew](README.md#homebrew), passing `--help-bundle` the
+bundle from section 2 (copied to the Mac) to `scripts/package-macos`.
+`scripts/package-macos` refuses a
 Qt built for a newer macOS than the deployment target before it builds
 anything.
 
 ## 7. Windows (MSI)
 
-On the dev machine at the tag: `scripts/package-windows`, as in
+On the dev machine at the tag: `scripts/package-windows --help-bundle ~/.cache/dw/bw-help-<version>`, as in
 [windows/README.md § The MSI](windows/README.md#the-msi), then upload
 `dist/blockwright-<version>-x86_64.msi`.
 
 ## 8. After publishing
 
 - Install each package from where users get it and run `blockwright --version`
-  and `blockwright-cli --version`: `yay -S blockwright` on Arch, the dmg and
+  and `blockwright-cli --version`, and open Help > Manual, which opens in the
+  help window, not the browser: `yay -S blockwright` on Arch, the dmg and
   `brew install --cask funkpower/tap/blockwright` on a Mac, the MSI on
   Windows, the AppImage (`--version` and `--cli --version`) on a current Linux.
 - Note the release in the issue tracker if an issue was waiting on it.

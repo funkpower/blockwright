@@ -702,6 +702,20 @@ set_target_properties(blockwright-app-tests PROPERTIES CROSSCOMPILING_EMULATOR "
 catch_discover_tests(blockwright-app-tests
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen
   DISCOVERY_MODE PRE_TEST)
+# The help bundle BW_HELP_BUNDLE installs (#210): helpdocs::check on it, the
+# app's three Help pages, every tool's section of the manual and every link
+# and picture of every page resolving in it. With no bundle configured (CI,
+# a checkout) it runs on tests/data/help-bundle, the small stand-in with
+# every tool's section, so the check and the window's pages are tested in
+# every build.
+if(BW_HELP_BUNDLE_DIR)
+  set(bw_help_check_dir ${BW_HELP_BUNDLE_DIR})
+else()
+  set(bw_help_check_dir ${PROJECT_SOURCE_DIR}/tests/data/help-bundle)
+endif()
+add_test(NAME help_bundle_check
+  COMMAND ${BW_APP_TEST_ENV} BW_HELP_BUNDLE_CHECK=${bw_help_check_dir} ${CMAKE_CROSSCOMPILING_EMULATOR}
+          $<TARGET_FILE:blockwright-app-tests> "[help-bundle-check]")
 # The default dock heights at fractional device pixel ratios: the preview's
 # target is in whole device pixels there.
 foreach(scale 1.25 1.5)

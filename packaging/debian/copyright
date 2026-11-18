@@ -37,6 +37,14 @@ License: OFL-1.1
 Comment: Built into the program as the window's font of blockwright
  --screenshot, under a family name of its own; the layout tests measure in it.
 
+Files: help/*
+Copyright: 2026 funkpower
+License: CC-BY-SA-4.0
+Comment: The tutorials and the manual for the help window, built from
+ blockwright-docs (scripts/help-bundle) and shipped in the release tarball.
+ The generator scripts packed inside the sample projects of manual 12 and
+ tutorial 12 are Blockwright's own, under GPL-3+.
+
 Files: third_party/oldschool-pc-fonts/fon2inc.py
        third_party/oldschool-pc-fonts/README.md
        third_party/tabler-icons/README.md

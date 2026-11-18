@@ -39,6 +39,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 
+#include <cstdlib>
 #include <filesystem>
 
 using namespace bw;
@@ -137,6 +138,25 @@ TEST_CASE("A help bundle is read from its bundle.json", "[help-docs]") {
         writeFile(json, "{");
         CHECK_FALSE(helpdocs::read(copy, &error).valid());
     }
+    SECTION("no contents: missing, not an array, or empty") {
+        const QByteArray good = readAll(QDir(fixture()).filePath(QStringLiteral("bundle.json")));
+        const qsizetype at = good.indexOf(",\n  \"contents\"");
+        REQUIRE(at > 0);
+        for (const QByteArray& bad : {good.left(at) + "\n}\n", good.left(at) + ",\n  \"contents\": {}\n}\n",
+                                      good.left(at) + ",\n  \"contents\": []\n}\n",
+                                      good.left(at) + ",\n  \"contents\": \"Tutorials\"\n}\n"}) {
+            INFO(bad.toStdString());
+            writeFile(json, bad);
+            error.clear();
+            CHECK_FALSE(helpdocs::read(copy, &error).valid());
+            CHECK(error.contains(QStringLiteral("has no contents")));
+        }
+    }
+    SECTION("a section whose pages aren't a list") {
+        writeFile(json, readAll(json).replace("\"pages\": [", "\"pages\": {\"x\": [").replace("]\n    }", "]}\n    }"));
+        CHECK_FALSE(helpdocs::read(copy, &error).valid());
+        CHECK(error.contains(QStringLiteral("pages aren't a list")));
+    }
 }
 
 TEST_CASE("Every tool has a manual section, and the bundle's links resolve", "[help-docs]") {
@@ -189,15 +209,79 @@ TEST_CASE("Every tool has a manual section, and the bundle's links resolve", "[h
                       .replace("href=\"01-what-ansi-art-is.html\"", "href=\"../../help/tutorials/index.html\""));
         CHECK(problems().size() == 1);
     }
+    SECTION("a link with a scheme other than http or https, which the window never opens") {
+        writeFile(tutorial, readAll(tutorial) +
+                                "<a href=\"https://example.org/a\">ok</a><a href='HTTP://example.org/b'>ok</a>"
+                                "<a href=\"mailto:someone@example.org\">m</a><a href=\"javascript:void(0)\">j</a>"
+                                "<a href=ftp://example.org/f>f</a><a href=\"//example.org/c\">s</a>"
+                                "<img src=\"data:image/png;base64,AAAA\">");
+        const QString page = QStringLiteral("tutorials/01-what-ansi-art-is.html: ");
+        const QString why = QStringLiteral(" isn't an http or https link, the only schemes the help window opens");
+        CHECK(problems() ==
+              QStringList{page + QStringLiteral("href=\"mailto:someone@example.org\"") + why,
+                          page + QStringLiteral("href=\"javascript:void(0)\"") + why,
+                          page + QStringLiteral("href=\"ftp://example.org/f\"") + why,
+                          page + QStringLiteral("href=\"//example.org/c\"") + why,
+                          page + QStringLiteral("src=\"data:image/png;base64,AAAA\"") + why});
+    }
     SECTION("a page in the contents is missing, and so is a page the app opens") {
         QFile::remove(copy + QStringLiteral("/manual/index.html"));
         const QStringList p = problems();
         CHECK(p.contains(QStringLiteral("the app opens manual/index.html, which isn't in the bundle")));
         CHECK(p.contains(QStringLiteral("manual/index.html is in the contents but not in the bundle")));
     }
+    SECTION("links in single quotes, percent-encoded and with character references, as a browser reads them") {
+        writeFile(copy + QStringLiteral("/tutorials/a b.html"), "<h1 id=\"x y\">A B</h1><p id='single'>s</p>");
+        writeFile(copy + QStringLiteral("/tutorials/a&b.html"), "<h1 id=\"t\">A and B</h1>");
+        writeFile(tutorial, readAll(tutorial) +
+                                "<a href='../manual/04-tools.html#fill'>fill</a>"
+                                "<a href=\"a%20b.html#x%20y\">ab</a><a href='a%20b.html#single'>s</a>"
+                                "<a href=\"a&amp;b.html#t\">amp</a><a href=\"a&#38;b.html\">dec</a>"
+                                "<a href=\"a&#x26;b.html\">hex</a><a href = 'a%26b.html'>pct</a>"
+                                "<img src='../samples/01-what-ansi-art-is/final.png'>");
+        CHECK(problems() == QStringList());
+        // and each is still checked
+        writeFile(tutorial, readAll(tutorial) + "<a href='../manual/04-tools.html#flood'>x</a>"
+                                                "<a href=\"a%20c.html\">y</a><a href=\"a&amp;c.html\">z</a>"
+                                                "<img src='../samples/none.png'>");
+        CHECK(problems() ==
+              QStringList{QStringLiteral("tutorials/01-what-ansi-art-is.html: href=\"../manual/04-tools.html#flood\" "
+                                         "doesn't resolve"),
+                          QStringLiteral("tutorials/01-what-ansi-art-is.html: href=\"a%20c.html\" doesn't resolve"),
+                          QStringLiteral("tutorials/01-what-ansi-art-is.html: href=\"a&amp;c.html\" doesn't resolve"),
+                          QStringLiteral("tutorials/01-what-ansi-art-is.html: src=\"../samples/none.png\" doesn't "
+                                         "resolve")});
+    }
+    SECTION("uppercase attributes and unquoted values, as a browser reads them") {
+        writeFile(tutorial, readAll(tutorial) + "<a HREF=\"upper.html\">u</a> <a href=bare.html>b</a>"
+                                                "<IMG SRC=none.png><a href=../manual/04-tools.html#fill>ok</a>");
+        CHECK(problems() ==
+              QStringList{QStringLiteral("tutorials/01-what-ansi-art-is.html: href=\"upper.html\" doesn't resolve"),
+                          QStringLiteral("tutorials/01-what-ansi-art-is.html: href=\"bare.html\" doesn't resolve"),
+                          QStringLiteral("tutorials/01-what-ansi-art-is.html: src=\"none.png\" doesn't resolve")});
+        // an unquoted or uppercase id is an anchor
+        writeFile(copy + QStringLiteral("/tutorials/anch.html"), "<h1 ID=up>U</h1><p name=bare>b</p>");
+        writeFile(tutorial, readAll(tutorial) + "<a href=anch.html#up>1</a><a href=anch.html#bare>2</a>");
+        CHECK(problems().size() == 3);
+    }
+#ifndef Q_OS_WIN
+    SECTION("a link through a symlink out of the bundle, which the window refuses") {
+        writeFile(tmp.path() + QStringLiteral("/outside.html"), "<h1 id=\"x\">Outside</h1>");
+        REQUIRE(QFile::link(tmp.path() + QStringLiteral("/outside.html"), copy + QStringLiteral("/tutorials/away.html")));
+        REQUIRE(QFile::link(tmp.path(), copy + QStringLiteral("/tutorials/up")));
+        REQUIRE(QFile::link(copy + QStringLiteral("/tutorials/index.html"),
+                            copy + QStringLiteral("/tutorials/again.html")));
+        writeFile(tutorial, readAll(tutorial) + "<a href=\"away.html#x\">a</a><a href=\"up/outside.html\">b</a>"
+                                                "<a href=\"again.html\">inside</a>");
+        CHECK(problems() ==
+              QStringList{QStringLiteral("tutorials/01-what-ansi-art-is.html: href=\"away.html#x\" doesn't resolve"),
+                          QStringLiteral("tutorials/01-what-ansi-art-is.html: href=\"up/outside.html\" doesn't "
+                                         "resolve")});
+    }
+#endif
     SECTION("links to the web aren't the bundle's to check") {
-        writeFile(tutorial, readAll(tutorial) + "<a href=\"mailto:someone@example.org\">x</a>"
-                                                "<a href=\"http://example.com/\">y</a><a href=\"//example.com/z\">z</a>");
+        writeFile(tutorial, readAll(tutorial) + "<a href=\"https://example.org/x\">x</a>"
+                                                "<a href=\"http://example.com/\">y</a>");
         CHECK(problems() == QStringList());
     }
 }
@@ -389,6 +473,121 @@ TEST_CASE("The help window shows the bundle's pages", "[help-docs]") {
     h->close();
 }
 
+TEST_CASE("Only pictures, text and PDF in the bundle go to the system's opener", "[help-docs]") {
+    UrlRecorder browser;
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString copy = copyFixture(tmp);
+    const QString dir = copy + QStringLiteral("/samples/01-what-ansi-art-is/");
+    for (const char* name : {"notes.txt", "sheet.PDF", "photo.jpg", "run.sh", "launch.desktop", "app.exe", "page.svg"})
+        writeFile(dir + QString::fromLatin1(name), "x");
+    HelpWindow h(helpdocs::read(copy), nullptr);
+    h.open(QString::fromLatin1(helpdocs::kGettingStartedPage));
+    for (const char* name : {"run.sh", "launch.desktop", "app.exe", "page.svg"})
+        h.followLink(QUrl(QStringLiteral("../samples/01-what-ansi-art-is/") + QString::fromLatin1(name)));
+    CHECK(browser.urls.isEmpty());
+    for (const char* name : {"notes.txt", "sheet.PDF", "photo.jpg", "final.png"})
+        h.followLink(QUrl(QStringLiteral("../samples/01-what-ansi-art-is/") + QString::fromLatin1(name)));
+    CHECK(browser.urls == QList<QUrl>{QUrl::fromLocalFile(dir + QStringLiteral("notes.txt")),
+                                      QUrl::fromLocalFile(dir + QStringLiteral("sheet.PDF")),
+                                      QUrl::fromLocalFile(dir + QStringLiteral("photo.jpg")),
+                                      QUrl::fromLocalFile(dir + QStringLiteral("final.png"))});
+    CHECK(h.currentPage() == QStringLiteral("tutorials/01-what-ansi-art-is.html"));
+}
+
+#ifndef Q_OS_WIN
+TEST_CASE("A symlink in the bundle doesn't take a link out of it", "[help-docs]") {
+    UrlRecorder browser;
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString copy = copyFixture(tmp);
+    writeFile(tmp.path() + QStringLiteral("/outside.html"), "<h1>Outside</h1>");
+    writeFile(tmp.path() + QStringLiteral("/outside.png"),
+              readAll(fixture() + QStringLiteral("/samples/01-what-ansi-art-is/final.png")));
+    writeFile(tmp.path() + QStringLiteral("/outside.ans"), "OUT");
+    const QString dir = copy + QStringLiteral("/tutorials/");
+    REQUIRE(QFile::link(tmp.path() + QStringLiteral("/outside.html"), dir + QStringLiteral("away.html")));
+    REQUIRE(QFile::link(tmp.path() + QStringLiteral("/outside.png"), dir + QStringLiteral("away.png")));
+    REQUIRE(QFile::link(tmp.path() + QStringLiteral("/outside.ans"), dir + QStringLiteral("away.ans")));
+    REQUIRE(QFile::link(tmp.path(), dir + QStringLiteral("up")));
+    // A symlink that stays inside is followed.
+    REQUIRE(QFile::link(dir + QStringLiteral("index.html"), dir + QStringLiteral("again.html")));
+    HelpWindow h(helpdocs::read(copy), nullptr);
+    QStringList requested;
+    QObject::connect(&h, &HelpWindow::fileRequested, [&](const QString& path) { requested << path; });
+    h.open(QString::fromLatin1(helpdocs::kGettingStartedPage));
+    for (const char* link : {"away.html", "away.png", "away.ans", "up/outside.html", "up/outside.png", "up/outside.ans"})
+        h.followLink(QUrl(QString::fromLatin1(link)));
+    CHECK(browser.urls.isEmpty());
+    CHECK(requested.isEmpty());
+    CHECK(h.currentPage() == QStringLiteral("tutorials/01-what-ansi-art-is.html"));
+    CHECK_FALSE(h.browser()->toPlainText().contains(QStringLiteral("Outside")));
+    // Opened by name, it is no page of the bundle.
+    h.open(QStringLiteral("tutorials/away.html"));
+    CHECK_FALSE(h.browser()->toPlainText().contains(QStringLiteral("Outside")));
+    h.followLink(QUrl(QStringLiteral("../samples/01-what-ansi-art-is/try.ans")));
+    CHECK(requested.size() == 1);
+    h.open(QStringLiteral("tutorials/again.html"));
+    CHECK(h.currentPage() == QStringLiteral("tutorials/again.html"));
+}
+#endif
+
+TEST_CASE("Only the web goes to the system's opener from a link, and a page name is never a scheme",
+          "[help-docs]") {
+    UrlRecorder browser({QStringLiteral("https"), QStringLiteral("http"), QStringLiteral("file"),
+                         QStringLiteral("smb"), QStringLiteral("evil"), QStringLiteral("javascript")});
+    HelpWindow h(helpdocs::read(fixture()), nullptr);
+    h.open(QString::fromLatin1(helpdocs::kGettingStartedPage));
+    for (const char* link : {"smb://example.invalid/share/run.desktop", "evil:payload.html", "javascript:alert(1)"})
+        h.followLink(QUrl(QString::fromLatin1(link)));
+    CHECK(browser.urls.isEmpty());
+    h.followLink(QUrl(QStringLiteral("http://example.com/a")));
+    h.followLink(QUrl(QStringLiteral("HTTPS://example.com/b")));
+    CHECK(browser.urls.size() == 2);
+    browser.urls.clear();
+    // a missing page whose name has a colon lands on the website
+    h.followLink(QUrl(QStringLiteral("../evil:payload.html")));
+    CHECK(browser.urls == QList<QUrl>{QUrl(QStringLiteral("https://blockwright.pumpin.online/evil:payload.html"))});
+    CHECK(helpdocs::websiteUrl(QStringLiteral("evil:payload.html")) ==
+          QUrl(QStringLiteral("https://blockwright.pumpin.online/evil:payload.html")));
+    CHECK(helpdocs::websiteUrl(QStringLiteral("smb://h/x#top")).scheme() == QStringLiteral("https"));
+    CHECK(helpdocs::websiteUrl(QStringLiteral("manual/index.html#tools")) ==
+          QUrl(QStringLiteral("https://blockwright.pumpin.online/manual/index.html#tools")));
+}
+
+TEST_CASE("A page missing from the bundle opens on the website, and the window says so", "[help-docs]") {
+    UrlRecorder browser;
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString copy = copyFixture(tmp);
+    QFile::remove(copy + QStringLiteral("/manual/index.html"));
+    MainWindow w;
+    w.setHelpDir(copy);
+    action(w, "manual")->trigger();
+    HelpWindow* h = w.helpWindow();
+    REQUIRE(h);
+    CHECK(h->isVisible());
+    CHECK(browser.urls == QList<QUrl>{QUrl(QStringLiteral("https://blockwright.pumpin.online/manual/index.html"))});
+    const QString text = h->browser()->toPlainText();
+    CHECK(text.contains(QStringLiteral("Not in the installed help")));
+    CHECK(text.contains(QStringLiteral("manual/index.html")));
+    CHECK(text.contains(QStringLiteral("https://blockwright.pumpin.online/manual/index.html")));
+    CHECK(h->currentPage().isEmpty());
+    // A link to such a page from another page, with its fragment.
+    action(w, "gettingStarted")->trigger();
+    CHECK(h->currentPage() == QStringLiteral("tutorials/01-what-ansi-art-is.html"));
+    h->followLink(QUrl(QStringLiteral("../manual/index.html#tools")));
+    REQUIRE(browser.urls.size() == 2);
+    CHECK(browser.urls.last() == QUrl(QStringLiteral("https://blockwright.pumpin.online/manual/index.html#tools")));
+    CHECK(h->browser()->toPlainText().contains(QStringLiteral("Not in the installed help")));
+    // The message's link goes to the website too.
+    h->followLink(QUrl(QStringLiteral("https://blockwright.pumpin.online/manual/index.html#tools")));
+    CHECK(browser.urls.size() == 3);
+    h->open(QStringLiteral("tutorials/index.html"));
+    CHECK(h->currentPage() == QStringLiteral("tutorials/index.html"));
+    h->close();
+}
+
 TEST_CASE("The start screen's Tutorials gives a new canvas with the tutorials open", "[help-docs]") {
     UrlRecorder browser;
     MainWindow w;
@@ -416,4 +615,32 @@ TEST_CASE("The start screen's Tutorials gives a new canvas with the tutorials op
         CHECK_FALSE(s.isVisible());
         CHECK(browser.urls == QList<QUrl>{QUrl(QStringLiteral("https://blockwright.pumpin.online/tutorials/index.html"))});
     }
+}
+
+// The real bundle BW_HELP_BUNDLE installs (#210 slice 4, the help_bundle_check
+// test, run when BW_HELP_BUNDLE is set): it reads, and helpdocs::check finds
+// nothing wrong with it for the app's own tools.
+TEST_CASE("The help bundle this build installs checks clean", "[.][help-bundle-check]") {
+    const char* dir = std::getenv("BW_HELP_BUNDLE_CHECK");
+    REQUIRE(dir);
+    QString error;
+    const helpdocs::Bundle b = helpdocs::read(QString::fromLocal8Bit(dir), &error);
+    INFO(error.toStdString());
+    REQUIRE(b.valid());
+    CHECK_FALSE(b.contents.isEmpty());
+    const QStringList problems = helpdocs::check(b, help::toolIds());
+    INFO(problems.join(QLatin1Char('\n')).toStdString());
+    CHECK(problems.isEmpty());
+    // And the window opens each of the app's pages from it.
+    UrlRecorder browser;
+    MainWindow w;
+    w.setHelpDir(QString::fromLocal8Bit(dir));
+    for (const char* name : {"gettingStarted", "tutorials", "manual"}) {
+        action(w, name)->trigger();
+        REQUIRE(w.helpWindow());
+        CHECK_FALSE(w.helpWindow()->currentPage().isEmpty());
+        CHECK_FALSE(w.helpWindow()->browser()->toPlainText().trimmed().isEmpty());
+    }
+    CHECK(browser.urls.isEmpty());
+    w.helpWindow()->close();
 }

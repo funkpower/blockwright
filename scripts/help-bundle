@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Build the help bundle (#210, PLAN §11) from blockwright-docs at a commit:
+#
+#   scripts/help-bundle [--docs DIR] [--ref REF] [--cli PATH] [--app PATH] <out>
+#
+#   --docs  a blockwright-docs checkout (default: blockwright-docs beside
+#           this repository)
+#   --ref   the docs commit to build (default: the one packaging/docs-commit
+#           pins); fetched from the checkout's origin when it isn't there
+#   --cli   the blockwright-cli the docs build renders the pictures with
+#   --app   the Blockwright app whose --list-actions makes the shortcuts page
+#           (both default to what the docs build finds: blockwright-cli-dev,
+#           blockwright-cli on PATH, and the app beside the CLI); a release's
+#           bundle is built with the release's own, so its checkedWith names
+#           the release
+#   <out>   where the bundle goes: a new or empty directory, or one a docs
+#           build wrote before
+#
+# The docs commit is exported with git archive into <out>.work/ (removed
+# afterwards), so nothing uncommitted in the checkout reaches the bundle, and
+# built there with `scripts/build --help-bundle <out> --docs-commit <short>`.
+# Needs what the docs build needs: Python 3 and Python-Markdown.
+set -euo pipefail
+
+die() { echo "help-bundle: $*" >&2; exit 1; }
+repo=$(cd "$(dirname "$0")/.." && pwd)
+docs=$(dirname "$repo")/blockwright-docs
+ref=
+cli=
+app=
+out=
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --docs) docs=$2; shift 2 ;;
+    --ref) ref=$2; shift 2 ;;
+    --cli) cli=$2; shift 2 ;;
+    --app) app=$2; shift 2 ;;
+    -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    -*) die "unknown option $1 (see --help)" ;;
+    *) [[ -z $out ]] || die "one output directory only"; out=$1; shift ;;
+  esac
+done
+[[ -n $out ]] || die "usage: scripts/help-bundle [--docs DIR] [--ref REF] [--cli PATH] [--app PATH] <out>"
+if [[ -z $ref ]]; then
+  [[ -f $repo/packaging/docs-commit ]] || die "no packaging/docs-commit; pass --ref"
+  ref=$(sed -n '1{s/[[:space:]]//g;p;}' "$repo/packaging/docs-commit")
+  [[ $ref =~ ^[0-9a-f]{7,40}$ ]] || die "packaging/docs-commit holds '$ref', not a commit"
+fi
+[[ -d $docs/.git || -f $docs/.git ]] || die "no blockwright-docs checkout at $docs; pass --docs"
+if ! full=$(git -C "$docs" rev-parse --verify -q "$ref^{commit}"); then
+  git -C "$docs" fetch -q origin || die "can't fetch $docs's origin"
+  full=$(git -C "$docs" rev-parse --verify -q "$ref^{commit}") || die "no docs commit $ref in $docs"
+fi
+short=$(git -C "$docs" rev-parse --short=7 "$full")
+
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+work=$out.work
+rm -rf "$work"
+mkdir -p "$work/docs"
+trap 'rm -rf "$work"' EXIT
+git -C "$docs" archive "$full" | tar -x -C "$work/docs"
+args=(--out "$work/site" --help-bundle "$out" --docs-commit "$short")
+[[ -z $cli ]] || args+=(--cli "$cli")
+[[ -z $app ]] || args+=(--app "$app")
+echo "help-bundle: docs $short into $out"
+python3 -I "$work/docs/scripts/build" "${args[@]}"

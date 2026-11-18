@@ -30,10 +30,20 @@ QString pageWithoutFragment(const QString& page) {
     return hash < 0 ? page : page.left(hash);
 }
 
+// The files in the bundle a link may hand to the system's opener: pictures,
+// text and PDF. Anything else (a script, an executable, a .desktop file a
+// packager let in) is never opened from a page.
+bool openable(const QString& suffix) {
+    static const QStringList kinds = {QStringLiteral("png"), QStringLiteral("jpg"), QStringLiteral("jpeg"),
+                                      QStringLiteral("gif"), QStringLiteral("webp"), QStringLiteral("txt"),
+                                      QStringLiteral("pdf")};
+    return kinds.contains(suffix);
+}
+
 } // namespace
 
 HelpWindow::HelpWindow(helpdocs::Bundle bundle, QWidget* parent)
-    : QWidget(parent, Qt::Window), bundle_(std::move(bundle)) {
+    : QWidget(parent, Qt::Window), bundle_(std::move(bundle)), realDir_(QFileInfo(bundle_.dir).canonicalFilePath()) {
     setObjectName(QStringLiteral("helpWindow"));
     setWindowTitle(tr("Blockwright Help"));
 
@@ -109,9 +119,27 @@ HelpWindow::HelpWindow(helpdocs::Bundle bundle, QWidget* parent)
 void HelpWindow::open(const QString& page) {
     const qsizetype hash = page.indexOf(QLatin1Char('#'));
     QUrl url = QUrl::fromLocalFile(QDir(bundle_.dir).filePath(pageWithoutFragment(page)));
+    if (realPageOf(url).isEmpty()) {
+        showMissing(page);
+        return;
+    }
     if (hash >= 0)
         url.setFragment(page.mid(hash + 1));
     browser_->setSource(url);
+}
+
+void HelpWindow::showMissing(const QString& page) {
+    const QUrl web = helpdocs::websiteUrl(page);
+    QDesktopServices::openUrl(web);
+    const QString link = web.toString().toHtmlEscaped();
+    browser_->setHtml(tr("<h1>Not in the installed help</h1>"
+                         "<p>The page %1 isn't in the help installed with Blockwright, so it has opened on the "
+                         "website instead:</p><p><a href=\"%2\">%2</a></p>")
+                          .arg(page.toHtmlEscaped(), link));
+    setWindowTitle(tr("Blockwright Help"));
+    const QSignalBlocker block(tree_);
+    tree_->clearSelection();
+    tree_->setCurrentItem(nullptr);
 }
 
 QString HelpWindow::pageOf(const QUrl& url) const {
@@ -120,6 +148,17 @@ QString HelpWindow::pageOf(const QUrl& url) const {
     const QString path = QDir::cleanPath(url.toLocalFile());
     const QString root = bundle_.dir + QLatin1Char('/');
     return path.startsWith(root) ? path.mid(root.size()) : QString();
+}
+
+QString HelpWindow::realPageOf(const QUrl& url) const {
+    if (!url.isLocalFile() || realDir_.isEmpty())
+        return QString();
+    const QFileInfo file(url.toLocalFile());
+    const QString real = file.canonicalFilePath();
+    const QString root = realDir_ + QLatin1Char('/');
+    if (real.isEmpty() || !file.isFile() || !real.startsWith(root))
+        return QString();
+    return pageOf(url);
 }
 
 QString HelpWindow::currentPage() const {
@@ -131,19 +170,31 @@ QString HelpWindow::currentPage() const {
 void HelpWindow::followLink(const QUrl& url) {
     const QUrl to = browser_->source().resolved(url);
     if (!to.isLocalFile()) {
-        QDesktopServices::openUrl(to);
+        // Only the web goes to the system's opener, not smb:, a custom
+        // handler or the like.
+        const QString scheme = to.scheme().toLower();
+        if (scheme == QLatin1String("http") || scheme == QLatin1String("https"))
+            QDesktopServices::openUrl(to);
         return;
     }
-    // Nothing outside the bundle opens from a page.
+    // Nothing outside the bundle opens from a page, by path or by real path.
     const QString page = pageOf(to);
     if (page.isEmpty())
         return;
     const QString suffix = QFileInfo(page).suffix().toLower();
+    const bool html = suffix == QLatin1String("html") || suffix == QLatin1String("htm");
+    if (realPageOf(to).isEmpty()) {
+        // A page missing from the bundle is on the website; a missing file
+        // or one that leaves the bundle through a symlink opens nothing.
+        if (html && !QFileInfo::exists(to.toLocalFile()))
+            showMissing(to.hasFragment() ? page + QLatin1Char('#') + to.fragment() : page);
+        return;
+    }
     if (suffix == QLatin1String("ans") || suffix == QLatin1String("bwp"))
         emit fileRequested(to.toLocalFile());
-    else if (suffix == QLatin1String("html") || suffix == QLatin1String("htm"))
+    else if (html)
         browser_->setSource(to);
-    else
+    else if (openable(suffix))
         QDesktopServices::openUrl(to);
 }
 

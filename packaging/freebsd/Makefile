@@ -25,6 +25,6 @@ USE_QT=		base svg
 CMAKE_OFF=	BUILD_TESTING BW_FETCH_CATCH2
 TEST_ENV=	QT_QPA_PLATFORM=offscreen
 
-PORTDATA=	library samples
+PORTDATA=	help library samples
 
 .include <bsd.port.mk>

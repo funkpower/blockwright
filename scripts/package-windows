@@ -3,6 +3,7 @@
 #
 #   scripts/package-windows [--llvm-mingw DIR] [--qt DIR] [--qt-host DIR]
 #                           [--wixl PROGRAM] [--build-dir DIR] [--dist DIR]
+#                           [--help-bundle DIR | --no-help-bundle]
 #
 #   --llvm-mingw  llvm-mingw toolchain (env LLVM_MINGW)
 #   --qt          Qt for Windows, win64_llvm_mingw (env QT_WIN)
@@ -11,6 +12,9 @@
 #   --build-dir   deps, build tree and staged install
 #                 (env BUILD_DIR, default: ~/.cache/dw/blockwright-win-build)
 #   --dist        where the MSI goes (default: dist/ in the source tree)
+#   --help-bundle DIR  the help bundle to install (scripts/help-bundle; #210);
+#            default: the source tree's help/, which a release tarball holds
+#   --no-help-bundle   none: Help opens the website
 #
 # Builds zlib, zstd and libzip first if the build dir lacks them
 # (packaging/windows/build-deps), then a Release build of the programs
@@ -32,6 +36,8 @@ dist=$src/dist
 jobs=${JOBS:-8}
 
 usage() { sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit "${1:-0}"; }
+help=
+no_help=
 while (($#)); do
   case $1 in
     --llvm-mingw) llvm_mingw=$2; shift 2 ;;
@@ -40,11 +46,28 @@ while (($#)); do
     --wixl) wixl=$2; shift 2 ;;
     --build-dir) build_dir=$2; shift 2 ;;
     --dist) dist=$2; shift 2 ;;
+    --help-bundle) help=$2; shift 2 ;;
+    --no-help-bundle) no_help=1; shift ;;
     -h|--help) usage ;;
     *) echo "package-windows: unknown option $1" >&2; usage 2 >&2 ;;
   esac
 done
 die() { echo "package-windows: $*" >&2; exit 1; }
+# The help bundle (#210): --help-bundle, else the tarball's help/, else
+# refused unless --no-help-bundle
+if [[ -n $help && -n $no_help ]]; then
+  die "--help-bundle and --no-help-bundle: one or the other"
+elif [[ -n $no_help ]]; then
+  help=
+elif [[ -z $help && -f $src/help/bundle.json ]]; then
+  help=$src/help
+elif [[ -z $help ]]; then
+  die "no help bundle: build from a release tarball (its help/), or pass --help-bundle DIR (scripts/help-bundle) or --no-help-bundle"
+fi
+if [[ -n $help ]]; then
+  [[ -f $help/bundle.json ]] || die "--help-bundle $help: no bundle.json there"
+  help=$(cd "$help" && pwd)
+fi
 [[ -n $llvm_mingw && -x $llvm_mingw/bin/x86_64-w64-mingw32-clang++ ]] || die "set --llvm-mingw (or LLVM_MINGW) to llvm-mingw"
 [[ -n $qt_win && -f $qt_win/lib/cmake/Qt6/Qt6Config.cmake && -d $qt_win/plugins ]] || die "set --qt (or QT_WIN) to Qt for Windows (win64_llvm_mingw)"
 # PDF references load through Qt PDF's image plugin; without it they would fail
@@ -61,7 +84,7 @@ deps=$build_dir/deps
 LLVM_MINGW=$llvm_mingw JOBS=$jobs "$src/packaging/windows/build-deps" "$deps" "$build_dir/deps-work"
 
 build=$build_dir/build
-cmake -S "$src" -B "$build" -G Ninja \
+cmake -S "$src" -B "$build" -G Ninja -DBW_HELP_BUNDLE="$help" \
   -DCMAKE_TOOLCHAIN_FILE="$src/cmake/toolchains/llvm-mingw-x86_64.cmake" \
   -DLLVM_MINGW="$llvm_mingw" -DCMAKE_PREFIX_PATH="$qt_win;$deps" -DQT_HOST_PATH="$qt_host" \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF >/dev/null
@@ -72,6 +95,7 @@ version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$build/CMakeCache.txt")
 stage=$build_dir/stage
 rm -rf "$stage"
 cmake --install "$build" --prefix "$stage" --strip >/dev/null
+[[ -z $help || -f $stage/share/blockwright/help/bundle.json ]] || die "the install left out the help bundle"
 
 mingw_licences=$llvm_mingw/x86_64-w64-mingw32/share/mingw32
 sboms=()

@@ -5,7 +5,11 @@
 // titles and text, whose results take the tree's place while there is
 // text to search for. Links inside the bundle open in the window; a link
 // to a sample file in it (.ans, .bwp) asks the main window to open it as
-// an untitled copy; any other link opens in the system's browser.
+// an untitled copy; a picture, .txt or .pdf in it and every web link open
+// in the system's browser or viewer. "Inside the bundle" is by real path,
+// symlinks resolved, so a link in it to outside it opens nothing, and so do
+// files of any other type. A page the bundle should hold but doesn't opens
+// on the website instead, and the window says so.
 
 #include "help_docs.h"
 
@@ -28,7 +32,9 @@ public:
     // A window of its own, kept by `parent` and closed with it.
     HelpWindow(helpdocs::Bundle bundle, QWidget* parent);
 
-    // Shows `page` (a bundle page name, with an optional #fragment).
+    // Shows `page` (a bundle page name, with an optional #fragment). When
+    // the bundle doesn't hold it, opens it on the website and shows a
+    // message saying so.
     void open(const QString& page);
     // The page shown, as a bundle page name with its fragment, if any.
     QString currentPage() const;
@@ -52,12 +58,20 @@ signals:
     void fileRequested(const QString& path);
 
 private:
-    // The bundle page name of a local file URL in the bundle, or empty.
+    // The bundle page name of a local file URL in the bundle by path, or
+    // empty.
     QString pageOf(const QUrl& url) const;
+    // The same by real path: the file exists and, symlinks resolved, is
+    // in the bundle's real directory. Empty otherwise.
+    QString realPageOf(const QUrl& url) const;
+    // The message for a page missing from the bundle, which opens on the
+    // website instead.
+    void showMissing(const QString& page);
     void showResults(const QString& text);
     void selectInContents(const QUrl& url);
 
     helpdocs::Bundle bundle_;
+    QString realDir_;  // the bundle's directory, symlinks resolved
     QTextBrowser* browser_ = nullptr;
     QTreeWidget* tree_ = nullptr;
     QLineEdit* search_ = nullptr;

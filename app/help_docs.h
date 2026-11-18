@@ -58,9 +58,9 @@ struct Bundle {
 // Where the installed bundle is: <datadir>/blockwright/help/ from the real
 // binary's directory, as the bundled samples and Library are found.
 QString installedDir();
-// Reads `dir`/bundle.json. A bundle that is missing, isn't format 1 or
-// names a page outside the bundle gives an invalid Bundle and says why in
-// `error`.
+// Reads `dir`/bundle.json. A bundle that is missing, isn't format 1, has no
+// contents (`contents` missing, not an array or empty) or names a page
+// outside the bundle gives an invalid Bundle and says why in `error`.
 Bundle read(const QString& dir, QString* error = nullptr);
 
 // A page name ("manual/04-tools.html#fill") on the website.
@@ -73,7 +73,9 @@ QString toolPage(const QString& toolId);
 // an internal link or image of a page that doesn't resolve to a file in
 // the bundle or to an anchor in its page, and a page the app opens
 // (the three Help pages and every tool's section) that doesn't exist.
-// Empty when nothing is.
+// An `href` or `src` is read as a browser reads it: in double or single
+// quotes, its character references (&amp;) decoded, then its path and
+// fragment percent-decoded. Empty when nothing is.
 QStringList check(const Bundle& bundle, const QStringList& toolIds);
 
 } // namespace bw::helpdocs

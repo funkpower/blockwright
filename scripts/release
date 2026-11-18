@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Make the release source tarball of a version:
 #
-#   scripts/release [--out DIR] [--repo DIR] [--check DIR] <version> [<ref>]
+#   scripts/release [--out DIR] [--repo DIR] [--check DIR]
+#                   (--help-bundle DIR | --no-help-bundle) <version> [<ref>]
 #
 #   <version>  the version, as in project(VERSION) in CMakeLists.txt at <ref>
 #   <ref>      the tag or commit to package (default: v<version>)
@@ -11,6 +12,15 @@
 #              with BW_FETCH_CATCH2=OFF and run ctest, without network where
 #              `unshare --net` works; it needs Catch2 3 installed or named in
 #              CMAKE_PREFIX_PATH
+#   --help-bundle  the help bundle to ship in the tarball as help/ (#210):
+#              scripts/help-bundle's, built from the docs commit the release
+#              commit's packaging/docs-commit pins with the release's own CLI
+#              and app. Its bundle.json must name that docs commit, and the
+#              release (checkedWith "<version> (<commit>)"), or it is refused.
+#              The tarball's builds install it (BW_HELP_BUNDLE defaults to
+#              help/), so every package made from the tarball carries it
+#   --no-help-bundle  a tarball without one, whose builds' Help opens the
+#              website; one of the two is required
 #
 # Writes <out>/blockwright-<version>.tar.gz, whose files sit under
 # blockwright-<version>/, <out>/blockwright-<version>.tar.gz.sha256
@@ -18,28 +28,40 @@
 # for that tarball with its .SRCINFO (where makepkg runs), and the FreeBSD
 # port <out>/freebsd/blockwright/ with its distinfo. The tarball is
 # `git archive` of the commit, so only committed, tracked files go in;
-# untracked and modified ones never do. The same commit
-# gives the same bytes: the entries carry the commit's time, gzip records no
-# name or time, and the file modes and the commit written into
-# packaging/tarball-commit don't depend on the local git configuration.
+# untracked and modified ones never do; the help bundle, which isn't
+# tracked, is appended under blockwright-<version>/help/. The same commit
+# (and bundle) gives the same bytes: the entries carry the commit's time,
+# gzip records no name or time, and the file modes and the commit written
+# into packaging/tarball-commit don't depend on the local git configuration;
+# the bundle's files go in sorted, owned by 0, mode 644, with the commit's
+# time.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 out=
 check=
+help=
+no_help=
 args=()
 while [[ $# -gt 0 ]]; do
   case $1 in
     --out) out=$2; shift 2 ;;
     --repo) repo=$2; shift 2 ;;
     --check) check=$2; shift 2 ;;
-    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+    --help-bundle) help=$2; shift 2 ;;
+    --no-help-bundle) no_help=1; shift ;;
+    -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d'; exit 0 ;;
     -*) echo "release: unknown option $1" >&2; exit 2 ;;
     *) args+=("$1"); shift ;;
   esac
 done
 if [[ ${#args[@]} -lt 1 || ${#args[@]} -gt 2 ]]; then
-  echo "usage: scripts/release [--out DIR] [--repo DIR] [--check DIR] <version> [<ref>]" >&2
+  echo "usage: scripts/release [--out DIR] [--repo DIR] [--check DIR] (--help-bundle DIR | --no-help-bundle)" \
+       "<version> [<ref>]" >&2
+  exit 2
+fi
+if [[ -n $help && -n $no_help ]] || [[ -z $help && -z $no_help ]]; then
+  echo "release: pass --help-bundle DIR (the help bundle the tarball ships) or --no-help-bundle" >&2
   exit 2
 fi
 version=${args[0]}
@@ -60,15 +82,69 @@ if [[ $have != "$version" ]]; then
   exit 1
 fi
 
+short=$(git -C "$repo" rev-parse --short=7 "$commit")
+# The help bundle: format 1 with contents, built from the docs commit this
+# commit pins and checked against this release
+if [[ -n $help ]]; then
+  [[ -f $help/bundle.json ]] || { echo "release: --help-bundle $help: no bundle.json there" >&2; exit 1; }
+  if ! pin=$(git -C "$repo" show "$commit:packaging/docs-commit" 2>/dev/null | sed -n '1{s/[[:space:]]//g;p;}') ||
+     [[ ! $pin =~ ^[0-9a-f]{7,40}$ ]]; then
+    echo "release: $ref pins no docs commit (packaging/docs-commit)" >&2; exit 1
+  fi
+  if ! why=$(python3 -I - "$help/bundle.json" "$pin" "$version ($short)" <<'PY'
+import json, sys
+path, pin, release = sys.argv[1:]
+try:
+    b = json.load(open(path, encoding="utf-8"))
+except (OSError, ValueError) as e:
+    sys.exit(f"bundle.json doesn't read: {e}")
+if not isinstance(b, dict) or b.get("format") != 1:
+    sys.exit("bundle.json isn't help bundle format 1")
+if not isinstance(b.get("contents"), list) or not b["contents"]:
+    sys.exit("bundle.json has no contents")
+commit = b.get("docsCommit")
+if not isinstance(commit, str) or len(commit) < 7 or not pin.startswith(commit):
+    sys.exit(f"bundle.json names docs commit {commit!r}, not {pin} (packaging/docs-commit)")
+if b.get("checkedWith") != release:
+    sys.exit(f"bundle.json was checked with {b.get('checkedWith')!r}, not this release, {release!r}")
+PY
+  ); then
+    echo "release: --help-bundle $help: $why" >&2; exit 1
+  fi
+  if [[ -n $(find "$help" ! -type f ! -type d -print -quit) ]]; then
+    echo "release: --help-bundle $help holds something that is neither a file nor a directory" >&2; exit 1
+  fi
+fi
+
 name=blockwright-$version
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 tarball=$out/$name.tar.gz
-git -C "$repo" -c core.abbrev=7 -c tar.umask=0022 archive --format=tar --prefix="$name/" "$commit" |
-  gzip -n -9 > "$tarball.new"
+git -C "$repo" -c core.abbrev=7 -c tar.umask=0022 archive --format=tar --prefix="$name/" "$commit" > "$tarball.tar"
+if [[ -n $help ]]; then
+  # the bundle's files appended to git archive's tar the same way each time:
+  # sorted, regular files only, owned by 0, mode 644, the commit's time; the
+  # docs build's manifest stays out
+  python3 -I - "$tarball.tar" "$help" "$name/help" "$(git -C "$repo" show -s --format=%ct "$commit")" <<'PY'
+import os, sys, tarfile
+tar, root, prefix, mtime = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+files = []
+for d, dirs, names in os.walk(root):
+    files += [os.path.relpath(os.path.join(d, n), root) for n in names if n != ".blockwright-docs-manifest"]
+with tarfile.open(tar, "a", format=tarfile.PAX_FORMAT) as t:
+    for rel in sorted(f.replace(os.sep, "/") for f in files):
+        info = tarfile.TarInfo(f"{prefix}/{rel}")
+        info.size = os.path.getsize(os.path.join(root, rel))
+        info.mtime, info.mode, info.uid, info.gid, info.uname, info.gname = mtime, 0o644, 0, 0, "root", "root"
+        with open(os.path.join(root, rel), "rb") as f:
+            t.addfile(info, f)
+PY
+fi
+gzip -n -9 < "$tarball.tar" > "$tarball.new"
+rm -f "$tarball.tar"
 mv "$tarball.new" "$tarball"
 (cd "$out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-echo "release: $tarball ($(git -C "$repo" rev-parse --short=7 "$commit"))"
+echo "release: $tarball ($short${help:+, help bundle from docs $(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["docsCommit"])' "$help/bundle.json")})"
 cat "$tarball.sha256"
 
 # The AUR package of this tarball: the commit's packaging/aur/blockwright with

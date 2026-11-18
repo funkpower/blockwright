@@ -2,6 +2,7 @@
 # Builds Blockwright as a Flatpak and bundles it in a single .flatpak file.
 #
 #   scripts/package-flatpak [--ref REF] [--work DIR] [--out DIR] [--check]
+#                           (--help-bundle DIR | --no-help-bundle)
 #
 #   --ref    the commit to build (default HEAD): only its tracked, committed
 #            files, exported with git archive as scripts/release does, so
@@ -10,6 +11,10 @@
 #            (default: $BW_PACKAGE_WORK, else ~/.cache/dw/blockwright-flatpak-build)
 #   --out    where the bundle goes (default: dist/ in the repo)
 #   --check  install the bundle and run tests/flatpak_test.sh on it
+#   --help-bundle DIR  the help bundle (scripts/help-bundle; #210), copied
+#            into the exported tree as help/, which the build installs, as
+#            a release tarball holds it
+#   --no-help-bundle   none: Help opens the website
 #
 # Environment: JOBS (default 8); FLATPAK_USER_DIR, a private Flatpak
 # installation to use instead of ~/.local/share/flatpak.
@@ -34,16 +39,24 @@ ref=HEAD
 work=${BW_PACKAGE_WORK:-$HOME/.cache/dw/blockwright-flatpak-build}
 out=$root/dist
 check=0
+help=
+no_help=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --ref) ref=$2; shift 2 ;;
     --work) work=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
     --check) check=1; shift ;;
+    --help-bundle) help=$2; shift 2 ;;
+    --no-help-bundle) no_help=1; shift ;;
     -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
 done
+if [[ -n $help && -n $no_help ]] || [[ -z $help && -z $no_help ]]; then
+  die "pass --help-bundle DIR (scripts/help-bundle) or --no-help-bundle"
+fi
+[[ -z $help || -f $help/bundle.json ]] || die "--help-bundle $help: no bundle.json there"
 for tool in git flatpak flatpak-builder sha256sum; do
   command -v "$tool" >/dev/null || die "$tool is not on PATH"
 done
@@ -58,6 +71,11 @@ src=$work/src
 rm -rf "$src" && mkdir -p "$src"
 git -C "$root" archive --format=tar "$ref" | tar -x -C "$src"
 [[ $(<"$src/packaging/tarball-commit") =~ ^[0-9a-f]+$ ]] || die "git archive left packaging/tarball-commit unfilled"
+if [[ -n $help ]]; then
+  mkdir -p "$src/help"
+  cp -R "$help/." "$src/help/"
+  rm -f "$src/help/.blockwright-docs-manifest"
+fi
 version=$(sed -n 's/^project(blockwright VERSION \([0-9.]*\).*/\1/p' "$src/CMakeLists.txt")
 [[ -n $version ]] || die "no project version in CMakeLists.txt"
 manifest=$src/packaging/flatpak/$app_id.yml

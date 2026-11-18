@@ -16,6 +16,7 @@ mode_is() { [[ -n $(find "$1" -prune -perm "$2") ]]; }
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 command -v git >/dev/null || { echo "skip: no git"; exit 77; }
+command -v python3 >/dev/null || { echo "skip: no python3"; exit 77; }
 
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=$tmp/gitconfig
 printf '[user]\n\tname = test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n' > "$GIT_CONFIG_GLOBAL"
@@ -34,6 +35,8 @@ printf 'PORTNAME=\tblockwright\nDISTVERSION=\t0.0.1\n' > "$repo/packaging/freebs
 printf 'descr\n' > "$repo/packaging/freebsd/pkg-descr"
 printf 'bin/blockwright\n' > "$repo/packaging/freebsd/pkg-plist"
 printf 'TIMESTAMP = 0\n' > "$repo/packaging/freebsd/distinfo"
+pin=0123456789abcdef0123456789abcdef01234567
+printf '%s\n' "$pin" > "$repo/packaging/docs-commit"
 printf 'tracked\n' > "$repo/sub/file.txt"
 printf '#!/bin/sh\n' > "$repo/sub/run.sh"; chmod 755 "$repo/sub/run.sh"
 git -C "$repo" init -q && git -C "$repo" add -A &&
@@ -45,14 +48,14 @@ short=$(git -C "$repo" rev-parse --short=7 HEAD)
 printf 'changed\n' > "$repo/sub/file.txt"
 printf 'untracked\n' > "$repo/sub/untracked.txt"
 
-if bash "$release" --repo "$repo" --out "$tmp/a" 1.2.3 >"$tmp/a.log" 2>&1; then
+if bash "$release" --no-help-bundle --repo "$repo" --out "$tmp/a" 1.2.3 >"$tmp/a.log" 2>&1; then
   ok "the release of v1.2.3"
 else
   bad "the release of v1.2.3: $(cat "$tmp/a.log")"; exit 1
 fi
 tarball=$tmp/a/blockwright-1.2.3.tar.gz
 list=$(tar -tzf "$tarball" | LC_ALL=C sort | tr '\n' ' ')
-want='blockwright-1.2.3/ blockwright-1.2.3/.gitattributes blockwright-1.2.3/CMakeLists.txt blockwright-1.2.3/packaging/ blockwright-1.2.3/packaging/aur/ blockwright-1.2.3/packaging/aur/blockwright/ blockwright-1.2.3/packaging/aur/blockwright/PKGBUILD blockwright-1.2.3/packaging/freebsd/ blockwright-1.2.3/packaging/freebsd/Makefile blockwright-1.2.3/packaging/freebsd/distinfo blockwright-1.2.3/packaging/freebsd/pkg-descr blockwright-1.2.3/packaging/freebsd/pkg-plist blockwright-1.2.3/packaging/tarball-commit blockwright-1.2.3/sub/ blockwright-1.2.3/sub/file.txt blockwright-1.2.3/sub/run.sh '
+want='blockwright-1.2.3/ blockwright-1.2.3/.gitattributes blockwright-1.2.3/CMakeLists.txt blockwright-1.2.3/packaging/ blockwright-1.2.3/packaging/aur/ blockwright-1.2.3/packaging/aur/blockwright/ blockwright-1.2.3/packaging/aur/blockwright/PKGBUILD blockwright-1.2.3/packaging/docs-commit blockwright-1.2.3/packaging/freebsd/ blockwright-1.2.3/packaging/freebsd/Makefile blockwright-1.2.3/packaging/freebsd/distinfo blockwright-1.2.3/packaging/freebsd/pkg-descr blockwright-1.2.3/packaging/freebsd/pkg-plist blockwright-1.2.3/packaging/tarball-commit blockwright-1.2.3/sub/ blockwright-1.2.3/sub/file.txt blockwright-1.2.3/sub/run.sh '
 if [[ $list == "$want" ]]; then ok "the committed files only, under blockwright-1.2.3/"; else bad "the tarball holds: $list"; fi
 mkdir -p "$tmp/x" && tar -xzf "$tarball" -C "$tmp/x"
 if [[ $(cat "$tmp/x/blockwright-1.2.3/sub/file.txt") == tracked ]]; then
@@ -113,7 +116,7 @@ mkdir -p "$fake/ok" "$fake/root"
 printf '#!/bin/sh\n[ "$1" = --printsrcinfo ] || exit 1\necho "pkgbase = blockwright"\n' > "$fake/ok/makepkg"
 printf '#!/bin/sh\necho "==> ERROR: Running makepkg as root is not allowed as it can cause permanent," >&2\nexit 10\n' > "$fake/root/makepkg"
 chmod 755 "$fake/ok/makepkg" "$fake/root/makepkg"
-if PATH=$fake/ok:$PATH bash "$release" --repo "$repo" --out "$tmp/s" 1.2.3 >"$tmp/s.log" 2>&1 &&
+if PATH=$fake/ok:$PATH bash "$release" --no-help-bundle --repo "$repo" --out "$tmp/s" 1.2.3 >"$tmp/s.log" 2>&1 &&
    [[ $(cat "$tmp/s/aur/blockwright/.SRCINFO" 2>/dev/null) == 'pkgbase = blockwright' ]] &&
    [[ -z $(find "$tmp/s/aur/blockwright" -name '.SRCINFO.*') ]]; then
   ok "the .SRCINFO is makepkg --printsrcinfo's"
@@ -121,7 +124,7 @@ else
   bad "the .SRCINFO with a working makepkg: $(cat "$tmp/s.log"; ls -A "$tmp/s/aur/blockwright" 2>&1)"
 fi
 # a stale .SRCINFO from an earlier run must not survive a failed makepkg
-if PATH=$fake/root:$PATH bash "$release" --repo "$repo" --out "$tmp/s" 1.2.3 >"$tmp/r.log" 2>&1 &&
+if PATH=$fake/root:$PATH bash "$release" --no-help-bundle --repo "$repo" --out "$tmp/s" 1.2.3 >"$tmp/r.log" 2>&1 &&
    [[ -f $tmp/s/aur/blockwright/PKGBUILD ]] &&
    [[ $(ls -A "$tmp/s/aur/blockwright") == PKGBUILD ]] &&
    grep -q 'makepkg --printsrcinfo failed with 10: ==> ERROR: Running makepkg as root' "$tmp/r.log"; then
@@ -134,23 +137,122 @@ fi
 # modes and abbreviations
 sleep 1
 printf '[tar]\n\tumask = 0077\n[core]\n\tabbrev = 12\n' >> "$GIT_CONFIG_GLOBAL"
-if bash "$release" --repo "$repo" --out "$tmp/b" 1.2.3 "$(git -C "$repo" rev-parse HEAD)" >"$tmp/b.log" 2>&1 &&
+if bash "$release" --no-help-bundle --repo "$repo" --out "$tmp/b" 1.2.3 "$(git -C "$repo" rev-parse HEAD)" >"$tmp/b.log" 2>&1 &&
    cmp -s "$tarball" "$tmp/b/blockwright-1.2.3.tar.gz"; then
   ok "the same bytes again, by hash and under another git configuration"
 else
   bad "a second release differs: $(cat "$tmp/b.log")"
 fi
 
-if bash "$release" --repo "$repo" --out "$tmp/c" 1.2.4 HEAD >"$tmp/c.log" 2>&1; then
+if bash "$release" --no-help-bundle --repo "$repo" --out "$tmp/c" 1.2.4 HEAD >"$tmp/c.log" 2>&1; then
   bad "a version the tree isn't was released"
 elif grep -q 'is version 1.2.3' "$tmp/c.log" && [[ ! -e $tmp/c/blockwright-1.2.4.tar.gz ]]; then
   ok "a version the tree isn't is refused"
 else
   bad "the wrong version: $(cat "$tmp/c.log")"
 fi
-if bash "$release" --repo "$repo" --out "$tmp/d" 1.2.5 >"$tmp/d.log" 2>&1; then
+if bash "$release" --no-help-bundle --repo "$repo" --out "$tmp/d" 1.2.5 >"$tmp/d.log" 2>&1; then
   bad "a version with no tag was released"
 else
   ok "no tag v1.2.5, no release"
+fi
+
+# The help bundle: --help-bundle or --no-help-bundle, one of them
+if bash "$release" --repo "$repo" --out "$tmp/n" 1.2.3 >"$tmp/n.log" 2>&1; then
+  bad "a release with neither --help-bundle nor --no-help-bundle"
+elif grep -q 'pass --help-bundle DIR' "$tmp/n.log" && [[ ! -e $tmp/n/blockwright-1.2.3.tar.gz ]]; then
+  ok "neither --help-bundle nor --no-help-bundle is refused"
+else
+  bad "neither flag: $(cat "$tmp/n.log")"
+fi
+help=$tmp/help
+mkdir -p "$help/tutorials" "$help/samples/x"
+bundle_json() { # <docsCommit> <checkedWith> <contents>
+  printf '{"format": 1, "docsCommit": "%s", "checkedWith": "%s", "contents": %s}\n' "$1" "$2" "$3" > "$help/bundle.json"
+}
+good_contents='[{"title": "Tutorials", "page": "tutorials/index.html", "pages": []}]'
+bundle_json "${pin:0:7}" "1.2.3 ($short)" "$good_contents"
+printf '<h1>T</h1>\n' > "$help/tutorials/index.html"
+printf 'ans\n' > "$help/samples/x/a.ans"
+printf 'tutorials/index.html\n' > "$help/.blockwright-docs-manifest"
+if bash "$release" --help-bundle "$help" --no-help-bundle --repo "$repo" --out "$tmp/n" 1.2.3 >"$tmp/n.log" 2>&1; then
+  bad "a release with both --help-bundle and --no-help-bundle"
+else
+  ok "both --help-bundle and --no-help-bundle are refused"
+fi
+if bash "$release" --help-bundle "$help" --repo "$repo" --out "$tmp/h" 1.2.3 >"$tmp/h.log" 2>&1; then
+  ok "a release with the help bundle"
+else
+  bad "a release with the help bundle: $(cat "$tmp/h.log")"
+fi
+htar=$tmp/h/blockwright-1.2.3.tar.gz
+hlist=$(tar -tzf "$htar" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')
+want_h=$(printf '%s\n' $want blockwright-1.2.3/help/bundle.json blockwright-1.2.3/help/samples/x/a.ans \
+  blockwright-1.2.3/help/tutorials/index.html | LC_ALL=C sort | tr '\n' ' ')
+if [[ $hlist == "$want_h" ]]; then
+  ok "the bundle's files under blockwright-1.2.3/help/, beside the tracked files, without the docs build's manifest"
+else
+  bad "the tarball with the help bundle holds: $hlist"
+fi
+rm -rf "$tmp/hx" && mkdir -p "$tmp/hx" && tar -xzf "$htar" -C "$tmp/hx" 2>/dev/null
+if cmp -s "$help/bundle.json" "$tmp/hx/blockwright-1.2.3/help/bundle.json" &&
+   cmp -s "$help/samples/x/a.ans" "$tmp/hx/blockwright-1.2.3/help/samples/x/a.ans" &&
+   mode_is "$tmp/hx/blockwright-1.2.3/help/bundle.json" 644; then
+  ok "the bundle's files as they are, mode 644"
+else
+  bad "the bundle's files in the tarball differ: $(ls -lR "$tmp/hx/blockwright-1.2.3/help" 2>&1)"
+fi
+hentry=$(python3 -I -c 'import sys, tarfile
+m = tarfile.open(sys.argv[1]).getmember("blockwright-1.2.3/help/bundle.json")
+print(m.uid, m.gid, m.mtime, oct(m.mode))' "$htar" 2>&1)
+if [[ $hentry == "0 0 $(git -C "$repo" show -s --format=%ct v1.2.3) 0o644" ]]; then
+  ok "the bundle's files owned by 0, with the commit's time"
+else
+  bad "the bundle's owner, time and mode: $hentry"
+fi
+sleep 1
+touch "$help/bundle.json" "$help/tutorials/index.html"
+chmod 600 "$help/samples/x/a.ans"
+if bash "$release" --help-bundle "$help" --repo "$repo" --out "$tmp/h2" 1.2.3 >"$tmp/h2.log" 2>&1 &&
+   cmp -s "$htar" "$tmp/h2/blockwright-1.2.3.tar.gz"; then
+  ok "the same bytes again with the bundle, its files touched and their modes changed"
+else
+  bad "a second release with the bundle differs: $(cat "$tmp/h2.log")"
+fi
+chmod 644 "$help/samples/x/a.ans"
+# refused: a bundle of another docs commit, checked with another Blockwright,
+# with no contents, without bundle.json, or holding a symlink; a commit that
+# pins no docs commit
+refused_bundle() { # <name> <wanted message>
+  if bash "$release" --help-bundle "$help" --repo "$repo" --out "$tmp/r" 1.2.3 >"$tmp/r.log" 2>&1; then
+    bad "$1 was released"
+  elif grep -q "$2" "$tmp/r.log" && [[ ! -e $tmp/r/blockwright-1.2.3.tar.gz ]]; then
+    ok "$1 is refused"
+  else
+    bad "$1: $(cat "$tmp/r.log")"
+  fi
+}
+bundle_json abcdef0 "1.2.3 ($short)" "$good_contents"
+refused_bundle "a bundle of another docs commit" "names docs commit 'abcdef0', not $pin"
+bundle_json "${pin:0:7}" "1.2.2 ($short)" "$good_contents"
+refused_bundle "a bundle checked with another Blockwright" "not this release, '1.2.3 ($short)'"
+bundle_json "${pin:0:7}" "1.2.3 ($short)" "[]"
+refused_bundle "a bundle with no contents" "has no contents"
+bundle_json "${pin:0:7}" "1.2.3 ($short)" "{}"
+refused_bundle "a bundle whose contents aren't a list" "has no contents"
+bundle_json "${pin:0:7}" "1.2.3 ($short)" "$good_contents"
+ln -s /etc/passwd "$help/samples/x/link.ans"
+refused_bundle "a bundle holding a symlink" "neither a file nor a directory"
+rm "$help/samples/x/link.ans"
+mv "$help/bundle.json" "$help/bundle.json.away"
+refused_bundle "a directory without bundle.json" "no bundle.json there"
+mv "$help/bundle.json.away" "$help/bundle.json"
+git -C "$repo" rm -q packaging/docs-commit && git -C "$repo" commit -qm "no pin" && git -C "$repo" tag v1.2.3-nopin
+if bash "$release" --help-bundle "$help" --repo "$repo" --out "$tmp/r" 1.2.3 v1.2.3-nopin >"$tmp/r.log" 2>&1; then
+  bad "a commit that pins no docs commit was released with a bundle"
+elif grep -q "pins no docs commit" "$tmp/r.log"; then
+  ok "a commit that pins no docs commit is refused with a bundle"
+else
+  bad "no pin: $(cat "$tmp/r.log")"
 fi
 exit $((fails > 0))
