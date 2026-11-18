@@ -436,8 +436,14 @@ TEST_CASE("every bundled sample, in every variant, lints clean and fits one IRC 
             const lint::LintReport r = bwcli::lintDocument(doc, o);
             INFO(bwcli::lintText(r));
             CHECK(r.clean());
-            if (saved.target == Target::Micron)
+            if (saved.target == Target::Micron) {
+                // a Micron sample keeps to three-digit colours and to glyphs
+                // NomadNet draws: no note about either
+                CHECK(std::none_of(r.findings.begin(), r.findings.end(), [](const lint::Finding& f) {
+                    return f.kind == lint::Finding::Kind::MicronColour || f.kind == lint::Finding::Kind::MicronGlyph;
+                }));
                 continue;
+            }
             const std::vector<std::string> lines = irc::encodeCanvas(doc.canvas);
             CHECK(irc::txtOverBudget(lines, saved.ircBudget.bytes).empty());
         }

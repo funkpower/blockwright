@@ -5,6 +5,7 @@
 #include "blockwright/glyph_rows.h"
 #include "blockwright/halfblock.h"
 #include "blockwright/irc.h"
+#include "blockwright/micron.h"
 #include "blockwright/ramp.h"
 #include "blockwright/width.h"
 
@@ -582,6 +583,27 @@ void ircFold(const Canvas& canvas, bool ice, std::vector<Finding>& out) {
                                " fold to the same colour"));
 }
 
+// What a Micron page doesn't write as the canvas holds it (PLAN §17): colours
+// in the truecolour form, and glyphs written '?'. Notes, one per kind.
+void micronLoss(const Canvas& canvas, const RuleOptions& options, std::vector<Finding>& out) {
+    const bool ice = options.ice;
+    const std::vector<std::pair<int, int>> rgb = micron::truecolourCells(canvas, options.palette.value_or(kPalette), ice);
+    if (const std::size_t n = rgb.size()) {
+        const auto [x, y] = rgb.front();
+        out.push_back(make(Kind::MicronColour, x, y, x, y,
+                           std::to_string(n) + (n == 1 ? " cell is in a colour" : " cells are in colours") +
+                               " three hex digits can't write: the page writes " + (n == 1 ? "it" : "them") +
+                               " exactly, as truecolour (`FTrrggbb or `BTrrggbb), not a twelve-bit `Frgb or `Brgb"));
+    }
+    const std::vector<Unwritable> lost = micron::unwritable(canvas);
+    if (const std::size_t n = lost.size()) {
+        out.push_back(make(Kind::MicronGlyph, lost.front().x, lost.front().y, lost.front().x, lost.front().y,
+                           std::to_string(n) + (n == 1 ? " cell holds a glyph" : " cells hold glyphs") +
+                               " a Micron page writes as '?': NomadNet strips " + (n == 1 ? "its code point" : "their code points") +
+                               " from a page, or IRC text can't write " + (n == 1 ? "it" : "them")));
+    }
+}
+
 // Formatting that draws nothing on its cell but costs IRC bytes: a bit
 // whose cell draws the same rows without it (formatRows, as the renderer
 // draws it) at either glyph width. Only a glyph the VGA font has is judged;
@@ -685,6 +707,8 @@ std::string_view kindName(Finding::Kind kind) {
     case Kind::AnsLoss: return "ans-loss";
     case Kind::WastedFormat: return "wasted-format";
     case Kind::IrcFold: return "irc-fold";
+    case Kind::MicronColour: return "micron-colour";
+    case Kind::MicronGlyph: return "micron-glyph";
     }
     return "?";
 }
@@ -722,7 +746,9 @@ bool craftPair(std::uint8_t a, std::uint8_t b) {
 
 bool ladderKind(Finding::Kind kind) { return kind <= Kind::OneGlyph; }
 
-bool noteKind(Finding::Kind kind) { return kind == Kind::AnsLoss || kind == Kind::IrcFold; }
+bool noteKind(Finding::Kind kind) {
+    return kind == Kind::AnsLoss || kind == Kind::IrcFold || kind == Kind::MicronColour || kind == Kind::MicronGlyph;
+}
 
 std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options) {
     std::vector<Finding> out;
@@ -749,6 +775,8 @@ std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options
     unicodeRules(canvas, out);
     if (options.target != Target::Micron)
         wastedFormat(canvas, out);
+    else
+        micronLoss(canvas, options, out);
     if (options.colours == IrcColours::Mirc16)
         ircFold(canvas, options.ice, out);
     std::stable_sort(out.begin(), out.end(), readingOrder);
@@ -808,6 +836,7 @@ LintReport lintCanvas(const Canvas& canvas, const LintOptions& options) {
     ro.box = options.box;
     ro.target = options.target;
     ro.colours = options.colours;
+    ro.palette = options.palette;
     for (Finding& f : checkRules(canvas, ro))
         all.push_back(std::move(f));
     if (options.box) {

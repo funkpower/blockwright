@@ -5,6 +5,7 @@
 // flat areas, what IRC drops, glyphs an .ans saves as '?'). The lint panel and
 // `blockwright-cli lint` both run lintCanvas, so they agree.
 #include "blockwright/lint.h"
+#include "blockwright/palette.h"
 #include "blockwright/target.h"
 
 #include <algorithm>
@@ -42,6 +43,8 @@ struct Finding {
         AnsLoss,         // IRC target: what an .ans save would drop, one finding per kind
         WastedFormat,    // bold, italic or underline that draws nothing but costs IRC bytes
         IrcFold,         // IRC in 16 colours: cells in mIRC 16-98 sent as the nearest of 0-15
+        MicronColour,    // Micron target: colours a page writes in the truecolour form, not three digits
+        MicronGlyph,     // Micron target: glyphs a page writes as '?' (micron::unwritable)
     };
     Kind kind = Kind::Noise;
     std::string ramp;  // the ramp a ladder finding came from; empty for the rest
@@ -64,7 +67,9 @@ std::string_view kindName(Finding::Kind kind);
 // Whether the kind comes from the ladder check (and so names a ramp).
 bool ladderKind(Finding::Kind kind);
 // Whether the kind is a note: reported, but no fault, so it doesn't make a
-// report unclean or `lint` exit 4. AnsLoss is one: the art is fine for IRC.
+// report unclean or `lint` exit 4. AnsLoss is one (the art is fine for IRC),
+// and so are MicronColour and MicronGlyph (the page shows the art, only not
+// the way a page kept to three-digit colours and NomadNet's glyphs would).
 // IrcFold is another: the fold is what 16 colours asks for.
 bool noteKind(Finding::Kind kind);
 
@@ -77,11 +82,14 @@ struct RuleOptions {
     int minFlatCells = 48;
     // The document's target: under IRC and Micron, NoCp437 is off and
     // AnsLoss runs; under Micron the rules about what IRC drops and
-    // WastedFormat are off too.
+    // WastedFormat are off too, and MicronColour and MicronGlyph run.
     Target target = Target::Ansi;
     // The colours IRC text carries (sentIrcColours of the document's
     // target and setting): with 16, IrcFold runs.
     IrcColours colours = IrcColours::Mirc99;
+    // The colours of the 16, as the document has them (an XBIN's own),
+    // for MicronColour; kPalette when empty.
+    std::optional<std::array<Rgb, 16>> palette;
 };
 
 // The craft rules over the whole canvas, in reading order (by y, then x).
@@ -155,6 +163,17 @@ struct RuleOptions {
 //   the first such cell, counting those whose glyph the fold hides: a
 //   foreground and background that differ in 99 colours and fold to the
 //   same one. Both notes.
+// - MicronColour: Micron target only. The cells whose colour Export Micron
+//   writes in the truecolour form (`FTrrggbb, `BTrrggbb), since three hex
+//   digits can't hold it (micron::truecolourCells: a colour the cell shows
+//   that isn't twelve-bit, indexed ones from options.palette). The page
+//   keeps the colour exactly, and NomadNet 1.5 reads the form; the note is
+//   for a page meant to keep to the 4096 three-digit colours. One finding,
+//   at the first cell, counting the cells.
+// - MicronGlyph: Micron target only. The cells a page writes as '?'
+//   (micron::unwritable): a code point NomadNet strips from a page
+//   (droppedByNomadNet), a wide one as '?' and a space, and what IRC text
+//   writes as '?'. One finding, at the first cell, counting the cells.
 std::vector<Finding> checkRules(const Canvas& canvas, const RuleOptions& options = {});
 
 // Whether hand shading goes between the two colours, either way round,
@@ -175,6 +194,7 @@ struct LintOptions {
     double maxNoise = 0.02;
     Target target = Target::Ansi;  // RuleOptions::target
     IrcColours colours = IrcColours::Mirc99;  // RuleOptions::colours
+    std::optional<std::array<Rgb, 16>> palette;  // RuleOptions::palette
 };
 
 struct LintReport {

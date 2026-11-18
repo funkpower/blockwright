@@ -167,7 +167,8 @@ LintDock::LintDock(Document* doc, QWidget* parent) :
     });
 }
 
-lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick, Target target, IrcColours colours) {
+lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick, Target target, IrcColours colours,
+                          const std::optional<std::array<Rgb, 16>>& palette) {
     lint::LintOptions o;
     if (rampPick <= 0) {
         o.ramps = namedRamps();
@@ -178,13 +179,15 @@ lint::LintReport dockLint(const Canvas& canvas, bool ice, int rampPick, Target t
     o.ice = ice;
     o.target = target;
     o.colours = colours;
+    o.palette = palette;
     return lint::lintCanvas(canvas, o);
 }
 
 FollowsDocument::Work LintDock::snapshot() {
     return [this, canvas = doc_->canvas(), ice = doc_->ansi().ice, pick = ramps_->currentIndex(),
-            target = doc_->target(), colours = doc_->sentIrcColours()]() -> Show {
-        auto report = std::make_shared<lint::LintReport>(dockLint(canvas, ice, pick, target, colours));
+            target = doc_->target(), colours = doc_->sentIrcColours(), palette = doc_->ansi().palette]() -> Show {
+        auto report =
+            std::make_shared<lint::LintReport>(dockLint(canvas, ice, pick, target, colours, palette));
         return [this, report] { showReport(std::move(*report)); };
     };
 }

@@ -991,6 +991,19 @@ expect "unpack --target Micron" 0 '^$' -- "$cli" unpack --target Micron "$piece"
 if grep -Eq '"target": *"micron"' "$tmp/tux-mu/manifest.json"; then ok "a Micron manifest says so"; else bad "a Micron manifest has no target"; fi
 expect "lint --target micron: ans-loss" 0 '^0,0 ans-loss - note: 1 cell is in a colour an \.ans can.t hold, saved as the nearest of the 16 \(fine for Micron\)$' -- "$cli" lint --target micron "$rgb"
 expect "lint follows a Micron project" 0 'fine for Micron' -- "$cli" lint "$tmp/rgb-mu.bwp"
+# #491 slice 2: what the page writes otherwise, as notes
+expect "lint --target micron: micron-colour" 0 '^0,0 micron-colour - note: 1 cell is in a colour three hex digits can.t write: the page writes it exactly, as truecolour \(`FTrrggbb or `BTrrggbb\), not a twelve-bit `Frgb or `Brgb$' -- "$cli" lint --target micron "$rgb"
+expect "lint --target micron: notes leave it clean" 0 '^clean, 2 notes \(1 ans-loss, 1 micron-colour\), noise ' -- "$cli" lint --target micron "$rgb"
+expect "lint --json: micron-colour is a note" 0 '"kind": *"micron-colour", *"severity": *"note"' -- "$cli" lint --json --target micron "$rgb"
+expect "lint --target irc: no micron-colour" 0 '^clean, 1 note \(1 ans-loss\)' -- "$cli" lint --target irc "$rgb"
+# an XBIN's own palette (flags 0x09: palette, iCE): entry 9 is 6-bit
+# (10,10,50), not twelve-bit, the rest black; four A's in 7 on 9 (0x97)
+k='\x00\x00\x00'
+printf "XBIN\x1a\x04\x00\x01\x00\x10\x09$k$k$k$k$k$k$k$k$k\x0a\x0a\x32$k$k$k$k$k${k}A\x97A\x97A\x97A\x97" >"$tmp/pal.xb"
+expect "export --micron of an XBIN palette colour is truecolour" 0 '`BT2828cbAAAA' -- sh -c '"$1" export --micron "$2" "$3" && cat "$3"' sh "$cli" "$tmp/pal.xb" "$tmp/pal.mu"
+expect "lint --target micron reads an XBIN's own palette" 0 '^0,0 micron-colour - note: 4 cells are in colours three hex digits can.t write' -- "$cli" lint --target micron "$tmp/pal.xb"
+printf 'A\xe2\x98\x9dB\r\n' >"$tmp/hand.ans"
+expect "lint --target micron: micron-glyph" 0 '^1,0 micron-glyph - note: 1 cell holds a glyph a Micron page writes as .\?.: NomadNet strips its code point' -- "$cli" lint --encoding utf-8 --target micron "$tmp/hand.ans"
 expect "lint under ANSI: no ans-loss" 0 '^clean' -- "$cli" lint "$rgb"
 # ans-loss is a note: printed, but only mIRC colours lint clean and exit 0
 expect "lint --target irc: ans-loss" 0 '^0,0 ans-loss - note: 1 cell is in a colour an \.ans can.t hold, saved as the nearest of the 16 \(fine for IRC\)$' -- "$cli" lint --target irc "$rgb"

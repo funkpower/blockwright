@@ -336,6 +336,30 @@ TEST_CASE("in IRC 16 colours the dialog's lint notes the folded cells, as the Li
     CHECK(noted(d.lintReport()));
 }
 
+TEST_CASE("under Micron the dialog's lint reads the document's own palette, as the Lint dock does", "[style]") {
+    MainWindow w;
+    Document* doc = w.document();
+    // an XBIN's palette whose entry 9 isn't twelve-bit (kPalette's is), and
+    // an A in it at (5, 3)
+    std::array<Rgb, 16> pal = kPalette;
+    pal[9] = Rgb{0x28, 0x28, 0xcb};
+    AnsiDocument flat;
+    flat.canvas = Canvas(kW, kH);
+    flat.palette = pal;
+    flat.canvas.at(5, 3) = Cell{U'A', Color::indexed(9), Color::indexed(Black), 0, false};
+    doc->replace(flat, QString());
+    REQUIRE(doc->setTarget(Target::Micron));
+    REQUIRE(doc->ansi().palette == pal);
+    LayerStyleDialog d(doc, doc->activeLayer());
+    const auto& f = d.lintReport().findings;
+    const auto note = std::find_if(f.begin(), f.end(),
+                                   [](const lint::Finding& x) { return x.kind == lint::Finding::Kind::MicronColour; });
+    REQUIRE(note != f.end());
+    CHECK(note->x == 5);
+    CHECK(note->y == 3);
+    CHECK(note->message.starts_with("1 cell is in a colour three hex digits can't write"));
+}
+
 TEST_CASE("the preview and its IRC bytes show the cells as the canvas does, with the project's iCE", "[style]") {
     // The colour in the middle of cell (5, 3) in the 1x preview.
     const auto shownBg = [](LayerStyleDialog& d) {

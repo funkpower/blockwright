@@ -14,6 +14,7 @@
 #include "blockwright/ansi.h"
 #include "blockwright/irc.h"
 #include "blockwright/irc_render.h"
+#include "blockwright/micron.h"
 #include "blockwright/project.h"
 #include "blockwright/ramp.h"
 #include "blockwright/render.h"
@@ -1702,6 +1703,74 @@ TEST_CASE("the Lint dock shows ans-loss as a note, in italics, and the summary c
     CHECK_FALSE(row->font(3).italic());
     REQUIRE(rowAt(dock->list(), QStringLiteral("0,0"), QStringLiteral("ans-loss")));
     CHECK(dock->summaryLabel()->text().toStdString().starts_with("1 finding (1 merge), 1 note (1 ans-loss), noise "));
+}
+
+TEST_CASE("under Micron the Lint dock notes truecolour cells and stripped glyphs") {
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    AnsiDocument small;
+    small.canvas = Canvas(4, 1);
+    doc->replace(small, QString());
+    REQUIRE(doc->setTarget(Target::Micron));
+    Cell x;
+    x.ch = U'X';
+    x.fg = Color::fromRgb({0x12, 0x34, 0x56});
+    Cell hand;
+    hand.ch = U'☝';
+    REQUIRE(doc->edit(CellEdit{{CellChange{0, 0, doc->canvas().at(0, 0), x},
+                                CellChange{2, 0, doc->canvas().at(2, 0), hand}}}));
+    LintDock* dock = w.lintWidget();
+    dock->refresh();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    QTreeWidgetItem* colour = rowAt(dock->list(), QStringLiteral("0,0"), QStringLiteral("micron-colour"));
+    REQUIRE(colour);
+    CHECK(colour->text(3).startsWith(QStringLiteral("note: 1 cell is in a colour three hex digits can't write")));
+    CHECK(colour->font(3).italic());
+    QTreeWidgetItem* glyph = rowAt(dock->list(), QStringLiteral("2,0"), QStringLiteral("micron-glyph"));
+    REQUIRE(glyph);
+    CHECK(glyph->text(3).startsWith(QStringLiteral("note: 1 cell holds a glyph a Micron page writes as '?'")));
+    CHECK(glyph->font(3).italic());
+    CHECK(dock->summaryLabel()->text().toStdString().starts_with("clean, "));
+
+    // a twelve-bit colour is no note; under IRC neither is noted
+    x.fg = Color::fromRgb(micron::twelveBit(1, 2, 3));
+    REQUIRE(doc->edit(CellEdit{{CellChange{0, 0, doc->canvas().at(0, 0), x}}}));
+    dock->refresh();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    CHECK_FALSE(rowAt(dock->list(), QStringLiteral("0,0"), QStringLiteral("micron-colour")));
+    REQUIRE(doc->setTarget(Target::Irc));
+    dock->refresh();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    CHECK_FALSE(rowAt(dock->list(), QStringLiteral("2,0"), QStringLiteral("micron-glyph")));
+}
+
+TEST_CASE("under Micron the Lint dock reads the document's own palette, as an XBIN has it") {
+    MainWindow w;
+    w.show();
+    Document* doc = w.document();
+    // the 16 but entry 9, here not twelve-bit: kPalette's is, so only the
+    // document's palette makes these cells truecolour on a page
+    std::array<Rgb, 16> pal = kPalette;
+    pal[9] = Rgb{0x28, 0x28, 0xcb};
+    AnsiDocument small;
+    small.canvas = Canvas(4, 1);
+    small.palette = pal;
+    Cell a;
+    a.ch = U'A';
+    a.fg = Color::indexed(9);
+    for (int x = 0; x < 4; ++x)
+        small.canvas.at(x, 0) = a;
+    doc->replace(small, QString());
+    REQUIRE(doc->setTarget(Target::Micron));
+    REQUIRE(doc->ansi().palette == pal);
+    LintDock* dock = w.lintWidget();
+    dock->refresh();
+    REQUIRE(waitFor([&] { return !dock->stale(); }));
+    QTreeWidgetItem* colour = rowAt(dock->list(), QStringLiteral("0,0"), QStringLiteral("micron-colour"));
+    REQUIRE(colour);
+    CHECK(colour->text(3).startsWith(QStringLiteral("note: 4 cells are in colours three hex digits can't write")));
+    CHECK(dock->summaryLabel()->text().toStdString().starts_with("clean, 1 note (1 micron-colour), noise "));
 }
 
 TEST_CASE("the Lint dock names a control or bidi override from a file by its code point") {

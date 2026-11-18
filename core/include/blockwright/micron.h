@@ -10,6 +10,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace bw::micron {
@@ -70,6 +71,13 @@ std::string encodeCanvas(const Canvas& canvas, const std::array<Rgb, 16>& palett
 // encodeCanvas of a document: its own palette (an XBIN's) or kPalette, and
 // its iCE setting.
 std::string encode(const AnsiDocument& doc, const Options& opts = {});
+
+// The cells, in cell order, whose colour encodeLine writes in the
+// truecolour form (`FTrrggbb / `BTrrggbb) since it isn't twelve-bit: a
+// colour the cell shows (a foreground on a glyph that draws one, a
+// background not covered by a full block), read as encodeLine reads it
+// with `palette` and `ice`. The colour is written as it is, not rounded.
+std::vector<std::pair<int, int>> truecolourCells(const Canvas& canvas, const std::array<Rgb, 16>& palette, bool ice);
 
 // The cells Micron writes as something else, in cell order: irc::unwritable's,
 // and each glyph written '?' for a code point NomadNet drops (Loss::NoCode,

@@ -570,7 +570,7 @@ void LayerStyleDialog::refresh() {
                 widest_ = sent;
                 widestWritten_ = line.size();
             }
-        report_ = dockLint(raw, ice, 0, doc_->target(), doc_->sentIrcColours());
+        report_ = dockLint(raw, ice, 0, doc_->target(), doc_->sentIrcColours(), doc_->ansi().palette);
     }
 
     // the widgets

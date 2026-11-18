@@ -49,6 +49,7 @@ bw::lint::LintReport lintDocument(const bw::AnsiDocument& doc, const LintCliOpti
     lo.ice = doc.ice;
     lo.target = o.target;
     lo.colours = o.colours;
+    lo.palette = doc.palette;
     return bw::lint::lintCanvas(doc.canvas, lo);
 }
 

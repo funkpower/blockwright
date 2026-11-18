@@ -221,6 +221,19 @@ std::string encode(const AnsiDocument& doc, const Options& opts) {
     return encodeCanvas(doc.canvas, doc.palette.value_or(kPalette), doc.ice, opts);
 }
 
+std::vector<std::pair<int, int>> truecolourCells(const Canvas& canvas, const std::array<Rgb, 16>& palette, bool ice) {
+    std::vector<std::pair<int, int>> out;
+    for (int y = 0; y < canvas.height(); ++y) {
+        const std::vector<Out> cells = rowCells(canvas, y, palette, ice, nullptr);
+        for (std::size_t x = 0; x < cells.size(); ++x) {
+            const Out& o = cells[x];
+            if (!o.text.empty() && ((o.showsFg && !isTwelveBit(o.fg)) || (o.showsBg && !isTwelveBit(o.bg))))
+                out.emplace_back(int(x), y);
+        }
+    }
+    return out;
+}
+
 std::vector<Unwritable> unwritable(const Canvas& canvas) {
     std::vector<Unwritable> lost;
     for (int y = 0; y < canvas.height(); ++y)
