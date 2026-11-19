@@ -67,8 +67,15 @@ Ubuntu 24.04 ship a Qt older than 6.7, the minimum; use the AppImage there.
 
 ### Fedora
 
-An `.rpm` is built for Fedora 44 and for Fedora 45, each for that release
-only (`fc44` or `fc45` in the file name):
+```sh
+sudo dnf copr enable funkpower/blockwright
+sudo dnf install blockwright
+```
+
+The Copr covers Fedora 44 and 45, and updates come with dnf.
+
+To install without the Copr, an `.rpm` is built for Fedora 44 and for Fedora 45,
+each for that release only (`fc44` or `fc45` in the file name):
 
 ```sh
 sudo dnf install ./blockwright-<version>-1.fc45.x86_64.rpm
