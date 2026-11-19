@@ -15,7 +15,7 @@ core. C++20 and Qt 6, for Linux, macOS, Windows and FreeBSD.
 Every release's files are on the
 [latest release page](https://git.pumpin.online/funkpower/blockwright/releases/latest).
 In the file names below, `<version>` is the release's version, such as
-`0.1.1`, and each file but the `PKGBUILD` has a `.sha256` beside it. Every
+`0.1.2`, and each file but the `PKGBUILD` has a `.sha256` beside it. Every
 package installs the editor, `blockwright`, and the command-line tool,
 `blockwright-cli`. [Installing Blockwright](https://blockwright.pumpin.online/manual/01-install.html)
 in the manual has each system's steps in full, with checking the downloads
@@ -39,14 +39,13 @@ installs the dependencies and the package. It puts `blockwright` and
 
 ### Debian and Ubuntu
 
-A `.deb` is built for each of these releases and is for that release only:
+A `.deb` is built for each of these releases and is for that release only.
+Version 0.1.2 has no `.deb` for Debian testing or Ubuntu 26.10:
 
 | Release | File |
 |---|---|
 | Debian 13 (trixie) | `blockwright_<version>-1_debian13_amd64.deb` |
-| Debian testing | `blockwright_<version>-1_debian-testing_amd64.deb` |
 | Ubuntu 26.04 | `blockwright_<version>-1_ubuntu26.04_amd64.deb` |
-| Ubuntu 26.10 | `blockwright_<version>-1_ubuntu26.10_amd64.deb` |
 
 ```sh
 sudo apt install ./blockwright_<version>-1_<release>_amd64.deb
@@ -57,7 +56,8 @@ Ubuntu 24.04 ship a Qt older than 6.7, the minimum; use the AppImage there.
 
 ### Fedora
 
-Built for Fedora 45:
+An `.rpm` is built for Fedora 44 and for Fedora 45, each for that release
+only (`fc44` or `fc45` in the file name):
 
 ```sh
 sudo dnf install ./blockwright-<version>-1.fc45.x86_64.rpm
@@ -90,9 +90,34 @@ command on the `PATH`, from the `fuse3` package or the older FUSE 2 package.
 Without one, set `APPIMAGE_EXTRACT_AND_RUN=1` or run it with
 `--appimage-extract-and-run`.
 
+### Flatpak
+
+`blockwright-<version>-x86_64.flatpak` is a bundle for x86-64 Linux. Install
+it for your user; Flatpak fetches the KDE runtime it needs from Flathub:
+
+```sh
+sha256sum -c blockwright-<version>-x86_64.flatpak.sha256
+flatpak install --user blockwright-<version>-x86_64.flatpak
+flatpak run online.pumpin.funkpower.blockwright
+flatpak run --command=blockwright-cli online.pumpin.funkpower.blockwright --help
+```
+
+`blockwright-cli` is not put on the `PATH`; run it with the second `flatpak
+run` command. The sandbox can read and write your home directory. For files
+elsewhere (another disk under `/mnt`, say), run `flatpak override --user
+--filesystem=<path> online.pumpin.funkpower.blockwright`. The Library and the
+settings are in `~/.var/app/online.pumpin.funkpower.blockwright/`, apart from
+a native install's. Generators run with the runtime's Python 3, so Python
+modules installed for the system's Python are not there unless they are in
+your home directory and on `PYTHONPATH`. [packaging/README.md §
+Flatpak](packaging/README.md#flatpak) has the rest.
+
 ### macOS
 
-`Blockwright-<version>.dmg` is a universal app (Apple silicon and Intel) for
+The newest macOS build is
+[0.1.1](https://git.pumpin.online/funkpower/blockwright/releases/tag/v0.1.1);
+0.1.2 has no dmg. The Homebrew cask installs 0.1.1 too. `Blockwright-0.1.1.dmg`
+is a universal app (Apple silicon and Intel) for
 macOS 12 or later. Open it and drag Blockwright to Applications.
 
 The app is signed ad hoc, not with a Developer ID, and is not notarized, so
