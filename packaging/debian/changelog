@@ -1,3 +1,23 @@
+blockwright (0.1.2-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Micron as a target for NomadNet pages: Format > Target, a NomadNet View dock, Snap to Micron Colours, and .mu files opened as documents.
+  * Palettes: draw a document in its own palette, swap presets, fit and remap colours.
+  * Library collections, in a Library dock and in blockwright-cli.
+  * An offline help window with the manual and tutorials.
+  * IRC output can be limited to the 16 mIRC colours.
+  * Lint notes for what Micron can't write, and a new sample 10.
+  * Layer > Add Generator Layer... adds the output of a generator program as a layer.
+  * Removed: File > Publish to Library and Send to WeeChat. File > Export IRC Text and blockwright-cli export --irc stay.
+  * The offline help bundle is now shipped in every package.
+  * On macOS the Layers dock shows every row's visibility and Alpha Lock boxes, not only the first row's; the Layer Style dialog's effect list has the same fix.
+  * Library fixes: a second path to the bundled library is refused, a library delete or remove can be restored from the trash, and the Library dock's Add Folder keeps non-ASCII file names on Windows.
+  * Windows: the project format refuses a directory or junction swapped in for a file.
+  * blockwright-cli replay and blockwright --screenshot get View > Guides, placeStamp and saveToLibrary steps.
+  * A Flatpak manifest and bundle script.
+
+ -- funkpower <funkpower@pumpin.online>  Thu, 19 Nov 2026 12:00:00 -0500
+
 blockwright (0.1.1-1) unstable; urgency=medium
 
   * New upstream release.

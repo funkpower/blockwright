@@ -34,6 +34,23 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.2" date="2026-11-19">
+      <description>
+        <p>
+          Micron as a target for NomadNet pages: a Format &gt; Target menu, a
+          NomadNet View dock, Snap to Micron Colours and .mu files opened as
+          documents. Palettes: draw a document in its own palette, swap
+          presets, fit and remap colours. Library collections, an offline
+          help window, shipped in every package, and a 16-colour IRC limit.
+          Layer &gt; Add Generator Layer adds the output of a generator
+          program as a layer. Removed: File &gt; Publish to Library and Send
+          to WeeChat; File &gt; Export IRC Text stays. On macOS the Layers dock
+          shows every row's visibility and Alpha Lock boxes. Library fixes
+          for the bundled library, the trash and non-ASCII file names on
+          Windows. A Flatpak manifest.
+        </p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-14">
       <description>
         <p>

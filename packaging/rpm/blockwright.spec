@@ -1,5 +1,5 @@
 Name:           blockwright
-Version:        0.1.1
+Version:        0.1.2
 Release:        1%{?dist}
 Summary:        Editor for ANSI and IRC block art
 
@@ -94,6 +94,22 @@ export QT_QPA_PLATFORM=offscreen
 %{_mandir}/man1/blockwright-cli.1*
 
 %changelog
+* Thu Nov 19 2026 funkpower - 0.1.2-1
+- Micron as a target for NomadNet pages: Format > Target, a NomadNet View dock, Snap to Micron Colours, and .mu files opened as documents
+- Palettes: draw a document in its own palette, swap presets, fit and remap colours
+- Library collections, in a Library dock and in blockwright-cli
+- An offline help window with the manual and tutorials
+- IRC output can be limited to the 16 mIRC colours
+- Lint notes for what Micron can't write, and a new sample 10
+- Layer > Add Generator Layer... adds the output of a generator program as a layer
+- Removed: File > Publish to Library and Send to WeeChat; File > Export IRC Text and blockwright-cli export --irc stay
+- The offline help bundle is now shipped in every package
+- On macOS the Layers dock shows every row's visibility and Alpha Lock boxes, not only the first row's; the Layer Style dialog's effect list has the same fix
+- Library fixes: a second path to the bundled library is refused, a library delete or remove can be restored from the trash, and the Library dock's Add Folder keeps non-ASCII file names on Windows
+- Windows: the project format refuses a directory or junction swapped in for a file
+- blockwright-cli replay and blockwright --screenshot get View > Guides, placeStamp and saveToLibrary steps
+- A Flatpak manifest and bundle script
+
 * Sat Nov 14 2026 funkpower - 0.1.1-1
 - Export to Micron for NomadNet pages, in the app and blockwright-cli
 - New samples 07, 08 and 09, and a new sample 02
