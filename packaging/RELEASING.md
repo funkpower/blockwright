@@ -101,12 +101,134 @@ changes only when its build does.
 
 ## 4. Debian, Ubuntu and Fedora
 
-No repository carries these yet: build each from the uploaded tarball, as in
+Build each from the uploaded tarball, as in
 [README.md § Debian and Ubuntu](README.md#debian-and-ubuntu) and
 [§ Fedora](README.md#fedora), in a clean container or chroot of each release,
 with `lintian` and `rpmlint` clean. The `.deb` of one release is for that
 release only, so name the distribution in each file uploaded to the release
 (`blockwright_<version>-1_ubuntu26.04_amd64.deb`, `blockwright-<version>-1.fc45.x86_64.rpm`).
+
+Ubuntu users get the package from the Launchpad PPA `ppa:funkpower/blockwright`
+and Fedora users from the Copr project `funkpower/blockwright`. Both build
+from source on their own builders, so each gets a source package of the
+uploaded tarball.
+
+### The PPA
+
+The PPA carries only Ubuntu series with Qt 6.7 or newer: Ubuntu 26.04
+(`resolute`) and later. Launchpad builds one upload per series, and each
+upload needs a version of its own: `<version>-1~<series>1`, which sorts
+below Debian's `<version>-1`. A second upload of the same version to the same
+series raises the last number (`~<series>2`). The source package is signed
+with the funkpower key registered on Launchpad (its fingerprint is on
+<https://launchpad.net/~funkpower>); uploading needs nothing else.
+
+1. In an `ubuntu:<release>` container (`docker run --rm -it -v <dir>:/out ubuntu:<release>`),
+   with the tarball in `/out`, make the source package. `dch` takes the name
+   and address from the `Maintainer` field, so they aren't typed:
+
+   ```sh
+   apt-get update && apt-get install -y --no-install-recommends devscripts debhelper lintian
+   cd /out
+   cp blockwright-<version>.tar.gz blockwright_<version>.orig.tar.gz
+   tar xf blockwright_<version>.orig.tar.gz
+   cd blockwright-<version>
+   cp -r packaging/debian debian
+   DEBEMAIL="$(dpkg-parsechangelog -S Maintainer)" \
+     dch -b -v <version>-1~<series>1 -D <series> "Build for Ubuntu <release> (<series>)."
+   dpkg-buildpackage -S -sa -d -us -uc
+   lintian -I --pedantic ../blockwright_<version>-1~<series>1_source.changes
+   ```
+
+   `-sa` puts the tarball in the upload, so its checksum on Launchpad is the
+   release's. `dch -b` accepts a version below the `<version>-1` entry under it.
+   lintian reports `latest-debian-changelog-entry-without-new-date` if the
+   `<version>-1` entry is dated later than the moment `dch` runs; Launchpad
+   doesn't check it.
+
+2. Sign it with the funkpower key. On a machine with `debsign` (devscripts):
+   `debsign -k'<fingerprint>!' blockwright_<version>-1~<series>1_source.changes`.
+   The `!` picks the primary key. On the dev machine, which has no devscripts,
+   run `debsign` in the container with the host's agent socket mounted and the
+   public key imported:
+
+   ```sh
+   gpg --export --armor '<fingerprint>' > <dir>/funkpower.asc
+   docker run --rm -it -v <dir>:/out \
+     -v "$(gpgconf --list-dirs agent-socket)":/root/.gnupg/S.gpg-agent ubuntu:<release> sh -c '
+       apt-get update && apt-get install -y --no-install-recommends devscripts gnupg &&
+       gpg --import /out/funkpower.asc && cd /out &&
+       debsign -k"<fingerprint>!" blockwright_<version>-1~<series>1_source.changes'
+   ```
+
+   Mount the agent's standard socket (`agent-socket`): signing through
+   `agent-extra-socket` times out.
+
+3. Build it from the signed `.dsc` in a clean `ubuntu:<release>` container, with
+   the tests, before uploading:
+
+   ```sh
+   dpkg-source -x blockwright_<version>-1~<series>1.dsc bw
+   cd bw && apt-get build-dep -y ./
+   DEB_BUILD_OPTIONS=parallel=6 dpkg-buildpackage -b -us -uc
+   lintian -I --pedantic ../blockwright_<version>-1~<series>1_amd64.changes
+   ```
+
+4. Upload it with `dput` (in the container, or anywhere it is installed).
+   `dput` checks the signatures first, so the funkpower public key must be in
+   its keyring (`gpg --import funkpower.asc` in a container):
+
+   ```sh
+   dput ppa:funkpower/blockwright blockwright_<version>-1~<series>1_source.changes
+   ```
+
+   Launchpad mails funkpower whether it accepted the upload, then builds it;
+   the builds are at
+   <https://launchpad.net/~funkpower/+archive/ubuntu/blockwright/+packages>.
+   A rejected upload with the same version can be uploaded again; one that was
+   accepted can't, so raise `~<series>N`.
+
+### The Copr
+
+The Copr project `funkpower/blockwright` builds the spec for the Fedora
+releases that are supported (Fedora 44 and 45 at 0.1.2). `copr-cli` needs an
+API token of the funkpower Fedora account: sign in at
+<https://copr.fedorainfracloud.org/api/> as funkpower and save the file it
+shows as `~/.config/copr` (mode 600). The token expires after 180 days; the
+same page renews it.
+
+1. Make the source rpm from the uploaded tarball and the spec. `dist` is
+   left out because Copr builds it again for each release:
+
+   ```sh
+   rpmdev-setuptree
+   cp blockwright-<version>.tar.gz ~/rpmbuild/SOURCES/
+   tar xf blockwright-<version>.tar.gz blockwright-<version>/packaging/rpm/blockwright.spec
+   rpmbuild -bs --define 'dist %{nil}' blockwright-<version>/packaging/rpm/blockwright.spec
+   rpmlint ~/rpmbuild/SRPMS/blockwright-<version>-1.src.rpm
+   ```
+
+2. Once, create the project (in a `fedora` container with `dnf install copr-cli`
+   and `-v ~/.config/copr:/root/.config/copr:ro` if the machine has no
+   `copr-cli`):
+
+   ```sh
+   copr-cli create blockwright --chroot fedora-44-x86_64 --chroot fedora-45-x86_64 \
+     --description 'Editor for ANSI and IRC block art.' \
+     --instructions 'sudo dnf copr enable funkpower/blockwright && sudo dnf install blockwright'
+   ```
+
+   When a Fedora release comes or goes, change the list with
+   `copr-cli modify blockwright --chroot fedora-<n>-x86_64 ...` (the full list).
+
+3. Submit the build:
+
+   ```sh
+   copr-cli build funkpower/blockwright ~/rpmbuild/SRPMS/blockwright-<version>-1.src.rpm
+   ```
+
+   It prints the build's URL and waits for it (`--nowait` returns at once;
+   `copr-cli status <build-id>` reads it later). Each chroot runs `%check`.
 
 ## 5. AppImage
 
@@ -145,5 +267,9 @@ On the dev machine at the tag: `scripts/package-windows --help-bundle ~/.cache/d
   and `blockwright-cli --version`, and open Help > Manual, which opens in the
   help window, not the browser: `yay -S blockwright` on Arch, the dmg and
   `brew install --cask funkpower/tap/blockwright` on a Mac, the MSI on
-  Windows, the AppImage (`--version` and `--cli --version`) on a current Linux.
+  Windows, the AppImage (`--version` and `--cli --version`) on a current Linux,
+  `sudo add-apt-repository ppa:funkpower/blockwright && sudo apt install blockwright`
+  on Ubuntu 26.04, and
+  `sudo dnf copr enable funkpower/blockwright && sudo dnf install blockwright`
+  on Fedora.
 - Note the release in the issue tracker if an issue was waiting on it.
