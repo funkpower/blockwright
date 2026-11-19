@@ -39,8 +39,19 @@ installs the dependencies and the package. It puts `blockwright` and
 
 ### Debian and Ubuntu
 
-A `.deb` is built for each of these releases and is for that release only.
-Version 0.1.2 has no `.deb` for Debian testing or Ubuntu 26.10:
+On Ubuntu 26.04, install from the PPA:
+
+```sh
+sudo add-apt-repository ppa:funkpower/blockwright
+sudo apt update
+sudo apt install blockwright
+```
+
+The PPA covers Ubuntu 26.04, and updates come with the system's updates.
+
+On Debian, or to install without the PPA, a `.deb` is built for each of these
+releases and is for that release only. Version 0.1.2 has no `.deb` for Debian
+testing or Ubuntu 26.10:
 
 | Release | File |
 |---|---|
