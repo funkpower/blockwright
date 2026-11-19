@@ -114,10 +114,7 @@ Flatpak](packaging/README.md#flatpak) has the rest.
 
 ### macOS
 
-The newest macOS build is
-[0.1.1](https://git.pumpin.online/funkpower/blockwright/releases/tag/v0.1.1);
-0.1.2 has no dmg. The Homebrew cask installs 0.1.1 too. `Blockwright-0.1.1.dmg`
-is a universal app (Apple silicon and Intel) for
+`Blockwright-<version>.dmg` is a universal app (Apple silicon and Intel) for
 macOS 12 or later. Open it and drag Blockwright to Applications.
 
 The app is signed ad hoc, not with a Developer ID, and is not notarized, so
