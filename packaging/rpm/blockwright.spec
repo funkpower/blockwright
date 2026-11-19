@@ -76,7 +76,8 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/%{name}.desktop
 appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/*.metainfo.xml
 %if %{with check}
 export QT_QPA_PLATFORM=offscreen
-%ctest
+# mock builds have no network, and the nested-build tests hang there
+%ctest -- -LE nested-build
 %endif
 
 %files

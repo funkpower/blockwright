@@ -290,6 +290,9 @@ add_test(NAME install_notices_space_path
           ${CMAKE_GENERATOR} ${Qt6_DIR} "${bw_prefix_path}")
 set_tests_properties(install_notices install_notices_absolute_docdir install_notices_space_path
   PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+# The tests that configure and build a second tree; the rpm's %check skips them
+set_tests_properties(install_notices_absolute_docdir install_notices_space_path
+  PROPERTIES LABELS nested-build)
 # packaging/freebsd/pkg-plist lists the notices the install carries, no more
 add_test(NAME install_notices_freebsd_plist
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/install_notices_freebsd_plist_test.sh
@@ -320,6 +323,8 @@ if(CMAKE_GENERATOR MATCHES "^Ninja")
   set_tests_properties(install_notices_multi_config PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
   set_tests_properties(install_notices_multi_config_debug_env PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CMAKE_CONFIGURATION_TYPES=Debug")
+  set_tests_properties(install_notices_multi_config install_notices_multi_config_debug_env
+    PROPERTIES LABELS nested-build)
 endif()
 
 # The Debian and Fedora packages (packaging/debian, packaging/rpm) build the
