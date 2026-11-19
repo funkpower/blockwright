@@ -76,8 +76,8 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/%{name}.desktop
 appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/*.metainfo.xml
 %if %{with check}
 export QT_QPA_PLATFORM=offscreen
-# mock builds have no network, and the nested-build tests hang there
-%ctest -- -LE nested-build
+# The nested-build tests hang in mock; the name filter also works on release tarballs that predate the label.
+%ctest -- -E '^install_notices_(absolute_docdir|space_path|multi_config|multi_config_debug_env)$'
 %endif
 
 %files
