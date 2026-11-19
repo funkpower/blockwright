@@ -58,13 +58,14 @@ QString utf8OpenFilter() { return utf8AnsiFilter(); }
 } // namespace
 
 QStringList openNameFilters() {
-    return {QObject::tr("Blockwright projects and ANSI art (*.bwp *.ans *.xb *.bin)"),
+    return {QObject::tr("Blockwright projects and ANSI art (*.bwp *.ans *.xb *.bin *.mu)"),
             QObject::tr("Blockwright projects (*.bwp)"),
             ansiFilter(),
             cp437OpenFilter(),
             utf8OpenFilter(),
             QObject::tr("XBIN (*.xb)"),
             QObject::tr("BIN (*.bin)"),
+            QObject::tr("Micron pages (*.mu)"),
             QObject::tr("All files (*)")};
 }
 
@@ -210,6 +211,8 @@ QString readLossDescription(const ReadLoss& loss) {
     if (loss.poolRefused)
         parts << plural(loss.poolRefused, QObject::tr("%n cluster read as its base: too many distinct clusters"),
                         QObject::tr("%n clusters read as their base: too many distinct clusters"));
+    for (const std::string& note : micron::readNotes(loss))
+        parts << QString::fromStdString(note);
     return parts.join(QStringLiteral("; "));
 }
 
@@ -1037,7 +1040,15 @@ bool MainWindow::openFile(const QString& path, QString* error, std::optional<Tex
         return false;
     }
     const QString dropped = readLossDescription(candidate.readLoss);
-    doc_.replace(std::move(candidate), path);
+    if (micron::isPage(QFile::encodeName(path).toStdString())) {
+        // A Micron document, untitled so Save asks where: a page is never
+        // written over with a project or an .ans (PLAN §17, Opening a page).
+        project::Project p = project::fromAnsi(candidate);
+        p.target = Target::Micron;
+        doc_.replace(std::move(p), QString(), FileForm::ProjectZip);
+    } else {
+        doc_.replace(std::move(candidate), path);
+    }
     addRecentFile(path);
     if (!dropped.isEmpty())
         statusBar()->showMessage(tr("Opened %1: %2").arg(QDir::toNativeSeparators(path), dropped));

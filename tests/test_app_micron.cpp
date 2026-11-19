@@ -1,13 +1,16 @@
 // File > Export Micron...: the loss question, the options dialog and the
 // page it writes (micron.h), and `blockwright-cli export --micron` writing
-// the same page for a flat file.
+// the same page for a flat file. File > Open on a page (.mu): an untitled
+// Micron document, its losses in the status bar.
 
 #include "util.h"
 
 #include "document.h"
 #include "main_window.h"
 #include "message_box.h"
+#include "recent_files.h"
 #include "scratch_settings.h"
+#include "settings.h"
 
 #include "blockwright/micron.h"
 #include "blockwright/sauce.h"
@@ -19,6 +22,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QDir>
 #include <QDialog>
 #include <QFile>
 #include <QFileDialog>
@@ -27,6 +31,7 @@
 #include <QMessageBox>
 #include <QProcess>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -244,4 +249,73 @@ TEST_CASE("cli export --micron writes a flat file as the app opens and exports i
         const QString path = writeFlat(tmp, c.name, c.body, c.width, c.ice);
         CHECK(cliMicron(path) == appMicron(tmp, path));
     }
+}
+
+TEST_CASE("File > Open offers Micron pages") {
+    const QStringList filters = openNameFilters();
+    REQUIRE_FALSE(filters.isEmpty());
+    CHECK(filters.front().contains(QStringLiteral("*.mu")));
+    CHECK(filters.contains(QStringLiteral("Micron pages (*.mu)")));
+    CHECK_FALSE(openFilterEncoding(QStringLiteral("Micron pages (*.mu)")).has_value());
+}
+
+TEST_CASE("File > Open opens a Micron page as an untitled Micron document", "[micron]") {
+    if (!fileDialogsAllowed())
+        SKIP("Qt's settings are not in the scratch directory");
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    struct Restore {
+        ~Restore() { QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, false); }
+    } restore;
+    appSettings()->remove(QStringLiteral("recent"));
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString page = tmp.filePath(QStringLiteral("links.mu"));
+    const std::string bytes = bwtest::readFile(bwtest::dataDir() / "micron" / "links-fields.mu");
+    {
+        QFile f(page);
+        REQUIRE(f.open(QIODevice::WriteOnly));
+        f.write(bytes.data(), qint64(bytes.size()));
+    }
+
+    MainWindow w;
+    QStringList offered;
+    bool picked = false;
+    QTimer timer;
+    timer.setInterval(10);
+    QObject::connect(&timer, &QTimer::timeout, [&] {
+        auto* d = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        if (!d || picked)
+            return;
+        picked = true;
+        offered = d->nameFilters();
+        auto* name = d->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"));
+        REQUIRE(name);
+        name->setText(page);
+        QMetaObject::invokeMethod(d, "accept");
+    });
+    timer.start();
+    act(w, "open")->trigger();
+    timer.stop();
+    REQUIRE(picked);
+    CHECK(offered.contains(QStringLiteral("Micron pages (*.mu)")));
+
+    const Document& doc = *w.document();
+    CHECK(doc.target() == Target::Micron);
+    CHECK(doc.path().isEmpty());  // Save asks where: the page is never written over
+    CHECK(doc.form() == FileForm::ProjectZip);
+    CHECK_FALSE(doc.isModified());
+    REQUIRE(doc.canvas().width() == 31);
+    REQUIRE(doc.canvas().height() == 7);
+    std::u32string top;
+    for (int x = 0; x < 7; ++x)
+        for (const char32_t cp : codePoints(doc.canvas().at(x, 0).ch))
+            top += cp;
+    CHECK(top == U"go Home");
+    const QString status = w.statusBar()->currentMessage();
+    INFO(status.toStdString());
+    CHECK(status.startsWith(QStringLiteral("Opened ") + QDir::toNativeSeparators(page)));
+    CHECK(status.contains(QStringLiteral("2 links drawn as their labels, the first on line 1")));
+    CHECK(status.contains(QStringLiteral("6 fields drawn as their text, the first on line 2")));
+    CHECK(recentFiles() == QStringList{QDir::cleanPath(QFileInfo(page).absoluteFilePath())});
+    CHECK(readAll(page) == bytes);
 }

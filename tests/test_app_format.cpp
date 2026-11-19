@@ -1493,13 +1493,13 @@ std::string fileBytes(const QString& path) {
 
 TEST_CASE("File > Open's filters pick the encoding an .ans is read as", "[app][utf8]") {
     const QStringList filters = openNameFilters();
-    REQUIRE(filters.size() == 8);
+    REQUIRE(filters.size() == 9);
     CHECK(filters[2] == QStringLiteral("ANSI art (*.ans)"));
     CHECK(filters[3] == QStringLiteral("ANSI art, CP437 (*.ans)"));
     CHECK(filters[4] == QStringLiteral("ANSI art, UTF-8 (*.ans)"));
     CHECK(openFilterEncoding(filters[3]) == TextEncoding::Cp437);
     CHECK(openFilterEncoding(filters[4]) == TextEncoding::Utf8);
-    for (const int i : {0, 1, 2, 5, 6, 7}) {
+    for (const int i : {0, 1, 2, 5, 6, 7, 8}) {
         INFO(filters[i].toStdString());
         CHECK_FALSE(openFilterEncoding(filters[i]).has_value());
     }

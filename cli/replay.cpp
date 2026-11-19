@@ -20,6 +20,7 @@
 #include "blockwright/halfblock.h"
 #include "blockwright/layer.h"
 #include "blockwright/library.h"
+#include "blockwright/micron.h"
 #include "blockwright/regular_file.h"
 #include "blockwright/samples.h"
 #include "blockwright/selection.h"
@@ -1411,6 +1412,11 @@ project::Project readStartFile(const fs::path& path, std::vector<std::string>* n
         const std::string data = readChecked(path, project::kMaxEntryBytes);
         if (data.empty())
             throw Failure{"start: " + name + ": empty file"};
+        if (bw::micron::isPage(name)) {
+            project::Project p = project::fromAnsi(bw::micron::parse(data));
+            p.target = bw::Target::Micron;
+            return p;
+        }
         return project::fromAnsi(parseArt(data, artFormatOf(name, data)));
     } catch (const project::ProjectError& e) {
         throw Failure{"start: " + name + ": " + e.what()};

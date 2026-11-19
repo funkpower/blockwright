@@ -10,6 +10,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -96,5 +97,35 @@ Canvas pageCanvas(const Canvas& canvas, const std::array<Rgb, 16>& palette, bool
 // and each glyph written '?' for a code point NomadNet drops (Loss::NoCode,
 // `lead` set on a wide one).
 std::vector<Unwritable> unwritable(const Canvas& canvas);
+
+// Whether `path` names a Micron page: it ends in .mu, in any case. The app
+// and the CLI open such a file with parse, as a Micron document.
+bool isPage(std::string_view path);
+
+// A .mu page as NomadNet 1.5 draws it (MicronParser.markup_to_attrmaps with
+// the browser's strip_modifiers and #!fg= / #!bg= headers, dark theme),
+// read into cells (PLAN §17, Opening a page): one row per line it draws,
+// the page as wide as its widest row (the indent of a section on both
+// sides counted) within kMaxColumns, kMaxRows rows at most. The colours and
+// formatting of each cell are the ones NomadNet draws it in: a colour of
+// kPalette as that index, any other as RGB, the page's default foreground
+// "ddd" (or its #!fg=), the terminal's own colours (`f, `b with no header,
+// a malformed code) as Grey and Black. Alignment, section indents,
+// headings, dividers, links and fields are drawn as NomadNet lays them
+// out and counted in readLoss.micron; comments, headers and anchors draw
+// nothing. The document is UTF-8 with iCE on. Any input parses: a
+// malformed code does what NomadNet's parser does with it, or nothing.
+//
+// `stats`, if given, is set to what the read held at its largest, so a test
+// can check that a page past the limits costs no more than one within them.
+struct ParseStats {
+    std::size_t rowsHeld = 0;    // rows kept at once
+    std::size_t widestRow = 0;   // code points in the longest row built
+};
+AnsiDocument parse(std::string_view page, ParseStats* stats = nullptr);
+
+// The losses of `loss.micron`, one English sentence each, as the CLI warns
+// and the app's status bar shows them.
+std::vector<std::string> readNotes(const ReadLoss& loss);
 
 } // namespace bw::micron

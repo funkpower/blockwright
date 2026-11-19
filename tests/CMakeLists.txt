@@ -91,6 +91,7 @@ add_executable(blockwright-tests
   test_lint_rules.cpp
   test_irc_view.cpp
   test_micron.cpp
+  test_micron_read.cpp
   test_micron_target.cpp
   test_nomadnet_view.cpp
   test_mirc.cpp

@@ -222,6 +222,13 @@ The canvas shows the cells as NomadNet draws them, and File > Export Micron
 writes their colours as they are. For a piece brought over from IRC, Colours >
 Snap to Micron Colours changes the RGB colours of the selection, or of the
 layer, to the nearest three-digit ones.
+
+File > Open reads a `.mu` page as NomadNet draws it, with these limits: 5000
+rows and 400 columns (the rest is left out and the status bar says so), links,
+fields and tables as plain text. Three differences from NomadNet are known: a
+field's text ignores the line's alignment, radio buttons of one group can be
+both checked, and the loss notes also count what a line past row 5000 would
+have added.
 View > NomadNet View shows the page as
 NomadNet draws it in its 256-colour mode, where each colour falls to xterm's
 colour cube, with a `?` for each glyph NomadNet strips.
@@ -240,7 +247,7 @@ own. Selection > Save to Library and Save as Frame Style add to it.
 | XBIN (`.xb`) | yes | yes |
 | BIN (`.bin`) | yes | yes |
 | IRC text (`.txt`, mIRC codes) | — | File > Export IRC Text, `export --irc` |
-| Micron page (`.mu`, NomadNet) | — | File > Export Micron, `export --micron` |
+| Micron page (`.mu`, NomadNet) | yes, as a Micron document (File > Open, every CLI input) | File > Export Micron, `export --micron` |
 | PNG | yes, as a reference image | `blockwright-cli render` |
 | JPEG, BMP, GIF, ICO, PBM/PGM/PPM, XBM, XPM; WebP and TIFF with Qt's image formats plugin | yes, as a reference image | — |
 | TheDraw fonts (`.tdf`) | yes, for text layers | — |

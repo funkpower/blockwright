@@ -362,3 +362,61 @@ TEST_CASE("Micron golden pages") {
     golden("tux-palette-font.mu", micron::encode(tux));
     golden("tux-palette-font.json", expectedCells(tux.canvas, *tux.palette, tux.ice, false));
 }
+
+// Opening a page the writer wrote gives back the cells it was written from,
+// as NomadNet shows them: glyphs, colours and formatting (the golden .json),
+// and writing it again gives the same page.
+TEST_CASE("Micron golden pages open to the cells they were written from") {
+    for (const char* name : {"swatch", "swatch-centre", "swatch-ice-off", "durin-gate", "darkmage", "tux-palette-font"}) {
+        INFO(name);
+        const bool centre = std::string(name) == "swatch-centre";
+        const std::string mu = readFile(dataDir() / "golden-micron" / (std::string(name) + ".mu"));
+        const AnsiDocument back = micron::parse(mu);
+        CHECK(expectedCells(back.canvas, kPalette, true, centre) ==
+              readFile(dataDir() / "golden-micron" / (std::string(name) + ".json")));
+        CHECK(micron::encode(back, {.centre = centre, .cacheSeconds = centre ? std::optional(0u) : std::nullopt}) ==
+              mu);
+        if (centre) {
+            CHECK(back.readLoss.micron.aligned.count == back.canvas.height());
+            CHECK(micron::readNotes(back.readLoss).size() == 1);
+        } else {
+            CHECK_FALSE(back.readLoss.lossy());
+        }
+    }
+}
+
+TEST_CASE("Micron pages of random cells open to the same cells") {
+    static constexpr char32_t kGlyphs[] = U" A z0`\\[]<>#-=!*_|:{}()\u00a0\u2588\u2580\u2584\u258c\u2590\u2591\u2592\u2593\u263a\u2302";
+    std::uint32_t seed = 0x4d75u;
+    const auto next = [&] {
+        seed = seed * 1664525u + 1013904223u;
+        return seed >> 8;
+    };
+    for (int i = 0; i < 400; ++i) {
+        AnsiDocument d;
+        d.ice = next() % 2;
+        d.canvas = Canvas(1 + int(next() % 24), 1 + int(next() % 6));
+        Canvas& c = d.canvas;
+        for (int y = 0; y < c.height(); ++y) {
+            for (int x = 0; x < c.width(); ++x) {
+                const std::uint8_t attrs = std::uint8_t(next() % 16) &
+                                           (attr::Bold | attr::Italic | attr::Underline | attr::Blink);
+                const bool wide = x + 1 < c.width() && next() % 12 == 0;
+                c.at(x, y) = cell(wide ? U'\u4e2d' : kGlyphs[next() % (std::size(kGlyphs) - 1)],
+                                  std::uint8_t(next() % 16), std::uint8_t(next() % 16), attrs);
+                if (wide) {
+                    c.at(x + 1, y) = c.at(x, y);
+                    c.at(++x, y).ch = Glyph::continuation();
+                }
+            }
+        }
+        REQUIRE(micron::unwritable(c).empty());
+        const std::string mu = micron::encode(d);
+        INFO(mu);
+        const AnsiDocument back = micron::parse(mu);
+        CHECK(back.canvas.width() == c.width());
+        CHECK(back.canvas.height() == c.height());
+        CHECK(expectedCells(back.canvas, kPalette, true, false) == expectedCells(c, kPalette, d.ice, false));
+        CHECK_FALSE(back.readLoss.lossy());
+    }
+}

@@ -47,8 +47,10 @@
 // bw::palettePresets) or a palette file (bw::readPaletteFile).
 //
 // Every command that reads an .ans also reads an XBIN (.xb, or any file that
-// starts with the XBIN header) or a BIN (.bin), and a project (PLAN §6), a
-// .bwp zip or a project directory, as its flattened composite. convert and
+// starts with the XBIN header) or a BIN (.bin), a Micron page (.mu, PLAN
+// §17, Opening a page; info, lint and pack take it as the Micron target),
+// and a project (PLAN §6), a .bwp zip or a project directory, as its
+// flattened composite. convert and
 // shade write the format <out>'s name gives (.xb, .bin, else .ans). convert,
 // shade, export and render refuse a .bwp <out>: pack writes a project.
 //
@@ -157,7 +159,8 @@ bw::TextEncoding gOutputEncoding = bw::TextEncoding::Cp437;
 // piece that packs into a project opens flat too.
 constexpr std::size_t kMaxFlatBytes = bw::project::kMaxEntryBytes;
 
-// An .ans, XBIN or BIN, or a project as its flattened composite.
+// An .ans, XBIN or BIN, a Micron page (.mu, as NomadNet draws it, its
+// losses warned of), or a project as its flattened composite.
 bw::AnsiDocument load(const std::string& path) {
     if (bw::project::isProject(path))
         return bw::project::toAnsi(loadProject(path));
@@ -166,7 +169,8 @@ bw::AnsiDocument load(const std::string& path) {
         throw Failure{path + ": empty file"};
     bw::AnsiDocument doc;
     try {
-        doc = bw::parseArt(data, bw::artFormatOf(path, data), {.encoding = gEncoding});
+        doc = bw::micron::isPage(path) ? bw::micron::parse(data)
+                                       : bw::parseArt(data, bw::artFormatOf(path, data), {.encoding = gEncoding});
     } catch (const bw::AnsiError& e) {
         throw Failure{path + ": " + e.what()};
     }
@@ -283,6 +287,13 @@ int info(const std::string& path) {
     if (bw::project::isProject(path))
         return projectInfo(path);
     const bw::AnsiDocument doc = load(path);
+    if (bw::micron::isPage(path)) {
+        std::cout << "file:        " << path << "\n"
+                  << "format:      Micron page\n"
+                  << "target:      " << bw::targetName(bw::Target::Micron) << "\n"
+                  << "size:        " << doc.canvas.width() << "x" << doc.canvas.height() << "\n";
+        return kOk;
+    }
     const std::string data = readFile(path, kMaxFlatBytes);
     const bw::ArtFormat format = bw::artFormatOf(path, data);
     // in binary text 0x1A is a glyph or a colour: the content is the bytes the cells take
@@ -523,7 +534,8 @@ bw::project::Project asProject(const std::string& in, const std::string& out, bo
     warnLoss(in, loss);
     if (loss.fontDropped && !allowLossy)
         throw Failure{out + ": not written: the project loses data (--allow-lossy writes it anyway)"};
-    p.target = target.value_or(bw::Target::Ansi);
+    // a Micron page packs as a Micron project
+    p.target = target.value_or(bw::micron::isPage(in) ? bw::Target::Micron : bw::Target::Ansi);
     p.ircColours = colours.value_or(bw::IrcColours::Mirc99);
     return p;
 }
@@ -1015,7 +1027,7 @@ Options:
 A steps file is JSON:
 
   {"version": 1,
-   "start": {"file": "piece.ans"}            .ans, .xb, .bin or a project, relative
+   "start": {"file": "piece.ans"}            .ans, .xb, .bin, .mu or a project, relative
                                              to the steps file
           | {"sample": "01-layers-showcase", "variant": "Night"}
           | {"blank": [80, 25]},
@@ -1369,7 +1381,7 @@ int lint(const std::string& in, bwcli::LintCliOptions o, std::optional<bw::Targe
         // the cells unfolded, so irc-fold can count the ones 16 colours fold
         doc = bw::richTarget(o.target) ? sentDocument(p) : bw::project::toAnsi(p);
     } else {
-        o.target = target.value_or(bw::Target::Ansi);
+        o.target = target.value_or(bw::micron::isPage(in) ? bw::Target::Micron : bw::Target::Ansi);
         o.colours = bw::sentIrcColours(o.target, colours.value_or(bw::IrcColours::Mirc99));
         doc = load(in);
     }
@@ -1801,8 +1813,10 @@ int main(int argc, char** argv) {
         "                       NN-<name>.ans (and .bwp with --project, .png with\n"
         "                       --render); replay --help gives the format\n\n"
         "Every command that reads an .ans also reads an XBIN (.xb) or BIN (.bin),\n"
-        "and a project (a .bwp zip or a project directory) as its flattened\n"
-        "composite. convert, shade and remap write XBIN to an <out> named .xb and\n"
+        "a Micron page (.mu) as NomadNet draws it, warning of what its cells\n"
+        "don't keep (links, fields, headings, alignment, ...), and a project (a\n"
+        ".bwp zip or a project directory) as its flattened composite. info, lint\n"
+        "and pack take a .mu as the Micron target. convert, shade and remap write XBIN to an <out> named .xb and\n"
         "BIN to one named .bin. Only XBIN and a project hold a palette: an .ans or\n"
         "BIN <out> of a piece with its own palette is lossy (--allow-lossy).\n"
         "convert, shade, export --irc and render refuse an <out> named .bwp:\n"

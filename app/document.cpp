@@ -2,6 +2,7 @@
 #include "font_scanner.h"
 
 #include "blockwright/halfblock.h"
+#include "blockwright/micron.h"
 #include "blockwright/regular_file.h"
 #include "blockwright/render.h"
 #include "blockwright/style_draw.h"
@@ -433,9 +434,15 @@ bool Document::read(const QString& path, AnsiDocument* out, QString* error, std:
     }
     try {
         const std::string_view bytes(data);
-        ParseOptions options;
-        options.encoding = encoding;
-        *out = parseArt(bytes, artFormatOf(QFile::encodeName(path).toStdString(), bytes), options);
+        const std::string name = QFile::encodeName(path).toStdString();
+        // a Micron page is UTF-8 whatever `encoding` says, as NomadNet reads it
+        if (micron::isPage(name)) {
+            *out = micron::parse(bytes);
+        } else {
+            ParseOptions options;
+            options.encoding = encoding;
+            *out = parseArt(bytes, artFormatOf(name, bytes), options);
+        }
     } catch (const AnsiError& e) {
         *error = QString::fromStdString(e.what());
         return false;

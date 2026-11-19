@@ -2,6 +2,7 @@
 
 #include "blockwright/cp437.h"
 #include "blockwright/glyph.h"
+#include "blockwright/micron.h"
 
 #include <algorithm>
 #include <optional>
@@ -123,6 +124,8 @@ std::vector<std::string> readWarnings(const bw::ReadLoss& loss) {
     if (const int n = loss.poolRefused)
         out.push_back(std::to_string(n) + (n == 1 ? " cluster read as its base" : " clusters read as their base") +
                       ": too many distinct clusters");
+    for (std::string& n : bw::micron::readNotes(loss))
+        out.push_back(std::move(n));
     return out;
 }
 

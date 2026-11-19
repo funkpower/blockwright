@@ -26,6 +26,44 @@ struct FileFont {
 // UTF-8, the way a terminal (or a paste from one) writes it.
 enum class TextEncoding { Cp437, Utf8 };
 
+// One kind of Micron markup a page had that the canvas has no place for
+// (micron::parse): how many times, and the page's line (1-based) of the first.
+struct MicronLoss {
+    int count = 0;
+    int line = 0;
+    void add(int at) {
+        if (count++ == 0)
+            line = at;
+    }
+};
+
+// What opening a Micron page drew as plain cells or left out (PLAN §17,
+// Opening a page). The cells keep what NomadNet shows; these say what a
+// page written back from them won't have.
+struct MicronReadLoss {
+    MicronLoss links;     // drawn as their label (or URL) text
+    MicronLoss fields;    // drawn as their text, a check box or radio as "[ ] label"
+    MicronLoss headings;  // drawn as text in the heading's colours, the row filled
+    MicronLoss dividers;  // drawn as a row of their glyph
+    MicronLoss sections;  // lines indented by their section depth
+    MicronLoss aligned;   // lines centred or right-aligned, placed at the page width
+    MicronLoss tables;    // their lines kept as text, one row each (two lines or more)
+    MicronLoss unclosedTables;  // a table never closed by a second `t: not drawn, as in NomadNet
+    MicronLoss partials;  // left out: NomadNet fetches them (only those it would)
+    MicronLoss images;    // left out (only those NomadNet draws)
+    MicronLoss clipped;   // rows cut at kMaxColumns
+    MicronLoss rows;      // lines past kMaxRows, left out
+    MicronLoss badUtf8;   // bytes not well-formed UTF-8, read as U+FFFD
+
+    bool lossy() const {
+        for (const MicronLoss* l : {&links, &fields, &headings, &dividers, &sections, &aligned, &tables, &unclosedTables, &partials,
+                                    &images, &clipped, &rows, &badUtf8})
+            if (l->count)
+                return true;
+        return false;
+    }
+};
+
 // What a UTF-8 .ans read couldn't keep (PLAN §16, Reading). Every other
 // read keeps everything.
 struct ReadLoss {
@@ -37,7 +75,10 @@ struct ReadLoss {
     // Clusters read as their base, their marks dropped: the pool was full.
     int poolRefused = 0;
 
-    bool lossy() const { return marksDropped || poolRefused; }
+    // What a Micron page had that its cells don't keep.
+    MicronReadLoss micron;
+
+    bool lossy() const { return marksDropped || poolRefused || micron.lossy(); }
 };
 
 struct AnsiDocument {
